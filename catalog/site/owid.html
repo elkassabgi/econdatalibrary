@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Our World in Data — Econ Data Library</title>
+<meta name="description" content="FULL-COVERAGE grouped ingest of the ENTIRE Our World in Data grapher catalog. Source: Our World in Data (CC BY 4.0). license_id = cc-by-4.0. ENUMERATION ----------- OWID has no JSON &quot;list every chart&quot; endpoint, but it publishes a sitemap that lists every public page including every grapher">
+<link rel="canonical" href="https://econdatalibrary.com/owid.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{--navy:#1a2332;--navy-light:#243044;--blue:#2563eb;--blue-pale:#eff6ff;
+--gold:#d4a843;--gold-deep:#8a6d27;--g50:#f9fafb;--g100:#f3f4f6;--g200:#e5e7eb;
+--g300:#d1d5db;--g500:#6b7280;--g600:#4b5563;--g700:#374151;--g800:#1f2937;
+--green:#047857;--red:#b91c1c;--amber:#92600a;--serif:Georgia,serif;
+--sans:"Inter",system-ui,sans-serif;--mono:"JetBrains Mono",monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);color:var(--g800);background:#fff;line-height:1.6}
+.nav{background:var(--navy);color:#fff;padding:0 1.5rem;height:60px;display:flex;
+align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}
+.brand .d{color:var(--gold)}.brand a{color:#fff;text-decoration:none}
+.nav a{color:rgba(255,255,255,.8);text-decoration:none;font-size:.9rem;margin-left:1rem}
+.wrap{max-width:920px;margin:0 auto;padding:2rem 1.5rem}
+.crumb{font-size:.82rem;color:var(--g500);margin-bottom:1rem}
+.crumb a{color:var(--blue);text-decoration:none}
+h1{font-family:var(--serif);color:var(--navy);font-size:2rem;line-height:1.2}
+.pid{font-family:var(--mono);color:var(--gold-deep);font-size:.85rem;margin-bottom:.3rem}
+.badges{margin:.9rem 0 1.2rem;display:flex;gap:.5rem;flex-wrap:wrap}
+.badge{display:inline-block;font-size:.74rem;font-weight:600;padding:.2rem .6rem;
+border-radius:999px}
+.badge.open{background:#ecfdf5;color:var(--green)}
+.badge.meta{background:#fffbeb;color:var(--amber)}
+.badge.lic{background:var(--blue-pale);color:var(--blue)}
+.badge.cat{background:var(--g100);color:var(--g600)}
+.lead{font-size:1.02rem;color:var(--g700);margin:.5rem 0 1.5rem;white-space:pre-wrap}
+.callout{font-size:.9rem;border-radius:8px;padding:.8rem 1rem;margin:1rem 0}
+.callout.meta{background:#fffbeb;border:1px solid #fde68a;color:#7c5e10}
+.callout.open{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46}
+ul.notes{margin:.4rem 0 1rem;padding-left:1.1rem;color:var(--g700)}
+ul.notes li{margin:.35rem 0;font-size:.92rem;line-height:1.5}
+ul.notes li:first-child{font-weight:600;color:var(--navy)}
+blockquote.cite{margin:.4rem 0;padding:.7rem 1rem;border-left:3px solid var(--gold);
+background:var(--g50,#f9fafb);font-family:var(--mono);font-size:.85rem;color:var(--g700);white-space:pre-wrap}
+p.proc{font-size:.85rem;color:var(--g600);margin:.4rem 0 1rem}
+h2{font-family:var(--serif);color:var(--navy);font-size:1.2rem;margin:1.8rem 0 .5rem;
+border-bottom:1px solid var(--g200);padding-bottom:.3rem}
+.kv{display:grid;grid-template-columns:190px 1fr;gap:.45rem 1rem;font-size:.92rem}
+.kv dt{color:var(--g500);font-weight:600}
+.kv dd{color:var(--g800);word-break:break-word}
+.kv dd a{color:var(--blue)}
+.mono{font-family:var(--mono);font-size:.85rem}
+details{margin-top:1rem;border:1px solid var(--g200);border-radius:8px;background:var(--g50)}
+summary{cursor:pointer;padding:.7rem 1rem;font-weight:600;color:var(--g700);font-size:.9rem}
+details pre{margin:0;padding:1rem;overflow:auto;font-family:var(--mono);font-size:.78rem;
+line-height:1.5;border-top:1px solid var(--g200);background:#fff;color:var(--g800)}
+.foot{color:var(--g500);font-size:.8rem;text-align:center;padding:2.5rem 1rem;
+border-top:1px solid var(--g200);margin-top:2.5rem}
+.foot a{color:var(--blue)}
+.dhero{background:var(--navy);margin:-2rem -1.5rem 1.6rem;padding:2.1rem 1.5rem 1.7rem;
+border-bottom:3px solid var(--gold)}
+.dhero .crumb{color:rgba(255,255,255,.55);margin-bottom:.7rem}
+.dhero .crumb a{color:var(--gold);text-decoration:none}
+.dhero .pid{color:var(--gold);margin-bottom:.35rem}
+.dhero h1{color:#fff;font-size:1.9rem}
+.dhero .badges{margin:.9rem 0 0}
+.dhero .lead{color:rgba(255,255,255,.78);margin:.8rem 0 0;font-size:1rem}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:.7rem;margin:.5rem 0 1rem}
+.metric{background:var(--g50);border:1px solid var(--g200);border-radius:10px;padding:.75rem .9rem}
+.metric .mlabel{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g500)}
+.metric .mval{font-family:var(--serif);font-size:1.15rem;color:var(--navy);margin-top:.25rem;word-break:break-word}
+</style>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org/",
+  "@type": "Dataset",
+  "name": "Our World in Data",
+  "description": "FULL-COVERAGE grouped ingest of the ENTIRE Our World in Data grapher catalog. Source: Our World in Data (CC BY 4.0). license_id = cc-by-4.0. ENUMERATION ----------- OWID has no JSON \"list every chart\" endpoint, but it publishes a sitemap that lists every public page including every grapher chart:…",
+  "url": "https://econdatalibrary.com/owid.html",
+  "identifier": "owid",
+  "isAccessibleForFree": true,
+  "publisher": {
+    "@type": "Organization",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com"
+  },
+  "creator": {
+    "@type": "Organization",
+    "name": "Our World in Data"
+  },
+  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "keywords": [
+    "climate",
+    "energy",
+    "macro",
+    "owid"
+  ],
+  "temporalCoverage": "1750-12-31/2024-12-31",
+  "repeatFrequency": "P1Y",
+  "creditText": "Source: Our World in Data (CC BY 4.0)",
+  "citation": "Our World in Data. Retrieved from https://ourworldindata.org. Compiled and redistributed by the Elkassabgi Data Library.",
+  "sameAs": [
+    "https://huggingface.co/datasets/econdatalibrary-owid",
+    "https://zenodo.org/communities/econdatalibrary"
+  ],
+  "distribution": [
+    {
+      "@type": "DataDownload",
+      "encodingFormat": "application/vnd.apache.parquet",
+      "contentUrl": "https://econdatalibrary.com/data/owid/",
+      "license": "https://creativecommons.org/licenses/by/4.0/"
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": {
+    "@language": "en",
+    "@vocab": "https://schema.org/",
+    "cr": "http://mlcommons.org/croissant/",
+    "data": {
+      "@id": "cr:data",
+      "@type": "@json"
+    },
+    "dataType": {
+      "@id": "cr:dataType",
+      "@type": "@vocab"
+    },
+    "sc": "https://schema.org/",
+    "conformsTo": "dct:conformsTo",
+    "dct": "http://purl.org/dc/terms/"
+  },
+  "@type": "sc:Dataset",
+  "conformsTo": "http://mlcommons.org/croissant/1.0",
+  "name": "owid",
+  "description": "FULL-COVERAGE grouped ingest of the ENTIRE Our World in Data grapher catalog. Source: Our World in Data (CC BY 4.0). license_id = cc-by-4.0. ENUMERATION ----------- OWID has no JSON \"list every chart\" endpoint, but it publishes a sitemap that lists every public page including every grapher chart:…",
+  "url": "https://econdatalibrary.com/owid.html",
+  "creator": {
+    "@type": "sc:Organization",
+    "name": "Our World in Data"
+  },
+  "publisher": {
+    "@type": "sc:Organization",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com"
+  },
+  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "keywords": [
+    "climate",
+    "energy",
+    "macro"
+  ],
+  "temporalCoverage": "1750-12-31/2024-12-31",
+  "citation": "Our World in Data. Retrieved from https://ourworldindata.org. Compiled and redistributed by the Elkassabgi Data Library.",
+  "distribution": [
+    {
+      "@type": "cr:FileObject",
+      "@id": "owid-parquet",
+      "name": "owid-parquet",
+      "description": "Canonical long-format Parquet for this dataset.",
+      "contentUrl": "https://econdatalibrary.com/data/owid/",
+      "encodingFormat": "application/vnd.apache.parquet"
+    }
+  ]
+}
+</script>
+</head><body>
+<div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
+<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+
+<div class="wrap">
+<div class="dhero">
+<div class="crumb"><a href="index.html">Catalog</a> / Our World in Data</div>
+<div class="pid">owid</div>
+<h1>Our World in Data</h1>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">climate</span><span class="badge cat">energy</span><span class="badge cat">macro</span></div>
+<p class="lead">FULL-COVERAGE grouped ingest of the ENTIRE Our World in Data grapher catalog. Source: Our World in Data (CC BY 4.0). license_id = cc-by-4.0. ENUMERATION ----------- OWID has no JSON &quot;list every chart&quot; endpoint, but it publishes a sitemap that lists every public page including every grapher chart:…</p>
+</div>
+<div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
+<h2>Important notes</h2>
+<ul class="notes"><li>Our World in Data charts often re-publish an underlying producer&#x27;s series; cite the original producer where OWID names one.</li></ul>
+<h2>Coverage</h2>
+<div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">64</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1750-12-31 – 2024-12-31</div></div><div class="metric"><div class="mlabel">Frequencies</div><div class="mval">Annual</div></div><div class="metric"><div class="mlabel">Distinct geographies</div><div class="mval">8</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">climate, energy, macro</div></div><div class="metric"><div class="mlabel">Measured observations</div><div class="mval">72,492,801</div></div></div>
+<h2>Licensing &amp; provenance</h2>
+<dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 4.0 (CC BY 4.0)</dd>
+<dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/4.0/">https://creativecommons.org/licenses/by/4.0/</a></dd>
+<dt>Required attribution</dt><dd>Source: Our World in Data (CC BY 4.0)</dd>
+<dt>Redistribution</dt><dd>Permitted (served here)</dd>
+<dt>Commercial use</dt><dd>Yes</dd>
+<dt>Modification</dt><dd>Permitted</dd></dl>
+<h2>How to cite</h2>
+<blockquote class="cite">Our World in Data. Retrieved from https://ourworldindata.org. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
+<p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
+<h2>Access &amp; mirrors</h2>
+<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/owid.html">https://econdatalibrary.com/owid.html</a></dd>
+<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-owid">https://huggingface.co/datasets/econdatalibrary-owid</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dt>Update cadence</dt><dd>monthly</dd>
+<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
+<dt>Storage layout</dt><dd>one parquet per chart slug: data/clean_full/owid/&lt;slug&gt;.parquet (~3,786 files) with columns series_key/obs_date/value, series_key=&#x27;&lt;slug&gt;|&lt;value_col&gt;|&lt;code-or-entity&gt;&#x27;. Plus _ingest_summary.json. Raw cache: data/raw/owid/owid_slugs.txt + owid_sitemap.xml.</dd></dl>
+<h2>Full description</h2>
+<p class="lead">FULL-COVERAGE grouped ingest of the ENTIRE Our World in Data grapher catalog.
+
+Source: Our World in Data (CC BY 4.0).  license_id = cc-by-4.0.
+
+ENUMERATION
+-----------
+OWID has no JSON &quot;list every chart&quot; endpoint, but it publishes a sitemap that
+lists every public page including every grapher chart:
+    https://ourworldindata.org/sitemap.xml
+We extract every `https://ourworldindata.org/grapher/&lt;slug&gt;` URL from it -&gt; the
+full set of chart slugs (4,510 as of 2026-06). This is OWID&#x27;s own authoritative
+manifest of public charts.
+
+PULL
+----
+For each slug the full long-format data is one CSV:
+    https://ourworldindata.org/grapher/&lt;slug&gt;.csv?csvType=full&amp;useColumnShortNames=true
+CSV schema is tidy:  entity, code, &lt;time&gt;, &lt;one-or-more value columns&gt;
+  * &lt;time&gt; is `year` (annual, the vast majority) OR `date` (YYYY-MM-DD daily).
+  * helper columns we never treat as data: owid_region, owid_*  (region tags).
+  * `code` is ISO-alpha3 for countries, an OWID code for aggregates (OWID_WRL,
+    OWID_EU27, ...). Some rows have an empty code (e.g. &quot;World&quot; sub-aggregates);
+    we then fall back to the `entity` label for the key.
+
+LICENSE / CARVE-OUT (sources.yaml owid carve_out)
+-------------------------------------------------
+&quot;Host OWID&#x27;s own work. For upstream third-party series, exclude where the
+license is not reservable.&quot; OWID enforces this at the source: a chart built on
+non-redistributable third-party data returns HTTP 403 with body
+  {&quot;status&quot;:403,&quot;error&quot;:&quot;This chart contains non-redistributable data ...&quot;}.
+We DETECT that, EXCLUDE the chart, and count it under `non_redistributable`.
+Everything OWID lets us download is CC BY 4.0 and reservable.
+
+GROUPED STORAGE (anti-bloat)
+----------------------------
+ONE Parquet per chart slug -&gt;  data/clean_full/owid/&lt;slug&gt;.parquet  with columns
+    series_key (string), obs_date (date32), value (float64)
+where series_key = &quot;&lt;slug&gt;|&lt;value_col&gt;|&lt;code-or-entity&gt;&quot;.  All entities and all
+value columns of a chart live inside that ONE file. Max ~4,510 files for the
+whole source (one per chart) -- NOT one-file-per-series.
+
+A per-source JSON summary (data/clean_full/owid/_ingest_summary.json) records
+coverage. catalog.db is NOT touched here.
+
+Usage:
+  python jobs/ingest_owid.py --enumerate        # rebuild slug list from sitemap, print count
+  python jobs/ingest_owid.py --dry 20           # download+parse 20 charts, no writes
+  python jobs/ingest_owid.py                     # FULL run (all slugs), resumable
+  python jobs/ingest_owid.py --workers 6         # tune concurrency (default 6)
+  python jobs/ingest_owid.py --limit 200         # only first N slugs (testing)</p>
+<h2>Structured metadata</h2>
+<details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
+  &quot;@context&quot;: &quot;https://schema.org/&quot;,
+  &quot;@type&quot;: &quot;Dataset&quot;,
+  &quot;name&quot;: &quot;Our World in Data&quot;,
+  &quot;description&quot;: &quot;FULL-COVERAGE grouped ingest of the ENTIRE Our World in Data grapher catalog. Source: Our World in Data (CC BY 4.0). license_id = cc-by-4.0. ENUMERATION ----------- OWID has no JSON \&quot;list every chart\&quot; endpoint, but it publishes a sitemap that lists every public page including every grapher chart:…&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/owid.html&quot;,
+  &quot;identifier&quot;: &quot;owid&quot;,
+  &quot;isAccessibleForFree&quot;: true,
+  &quot;publisher&quot;: {
+    &quot;@type&quot;: &quot;Organization&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;creator&quot;: {
+    &quot;@type&quot;: &quot;Organization&quot;,
+    &quot;name&quot;: &quot;Our World in Data&quot;
+  },
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
+  &quot;keywords&quot;: [
+    &quot;climate&quot;,
+    &quot;energy&quot;,
+    &quot;macro&quot;,
+    &quot;owid&quot;
+  ],
+  &quot;temporalCoverage&quot;: &quot;1750-12-31/2024-12-31&quot;,
+  &quot;repeatFrequency&quot;: &quot;P1Y&quot;,
+  &quot;creditText&quot;: &quot;Source: Our World in Data (CC BY 4.0)&quot;,
+  &quot;citation&quot;: &quot;Our World in Data. Retrieved from https://ourworldindata.org. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;sameAs&quot;: [
+    &quot;https://huggingface.co/datasets/econdatalibrary-owid&quot;,
+    &quot;https://zenodo.org/communities/econdatalibrary&quot;
+  ],
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/owid/&quot;,
+      &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;
+    }
+  ]
+}</pre></details>
+<details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
+  &quot;@context&quot;: {
+    &quot;@language&quot;: &quot;en&quot;,
+    &quot;@vocab&quot;: &quot;https://schema.org/&quot;,
+    &quot;cr&quot;: &quot;http://mlcommons.org/croissant/&quot;,
+    &quot;data&quot;: {
+      &quot;@id&quot;: &quot;cr:data&quot;,
+      &quot;@type&quot;: &quot;@json&quot;
+    },
+    &quot;dataType&quot;: {
+      &quot;@id&quot;: &quot;cr:dataType&quot;,
+      &quot;@type&quot;: &quot;@vocab&quot;
+    },
+    &quot;sc&quot;: &quot;https://schema.org/&quot;,
+    &quot;conformsTo&quot;: &quot;dct:conformsTo&quot;,
+    &quot;dct&quot;: &quot;http://purl.org/dc/terms/&quot;
+  },
+  &quot;@type&quot;: &quot;sc:Dataset&quot;,
+  &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
+  &quot;name&quot;: &quot;owid&quot;,
+  &quot;description&quot;: &quot;FULL-COVERAGE grouped ingest of the ENTIRE Our World in Data grapher catalog. Source: Our World in Data (CC BY 4.0). license_id = cc-by-4.0. ENUMERATION ----------- OWID has no JSON \&quot;list every chart\&quot; endpoint, but it publishes a sitemap that lists every public page including every grapher chart:…&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/owid.html&quot;,
+  &quot;creator&quot;: {
+    &quot;@type&quot;: &quot;sc:Organization&quot;,
+    &quot;name&quot;: &quot;Our World in Data&quot;
+  },
+  &quot;publisher&quot;: {
+    &quot;@type&quot;: &quot;sc:Organization&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
+  &quot;keywords&quot;: [
+    &quot;climate&quot;,
+    &quot;energy&quot;,
+    &quot;macro&quot;
+  ],
+  &quot;temporalCoverage&quot;: &quot;1750-12-31/2024-12-31&quot;,
+  &quot;citation&quot;: &quot;Our World in Data. Retrieved from https://ourworldindata.org. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;cr:FileObject&quot;,
+      &quot;@id&quot;: &quot;owid-parquet&quot;,
+      &quot;name&quot;: &quot;owid-parquet&quot;,
+      &quot;description&quot;: &quot;Canonical long-format Parquet for this dataset.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/owid/&quot;,
+      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;
+    }
+  ]
+}</pre></details>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+</div></body></html>

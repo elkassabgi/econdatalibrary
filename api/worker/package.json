@@ -1,0 +1,17 @@
+{
+  "name": "econdl-api-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker for the Econ Data Library /v1 API (D1 + R2).",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "typescript": "^5.5.4",
+    "wrangler": "^3.78.0"
+  }
+}

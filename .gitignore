@@ -1,0 +1,45 @@
+# Data staging (large; never commit)
+data/
+*.part
+*.zip
+*.parquet
+
+# Logs & runtime
+*.log
+runlogs/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets
+.env*
+*.key
+*.pem
+.dev.vars
+*.dev.vars
+
+# Heavy artifacts (live in R2/D1, not git)
+dist/
+db/
+logs/
+emails/
+_raw_insider_zips/
+_raw_insider_extract/
+*.db
+_backfill_*
+_series_census*
+_supported_sources_ts.txt
+_scratch_*.py
+_verify_*.py
+_target_schema.json
+
+# Node
+node_modules/
+
+# Desktop/session-local ops (Windows watchdogs, not part of the product)
+.claude/
+RELAUNCH_*.ps1
+EconGuard.cmd
+
+# Local notes
+scratch/

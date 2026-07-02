@@ -1,0 +1,240 @@
+# Source-level series metadata (OWID-style) — merged into every series' metadata
+# JSON by core/build_series_metadata.py. Per-series metadata always WINS over these
+# source-level defaults. The /v1 metadata endpoint, the D1 export, bundle provenance,
+# and the landing pages all read these keys.
+#
+# Fields per source:
+#   description_key:        list of bulleted caveats a researcher MUST know.
+#                           For hf_equities the survivorship-bias disclosure is FIRST.
+#   description_processing: what the Elkassabgi Data Library did to the raw source.
+#   citation_short / citation_long: PRODUCER FIRST, library "compiled by" second.
+#
+# Rule: never invent a caveat. Omit description_key for a source with no known
+# material caveat; the builder still derives a producer-first citation from the
+# registry (source.name + homepage) so every series is citable.
+
+_defaults:
+  description_processing: >-
+    Retrieved from the official source, normalized to a long {series_key, obs_date,
+    value} schema (period-start dates), de-duplicated, and stored as zstd Parquet.
+    Compiled and redistributed by the Elkassabgi Data Library.
+
+sources:
+
+  # ---- US equity intraday (the hfdatalibrary product) ----
+  hf_equities:
+    description_key:
+      - >-
+        SURVIVORSHIP BIAS: the ticker universe is a ~2023 snapshot of then-active
+        U.S. symbols. Securities that delisted, merged, or were renamed BEFORE that
+        snapshot are absent, so historical cross-sections are biased toward survivors.
+        Do NOT treat the panel as a point-in-time-complete record of the market.
+      - >-
+        Spliced series: bars before 2022 and from 2022 onward (IEX Exchange HIST)
+        come from different feeds; the splice point is a known seam. Per-segment
+        provenance is carried so each observation's true origin is recoverable.
+      - >-
+        Intraday microstructure: 1-minute OHLCV bars carry cleaning flags
+        (volume spikes, stale quotes, auction prints, splice artifacts); a single
+        venue's tape is not the full consolidated NBBO.
+    description_processing: >-
+      1-minute OHLCV bars assembled per symbol, cleaned (volume-spike / stale-quote /
+      auction / splice-artifact flags), spliced across feeds with the 2022 IEX
+      Exchange HIST cutover, and stored per ticker. Compiled by the Elkassabgi Data Library.
+    citation_short: "Elkassabgi High-Frequency Equity Data Library."
+    citation_long: >-
+      Elkassabgi High-Frequency Equity Data Library (1-minute U.S. equity bars; post-2022
+      data from IEX Exchange HIST). Compiled by Ahmed Elkassabgi, University of Central Arkansas.
+
+  # ---- US macro / official statistics ----
+  bls:
+    description_key:
+      - >-
+        Vintage rows: some flat-file surveys (e.g. CPI cu) carry multiple rows per
+        (series, date) across release vintages; ~96k (series, date) groups differ in
+        value (genuine revisions). Take the latest vintage unless you need a back-run.
+      - "Series ids follow the BLS scheme; the survey prefix (first 2 chars) selects the file."
+    citation_short: "U.S. Bureau of Labor Statistics (BLS)."
+    citation_long: >-
+      U.S. Bureau of Labor Statistics. Retrieved from https://www.bls.gov. Compiled and
+      redistributed by the Elkassabgi Data Library.
+  bea:
+    description_key:
+      - "NIPA aggregates are revised; the library stores the published value without a vintage axis (latest-known)."
+    citation_short: "U.S. Bureau of Economic Analysis (BEA)."
+    citation_long: >-
+      U.S. Bureau of Economic Analysis, National Income and Product Accounts. Retrieved from
+      https://www.bea.gov. Compiled and redistributed by the Elkassabgi Data Library.
+  fed_board:
+    citation_short: "Board of Governors of the Federal Reserve System."
+    citation_long: >-
+      Board of Governors of the Federal Reserve System (US). Retrieved from
+      https://www.federalreserve.gov. Compiled and redistributed by the Elkassabgi Data Library.
+  treasury:
+    description_key:
+      - "Relational/wide Fiscal Data tables (e.g. Debt to the Penny); the measure columns are not a single value series."
+    citation_short: "U.S. Department of the Treasury, Fiscal Data."
+    citation_long: >-
+      U.S. Department of the Treasury (Fiscal Data). Retrieved from
+      https://fiscaldata.treasury.gov. Compiled and redistributed by the Elkassabgi Data Library.
+  census:
+    description_key:
+      - "Census Economic Indicators (EITS); relational rows — the observation value is in cell_value, not a 'value' column."
+    citation_short: "U.S. Census Bureau."
+    citation_long: >-
+      U.S. Census Bureau, Economic Indicators Time Series. Retrieved from
+      https://www.census.gov. Compiled and redistributed by the Elkassabgi Data Library.
+  fhfa:
+    description_key:
+      - "House Price Index; NSA index in index_nsa (relational cube), seasonally-adjusted in index_sa."
+    citation_short: "U.S. Federal Housing Finance Agency (FHFA)."
+    citation_long: >-
+      U.S. Federal Housing Finance Agency, House Price Index. Retrieved from
+      https://www.fhfa.gov. Compiled and redistributed by the Elkassabgi Data Library.
+  eia:
+    citation_short: "U.S. Energy Information Administration (EIA)."
+    citation_long: >-
+      U.S. Energy Information Administration. Retrieved from https://www.eia.gov.
+      Compiled and redistributed by the Elkassabgi Data Library.
+  noaa:
+    citation_short: "NOAA National Centers for Environmental Information."
+    citation_long: >-
+      NOAA National Centers for Environmental Information (GHCN). Retrieved from
+      https://www.ncei.noaa.gov. Compiled and redistributed by the Elkassabgi Data Library.
+  usda:
+    description_key:
+      - "USDA NASS Quick Stats; a catalog id is a grouped indicator spanning all geographies/years sharing one SHORT_DESC."
+    citation_short: "USDA National Agricultural Statistics Service (Quick Stats)."
+    citation_long: >-
+      USDA National Agricultural Statistics Service, Quick Stats. Retrieved from
+      https://quickstats.nass.usda.gov. Compiled and redistributed by the Elkassabgi Data Library.
+  sec_edgar:
+    description_key:
+      - "Company XBRL fundamentals; the SEC 'filed' date is kept as vintage_date (point-in-time), so a (metric, period) can repeat across filings."
+    citation_short: "U.S. Securities and Exchange Commission, EDGAR."
+    citation_long: >-
+      U.S. Securities and Exchange Commission (EDGAR company facts). Retrieved from
+      https://www.sec.gov/edgar. Compiled and redistributed by the Elkassabgi Data Library.
+
+  # ---- international / multilateral ----
+  worldbank:
+    citation_short: "World Bank."
+    citation_long: >-
+      World Bank (World Development Indicators). Retrieved from https://data.worldbank.org.
+      Compiled and redistributed by the Elkassabgi Data Library.
+  worldbank_wdi:
+    citation_short: "World Bank, World Development Indicators."
+    citation_long: >-
+      World Bank, World Development Indicators. Retrieved from https://data.worldbank.org.
+      Compiled and redistributed by the Elkassabgi Data Library.
+  worldbank_esg:
+    citation_short: "World Bank, Sovereign ESG Data."
+    citation_long: >-
+      World Bank, Sovereign ESG Data Framework. Retrieved from https://datatopics.worldbank.org/esg.
+      Compiled and redistributed by the Elkassabgi Data Library.
+  worldbank_pink:
+    citation_short: "World Bank, Commodity Markets (Pink Sheet)."
+    citation_long: >-
+      World Bank, Commodity Price Data (the Pink Sheet). Retrieved from
+      https://www.worldbank.org/commodities. Compiled and redistributed by the Elkassabgi Data Library.
+  imf:
+    citation_short: "International Monetary Fund (IMF)."
+    citation_long: >-
+      International Monetary Fund. Retrieved from https://data.imf.org. Compiled and
+      redistributed by the Elkassabgi Data Library.
+  oecd:
+    citation_short: "OECD."
+    citation_long: >-
+      Organisation for Economic Co-operation and Development. Retrieved from
+      https://data-explorer.oecd.org. Compiled and redistributed by the Elkassabgi Data Library.
+  eurostat:
+    description_key:
+      - "Legacy keys may embed a 'LAST UPDATE=' token; the continuous-update path rebuilds stable dimension-only keys."
+    citation_short: "Eurostat (European Commission)."
+    citation_long: >-
+      Eurostat, European Commission. Retrieved from https://ec.europa.eu/eurostat.
+      Compiled and redistributed by the Elkassabgi Data Library.
+  ecb:
+    citation_short: "European Central Bank (ECB)."
+    citation_long: >-
+      European Central Bank, Statistical Data Warehouse. Retrieved from
+      https://data.ecb.europa.eu. Compiled and redistributed by the Elkassabgi Data Library.
+  frankfurter:
+    citation_short: "European Central Bank (EUR reference rates)."
+    citation_long: >-
+      European Central Bank euro foreign-exchange reference rates (via the Frankfurter API).
+      Compiled and redistributed by the Elkassabgi Data Library.
+  bis:
+    citation_short: "Bank for International Settlements (BIS)."
+    citation_long: >-
+      Bank for International Settlements. Retrieved from https://data.bis.org. Compiled and
+      redistributed by the Elkassabgi Data Library.
+  boe:
+    citation_short: "Bank of England."
+    citation_long: >-
+      Bank of England, Statistical Interactive Database. Retrieved from
+      https://www.bankofengland.co.uk. Compiled and redistributed by the Elkassabgi Data Library.
+  statcan:
+    citation_short: "Statistics Canada."
+    citation_long: >-
+      Statistics Canada. Retrieved from https://www150.statcan.gc.ca. Compiled and
+      redistributed by the Elkassabgi Data Library.
+  abs:
+    citation_short: "Australian Bureau of Statistics (ABS)."
+    citation_long: >-
+      Australian Bureau of Statistics. Retrieved from https://www.abs.gov.au. Compiled and
+      redistributed by the Elkassabgi Data Library.
+  ilostat:
+    citation_short: "International Labour Organization (ILOSTAT)."
+    citation_long: >-
+      International Labour Organization, ILOSTAT. Retrieved from https://ilostat.ilo.org.
+      Compiled and redistributed by the Elkassabgi Data Library.
+  faostat:
+    citation_short: "Food and Agriculture Organization of the UN (FAOSTAT)."
+    citation_long: >-
+      Food and Agriculture Organization of the United Nations, FAOSTAT. Retrieved from
+      https://www.fao.org/faostat. Compiled and redistributed by the Elkassabgi Data Library.
+
+  # ---- research / aggregator / reference ----
+  penn_world_table:
+    citation_short: "Penn World Table (Feenstra, Inklaar & Timmer 2015)."
+    citation_long: >-
+      Feenstra, R. C., Inklaar, R., & Timmer, M. P. (2015). The Next Generation of the Penn
+      World Table. American Economic Review. Retrieved from https://www.rug.nl/ggdc/productivity/pwt.
+      Compiled and redistributed by the Elkassabgi Data Library.
+  owid:
+    description_key:
+      - "Our World in Data charts often re-publish an underlying producer's series; cite the original producer where OWID names one."
+    citation_short: "Our World in Data."
+    citation_long: >-
+      Our World in Data. Retrieved from https://ourworldindata.org. Compiled and redistributed
+      by the Elkassabgi Data Library.
+  ember:
+    citation_short: "Ember."
+    citation_long: >-
+      Ember (electricity data). Retrieved from https://ember-energy.org. Compiled and
+      redistributed by the Elkassabgi Data Library.
+  zillow:
+    citation_short: "Zillow Research."
+    citation_long: >-
+      Zillow Research (ZHVI / ZORI). Retrieved from https://www.zillow.com/research/data.
+      Compiled and redistributed by the Elkassabgi Data Library.
+  defillama:
+    citation_short: "DefiLlama."
+    citation_long: >-
+      DefiLlama (DeFi TVL). Retrieved from https://defillama.com. Compiled and redistributed
+      by the Elkassabgi Data Library.
+  wikidata:
+    description_key:
+      - "Reference/knowledge-graph cube (not a time series); multi-valued attributes are pipe-joined."
+    citation_short: "Wikidata."
+    citation_long: >-
+      Wikidata. Retrieved from https://www.wikidata.org. Compiled and redistributed by the
+      Elkassabgi Data Library.
+  dbnomics:
+    description_key:
+      - "Aggregator: each series carries its underlying provider/dataset; cite the original provider first."
+    citation_short: "DBnomics (and underlying providers)."
+    citation_long: >-
+      DBnomics, aggregating the named underlying provider. Retrieved from https://db.nomics.world.
+      Compiled and redistributed by the Elkassabgi Data Library.

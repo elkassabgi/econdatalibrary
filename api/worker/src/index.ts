@@ -1,0 +1,120 @@
+// ---------------------------------------------------------------------------
+// src/index.ts  --  Cloudflare Worker entrypoint. Routes the /v1 contract.
+//
+// Same contract, same SQL, same honest-status codes as the Python dev shim.
+// Backends: D1 (catalog/license/series/freshness) + R2 (per-series CSV objects).
+//
+// Endpoint status (see api/worker/README.md for the full matrix):
+//   FULLY LIVE from D1 now:
+//     GET /v1/catalog                       (search + browse, FTS5 + LIKE)
+//     GET /v1/sources                       (309 sources + license + freshness)
+//     GET /v1/last-updates                  (canonical SQL + cadence math)
+//     GET /v1/series/{id}.metadata.json     (series + source + license + freshness)
+//     GET /v1/bundle                        (manifest; client fans out)
+//   NEEDS the pre-derived R2 per-series CSV objects (see src/series.ts header):
+//     GET /v1/series/{id}.csv               (streams series/<id>.csv from R2)
+// ---------------------------------------------------------------------------
+
+import type { Env } from "./types";
+import { handleCatalog } from "./catalog";
+import { handleSources } from "./sources";
+import { handleLastUpdates } from "./lastUpdates";
+import { handleMetadata } from "./metadata";
+import { handleSeriesCsv } from "./series";
+import { handleBundle } from "./bundle";
+import { json, reqLang } from "./util";
+
+const CORS_PREFLIGHT: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, OPTIONS",
+  "access-control-allow-headers": "*",
+  "access-control-max-age": "86400",
+};
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: CORS_PREFLIGHT });
+    }
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed", detail: "only GET is supported" }, 405);
+    }
+
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    try {
+      // Fixed routes first.
+      if (path === "/v1/catalog") return await handleCatalog(url, env);
+      if (path === "/v1/sources") return await handleSources(env);
+      if (path === "/v1/last-updates") return await handleLastUpdates(env);
+      if (path === "/v1/bundle") return await handleBundle(url, env);
+
+      // Headline stats. individual_series/observations are MEASURED on the full
+      // data store (census 2026-07-02, D:\...\_series_census_hll.json): global
+      // distinct series keys per source via HyperLogLog (~1% error; a floor,
+      // since keys that repeat across datasets dedupe), observations = exact
+      // parquet row counts. catalog_entries is counted live from D1.
+      if (path === "/v1/stats") {
+        const cat = await env.CATALOG.prepare("SELECT COUNT(*) AS c FROM series")
+          .first<{ c: number }>();
+        return json({
+          individual_series: 7_730_440_157,
+          observations: 79_782_631_887,
+          sources_catalogued: 309,
+          catalog_entries: cat?.c ?? null,
+          as_of: "2026-07-02",
+          method:
+            "individual_series = sum over sources of globally distinct series keys, " +
+            "measured on the complete data store (HyperLogLog estimate, ~1% error; " +
+            "conservative floor). observations = exact parquet row counts. " +
+            "catalog_entries = dataset-grain rows served by /v1/catalog.",
+        });
+      }
+
+      // /v1/series/{id}.csv  and  /v1/series/{id}.metadata.json
+      //   {id} is the EXACT catalog series_id, URL-encoded (it contains ':').
+      //   It is NOT a provider/dataset/series path split.
+      const seriesPrefix = "/v1/series/";
+      if (path.startsWith(seriesPrefix)) {
+        const tail = path.slice(seriesPrefix.length);
+        if (tail.endsWith(".metadata.json")) {
+          const enc = tail.slice(0, -".metadata.json".length);
+          const id = decodeURIComponent(enc);
+          if (!id) return json({ error: "bad_request", detail: "empty series id" }, 400);
+          const { lang, error } = reqLang(url);
+          if (error) return error; // unsupported ?lang= -> honest 400
+          return await handleMetadata(id, env, lang);
+        }
+        if (tail.endsWith(".csv")) {
+          const enc = tail.slice(0, -".csv".length);
+          const id = decodeURIComponent(enc);
+          if (!id) return json({ error: "bad_request", detail: "empty series id" }, 400);
+          return await handleSeriesCsv(id, url, env);
+        }
+        return json(
+          { error: "not_found", detail: "use /v1/series/{id}.csv or /v1/series/{id}.metadata.json" },
+          404,
+        );
+      }
+
+      if (path === "/" || path === "/v1" || path === "/v1/") {
+        return json({
+          name: "Econ Data Library API",
+          version: "v1",
+          endpoints: [
+            "/v1/catalog", "/v1/sources", "/v1/last-updates", "/v1/stats",
+            "/v1/series/{id}.csv", "/v1/series/{id}.metadata.json", "/v1/bundle",
+          ],
+          contract: "api/CONTRACT.md",
+        });
+      }
+
+      return json({ error: "not_found", detail: `no route for ${path}` }, 404);
+    } catch (err) {
+      // Never leak a stack as a 200. Honest 500 with a machine code.
+      const detail = err instanceof Error ? err.message : "unknown error";
+      return json({ error: "internal_error", detail }, 500);
+    }
+  },
+} satisfies ExportedHandler<Env>;

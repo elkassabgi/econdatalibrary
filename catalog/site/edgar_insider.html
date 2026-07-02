@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>U.S. Securities and Exchange Commission (SEC) -- EDGAR Insider Transactions (Forms 3, 4, 5) — Econ Data Library</title>
+<meta name="description" content="Source: U.S. Securities and Exchange Commission, EDGAR (insider transaction Forms 3/4/5).">
+<link rel="canonical" href="https://econdatalibrary.com/edgar_insider.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{--navy:#1a2332;--navy-light:#243044;--blue:#2563eb;--blue-pale:#eff6ff;
+--gold:#d4a843;--gold-deep:#8a6d27;--g50:#f9fafb;--g100:#f3f4f6;--g200:#e5e7eb;
+--g300:#d1d5db;--g500:#6b7280;--g600:#4b5563;--g700:#374151;--g800:#1f2937;
+--green:#047857;--red:#b91c1c;--amber:#92600a;--serif:Georgia,serif;
+--sans:"Inter",system-ui,sans-serif;--mono:"JetBrains Mono",monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);color:var(--g800);background:#fff;line-height:1.6}
+.nav{background:var(--navy);color:#fff;padding:0 1.5rem;height:60px;display:flex;
+align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}
+.brand .d{color:var(--gold)}.brand a{color:#fff;text-decoration:none}
+.nav a{color:rgba(255,255,255,.8);text-decoration:none;font-size:.9rem;margin-left:1rem}
+.wrap{max-width:920px;margin:0 auto;padding:2rem 1.5rem}
+.crumb{font-size:.82rem;color:var(--g500);margin-bottom:1rem}
+.crumb a{color:var(--blue);text-decoration:none}
+h1{font-family:var(--serif);color:var(--navy);font-size:2rem;line-height:1.2}
+.pid{font-family:var(--mono);color:var(--gold-deep);font-size:.85rem;margin-bottom:.3rem}
+.badges{margin:.9rem 0 1.2rem;display:flex;gap:.5rem;flex-wrap:wrap}
+.badge{display:inline-block;font-size:.74rem;font-weight:600;padding:.2rem .6rem;
+border-radius:999px}
+.badge.open{background:#ecfdf5;color:var(--green)}
+.badge.meta{background:#fffbeb;color:var(--amber)}
+.badge.lic{background:var(--blue-pale);color:var(--blue)}
+.badge.cat{background:var(--g100);color:var(--g600)}
+.lead{font-size:1.02rem;color:var(--g700);margin:.5rem 0 1.5rem;white-space:pre-wrap}
+.callout{font-size:.9rem;border-radius:8px;padding:.8rem 1rem;margin:1rem 0}
+.callout.meta{background:#fffbeb;border:1px solid #fde68a;color:#7c5e10}
+.callout.open{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46}
+ul.notes{margin:.4rem 0 1rem;padding-left:1.1rem;color:var(--g700)}
+ul.notes li{margin:.35rem 0;font-size:.92rem;line-height:1.5}
+ul.notes li:first-child{font-weight:600;color:var(--navy)}
+blockquote.cite{margin:.4rem 0;padding:.7rem 1rem;border-left:3px solid var(--gold);
+background:var(--g50,#f9fafb);font-family:var(--mono);font-size:.85rem;color:var(--g700);white-space:pre-wrap}
+p.proc{font-size:.85rem;color:var(--g600);margin:.4rem 0 1rem}
+h2{font-family:var(--serif);color:var(--navy);font-size:1.2rem;margin:1.8rem 0 .5rem;
+border-bottom:1px solid var(--g200);padding-bottom:.3rem}
+.kv{display:grid;grid-template-columns:190px 1fr;gap:.45rem 1rem;font-size:.92rem}
+.kv dt{color:var(--g500);font-weight:600}
+.kv dd{color:var(--g800);word-break:break-word}
+.kv dd a{color:var(--blue)}
+.mono{font-family:var(--mono);font-size:.85rem}
+details{margin-top:1rem;border:1px solid var(--g200);border-radius:8px;background:var(--g50)}
+summary{cursor:pointer;padding:.7rem 1rem;font-weight:600;color:var(--g700);font-size:.9rem}
+details pre{margin:0;padding:1rem;overflow:auto;font-family:var(--mono);font-size:.78rem;
+line-height:1.5;border-top:1px solid var(--g200);background:#fff;color:var(--g800)}
+.foot{color:var(--g500);font-size:.8rem;text-align:center;padding:2.5rem 1rem;
+border-top:1px solid var(--g200);margin-top:2.5rem}
+.foot a{color:var(--blue)}
+.dhero{background:var(--navy);margin:-2rem -1.5rem 1.6rem;padding:2.1rem 1.5rem 1.7rem;
+border-bottom:3px solid var(--gold)}
+.dhero .crumb{color:rgba(255,255,255,.55);margin-bottom:.7rem}
+.dhero .crumb a{color:var(--gold);text-decoration:none}
+.dhero .pid{color:var(--gold);margin-bottom:.35rem}
+.dhero h1{color:#fff;font-size:1.9rem}
+.dhero .badges{margin:.9rem 0 0}
+.dhero .lead{color:rgba(255,255,255,.78);margin:.8rem 0 0;font-size:1rem}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:.7rem;margin:.5rem 0 1rem}
+.metric{background:var(--g50);border:1px solid var(--g200);border-radius:10px;padding:.75rem .9rem}
+.metric .mlabel{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g500)}
+.metric .mval{font-family:var(--serif);font-size:1.15rem;color:var(--navy);margin-top:.25rem;word-break:break-word}
+</style>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org/",
+  "@type": "Dataset",
+  "name": "U.S. Securities and Exchange Commission (SEC) -- EDGAR Insider Transactions (Forms 3, 4, 5)",
+  "description": "Source: U.S. Securities and Exchange Commission, EDGAR (insider transaction Forms 3/4/5).",
+  "url": "https://econdatalibrary.com/edgar_insider.html",
+  "identifier": "edgar_insider",
+  "isAccessibleForFree": true,
+  "publisher": {
+    "@type": "Organization",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com"
+  },
+  "creator": {
+    "@type": "Organization",
+    "name": "U.S. Securities and Exchange Commission (SEC) -- EDGAR Insider Transactions (Forms 3, 4, 5)",
+    "url": "https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets"
+  },
+  "license": "https://www.usa.gov/government-works",
+  "keywords": [
+    "edgar_insider"
+  ],
+  "sameAs": [
+    "https://huggingface.co/datasets/econdatalibrary-edgar_insider",
+    "https://zenodo.org/communities/econdatalibrary"
+  ],
+  "distribution": [
+    {
+      "@type": "DataDownload",
+      "encodingFormat": "application/vnd.apache.parquet",
+      "contentUrl": "https://econdatalibrary.com/data/edgar_insider/",
+      "license": "https://www.usa.gov/government-works"
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": {
+    "@language": "en",
+    "@vocab": "https://schema.org/",
+    "cr": "http://mlcommons.org/croissant/",
+    "data": {
+      "@id": "cr:data",
+      "@type": "@json"
+    },
+    "dataType": {
+      "@id": "cr:dataType",
+      "@type": "@vocab"
+    },
+    "sc": "https://schema.org/",
+    "conformsTo": "dct:conformsTo",
+    "dct": "http://purl.org/dc/terms/"
+  },
+  "@type": "sc:Dataset",
+  "conformsTo": "http://mlcommons.org/croissant/1.0",
+  "name": "edgar_insider",
+  "description": "Source: U.S. Securities and Exchange Commission, EDGAR (insider transaction Forms 3/4/5).",
+  "url": "https://econdatalibrary.com/edgar_insider.html",
+  "creator": {
+    "@type": "sc:Organization",
+    "name": "U.S. Securities and Exchange Commission (SEC) -- EDGAR Insider Transactions (Forms 3, 4, 5)"
+  },
+  "publisher": {
+    "@type": "sc:Organization",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com"
+  },
+  "license": "https://www.usa.gov/government-works",
+  "distribution": [
+    {
+      "@type": "cr:FileObject",
+      "@id": "edgar_insider-parquet",
+      "name": "edgar_insider-parquet",
+      "description": "Canonical long-format Parquet for this dataset.",
+      "contentUrl": "https://econdatalibrary.com/data/edgar_insider/",
+      "encodingFormat": "application/vnd.apache.parquet"
+    }
+  ]
+}
+</script>
+</head><body>
+<div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
+<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+
+<div class="wrap">
+<div class="dhero">
+<div class="crumb"><a href="index.html">Catalog</a> / U.S. Securities and Exchange Commission (SEC) -- EDGAR Insider Transactions (Forms 3, 4, 5)</div>
+<div class="pid">edgar_insider</div>
+<h1>U.S. Securities and Exchange Commission (SEC) -- EDGAR Insider Transactions (Forms 3, 4, 5)</h1>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">U.S. Government Work (public domain)</span></div>
+<p class="lead">Source: U.S. Securities and Exchange Commission, EDGAR (insider transaction Forms 3/4/5).</p>
+</div>
+<div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
+<h2>Licensing &amp; provenance</h2>
+<dl class="kv"><dt>License</dt><dd>U.S. Government Work (public domain)</dd>
+<dt>License URL</dt><dd><a href="https://www.usa.gov/government-works">https://www.usa.gov/government-works</a></dd>
+<dt>Required attribution</dt><dd>Source: U.S. Securities and Exchange Commission, EDGAR (insider transaction Forms 3/4/5).</dd>
+<dt>Redistribution</dt><dd>Permitted (served here)</dd>
+<dt>Commercial use</dt><dd>Yes</dd>
+<dt>Modification</dt><dd>Permitted</dd>
+<dt>Provider homepage</dt><dd><a href="https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets">https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets</a></dd>
+<dt>Provider terms</dt><dd><a href="https://www.sec.gov/about/privacy-information">https://www.sec.gov/about/privacy-information</a></dd></dl>
+<h2>Access &amp; mirrors</h2>
+<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/edgar_insider.html">https://econdatalibrary.com/edgar_insider.html</a></dd>
+<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-edgar_insider">https://huggingface.co/datasets/econdatalibrary-edgar_insider</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd></dl>
+<h2>Structured metadata</h2>
+<details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
+  &quot;@context&quot;: &quot;https://schema.org/&quot;,
+  &quot;@type&quot;: &quot;Dataset&quot;,
+  &quot;name&quot;: &quot;U.S. Securities and Exchange Commission (SEC) -- EDGAR Insider Transactions (Forms 3, 4, 5)&quot;,
+  &quot;description&quot;: &quot;Source: U.S. Securities and Exchange Commission, EDGAR (insider transaction Forms 3/4/5).&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/edgar_insider.html&quot;,
+  &quot;identifier&quot;: &quot;edgar_insider&quot;,
+  &quot;isAccessibleForFree&quot;: true,
+  &quot;publisher&quot;: {
+    &quot;@type&quot;: &quot;Organization&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;creator&quot;: {
+    &quot;@type&quot;: &quot;Organization&quot;,
+    &quot;name&quot;: &quot;U.S. Securities and Exchange Commission (SEC) -- EDGAR Insider Transactions (Forms 3, 4, 5)&quot;,
+    &quot;url&quot;: &quot;https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets&quot;
+  },
+  &quot;license&quot;: &quot;https://www.usa.gov/government-works&quot;,
+  &quot;keywords&quot;: [
+    &quot;edgar_insider&quot;
+  ],
+  &quot;sameAs&quot;: [
+    &quot;https://huggingface.co/datasets/econdatalibrary-edgar_insider&quot;,
+    &quot;https://zenodo.org/communities/econdatalibrary&quot;
+  ],
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/edgar_insider/&quot;,
+      &quot;license&quot;: &quot;https://www.usa.gov/government-works&quot;
+    }
+  ]
+}</pre></details>
+<details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
+  &quot;@context&quot;: {
+    &quot;@language&quot;: &quot;en&quot;,
+    &quot;@vocab&quot;: &quot;https://schema.org/&quot;,
+    &quot;cr&quot;: &quot;http://mlcommons.org/croissant/&quot;,
+    &quot;data&quot;: {
+      &quot;@id&quot;: &quot;cr:data&quot;,
+      &quot;@type&quot;: &quot;@json&quot;
+    },
+    &quot;dataType&quot;: {
+      &quot;@id&quot;: &quot;cr:dataType&quot;,
+      &quot;@type&quot;: &quot;@vocab&quot;
+    },
+    &quot;sc&quot;: &quot;https://schema.org/&quot;,
+    &quot;conformsTo&quot;: &quot;dct:conformsTo&quot;,
+    &quot;dct&quot;: &quot;http://purl.org/dc/terms/&quot;
+  },
+  &quot;@type&quot;: &quot;sc:Dataset&quot;,
+  &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
+  &quot;name&quot;: &quot;edgar_insider&quot;,
+  &quot;description&quot;: &quot;Source: U.S. Securities and Exchange Commission, EDGAR (insider transaction Forms 3/4/5).&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/edgar_insider.html&quot;,
+  &quot;creator&quot;: {
+    &quot;@type&quot;: &quot;sc:Organization&quot;,
+    &quot;name&quot;: &quot;U.S. Securities and Exchange Commission (SEC) -- EDGAR Insider Transactions (Forms 3, 4, 5)&quot;
+  },
+  &quot;publisher&quot;: {
+    &quot;@type&quot;: &quot;sc:Organization&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;license&quot;: &quot;https://www.usa.gov/government-works&quot;,
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;cr:FileObject&quot;,
+      &quot;@id&quot;: &quot;edgar_insider-parquet&quot;,
+      &quot;name&quot;: &quot;edgar_insider-parquet&quot;,
+      &quot;description&quot;: &quot;Canonical long-format Parquet for this dataset.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/edgar_insider/&quot;,
+      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;
+    }
+  ]
+}</pre></details>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+</div></body></html>

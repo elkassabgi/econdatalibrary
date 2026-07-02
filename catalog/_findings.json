@@ -1,0 +1,106 @@
+{
+  "adapter_built": [
+    "barro_lee",
+    "bcb",
+    "bcrp",
+    "bundesbank",
+    "cboe",
+    "cso",
+    "damodaran",
+    "defillama",
+    "dst",
+    "edgar_jrc",
+    "ei_statreview",
+    "epu",
+    "famafrench",
+    "fred_releases",
+    "freedomhouse",
+    "fsi_fundforpeace",
+    "gapminder",
+    "gcb",
+    "ggdc",
+    "gpi",
+    "gppd",
+    "harvard_atlas",
+    "imf_commodity",
+    "imf_weo",
+    "irena",
+    "kof_globalization",
+    "ksh",
+    "nasa_giss",
+    "ofr",
+    "oxcgrt",
+    "penn_world_table",
+    "pip",
+    "pwt",
+    "qog",
+    "shiller",
+    "sipri",
+    "sipri_polity",
+    "swiid",
+    "tcmb",
+    "transparency_ti",
+    "treasury",
+    "undp_hdr",
+    "unsdg",
+    "vdem",
+    "wgi",
+    "whr",
+    "wikidata",
+    "yale_epi"
+  ],
+  "findings": {
+    "damodaran": {
+      "url_status": "evsales.xls and profit.xls both 404 (https://pages.stern.nyu.edu/~adamodar/pc/datasets/evsales.xls and .../profit.xls) -- two of ~22 legacy ingester URLs are dead. No working replacement found; they were ALSO absent from the pre-existing 25192-row file (evsales/profitability datasets never landed), so no data regression. NOT a blocker: the other 20 workbooks fetch fine and are current through 2026 (ctryprem Apr 2026, betas Apr 2026). Tally counts each 404 as empty_unit; only ALL datasets 404ing escalates to structural."
+    },
+    "ei_statreview": {
+      "url_status": "EI primary URLs are stale/dead (HTTP 403 to all programmatic clients incl. browser UA): https://www.energyinst.org/__data/assets/excel_doc/0020/1540154/EI-Stats-Review-All-Data.xlsx and https://www.energyinst.org/__data/assets/excel_doc/0007/1055545/Statistical-Review-of-World-Energy-Consolidated-Dataset-panel-format.csv . Working replacement (and what actually produced the published rows): the OWID GitHub mirror https://raw.githubusercontent.com/owid/energy-data/master/owid-energy-data.csv (HEAD 200 + ETag; commits API SHA e7897aed, last changed 2026-04-27).",
+      "blocker": "EI primary URLs (energyinst.org __data/assets/excel_doc/...) are dead -- HTTP 403 to all programmatic clients incl. browser UA; the asset id rotates per edition and the host blocks bots. Mitigated, not faked: vintage + fetch fall through to the live OWID GitHub mirror (the source that produced the published 782,908 rows). Residual risk per registry open_question: the EI -> OWID fallback shifts variable naming/units silently; a human should refresh the EI URL yearly and/or alert on fallback. If all URLs (EI + OWID) are unreachable, update() returns 'partial' (transient) and keeps existing data rather than reporting success."
+    },
+    "freedomhouse": {
+      "url_status": "Stale hardcoded paths in jobs/ingest_freedomhouse.py: https://freedomhouse.org/sites/default/files/2025-03/Country_and_Territory_Ratings_and_Statuses_FIW_1973-2025.xlsx (404) and .../2023-02/...FIW_1973-2023.xlsx (404). Working replacement (live current FIW-2025 edition, data through year 2025): https://freedomhouse.org/sites/default/files/2025-02/Country_and_Territory_Ratings_and_Statuses_FIW_1973-2024.xlsx (HTTP 200, CL 214340, ETag \"67be808f-34544\"). Known-good fallback: .../2024-02/Country_and_Territory_Ratings_and_Statuses_FIW_1973-2024.xlsx (200)."
+    },
+    "fsi_fundforpeace": {
+      "url_status": "DEAD primary signal (registry's named vintage_signal): GitHub mirror repo ksreyes/tidy-fragile-states-index is deleted — both https://api.github.com/repos/ksreyes/tidy-fragile-states-index/commits?path=data/fsi.csv and https://raw.githubusercontent.com/ksreyes/tidy-fragile-states-index/main/data/fsi.csv return 404; a GitHub search for the repo returns no results. Also STALE in jobs/ingest_fsi_fundforpeace.py YEAR_URLS: the 2006-2020 fragilestatesindex.org paths 404 (e.g. https://fragilestatesindex.org/wp-content/uploads/2020/05/fsi-2020-download.xlsx -> 404). WORKING REPLACEMENT: the canonical FSI index page https://fragilestatesindex.org/excel/ lists current live XLSX URLs for ALL years 2006-2023 (2006-2017 under /wp-content/uploads/data/fsi-YYYY.xlsx; 2018-2023 under year/month folders). Fetcher scrapes this page (auto-picks-up new releases) with the year URLs hardcoded as fallback."
+    },
+    "gpi": {
+      "url_status": "DEAD (all 8 hardcoded GPI_URLS return HTTP 404, verified live 2026-06): https://www.visionofhumanity.org/wp-content/uploads/2024/06/GPI-2024-web.xlsx (+ the other 7 xlsx/csv candidates). IEP moved structured data behind a licensing wall at https://www.economicsandpeace.org/consulting/data-licensing/ ; the wp-content path now serves only PDFs (Global-Peace-Index-2025-web.pdf returns 200, 6.5MB). NO working free programmatic full-table replacement found: OWID has no global-peace-index grapher slug (404); GitHub datasets/global-peace-index mirror gone (404); owid-datasets GPI csv 404; Mendeley CC-BY mirror DOI 10.17632/yjxnfkcv4h (2008-2023, 163 countries) reachable in browser but its public-API/file endpoints return 403 to server clients (Cloudflare WAF); QOG datafinder (datafinder.qog.gu.se/dataset/gpi, updated 2025-06-30) exposes only 4 aggregate variables with no discoverable direct CSV endpoint.",
+      "blocker": "All 8 hardcoded GPI source URLs return HTTP 404 and no free programmatic full-table replacement exists (IEP data now behind economicsandpeace.org licensing wall; OWID/GitHub mirrors gone; Mendeley CC-BY mirror blocked by Cloudflare 403; QOG only has 4 aggregate vars). A working IEP/licensed download link or an alternate machine-fetchable full GPI table is needed before this source can produce a parquet."
+    },
+    "gppd": {
+      "url_status": "The hardcoded WRI dataverse ZIP URL https://datasets.wri.org/dataset/540dcf46-f287-47ac-985d-269b04bea4c6/resource/c240ed2e-1190-4d7e-b1da-c66b72e08858/download/globalpowerplantdatabasev130.zip returns HTTP 404 (as registry predicted). Working replacement already in use: GitHub master mirror https://github.com/wri/global-power-plant-database/raw/master/output_database/global_power_plant_database.csv (HTTP 200) and https://raw.githubusercontent.com/wri/global-power-plant-database/master/output_database/global_power_plant_database.csv (HTTP 200). Not a blocker — the 404 URL is the last fallback; live mirrors precede it."
+    },
+    "sipri": {
+      "url_status": "The hardcoded URL list in jobs/ingest_sipri.py tops out at SIPRI-Milex-data-1949-2024.xlsx (still live). A NEWER vintage is now published: https://www.sipri.org/sites/default/files/SIPRI-Milex-data-1949-2025.xlsx (HEAD 200, 922808 bytes, Last-Modified Sun 26 Apr 2026, ETag \"e14b8-65062d60c6cea\"). The 2023 file (SIPRI-Milex-data-1949-2023.xlsx) now 404s. The fetcher auto-discovers the latest live year, so it picked up 2025 without any hardcoded edit."
+    },
+    "undp_hdr": {
+      "url_status": "Registry's hardcoded edition (.../2023-24_HDR/HDR23-24_Composite_indices_complete_time_series.csv) is still live (HTTP 200, Last-Modified 2024-03-13) but frozen at 2022. Superseded by the newer HDR 2025 edition: https://hdr.undp.org/sites/default/files/2025_HDR/HDR25_Composite_indices_complete_time_series.csv (HTTP 200, Last-Modified 2025-05-05, extends panel to 2023). Fetcher prefers the newer one and falls back to 2023-24. Candidate 2024-25 naming (2024-25_HDR/HDR24-25_... and HDR25_...) 404s; the correct next-edition path is 2025_HDR/HDR25_..."
+    },
+    "wgi": {
+      "url_status": "The doc-page candidate https://www.worldbank.org/content/dam/sites/govindicators/doc/WGIData.xlsx is dead (HTTP 404), but it is NOT the URL the ingest relies on. Working replacement (live, current): https://databank.worldbank.org/data/download/WGI_EXCEL.zip — HEAD 200, Last-Modified Thu, 19 Mar 2026, data through 2024. This is already the URL the existing parquet was built from, so no blocker."
+    },
+    "whr": {
+      "url_status": "happiness-report.s3.us-east-1.amazonaws.com 6-factor XLSX panels still 403 even WITH a worldhappiness.report Referer (verified live); 6/7 OWID grapher factor CSV slugs (log-gdp-per-capita-whr.csv, social-support-whr.csv, healthy-life-expectancy-whr.csv, freedom-to-make-life-choices.csv, generosity-whr.csv, perceptions-of-corruption-whr.csv) all return HTTP 404. No working replacement found. Only working WHR endpoint: https://ourworldindata.org/grapher/happiness-cantril-ladder.csv (200, Last-Modified present).",
+      "blocker": "6-factor panel coverage: full WHR explanatory variables (log GDP, social support, healthy life expectancy, freedom, generosity, corruption) are unreachable. S3 XLSX appendices return 403 even with a worldhappiness.report Referer, and the OWID factor CSV slugs 404. A human must supply a working S3 URL+Referer (or correct OWID grapher slugs / a Figshare/Kaggle mirror) to ingest the 6 factors; until then only the life-satisfaction ladder slice (2270 obs) is refreshed. The fetcher already lists the factor URLs so a single upstream re-enable folds them in automatically without shrinking. The ladder refresh itself works correctly."
+    },
+    "cso": {
+      "blocker": "Upstream flakiness (not a code defect, not fake-able): ws.cso.ie intermittently TRUNCATES the large JSON-stat collection bodies tonight (full ~22MB and 120-day ~5.7MB), causing ChunkedEncoding/premature-end; single-table ReadDataset calls succeed fine (CPM01 62608 vals in ~10s). The fetcher handles this honestly: streaming download + retries+backoff, returns current_vintage None (safe; strategy fetches anyway) or update partial when a complete collection/table body can't be obtained. The exact prescribed one-shot test (which must download the full 22MB collection) repeatedly stalled on a giant newest-revised table tonight; all contract behaviors (ok with +rows, partial on transient, real vintage token, never-shrink, no leftover tmp) were verified via direct live update() calls on full real tables. Recommend the orchestrator run when ws.cso.ie large-body streaming is stable, or add a per-update wall-clock budget so a single flaky giant table yields partial faster."
+    },
+    "defillama": {
+      "blocker": "Persistent upstream HTTP 500 on https://api.llama.fi/overview/bridge-aggregators?dataType=dailyVolume&excludeTotalDataChart=true&excludeTotalDataChartBreakdown=false — returns 500 \"Internal server error\" (21-byte body) on every attempt (confirmed 5/5 direct retries). It is the dataType=dailyVolume breakdown variant specifically: the PLAIN https://api.llama.fi/overview/bridge-aggregators returns 200 (288KB, totalDataChart present). This is a DeFiLlama-side bug on that one sub-endpoint, which is why the original ingester never produced bridge_aggregators_dailyVolume.parquet (only a stray bridge_aggregators_snapshot.parquet exists). The fetcher correctly surfaces it as a transient sub-failure -> overall status=partial (1/20 sub-units), NOT faked success; existing data untouched and it retries next tick. No working dataType=dailyVolume breakdown replacement found; all 13 other overview endpoints + all bulk endpoints are healthy and fast. This is the sole reason status is partial rather than ok."
+    },
+    "edgar_jrc": {
+      "blocker": "DATA-MODELING BLOCKER (not upstream/URL): the existing edgar_jrc.parquet stores 3,362,599 SECTORAL rows all collapsed under country-level series_key (EDGAR:{gas}:{iso3}) — i.e. 190,552 duplicate (series_key,obs_date) pairs (up to 48 per key, written by jobs/ingest_edgar_jrc.py picking the IPCC-2006 sectoral sheet). The declared S1 dedup keys (series_key,obs_date) dedup these to the 195,391 true country totals my fetcher correctly parses from 'TOTALS BY COUNTRY', so merge_and_write correctly refuses the 3,362,599->195,391 shrink (<97% floor). Upstream is HEALTHY (all 17 JRC URLs HTTP 200, ETag/Last-Modified present, parse fine). I did NOT weaken the guard or fake success; update() catches merge's DefinitiveError and returns partial (existing data untouched) per the DefinitiveError contract. RESOLUTION needed from a human: either (a) re-ingest the source parquet from the 'TOTALS BY COUNTRY' sheet so published data matches its declared (series_key,obs_date) keys (then this fetcher merges cleanly), or (b) add a sector dimension to series_key (e.g. EDGAR:{gas}:{iso3}:{sector}) if sectoral detail is intended. Until then the source stays 'partial' rather than fresh."
+    },
+    "harvard_atlas": {
+      "blocker": "Pre-existing DATA CORRUPTION in the existing hs12_country_year.parquet (built by jobs/ingest_harvard_atlas.py), NOT a stale URL. That file had 1,651,952 physical rows but only 52 distinct (series_key, obs_date) — 412,988-fold duplication. Cause: ingest_hs12_cy looked for \"exporter\"/\"importer\" columns that don't exist (real header is country_id, country_iso3_code, partner_country_id, partner_iso3_code, year, export_value, import_value), so it emitted bilateral rows with NO reporter/partner identity and every pair for a year collapsed onto the same key. My fetcher's hs12cy parse resolves country_id as reporter and partner_country_id as partner, producing 826,028 genuinely-distinct bilateral series (82,964 keys). Because honest dedup-merge collapses the old garbage, the bilateral file legitimately shrinks 1,651,952 -> 826,028 and the aggregate 4,306,382 -> 3,480,458. I did NOT weaken the shared merge guard: I used merge_and_write's documented per-call min_ratio (0.40 for this one file only; 0.97 for the other 8) which the contract explicitly reserves for \"sources that legitimately shrink more\". DECISION NEEDED: confirm replacing the corrupt 1.65M-row bilateral file with the corrected 826k-row version is acceptable (it is a correction, not data loss), and consider patching jobs/ingest_harvard_atlas.py's ingest_hs12_cy with the same country_id/partner_country_id key fix so a from-scratch rebuild isn't re-corrupted.",
+      "maintenance": "Pre-existing duplicate-row corruption in hs12_country_year cleaned on first S1 run (dedup on series_key,obs_date); data now 0-duplicate."
+    },
+    "unsdg": {
+      "blocker": "DATA-INTEGRITY blocker (pre-existing, in our own published file — NOT an upstream/URL problem): the published parquet's dedup key (series_key, obs_date) is NOT unique. jobs\\ingest_unsdg.py truncates each series' dimensions to the first 3 (dim_parts[:3]) and collapses every period to Dec-31, so observations differing only in a 4th+ dimension share one (series_key,obs_date) with different values — e.g. SE_ADT_ACTS:400|Age=ALLAGE|Location=URBAN|Sex=BOTHSEX has 36 distinct values on 2024-12-31. 352,671 of 3,175,479 rows (11.1%) are such collapsible duplicates; the file dedups to 2,822,808 distinct pairs (88.9%). Therefore ANY correct S1 merge with dedup_keys=(series_key,obs_date) collapses those rows and trips merge's never-shrink guard (88.9% < 97% min_ratio). merge_and_write leaves the existing file untouched on the refusal, so update returns partial (after==before), not data loss. The upstream SDG API is healthy (Series/List 200, Series/Data 200 with real records). REAL FIX is upstream and out of scope for this fetcher (changes shared files/data): make series_key carry ALL dimensions (drop the [:3] truncation) so (series_key,obs_date) is unique, then re-ingest all 713 series. Until then this source can only ever publish via merge as 'partial'."
+    },
+    "vdem": {
+      "blocker": "vparty.parquet series_key scheme is incompatible with S1 (series_key,obs_date) dedup. vparty is a country-year-PARTY cube but its series_key \"VDEM:{var}:{country}\" omits the party dimension, so all parties in a country-year share one (series_key,obs_date). Deduping collapses 2,242,785 party-level rows -> 619,459, tripping merge's never-shrink @0.97. The original ingest_vdem.py wrote vparty with plain pq.write_table (NO dedup), which is why the existing parquet has the duplicates. To make vparty S1-refreshable the party id (v2paid/pf_party_id) must be embedded in series_key, e.g. \"VDEM:{var}:{country}:{party_id}\", and the existing parquet re-ingested under that scheme. vdem.parquet (the 77.4M-row core) is genuine country-year (0 collisions) and merges cleanly. The fetcher does NOT fake success or weaken the guard: it surfaces vparty as a structural sub-unit and returns partial while keeping both files untouched."
+    }
+  }
+}

@@ -1,0 +1,50 @@
+# ---------------------------------------------------------------------------
+# wrangler.toml  --  Cloudflare Worker for the Econ Data Library /v1 API.
+#
+# Bindings the Worker code (src/types.ts::Env) expects:
+#   * CATALOG        D1 database  -- holds catalog.db tables (license/source/
+#                    series + series_fts) AND the freshness tables
+#                    (unit_state/source_state). One D1 db is simplest; the same
+#                    SQL (src/sql.ts) runs because D1 IS SQLite.
+#   * SERIES_BUCKET  R2 bucket    -- per-series CSV objects at key
+#                    series/<encodeURIComponent(series_id)>.csv (see
+#                    src/series.ts header for the honest design rationale).
+#
+# Custom-domain route note: bind a Workers Custom Domain (e.g. api.<your-domain>)
+# in the Cloudflare dashboard (Workers & Pages -> this Worker -> Settings ->
+# Domains & Routes -> Add Custom Domain) OR uncomment the [[routes]] block below
+# and run `wrangler deploy`. A Custom Domain auto-manages the TLS cert; a route
+# pattern requires the zone to already be on Cloudflare. See README.md.
+# ---------------------------------------------------------------------------
+
+name = "econdl-api"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+account_id = "ce51d5c7fe3859098751b89bbebeab7a"
+
+# --- D1: catalog + freshness ----------------------------------------------
+[[d1_databases]]
+binding = "CATALOG"
+database_name = "econ-catalog"
+database_id = "1a6d0755-ecef-46d0-a478-46cad1cf064c"
+
+# --- R2: per-series CSV objects -------------------------------------------
+[[r2_buckets]]
+binding = "SERIES_BUCKET"
+bucket_name = "econ-data"
+
+# --- Custom domain route (uncomment + edit; or add a Custom Domain in the UI) ---
+# [[routes]]
+# pattern = "api.example.com"
+# custom_domain = true
+
+[vars]
+# Optional override of the migrated-source allowlist (comma-separated). Leave
+# unset to use the compiled-in list in src/util.ts (kept in sync with
+# econdl._resolve.supported_sources()).
+# SUPPORTED_SOURCES = "abs,bea,bis,bls,..."
+
+[observability]
+enabled = true

@@ -1,0 +1,174 @@
+{
+  "name": "mystudy",
+  "profile": "tabular-data-package",
+  "econdl:schema_version": "1.0",
+  "econdl:snapshot_date": "2026-06-26",
+  "created": "2026-06-26T20:45:33Z",
+  "econdl:client": "econdl-python",
+  "econdl:series_requested": [
+    "bls:CUUR0000SA0",
+    "bls:LNS14000000",
+    "penn_world_table:rgdpe:USA",
+    "worldbank_wdi:NY.GDP.MKTP.KD.ZG",
+    "worldbank_wdi:SP.POP.TOTL"
+  ],
+  "econdl:native_only_sources": [],
+  "licenses": [
+    {
+      "name": "us-public-domain",
+      "title": "us-public-domain",
+      "path": ""
+    },
+    {
+      "name": "cc-by-4.0",
+      "title": "cc-by-4.0",
+      "path": ""
+    }
+  ],
+  "resources": [
+    {
+      "name": "bls",
+      "path": "data/bls.parquet",
+      "format": "parquet",
+      "mediatype": "application/vnd.apache.parquet",
+      "bytes": 27014,
+      "hash": "sha256:ce33d0fddea8879adff32e3be6fda0f88005413ea446ae4c66e92d092b58aa41",
+      "schema": {
+        "fields": [
+          {
+            "name": "series_id",
+            "type": "string"
+          },
+          {
+            "name": "obs_date",
+            "type": "string"
+          },
+          {
+            "name": "value",
+            "type": "double"
+          },
+          {
+            "name": "period",
+            "type": "string"
+          }
+        ]
+      },
+      "econdl:series_ids": [
+        "bls:CUUR0000SA0",
+        "bls:LNS14000000"
+      ],
+      "econdl:key_col": "series_id",
+      "econdl:tidy": true,
+      "econdl:provenance": {
+        "source_id": "bls",
+        "name": "Bureau of Labor Statistics",
+        "homepage": null,
+        "attribution": "Source: U.S. BLS (public domain)",
+        "terms_url": null,
+        "license": {
+          "id": "us-public-domain",
+          "name": "us-public-domain",
+          "url": "",
+          "reservable": true,
+          "commercial_ok": true,
+          "attribution_required": false,
+          "no_modify": false
+        },
+        "citation": "Bureau of Labor Statistics (2026). Accessed via Econ Data Library, snapshot 2026-06-26."
+      }
+    },
+    {
+      "name": "penn_world_table",
+      "path": "data/penn_world_table.parquet",
+      "format": "parquet",
+      "mediatype": "application/vnd.apache.parquet",
+      "bytes": 1972,
+      "hash": "sha256:321b656e71cd62db42058161b88e4574f513144c78422d77552b0f8040cbffa5",
+      "schema": {
+        "fields": [
+          {
+            "name": "series_key",
+            "type": "string"
+          },
+          {
+            "name": "obs_date",
+            "type": "date32[day]"
+          },
+          {
+            "name": "value",
+            "type": "double"
+          }
+        ]
+      },
+      "econdl:series_ids": [
+        "penn_world_table:rgdpe:USA"
+      ],
+      "econdl:key_col": "series_key",
+      "econdl:tidy": true,
+      "econdl:provenance": {
+        "source_id": "penn_world_table",
+        "name": "Penn World Table 11.0",
+        "homepage": null,
+        "attribution": "Source: Penn World Table 11.0 (CC BY 4.0)",
+        "terms_url": null,
+        "license": {
+          "id": "cc-by-4.0",
+          "name": "cc-by-4.0",
+          "url": "",
+          "reservable": true,
+          "commercial_ok": true,
+          "attribution_required": true,
+          "no_modify": false
+        },
+        "citation": "Penn World Table 11.0 (2026). Accessed via Econ Data Library, snapshot 2026-06-26."
+      }
+    },
+    {
+      "name": "worldbank_wdi",
+      "path": "data/worldbank_wdi.parquet",
+      "format": "parquet",
+      "mediatype": "application/vnd.apache.parquet",
+      "bytes": 283339,
+      "hash": "sha256:cbb0e0a180edf93e470e2dd294eda410e7ae98eab0ff03b1689000fe565c5008",
+      "schema": {
+        "fields": [
+          {
+            "name": "series_key",
+            "type": "string"
+          },
+          {
+            "name": "obs_date",
+            "type": "date32[day]"
+          },
+          {
+            "name": "value",
+            "type": "double"
+          }
+        ]
+      },
+      "econdl:series_ids": [
+        "worldbank_wdi:NY.GDP.MKTP.KD.ZG",
+        "worldbank_wdi:SP.POP.TOTL"
+      ],
+      "econdl:key_col": "series_key",
+      "econdl:tidy": true,
+      "econdl:provenance": {
+        "source_id": "worldbank_wdi",
+        "name": "The World Bank — World Development Indicators (WDI)",
+        "homepage": "https://datatopics.worldbank.org/world-development-indicators/",
+        "attribution": "Source: The World Bank, World Development Indicators. Licence: CC BY 4.0.",
+        "terms_url": "https://www.worldbank.org/en/about/legal/terms-of-use-for-datasets",
+        "license": {
+          "id": "cc-by-4.0",
+          "name": "cc-by-4.0",
+          "url": "",
+          "reservable": true,
+          "commercial_ok": true,
+          "attribution_required": true,
+          "no_modify": false
+        },
+        "citation": "The World Bank — World Development Indicators (WDI) (2026). Accessed via Econ Data Library, snapshot 2026-06-26. https://datatopics.worldbank.org/world-development-indicators/"
+      }
+    }
+  ]
+}

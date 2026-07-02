@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Australian Bureau of Statistics — Econ Data Library</title>
+<meta name="description" content="FULL-COVERAGE grouped ingest of the Australian Bureau of Statistics (ABS) SDMX API. Catalog : https://data.api.abs.gov.au/rest/dataflow/ABS?detail=allstubs (~1223 flows) Data pull: https://data.api.abs.gov.au/rest/data/&lt;FLOW&gt;/all?format=csvfile (compact, codes only) GROUPED storage (mirrors…">
+<link rel="canonical" href="https://econdatalibrary.com/abs.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{--navy:#1a2332;--navy-light:#243044;--blue:#2563eb;--blue-pale:#eff6ff;
+--gold:#d4a843;--gold-deep:#8a6d27;--g50:#f9fafb;--g100:#f3f4f6;--g200:#e5e7eb;
+--g300:#d1d5db;--g500:#6b7280;--g600:#4b5563;--g700:#374151;--g800:#1f2937;
+--green:#047857;--red:#b91c1c;--amber:#92600a;--serif:Georgia,serif;
+--sans:"Inter",system-ui,sans-serif;--mono:"JetBrains Mono",monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);color:var(--g800);background:#fff;line-height:1.6}
+.nav{background:var(--navy);color:#fff;padding:0 1.5rem;height:60px;display:flex;
+align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}
+.brand .d{color:var(--gold)}.brand a{color:#fff;text-decoration:none}
+.nav a{color:rgba(255,255,255,.8);text-decoration:none;font-size:.9rem;margin-left:1rem}
+.wrap{max-width:920px;margin:0 auto;padding:2rem 1.5rem}
+.crumb{font-size:.82rem;color:var(--g500);margin-bottom:1rem}
+.crumb a{color:var(--blue);text-decoration:none}
+h1{font-family:var(--serif);color:var(--navy);font-size:2rem;line-height:1.2}
+.pid{font-family:var(--mono);color:var(--gold-deep);font-size:.85rem;margin-bottom:.3rem}
+.badges{margin:.9rem 0 1.2rem;display:flex;gap:.5rem;flex-wrap:wrap}
+.badge{display:inline-block;font-size:.74rem;font-weight:600;padding:.2rem .6rem;
+border-radius:999px}
+.badge.open{background:#ecfdf5;color:var(--green)}
+.badge.meta{background:#fffbeb;color:var(--amber)}
+.badge.lic{background:var(--blue-pale);color:var(--blue)}
+.badge.cat{background:var(--g100);color:var(--g600)}
+.lead{font-size:1.02rem;color:var(--g700);margin:.5rem 0 1.5rem;white-space:pre-wrap}
+.callout{font-size:.9rem;border-radius:8px;padding:.8rem 1rem;margin:1rem 0}
+.callout.meta{background:#fffbeb;border:1px solid #fde68a;color:#7c5e10}
+.callout.open{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46}
+ul.notes{margin:.4rem 0 1rem;padding-left:1.1rem;color:var(--g700)}
+ul.notes li{margin:.35rem 0;font-size:.92rem;line-height:1.5}
+ul.notes li:first-child{font-weight:600;color:var(--navy)}
+blockquote.cite{margin:.4rem 0;padding:.7rem 1rem;border-left:3px solid var(--gold);
+background:var(--g50,#f9fafb);font-family:var(--mono);font-size:.85rem;color:var(--g700);white-space:pre-wrap}
+p.proc{font-size:.85rem;color:var(--g600);margin:.4rem 0 1rem}
+h2{font-family:var(--serif);color:var(--navy);font-size:1.2rem;margin:1.8rem 0 .5rem;
+border-bottom:1px solid var(--g200);padding-bottom:.3rem}
+.kv{display:grid;grid-template-columns:190px 1fr;gap:.45rem 1rem;font-size:.92rem}
+.kv dt{color:var(--g500);font-weight:600}
+.kv dd{color:var(--g800);word-break:break-word}
+.kv dd a{color:var(--blue)}
+.mono{font-family:var(--mono);font-size:.85rem}
+details{margin-top:1rem;border:1px solid var(--g200);border-radius:8px;background:var(--g50)}
+summary{cursor:pointer;padding:.7rem 1rem;font-weight:600;color:var(--g700);font-size:.9rem}
+details pre{margin:0;padding:1rem;overflow:auto;font-family:var(--mono);font-size:.78rem;
+line-height:1.5;border-top:1px solid var(--g200);background:#fff;color:var(--g800)}
+.foot{color:var(--g500);font-size:.8rem;text-align:center;padding:2.5rem 1rem;
+border-top:1px solid var(--g200);margin-top:2.5rem}
+.foot a{color:var(--blue)}
+.dhero{background:var(--navy);margin:-2rem -1.5rem 1.6rem;padding:2.1rem 1.5rem 1.7rem;
+border-bottom:3px solid var(--gold)}
+.dhero .crumb{color:rgba(255,255,255,.55);margin-bottom:.7rem}
+.dhero .crumb a{color:var(--gold);text-decoration:none}
+.dhero .pid{color:var(--gold);margin-bottom:.35rem}
+.dhero h1{color:#fff;font-size:1.9rem}
+.dhero .badges{margin:.9rem 0 0}
+.dhero .lead{color:rgba(255,255,255,.78);margin:.8rem 0 0;font-size:1rem}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:.7rem;margin:.5rem 0 1rem}
+.metric{background:var(--g50);border:1px solid var(--g200);border-radius:10px;padding:.75rem .9rem}
+.metric .mlabel{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g500)}
+.metric .mval{font-family:var(--serif);font-size:1.15rem;color:var(--navy);margin-top:.25rem;word-break:break-word}
+</style>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org/",
+  "@type": "Dataset",
+  "name": "Australian Bureau of Statistics",
+  "description": "FULL-COVERAGE grouped ingest of the Australian Bureau of Statistics (ABS) SDMX API. Catalog : https://data.api.abs.gov.au/rest/dataflow/ABS?detail=allstubs (~1223 flows) Data pull: https://data.api.abs.gov.au/rest/data/<FLOW>/all?format=csvfile (compact, codes only) GROUPED storage (mirrors…",
+  "url": "https://econdatalibrary.com/abs.html",
+  "identifier": "abs",
+  "isAccessibleForFree": true,
+  "publisher": {
+    "@type": "Organization",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com"
+  },
+  "creator": {
+    "@type": "Organization",
+    "name": "Australian Bureau of Statistics"
+  },
+  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "keywords": [
+    "labour",
+    "national-accounts",
+    "prices",
+    "trade",
+    "abs"
+  ],
+  "temporalCoverage": "1948-09-30/2026-04-30",
+  "repeatFrequency": [
+    "P1M",
+    "P3M"
+  ],
+  "creditText": "Source: ABS (CC BY 4.0)",
+  "citation": "Australian Bureau of Statistics. Retrieved from https://www.abs.gov.au. Compiled and redistributed by the Elkassabgi Data Library.",
+  "sameAs": [
+    "https://huggingface.co/datasets/econdatalibrary-abs",
+    "https://zenodo.org/communities/econdatalibrary"
+  ],
+  "distribution": [
+    {
+      "@type": "DataDownload",
+      "encodingFormat": "application/vnd.apache.parquet",
+      "contentUrl": "https://econdatalibrary.com/data/abs/",
+      "license": "https://creativecommons.org/licenses/by/4.0/"
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": {
+    "@language": "en",
+    "@vocab": "https://schema.org/",
+    "cr": "http://mlcommons.org/croissant/",
+    "data": {
+      "@id": "cr:data",
+      "@type": "@json"
+    },
+    "dataType": {
+      "@id": "cr:dataType",
+      "@type": "@vocab"
+    },
+    "sc": "https://schema.org/",
+    "conformsTo": "dct:conformsTo",
+    "dct": "http://purl.org/dc/terms/"
+  },
+  "@type": "sc:Dataset",
+  "conformsTo": "http://mlcommons.org/croissant/1.0",
+  "name": "abs",
+  "description": "FULL-COVERAGE grouped ingest of the Australian Bureau of Statistics (ABS) SDMX API. Catalog : https://data.api.abs.gov.au/rest/dataflow/ABS?detail=allstubs (~1223 flows) Data pull: https://data.api.abs.gov.au/rest/data/<FLOW>/all?format=csvfile (compact, codes only) GROUPED storage (mirrors…",
+  "url": "https://econdatalibrary.com/abs.html",
+  "creator": {
+    "@type": "sc:Organization",
+    "name": "Australian Bureau of Statistics"
+  },
+  "publisher": {
+    "@type": "sc:Organization",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com"
+  },
+  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "keywords": [
+    "labour",
+    "national-accounts",
+    "prices",
+    "trade"
+  ],
+  "temporalCoverage": "1948-09-30/2026-04-30",
+  "citation": "Australian Bureau of Statistics. Retrieved from https://www.abs.gov.au. Compiled and redistributed by the Elkassabgi Data Library.",
+  "distribution": [
+    {
+      "@type": "cr:FileObject",
+      "@id": "abs-parquet",
+      "name": "abs-parquet",
+      "description": "Canonical long-format Parquet for this dataset.",
+      "contentUrl": "https://econdatalibrary.com/data/abs/",
+      "encodingFormat": "application/vnd.apache.parquet"
+    }
+  ]
+}
+</script>
+</head><body>
+<div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
+<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+
+<div class="wrap">
+<div class="dhero">
+<div class="crumb"><a href="index.html">Catalog</a> / Australian Bureau of Statistics</div>
+<div class="pid">abs</div>
+<h1>Australian Bureau of Statistics</h1>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">labour</span><span class="badge cat">national-accounts</span><span class="badge cat">prices</span><span class="badge cat">trade</span></div>
+<p class="lead">FULL-COVERAGE grouped ingest of the Australian Bureau of Statistics (ABS) SDMX API. Catalog : https://data.api.abs.gov.au/rest/dataflow/ABS?detail=allstubs (~1223 flows) Data pull: https://data.api.abs.gov.au/rest/data/&lt;FLOW&gt;/all?format=csvfile (compact, codes only) GROUPED storage (mirrors…</p>
+</div>
+<div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
+<h2>Coverage</h2>
+<div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">18</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1948-09-30 – 2026-04-30</div></div><div class="metric"><div class="mlabel">Frequencies</div><div class="mval">Monthly, Quarterly, Irregular</div></div><div class="metric"><div class="mlabel">Distinct geographies</div><div class="mval">1</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">labour, national-accounts, prices, trade</div></div><div class="metric"><div class="mlabel">Measured observations</div><div class="mval">975,186,637</div></div></div>
+<h2>Licensing &amp; provenance</h2>
+<dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 4.0 (CC BY 4.0)</dd>
+<dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/4.0/">https://creativecommons.org/licenses/by/4.0/</a></dd>
+<dt>Required attribution</dt><dd>Source: ABS (CC BY 4.0)</dd>
+<dt>Redistribution</dt><dd>Permitted (served here)</dd>
+<dt>Commercial use</dt><dd>Yes</dd>
+<dt>Modification</dt><dd>Permitted</dd></dl>
+<h2>How to cite</h2>
+<blockquote class="cite">Australian Bureau of Statistics. Retrieved from https://www.abs.gov.au. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
+<p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
+<h2>Access &amp; mirrors</h2>
+<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/abs.html">https://econdatalibrary.com/abs.html</a></dd>
+<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-abs">https://huggingface.co/datasets/econdatalibrary-abs</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dt>Update cadence</dt><dd>monthly</dd>
+<dt>Update strategy</dt><dd>sdmx delta</dd>
+<dt>Storage layout</dt><dd>overwrite-multi-file: one zstd parquet per dataflow at data/clean_full/abs/&lt;FLOW&gt;.parquet (~1222 files), each with columns (series_key, obs_date, value); oversized flows (&gt;8M obs) written as a single multi-rowgroup parquet split by FREQ via ParquetWriter. Sidecar catalog at data/clean_full/abs_catalog.parquet.</dd></dl>
+<h2>Full description</h2>
+<p class="lead">FULL-COVERAGE grouped ingest of the Australian Bureau of Statistics (ABS) SDMX API.
+
+Catalog  : https://data.api.abs.gov.au/rest/dataflow/ABS?detail=allstubs  (~1223 flows)
+Data pull: https://data.api.abs.gov.au/rest/data/&lt;FLOW&gt;/all?format=csvfile (compact, codes only)
+
+GROUPED storage (mirrors jobs/ingest_eurostat.py): ONE Parquet per dataflow under
+    data/clean_full/abs/&lt;FLOW&gt;.parquet
+with columns (series_key, obs_date, value) -- many series inside each file. The
+series_key is the dotted SDMX data key: every dimension code column between the
+DATAFLOW column and TIME_PERIOD, joined with &#x27;.&#x27;. This matches the existing
+connectors/abs/connector.py key convention (e.g. &quot;1.10001.10.50.Q&quot;).
+
+The ABS compact CSV (format=csvfile) is:
+    DATAFLOW, &lt;dim1&gt;, &lt;dim2&gt;, ..., TIME_PERIOD, OBS_VALUE, &lt;attributes...&gt;
+Column positions vary per flow, so we locate TIME_PERIOD / OBS_VALUE by name and
+treat every column strictly between DATAFLOW (col 0) and TIME_PERIOD as a dimension.
+
+License = cc-by-4.0 (reservable id from configs/sources.yaml -&gt; sources.abs.license).
+
+Resilience: the ABS API is flaky. Each dataflow is streamed and parsed independently;
+network errors retry with exponential backoff; a 404 / empty body is treated as
+&quot;no data for this flow&quot; and skipped. Already-written .parquet files are skipped so
+the job is fully resumable after a crash. A flow whose download exceeds a size guard
+is split by its FREQ (or first) dimension and written as one Parquet per split value.
+
+Usage:
+  python jobs/ingest_abs_full.py --list           # just enumerate the catalog
+  python jobs/ingest_abs_full.py --dry 5           # parse 5 flows, print, no writes
+  python jobs/ingest_abs_full.py                   # full run (resumable)
+  python jobs/ingest_abs_full.py --only CPI,LF     # restrict to named flows</p>
+<h2>Structured metadata</h2>
+<details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
+  &quot;@context&quot;: &quot;https://schema.org/&quot;,
+  &quot;@type&quot;: &quot;Dataset&quot;,
+  &quot;name&quot;: &quot;Australian Bureau of Statistics&quot;,
+  &quot;description&quot;: &quot;FULL-COVERAGE grouped ingest of the Australian Bureau of Statistics (ABS) SDMX API. Catalog : https://data.api.abs.gov.au/rest/dataflow/ABS?detail=allstubs (~1223 flows) Data pull: https://data.api.abs.gov.au/rest/data/&lt;FLOW&gt;/all?format=csvfile (compact, codes only) GROUPED storage (mirrors…&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/abs.html&quot;,
+  &quot;identifier&quot;: &quot;abs&quot;,
+  &quot;isAccessibleForFree&quot;: true,
+  &quot;publisher&quot;: {
+    &quot;@type&quot;: &quot;Organization&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;creator&quot;: {
+    &quot;@type&quot;: &quot;Organization&quot;,
+    &quot;name&quot;: &quot;Australian Bureau of Statistics&quot;
+  },
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
+  &quot;keywords&quot;: [
+    &quot;labour&quot;,
+    &quot;national-accounts&quot;,
+    &quot;prices&quot;,
+    &quot;trade&quot;,
+    &quot;abs&quot;
+  ],
+  &quot;temporalCoverage&quot;: &quot;1948-09-30/2026-04-30&quot;,
+  &quot;repeatFrequency&quot;: [
+    &quot;P1M&quot;,
+    &quot;P3M&quot;
+  ],
+  &quot;creditText&quot;: &quot;Source: ABS (CC BY 4.0)&quot;,
+  &quot;citation&quot;: &quot;Australian Bureau of Statistics. Retrieved from https://www.abs.gov.au. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;sameAs&quot;: [
+    &quot;https://huggingface.co/datasets/econdatalibrary-abs&quot;,
+    &quot;https://zenodo.org/communities/econdatalibrary&quot;
+  ],
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/abs/&quot;,
+      &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;
+    }
+  ]
+}</pre></details>
+<details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
+  &quot;@context&quot;: {
+    &quot;@language&quot;: &quot;en&quot;,
+    &quot;@vocab&quot;: &quot;https://schema.org/&quot;,
+    &quot;cr&quot;: &quot;http://mlcommons.org/croissant/&quot;,
+    &quot;data&quot;: {
+      &quot;@id&quot;: &quot;cr:data&quot;,
+      &quot;@type&quot;: &quot;@json&quot;
+    },
+    &quot;dataType&quot;: {
+      &quot;@id&quot;: &quot;cr:dataType&quot;,
+      &quot;@type&quot;: &quot;@vocab&quot;
+    },
+    &quot;sc&quot;: &quot;https://schema.org/&quot;,
+    &quot;conformsTo&quot;: &quot;dct:conformsTo&quot;,
+    &quot;dct&quot;: &quot;http://purl.org/dc/terms/&quot;
+  },
+  &quot;@type&quot;: &quot;sc:Dataset&quot;,
+  &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
+  &quot;name&quot;: &quot;abs&quot;,
+  &quot;description&quot;: &quot;FULL-COVERAGE grouped ingest of the Australian Bureau of Statistics (ABS) SDMX API. Catalog : https://data.api.abs.gov.au/rest/dataflow/ABS?detail=allstubs (~1223 flows) Data pull: https://data.api.abs.gov.au/rest/data/&lt;FLOW&gt;/all?format=csvfile (compact, codes only) GROUPED storage (mirrors…&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/abs.html&quot;,
+  &quot;creator&quot;: {
+    &quot;@type&quot;: &quot;sc:Organization&quot;,
+    &quot;name&quot;: &quot;Australian Bureau of Statistics&quot;
+  },
+  &quot;publisher&quot;: {
+    &quot;@type&quot;: &quot;sc:Organization&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
+  &quot;keywords&quot;: [
+    &quot;labour&quot;,
+    &quot;national-accounts&quot;,
+    &quot;prices&quot;,
+    &quot;trade&quot;
+  ],
+  &quot;temporalCoverage&quot;: &quot;1948-09-30/2026-04-30&quot;,
+  &quot;citation&quot;: &quot;Australian Bureau of Statistics. Retrieved from https://www.abs.gov.au. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;cr:FileObject&quot;,
+      &quot;@id&quot;: &quot;abs-parquet&quot;,
+      &quot;name&quot;: &quot;abs-parquet&quot;,
+      &quot;description&quot;: &quot;Canonical long-format Parquet for this dataset.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/abs/&quot;,
+      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;
+    }
+  ]
+}</pre></details>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+</div></body></html>

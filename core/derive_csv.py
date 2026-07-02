@@ -1,0 +1,162 @@
+"""Materialize per-series CSV objects to R2 so /v1/series/{id}.csv is live on the Worker.
+
+For each catalog series_id, project rows through the SAME econdl resolver the dev shim
+uses (so the bytes are identical to the local /v1 response), and PUT them to R2 at
+  <prefix>/series/<urlencoded series_id>.csv
+The Worker then serves /v1/series/{id}.csv as a plain R2 GET (no parquet-in-Worker).
+
+  python core/derive_csv.py --dry-run --limit 5     # derive locally + DIFF vs the dev shim
+  python core/derive_csv.py --bucket econ-data       # full run (needs R2 write creds)
+
+Tidy sources emit the canonical `series_id,obs_date,value`; relational/wide sources
+(tidy_ok=False) emit their native columns verbatim — exactly as the contract specifies.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import os
+import sqlite3
+import sys
+import urllib.parse
+import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "clients", "python"))
+
+from . import r2_util  # noqa: E402
+
+ROOT = r2_util.ROOT
+CATALOG = os.path.join(ROOT, "data", "catalog.db")
+DEFAULT_PREFIX = "series"
+
+
+def _series_csv_bytes(series_id: str) -> bytes:
+    """Project one series to CSV bytes via the econdl resolver (the contract shape)."""
+    from econdl import _resolve
+    res = _resolve.resolve(series_id)
+    table = _resolve.read_native(res)
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")   # match the dev shim / Worker byte-for-byte
+    if res.tidy_ok:
+        df = _resolve.native_to_tidy(res, table)
+        w.writerow(["series_id", "obs_date", "value"])
+        for sid, _src, d, v in df[["series_id", "source", "obs_date", "value"]].itertuples(index=False):
+            w.writerow([sid, d, v])
+    else:
+        cols = table.column_names
+        w.writerow(cols)
+        for row in table.to_pylist():
+            w.writerow([row.get(c) for c in cols])
+    return buf.getvalue().encode("utf-8")
+
+
+def _catalog_ids(limit: int | None, source: list | None):
+    conn = sqlite3.connect(f"file:{CATALOG}?mode=ro", uri=True)
+    try:
+        q = "SELECT series_id, source_id FROM series"
+        if source:
+            q += " WHERE source_id IN (%s)" % ",".join("?" * len(source))
+        q += " ORDER BY source_id, series_id"
+        if limit:
+            q += f" LIMIT {int(limit)}"
+        return conn.execute(q, source or []).fetchall()
+    finally:
+        conn.close()
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Derive per-series CSV objects to R2")
+    ap.add_argument("--bucket")
+    ap.add_argument("--prefix", default=DEFAULT_PREFIX)
+    ap.add_argument("--dry-run", action="store_true", help="derive locally, contact no R2")
+    ap.add_argument("--limit", type=int)
+    ap.add_argument("--source", action="append")
+    ap.add_argument("--verify-shim", help="base URL of a running dev shim to byte-diff against")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="list existing <prefix>/ keys once and skip them (resumable multi-day run)")
+    ap.add_argument("--smallest-first", action="store_true",
+                    help="process sources in ascending entry count so whole sources go live early")
+    a = ap.parse_args()
+
+    rows = _catalog_ids(a.limit, a.source)
+    print(f"{len(rows):,} catalog series to derive")
+
+    if a.dry_run:
+        ok = miss = 0
+        diffs = 0
+        for sid, _src in rows:
+            try:
+                body = _series_csv_bytes(sid)
+                ok += 1
+            except Exception as e:  # store-coverage gaps error loudly, never silently skipped
+                miss += 1
+                print(f"  SKIP(unresolvable) {sid}: {str(e)[:80]}")
+                continue
+            if a.verify_shim:
+                url = a.verify_shim.rstrip("/") + "/v1/series/" + urllib.parse.quote(sid, safe="") + ".csv"
+                try:
+                    shim = urllib.request.urlopen(url, timeout=15).read()
+                    same = shim == body
+                    diffs += 0 if same else 1
+                    print(f"  {sid:42} {len(body):>8} B  shim-match={same}")
+                except Exception as e:
+                    print(f"  {sid:42} shim fetch failed: {str(e)[:60]}")
+        print(f"DRY RUN: derived {ok}, unresolvable {miss}"
+              + (f", shim byte-diffs {diffs}" if a.verify_shim else "")
+              + " (no R2 contact)")
+        return
+
+    if not a.bucket:
+        ap.error("--bucket is required for a real run")
+    s3 = r2_util.client(write=True)
+
+    if a.smallest_first:
+        by_src: dict = {}
+        for sid, src in rows:
+            by_src.setdefault(src, []).append((sid, src))
+        rows = [r for src in sorted(by_src, key=lambda s: len(by_src[s]))
+                for r in by_src[src]]
+
+    existing: set = set()
+    if a.skip_existing:
+        tok = None
+        while True:
+            kw = {"Bucket": a.bucket, "Prefix": f"{a.prefix}/", "MaxKeys": 1000}
+            if tok:
+                kw["ContinuationToken"] = tok
+            resp = s3.list_objects_v2(**kw)
+            for o in resp.get("Contents", []):
+                existing.add(o["Key"])
+            if not resp.get("IsTruncated"):
+                break
+            tok = resp.get("NextContinuationToken")
+        print(f"skip-existing: {len(existing):,} objects already in R2", flush=True)
+
+    up = miss = skip = 0
+    cur_src = None
+    for sid, src in rows:
+        if src != cur_src:
+            if cur_src is not None:
+                print(f"  [source done] {cur_src} (running: put {up:,}, skip {skip:,})", flush=True)
+            cur_src = src
+        key = f"{a.prefix}/{urllib.parse.quote(sid, safe='')}.csv"
+        if key in existing:
+            skip += 1
+            continue
+        try:
+            body = _series_csv_bytes(sid)
+        except Exception as e:
+            miss += 1
+            print(f"  unresolvable {sid}: {str(e)[:80]}")
+            continue
+        s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv")
+        up += 1
+        if up % 500 == 0:
+            print(f"  derived+put {up:,} (skip {skip:,}, miss {miss:,})...", flush=True)
+    print(f"done: put {up:,} series CSVs, skipped {skip:,} existing, "
+          f"{miss:,} unresolvable (store-coverage gaps)")
+
+
+if __name__ == "__main__":
+    main()

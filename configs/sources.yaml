@@ -1,0 +1,104 @@
+# ============================================================================
+# Econ-Fin Data Library -- SOURCE & LICENSE REGISTRY  (the legal backbone)
+# ----------------------------------------------------------------------------
+# Decisions locked 2026-06-01:
+#   HOST  = all GREEN + kept YELLOW (IMF, ECB/Frankfurter, BIS*, DBnomics*)
+#   DROP  = CoinGecko, Alternative.me            (see `dropped:` below)
+#   CARVE = Eurostat / OWID / FRED               (see `carve_outs:` below)
+#   * BIS = non-commercial only;  DBnomics = per-series license passthrough.
+#
+# `reservable: true` is the gate -- core/licenses.py refuses to publish anything
+# whose license class is not re-serveable. Re-verify every license before launch.
+# ============================================================================
+
+licenses:
+  us-public-domain:     {reservable: true,  commercial_ok: true,  attribution: requested}
+  cc-by-4.0:            {reservable: true,  commercial_ok: true,  attribution: required}
+  cc0:                  {reservable: true,  commercial_ok: true,  attribution: false}
+  ogl-uk-3.0:           {reservable: true,  commercial_ok: true,  attribution: required}
+  etalab-2.0:           {reservable: true,  commercial_ok: true,  attribution: required}
+  statcan-open:         {reservable: true,  commercial_ok: true,  attribution: required}
+  ecb-attrib-nomodify:  {reservable: true,  commercial_ok: true,  attribution: required, no_modify: true}
+  imf-terms:            {reservable: true,  commercial_ok: true,  attribution: required, disclose_free: true}
+  bis-attrib-nc:        {reservable: true,  commercial_ok: false, attribution: required}   # NON-COMMERCIAL
+  zillow-research:      {reservable: true,  commercial_ok: true,  attribution: required}    # "Data Provided by Zillow Group"
+  defillama-open:       {reservable: true,  commercial_ok: true,  attribution: required}
+  dbnomics-passthrough: {reservable: per_series, note: "inherit each provider's license at ingest"}
+
+# ---------------------------------------------------------------------------
+# SOURCES WE HOST (cache on R2 + re-serve). schedule = per-source cadence.
+# ---------------------------------------------------------------------------
+sources:
+
+  # ---- US federal, public domain ----
+  sec_edgar:
+    name: U.S. SEC EDGAR
+    license: us-public-domain
+    attribution: "Source: U.S. SEC EDGAR (public domain)"
+    schedule: "0 7 * * *"
+    homepage: https://www.sec.gov/edgar
+    scope: "XBRL fundamentals + 13F + insider = DATA we host; filings = metadata POINTERS to sec.gov (NOT the documents)"
+    datasets: [xbrl_fundamentals, filings_index, form13f, insider_forms]
+  bls:      {name: Bureau of Labor Statistics, license: us-public-domain, schedule: "0 6 * * *", needs_key: true,  attribution: "Source: U.S. BLS (public domain)"}
+  bea:      {name: Bureau of Economic Analysis, license: us-public-domain, schedule: "0 6 * * *", needs_key: true,  attribution: "Source: U.S. BEA (public domain)"}
+  census:   {name: U.S. Census Bureau,          license: us-public-domain, schedule: "0 6 * * 1", needs_key: true,  attribution: "Source: U.S. Census Bureau (public domain)"}
+  treasury: {name: U.S. Treasury FiscalData + Yield Curve, license: us-public-domain, schedule: "0 6 * * *", attribution: "Source: U.S. Treasury (public domain)"}
+  fed_board: {name: Federal Reserve Board (H.15 etc.), license: us-public-domain, schedule: "0 6 * * *", attribution: "Source: Federal Reserve Board (public domain)"}
+  eia:      {name: U.S. Energy Information Administration, license: us-public-domain, schedule: "0 6 * * *", needs_key: true, attribution: "Source: U.S. EIA (public domain)", tos_note: "ToS permits building a public display service (verified 2026-06-01). Attribute to EIA; do NOT use the EIA logo; do NOT claim EIA as source for modified/derived values -> label Clean/derived tier 'derived from EIA data'."}
+  usda:     {name: USDA NASS + ERS, license: us-public-domain, schedule: "0 6 * * 1", needs_key: true, attribution: "Source: USDA (public domain)"}
+  noaa:     {name: NOAA NCEI / Climate Data Online, license: us-public-domain, schedule: "0 6 * * 1", needs_key: true, attribution: "Source: NOAA (public domain)"}
+  fhfa:     {name: FHFA House Price Index, license: us-public-domain, schedule: "0 6 * * 1", attribution: "Source: U.S. FHFA (public domain)"}
+
+  # ---- CC BY 4.0 / open-government ----
+  worldbank:        {name: World Bank Open Data (WDI), license: cc-by-4.0, schedule: "0 6 * * 1", attribution: "Source: World Bank, World Development Indicators (CC BY 4.0)"}
+  worldbank_esg:    {name: World Bank Sovereign ESG, license: cc-by-4.0, schedule: "0 6 * * 1", attribution: "Source: World Bank Sovereign ESG (CC BY 4.0)"}
+  worldbank_pink:   {name: World Bank Pink Sheet (commodities), license: cc-by-4.0, schedule: "0 6 5 * *", attribution: "Source: World Bank Commodity Markets (CC BY 4.0)"}
+  global_findex:    {name: World Bank Global Findex Database (financial inclusion), license: cc-by-4.0, schedule: "0 6 8 * *", homepage: "https://www.worldbank.org/en/publication/globalfindex", attribution: "Source: World Bank Global Findex Database (CC BY 4.0)"}
+  oecd:             {name: OECD Data Explorer (from 2024-07-01), license: cc-by-4.0, schedule: "0 6 * * 2", attribution: "Source: OECD (CC BY 4.0)"}
+  eurostat:         {name: Eurostat, license: cc-by-4.0, schedule: "0 6 * * 2", attribution: "Source: Eurostat (CC BY 4.0)", carve_out: see-carve_outs}
+  imf:              {name: IMF Data, license: imf-terms, schedule: "0 6 * * 2", attribution: "Source: IMF -- this data is available free of charge"}
+  ilostat:          {name: ILOSTAT, license: cc-by-4.0, schedule: "0 6 * * 2", attribution: "Source: ILOSTAT (CC BY 4.0)"}
+  faostat:          {name: FAOSTAT, license: cc-by-4.0, schedule: "0 6 * * 3", attribution: "Source: FAO FAOSTAT (CC BY 4.0)"}
+  penn_world_table: {name: Penn World Table 11.0, license: cc-by-4.0, schedule: "0 6 1 */3 *", attribution: "Source: Penn World Table 11.0 (CC BY 4.0)"}
+  statcan:          {name: Statistics Canada, license: statcan-open, schedule: "0 6 * * *", attribution: "Source: Statistics Canada (Open Licence)"}
+  abs:              {name: Australian Bureau of Statistics, license: cc-by-4.0, schedule: "0 6 * * 2", attribution: "Source: ABS (CC BY 4.0)"}
+  boe:              {name: Bank of England, license: ogl-uk-3.0, schedule: "0 6 * * *", attribution: "Source: Bank of England (OGL v3.0)"}
+  insee:            {name: INSEE (France), license: etalab-2.0, schedule: "0 6 * * 2", needs_key: true, attribution: "Source: INSEE (Etalab 2.0)"}
+  owid:             {name: Our World in Data, license: cc-by-4.0, schedule: "0 6 * * 3", attribution: "Source: Our World in Data (CC BY 4.0)", carve_out: see-carve_outs}
+  ember:            {name: Ember (electricity), license: cc-by-4.0, schedule: "0 6 * * 3", attribution: "Source: Ember (CC BY 4.0)"}
+  bis:              {name: Bank for International Settlements, license: bis-attrib-nc, schedule: "0 6 * * 4", attribution: "Source: BIS (non-commercial reuse, attribution)"}
+
+  # ---- CC0 ----
+  wikidata:         {name: Wikidata (econ/finance subset), license: cc0, schedule: "0 6 * * 4", attribution: "Source: Wikidata (CC0)", scope: "econ/finance subset only -- NOT the full graph"}
+
+  # ---- Free-with-attribution ----
+  ecb:              {name: ECB Data Portal / euro reference rates, license: ecb-attrib-nomodify, schedule: "30 16 * * *", attribution: "Source: ECB -- available free at the ECB; values not modified"}
+  frankfurter:      {name: Frankfurter API (ECB FX), license: ecb-attrib-nomodify, schedule: "30 16 * * *", attribution: "FX data from the ECB via Frankfurter"}
+  zillow:           {name: Zillow Research, license: zillow-research, schedule: "0 6 * * 4", attribution: "Data Provided by Zillow Group"}
+  defillama:        {name: DeFiLlama, license: defillama-open, schedule: "0 */6 * * *", attribution: "Source: DeFiLlama"}
+
+  # ---- DBnomics: ingest accelerator, NOT a wholesale source ----
+  dbnomics:         {name: DBnomics (87 providers), license: dbnomics-passthrough, schedule: "0 5 * * 1", attribution: "Via DBnomics -- per-series provider license applies", note: "use for breadth; dedupe vs direct connectors; store per-series license"}
+
+  # ---- Your own asset ----
+  hf_equities:      {name: HF Data Library intraday US equities, license: cc-by-4.0, schedule: bridge, attribution: "Source: HF Data Library (CC BY 4.0)", note: "bridge to existing hfdatalibrary R2 data"}
+
+# ---------------------------------------------------------------------------
+# DROPPED -- do NOT ingest (per the storage-doc adversarial critic)
+# ---------------------------------------------------------------------------
+dropped:
+  coingecko:      "Free tier is personal/non-commercial; forbids redistribute/syndicate; discourages caching. Use DeFiLlama for crypto."
+  alternative_me: "Dropped together with CoinGecko; DeFiLlama covers the crypto slot."
+
+# ---------------------------------------------------------------------------
+# CARVE-OUTS -- ingest the source but EXCLUDE the noted parts
+# ---------------------------------------------------------------------------
+carve_outs:
+  eurostat: "EU data = CC BY (host). EXCLUDE non-EU country data + some trade series (non-commercial)."
+  owid:     "Host OWID's own work. For upstream third-party series, cite the original and exclude where its license is not reservable."
+  fred:     "DISCOVERY ONLY -- do not host the FRED feed. Re-pull public-domain series from BLS/BEA/Census/Treasury at origin. EXCLUDE any series whose notes contain 'Copyright' (e.g. S&P/Case-Shiller)."
+
+# ---------------------------------------------------------------------------
+# Free API keys we hold SERVER-SIDE (visitors never need a key). Fill .env.
+# ---------------------------------------------------------------------------
+keys_needed: [bls, bea, census, eia, usda, noaa, insee]
