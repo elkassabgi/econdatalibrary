@@ -53,6 +53,9 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       AQUEDUCT_BACKEND: r2
+      # CSV derive (contract step 5) resolves catalog ids against this db —
+      # pulled from R2 each run (plan §1.1 step 5 / O-9).
+      ECONDL_CATALOG: ${{ github.workspace }}/data/catalog.db
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,6 +72,23 @@ jobs:
         # Downloads _aqueduct/state.db.zst, decompresses to data/_aqueduct/state.db,
         # records the object ETag for the compare-and-swap at push time (§1.2).
         run: python -m updater.run --pull-state
+
+      - name: Pull catalog.db (CSV-derive dependency, plan O-9)
+        # ~0.5 GB zstd download; the derive step maps changed series to catalog
+        # ids and projects their CSVs — without the catalog the run would be
+        # honest-partial every day. Skipped on dry runs (no derive happens).
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          python - <<'PY'
+          import os, zstandard
+          from core import r2_util
+          c = r2_util.client()
+          obj = c.get_object(Bucket='econ-data', Key='_aqueduct/catalog.db.zst')
+          os.makedirs('data', exist_ok=True)
+          with open('data/catalog.db', 'wb') as out:
+              zstandard.ZstdDecompressor().copy_stream(obj['Body'], out)
+          print('catalog.db bytes:', os.path.getsize('data/catalog.db'))
+          PY
 
       - name: Run updater
         # Inputs are passed via env (not inlined into the command) so a crafted

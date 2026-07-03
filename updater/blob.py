@@ -3,9 +3,11 @@
 Two layers live here on purpose (UPDATER_BUILD_PLAN.md §1.1 step 3, §1.3):
 
 1. Module-level path functions (exists / read_table / write_table_atomic /
-   row_count): the original filesystem primitives. ~40 strategy fetchers call
-   these against local paths; their behavior is UNCHANGED — atomic publish is
-   still a per-process unique ``.tmp`` + ``os.replace``.
+   row_count): what the ~75 strategy fetchers call against store paths. With
+   AQUEDUCT_BACKEND=local they are the original filesystem primitives
+   (atomic publish = per-process unique ``.tmp`` + ``os.replace``); with
+   AQUEDUCT_BACKEND=r2 they route to the bucket via path→key translation
+   (see the Layer-1 banner below) so every fetcher is CI-capable unedited.
 
 2. The Blob interface (``LocalBlob`` / ``R2Blob`` + ``from_env``): a uniform
    ``get/put_atomic/etag/exists`` handle so the SAME invariant-guarded publish
@@ -24,21 +26,61 @@ giants never publish through CI at all, plan §3.4).
 """
 from __future__ import annotations
 import hashlib
+import io
 import os
 import uuid
 
 import pyarrow.parquet as pq
 
 # ---------------------------------------------------------------------------
-# Layer 1 — filesystem path primitives (pre-existing; used directly by fetchers)
+# Layer 1 — path primitives used directly by the ~75 fetchers.
+#
+# BACKEND ROUTING (the one choke point that makes every fetcher CI-capable
+# without editing any of them): with AQUEDUCT_BACKEND=r2 these four functions
+# translate the local store path (…/data/clean_full/<src>/x.parquet) to the R2
+# object key (clean_full/<src>/x.parquet) and read/publish against the bucket —
+# R2 is the source of truth in CI. Writes ALSO keep the local file at the
+# original path: that mirror is what plan §1.1-step-5 needs so $ECONDL_DATA can
+# point at the runner scratch store for the CSV derive (bytes already in hand,
+# no re-download). With AQUEDUCT_BACKEND=local (default) behavior is
+# byte-identical to the original filesystem-only implementation.
 # ---------------------------------------------------------------------------
 
 
+def _r2_routed():
+    """The active R2Blob when AQUEDUCT_BACKEND=r2, else None (= local mode)."""
+    if os.environ.get("AQUEDUCT_BACKEND", "local").strip().lower() == "r2":
+        return from_env("r2")
+    return None
+
+
+def _path_to_key(path: str) -> str:
+    """Map a local store path to its R2 object key: everything after the last
+    /data/ segment. Refuses loudly on paths outside the store — guessing a key
+    could publish data to the wrong object."""
+    norm = str(path).replace("\\", "/")
+    i = norm.rfind("/data/")
+    if i == -1:
+        raise ValueError(
+            f"cannot derive an R2 key from {path!r}: no /data/ segment. "
+            "R2-routed blob helpers only accept store paths (…/data/<tier>/…).")
+    return norm[i + len("/data/"):]
+
+
 def exists(path: str) -> bool:
+    r2 = _r2_routed()
+    if r2 is not None:
+        return r2.exists(_path_to_key(path))
     return os.path.exists(path)
 
 
 def read_table(path: str):
+    r2 = _r2_routed()
+    if r2 is not None:
+        data = r2.get(_path_to_key(path))
+        if data is None:
+            raise FileNotFoundError(f"R2 object absent for {path!r}")
+        return pq.read_table(io.BytesIO(data))
     return pq.read_table(path)
 
 
@@ -56,9 +98,24 @@ def write_table_atomic(path: str, table, compression: str = "zstd") -> None:
                 os.remove(tmp)
             except OSError:
                 pass
+    r2 = _r2_routed()
+    if r2 is not None:
+        # R2 is the publish target in CI; the local file written above doubles
+        # as the scratch-store mirror for the same-run CSV derive ($ECONDL_DATA).
+        with open(path, "rb") as fh:
+            r2.put_atomic(_path_to_key(path), fh.read())
 
 
 def row_count(path: str) -> int:
+    r2 = _r2_routed()
+    if r2 is not None:
+        data = r2.get(_path_to_key(path))
+        if data is None:
+            return 0
+        try:
+            return pq.read_metadata(io.BytesIO(data)).num_rows
+        except Exception:
+            return 0
     if not os.path.exists(path):
         return 0
     try:

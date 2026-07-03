@@ -888,6 +888,7 @@ sources:
       every historical + annual CSV/TXT (all columns stored as strings; missing cols filled ''). Raw zips cached under data/raw/cftc/.
       Written in 100k-row batches via one ParquetWriter.
 - source_id: cnb
+  live: true
   scripts:
   - jobs/ingest_cnb.py
   strategy: extend_by_date
@@ -1822,6 +1823,7 @@ sources:
       cols index_nsa/index_sa/rstderr or hpi/hpi_1990/hpi_2000/annual_change) + <cube>__series.parquet (series meta) + <cube>.meta.json
       + top-level fhfa.meta.json. zstd, written whole (pandas->pyarrow, no streaming). Raw at data/raw/fhfa/ (9 files).'
 - source_id: frankfurter
+  live: true
   scripts:
   - jobs/ingest_frankfurter.py
   strategy: extend_by_date

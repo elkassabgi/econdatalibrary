@@ -110,13 +110,61 @@ def _derive_changed_csvs(unit, res, blob):
                         f"{res.obs} merged obs — CSVs not re-derived (§5.7)")
         return [], None
     try:
+        # `changed` holds STORE series_keys; the derive/resolver layer needs
+        # CATALOG series_ids. The key→id mapping is source-specific (e.g.
+        # frankfurter stores 'EURARS' but catalogs 'frankfurter:EUR:ARS'), so:
+        #   1. exact hit: '<source>:<key>' exists in the catalog → derive it;
+        #   2. any unmapped keys → for small sources (≤ _DERIVE_ALL_CAP catalog
+        #      ids) re-derive ALL of the source's ids — coherence guaranteed at
+        #      trivial cost; larger sources demote to partial with the gap named
+        #      (never a silent §5.7 violation).
+        ids, unmapped = _catalog_ids_for(unit.source_id, changed)
+        if not ids:
+            return [], (f"csv coherence unmet: {len(unmapped)} changed series_keys "
+                        f"have no catalog mapping for {unit.source_id} and the "
+                        f"source exceeds the derive-all cap (§5.7)")
         from . import derive  # lazy: lands with the derive work-package; missing => partial
-        out = derive.derive_and_put(changed, blob if blob is not None else _resolve_blob()) or {}
+        out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob()) or {}
         failed = [str(s) for s in (out.get("failed") or [])]
-        note = f"csv_derive failed {len(failed)}/{len(changed)} series" if failed else None
+        note = f"csv_derive failed {len(failed)}/{len(ids)} series" if failed else None
+        if not note and unmapped:
+            note = (f"csv coherence partial: {len(unmapped)} changed keys unmapped "
+                    f"for {unit.source_id} (over derive-all cap)")
         return failed, note
     except Exception as e:  # noqa: BLE001 — CSV failure must NEVER sink the data publish
         return changed, (f"csv_derive crashed ({len(changed)} series queued): " + repr(e))[:300]
+
+
+_DERIVE_ALL_CAP = 5000
+
+
+def _catalog_ids_for(source_id: str, changed_keys):
+    """Map changed store series_keys to catalog series_ids (see hook comment).
+    Returns (ids_to_derive, unmapped_keys). Reads the catalog read-only from
+    $ECONDL_CATALOG or <root>/data/catalog.db."""
+    import sqlite3
+    cat = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
+    con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
+    try:
+        exact, unmapped = [], []
+        for k in changed_keys:
+            cand = f"{source_id}:{k}"
+            row = con.execute("SELECT 1 FROM series WHERE series_id=?", (cand,)).fetchone()
+            if row:
+                exact.append(cand)
+            else:
+                unmapped.append(k)
+        if not unmapped:
+            return exact, []
+        n_src = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?",
+                            (source_id,)).fetchone()[0]
+        if 0 < n_src <= _DERIVE_ALL_CAP:
+            all_ids = [r[0] for r in con.execute(
+                "SELECT series_id FROM series WHERE source_id=?", (source_id,))]
+            return all_ids, []
+        return exact, unmapped
+    finally:
+        con.close()
 
 
 def run_once(sources=None, strategies=None, cadences=None, force=False, dry=False,
