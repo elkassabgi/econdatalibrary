@@ -180,12 +180,25 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     units = registry.all_units()
     results = []
     pending_live, pending_other = [], []  # no-adapter sources, split by live tier
+    # Rollout perimeter enforced at EXECUTION (learned from CI run 28682266857,
+    # SIGTERM'd at 1h47m): `live: true` alone only gated the no-adapter failure
+    # mode, so a CI run with no --source filter executed EVERY due source with
+    # an adapter — ~70 fetchers + a 6,500-CSV derive marathon on one 14 GB
+    # runner. With AQUEDUCT_LIVE_ONLY=1 (set in updater-daily.yml), only
+    # live-tier sources EXECUTE; the rest are counted and reported, never run.
+    # An explicit --source request still runs a non-live source (manual
+    # dispatch is how a source earns its delta proof before joining the tier).
+    live_only = os.environ.get("AQUEDUCT_LIVE_ONLY", "").strip() in ("1", "true", "yes")
+    not_in_rollout = []
     for unit in units:
         if sources and unit.source_id not in sources:
             continue
         if strategies and unit.strategy not in strategies:
             continue
         if cadences and unit.cadence not in cadences:
+            continue
+        if live_only and not _is_live(unit) and not sources:
+            not_in_rollout.append(unit.source_id)
             continue
         if _protected(unit):
             continue  # protected in-flight backfill (by source_id or output dir)
@@ -315,6 +328,14 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             results.append((unit.key, "error"))
         finally:
             store.release_lease(unit.key, owner=OWNER)
+    if not_in_rollout:
+        # Honest disclosure, not a shrug: these sources are DUE-ELIGIBLE but the
+        # rollout perimeter (AQUEDUCT_LIVE_ONLY) excludes them until their tier
+        # ships with per-source delta proofs (plan §3). Count + names, one line.
+        print(f"[orchestrator] rollout perimeter: {len(set(not_in_rollout))} non-live "
+              f"source(s) not executed (AQUEDUCT_LIVE_ONLY=1): "
+              f"{', '.join(sorted(set(not_in_rollout))[:12])}"
+              f"{' …' if len(set(not_in_rollout)) > 12 else ''}", flush=True)
     # Explicit PENDING line per no-adapter source — never an aggregate shrug (§5.3).
     live_set = sorted(set(pending_live))
     for sid in sorted(set(pending_other) | set(live_set)):

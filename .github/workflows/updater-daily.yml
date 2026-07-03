@@ -53,6 +53,12 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       AQUEDUCT_BACKEND: r2
+      # Rollout perimeter: scheduled runs execute ONLY live: true sources.
+      # (Learned from run 28682266857: without this, every due source with an
+      # adapter ran on one 14 GB runner until SIGTERM.) A manual dispatch with
+      # an explicit `source` input still runs a non-live source for its
+      # pre-go-live delta proof.
+      AQUEDUCT_LIVE_ONLY: '1'
       # CSV derive (contract step 5) resolves catalog ids against this db —
       # pulled from R2 each run (plan §1.1 step 5 / O-9).
       ECONDL_CATALOG: ${{ github.workspace }}/data/catalog.db
