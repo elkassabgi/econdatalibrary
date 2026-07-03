@@ -150,7 +150,22 @@ def main() -> None:
             miss += 1
             print(f"  unresolvable {sid}: {str(e)[:80]}")
             continue
-        s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv")
+        # R2 can throw transient ServiceUnavailable/SlowDown throttles that outlast
+        # botocore's 5 built-in retries (killed the 2026-07-02 run at 103k objects).
+        # Patient app-level backoff: 7 tries, ~4 min total, then re-raise loudly.
+        import time as _time
+        for attempt in range(7):
+            try:
+                s3.put_object(Bucket=a.bucket, Key=key, Body=body,
+                              ContentType="text/csv")
+                break
+            except Exception as e:
+                if attempt == 6:
+                    raise
+                wait = 2 ** attempt  # 1..64s
+                print(f"  PUT retry {attempt+1}/7 in {wait}s ({str(e)[:70]})",
+                      flush=True)
+                _time.sleep(wait)
         up += 1
         if up % 500 == 0:
             print(f"  derived+put {up:,} (skip {skip:,}, miss {miss:,})...", flush=True)

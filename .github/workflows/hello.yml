@@ -1,0 +1,18 @@
+# hello.yml — Phase-0 exit gate (UPDATER_BUILD_PLAN.md §4.2 / §6.1).
+#
+# WHY: the plan requires a trivial workflow_dispatch run to go green BEFORE any
+# real CI is trusted — it proves the repo exists on GitHub, Actions are enabled,
+# and a runner can be dispatched. Nothing else. Safe to delete after Phase 2.
+
+name: hello
+
+on:
+  workflow_dispatch:
+
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Say hello
+        run: echo "hello from econdatalibrary CI — Phase 0 gate green"

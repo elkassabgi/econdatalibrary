@@ -9,13 +9,24 @@ mode='merge'     : union new rows with the existing parquet, dedup on dedup_keys
                    (new rows win on revision), sort, publish atomically.
 mode='overwrite' : new_table IS the full content (whole-table refresh); still
                    never-shrink checked before publish.
+
+Cloud portability (UPDATER_BUILD_PLAN.md §1.3): merge_and_write accepts an
+optional blob= handle. With blob=None (the default) behavior is byte-identical
+to the original local-filesystem path. With a Blob (e.g. blob.R2Blob in CI),
+out_path is the object KEY and the same read-modify-write + invariants run
+against R2: GET existing object -> concat/dedup/never-shrink -> single atomic
+PUT. The invariants themselves are one shared code path — only the I/O layer
+switches — so local and cloud publishes can never drift apart.
 """
 from __future__ import annotations
 
+import io
+
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
 
-from . import blob
+from . import blob as fsblob
 from .errors import DefinitiveError
 
 DEDUP_KEYS = ("series_key", "obs_date")
@@ -59,8 +70,18 @@ def _concat(existing, new_table):
     return pa.concat_tables([existing, new_table], promote_options="permissive")
 
 
+def _table_from_bytes(data: bytes):
+    return pq.read_table(io.BytesIO(data))
+
+
+def _table_to_bytes(table, compression: str = "zstd") -> bytes:
+    buf = io.BytesIO()
+    pq.write_table(table, buf, compression=compression)
+    return buf.getvalue()
+
+
 def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
-                    min_ratio=0.97, allow_empty=False):
+                    min_ratio=0.97, allow_empty=False, blob=None):
     """Publish new_table to out_path under the never-shrink invariant.
 
     Returns (rows_written, last_obs_date).
@@ -71,11 +92,25 @@ def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
     data and surfaces the unit as partial). `min_ratio` defaults to 0.97 so a
     truncated/partial upstream pull can't silently overwrite good data; sources
     that legitimately shrink more must pass an explicit lower min_ratio.
-    """
-    old_rows = blob.row_count(out_path)
 
-    if mode == "merge" and blob.exists(out_path):
-        existing = blob.read_table(out_path)
+    blob=None publishes to the local filesystem exactly as before. Passing a
+    Blob handle (blob.LocalBlob/blob.R2Blob) treats out_path as the object key
+    and runs the identical invariants against that backend.
+    """
+    if blob is None:
+        # Local filesystem — the original code path, byte-identical behavior.
+        old_rows = fsblob.row_count(out_path)
+        existing = (fsblob.read_table(out_path)
+                    if mode == "merge" and fsblob.exists(out_path) else None)
+    else:
+        # Blob handle: one GET serves both the never-shrink baseline and the merge
+        # base (an R2 GET is the expensive step — never fetch the object twice).
+        raw = blob.get(out_path)
+        prior = _table_from_bytes(raw) if raw is not None else None
+        old_rows = prior.num_rows if prior is not None else 0
+        existing = prior if mode == "merge" else None
+
+    if existing is not None:  # merge mode with a published object to extend
         combined = _concat(existing, new_table)  # raises if a published column would vanish
         missing_keys = [k for k in dedup_keys if k not in combined.column_names]
         if dedup_keys and missing_keys:
@@ -96,5 +131,8 @@ def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
             f"refusing shrink {old_rows}->{n} at {out_path} (< {min_ratio:.0%} of existing)")
 
     final = _sort(final, dedup_keys)
-    blob.write_table_atomic(out_path, final)
+    if blob is None:
+        fsblob.write_table_atomic(out_path, final)
+    else:
+        blob.put_atomic(out_path, _table_to_bytes(final))
     return n, _max_obs_date(final)

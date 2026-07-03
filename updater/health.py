@@ -116,6 +116,9 @@ def assess(store=None) -> dict:
 
         rows.append({
             "source": sid, "strategy": e.get("strategy"), "cadence": cadence,
+            # rollout perimeter flag (registry `live: true`) — the --fail-past-2x-sla
+            # CI gate judges ONLY live-tier sources (§5.3)
+            "live": bool(e.get("live", False)),
             "health": health,
             "last_success_age_d": round(succ_age, 1) if succ_age is not None else None,
             "newest_obs": newest_obs,
@@ -135,8 +138,32 @@ def assess(store=None) -> dict:
             "sla_tolerance_periods": SLA_TOLERANCE, "summary": summary, "sources": rows}
 
 
+def gate_failures(report: dict) -> list[str]:
+    """The --fail-past-2x-sla CI gate (UPDATER_BUILD_PLAN.md §5.3): live-tier
+    sources in a failing state. RED-SLA / RED-DATA = past 2x SLA (job or data);
+    RED-UNRUN / ATTENTION = failed or never-ran while live; PENDING = live with
+    no adapter (mirrors the orchestrator's run-failure rule). Sources outside
+    the rollout perimeter (`live: true` in registry.yaml) never fail the gate —
+    they surface in the table but the rollout is judged only on what we have
+    actually committed to keep fresh."""
+    bad = ("RED-SLA", "RED-DATA", "RED-UNRUN", "ATTENTION", "PENDING")
+    return [f"{r['health']:<10} {r['source']}" for r in report["sources"]
+            if r.get("live") and r["health"] in bad]
+
+
+_KNOWN_ARGS = {"--json", "--red", "--fail-past-2x-sla"}
+
+
 def main():
     import os
+    # Refuse unknown flags LOUDLY. This module used to ignore unrecognized
+    # arguments, which made `--fail-past-2x-sla` in updater-daily.yml a silent
+    # exit-0 no-op — the exact silent-pass §5.3 exists to prevent. Never again.
+    unknown = [a for a in sys.argv[1:] if a not in _KNOWN_ARGS]
+    if unknown:
+        print(f"updater.health: unknown argument(s) {unknown}; "
+              f"known: {sorted(_KNOWN_ARGS)}", file=sys.stderr)
+        sys.exit(2)
     report = assess()
     config.ensure_dirs()
     out = os.path.join(config.STATE_DIR, "health.json")
@@ -169,6 +196,17 @@ def main():
     if "--red" in sys.argv:
         n = sum(report["summary"].get(k, 0) for k in bad)
         sys.exit(1 if n else 0)
+
+    if "--fail-past-2x-sla" in sys.argv:
+        fails = gate_failures(report)
+        if fails:
+            print(f"\nHEALTH GATE FAILED: {len(fails)} live-tier source(s) "
+                  f"unhealthy (§5.3 — red run, GH notification):")
+            for line in fails:
+                print(f"  {line}")
+        else:
+            print("\nhealth gate OK: no live-tier source past its SLA")
+        sys.exit(1 if fails else 0)
 
 
 if __name__ == "__main__":

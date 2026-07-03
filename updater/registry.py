@@ -3,6 +3,11 @@
 The registry is the authoritative assignment of one strategy per source. The
 validator FAILS LOUDLY (used as a CI gate) if coverage is incomplete or any source
 lacks a valid strategy — that's what guarantees no source can silently go unmanaged.
+
+Entries may carry an optional `live: true` flag — the rollout perimeter lives in
+DATA, never in a Python source list (the whack-a-mole pattern reborn). A live
+source with no runnable adapter is a RUN FAILURE in the orchestrator, not a skip
+(UPDATER_BUILD_PLAN.md §1.3/§5.3).
 """
 from __future__ import annotations
 import os
@@ -43,6 +48,10 @@ def validate(reg: dict, expected_count: int | None = None) -> list[str]:
             problems.append(f"{sid}: invalid/missing strategy {e.get('strategy')!r}")
         if not e.get("cadence"):
             problems.append(f"{sid}: missing cadence")
+        if "live" in e and not isinstance(e.get("live"), bool):
+            # the live tier gates run-failure semantics — a typo like live: "yes"
+            # must not silently widen or narrow the perimeter
+            problems.append(f"{sid}: live flag must be boolean, got {e.get('live')!r}")
     if expected_count is not None and len(sources) != expected_count:
         problems.append(f"expected {expected_count} sources, found {len(sources)}")
     return problems
@@ -64,7 +73,10 @@ def to_units(entry: dict) -> list[Unit]:
     cadence = entry.get("cadence", "monthly")
     base_cfg = {"matrix": entry.get("matrix", {}), "script": entry.get("script"),
                 "refresh_cost": entry.get("refresh_cost"),
-                "out_dir": entry.get("out_dir", sid)}
+                "out_dir": entry.get("out_dir", sid),
+                # live tier flag rides in unit config so the orchestrator can apply
+                # the no-silent-skip rule without re-reading the registry entry
+                "live": bool(entry.get("live", False))}
     units_spec = entry.get("units")
     if units_spec:
         out = []

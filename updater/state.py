@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS runs(
   status TEXT, obs INTEGER, dur_s REAL, note TEXT);
 CREATE TABLE IF NOT EXISTS leases(
   key TEXT PRIMARY KEY, owner TEXT, expires_utc TEXT);
+CREATE TABLE IF NOT EXISTS csv_retry_queue(
+  series_id TEXT PRIMARY KEY, source_id TEXT, enqueued_utc TEXT,
+  attempts INTEGER DEFAULT 0, last_error TEXT);
 """
 
 _SRC_COLS = ["source_id", "strategy", "cadence", "status", "last_success_utc",
@@ -110,6 +113,31 @@ class StateStore:
             "INSERT INTO series_cursor(source_id,series_key,last_obs_date) VALUES(?,?,?) "
             "ON CONFLICT(source_id,series_key) DO UPDATE SET last_obs_date=excluded.last_obs_date",
             [(sid, k, v) for k, v in mapping.items()])
+        self.db.commit()
+
+    # ---- csv retry queue (honesty rule §5.7: a CSV derive/PUT that fails AFTER its
+    # parquet published demotes the run to `partial` and the series ids land here for
+    # a later re-derive — never silently dropped, never rolls back the data publish) ----
+    def enqueue_csv_retry(self, source_id, series_ids, error=None):
+        self.db.executemany(
+            "INSERT INTO csv_retry_queue(series_id,source_id,enqueued_utc,attempts,last_error) "
+            "VALUES(?,?,?,1,?) "
+            "ON CONFLICT(series_id) DO UPDATE SET enqueued_utc=excluded.enqueued_utc, "
+            "attempts=csv_retry_queue.attempts+1, last_error=excluded.last_error",
+            [(s, source_id, now_utc(), error) for s in series_ids])
+        self.db.commit()
+
+    def csv_retries(self, source_id=None):
+        if source_id:
+            rows = self.db.execute(
+                "SELECT * FROM csv_retry_queue WHERE source_id=?", (source_id,))
+        else:
+            rows = self.db.execute("SELECT * FROM csv_retry_queue")
+        return [dict(r) for r in rows]
+
+    def clear_csv_retries(self, series_ids):
+        self.db.executemany("DELETE FROM csv_retry_queue WHERE series_id=?",
+                            [(s,) for s in series_ids])
         self.db.commit()
 
     # ---- leases (prevent double-runs) ----

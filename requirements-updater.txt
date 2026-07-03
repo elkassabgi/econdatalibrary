@@ -1,0 +1,23 @@
+# requirements-updater.txt — CI dependency set for the Aqueduct updater
+# (.github/workflows/updater-daily.yml and future updater-*.yml workflows).
+#
+# WHY this file exists (UPDATER_BUILD_PLAN.md §4.3): the runner installs exactly
+# what `python -m updater.run` + `core/sync_state_d1.py` + the CSV derive path
+# import — nothing more. Every entry below was verified against actual imports
+# in updater/, core/r2_util.py, core/derive_csv.py and clients/python/econdl/
+# (grep of top-level imports, 2026-07-03). Floors are the major.minor of the
+# versions the updater has actually run with locally (Python 3.12; CI uses 3.11
+# — both supported). Floors only, no upper caps: honest breakage in CI beats a
+# silently frozen stack.
+#
+# NOT pip deps, deliberately: wrangler (pinned in api/worker/package.json,
+# installed via `npm ci` inside the D1 sync step) and sqlite3/zipfile/xml etc.
+# (stdlib).
+
+pandas>=2.2        # fetch normalization + econdl derive path (updater/strategies/fetchers/*, clients/python/econdl/*)
+pyarrow>=23.0      # parquet merge invariants + all fetcher table builds (updater/merge.py, updater/blob.py)
+requests>=2.32     # every HTTP fetcher + vintage probes (updater/strategies/fetchers/*, _vintage.py)
+urllib3>=2.6       # imported directly for Retry config (updater/strategies/fetchers/defillama.py); also a requests dep
+PyYAML>=6.0        # registry load/validate (updater/registry.py, updater/gen_registry.py)
+boto3>=1.42        # R2 S3-compatible client (core/r2_util.py -> updater/blob.py R2Blob backend)
+zstandard>=0.23    # state.db compress/decompress for the R2 round-trip (updater/run.py --pull/--push-state, plan O-8). NEW dep introduced by Phase 1 — not yet in the pre-Phase-1 local env; floor is the current stable line.
