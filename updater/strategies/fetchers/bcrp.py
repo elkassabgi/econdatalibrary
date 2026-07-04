@@ -36,7 +36,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Tally, finalize, revision_since
 
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
       "Accept": "application/json"}
@@ -259,7 +259,9 @@ def update(unit, since) -> Result:
         skey = f"BCRP:{label}"
         last = last_by_series.get(skey)
         if last is not None:
-            start_date = last  # re-fetch the last stored day too (captures same-day revisions)
+            # revision-lookback window (edge-case fix): catches BCRP back-postings
+            # behind the stored frontier, not just same-day revisions
+            start_date = revision_since(last, unit)
         elif not last_by_series:
             # whole parquet empty (true first run) -> the unit-level hint is fine
             start_date = since_global if since_global is not None else EARLIEST

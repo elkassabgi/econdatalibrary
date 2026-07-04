@@ -476,3 +476,35 @@ class TestHealthGate:
         with pytest.raises(SystemExit) as e:
             healthmod.main()
         assert e.value.code == 0
+
+
+# ── revision_since: the date-tail edge-case fix (provider back-postings) ──────
+
+class TestRevisionSince:
+    def test_default_lookback(self):
+        import datetime as dt
+        from updater.strategies.fetchers._common import revision_since
+        assert revision_since(dt.date(2026, 7, 3)) == dt.date(2026, 6, 3)
+
+    def test_registry_override_and_disable(self):
+        import datetime as dt
+        from updater.strategies.fetchers._common import revision_since
+
+        class U:
+            config = {"revision_lookback_days": 7}
+        assert revision_since(dt.date(2026, 7, 3), U()) == dt.date(2026, 6, 26)
+
+        class Z:
+            config = {"revision_lookback_days": 0}
+        assert revision_since(dt.date(2026, 7, 3), Z()) == dt.date(2026, 7, 3)
+
+    def test_none_and_garbage_pass_through(self):
+        from updater.strategies.fetchers._common import revision_since
+        assert revision_since(None) is None
+        assert revision_since("not-a-date") is None
+
+    def test_iso_string_accepted_and_floor(self):
+        import datetime as dt
+        from updater.strategies.fetchers._common import revision_since
+        assert revision_since("2026-07-03") == dt.date(2026, 6, 3)
+        assert revision_since(dt.date(1900, 1, 5)) == dt.date(1900, 1, 1)  # floor

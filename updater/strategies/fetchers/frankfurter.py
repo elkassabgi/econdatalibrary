@@ -26,7 +26,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Tally, finalize, revision_since
 
 SOURCE = "frankfurter"
 FILE = "frankfurter_fx_eur.parquet"
@@ -79,7 +79,9 @@ def update(unit, since) -> Result:
 
     last = _unit_last(path)
     if last is not None:
-        start = last                      # boundary re-fetch (same-day revisions)
+        # revision lookback window, not just the boundary day — catches provider
+        # insertions/revisions behind the frontier (_common.revision_since)
+        start = revision_since(last, unit)
     else:
         try:
             start = dt.date.fromisoformat(str(since)[:10]) if since else EARLIEST

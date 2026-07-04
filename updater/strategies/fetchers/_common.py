@@ -40,6 +40,44 @@ def sane_since(stored_max, *, max_future_days=400):
     return stored_max
 
 
+REVISION_LOOKBACK_DAYS = 30
+
+
+def revision_since(last, unit=None, default_days=REVISION_LOOKBACK_DAYS):
+    """The date-tail EDGE-CASE fix: start the fetch a lookback window BEHIND the
+    stored frontier, not exactly at it.
+
+    A pure `fetch from last stored obs_date` tail can never see observations a
+    provider INSERTS or REVISES at dates <= that frontier (late postings after
+    an outage on their side, back-corrections). Refetching a trailing window is
+    free-to-cheap for date-tail sources (dedup keep-last absorbs the overlap,
+    merge's never-shrink still guards), so every S2 fetcher computes its start
+    as revision_since(last) instead of last. Override per source with
+    `revision_lookback_days` in the registry entry's config; 0 disables.
+
+    Honest-status nuance: rows inside the window carry no NEW dates, so a run
+    that only absorbed revisions still reports `no_change` — the status tracks
+    the data frontier, and revised values are corrected in the store either way.
+
+    Returns a datetime.date (never earlier than 1900-01-01), or None if `last`
+    is None/unparseable (caller falls back to its first-run origin).
+    """
+    if last is None:
+        return None
+    try:
+        d = last if isinstance(last, _dt.date) else _dt.date.fromisoformat(str(last)[:10])
+    except Exception:
+        return None
+    days = default_days
+    cfg = getattr(unit, "config", None) or {}
+    if "revision_lookback_days" in cfg:
+        try:
+            days = max(0, int(cfg["revision_lookback_days"]))
+        except (TypeError, ValueError):
+            pass
+    return max(d - _dt.timedelta(days=days), _dt.date(1900, 1, 1))
+
+
 class Tally:
     """Counts the outcome of each sub-unit (endpoint / dataset / series / day) a fetcher attempts."""
 

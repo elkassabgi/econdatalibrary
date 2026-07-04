@@ -28,7 +28,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Tally, finalize, revision_since
 
 SOURCE = "cnb"
 FILE = "cnb.parquet"
@@ -122,7 +122,10 @@ def update(unit, since) -> Result:
     last = _unit_last(path)
     today = dt.date.today()
     if last is not None:
-        years = range(last.year, today.year + 1)   # boundary year included
+        # anchor at the revision-lookback window so a January frontier still
+        # re-pulls the prior year's file (provider back-postings, edge-case fix)
+        anchor = revision_since(last, unit)
+        years = range(anchor.year, today.year + 1)
     else:
         try:
             start_year = dt.date.fromisoformat(str(since)[:10]).year if since else EARLIEST_YEAR
@@ -153,8 +156,8 @@ def update(unit, since) -> Result:
             continue
         added = 0
         for k, d, v in rows:
-            if last is not None and d < last:
-                continue                       # only the tail (>= boundary day)
+            if last is not None and d < anchor:
+                continue                       # only the lookback window + tail
             keys.append(k); dates.append(d); vals.append(v)
             added += 1
         genuinely_new = any(d > last for _, d, _ in rows) if last is not None else added > 0
