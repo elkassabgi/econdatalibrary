@@ -122,6 +122,7 @@ def fetch(
     category=None,
     db: str | None = None,
     data_root: str | None = None,
+    wide: bool = False,
 ) -> pd.DataFrame:
     """Cross-section query: resolve a dimension mask -> the tidy frame for it.
 
@@ -142,6 +143,9 @@ def fetch(
                ``category`` columns (``IN`` semantics for a list).
     db        : catalog override (defaults to the bundled ``catalog.db``).
     data_root : at-rest store override (defaults to ``$ECONDL_DATA``).
+    wide      : return the FRED-style WIDE shape instead (obs_date index, one
+                column per series) via :func:`to_wide` — mixed frequencies are
+                loudly warned, never silently aligned or filled.
 
     Returns
     -------
@@ -249,4 +253,60 @@ def fetch(
     tidy.attrs["econdl_unresolved"] = [sid for sid, _ in unresolved]
     tidy.attrs["econdl_native_only"] = native_only
     tidy.attrs["econdl_proxied"] = proxied
+    if wide:
+        return to_wide(tidy)
     return tidy
+
+
+# Median day-gap -> frequency bucket, for the mixed-frequency honesty warning in
+# to_wide(). Boundaries are generous (weekends, month-length wobble, quarters).
+_FREQ_BUCKETS = ((3.5, "daily"), (10, "weekly"), (45, "monthly"),
+                 (135, "quarterly"), (550, "annual"))
+
+
+def _freq_bucket(dates: pd.Series) -> str:
+    d = pd.to_datetime(dates).sort_values().drop_duplicates()
+    if len(d) < 3:
+        return "sparse"
+    gap = d.diff().dt.days.dropna().median()
+    for bound, name in _FREQ_BUCKETS:
+        if gap <= bound:
+            return name
+    return "multi-year"
+
+
+def to_wide(tidy: pd.DataFrame) -> pd.DataFrame:
+    """Pivot the canonical tidy frame to the FRED-style WIDE shape: obs_date
+    index, one column per series_id. Dates are outer-joined; a period a series
+    does not cover is simply NaN (never interpolated, never forward-filled —
+    that would be fabricating observations).
+
+    Mixed-frequency honesty: joining e.g. daily FX to annual GDP produces a
+    mostly-NaN matrix that silently misleads. We never refuse (the caller may
+    want exactly that), but we WARN loudly with the per-bucket breakdown so the
+    shape is a choice, not an accident. attrs are carried over from the tidy
+    frame (including econdl_unresolved / econdl_proxied accounting).
+    """
+    if tidy.empty:
+        out = pd.DataFrame()
+        out.attrs.update(tidy.attrs)
+        return out
+    buckets: dict[str, list[str]] = {}
+    for sid, grp in tidy.groupby("series_id"):
+        buckets.setdefault(_freq_bucket(grp["obs_date"]), []).append(str(sid))
+    if len(buckets) > 1:
+        detail = "; ".join(f"{b}: {len(ids)} series (e.g. {ids[0]})"
+                           for b, ids in sorted(buckets.items()))
+        warnings.warn(
+            "econdl wide=True: the requested series MIX frequencies — the wide "
+            f"matrix will be mostly-NaN off each series' own grid ({detail}). "
+            "Values are NEVER interpolated or filled; align/resample explicitly "
+            "if you need a common grid.",
+            stacklevel=2,
+        )
+    out = (tidy.pivot_table(index="obs_date", columns="series_id", values="value",
+                            aggfunc="last")
+           .sort_index())
+    out.columns.name = None
+    out.attrs.update(tidy.attrs)
+    return out

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from ._bundle import SCHEMA_VERSION, bundle, pull
 from ._catalog import get_license, get_series, get_source, search
-from ._fetch import fetch, resolve_mask
+from ._fetch import fetch, to_wide, resolve_mask
 from ._http import HttpClient, HttpResolveError
 from ._proxy import is_proxied, reservable_state
 from ._resolve import ResolveError, supported_sources
@@ -36,7 +36,7 @@ __all__ = [
     "search",
     "bundle",
     "pull",
-    "fetch",
+    "fetch", "to_wide",
     "resolve_mask",
     "get_series",
     "get_source",
