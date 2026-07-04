@@ -77,6 +77,15 @@ def main() -> None:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             print(f"[digest] sent: HTTP {resp.status}", flush=True)
+    except urllib.error.HTTPError as e:
+        # Print Resend's exact error body (safe: their error JSON carries no
+        # secrets) so a misconfigured key/domain is diagnosable from the log.
+        try:
+            detail = e.read().decode()[:300]
+        except Exception:
+            detail = "(no body)"
+        print(f"[digest] SEND FAILED: HTTP {e.code} — {detail} (run status is "
+              f"still governed by the health gate, not the email)", flush=True)
     except Exception as e:  # noqa: BLE001 — email failure must not flip a green run red
         print(f"[digest] SEND FAILED: {e!r} (run status is still governed by the "
               f"health gate, not the email)", flush=True)
