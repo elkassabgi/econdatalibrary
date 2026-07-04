@@ -55,9 +55,10 @@ export async function requireDownloadAuth(
     return json({
       error: "auth_required",
       detail:
-        "Data downloads use the free Data Library family account — one login for " +
-        "hfdatalibrary.com and econdatalibrary.com. If you already have an " +
-        "hfdatalibrary API key it works here as-is. Pass it as an `X-API-Key` " +
+        "Data downloads use the free ElkassabgiData account — ONE login for every " +
+        "Elkassabgi data library (hfdatalibrary.com, econdatalibrary.com, and any " +
+        "future database). If you already registered on either site, your existing " +
+        "API key works here as-is. Pass it as an `X-API-Key` " +
         `header or `.concat("`?api_key=` query parameter. Get a free key at ", ACCOUNT_URL),
     }, 401);
   }
@@ -71,7 +72,7 @@ export async function requireDownloadAuth(
       error: "invalid_key",
       detail:
         "This API key is unknown, deactivated, or expired. Keys are shared across " +
-        `the Data Library family — check or regenerate yours at ${ACCOUNT_URL}.`,
+        `all ElkassabgiData libraries — check or regenerate yours at ${ACCOUNT_URL}.`,
     }, 401);
   }
 

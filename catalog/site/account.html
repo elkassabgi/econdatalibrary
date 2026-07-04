@@ -1,0 +1,94 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Account — Econ Data Library · ElkassabgiData</title>
+<meta name="description" content="One free ElkassabgiData account works across every Elkassabgi data library — hfdatalibrary.com, econdatalibrary.com, and future databases.">
+<meta name="robots" content="noindex">
+<style>
+:root{--g200:#e5e7eb;--g500:#6b7280;--g600:#4b5563;--blue:#1d4ed8;--serif:Georgia,serif;--sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+*{box-sizing:border-box;margin:0}body{font-family:var(--sans);color:#111827;background:#fafafa}
+.nav{display:flex;justify-content:space-between;align-items:center;padding:.9rem 5vw;background:#0b1220}
+.nav a{color:#fff;text-decoration:none;margin-left:1.2rem}.brand a{font-family:var(--serif);font-size:1.15rem;margin:0}
+.brand .d{color:#c9a961}
+.wrap{max-width:760px;margin:0 auto;padding:2.2rem 5vw 4rem}
+h1{font-family:var(--serif);margin:.6rem 0 .4rem}
+.sub{color:var(--g600);line-height:1.6;max-width:64ch}
+.card{border:1px solid var(--g200);border-radius:12px;padding:1.3rem 1.4rem;background:#fff;margin-top:1.3rem}
+.card h2{font-size:1.05rem;margin-bottom:.6rem}
+label{display:block;font-size:.85rem;color:var(--g600);margin:.7rem 0 .25rem}
+input{width:100%;padding:.6rem .7rem;border:1px solid var(--g200);border-radius:8px;font-size:.95rem}
+button{margin-top:1rem;padding:.65rem 1.3rem;border:0;border-radius:8px;background:#0b1220;color:#fff;font-size:.95rem;cursor:pointer}
+button:hover{background:#1d2a44}
+.alt{display:inline-block;margin-top:1rem;padding:.65rem 1.3rem;border-radius:8px;background:#c9a961;color:#0b1220;text-decoration:none;font-weight:600}
+.msg{margin-top:.9rem;font-size:.9rem;line-height:1.5}
+.err{color:#b91c1c}.ok{color:#15803d}
+code{background:#f3f4f6;padding:.1rem .4rem;border-radius:5px;font-size:.85em;word-break:break-all}
+.keybox{background:#f8fafc;border:1px dashed var(--g200);border-radius:8px;padding:.8rem;margin-top:.8rem;font-family:ui-monospace,Consolas,monospace;font-size:.85rem;word-break:break-all}
+.note{font-size:.85rem;color:var(--g500);margin-top:1rem;line-height:1.6}
+</style></head><body>
+<div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
+<div><a href="index.html">Catalog</a><a href="status.html">Status</a><a href="account.html">Account</a></div></div>
+<div class="wrap">
+<h1>One account. Every library.</h1>
+<p class="sub">Your free <strong>ElkassabgiData</strong> account works across every Elkassabgi
+data library — <a href="https://hfdatalibrary.com">hfdatalibrary.com</a> (1-minute US equities),
+<strong>econdatalibrary.com</strong> (global economic &amp; financial data), and every future
+database — with the same login and the same API key. Register once, download everywhere.</p>
+
+<div class="card">
+  <h2>New here? Create your ElkassabgiData account</h2>
+  <p class="sub" style="font-size:.92rem">Registration takes a minute (email or Google/ORCID) and is
+  hosted on the family's account server. Your key works here the moment you have it.</p>
+  <a class="alt" href="https://hfdatalibrary.com/pages/download" rel="noopener">Create free account →</a>
+</div>
+
+<div class="card">
+  <h2>Already registered (on either site)? Sign in to see your key</h2>
+  <form id="f" onsubmit="return login(event)">
+    <label for="em">Email</label><input id="em" type="email" autocomplete="email" required>
+    <label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+  </form>
+  <div class="msg" id="msg"></div>
+  <div class="keybox" id="keybox" hidden></div>
+  <div class="note" id="usage" hidden>Use it on any library, e.g.:<br>
+  <code>curl -H "X-API-Key: YOUR_KEY" "https://econdl-api.elkassabgi.workers.dev/v1/series/worldbank_wdi%3ASP.POP.TOTL.csv"</code><br>
+  or in Python: <code>econdl.HttpClient(BASE, api_key="YOUR_KEY")</code> (also reads <code>$ECONDL_API_KEY</code> / <code>$HFDL_API_KEY</code>).</div>
+</div>
+
+<p class="note">Accounts are stored once, centrally, for the whole ElkassabgiData family — registering
+here or on hfdatalibrary.com creates the SAME account. Manage details, regenerate keys, or delete your
+account any time at <a href="https://hfdatalibrary.com/pages/account">your account page</a>.</p>
+</div>
+<script>
+const API = 'https://api.hfdatalibrary.com';
+async function login(ev) {
+  ev.preventDefault();
+  const msg = document.getElementById('msg');
+  msg.className = 'msg'; msg.textContent = 'Signing in…';
+  try {
+    const r = await fetch(API + '/v1/auth/login', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: document.getElementById('em').value,
+                             password: document.getElementById('pw').value }),
+    });
+    const d = await r.json();
+    if (!r.ok) { msg.className = 'msg err'; msg.textContent = d.error || ('Sign-in failed (' + r.status + ')'); return false; }
+    const me = await fetch(API + '/v1/auth/me', { credentials: 'include' });
+    const u = await me.json();
+    const key = (u && (u.api_key || (u.user && u.user.api_key))) || null;
+    if (key) {
+      msg.className = 'msg ok'; msg.textContent = 'Signed in. Your ElkassabgiData API key:';
+      const kb = document.getElementById('keybox'); kb.hidden = false; kb.textContent = key;
+      document.getElementById('usage').hidden = false;
+    } else {
+      msg.className = 'msg ok';
+      msg.innerHTML = 'Signed in. View your key on <a href="https://hfdatalibrary.com/pages/account">your account page</a>.';
+    }
+  } catch (e) {
+    msg.className = 'msg err'; msg.textContent = 'Could not reach the account server.';
+  }
+  return false;
+}
+</script>
+</body></html>
