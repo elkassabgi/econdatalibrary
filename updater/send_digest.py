@@ -72,7 +72,10 @@ def main() -> None:
         data=json.dumps({"from": FROM, "to": [TO], "subject": subject,
                          "text": body}).encode(),
         headers={"Authorization": f"Bearer {key}",
-                 "Content-Type": "application/json"},
+                 "Content-Type": "application/json",
+                 # api.resend.com sits behind Cloudflare bot protection, which
+                 # 1010-blocks urllib's default signature — identify honestly.
+                 "User-Agent": "econdatalibrary-digest/1.0"},
         method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
