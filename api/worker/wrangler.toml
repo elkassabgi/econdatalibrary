@@ -30,6 +30,15 @@ binding = "CATALOG"
 database_name = "econ-catalog"
 database_id = "1a6d0755-ecef-46d0-a478-46cad1cf064c"
 
+# --- D1: SHARED LOGIN — hfdatalibrary's users db is the family identity
+# provider (owner directive; PLAN.md §6). Same Cloudflare account; existing hf
+# api_keys work here unchanged. Econ writes ONLY to its own tables in this db
+# (econ_download_log + the econ:download namespace of rate_limits).
+[[d1_databases]]
+binding = "USERS"
+database_name = "hfdatalibrary-db"
+database_id = "a396506e-e78a-4978-bc38-883056f98810"
+
 # --- R2: per-series CSV objects -------------------------------------------
 [[r2_buckets]]
 binding = "SERIES_BUCKET"

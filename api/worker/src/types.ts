@@ -19,6 +19,15 @@ export interface Env {
   // Optional: comma-separated override of the migrated-source allowlist. When
   // unset the compiled-in SUPPORTED_SOURCES constant is authoritative.
   SUPPORTED_SOURCES?: string;
+
+  // SHARED LOGIN (owner directive; PLAN.md §6 "API keys + rate limit (echo
+  // your 300/min)"): the hfdatalibrary users database is THE identity provider
+  // for the whole Data Library family. This binding points at hfdatalibrary-db
+  // (same Cloudflare account), so every existing hf api_key works here with no
+  // migration. Data downloads validate against it; econ download logging goes
+  // to econ_download_log inside the SAME db (separate table — hf's download
+  // counts are never inflated by econ traffic).
+  USERS: D1Database;
 }
 
 // --- D1 row shapes (one per SELECT column list in sql.ts) ------------------

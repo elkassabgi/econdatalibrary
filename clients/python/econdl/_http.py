@@ -58,7 +58,8 @@ def default_api() -> str | None:
 class HttpClient:
     """Thin client over the `/v1` contract. One instance per base URL."""
 
-    def __init__(self, base_url: str, *, timeout: float = 60.0):
+    def __init__(self, base_url: str, *, timeout: float = 60.0,
+                 api_key: str | None = None):
         if not base_url:
             raise ValueError("HttpClient needs a base URL (e.g. http://127.0.0.1:8787)")
         # Normalise: strip a trailing slash and an optional trailing '/v1' so the
@@ -68,6 +69,14 @@ class HttpClient:
             b = b[: -len("/v1")]
         self.base = b
         self.timeout = timeout
+        # SHARED LOGIN: data downloads need the free Data Library family key —
+        # ONE account for hfdatalibrary.com AND econdatalibrary.com (an existing
+        # hfdatalibrary key works as-is). Resolution order: explicit arg, then
+        # $ECONDL_API_KEY, then $HFDL_API_KEY (family key under its hf name).
+        # Browsing endpoints (catalog/search/metadata) never require it.
+        import os as _os
+        self.api_key = (api_key or _os.environ.get("ECONDL_API_KEY")
+                        or _os.environ.get("HFDL_API_KEY") or None)
 
     # ---- low-level GET -----------------------------------------------------
     def _url(self, path: str, params: dict[str, Any] | None = None) -> str:
@@ -88,8 +97,12 @@ class HttpClient:
 
     def _get(self, path: str, params: dict | None = None) -> tuple[int, bytes, str]:
         url = self._url(path, params)
-        req = urllib.request.Request(url, method="GET",
-                                     headers={"Accept": "application/json, text/csv"})
+        headers = {"Accept": "application/json, text/csv",
+                   # urllib's default UA can trip edge bot-checks; identify honestly.
+                   "User-Agent": "econdl-python-client"}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+        req = urllib.request.Request(url, method="GET", headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = resp.read()

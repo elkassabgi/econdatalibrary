@@ -22,6 +22,7 @@ import { handleLastUpdates } from "./lastUpdates";
 import { handleMetadata } from "./metadata";
 import { handleSeriesCsv } from "./series";
 import { handleBundle } from "./bundle";
+import { requireDownloadAuth, logDownload } from "./auth";
 import { json, reqLang } from "./util";
 
 const CORS_PREFLIGHT: Record<string, string> = {
@@ -90,7 +91,13 @@ export default {
           const enc = tail.slice(0, -".csv".length);
           const id = decodeURIComponent(enc);
           if (!id) return json({ error: "bad_request", detail: "empty series id" }, 400);
-          return await handleSeriesCsv(id, url, env);
+          // Shared-login gate (auth.ts): data downloads need the free family
+          // key (hf keys work as-is); catalog/metadata/freshness stay open.
+          const auth = await requireDownloadAuth(request, env);
+          if (auth instanceof Response) return auth;
+          const resp = await handleSeriesCsv(id, url, env);
+          if (resp.status === 200) await logDownload(env, auth.user.id, id, request);
+          return resp;
         }
         return json(
           { error: "not_found", detail: "use /v1/series/{id}.csv or /v1/series/{id}.metadata.json" },
