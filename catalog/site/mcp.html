@@ -1,0 +1,83 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MCP Server — Use Econ Data Library inside Claude &amp; other AI tools</title>
+<meta name="description" content="Connect the ElkassabgiData MCP server to Claude, Cursor, or any MCP client: search 7.7B+ economic series, fetch data with citations, and run guided analyses in-conversation.">
+<style>
+:root{--g200:#e5e7eb;--g500:#6b7280;--g600:#4b5563;--serif:Georgia,serif;--sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+*{box-sizing:border-box;margin:0}body{font-family:var(--sans);color:#111827;background:#fafafa}
+.nav{display:flex;justify-content:space-between;align-items:center;padding:.9rem 5vw;background:#0b1220}
+.nav a{color:#fff;text-decoration:none;margin-left:1.2rem}.brand a{font-family:var(--serif);font-size:1.15rem;margin:0}
+.brand .d{color:#c9a961}
+.wrap{max-width:860px;margin:0 auto;padding:2.2rem 5vw 4rem}
+h1{font-family:var(--serif);margin:.6rem 0 .4rem}h2{font-family:var(--serif);font-size:1.25rem;margin:2rem 0 .6rem}
+p,li{color:var(--g600);line-height:1.65}
+pre{background:#0b1220;color:#e5e7eb;padding:1rem 1.1rem;border-radius:10px;overflow-x:auto;font-size:.88rem;margin:.8rem 0}
+code{font-family:ui-monospace,Consolas,monospace}
+p code,li code,td code{background:#f3f4f6;color:#111827;padding:.08rem .35rem;border-radius:5px;font-size:.88em}
+table{width:100%;border-collapse:collapse;margin:.8rem 0;background:#fff;border:1px solid var(--g200);border-radius:10px;overflow:hidden}
+th,td{padding:.5rem .7rem;text-align:left;font-size:.88rem;border-top:1px solid var(--g200)}
+th{background:#f3f4f6;border-top:none;font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;color:var(--g600)}
+.note{border-left:4px solid #c9a961;background:#fff;border-radius:8px;padding:.9rem 1rem;margin:1rem 0}
+ol li{margin:.35rem 0}
+</style></head><body>
+<div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
+<div><a href="index.html">Catalog</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div class="wrap">
+<h1>Use this library inside Claude, Cursor &amp; other AI tools</h1>
+<p>The <strong>ElkassabgiData MCP server</strong> exposes the whole data-library family —
+Econ Data Library (7.7B+ economic series) and <a href="https://hfdatalibrary.com" rel="noopener">HF Data
+Library</a> (1-minute US equities) — to any AI assistant that speaks the
+<a href="https://modelcontextprotocol.io" rel="noopener">Model Context Protocol</a>. Your assistant can
+search the catalog, fetch series <em>with their citations and licenses attached</em>, check live data
+freshness, and run guided analyses, all inside a conversation.</p>
+
+<h2>Connect in two minutes</h2>
+<ol>
+<li><strong>Claude</strong> (web/desktop): Settings → Connectors → <em>Add custom connector</em> → paste the URL below.</li>
+<li><strong>Cursor / other MCP clients</strong>: add a remote MCP server with the same URL.</li>
+</ol>
+<pre><code>https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=YOUR_API_KEY</code></pre>
+<p>Replace <code>YOUR_API_KEY</code> with your free <a href="account.html">ElkassabgiData key</a> — the
+same key used on hfdatalibrary.com (one account for every library). Prefer headers? Send it as
+<code>X-API-Key</code> or <code>Authorization: Bearer</code> instead of the URL parameter.</p>
+<div class="note"><strong>No key?</strong> Everything except data downloads still works — search,
+metadata, sources, freshness, and status are open. Downloads return a friendly pointer to the free
+registration. Your key is used server-side only and is never echoed into the AI conversation.</div>
+
+<h2>Tools</h2>
+<table>
+<thead><tr><th>Tool</th><th>What it does</th><th>Key?</th></tr></thead>
+<tbody>
+<tr><td><code>search_econ_series</code></td><td>Search 7.7B+ series across 309 sources</td><td>—</td></tr>
+<tr><td><code>get_econ_series</code></td><td>Fetch a series as rows (long format) with citation + license inline; date windowing; honest truncation</td><td>required</td></tr>
+<tr><td><code>get_econ_series_metadata</code></td><td>Full metadata: license (incl. commercial-use flag), attribution, coverage</td><td>—</td></tr>
+<tr><td><code>list_econ_sources</code></td><td>All 309 sources with licenses</td><td>—</td></tr>
+<tr><td><code>get_data_freshness</code></td><td>Live per-source update board — same ledger as the <a href="status.html">status page</a>, staleness never hidden</td><td>—</td></tr>
+<tr><td><code>get_hf_download_link</code></td><td>Authenticated download instructions for 1-minute bars and the 25 academic variables (full-history files, fetched by your code)</td><td>for use</td></tr>
+<tr><td><code>get_hf_variables_dictionary</code></td><td>The 25 pre-computed variables, exact definitions</td><td>—</td></tr>
+<tr><td><code>get_family_status</code></td><td>Live stats + data currency for both libraries</td><td>—</td></tr>
+<tr><td><code>get_auth_status</code></td><td>Whether a key is configured on this connection (masked)</td><td>—</td></tr>
+</tbody>
+</table>
+
+<h2>Resources &amp; guided prompts</h2>
+<p>The server publishes MCP <strong>resources</strong> your assistant can read: a
+<em>data-honesty charter</em> (survivorship caveats, the 2022 source break on HF data, per-source
+licensing, freshness semantics — so analyses disclose what they should), the variables dictionary,
+and a family overview. Guided <strong>prompts</strong> ship ready-made workflows:
+<code>analyze_econ_series</code>, <code>compare_countries</code>, and <code>hf_event_study</code> —
+each bakes the honesty rules in (no interpolation, citations required, caveats disclosed).</p>
+
+<h2>Try asking your assistant</h2>
+<ul>
+<li>“Search ElkassabgiData for German inflation and plot it against French inflation since 2000.”</li>
+<li>“What's the data freshness for the ECB source in econdatalibrary?”</li>
+<li>“Download AAPL 1-minute bars via ElkassabgiData and run an event study around 2024-08-05.”</li>
+</ul>
+
+<h2>Fair use</h2>
+<p>MCP traffic uses the same account, rate limits (300 downloads/min), logging, and licenses as the
+website APIs. Per-series licenses travel with every response — please honor them, especially the
+non-commercial sources, and keep the attribution lines in published work.</p>
+</div>
+</body></html>
