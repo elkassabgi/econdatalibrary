@@ -130,6 +130,16 @@ jobs:
         # date — the public endpoint never lies to hide our failure (§5.3).
         run: python -m updater.health --fail-past-2x-sla
 
+      - name: Daily digest email (morning report, like hfdatalibrary's)
+        # Runs even when earlier steps failed so a broken morning is REPORTED,
+        # not silent. Needs the RESEND_API_KEY repo secret; without it the step
+        # prints the digest to the log and skips sending (loudly).
+        if: ${{ always() && inputs.dry_run != true }}
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RUN_STATUS: ${{ job.status }}
+        run: python updater/send_digest.py
+
       - name: Heartbeat commit (cron-death guard)
         # GitHub disables schedules after 60 days of repo inactivity; nothing
         # else ever commits at steady state. Every real run (scheduled or manual

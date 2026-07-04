@@ -1,0 +1,80 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Data Status — Econ Data Library</title>
+<meta name="description" content="Per-source update status for every database in the Econ Data Library: last successful update, data frontier, and honest staleness flags.">
+<meta name="robots" content="noindex">
+<style>
+:root{--g200:#e5e7eb;--g500:#6b7280;--g600:#4b5563;--blue:#1d4ed8;--serif:Georgia,serif;--sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+*{box-sizing:border-box;margin:0}body{font-family:var(--sans);color:#111827;background:#fafafa}
+.nav{display:flex;justify-content:space-between;align-items:center;padding:.9rem 5vw;background:#0b1220}
+.nav a{color:#fff;text-decoration:none;margin-left:1.2rem}.brand a{font-family:var(--serif);font-size:1.15rem;margin:0}
+.brand .d{color:#c9a961}
+.wrap{max-width:1000px;margin:0 auto;padding:2rem 5vw 4rem}
+h1{font-family:var(--serif);margin:.6rem 0 .4rem}
+.sub{color:var(--g600);line-height:1.55;max-width:70ch}
+.dot{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:.5rem;vertical-align:-1px}
+.ok{background:#16a34a}.warn{background:#d97706}.bad{background:#dc2626}.off{background:#9ca3af}
+table{width:100%;border-collapse:collapse;margin-top:1.2rem;background:#fff;border:1px solid var(--g200);border-radius:10px;overflow:hidden}
+th,td{padding:.55rem .8rem;text-align:left;font-size:.9rem;border-top:1px solid var(--g200)}
+th{background:#f3f4f6;border-top:none;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;color:var(--g600)}
+.legend{margin-top:1.4rem;font-size:.85rem;color:var(--g500);line-height:1.7}
+.count{color:var(--g600);margin-top:1rem;font-size:.92rem}
+code{background:#f3f4f6;padding:.08rem .35rem;border-radius:5px;font-size:.85em}
+</style></head><body>
+<div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
+<div><a href="index.html">Catalog</a><a href="status.html">Status</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div class="wrap">
+<h1>Data Status</h1>
+<p class="sub">Live, per-database update status straight from the update system's own ledger — the same
+freshness the API serves at <code>/v1/last-updates</code>. Sources join the automated
+rollout in phases; until a source joins, its data is the verified initial load and it is
+listed here honestly as “initial load” rather than pretended current.</p>
+<div class="count" id="summary">Loading…</div>
+<table id="tbl" hidden>
+<thead><tr><th></th><th>Source</th><th>Status</th><th>Data through</th><th>Last checked</th><th>Next expected</th></tr></thead>
+<tbody id="rows"></tbody>
+</table>
+<p class="legend">
+<span class="dot ok"></span> updated &amp; current (or an honest <code>no_change</code> probe) &nbsp;·&nbsp;
+<span class="dot warn"></span> partial / transient issue — retries automatically next run &nbsp;·&nbsp;
+<span class="dot bad"></span> failed or past its expected update window — visible here and in the operator's daily report until fixed &nbsp;·&nbsp;
+<span class="dot off"></span> initial load; joins the automated rollout in an upcoming phase.<br>
+Statuses are never fabricated: a source's date only advances when new observations were actually
+fetched and merged, and a silent upstream failure shows up red here rather than being papered over.
+</p>
+</div>
+<script>
+(function(){
+const API='https://econdl-api.elkassabgi.workers.dev';
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+fetch(API+'/v1/last-updates?cb='+Date.now(),{cache:'no-store'}).then(r=>r.json()).then(d=>{
+  const rows=d.datasets||[];
+  const now=Date.now();
+  let ok=0,warn=0,bad=0;
+  rows.sort((a,b)=>(a.source||'').localeCompare(b.source||''));
+  const tb=document.getElementById('rows');
+  for(const r of rows){
+    let cls='ok';
+    const st=r.status||'';
+    const nextTs=r.next_update_expected?Date.parse(r.next_update_expected):null;
+    if(st==='ok'||st==='no_change'){cls=(nextTs&&now>nextTs+36e5*24)?'bad':'ok'}
+    else if(st==='partial'||st==='transient_fail'){cls='warn'}
+    else{cls='bad'}
+    if(cls==='ok')ok++;else if(cls==='warn')warn++;else bad++;
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td><span class="dot '+cls+'"></span></td><td><b>'+esc(r.source)+'</b></td>'+
+      '<td>'+esc(st)+'</td><td>'+esc(r.last_obs_date||'—')+'</td>'+
+      '<td>'+esc((r.source_date_accessed||r.last_updated||'—').slice(0,16).replace('T',' '))+'</td>'+
+      '<td>'+esc((r.next_update_expected||'—').slice(0,10))+'</td>';
+    tb.appendChild(tr);
+  }
+  document.getElementById('tbl').hidden=false;
+  document.getElementById('summary').innerHTML=
+    '<b>'+rows.length+'</b> databases in the update ledger — '+
+    '<span class="dot ok"></span>'+ok+' current · <span class="dot warn"></span>'+warn+
+    ' retrying · <span class="dot bad"></span>'+bad+' attention. '+
+    'The wider catalog (309 sources) joins this ledger phase by phase.';
+}).catch(()=>{document.getElementById('summary').textContent='Status API unreachable.';});
+})();
+</script>
+</body></html>

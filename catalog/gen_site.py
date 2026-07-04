@@ -527,7 +527,7 @@ HEAD = """<!DOCTYPE html>
 {jsonld}
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="status.html">Status</a><a href="sitemap.xml">Sitemap</a></div></div>
 """
 
 
