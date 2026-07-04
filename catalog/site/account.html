@@ -50,7 +50,10 @@ database — with the same login and the same API key. Register once, download e
   </form>
   <div class="msg" id="msg"></div>
   <div class="keybox" id="keybox" hidden></div>
-  <div class="note" id="usage" hidden>Use it on any library, e.g.:<br>
+  <div class="note" id="usage" hidden><b>Your personal MCP connect URL</b> (paste into Claude/Cursor — key included):
+  <div class="keybox" id="mcpbox"></div>
+  <button type="button" onclick="copyMcp(event)" style="margin-top:.4rem">Copy MCP URL</button><br><br>
+  Use the key on any library, e.g.:<br>
   <code>curl -H "X-API-Key: YOUR_KEY" "https://econdl-api.elkassabgi.workers.dev/v1/series/worldbank_wdi%3ASP.POP.TOTL.csv"</code><br>
   or in Python: <code>econdl.HttpClient(BASE, api_key="YOUR_KEY")</code> (also reads <code>$ECONDL_API_KEY</code> / <code>$HFDL_API_KEY</code>).</div>
 </div>
@@ -80,6 +83,8 @@ async function login(ev) {
     if (key) {
       msg.className = 'msg ok'; msg.textContent = 'Signed in. Your ElkassabgiData API key:';
       const kb = document.getElementById('keybox'); kb.hidden = false; kb.textContent = key;
+      window._mcpUrl = 'https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=' + key;
+      document.getElementById('mcpbox').textContent = window._mcpUrl;
       document.getElementById('usage').hidden = false;
     } else {
       msg.className = 'msg ok';
@@ -89,6 +94,13 @@ async function login(ev) {
     msg.className = 'msg err'; msg.textContent = 'Could not reach the account server.';
   }
   return false;
+}
+function copyMcp(ev) {
+  if (!window._mcpUrl) return;
+  navigator.clipboard.writeText(window._mcpUrl).then(function () {
+    var b = ev.target, o = b.textContent; b.textContent = 'Copied!';
+    setTimeout(function () { b.textContent = o; }, 2000);
+  });
 }
 </script>
 </body></html>
