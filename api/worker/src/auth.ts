@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // src/auth.ts — shared-login download gate (the Data Library family account).
 //
-// Owner directive + PLAN.md §6 ("API keys + rate limit (echo your 300/min)"):
+// Owner directive + PLAN.md §6 ("API keys + rate limit, echoing hf's"):
 // hfdatalibrary's users database is THE identity provider for both libraries.
 // This module validates the SAME api_keys against the shared `USERS` binding
 // (hfdatalibrary-db), so every existing hf account downloads econ data with
@@ -12,7 +12,8 @@
 //     (same curl/browser ergonomics on both APIs);
 //   * validation: is_active = 1 AND key not expired;
 //   * rate limit: fixed window in the SHARED `rate_limits` table under the
-//     `econ:download` namespace — 300/min per user, echoing hf's download rule;
+//     `econ:download` namespace — 100/min per user, echoing hf's ENFORCED
+//     download rule (api:download, max 100/60s — the canonical family limit);
 //   * logging: `econ_download_log` — a SEPARATE table in the shared db, so hf's
 //     download counters are never inflated by econ traffic.
 //
@@ -25,7 +26,7 @@ import type { Env } from "./types";
 import { json } from "./util";
 
 const ACCOUNT_URL = "https://hfdatalibrary.com/pages/download";
-const LIMIT_MAX = 300;      // echo hf: 300 downloads/min per account
+const LIMIT_MAX = 100;      // canonical family limit: 100 downloads/min per account
 const LIMIT_WINDOW_S = 60;
 
 export interface AuthedUser {

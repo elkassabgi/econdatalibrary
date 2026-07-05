@@ -21,7 +21,7 @@ export interface Env {
   SUPPORTED_SOURCES?: string;
 
   // SHARED LOGIN (owner directive; PLAN.md §6 "API keys + rate limit (echo
-  // your 300/min)"): the hfdatalibrary users database is THE identity provider
+  // your rate limit)"): the hfdatalibrary users database is THE identity provider
   // for the whole Data Library family. This binding points at hfdatalibrary-db
   // (same Cloudflare account), so every existing hf api_key works here with no
   // migration. Data downloads validate against it; econ download logging goes

@@ -146,7 +146,7 @@ GET /v1/sources                                     → public source + license 
 GET /v1/bulk/{bundle}.parquet                       → pre-built country/topic bundles
 ```
 
-- API keys + rate limit (echo your 300/min), JSON/CSV/Parquet, OpenAPI spec.
+- API keys + rate limit (echo your 100/min download limit), JSON/CSV/Parquet, OpenAPI spec.
 - **Copy-as-code** snippets (Python/R) on every series — your audience lives in pandas.
 - **"Cite this"** auto-generated citation + permalink + (for curated derived sets) a Zenodo DOI.
 - **Attribution** auto-rendered from the registry on every response.
