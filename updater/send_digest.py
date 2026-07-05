@@ -56,7 +56,10 @@ def main() -> None:
         lines.append("")
     for r in ok:
         lines.append(f"     {r[0]:20} {r[1]:15} data through {r[2] or '—'}")
-    lines += ["", "Status page: https://econdatalibrary.com/status.html",
+    lines += ["",
+              # the human status page ships with the site deploy; until then link
+              # the LIVE freshness feed rather than a URL that does not resolve
+              "Live freshness feed: https://econdl-api.elkassabgi.workers.dev/v1/last-updates",
               f"Run log: https://github.com/elkassabgi/econdatalibrary/actions/runs/{run_id}"]
     body = "\n".join(lines)
 
