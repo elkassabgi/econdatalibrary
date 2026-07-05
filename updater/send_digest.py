@@ -21,7 +21,7 @@ import sys
 import urllib.request
 
 FROM = "Econ Data Library <noreply@hfdatalibrary.com>"
-TO = "elkassabgi@yahoo.com"
+TO = "admin@hfdatalibrary.com"
 STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "data", "_aqueduct", "state.db")
 
