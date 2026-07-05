@@ -771,12 +771,12 @@ transition:box-shadow .14s,border-color .14s,transform .14s}
 <h1>Economic &amp; financial data, free and citable</h1>
 <p class="tag">One namespace over the world's macro &amp; financial sources — each series resolvable, reproducible as a snapshot-pinned bundle, and carrying its license, provenance, and producer-first citation.</p>
 <div class="heroStats">
-<div><div class="n">__NIND__</div><div class="l">individual series</div></div>
-<div><div class="n">__NOBS__</div><div class="l">observations</div></div>
+<div><div class="n" id="live-series">&mdash;</div><div class="l">individual series</div></div>
+<div><div class="n" id="live-obs">&mdash;</div><div class="l">observations</div></div>
 <div><div class="n">__N__</div><div class="l">sources catalogued</div></div>
 <div><div class="n">Free</div><div class="l">open &amp; reproducible</div></div>
 </div>
-<p class="tag" style="font-size:.78rem;opacity:.75;margin-top:.6rem">Measured on our data store __MEASURED_ASOF__: individual series = every fully-specified time series (distinct series key per source; ~1% estimation error, conservative floor); observations = exact row counts. The catalog below indexes these at dataset grain for browsing.</p>
+<p class="tag" style="font-size:.78rem;opacity:.75;margin-top:.6rem">Measured on our data store (as of <span id="live-asof">&mdash;</span>): individual series = every fully-specified time series (distinct series key per source; ~1% estimation error, conservative floor); observations = exact row counts. The catalog below indexes these at dataset grain for browsing.</p>
 </div>
 <div class="controls">
 <input id="q" placeholder="Search by name, id, description, license…" oninput="render()" autofocus>
@@ -870,24 +870,23 @@ async function renderApi(){
  }
 }
 render();
+// Live headline counts from /v1/stats - never hardcoded in the page.
+fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (d) {
+  function fmtB(n) { return n >= 1e9 ? (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B+" : Number(n).toLocaleString(); }
+  if (d.individual_series) document.getElementById("live-series").textContent = fmtB(d.individual_series);
+  if (d.observations) document.getElementById("live-obs").textContent = fmtB(d.observations);
+  if (d.as_of) document.getElementById("live-asof").textContent = d.as_of;
+}).catch(function () {});
 </script>
 </body></html>
 """
     )
-    # Store-measured headline stats (series census 2026-07-02, results in
-    # _series_census_hll.json: global distinct series keys per source via
-    # HyperLogLog ±1% — a conservative floor; observations = exact parquet row
-    # counts; worker /v1/stats serves the same figures). Update these ONLY from
-    # a fresh census run (_series_census_hll.py), never by hand.
-    measured_series = "7.7B+"
-    measured_obs = "79.8B"
-    measured_asof = "2026-07-02"
+    # Headline stats are NOT baked in (owner rule: no stale hardcoded counts).
+    # The page fetches /v1/stats live; the worker serves R2 _aqueduct/stats.json,
+    # refreshed by each census run.
     return (
         tpl.replace("__DATA__", data)
         .replace("__NSERIES__", f"{n_series_total/1e6:.2f}M" if n_series_total >= 1e6 else f"{n_series_total:,}")
-        .replace("__NIND__", measured_series)
-        .replace("__NOBS__", measured_obs)
-        .replace("__MEASURED_ASOF__", measured_asof)
         .replace("__NACTIVE__", str(n_active))
         .replace("__N__", str(n_total))
         .replace("__NOPEN__", str(n_open))

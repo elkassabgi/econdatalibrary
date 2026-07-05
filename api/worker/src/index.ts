@@ -57,20 +57,24 @@ export default {
       // since keys that repeat across datasets dedupe), observations = exact
       // parquet row counts. catalog_entries is counted live from D1.
       if (path === "/v1/stats") {
+        // NO hardcoded headline numbers (owner rule: counts must never go stale
+        // in code). The measured census results live in R2 at _aqueduct/stats.json
+        // — a fresh census re-uploads that object and every consumer (this
+        // endpoint, the sites, the MCP server) updates with zero deploys.
         const cat = await env.CATALOG.prepare("SELECT COUNT(*) AS c FROM series")
           .first<{ c: number }>();
-        return json({
-          individual_series: 7_730_440_157,
-          observations: 79_782_631_887,
-          sources_catalogued: 309,
-          catalog_entries: cat?.c ?? null,
-          as_of: "2026-07-02",
-          method:
-            "individual_series = sum over sources of globally distinct series keys, " +
-            "measured on the complete data store (HyperLogLog estimate, ~1% error; " +
-            "conservative floor). observations = exact parquet row counts. " +
-            "catalog_entries = dataset-grain rows served by /v1/catalog.",
-        });
+        const obj = await env.SERIES_BUCKET.get("_aqueduct/stats.json");
+        if (obj === null) {
+          return json({
+            error: "stats_unavailable",
+            detail: "_aqueduct/stats.json is absent from the store — re-run the " +
+              "series census and upload its results. Refusing to serve stale " +
+              "compiled-in numbers.",
+            catalog_entries: cat?.c ?? null,
+          }, 503);
+        }
+        const measured = await obj.json() as Record<string, unknown>;
+        return json({ ...measured, catalog_entries: cat?.c ?? null });
       }
 
       // /v1/series/{id}.csv  and  /v1/series/{id}.metadata.json

@@ -39,8 +39,8 @@ footer a{color:var(--g600)}
   updated automatically, and citable — with one free account across every library.</p>
   <div class="stats">
     <div><div class="n">2</div><div class="l">libraries (more coming)</div></div>
-    <div><div class="n">7.7B+</div><div class="l">economic series</div></div>
-    <div><div class="n">1.5B+</div><div class="l">1-minute equity bars</div></div>
+    <div><div class="n" id="n-series">&mdash;</div><div class="l">economic series</div></div>
+    <div><div class="n" id="n-bars">&mdash;</div><div class="l">1-minute equity bars</div></div>
     <div><div class="n">Free</div><div class="l">open &amp; citable</div></div>
   </div>
 </div>
@@ -55,8 +55,8 @@ footer a{color:var(--g600)}
     </div>
     <div class="lib">
       <h2><a href="https://econdatalibrary.com">Econ Data Library</a></h2>
-      <div class="what">Global <strong>economic &amp; financial data</strong>: 7.7B+ individual series from
-      309 sources — national accounts, prices, trade, labor, energy, markets — one namespace,
+      <div class="what">Global <strong>economic &amp; financial data</strong>: billions of individual series from
+      300+ sources — national accounts, prices, trade, labor, energy, markets — one namespace,
       per-series licensing and citations, auto-updated.</div>
       <a class="go" href="https://econdatalibrary.com">econdatalibrary.com →</a>
     </div>
@@ -86,4 +86,15 @@ footer a{color:var(--g600)}
   <a href="https://hfdatalibrary.com/pages/cite">How to cite</a> ·
   <a href="https://hfdatalibrary.com/pages/contact">Contact</a>
 </footer>
+<script>
+(function () {
+  function fmtB(n) { return n >= 1e9 ? (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B+" : Number(n).toLocaleString(); }
+  fetch("https://econdl-api.elkassabgi.workers.dev/v1/stats").then(function(r){return r.json();}).then(function(d){
+    if (d.individual_series) document.getElementById("n-series").textContent = fmtB(d.individual_series);
+  }).catch(function(){});
+  fetch("https://api.hfdatalibrary.com/v1/public-stats").then(function(r){return r.json();}).then(function(d){
+    if (d.dataset && d.dataset.bars_clean) document.getElementById("n-bars").textContent = fmtB(d.dataset.bars_clean);
+  }).catch(function(){});
+})();
+</script>
 </body></html>

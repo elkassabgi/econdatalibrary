@@ -122,12 +122,12 @@ transition:box-shadow .14s,border-color .14s,transform .14s}
 <h1>Economic &amp; financial data, free and citable</h1>
 <p class="tag">One namespace over the world's macro &amp; financial sources — each series resolvable, reproducible as a snapshot-pinned bundle, and carrying its license, provenance, and producer-first citation.</p>
 <div class="heroStats">
-<div><div class="n">7.7B+</div><div class="l">individual series</div></div>
-<div><div class="n">79.8B</div><div class="l">observations</div></div>
+<div><div class="n" id="live-series">&mdash;</div><div class="l">individual series</div></div>
+<div><div class="n" id="live-obs">&mdash;</div><div class="l">observations</div></div>
 <div><div class="n">309</div><div class="l">sources catalogued</div></div>
 <div><div class="n">Free</div><div class="l">open &amp; reproducible</div></div>
 </div>
-<p class="tag" style="font-size:.78rem;opacity:.75;margin-top:.6rem">Measured on our data store 2026-07-02: individual series = every fully-specified time series (distinct series key per source; ~1% estimation error, conservative floor); observations = exact row counts. The catalog below indexes these at dataset grain for browsing.</p>
+<p class="tag" style="font-size:.78rem;opacity:.75;margin-top:.6rem">Measured on our data store (as of <span id="live-asof">&mdash;</span>): individual series = every fully-specified time series (distinct series key per source; ~1% estimation error, conservative floor); observations = exact row counts. The catalog below indexes these at dataset grain for browsing.</p>
 </div>
 <div class="controls">
 <input id="q" placeholder="Search by name, id, description, license…" oninput="render()" autofocus>
@@ -221,5 +221,12 @@ async function renderApi(){
  }
 }
 render();
+// Live headline counts from /v1/stats - never hardcoded in the page.
+fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (d) {
+  function fmtB(n) { return n >= 1e9 ? (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B+" : Number(n).toLocaleString(); }
+  if (d.individual_series) document.getElementById("live-series").textContent = fmtB(d.individual_series);
+  if (d.observations) document.getElementById("live-obs").textContent = fmtB(d.observations);
+  if (d.as_of) document.getElementById("live-asof").textContent = d.as_of;
+}).catch(function () {});
 </script>
 </body></html>

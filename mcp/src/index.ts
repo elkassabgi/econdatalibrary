@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // ElkassabgiData MCP server — AI-native access to the family of free
 // research-grade data libraries:
-//   * Econ Data Library  (econdatalibrary.com)  — 7.7B+ economic series
+//   * Econ Data Library  (econdatalibrary.com)  — billions of economic series
 //   * HF Data Library    (hfdatalibrary.com)    — 1-minute US equity bars
 //
 // Design rules (mirroring the sites exactly):
@@ -132,7 +132,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     // ═════════════════ ECON DATA LIBRARY ═════════════════
     s.registerTool("search_econ_series", {
       description:
-        "Search the Econ Data Library catalog (7.7B+ series from 309 sources: " +
+        "Search the Econ Data Library catalog (billions of series from 300+ sources: " +
         "national accounts, prices, trade, labor, energy, markets…). Free, no " +
         "key needed. Returns series ids usable with get_econ_series.",
       inputSchema: {
@@ -387,8 +387,8 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       contents: [{ uri: uri.href, mimeType: "text/plain", text:
         "ElkassabgiData (elkassabgidata.com) is a family of free, research-grade data libraries " +
         "by Ahmed Elkassabgi: HF Data Library (1-minute US equity OHLCV, 1,391 tickers, 2002→present, " +
-        "raw+clean, 25 academic variables) and Econ Data Library (7.7B+ economic/financial series from " +
-        "309 sources with per-series licensing and citations). ONE free account works across every " +
+        "raw+clean, 25 academic variables) and Econ Data Library (billions of economic/financial series from " +
+        "300+ sources with per-series licensing and citations). ONE free account works across every " +
         `library, current and future: ${ACCOUNT_URL}. Cite series using the attribution shipped in their metadata.` }],
     }));
 
@@ -448,7 +448,7 @@ h1{font-family:Georgia,serif}code{background:#f3f4f6;padding:.15rem .4rem;border
 .gold{color:#977f3f}</style></head><body>
 <h1>Elkassabgi<span class="gold">Data</span> MCP server</h1>
 <p>AI-native access to the family of free research data libraries —
-<a href="https://econdatalibrary.com">Econ Data Library</a> (7.7B+ economic series) and
+<a href="https://econdatalibrary.com">Econ Data Library</a> (billions of economic series) and
 <a href="https://hfdatalibrary.com">HF Data Library</a> (1-minute US equity data).</p>
 <p><b>Connect:</b> add this server to Claude, Cursor, or any MCP client:</p>
 <p><code>https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp</code></p>
