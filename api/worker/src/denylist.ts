@@ -11,9 +11,14 @@
 // commercial policy and are intentionally NOT listed here.
 // ---------------------------------------------------------------------------
 
+// GRANTED (re-enabled): kof_globalization — Prof. Jan-Egbert Sturm (KOF director,
+//   index co-author) granted non-commercial academic re-hosting on 2026-07-06.
+//   Conditions (must be honored in the site's KOF attribution/citation): NC use only;
+//   cite "KOF, ETH Zurich"; include a clear link back to the official KOF Globalisation
+//   Index page; no commercial resale/sublicensing; KOF may request removal.
 export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   // Flatly not redistributable
-  "qog", "cboe", "kof_globalization",
+  "qog", "cboe",
   // Permission required (written approval needed before re-hosting)
   "social_progress", "spi", "whr", "ei_statreview", "comtrade", "cow",
   "famafrench", "fraser_efw", "polity", "sipri", "sipri_polity", "tcmb",
