@@ -16,13 +16,16 @@ ROOT = os.path.abspath(os.environ.get("ECONDL_ROOT")
 BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 
 # MEASURED registry size, pinned by the §1.3 reconciliation run on 2026-07-03 —
-# never copied from a doc (honesty rule §5.6). registry.yaml has 130 unique
-# source_ids; the capability matrix's "133" is script-profile ROWS (129 unique
-# sources, 4 profiled twice, sec_edgar_xbrl split out after profiling). Full diff
-# + add/drop reasons: updater/REGISTRY_RECONCILIATION.md. Adding or retiring a
-# source requires re-measuring and updating both files in the same commit;
-# orchestrate.run_once() refuses to run when the registry disagrees.
-EXPECTED_SOURCE_COUNT = 130
+# never copied from a doc (honesty rule §5.6). Adding or retiring a source requires
+# re-measuring and updating both files in the same commit; orchestrate.run_once()
+# refuses to run when the registry disagrees.
+# 2026-07-03: 130 unique source_ids (the capability matrix's "133" is script-profile
+#   ROWS; full diff in updater/REGISTRY_RECONCILIATION.md).
+# 2026-07-06: +3 -> 133. IEP granted CC BY-NC-SA 4.0 non-commercial re-hosting, so
+#   gti (Global Terrorism Index), ppi (Positive Peace Index) and etr (Ecological
+#   Threat Report) were added alongside gpi (which was already counted; its dead
+#   URLs were repaired with the granted IEP source). See [[project_redistributability]].
+EXPECTED_SOURCE_COUNT = 133
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

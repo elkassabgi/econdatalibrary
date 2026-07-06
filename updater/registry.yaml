@@ -2333,41 +2333,100 @@ sources:
     - single parquet (data/clean_full/gleif/lei_records.parquet, ~85 MB, ~3.3M rows); raw zip cached separately under data/raw/gleif/
 - source_id: gpi
   scripts:
-  - jobs/ingest_gpi.py
+  - updater/strategies/fetchers/gpi.py
   strategy: overwrite_if_changed
-  strategy_reason: Tiny annual full table (series_key/obs_date/value) cheapest to overwrite wholesale; no observation-level
-    since-param exists for an annual Excel report, so gate on a vintage signal and overwrite atomically.
+  strategy_reason: Tiny annual full table (series_key/obs_date/value); no observation-level since-param for an annual Excel report, so gate on the IEP xlsx vintage (ETag/Last-Modified) and overwrite atomically via the dedup/never-shrink merge.
   cadence: annual
   refresh_cost: fast
   out_dir: gpi
   review: true
+  license: CC-BY-NC-SA-4.0
+  attribution: Institute for Economics & Peace (IEP), Global Peace Index
   adapter:
-    vintage_signal: HEAD/ETag/Last-Modified on the (repaired) live IEP/OWID GPI source URL once it exists; until then there
-      is no usable signal because every hardcoded GPI_URL 404s.
+    vintage_signal: HEAD ETag/Last-Modified of the IEP public-release xlsx (GPI_URLS[0]).
     since_param: n/a
-    out_paths_note: single file data/clean_full/gpi/gpi.parquet (currently absent — only _gpi_log.txt/_gpi_err.txt exist).
-    rate_note: No key; UA header set, 2 retries per URL.
+    out_paths_note: single file data/clean_full/gpi/gpi.parquet (series_key GPI:<indicator>:<ISO3>; ~92.5k obs, 30 indicators x 163 countries x 2008-2026).
+    rate_note: No key; UA header set; URL(s) tried in order, first parsing >0 rows wins.
     key_env: none
-    confidence: low
-    open_question: 'BLOCKER: all 9 hardcoded GPI_URLS return 404, so the source produces no parquet and exits success silently.
-      Need a working IEP/OWID GPI URL before any strategy can run — please supply the current download link.'
+    confidence: high
+    open_question: 'IEP granted CC BY-NC-SA 4.0 non-commercial re-hosting (2026-07-06 confirmation, info@economicsandpeace.org). Each edition ships a new versioned URL; prepend it to URLS when it appears.'
   matrix:
     refresh_mechanism:
     - overwrite-single-file
-    force_refresh_procedure:
-    - 'main() short-circuits only if data/clean_full/gpi/gpi.parquet exists; it does not currently exist, so simply run: python.exe
-      D:\research\econfindatalibrary\jobs\ingest_gpi.py . If a parquet were present, delete it first: del D:\research\econfindatalibrary\data\clean_full\gpi\gpi.parquet
-      . (To actually get data the dead GPI_URLS list must first be repaired with a live IEP/OWID URL.)'
-    incremental_path:
-    - Not applicable / not feasible incrementally — GPI is a tiny annual full table that is cheapest to overwrite wholesale.
-      The real fix needed is not incrementality but a working source URL (or a since-param does not exist for an annual Excel
-      report). 'Incremental' would be meaningless at this size; mark already-overwrite-on-rerun once a URL works.
-    keys_or_blockers:
-    - 'No API key. BLOCKER: every hardcoded URL is dead (all 404). UA header set; only 2 retries per URL. Source effectively
-      broken until URLs updated.'
     storage_layout:
-    - 'single parquet (data/clean_full/gpi/gpi.parquet) when it succeeds; currently absent (only log/err txt present). Schema:
-      series_key, obs_date, value.'
+    - 'single parquet data/clean_full/gpi/gpi.parquet; schema series_key, obs_date, value.'
+- source_id: gti
+  scripts:
+  - updater/strategies/fetchers/gti.py
+  strategy: overwrite_if_changed
+  strategy_reason: Tiny annual full table; long-format IEP xlsx re-published each edition; overwrite atomically gated on the xlsx vintage.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: gti
+  review: true
+  license: CC-BY-NC-SA-4.0
+  attribution: Institute for Economics & Peace (IEP), Global Terrorism Index
+  adapter:
+    vintage_signal: HEAD ETag/Last-Modified of the IEP GTI public-release xlsx (URLS[0]).
+    since_param: n/a
+    out_paths_note: single file data/clean_full/gti/gti.parquet (series_key GTI:<indicator>:<ISO3>; ~14.7k obs, 6 indicators x 163 countries x 2011-2025).
+    rate_note: No key; UA header set; URL(s) tried in order, first parsing >0 rows wins.
+    key_env: none
+    confidence: high
+    open_question: 'IEP granted CC BY-NC-SA 4.0 non-commercial re-hosting (2026-07-06 confirmation, info@economicsandpeace.org). Each edition ships a new versioned URL; prepend it to URLS when it appears.'
+  matrix:
+    refresh_mechanism:
+    - overwrite-single-file
+    storage_layout:
+    - 'single parquet data/clean_full/gti/gti.parquet; schema series_key, obs_date, value.'
+- source_id: ppi
+  scripts:
+  - updater/strategies/fetchers/ppi.py
+  strategy: overwrite_if_changed
+  strategy_reason: Tiny annual full table; per-year-sheet IEP xlsx re-published each edition; overwrite atomically gated on the xlsx vintage.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: ppi
+  review: true
+  license: CC-BY-NC-SA-4.0
+  attribution: Institute for Economics & Peace (IEP), Positive Peace Index
+  adapter:
+    vintage_signal: HEAD ETag/Last-Modified of the IEP PPI public-release xlsx (URLS[0]).
+    since_param: n/a
+    out_paths_note: single file data/clean_full/ppi/ppi.parquet (series_key PPI:<indicator>:<country_name>, no ISO3 in source; ~75.3k obs, 33 indicators x 163 countries x 2009-2022).
+    rate_note: No key; UA header set; URL(s) tried in order, first parsing >0 rows wins.
+    key_env: none
+    confidence: high
+    open_question: 'IEP granted CC BY-NC-SA 4.0 non-commercial re-hosting (2026-07-06 confirmation, info@economicsandpeace.org). Each edition ships a new versioned URL; prepend it to URLS when it appears.'
+  matrix:
+    refresh_mechanism:
+    - overwrite-single-file
+    storage_layout:
+    - 'single parquet data/clean_full/ppi/ppi.parquet; schema series_key, obs_date, value.'
+- source_id: etr
+  scripts:
+  - updater/strategies/fetchers/etr.py
+  strategy: overwrite_if_changed
+  strategy_reason: Tiny single-cross-section IEP xlsx re-published each edition; overwrite atomically gated on the xlsx vintage; reporting year read from the release URL.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: etr
+  review: true
+  license: CC-BY-NC-SA-4.0
+  attribution: Institute for Economics & Peace (IEP), Ecological Threat Report
+  adapter:
+    vintage_signal: HEAD ETag/Last-Modified of the IEP ETR public-release xlsx (URLS[0]).
+    since_param: n/a
+    out_paths_note: single file data/clean_full/etr/etr.parquet (series_key ETR:<indicator>:<country_name>, no ISO3/year in source; 1,035 obs, 5 indicators x 207 countries, year from URL).
+    rate_note: No key; UA header set; URL(s) tried in order, first parsing >0 rows wins.
+    key_env: none
+    confidence: high
+    open_question: 'IEP granted CC BY-NC-SA 4.0 non-commercial re-hosting (2026-07-06 confirmation, info@economicsandpeace.org). Each edition ships a new versioned URL; prepend it to URLS when it appears.'
+  matrix:
+    refresh_mechanism:
+    - overwrite-single-file
+    storage_layout:
+    - 'single parquet data/clean_full/etr/etr.parquet; schema series_key, obs_date, value.'
 - source_id: gppd
   scripts:
   - jobs/ingest_gppd.py

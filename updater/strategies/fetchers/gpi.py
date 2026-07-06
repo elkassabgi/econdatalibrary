@@ -38,9 +38,18 @@ from ._vintage import UA
 SOURCE = "gpi"
 DEDUP = ("series_key", "obs_date")  # matches jobs/ingest_gpi.py output schema
 
-# URL list copied from jobs/ingest_gpi.py (IEP report files change name each year,
-# so several candidates are tried in order; first one that parses >0 rows wins).
+# URL list (IEP report files change name each year, so several candidates are tried
+# in order; first one that parses >0 rows wins).
+#
+# PRIMARY (2026-07-06): IEP granted non-commercial re-hosting under CC BY-NC-SA 4.0
+# (Prof. Elkassabgi's data-licensing request; info@economicsandpeace.org). This is the
+# current WORKING source — the old visionofhumanity.org/GitHub/OWID URLs below all 404
+# now (IEP moved GPI onto economicsandpeace.org behind the licensing confirmation).
+# When IEP publishes the next edition, prepend its ..._YYYY.xlsx URL here.
 GPI_URLS = [
+    # 2026 edition — IEP public-release (granted, CC BY-NC-SA 4.0)
+    "https://www.economicsandpeace.org/wp-content/uploads/2026/06/GPI_Public_Release_2026.xlsx",
+    # --- legacy candidates (currently 404; kept as ordered fallbacks) ---
     # 2024 edition
     "https://www.visionofhumanity.org/wp-content/uploads/2024/06/GPI-2024-web.xlsx",
     "https://www.visionofhumanity.org/wp-content/uploads/2024/07/GPI-2024-full-report-data.xlsx",
@@ -123,84 +132,85 @@ def _parse_owid_csv(data: bytes):
     return keys, dates, vals
 
 
+def _slug(header) -> str:
+    """Sanitize an indicator column header to [A-Za-z0-9_]."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", str(header).strip()).strip("_")
+
+
 def _parse_gpi_xlsx(data: bytes):
-    """IEP GPI Excel workbook (one sheet of country x indicator scores)."""
+    """IEP GPI public-release workbook -> (keys, dates, vals).
+
+    series_key = "GPI:<indicator_slug>:<ISO3>", obs_date = date(year, 12, 31).
+
+    Layout (verified against GPI_Public_Release_2026.xlsx, 2026-07-06): a
+    'Contents' sheet, an 'Overall Scores' sheet, and one sheet PER YEAR
+    (2008..latest). Every per-year sheet carries the country name, an ISO3 code
+    (column 'geocode'), and every numeric indicator (Overall Score, Rank, and the
+    sub-indicators). We read ALL year sheets (the old parser stopped after the
+    first). The 'Overall Scores' sheet is intentionally skipped: its <year>_Score/
+    <year>_Rank columns are byte-identical to the per-year Overall Score/Rank, so
+    re-reading it would duplicate (series_key, obs_date). Gaps (e.g. South Sudan
+    pre-2012) are skipped, never fabricated.
+    """
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     keys, dates, vals = [], [], []
 
-    for sheet_name in wb.sheetnames:
-        if any(s in sheet_name.lower() for s in ["cover", "about", "note", "method", "source"]):
-            continue
+    # Per-year data sheets are those whose name is exactly a 4-digit year.
+    year_sheets = [s for s in wb.sheetnames if re.fullmatch(r"\d{4}", s)]
+
+    for sheet_name in year_sheets:
         ws = wb[sheet_name]
         rows = list(ws.iter_rows(values_only=True))
-        if len(rows) < 5:
-            continue
 
+        # Real header row = first row containing both 'country' and 'geocode'
+        # (rows above are blank/branding).
         header_idx = None
-        for ri, row in enumerate(rows[:10]):
-            row_lower = [str(c).strip().lower() if c else "" for c in row]
-            if "country" in row_lower or "iso" in row_lower or "code" in row_lower:
-                header_idx = ri
+        for i, row in enumerate(rows):
+            cells = [str(c).strip().lower() if c is not None else "" for c in row]
+            if "country" in cells and "geocode" in cells:
+                header_idx = i
                 break
         if header_idx is None:
             continue
 
-        header = [str(c).strip() if c else "" for c in rows[header_idx]]
-        ctry_ci = next((i for i, h in enumerate(header) if h.lower() in ("country", "nation", "name")), None)
-        iso_ci = next((i for i, h in enumerate(header) if h.lower() in ("iso", "iso3", "code", "iso_code")), None)
-        year_ci = next((i for i, h in enumerate(header) if h.lower() in ("year",)), None)
-        id_ci = iso_ci if iso_ci is not None else ctry_ci
-        if id_ci is None:
+        header = list(rows[header_idx])
+        col_country = col_geocode = None
+        indicator_cols = []  # (col_index, slug)
+        for ci, h in enumerate(header):
+            if h is None:
+                continue
+            hl = str(h).strip().lower()
+            if hl == "country":
+                col_country = ci
+            elif hl == "geocode":
+                col_geocode = ci
+            elif hl != "year":
+                indicator_cols.append((ci, _slug(h)))
+        if col_country is None or col_geocode is None:
             continue
 
-        skip_ci = {id_ci, ctry_ci, iso_ci, year_ci, None}
-        val_cols = [(i, h) for i, h in enumerate(header) if i not in skip_ci and h]
-        if not val_cols:
-            continue
-
-        sheet_yr = None
-        if year_ci is None:
-            m = re.search(r"\b(20\d{2})\b", sheet_name)
-            if m:
-                sheet_yr = int(m.group(0))
-
-        n_before = len(vals)
+        obs_d = dt.date(int(sheet_name), 12, 31)
         for row in rows[header_idx + 1:]:
-            if not row or row[id_ci] is None:
+            if col_country >= len(row) or col_geocode >= len(row):
                 continue
-            cid = str(row[id_ci]).strip()
-            if not cid or cid.lower() in ("nan", "none"):
+            if row[col_country] is None or row[col_geocode] is None:
                 continue
-
-            if year_ci is not None and row[year_ci] is not None:
-                try:
-                    yr = int(float(str(row[year_ci]).strip()))
-                    obs_d = dt.date(yr, 12, 31)
-                except (TypeError, ValueError):
+            iso3 = str(row[col_geocode]).strip()
+            if not re.fullmatch(r"[A-Za-z]{3}", iso3):
+                continue  # not a valid ISO3 -> not a country data row
+            iso3 = iso3.upper()
+            for ci, slug in indicator_cols:
+                if ci >= len(row):
                     continue
-            elif sheet_yr:
-                obs_d = dt.date(sheet_yr, 12, 31)
-            else:
-                continue
-
-            for col_i, col_name in val_cols:
-                if col_i >= len(row) or row[col_i] is None:
+                v = row[ci]
+                if v is None or isinstance(v, bool) or not isinstance(v, (int, float)):
                     continue
-                try:
-                    v = float(row[col_i])
-                except (TypeError, ValueError):
-                    continue
-                if v != v:  # NaN
-                    continue
-                safe = re.sub(r"[^a-zA-Z0-9_]", "_", col_name)[:30]
-                keys.append(f"GPI:{safe}:{cid}")
+                keys.append(f"GPI:{slug}:{iso3}")
                 dates.append(obs_d)
-                vals.append(v)
+                vals.append(float(v))
 
-        if len(vals) > n_before:
-            break  # first sheet that yields data is the results sheet
-
+    wb.close()
     return keys, dates, vals
 
 
