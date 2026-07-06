@@ -1,0 +1,41 @@
+// elkassabgidata-assistant — hosted "ask the data" chat for the ElkassabgiData
+// family. A proxy Worker over the existing free endpoints; the only stateful
+// piece is the AssistantState Durable Object (rate limits + monthly budget).
+//
+// Secrets (set with `wrangler secret put`, never in this file):
+//   DEEPSEEK_API_KEY   — DeepSeek key. ABSENT => MOCK mode (scripted, no spend).
+//   TURNSTILE_SECRET   — Cloudflare Turnstile secret (bot-gate anon chat).
+//   ANON_PASS_SECRET   — any random string; signs the short-lived anon pass.
+{
+  "name": "elkassabgidata-assistant",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "ce51d5c7fe3859098751b89bbebeab7a",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AssistantState"] }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "AssistantState", "name": "ASSISTANT_STATE" }
+    ]
+  },
+
+  "vars": {
+    "MODEL": "deepseek-v4-flash",
+    "MONTHLY_USD_CAP": "30",
+    // Set this to your Turnstile sitekey WHEN you set the TURNSTILE_SECRET
+    // (via `wrangler secret put`). The widget reads it from /health, so the two
+    // can never desync into a "secret set, no sitekey" anonymous lockout.
+    "TURNSTILE_SITEKEY": "",
+    "ANON_PER_HOUR": "5",
+    "ANON_PER_DAY": "15",
+    "USER_PER_HOUR": "20",
+    "USER_PER_DAY": "60",
+    "MAX_TOOL_ROUNDS": "6",
+    "MAX_OUTPUT_TOKENS": "800"
+  }
+}

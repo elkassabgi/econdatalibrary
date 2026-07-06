@@ -149,12 +149,18 @@ achieves is… searching public data they could already search for free.
 
 ## 5. Phasing
 
-- **Phase 0 — decide** (Ahmed): go/no-go, model, access policy, monthly cap.
-- **Phase 1 — MVP:** assistant Worker + minimal chat widget on elkassabgidata.com; 3 tools (search, fetch,
-  hf-link); login-gated; daily cap; streaming; grounded system prompt + guard; usage logging.
-- **Phase 2 — polish:** nicer UI, embed on hf + econ sites, "download as file" actions, short conversation
-  memory, freshness/sources tools, assistant usage line in the morning digest.
-- **Phase 3 — harden:** caching, budget kill-switch tuning, optional selective model upgrade, abuse
+- **Phase 0 — decide** (Ahmed): go/no-go, model, access policy, monthly cap. ✅ DONE (2026-07-05).
+- **Phase 1 — MVP:** ✅ BUILT + reviewed (2026-07-05) in `assistant/` + `portal/ask.html`. Worker (routing,
+  CORS allowlist, visitor resolution via hf `/v1/auth/me`, Turnstile + HMAC anon-pass, AssistantState DO
+  for atomic rate-limit + reserved-budget cap, DeepSeek tool loop, SSE streaming); 5 read-only tools
+  (search / details / freshness + two download tools that return links only); the chat widget with
+  client-side authenticated downloads + the registration gate; a keyless MOCK mode for local demo. Passed
+  a 4-lens adversarial review (security/correctness/integration/grounding) with every finding verified and
+  fixed — incl. a HIGH budget-overshoot race (now a reserve-at-gate/reconcile-at-charge scheme, verified
+  1×200 + 4×503 under a concurrent burst). **Blocker to go live: a DeepSeek API key** (§8).
+- **Phase 2 — polish:** latest-value preview (keyless `/v1/series/{id}.preview.json` on the econ API),
+  embed-everywhere floating widget, short conversation memory, assistant usage line in the morning digest.
+- **Phase 3 — harden:** prompt caching, budget kill-switch tuning, optional selective model upgrade, abuse
   monitoring.
 
 ---
