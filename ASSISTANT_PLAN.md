@@ -89,21 +89,61 @@ Sources: DeepSeek API pricing docs (api-docs.deepseek.com/quick_start/pricing); 
 move, and DeepSeek is deprecating the `deepseek-chat`/`deepseek-reasoner` aliases on 2026-07-24 in favor of
 explicit `deepseek-v4-flash`.*
 
-Both are cheap in absolute terms. Controls that make cost structurally bounded:
+Both are cheap in absolute terms. Cost controls are detailed in §7 alongside abuse defense.
 
-1. **Login required** (recommended) — kills anonymous abuse and ties every message to a known account.
-2. **Per-user daily message cap** (e.g. 30/day) — one heavy user can't drain the budget.
-3. **Global monthly kill-switch** — an env `ASSISTANT_MONTHLY_USD_CAP`; when spend crosses it the widget
-   degrades gracefully ("assistant is at capacity today — use the catalog or connect MCP") rather than
-   billing without limit.
-4. **Max tokens/turn** + **prompt-cache the system prompt** (big discount on the fixed charter/schemas).
-5. **Scope guard** — refuse off-topic "use me as a free ChatGPT" requests; keep it a *data* assistant.
+**Model — DECIDED: DeepSeek** (`deepseek-v4-flash`), validated cheaply, behind a model-agnostic adapter so
+we can flip to Claude Haiku if grounding/tool-use quality needs it. Two caveats we accept: (a) tool-calling
+is less reliable than Claude's, so the §2 grounding guard matters more; (b) it's a non-US API — queries are
+public-data questions (nothing sensitive), flagged for institutional data-governance awareness.
 
-**Model recommendation:** start on **DeepSeek** to validate cheaply (Ahmed already leans this way), but
-build the adapter model-agnostic so we can flip to **Claude Haiku** if grounding/tool-use quality needs it.
-Two caveats to weigh on DeepSeek: (a) tool-calling is less reliable than Claude's, so the grounding guard
-matters more; (b) it's a non-US API — the queries are public-data questions (nothing sensitive), but some
-institutions have blanket data-governance rules, so this is worth a conscious call.
+---
+
+## 6b. Access model — DECIDED: anonymous chat, gated download (registration bait)
+
+Anonymous visitors **can chat** — the assistant searches, shows what it found, previews the latest value,
+and explains the series. But **downloading the actual data requires a free account.** The assistant says so
+explicitly: *"I found it — [series + latest value]. Create a free account to download the full series."*
+This turns the assistant into a conversion funnel while never handing bulk data to the unregistered.
+
+This maps 1:1 onto the existing tool design: `search` + metadata + freshness are already keyless; the actual
+data (`get_econ_series`) already requires a key, **enforced server-side**. Anonymous users get metadata +
+a tiny preview (latest N observations / a summary), never the full file.
+
+---
+
+## 7. Security & abuse mitigation (public, free LLM endpoint)
+
+A free LLM open to anonymous users is the real risk surface. Layered defense, strongest first:
+
+**Tier 1 — structural (a jailbreak still can't hurt you):**
+- **Least privilege.** The assistant can call *only* read-only data tools (search / metadata / preview /
+  freshness). No write tools, no code exec, no email, no spend, no secrets. Even a total jailbreak can do no
+  more than search public data.
+- **No secrets in the model's context.** The DeepSeek key and all creds live in the Worker env, never in the
+  system prompt — so "leak your prompt" reveals nothing sensitive.
+- **Download gate enforced by the Worker, not the model.** The actual data bytes come from the key-checked
+  `get_econ_series` path. Even if a user jailbreaks the model into *offering* the full dataset, the model
+  never *received* it — the Worker refuses without a valid account. The LLM can't give away what it never got.
+- **Global monthly kill-switch** — env `ASSISTANT_MONTHLY_USD_CAP`; on breach, anonymous chat degrades to
+  "register to keep going" (which also serves conversion). Hard ceiling on total spend.
+
+**Tier 2 — bot / script defense (the main cost-drain vector):**
+- **Cloudflare Turnstile** (already in our stack) on the first anonymous message (or after 1–2). This is the
+  single biggest lever against scripted abuse — it stops the "curl-loop it as a free GPT" attack cold.
+- **Layered rate limits:** anonymous keyed on IP + a signed session cookie → small quota (starter: ~5/hour,
+  ~15/day — enough to get hooked, not to abuse); registered users get more. Plus **per-turn caps**: max
+  output tokens, max tool calls, max context — so no single request is expensive.
+
+**Tier 3 — scope & hygiene:**
+- **Topic guard.** System prompt + a cheap pre-check refuses non-data requests ("I only help with
+  ElkassabgiData data"), so it can't be repurposed as a general free chatbot. Short max output reinforces this.
+- **Tool-call budget per session** — prevents scripting the assistant to page through thousands of series.
+- **Transparent, minimal logging** (tokens, cost, tools used; not sensitive content); privacy-page note; no
+  user identifiers sent to DeepSeek beyond the query text.
+
+Net: cost is bounded by the kill-switch; automated abuse is blocked by Turnstile + rate limits; and because
+the assistant is least-privilege with a server-side download gate, the worst a determined jailbreaker
+achieves is… searching public data they could already search for free.
 
 ---
 
@@ -119,10 +159,13 @@ institutions have blanket data-governance rules, so this is worth a conscious ca
 
 ---
 
-## 6. Open decisions (blocking Phase 1)
+## 8. Decisions & what's needed to start Phase 1
 
-1. **Model:** DeepSeek (cheapest, swappable) — *recommended start* — vs Claude Haiku (best grounding).
-2. **Access:** logged-in users only (*recommended*) vs open-to-all rate-limited.
-3. **Budget:** monthly USD kill-switch value (a low starter cap, e.g. $20–50, is plenty given the math).
+- **Model:** DeepSeek `deepseek-v4-flash` — DECIDED (2026-07-05).
+- **Access:** anonymous chat, download gated behind free registration (bait) — DECIDED (2026-07-05).
+- **Budget:** proposed starter `ASSISTANT_MONTHLY_USD_CAP` = $30/mo kill-switch (revisit up once traffic is
+  known; the math says this covers ~12k DeepSeek conversations). Confirm value.
+- **Blocker to deploy:** a **DeepSeek API key** (Ahmed creates it at platform.deepseek.com → stored in the
+  Worker env, never in chat). Code can be built before the key exists; only deployment needs it.
 
-Nothing here is built yet — this is the plan for Ahmed's go-ahead.
+Code is not written yet — this is the agreed design, ready to build on Ahmed's go.
