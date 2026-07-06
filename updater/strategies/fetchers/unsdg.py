@@ -124,7 +124,13 @@ def _parse_records(records, code):
             dim_parts = [f"{k}={dv}" for k, dv in sorted(dims.items())
                          if dv and dv not in ("", "_T", "ALLAREA", "G")]
             if dim_parts:
-                dim_str = "|" + "|".join(dim_parts[:3])
+                # Carry ALL non-trivial dimensions, not just the first 3. Several SDG
+                # series expose 4+ disaggregating dimensions (e.g. SE_ADT_ACTS has
+                # Age|Location|Sex|Type-of-skill|Reporting-Type); truncating to [:3]
+                # dropped "Type of skill" and collapsed up to 36 distinct values onto
+                # one (series_key, obs_date), so the merge dedup shrank the store 11%
+                # and tripped never-shrink. Full dimensions make the key unique.
+                dim_str = "|" + "|".join(dim_parts)
         keys.append(f"{code}:{geo}{dim_str}")
         dates.append(obs_date)
         vals.append(v)
@@ -245,17 +251,16 @@ def update(unit, since) -> Result:
     # series_key+obs_date, revised values win, never-shrink @0.97). Untouched series
     # survive the union, so a budgeted partial pull can only grow the table.
     #
-    # KNOWN BLOCKER (see module docstring + REPORT): the PUBLISHED parquet's effective
-    # key (series_key, obs_date) is NOT unique — the ingester truncates each series'
-    # dimensions to the first 3 (dim_parts[:3]) and collapses every period to Dec-31,
-    # so observations that differ only in a 4th+ dimension share one (series_key,
-    # obs_date) with different values (e.g. SE_ADT_ACTS:400|Age|Location|Sex carries 36
-    # distinct values on 2024-12-31). 352,671 of 3,175,479 published rows (11%) are such
-    # collapsible duplicates. A correct dedup-on-merge therefore drops them and trips
-    # never-shrink (88.9% < 97%). merge_and_write leaves the existing file UNTOUCHED on
-    # that refusal. We do NOT weaken the guard or lower min_ratio; we surface it as a
-    # partial with the reason. Real fix belongs upstream (make series_key carry ALL
-    # dimensions so the key is unique), which requires re-ingesting all 713 series.
+    # KEY-UNIQUENESS FIX (resolved 2026-07): _parse_records now carries ALL non-trivial
+    # dimensions (dropped the old dim_parts[:3] cap), so (series_key, obs_date) is unique
+    # per re-fetched series and the merge dedup is lossless. The historical shrink
+    # (3,175,479 -> 2,822,808, 88.9% < 97%) that tripped never-shrink was self-inflicted:
+    # 288,453 of those 352,671 collapsed rows were EXACT (key,date,value) duplicates from
+    # an interrupted/resumed ingest double-append, and 64,218 were distinct values fused
+    # onto one key by the [:3] truncation (e.g. SE_ADT_ACTS's 4th dim "Type of skill",
+    # 36 values). After a one-time re-ingest with jobs/ingest_unsdg.py (also uncapped) the
+    # published file loses the duplicate inflation, the effective key is unique, and this
+    # merge grows-or-noops cleanly. The guard is left intact (min_ratio unchanged).
     try:
         n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
     except DefinitiveError as e:

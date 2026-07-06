@@ -14,6 +14,7 @@ gate — the health gate step is what turns runs red).
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import sqlite3
@@ -58,7 +59,18 @@ def main() -> None:
     if warn or bad:
         lines.append("")
     for r in ok:
-        lines.append(f"     {r[0]:20} {r[1]:15} data through {r[2] or '—'}")
+        # A "data through" frontier far in the future is a legitimate projection
+        # horizon (e.g. fred_releases carries CBO potential-GDP / WEO forecasts that
+        # extend ~10y out), NOT a data bug. Flag it so a projection is never mistaken
+        # for a stale/garbled date in the digest.
+        _proj = ""
+        try:
+            _d = dt.date.fromisoformat(str(r[2])[:10]) if r[2] else None
+            if _d and (_d - dt.date.today()).days > 366:
+                _proj = " (incl. forecast/projection horizon)"
+        except (ValueError, TypeError):
+            _proj = ""
+        lines.append(f"     {r[0]:20} {r[1]:15} data through {r[2] or '—'}{_proj}")
     lines += ["", f"Live freshness feed: {feed}", f"Run log: {runlog}"]
     body = chr(10).join(lines)
 

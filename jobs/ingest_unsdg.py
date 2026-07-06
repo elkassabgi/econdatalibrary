@@ -121,7 +121,12 @@ def fetch_series_data(series_code: str) -> tuple[list, list, list]:
                 dim_parts = [f"{k}={dv}" for k, dv in sorted(dims.items())
                              if dv and dv not in ("", "_T", "ALLAREA", "G")]
                 if dim_parts:
-                    dim_str = "|" + "|".join(dim_parts[:3])
+                    # Carry ALL non-trivial dimensions, not just the first 3 — mirrors
+                    # the S1 fetcher (strategies/fetchers/unsdg.py). Truncating to [:3]
+                    # dropped a 4th+ disaggregating dimension (e.g. SE_ADT_ACTS's
+                    # "Type of skill", 36 values) and collapsed distinct observations
+                    # onto one (series_key, obs_date), inflating the store with dupes.
+                    dim_str = "|" + "|".join(dim_parts)
 
             keys.append(f"{series_code}:{geo}{dim_str}")
             dates.append(obs_date)
