@@ -23,6 +23,7 @@ import { handleMetadata } from "./metadata";
 import { handleSeriesCsv } from "./series";
 import { handleBundle } from "./bundle";
 import { requireDownloadAuth, logDownload } from "./auth";
+import { isNonRedistributable } from "./denylist";
 import { json, reqLang } from "./util";
 
 const CORS_PREFLIGHT: Record<string, string> = {
@@ -95,6 +96,11 @@ export default {
           const enc = tail.slice(0, -".csv".length);
           const id = decodeURIComponent(enc);
           if (!id) return json({ error: "bad_request", detail: "empty series id" }, 400);
+          // Redistribution gate (denylist.ts): some sources' licences forbid
+          // third-party re-hosting of the data. Hard-block the DATA with 451.
+          if (isNonRedistributable(id)) {
+            return json({ error: "not_redistributable", detail: "This source's licence does not permit third-party redistribution of the data. Please obtain it directly from the original provider." }, 451);
+          }
           // Shared-login gate (auth.ts): data downloads need the free family
           // key (hf keys work as-is); catalog/metadata/freshness stay open.
           const auth = await requireDownloadAuth(request, env);
