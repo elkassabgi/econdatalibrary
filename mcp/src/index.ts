@@ -131,6 +131,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
 
     // ═════════════════ ECON DATA LIBRARY ═════════════════
     s.registerTool("search_econ_series", {
+      title: "Search Economic Series",
       description:
         "Search the Econ Data Library catalog (billions of series from 300+ sources: " +
         "national accounts, prices, trade, labor, energy, markets…). Free, no " +
@@ -158,6 +159,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     });
 
     s.registerTool("get_econ_series", {
+      title: "Download Economic Series",
       description:
         "Download an economic time series as rows (long format: date, value) " +
         "with its citation and license. REQUIRES the free ElkassabgiData API " +
@@ -212,6 +214,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     });
 
     s.registerTool("get_econ_series_metadata", {
+      title: "Economic Series Metadata",
       description:
         "Full metadata for one econ series: title, frequency, geography, unit, " +
         "license (incl. commercial-use flag), attribution/citation, coverage " +
@@ -225,6 +228,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     });
 
     s.registerTool("list_econ_sources", {
+      title: "List Economic Data Sources",
       description:
         "List the Econ Data Library's sources (309: statistical offices, " +
         "central banks, IGOs, research datasets) with their licenses. Free.",
@@ -249,6 +253,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     });
 
     s.registerTool("get_data_freshness", {
+      title: "Data Freshness",
       description:
         "Live per-source update status straight from the automated updater's " +
         "ledger: last successful update, data frontier, and honest stale/" +
@@ -276,6 +281,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
 
     // ═════════════════ HF DATA LIBRARY ═════════════════
     s.registerTool("get_hf_download_link", {
+      title: "HF Equity Data Download Link",
       description:
         "Authenticated download instructions for HF Data Library's 1-minute " +
         "OHLCV bars (full per-ticker history, 1,391 US stocks/ETFs, 2002→" +
@@ -311,6 +317,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     });
 
     s.registerTool("get_hf_variables_dictionary", {
+      title: "HF Variables Dictionary",
       description:
         "The exact definitions/formulas of HF Data Library's 25 pre-computed " +
         "academic variables (realized volatility family, spreads, jumps, " +
@@ -321,6 +328,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
 
     // ═════════════════ FAMILY ═════════════════
     s.registerTool("get_family_status", {
+      title: "ElkassabgiData Family Status",
       description:
         "Live status of the whole ElkassabgiData family: both libraries' " +
         "headline stats and data currency. Free.",
@@ -353,6 +361,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     });
 
     s.registerTool("get_auth_status", {
+      title: "Authentication Status",
       description:
         "Whether this MCP connection has an ElkassabgiData API key configured " +
         "(masked — the key itself is never echoed), and how to add one.",
