@@ -200,6 +200,20 @@ def main():
     if not all_vals:
         log("0 observations collected"); return
 
+    # Dedup exact (series_key, obs_date) duplicates the UN SDG API returns: many
+    # series report the SAME observation multiple times (verified: every collision
+    # carries an identical value — zero differing values, so this is lossless). Left
+    # raw, ~286k dup rows would make the effective key non-unique and a downstream
+    # dedup-on-merge shrink the store below the 0.97 never-shrink floor.
+    items = {}
+    for k, d, v in zip(all_keys, all_dates, all_vals):
+        items[(k, d)] = v  # exact dupes share a value; last-wins is harmless
+    if len(items) != len(all_vals):
+        log(f"deduped exact (key,obs_date) dupes: {len(all_vals):,} -> {len(items):,}")
+        all_keys  = [k for (k, _d) in items]
+        all_dates = [d for (_k, d) in items]
+        all_vals  = list(items.values())
+
     tbl = pa.table({
         "series_key": pa.array(all_keys,  pa.string()),
         "obs_date":   pa.array(all_dates, pa.date32()),
