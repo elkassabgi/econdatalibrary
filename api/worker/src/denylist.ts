@@ -16,11 +16,19 @@
 //   Conditions (must be honored in the site's KOF attribution/citation): NC use only;
 //   cite "KOF, ETH Zurich"; include a clear link back to the official KOF Globalisation
 //   Index page; no commercial resale/sublicensing; KOF may request removal.
+// GRANTED (re-enabled): comtrade — UN Comtrade team replied 2026-07-07 ("In brief,
+//   your use case should not require an additional license"), pointing to their
+//   use-and-re-dissemination decision tree. Our store (24,086 rows, verified) sits in
+//   the tree's explicit no-fee branch: free-of-charge data extraction "offering only
+//   a small number of records (up to 100,000)". Conditions honored: cite the source
+//   as "UN Comtrade" (their specified wording) + link back. STANDING GUARD: comtrade
+//   holdings must STAY <= 100,000 records — growing past that leaves the free branch
+//   and requires re-gating (or a premium re-dissemination license).
 export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   // Flatly not redistributable
   "qog", "cboe",
   // Permission required (written approval needed before re-hosting)
-  "social_progress", "spi", "whr", "ei_statreview", "comtrade", "cow",
+  "social_progress", "spi", "whr", "ei_statreview", "cow",
   "famafrench", "fraser_efw", "polity", "sipri", "sipri_polity", "tcmb",
   "wto_bat_bv_x", "wto_hs_0010", "wto_hs_0015", "wto_hs_0020", "wto_hs_0025",
   "wto_hs_0030", "wto_hs_0040", "wto_hs_a_0010", "wto_hs_a_0040",
