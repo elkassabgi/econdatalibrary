@@ -121,9 +121,19 @@ export async function logDownload(
 ): Promise<void> {
   try {
     const ip = request.headers.get("cf-connecting-ip") || "";
+    // Channel attribution (mirrors hf's downloadChannel): mcp relays carry the
+    // X-Elkassabgi-Client header / elkassabgidata-mcp UA or a ?via=mcp link tag;
+    // our own sites' browsers send a family Referer; everything else is 'api'.
+    const client = (request.headers.get("x-elkassabgi-client") || "").toLowerCase();
+    const ua = (request.headers.get("user-agent") || "").toLowerCase();
+    const via = new URL(request.url).searchParams.get("via");
+    const ref = request.headers.get("referer") || "";
+    const channel =
+      client === "mcp" || ua.includes("elkassabgidata-mcp") || via === "mcp" ? "mcp" :
+      (ref.includes("econdatalibrary.com") || ref.includes("elkassabgidata.com") || ref.includes("hfdatalibrary.com")) ? "web" : "api";
     await env.USERS.prepare(
-      "INSERT INTO econ_download_log (user_id, series_id, ip) VALUES (?, ?, ?)",
-    ).bind(userId, seriesId, ip).run();
+      "INSERT INTO econ_download_log (user_id, series_id, ip, channel) VALUES (?, ?, ?, ?)",
+    ).bind(userId, seriesId, ip, channel).run();
   } catch (e) {
     console.log("econ_download_log insert failed:", String(e));
   }
