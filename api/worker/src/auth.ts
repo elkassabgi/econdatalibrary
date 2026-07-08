@@ -27,6 +27,7 @@ import { json } from "./util";
 
 const ACCOUNT_URL = "https://hfdatalibrary.com/pages/download";
 const LIMIT_MAX = 100;      // canonical family limit: 100 downloads/min per account
+const LIMIT_MAX_VIP = 500;  // VIP: 5x, matching hf's 'api:download-vip' (bounded, unadvertised)
 const LIMIT_WINDOW_S = 60;
 
 export interface AuthedUser {
@@ -34,7 +35,7 @@ export interface AuthedUser {
   email: string | null;
 }
 
-interface UserRow { id: number; email: string | null; }
+interface UserRow { id: number; email: string | null; is_vip: number | null; }
 interface RateRow { count: number; window_start: string; }
 
 function extractKey(request: Request): string | null {
@@ -65,7 +66,7 @@ export async function requireDownloadAuth(
   }
 
   const user = await env.USERS.prepare(
-    'SELECT id, email FROM users WHERE api_key = ? AND is_active = 1 ' +
+    'SELECT id, email, is_vip FROM users WHERE api_key = ? AND is_active = 1 ' +
     'AND (api_key_expires_at IS NULL OR api_key_expires_at > datetime("now"))',
   ).bind(key).first<UserRow>();
   if (!user) {
@@ -91,10 +92,11 @@ export async function requireDownloadAuth(
     ).bind(fullKey).run();
     return { user };
   }
-  if (row.count >= LIMIT_MAX) {
+  const limitMax = user.is_vip ? LIMIT_MAX_VIP : LIMIT_MAX;
+  if (row.count >= limitMax) {
     return new Response(JSON.stringify({
       error: "rate_limited",
-      detail: `Limit is ${LIMIT_MAX} downloads per minute per account (same as ` +
+      detail: `Limit is ${limitMax} downloads per minute per account (same as ` +
         "hfdatalibrary). Slow down and retry.",
     }), {
       status: 429,
