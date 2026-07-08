@@ -21,3 +21,5 @@ urllib3>=2.6       # imported directly for Retry config (updater/strategies/fetc
 PyYAML>=6.0        # registry load/validate (updater/registry.py, updater/gen_registry.py)
 boto3>=1.42        # R2 S3-compatible client (core/r2_util.py -> updater/blob.py R2Blob backend)
 zstandard>=0.23    # state.db compress/decompress for the R2 round-trip (updater/run.py --pull/--push-state, plan O-8). NEW dep introduced by Phase 1 — not yet in the pre-Phase-1 local env; floor is the current stable line.
+openpyxl>=3.1      # xlsx parsers: edgar_jrc (imports jobs/ingest_edgar_jrc.py at module load — missing dep made implemented() report "no adapter built" on CI, run 28978133410) + gpi/gti/ppi/etr IEP workbooks (lazy import; absence would surface as a phantom "structural break")
+pyreadr>=0.5       # vdem RData reader (updater/strategies/fetchers/vdem.py _rdata_to_df; lazy import, same phantom-structural failure mode without it)
