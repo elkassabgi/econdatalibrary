@@ -35,7 +35,7 @@ const UPSTREAM_TIMEOUT_MS = 25_000;
 
 // ── upstream fetch with timeout + one retry on transient failure ────────────
 async function upstream(url: string, apiKey?: string | null): Promise<Response> {
-  const headers: Record<string, string> = { "User-Agent": "elkassabgidata-mcp" };
+  const headers: Record<string, string> = { "User-Agent": "elkassabgidata-mcp", "X-Elkassabgi-Client": "mcp" };
   if (apiKey) headers["X-API-Key"] = apiKey;
   for (let attempt = 0; ; attempt++) {
     const ctl = new AbortController();
@@ -299,8 +299,8 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       const t = ticker.toUpperCase();
       const url =
         dataset === "bars"
-          ? `${HF_API}/v1/download/${t}?version=${version}&format=${format}`
-          : `${HF_API}/v1/${dataset}/${t}?version=${version}`;
+          ? `${HF_API}/v1/download/${t}?version=${version}&format=${format}&via=mcp`
+          : `${HF_API}/v1/${dataset}/${t}?version=${version}&via=mcp`;
       const keyNote = this.key()
         ? "A key is configured on this MCP server — the SAME key authorizes these URLs."
         : `No key is configured on this MCP server. ${NO_KEY_MSG}`;
