@@ -27,6 +27,10 @@ licenses:
   # NonCommercial + granted licenses (attribution is a binding condition — the .csv
   # citation header + metadata surface these flags; see REDISTRIBUTION_COMPLIANCE.md).
   cc-by-nc-sa-4.0:      {reservable: true,  commercial_ok: false, attribution: required, no_modify: false, url: "https://creativecommons.org/licenses/by-nc-sa/4.0/"}   # IEP gpi/gti/ppi/etr
+  cc-by-nc-sa-3.0-igo:  {reservable: true,  commercial_ok: false, attribution: required, no_modify: true,  url: "https://creativecommons.org/licenses/by-nc-sa/3.0/igo/"}  # WHO GHO — NonCommercial (flag was backwards)
+  cc-by-sa-4.0:         {reservable: true,  commercial_ok: true,  attribution: required, no_modify: false, url: "https://creativecommons.org/licenses/by-sa/4.0/"}   # ShareAlike allows commercial (both flags were backwards)
+  cc-by-3.0:            {reservable: true,  commercial_ok: true,  attribution: required, url: "https://creativecommons.org/licenses/by/3.0/"}
+  nlod-2.0:             {reservable: true,  commercial_ok: true,  attribution: required, url: "https://data.norge.no/nlod/en/2.0"}   # Statistics Norway requires credit
   whr-granted:          {reservable: true,  commercial_ok: false, attribution: required, url: "https://worldhappiness.report/data-sharing/"}   # WHR/Gallup: copyrighted, publicly available with attribution (granted 2026-07)
 
 # ---------------------------------------------------------------------------

@@ -24,25 +24,30 @@
 //   as "UN Comtrade" (their specified wording) + link back. STANDING GUARD: comtrade
 //   holdings must STAY <= 100,000 records — growing past that leaves the free branch
 //   and requires re-gating (or a premium re-dissemination license).
-// GRANTED (re-enabled): whr — World Happiness Report / Gallup (REDACTED) granted
-//   2026-07-09: use of the free Figure 2.1 summary (life-eval 3yr averages from 2012,
-//   95% CIs, six-factor contributions). LEGAL BASIS (REDACTED's same-day clarification —
-//   do NOT call it public domain): "the data is not technically in the public domain;
-//   it is publicly available. These data are still protected by COPYRIGHT; we make
-//   them publicly available for use, subject to APPROPRIATE ATTRIBUTION." So
-//   attribution is the binding CONDITION of the grant, not a courtesy. Required cite:
-//   "Helliwell, Layard, Sachs, De Neve, Aknin & Wang, eds., World Happiness Report
-//   2026, University of Oxford: Wellbeing Research Centre" + link back to
-//   worldhappiness.report and the Figure 2.1 download. THEIR ASK: send REDACTED the live
-//   link once the econ library is public.
+// whr — World Happiness Report / Gallup (REDACTED) granted 2026-07-09 use of the
+//   free Figure 2.1 summary ONLY (3yr-avg life evaluation, 95% CIs, six-factor
+//   contributions), copyrighted-but-publicly-available-with-attribution (NOT public
+//   domain). RE-GATED 2026-07-08 by the compliance audit: the catalog currently serves
+//   the broader ANNUAL Life-Ladder panel (2011-2025, 178 countries) — beyond the
+//   granted Figure 2.1 scope. Keep gated until the served series are trimmed to the
+//   Figure 2.1 summary, OR Gallup/WHR confirms the annual panel is in scope. Required
+//   cite when un-gated: "Helliwell, Layard, Sachs, De Neve, Aknin & Wang, eds., World
+//   Happiness Report 2026, University of Oxford: Wellbeing Research Centre" + link back.
 export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   // Flatly not redistributable
   "qog", "cboe",
+  // WTO DENIED (REDACTED, Chief IDB Unit, 2026-07-08: refused all TTD
+  // redissemination). The prior list gated PHANTOM ids (wto_hs_* — 0 rows in the
+  // catalog) while the REAL HS-MFN tariff facets (wto_hs_a_0015/0020/0025/0030,
+  // ~87k series) leaked. Gate every real WTO id: all six HS-MFN tariff facets + the
+  // ITS merchandise-trade tables (same TTD portal, no clearly-open license).
+  "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025",
+  "wto_hs_a_0030", "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax",
+  // WHR: gated (see header note) — grant is Figure 2.1 only; we serve the broader panel.
+  "whr",
   // Permission required (written approval needed before re-hosting)
   "social_progress", "spi", "ei_statreview", "cow",
   "famafrench", "fraser_efw", "polity", "sipri", "sipri_polity", "tcmb",
-  "wto_bat_bv_x", "wto_hs_0010", "wto_hs_0015", "wto_hs_0020", "wto_hs_0025",
-  "wto_hs_0030", "wto_hs_0040", "wto_hs_a_0010", "wto_hs_a_0040",
   // Unclear — gate until the provider confirms redistribution terms
   "nbp", "wid", "barro_lee", "sdmx_nso",
 ]);
