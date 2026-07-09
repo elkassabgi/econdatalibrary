@@ -24,12 +24,15 @@
 //   as "UN Comtrade" (their specified wording) + link back. STANDING GUARD: comtrade
 //   holdings must STAY <= 100,000 records — growing past that leaves the free branch
 //   and requires re-gating (or a premium re-dissemination license).
-// GRANTED (re-enabled): whr — World Happiness Report / Gallup (REDACTED) replied
-//   2026-07-09: "Since these data are in the public domain, you may proceed with the
-//   attribution as you've outlined." Scope = the free Figure 2.1 summary (life-eval
-//   3yr averages from 2012, 95% CIs, six-factor contributions). Conditions honored:
-//   cite "Helliwell, Layard, Sachs, De Neve, Aknin & Wang, eds., World Happiness
-//   Report 2026, University of Oxford: Wellbeing Research Centre" + link back to
+// GRANTED (re-enabled): whr — World Happiness Report / Gallup (REDACTED) granted
+//   2026-07-09: use of the free Figure 2.1 summary (life-eval 3yr averages from 2012,
+//   95% CIs, six-factor contributions). LEGAL BASIS (REDACTED's same-day clarification —
+//   do NOT call it public domain): "the data is not technically in the public domain;
+//   it is publicly available. These data are still protected by COPYRIGHT; we make
+//   them publicly available for use, subject to APPROPRIATE ATTRIBUTION." So
+//   attribution is the binding CONDITION of the grant, not a courtesy. Required cite:
+//   "Helliwell, Layard, Sachs, De Neve, Aknin & Wang, eds., World Happiness Report
+//   2026, University of Oxford: Wellbeing Research Centre" + link back to
 //   worldhappiness.report and the Figure 2.1 download. THEIR ASK: send REDACTED the live
 //   link once the econ library is public.
 export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
