@@ -24,6 +24,10 @@ licenses:
   zillow-research:      {reservable: true,  commercial_ok: true,  attribution: required}    # "Data Provided by Zillow Group"
   defillama-open:       {reservable: true,  commercial_ok: true,  attribution: required}
   dbnomics-passthrough: {reservable: per_series, note: "inherit each provider's license at ingest"}
+  # NonCommercial + granted licenses (attribution is a binding condition — the .csv
+  # citation header + metadata surface these flags; see REDISTRIBUTION_COMPLIANCE.md).
+  cc-by-nc-sa-4.0:      {reservable: true,  commercial_ok: false, attribution: required, no_modify: false, url: "https://creativecommons.org/licenses/by-nc-sa/4.0/"}   # IEP gpi/gti/ppi/etr
+  whr-granted:          {reservable: true,  commercial_ok: false, attribution: required, url: "https://worldhappiness.report/data-sharing/"}   # WHR/Gallup: copyrighted, publicly available with attribution (granted 2026-07)
 
 # ---------------------------------------------------------------------------
 # SOURCES WE HOST (cache on R2 + re-serve). schedule = per-source cadence.

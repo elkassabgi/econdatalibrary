@@ -46,17 +46,68 @@
 //   6. >=1 row                      -> 200 text/csv
 // ---------------------------------------------------------------------------
 
-import type { Env, SeriesRow } from "./types";
-import { SELECT_SERIES } from "./sql";
+import type { Env, SeriesRow, SourceRow, LicenseRow } from "./types";
+import { SELECT_SERIES, SELECT_SOURCE, SELECT_LICENSE } from "./sql";
 import {
   csv, notFound, notMigrated, dataUnavailable, resolverEmpty, unsupportedFilter,
-  badRequest, supportedSources, sourceOf,
+  badRequest, supportedSources, sourceOf, licenseBlock,
 } from "./util";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function objectKey(seriesId: string): string {
   return `series/${encodeURIComponent(seriesId)}.csv`;
+}
+
+// Prominent citation header prepended to every .csv (unless ?raw=1). Lines start
+// with '#' so pandas (comment='#') / R (comment.char='#') skip them — but anyone
+// who OPENS the file (e.g. a data provider verifying attribution) sees the source,
+// licence and citation at the very top. This is the primary "attribution travels
+// with the bytes" mechanism and it is REQUIRED for the sources we re-host by
+// permission (KOF, UN Comtrade, WHR, IEP). The header is built from the same
+// catalog source/licence rows the metadata endpoint uses — one source of truth.
+async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Promise<string> {
+  const source = sourceOf(seriesId);
+  const src = await env.CATALOG.prepare(SELECT_SOURCE).bind(source).first<SourceRow>();
+  const licId = series.license_id ?? src?.license_id ?? null;
+  const lic = licId ? await env.CATALOG.prepare(SELECT_LICENSE).bind(licId).first<LicenseRow>() : null;
+  const L = licenseBlock(lic);
+
+  let citation = "";
+  if (series.metadata) {
+    try {
+      const m = JSON.parse(series.metadata) as { citation?: string; citation_long?: string; citation_short?: string };
+      citation = m.citation_long || m.citation || m.citation_short || "";
+    } catch { /* best-effort */ }
+  }
+
+  const row = (label: string, val: string | null | undefined): string =>
+    val ? `#  ${(label + ":").padEnd(11)}${String(val).replace(/\s+/g, " ").trim()}\n` : "";
+
+  let licLine = "";
+  if (L) {
+    let s = L.name || L.id || "";
+    if (L.commercial_ok === false) s += " — NON-COMMERCIAL USE ONLY (honor it)";
+    if (L.attribution_required) s += "; attribution required";
+    licLine = `#  ${"License:".padEnd(11)}${s}\n`;
+  }
+
+  const bar = "# " + "=".repeat(76) + "\n";
+  return (
+    bar +
+    "#  DATA CITATION — please credit the original source in any use or publication.\n" +
+    "#  By downloading from the Elkassabgi Data Library you agreed to cite this source.\n" +
+    "#\n" +
+    row("Series", `${series.title ?? seriesId}  [${seriesId}]`) +
+    row("Source", src?.attribution?.replace(/^\s*source:\s*/i, "")) +
+    licLine +
+    row("Homepage", src?.homepage) +
+    row("Terms", src?.terms_url) +
+    row("Cite as", citation) +
+    "#  Provided:  Elkassabgi Data Library — econdatalibrary.com\n" +
+    "#  (Pipelines: pandas pd.read_csv(url, comment='#'), or append ?raw=1 for bare CSV.)\n" +
+    bar
+  );
 }
 
 export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Promise<Response> {
@@ -107,8 +158,14 @@ export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Pro
   // 5) zero data rows -> 502 resolver_empty (refuse an empty series silently).
   if (countDataRows(filtered) === 0) return resolverEmpty(seriesId);
 
-  // 6) 200 with >=1 row.
-  return csv(filtered, { etag: obj.httpEtag });
+  // 6) 200 with >=1 row. Prepend the prominent citation header by default;
+  //    ?raw=1 (used by the MCP server, econdl clients, and pipelines) returns the
+  //    bare series_id,obs_date,value CSV. The R2 ETag describes the bare object, so
+  //    only pass it through on the raw path.
+  const rawParam = url.searchParams.get("raw");
+  const bare = rawParam === "1" || rawParam === "true";
+  if (bare) return csv(filtered, { etag: obj.httpEtag });
+  return csv((await citationHeader(seriesId, series, env)) + filtered);
 }
 
 /** Keep the header + rows whose obs_date is within [from, to] (inclusive).

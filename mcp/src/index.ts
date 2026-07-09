@@ -189,6 +189,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
         }
       } catch { /* metadata is best-effort; data call decides success */ }
       const du = new URL(`${ECON}/v1/series/${enc}.csv`);
+      du.searchParams.set("raw", "1"); // bare CSV; the MCP prepends its own citation metaBlock
       if (date_from) du.searchParams.set("from", date_from);
       if (date_to) du.searchParams.set("to", date_to);
       const r = await upstream(du.toString(), key);
