@@ -145,13 +145,30 @@ jobs:
         # else ever commits at steady state. Every real run (scheduled or manual
         # non-dry) commits a one-line run-id heartbeat. Any failure in this
         # chain — including the push — makes the run RED (bash -e).
+        #
+        # RACE-PROOF (2026-07-10, after run 28979036246 went red): a queued run
+        # checks out the sha pinned at TRIGGER time, so by heartbeat time main
+        # may already carry a sibling run's heartbeat — the old commit-then-
+        # `pull --rebase` pattern then hit a guaranteed content conflict on this
+        # single-line file. A heartbeat is last-writer-wins by definition, so
+        # instead: rebuild it on a FRESH origin tip immediately before each push
+        # attempt (reset --hard is safe here — the updater persists to R2/D1,
+        # never the repo tree), retry x3, and only then go RED.
         if: ${{ inputs.dry_run != true }}
         run: |
-          mkdir -p ops
-          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) run=${{ github.run_id }}" > ops/last_run.txt
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add ops/last_run.txt
-          git commit -m "heartbeat: run ${{ github.run_id }}"
-          git pull --rebase origin "${GITHUB_REF_NAME}"
-          git push origin HEAD:"${GITHUB_REF_NAME}"
+          for attempt in 1 2 3; do
+            git fetch origin "${GITHUB_REF_NAME}"
+            git reset --hard "origin/${GITHUB_REF_NAME}"
+            mkdir -p ops
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) run=${{ github.run_id }}" > ops/last_run.txt
+            git add ops/last_run.txt
+            git commit -m "heartbeat: run ${{ github.run_id }}"
+            if git push origin HEAD:"${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "heartbeat push raced another writer (attempt ${attempt}); rebuilding on fresh origin"
+          done
+          echo "heartbeat push failed after 3 attempts" >&2
+          exit 1
