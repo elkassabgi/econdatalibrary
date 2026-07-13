@@ -108,10 +108,19 @@ def main() -> None:
     for t, n in counts.items():
         print(f"  {t:14} {n:>8,} rows")
 
-    # ---- VERIFY: load the emitted SQL into a fresh in-memory SQLite (== D1) ----
-    mem = sqlite3.connect(":memory:")
+    # ---- VERIFY: replay the emitted dump into a fresh FILE-BACKED SQLite (== D1) ----
+    # A single executescript() on the full ~1 GB dump exceeds SQLite's
+    # SQLITE_MAX_SQL_LENGTH ("query string is too large"). Each `line` is already one
+    # complete statement, so replay them in blocks that stay well under the limit.
+    verify_db = OUT + ".verify.sqlite"
+    if os.path.exists(verify_db):
+        os.remove(verify_db)
+    mem = sqlite3.connect(verify_db)
     try:
-        mem.executescript(sql)
+        _VCHUNK = 2000  # statements per executescript block
+        for i in range(0, len(lines), _VCHUNK):
+            mem.executescript("\n".join(lines[i:i + _VCHUNK]))
+        mem.commit()
         ok = True
         for t in _CATALOG_TABLES + _STATE_TABLES:
             if t not in counts:
@@ -128,6 +137,10 @@ def main() -> None:
         print("VERIFY:", "PASS" if ok else "FAIL")
     finally:
         mem.close()
+        try:
+            os.remove(verify_db)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":
