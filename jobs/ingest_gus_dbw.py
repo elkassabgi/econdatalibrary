@@ -49,7 +49,14 @@ CLIENT_ID = os.environ.get("GUS_DBW_CLIENT_ID", "").strip()
 #   exceeded the weekly cap on a sustained crawl and would eventually trip 429s);
 #   anonymous  10000/7d -> 604800/10000 = 60.48 s/request.
 # (Verified 2026-06-24 against the live OpenAPI spec api-dbw.stat.gov.pl/apidocs.)
-SLEEP = 12.1 if CLIENT_ID else 60.5
+# 2026-07-13: GUS (api-dbw@stat.gov.pl) DISABLED the request limits on this
+# registered ClientId (email confirmation on file). The old 12.1s pacing existed
+# only to stay under the 50000/7d cap, which no longer applies. Ease to a still-
+# respectful ~1 req/s (well under the 10 req/s technical tier, honoring the
+# "capped, low-impact" commitment made to GUS): ~12x faster, ~13wk backfill -> ~1wk.
+# api_get() still honors Retry-After and backs off on any 429/503, so this
+# self-throttles if the gateway ever pushes back.
+SLEEP = 1.0 if CLIENT_ID else 60.5
 HEADERS = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 if CLIENT_ID:
     HEADERS["X-ClientId"] = CLIENT_ID
