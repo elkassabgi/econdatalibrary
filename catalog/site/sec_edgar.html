@@ -103,8 +103,8 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "DataDownload",
-      "encodingFormat": "application/vnd.apache.parquet",
-      "contentUrl": "https://econdatalibrary.com/data/sec_edgar/",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=sec_edgar",
       "license": "https://www.usa.gov/government-works"
     }
   ]
@@ -150,18 +150,18 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "cr:FileObject",
-      "@id": "sec_edgar-parquet",
-      "name": "sec_edgar-parquet",
-      "description": "Canonical long-format Parquet for this dataset.",
-      "contentUrl": "https://econdatalibrary.com/data/sec_edgar/",
-      "encodingFormat": "application/vnd.apache.parquet"
+      "@id": "sec_edgar-csv",
+      "name": "sec_edgar-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=sec_edgar",
+      "encodingFormat": "text/csv"
     }
   ]
 }
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -189,9 +189,9 @@ border-bottom:3px solid var(--gold)}
 <blockquote class="cite">U.S. Securities and Exchange Commission (EDGAR company facts). Retrieved from https://www.sec.gov/edgar. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/sec_edgar.html">https://econdatalibrary.com/sec_edgar.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-sec_edgar">https://huggingface.co/datasets/econdatalibrary-sec_edgar</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=sec_edgar">Select &amp; download sec_edgar series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/sec_edgar.html">https://econdatalibrary.com/sec_edgar.html</a></dd>
 <dt>Update cadence</dt><dd>daily</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
 <dt>Storage layout</dt><dd>TWO stages. Raw: data/raw/sec_edgar/companyfacts.zip + submissions.zip (~2.9GB combined) from this fetch script. Clean: one parquet per ticker/identifier under data/clean_grouped/sec_edgar/&lt;TICKER&gt;.parquet (~17,274 files) written by the separate jobs/ingest_sec_edgar.py — note this lands in clean_grouped, NOT clean_full (clean_full/sec_edgar is empty). ~123M obs total.</dd></dl>
@@ -239,8 +239,8 @@ Run:  python jobs/fetch_sec_edgar_bulk.py</p>
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/sec_edgar/&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=sec_edgar&quot;,
       &quot;license&quot;: &quot;https://www.usa.gov/government-works&quot;
     }
   ]
@@ -284,13 +284,13 @@ Run:  python jobs/fetch_sec_edgar_bulk.py</p>
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;cr:FileObject&quot;,
-      &quot;@id&quot;: &quot;sec_edgar-parquet&quot;,
-      &quot;name&quot;: &quot;sec_edgar-parquet&quot;,
-      &quot;description&quot;: &quot;Canonical long-format Parquet for this dataset.&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/sec_edgar/&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;
+      &quot;@id&quot;: &quot;sec_edgar-csv&quot;,
+      &quot;name&quot;: &quot;sec_edgar-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=sec_edgar&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

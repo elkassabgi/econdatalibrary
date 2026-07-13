@@ -102,8 +102,8 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "DataDownload",
-      "encodingFormat": "application/vnd.apache.parquet",
-      "contentUrl": "https://econdatalibrary.com/data/noaa/",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=noaa",
       "license": "https://www.usa.gov/government-works"
     }
   ]
@@ -150,18 +150,18 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "cr:FileObject",
-      "@id": "noaa-parquet",
-      "name": "noaa-parquet",
-      "description": "Canonical long-format Parquet for this dataset.",
-      "contentUrl": "https://econdatalibrary.com/data/noaa/",
-      "encodingFormat": "application/vnd.apache.parquet"
+      "@id": "noaa-csv",
+      "name": "noaa-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=noaa",
+      "encodingFormat": "text/csv"
     }
   ]
 }
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -185,9 +185,9 @@ border-bottom:3px solid var(--gold)}
 <blockquote class="cite">NOAA National Centers for Environmental Information (GHCN). Retrieved from https://www.ncei.noaa.gov. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/noaa.html">https://econdatalibrary.com/noaa.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-noaa">https://huggingface.co/datasets/econdatalibrary-noaa</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=noaa">Select &amp; download noaa series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/noaa.html">https://econdatalibrary.com/noaa.html</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
 <dt>Storage layout</dt><dd>overwrite-multi-file, grouped by 2-char GHCN country/network prefix: data/clean_full/noaa/&lt;ds&gt;__&lt;PREFIX&gt;.parquet (obs) + &lt;ds&gt;__&lt;PREFIX&gt;__series.parquet (series meta sidecar), ds in {gsom,gsoy}. ~834 parquet files total currently; ~552M obs (COVERAGE LARGE). Obs schema: dataset, station, series_key (&#x27;&lt;station&gt;:&lt;element&gt;&#x27;), obs_date (date32), element, value (float64), attributes. Raw cache: data/raw/noaa/{gsom,gsoy}/*.csv (~214K station CSVs), plus _manifest.json, _&lt;ds&gt;_failures.json, station_ids.txt, doc/ghcnd-stations.txt.</dd></dl>
@@ -259,8 +259,8 @@ Usage:
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/noaa/&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=noaa&quot;,
       &quot;license&quot;: &quot;https://www.usa.gov/government-works&quot;
     }
   ]
@@ -305,13 +305,13 @@ Usage:
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;cr:FileObject&quot;,
-      &quot;@id&quot;: &quot;noaa-parquet&quot;,
-      &quot;name&quot;: &quot;noaa-parquet&quot;,
-      &quot;description&quot;: &quot;Canonical long-format Parquet for this dataset.&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/noaa/&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;
+      &quot;@id&quot;: &quot;noaa-csv&quot;,
+      &quot;name&quot;: &quot;noaa-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=noaa&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

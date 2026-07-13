@@ -102,8 +102,8 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "DataDownload",
-      "encodingFormat": "application/vnd.apache.parquet",
-      "contentUrl": "https://econdatalibrary.com/data/usda/",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=usda",
       "license": "https://www.usa.gov/government-works"
     }
   ]
@@ -150,18 +150,18 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "cr:FileObject",
-      "@id": "usda-parquet",
-      "name": "usda-parquet",
-      "description": "Canonical long-format Parquet for this dataset.",
-      "contentUrl": "https://econdatalibrary.com/data/usda/",
-      "encodingFormat": "application/vnd.apache.parquet"
+      "@id": "usda-csv",
+      "name": "usda-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=usda",
+      "encodingFormat": "text/csv"
     }
   ]
 }
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -187,9 +187,9 @@ border-bottom:3px solid var(--gold)}
 <blockquote class="cite">USDA National Agricultural Statistics Service, Quick Stats. Retrieved from https://quickstats.nass.usda.gov. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/usda.html">https://econdatalibrary.com/usda.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-usda">https://huggingface.co/datasets/econdatalibrary-usda</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=usda">Select &amp; download usda series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/usda.html">https://econdatalibrary.com/usda.html</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
 <dt>Storage layout</dt><dd>per-cube directory of rolling part files: data/clean_full/usda/&lt;cube&gt;/part_NNN.parquet (each capped at PART_ROWS=1,000,000 rows, flushed in BATCH_ROWS=200k row-groups, zstd) plus a per-cube &#x27;_complete&#x27; sentinel; cubes = animals_products, crops (25 parts), demographics, economics, environmental. Plus _manifest.json (source_id, license, per-cube rows/series, totals: 57,629,841 rows / 15,534,339 series). Wide schema: series_key + ~31 self-describing NASS dimension columns + obs_date(date32) + value(float64) + value_flag(string). series_key = &#x27;usda:&#x27; + pipe-joined KEY_COLS.</dd></dl>
@@ -250,8 +250,8 @@ Usage:
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/usda/&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=usda&quot;,
       &quot;license&quot;: &quot;https://www.usa.gov/government-works&quot;
     }
   ]
@@ -296,13 +296,13 @@ Usage:
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;cr:FileObject&quot;,
-      &quot;@id&quot;: &quot;usda-parquet&quot;,
-      &quot;name&quot;: &quot;usda-parquet&quot;,
-      &quot;description&quot;: &quot;Canonical long-format Parquet for this dataset.&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/usda/&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;
+      &quot;@id&quot;: &quot;usda-csv&quot;,
+      &quot;name&quot;: &quot;usda-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=usda&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

@@ -100,8 +100,8 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "DataDownload",
-      "encodingFormat": "application/vnd.apache.parquet",
-      "contentUrl": "https://econdatalibrary.com/data/istat/",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=istat",
       "license": "https://creativecommons.org/licenses/by/4.0/"
     }
   ]
@@ -143,18 +143,18 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "cr:FileObject",
-      "@id": "istat-parquet",
-      "name": "istat-parquet",
-      "description": "Canonical long-format Parquet for this dataset.",
-      "contentUrl": "https://econdatalibrary.com/data/istat/",
-      "encodingFormat": "application/vnd.apache.parquet"
+      "@id": "istat-csv",
+      "name": "istat-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=istat",
+      "encodingFormat": "text/csv"
     }
   ]
 }
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -175,9 +175,9 @@ border-bottom:3px solid var(--gold)}
 <dt>Provider homepage</dt><dd><a href="https://www.istat.it/en/">https://www.istat.it/en/</a></dd>
 <dt>Provider terms</dt><dd><a href="https://www.istat.it/en/legal-notice/">https://www.istat.it/en/legal-notice/</a></dd></dl>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/istat.html">https://econdatalibrary.com/istat.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-istat">https://huggingface.co/datasets/econdatalibrary-istat</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=istat">Select &amp; download istat series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/istat.html">https://econdatalibrary.com/istat.html</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
 <dt>Update strategy</dt><dd>sdmx delta</dd>
 <dt>Storage layout</dt><dd>per-flow parquet files in data/clean_full/istat/ (755 files present, many MB-scale, e.g. 101_1015.parquet ~2.9MB; schema series_key:string, obs_date:date32, value:float64, zstd, sorted by (key,date)). SAME dir+filename convention as ingest_sdmx_nso.py so the two jobs dedupe via skip-existing across both. Plus JSON checkpoints _sliced_done.json / _sliced_unrecoverable.json (atomic tmp+os.replace, lines 603-607). Full mode: incomplete = no parquet (is_incomplete, lines 610-614); present flows skipped+marked done (lines 697-700). --only mode INTENTIONALLY ignores skip-existing and the done checkpoint and OVERWRITES the target flow (lines 654-665, 697).</dd></dl>
@@ -249,8 +249,8 @@ Run:
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/istat/&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=istat&quot;,
       &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;
     }
   ]
@@ -290,13 +290,13 @@ Run:
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;cr:FileObject&quot;,
-      &quot;@id&quot;: &quot;istat-parquet&quot;,
-      &quot;name&quot;: &quot;istat-parquet&quot;,
-      &quot;description&quot;: &quot;Canonical long-format Parquet for this dataset.&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/istat/&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;
+      &quot;@id&quot;: &quot;istat-csv&quot;,
+      &quot;name&quot;: &quot;istat-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=istat&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

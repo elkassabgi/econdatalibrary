@@ -103,8 +103,8 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "DataDownload",
-      "encodingFormat": "application/vnd.apache.parquet",
-      "contentUrl": "https://econdatalibrary.com/data/worldbank_pink/",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=worldbank_pink",
       "license": "https://creativecommons.org/licenses/by/4.0/"
     }
   ]
@@ -151,18 +151,18 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "cr:FileObject",
-      "@id": "worldbank_pink-parquet",
-      "name": "worldbank_pink-parquet",
-      "description": "Canonical long-format Parquet for this dataset.",
-      "contentUrl": "https://econdatalibrary.com/data/worldbank_pink/",
-      "encodingFormat": "application/vnd.apache.parquet"
+      "@id": "worldbank_pink-csv",
+      "name": "worldbank_pink-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=worldbank_pink",
+      "encodingFormat": "text/csv"
     }
   ]
 }
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -186,9 +186,9 @@ border-bottom:3px solid var(--gold)}
 <blockquote class="cite">World Bank, Commodity Price Data (the Pink Sheet). Retrieved from https://www.worldbank.org/commodities. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/worldbank_pink.html">https://econdatalibrary.com/worldbank_pink.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-worldbank_pink">https://huggingface.co/datasets/econdatalibrary-worldbank_pink</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=worldbank_pink">Select &amp; download worldbank_pink series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/worldbank_pink.html">https://econdatalibrary.com/worldbank_pink.html</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
 <dt>Storage layout</dt><dd>6 grouped parquet files (one per sheet) under data/clean_full/worldbank_pink/: m_price, m_index, a_price, a_index_nominal, a_price_real, a_index_real (schema series_key, obs_date date32, value). Plus _manifest.json with per-series catalog + vintage. Raw xlsx cached in data/raw/worldbank_pink/.</dd></dl>
@@ -262,8 +262,8 @@ Run:
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/worldbank_pink/&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=worldbank_pink&quot;,
       &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;
     }
   ]
@@ -308,13 +308,13 @@ Run:
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;cr:FileObject&quot;,
-      &quot;@id&quot;: &quot;worldbank_pink-parquet&quot;,
-      &quot;name&quot;: &quot;worldbank_pink-parquet&quot;,
-      &quot;description&quot;: &quot;Canonical long-format Parquet for this dataset.&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/worldbank_pink/&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;
+      &quot;@id&quot;: &quot;worldbank_pink-csv&quot;,
+      &quot;name&quot;: &quot;worldbank_pink-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=worldbank_pink&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

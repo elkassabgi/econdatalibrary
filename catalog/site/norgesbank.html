@@ -139,7 +139,7 @@ border-bottom:3px solid var(--gold)}
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -159,9 +159,9 @@ border-bottom:3px solid var(--gold)}
 <dt>Provider homepage</dt><dd><a href="https://www.norges-bank.no/en/topics/Statistics/">https://www.norges-bank.no/en/topics/Statistics/</a></dd>
 <dt>Provider terms</dt><dd><a href="https://www.norges-bank.no/en/disclaimer/">https://www.norges-bank.no/en/disclaimer/</a></dd></dl>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/norgesbank.html">https://econdatalibrary.com/norgesbank.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-norgesbank">https://huggingface.co/datasets/econdatalibrary-norgesbank</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=norgesbank">Select &amp; download norgesbank series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/norgesbank.html">https://econdatalibrary.com/norgesbank.html</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
 <dt>Update strategy</dt><dd>sdmx delta</dd>
 <dt>Storage layout</dt><dd>single parquet (combined): data/clean_full/norgesbank/norgesbank.parquet (~12 MB, ~16K obs is the COVERAGE &#x27;nyfed&#x27; line — norgesbank itself is small/medium). Schema: series_key (str, &#x27;{flow}:{dim.dim.dim}&#x27;), obs_date (date32), value (float64). Written once at end of run (no checkpointing); resume reads the whole file back in first. Sibling per-dataflow .parquet files are from a separate script.</dd></dl>
@@ -249,5 +249,5 @@ Run: python jobs/ingest_norgesbank.py</p>
   &quot;isAccessibleForFree&quot;: false,
   &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

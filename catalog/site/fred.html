@@ -139,7 +139,7 @@ border-bottom:3px solid var(--gold)}
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -161,9 +161,9 @@ border-bottom:3px solid var(--gold)}
 <dt>Provider homepage</dt><dd><a href="https://fred.stlouisfed.org/">https://fred.stlouisfed.org/</a></dd>
 <dt>Provider terms</dt><dd><a href="https://fred.stlouisfed.org/legal/">https://fred.stlouisfed.org/legal/</a></dd></dl>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/fred.html">https://econdatalibrary.com/fred.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-fred">https://huggingface.co/datasets/econdatalibrary-fred</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=fred">Select &amp; download fred series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/fred.html">https://econdatalibrary.com/fred.html</a></dd>
 <dt>Update cadence</dt><dd>weekly</dd>
 <dt>Update strategy</dt><dd>extend by date</dd>
 <dt>Storage layout</dt><dd>Single grouped parquet: data/clean_full/fred/fred.parquet, columns series_key (FRED id), obs_date(date32), value(float64), zstd. Built by loading the entire existing file into Python lists, extending with new series, and rewriting the whole file once. No raw dir, no sidecar (the _fred_log.txt / _manifest.json / release_*.parquet alongside it are from other scripts).</dd></dl>
@@ -245,5 +245,5 @@ Run: python jobs/ingest_fred.py
   &quot;isAccessibleForFree&quot;: false,
   &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

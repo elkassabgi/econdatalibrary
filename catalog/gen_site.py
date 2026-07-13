@@ -369,8 +369,8 @@ def dataset_jsonld(rec):
     if rec["reservable"]:
         dist = {
             "@type": "DataDownload",
-            "encodingFormat": "application/vnd.apache.parquet",
-            "contentUrl": f"{SITE_BASE}/data/{rec['id']}/",
+            "encodingFormat": "text/csv",
+            "contentUrl": f"{SITE_BASE}/download.html?source={rec['id']}",
         }
         if rec["license_url"]:
             dist["license"] = rec["license_url"]
@@ -431,11 +431,11 @@ def croissant_jsonld(rec):
         obj["distribution"] = [
             {
                 "@type": "cr:FileObject",
-                "@id": f"{rec['id']}-parquet",
-                "name": f"{rec['id']}-parquet",
-                "description": "Canonical long-format Parquet for this dataset.",
-                "contentUrl": f"{SITE_BASE}/data/{rec['id']}/",
-                "encodingFormat": "application/vnd.apache.parquet",
+                "@id": f"{rec['id']}-csv",
+                "name": f"{rec['id']}-csv",
+                "description": "Per-series CSV, downloadable with a free API key.",
+                "contentUrl": f"{SITE_BASE}/download.html?source={rec['id']}",
+                "encodingFormat": "text/csv",
             }
         ]
     else:
@@ -527,7 +527,7 @@ HEAD = """<!DOCTYPE html>
 {jsonld}
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 """
 
 
@@ -611,9 +611,9 @@ def render_dataset_page(rec):
 
     # Access / mirrors
     acc_rows = [
+        ("Download", f'<a href="download.html?source={esc(rec["id"])}">Select &amp; download {esc(rec["id"])} series as CSV &rarr;</a>'),
+        ("API", f'<a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span>'),
         ("Canonical landing", f'<a href="{esc(rec["page_url"])}">{esc(rec["page_url"])}</a>'),
-        ("Hugging Face (planned mirror)", f'<a href="{esc(rec["hf_url"])}">{esc(rec["hf_url"])}</a> <span style="color:#9ca3af">(placeholder)</span>'),
-        ("Zenodo (planned DOI)", f'<a href="{esc(rec["zenodo_url"])}">{esc(rec["zenodo_url"])}</a> <span style="color:#9ca3af">(placeholder)</span>'),
     ]
     if rec["cadence"]:
         acc_rows.append(("Update cadence", esc(rec["cadence"])))

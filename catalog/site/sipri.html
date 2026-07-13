@@ -143,7 +143,7 @@ border-bottom:3px solid var(--gold)}
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -168,9 +168,9 @@ border-bottom:3px solid var(--gold)}
 <blockquote class="cite">Stockholm International Peace Research Institute (SIPRI). Retrieved from https://www.sipri.org/. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/sipri.html">https://econdatalibrary.com/sipri.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-sipri">https://huggingface.co/datasets/econdatalibrary-sipri</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=sipri">Select &amp; download sipri series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/sipri.html">https://econdatalibrary.com/sipri.html</a></dd>
 <dt>Update cadence</dt><dd>annual</dd>
 <dt>Update strategy</dt><dd>overwrite if changed</dd>
 <dt>Storage layout</dt><dd>single parquet: data/clean_full/sipri/sipri.parquet (~435 KB; series_key=&#x27;&lt;prefix&gt;:&lt;country_key&gt;&#x27; where prefix in {milex_usd_const, milex_usd_curr, milex_gdp_share, milex_gov_share, milex_percap, milex_lcu} and country_key is a sanitized &lt;=30-char country name; obs_date = Dec-31 of year; value float64). One file. (The sibling milex.parquet in the same dir is from ingest_sipri_polity.py and out of scope.) No in-run (key,date) dedup, but sheets are disjoint by prefix so cross-sheet collisions don&#x27;t occur.</dd></dl>
@@ -260,5 +260,5 @@ Run: python jobs/ingest_sipri.py</p>
   &quot;isAccessibleForFree&quot;: false,
   &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

@@ -138,7 +138,7 @@ border-bottom:3px solid var(--gold)}
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -158,9 +158,9 @@ border-bottom:3px solid var(--gold)}
 <dt>Provider homepage</dt><dd><a href="https://db.nomics.world/IMF">https://db.nomics.world/IMF</a></dd>
 <dt>Provider terms</dt><dd><a href="https://www.imf.org/en/about/copyright-and-terms">https://www.imf.org/en/about/copyright-and-terms</a></dd></dl>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/imf_dbnomics.html">https://econdatalibrary.com/imf_dbnomics.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-imf_dbnomics">https://huggingface.co/datasets/econdatalibrary-imf_dbnomics</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=imf_dbnomics">Select &amp; download imf_dbnomics series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/imf_dbnomics.html">https://econdatalibrary.com/imf_dbnomics.html</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
 <dt>Storage layout</dt><dd>single parquet per dataset argument: data/clean_full/&lt;dir&gt;/&lt;dir&gt;.parquet (e.g. imf_ifs/imf_ifs.parquet, imf_dot/imf_dot.parquet, imf_bop/imf_bop.parquet) plus an intermediate &lt;file&gt;.parquet.checkpoint written every 50,000 series. Schema series_key(str), obs_date(date32), value(float64). series_key = &lt;PROVIDER&gt;_&lt;DATASET&gt;:&lt;series_code&gt;.</dd></dl>
@@ -257,5 +257,5 @@ Run: python jobs/ingest_imf_dbnomics.py IFS</p>
   &quot;isAccessibleForFree&quot;: false,
   &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

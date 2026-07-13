@@ -99,8 +99,8 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "DataDownload",
-      "encodingFormat": "application/vnd.apache.parquet",
-      "contentUrl": "https://econdatalibrary.com/data/sdmx_nso/",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=sdmx_nso",
       "license": "https://www.istat.it/en/legal-notice/"
     }
   ]
@@ -142,18 +142,18 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "cr:FileObject",
-      "@id": "sdmx_nso-parquet",
-      "name": "sdmx_nso-parquet",
-      "description": "Canonical long-format Parquet for this dataset.",
-      "contentUrl": "https://econdatalibrary.com/data/sdmx_nso/",
-      "encodingFormat": "application/vnd.apache.parquet"
+      "@id": "sdmx_nso-csv",
+      "name": "sdmx_nso-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=sdmx_nso",
+      "encodingFormat": "text/csv"
     }
   ]
 }
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -174,9 +174,9 @@ border-bottom:3px solid var(--gold)}
 <dt>Provider homepage</dt><dd><a href="https://www.istat.it/en/">https://www.istat.it/en/</a></dd>
 <dt>Provider terms</dt><dd><a href="https://www.istat.it/en/legal-notice/">https://www.istat.it/en/legal-notice/</a></dd></dl>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/sdmx_nso.html">https://econdatalibrary.com/sdmx_nso.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-sdmx_nso">https://huggingface.co/datasets/econdatalibrary-sdmx_nso</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=sdmx_nso">Select &amp; download sdmx_nso series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/sdmx_nso.html">https://econdatalibrary.com/sdmx_nso.html</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
 <dt>Update strategy</dt><dd>giant changed units</dd>
 <dt>Storage layout</dt><dd>multi-file, one parquet per dataflow under data/clean_full/&lt;out_key or provider&gt;/&lt;flow_id&gt;.parquet. series_key built from SDMX dimension key (SDMX-CSV: dim cols joined as k=v, skipping time/obs/attribute cols; XML: SeriesKey Values or compact Obs attributes); obs_date from TIME_PERIOD via parse_sdmx_period; value float64. Tries SDMX-CSV first, falls back to generic/compact XML (XML capped at 800 MB, oversized flows skipped). Multiple providers can share one dir via out_key (istat/istat_esploradati). Cost is GIANT because the connector fronts the largest sources in the library — eurostat (6.1B obs), bis (88M, observed LBS.parquet alone 184 MB), ilostat (388M), plus istat/bundesbank/etc.; a full multi-provider sweep is many hours.</dd></dl>
@@ -226,8 +226,8 @@ Run: python jobs/ingest_sdmx_nso.py &lt;provider&gt;
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/sdmx_nso/&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=sdmx_nso&quot;,
       &quot;license&quot;: &quot;https://www.istat.it/en/legal-notice/&quot;
     }
   ]
@@ -267,13 +267,13 @@ Run: python jobs/ingest_sdmx_nso.py &lt;provider&gt;
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;cr:FileObject&quot;,
-      &quot;@id&quot;: &quot;sdmx_nso-parquet&quot;,
-      &quot;name&quot;: &quot;sdmx_nso-parquet&quot;,
-      &quot;description&quot;: &quot;Canonical long-format Parquet for this dataset.&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/sdmx_nso/&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;
+      &quot;@id&quot;: &quot;sdmx_nso-csv&quot;,
+      &quot;name&quot;: &quot;sdmx_nso-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=sdmx_nso&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

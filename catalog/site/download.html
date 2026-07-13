@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Download Data — Econ Data Library</title>
+<meta name="description" content="Search 7.7 billion economic and financial time series across 309 sources, select the ones you want, and download them as CSV — free with an ElkassabgiData API key.">
+<link rel="canonical" href="https://econdatalibrary.com/download.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{--navy:#1a2332;--navy-light:#243044;--blue:#2563eb;--blue-pale:#eff6ff;
+--gold:#d4a843;--gold-deep:#8a6d27;--g50:#f9fafb;--g100:#f3f4f6;--g200:#e5e7eb;
+--g300:#d1d5db;--g400:#9ca3af;--g500:#6b7280;--g600:#4b5563;--g700:#374151;--g800:#1f2937;
+--green:#047857;--red:#b91c1c;--amber:#92600a;--serif:Georgia,serif;
+--sans:"Inter",system-ui,sans-serif;--mono:"JetBrains Mono",monospace}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--sans);color:var(--g800);background:#fff;line-height:1.6}
+.nav{background:var(--navy);color:#fff;padding:0 1.5rem;height:60px;display:flex;align-items:center;justify-content:space-between}
+.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}
+.brand .d{color:var(--gold)}.brand a{color:#fff;text-decoration:none}
+.nav .links a{color:rgba(255,255,255,.8);text-decoration:none;font-size:.9rem;margin-left:1rem}
+.nav .links a.active{color:var(--gold)}
+.wrap{max-width:1080px;margin:0 auto;padding:1.5rem}
+h1{font-family:var(--serif);color:var(--navy);font-size:2rem;line-height:1.2;margin:.5rem 0 .3rem}
+.sub{color:var(--g600);font-size:1.02rem;margin:0 0 1.5rem}
+.mono{font-family:var(--mono)}
+/* API key bar */
+.keybar{background:var(--g50);border:1px solid var(--g200);border-radius:10px;padding:1rem 1.15rem;margin-bottom:1.4rem}
+.keybar h3{margin:0 0 .5rem;font-size:.95rem;color:var(--navy)}
+.keyrow{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}
+.keyrow input{flex:1;min-width:240px;font-family:var(--mono);font-size:.86rem;padding:.55rem .7rem;border:1px solid var(--g300);border-radius:7px}
+.keyrow .status{font-size:.85rem;font-weight:600}
+.keyrow .status.ok{color:var(--green)}.keyrow .status.no{color:var(--g500)}
+.keybar .hint{font-size:.83rem;color:var(--g600);margin:.55rem 0 0}
+.keybar .hint a{color:var(--blue);text-decoration:none}
+/* search + facets */
+.searchrow{display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:.8rem}
+#q{flex:1;min-width:260px;font-size:1rem;padding:.7rem .9rem;border:1.5px solid var(--g300);border-radius:8px}
+#q:focus{outline:none;border-color:var(--blue)}
+select{font-size:.88rem;padding:.7rem .6rem;border:1px solid var(--g300);border-radius:8px;background:#fff;color:var(--g700)}
+.meta-line{font-size:.85rem;color:var(--g500);margin:.2rem 0 1rem}
+/* results */
+table{width:100%;border-collapse:collapse;font-size:.88rem}
+thead th{text-align:left;padding:.5rem .5rem;border-bottom:2px solid var(--g200);color:var(--g500);font-size:.76rem;text-transform:uppercase;letter-spacing:.03em;font-weight:600}
+tbody td{padding:.6rem .5rem;border-bottom:1px solid var(--g100);vertical-align:top}
+tbody tr:hover{background:var(--g50)}
+.sid{font-family:var(--mono);font-size:.8rem;color:var(--gold-deep);word-break:break-all}
+.title{color:var(--g800);font-weight:500}
+.dims{font-size:.78rem;color:var(--g500);margin-top:.15rem}
+.badge{display:inline-block;font-size:.72rem;font-weight:600;padding:.12rem .5rem;border-radius:5px;background:var(--blue-pale);color:var(--blue);white-space:nowrap}
+.dlbtn{font-family:var(--sans);font-size:.8rem;font-weight:600;padding:.4rem .8rem;border:1px solid var(--blue);background:var(--blue);color:#fff;border-radius:6px;cursor:pointer;white-space:nowrap}
+.dlbtn:hover{background:#1d4fd8}
+.dlbtn:disabled{opacity:.5;cursor:default}
+.chk{width:16px;height:16px;cursor:pointer}
+.empty{padding:2.5rem 1rem;text-align:center;color:var(--g500)}
+.morebtn{display:block;margin:1.2rem auto;font-size:.9rem;padding:.55rem 1.4rem;border:1px solid var(--g300);background:#fff;color:var(--g700);border-radius:7px;cursor:pointer}
+/* selection tray */
+#tray{position:sticky;bottom:0;background:#fff;border-top:2px solid var(--navy);box-shadow:0 -4px 18px rgba(0,0,0,.08);padding:.85rem 1.5rem;display:none;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+#tray.show{display:flex}
+#tray .cnt{font-weight:600;color:var(--navy)}
+#tray .actions{display:flex;gap:.6rem;align-items:center}
+#tray button{font-family:var(--sans);font-weight:600;font-size:.88rem;padding:.55rem 1.1rem;border-radius:7px;cursor:pointer;border:1px solid var(--g300);background:#fff;color:var(--g700)}
+#tray button.primary{background:var(--gold);border-color:var(--gold-deep);color:#3a2e08}
+#tray button.primary:hover{background:#c79b34}
+.gate{font-size:.8rem;color:var(--g600);margin-top:.5rem}
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;padding:.7rem 1.2rem;border-radius:8px;font-size:.88rem;opacity:0;transition:opacity .25s;z-index:50;max-width:90vw}
+.toast.show{opacity:1}
+.foot{color:var(--g500);font-size:.82rem;text-align:center;padding:2rem 1rem;border-top:1px solid var(--g100);margin-top:2rem}
+</style>
+</head>
+<body>
+<div class="nav">
+  <div class="brand"><a href="index.html">econdata<span class="d">library</span></a></div>
+  <div class="links">
+    <a href="index.html">Catalog</a>
+    <a href="download.html" class="active">Download</a>
+    <a href="status.html">Status</a>
+    <a href="mcp.html">MCP</a>
+    <a href="account.html">Account</a>
+  </div>
+</div>
+
+<div class="wrap">
+  <h1>Download data</h1>
+  <p class="sub">Search 7.7 billion economic &amp; financial time series across 309 sources, select what you need, and download it as CSV. Free with an ElkassabgiData API key.</p>
+
+  <div class="keybar">
+    <h3>Your API key</h3>
+    <div class="keyrow">
+      <input id="key" type="text" placeholder="hfd_… or your ElkassabgiData API key" autocomplete="off" spellcheck="false">
+      <button class="dlbtn" id="savekey">Save</button>
+      <span class="status no" id="keystatus">no key set</span>
+    </div>
+    <p class="hint">One free key works across every Elkassabgi data library (hfdatalibrary.com &amp; econdatalibrary.com). Already registered on either site? Your existing key works here. <a href="https://hfdatalibrary.com/pages/download" target="_blank" rel="noopener">Get a free key →</a> Your key is stored only in this browser.</p>
+  </div>
+
+  <div class="searchrow">
+    <input id="q" type="text" placeholder="Search by name, id, source, geography… (e.g. CO2 emissions, GDP, unemployment)" autofocus>
+    <select id="fsource"><option value="">All sources</option></select>
+    <select id="ffreq">
+      <option value="">Any frequency</option>
+      <option value="A">Annual</option><option value="Q">Quarterly</option>
+      <option value="M">Monthly</option><option value="W">Weekly</option><option value="D">Daily</option>
+    </select>
+  </div>
+  <div class="meta-line" id="meta">Type above to search the catalog.</div>
+
+  <table id="tbl" style="display:none">
+    <thead><tr>
+      <th style="width:32px"><input type="checkbox" class="chk" id="chkall" title="Select all on this page"></th>
+      <th>Series</th><th style="width:130px">Coverage</th><th style="width:90px">License</th><th style="width:110px"></th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="empty" id="empty" style="display:none"></div>
+  <button class="morebtn" id="more" style="display:none">Load more</button>
+</div>
+
+<div id="tray">
+  <div class="cnt"><span id="traycount">0</span> series selected</div>
+  <div class="actions">
+    <button id="clearsel">Clear</button>
+    <button class="primary" id="dlsel">Download selected (CSV .zip)</button>
+  </div>
+  <div class="gate" style="flex-basis:100%">By downloading you agree to cite each series' original source (attribution is included in every file header).</div>
+</div>
+<div class="toast" id="toast"></div>
+<div class="foot">Econ Data Library · data served under each source's license with attribution and provenance preserved · <a href="index.html" style="color:var(--blue)">Full catalog</a></div>
+
+<script>
+const API = 'https://econdl-api.elkassabgi.workers.dev';
+const PAGE = 25;
+let state = {q:'', source:'', freq:'', offset:0, total:0, loading:false};
+const selected = new Map(); // series_id -> {title, source}
+
+// ---- API key ----
+const keyInput = document.getElementById('key');
+const keyStatus = document.getElementById('keystatus');
+function loadKey(){ const k = localStorage.getItem('edl_api_key')||''; keyInput.value=k; setKeyStatus(k); }
+function setKeyStatus(k){ if(k){keyStatus.textContent='key saved ✓';keyStatus.className='status ok';} else {keyStatus.textContent='no key set';keyStatus.className='status no';} }
+document.getElementById('savekey').onclick=()=>{ const k=keyInput.value.trim(); localStorage.setItem('edl_api_key',k); setKeyStatus(k); toast(k?'API key saved':'API key cleared'); };
+function getKey(){ return (localStorage.getItem('edl_api_key')||'').trim(); }
+
+// ---- search ----
+let searchTimer=null;
+function onInput(){ clearTimeout(searchTimer); searchTimer=setTimeout(()=>{ state.offset=0; runSearch(true); }, 280); }
+document.getElementById('q').addEventListener('input',e=>{ state.q=e.target.value.trim(); onInput(); });
+document.getElementById('fsource').addEventListener('change',e=>{ state.source=e.target.value; state.offset=0; runSearch(true); });
+document.getElementById('ffreq').addEventListener('change',e=>{ state.freq=e.target.value; state.offset=0; runSearch(true); });
+
+async function runSearch(reset){
+  if(state.loading) return;
+  if(!state.q && !state.source){ document.getElementById('meta').textContent='Type above to search the catalog.'; document.getElementById('tbl').style.display='none'; document.getElementById('rows').innerHTML=''; document.getElementById('more').style.display='none'; document.getElementById('empty').style.display='none'; return; }
+  state.loading=true;
+  const meta=document.getElementById('meta'); meta.textContent='Searching…';
+  const params=new URLSearchParams({limit:PAGE, offset:state.offset});
+  if(state.q) params.set('q',state.q);
+  if(state.source) params.set('source',state.source);
+  try{
+    const r=await fetch(`${API}/v1/catalog?${params}`);
+    const d=await r.json();
+    state.total=d.total||0;
+    let results=d.results||[];
+    if(state.freq) results=results.filter(x=>(x.frequency||'').toUpperCase()===state.freq);
+    renderRows(results, reset);
+    meta.textContent = state.total.toLocaleString()+' series match'+(state.freq?` (showing ${state.freq}-frequency on this page)`:'')+` · showing ${Math.min(state.offset+PAGE,state.total).toLocaleString()}`;
+    document.getElementById('more').style.display = (state.offset+PAGE < state.total)?'block':'none';
+    document.getElementById('empty').style.display = (state.total===0)?'block':'none';
+    if(state.total===0) document.getElementById('empty').textContent='No series match. Try a broader term or clear the filters.';
+    document.getElementById('tbl').style.display = state.total>0?'table':'none';
+  }catch(e){ meta.textContent='Search failed — the API may be unreachable. '+e.message; }
+  state.loading=false;
+}
+
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+const FREQ={A:'Annual',Q:'Quarterly',M:'Monthly',W:'Weekly',D:'Daily'};
+
+function renderRows(results, reset){
+  const tb=document.getElementById('rows');
+  if(reset) tb.innerHTML='';
+  for(const x of results){
+    const tr=document.createElement('tr');
+    const dims=[x.source, x.geography, FREQ[(x.frequency||'').toUpperCase()]||x.frequency, x.unit].filter(Boolean).join(' · ');
+    const cov=(x.start_date||'?').slice(0,4)+'–'+(x.end_date||'?').slice(0,4);
+    tr.innerHTML=`<td><input type="checkbox" class="chk rowchk" data-id="${esc(x.series_id)}" data-title="${esc(x.title)}" data-source="${esc(x.source)}" ${selected.has(x.series_id)?'checked':''}></td>
+      <td><div class="title">${esc(x.title||x.series_id)}</div><div class="sid">${esc(x.series_id)}</div><div class="dims">${esc(dims)}</div></td>
+      <td>${esc(cov)}</td>
+      <td>${x.license_id?`<span class="badge">${esc(x.license_id)}</span>`:''}</td>
+      <td><button class="dlbtn" data-id="${esc(x.series_id)}" data-title="${esc(x.title)}">Download</button></td>`;
+    tb.appendChild(tr);
+  }
+  tb.querySelectorAll('.dlbtn').forEach(b=>b.onclick=()=>downloadOne(b.dataset.id, b.dataset.title, b));
+  tb.querySelectorAll('.rowchk').forEach(c=>c.onchange=()=>{ if(c.checked) selected.set(c.dataset.id,{title:c.dataset.title,source:c.dataset.source}); else selected.delete(c.dataset.id); refreshTray(); });
+}
+document.getElementById('more').onclick=()=>{ state.offset+=PAGE; runSearch(false); };
+document.getElementById('chkall').onchange=e=>{ document.querySelectorAll('.rowchk').forEach(c=>{ c.checked=e.target.checked; if(c.checked) selected.set(c.dataset.id,{title:c.dataset.title,source:c.dataset.source}); else selected.delete(c.dataset.id); }); refreshTray(); };
+
+// ---- downloads ----
+function encId(id){ return encodeURIComponent(id); }
+async function fetchCsv(id){
+  const key=getKey();
+  const r=await fetch(`${API}/v1/series/${encId(id)}.csv`, {headers: key?{'X-API-Key':key}:{}} );
+  if(r.status===401){ throw new Error('AUTH'); }
+  if(!r.ok){ throw new Error('HTTP '+r.status); }
+  return await r.text();
+}
+function saveBlob(name, text){
+  const blob=new Blob([text],{type:'text/csv'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+async function downloadOne(id, title, btn){
+  if(!getKey()){ toast('Enter your free API key above first'); keyInput.focus(); return; }
+  const old=btn?btn.textContent:''; if(btn){btn.disabled=true;btn.textContent='…';}
+  try{
+    const csv=await fetchCsv(id);
+    saveBlob(id.replace(/[^\w.-]+/g,'_')+'.csv', csv);
+    toast('Downloaded '+id);
+  }catch(e){
+    if(e.message==='AUTH'){ toast('Your API key was rejected — check it above'); }
+    else toast('Download failed: '+e.message);
+  }finally{ if(btn){btn.disabled=false;btn.textContent=old;} }
+}
+
+// selection tray
+function refreshTray(){
+  const n=selected.size;
+  document.getElementById('traycount').textContent=n;
+  document.getElementById('tray').classList.toggle('show', n>0);
+}
+document.getElementById('clearsel').onclick=()=>{ selected.clear(); document.querySelectorAll('.rowchk,#chkall').forEach(c=>c.checked=false); refreshTray(); };
+document.getElementById('dlsel').onclick=downloadSelected;
+
+let JSZipReady=null;
+function loadJSZip(){
+  if(window.JSZip) return Promise.resolve();
+  if(JSZipReady) return JSZipReady;
+  JSZipReady=new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+  return JSZipReady;
+}
+async function downloadSelected(){
+  if(!getKey()){ toast('Enter your free API key above first'); keyInput.focus(); return; }
+  const ids=[...selected.keys()];
+  if(ids.length===1){ return downloadOne(ids[0], '', document.getElementById('dlsel')); }
+  const btn=document.getElementById('dlsel'); const old=btn.textContent; btn.disabled=true;
+  try{
+    let zip=null;
+    try{ await loadJSZip(); zip=new JSZip(); }catch(_){ zip=null; }
+    let ok=0, fail=0, manifest=['series_id,status'];
+    for(let i=0;i<ids.length;i++){
+      btn.textContent=`Downloading ${i+1}/${ids.length}…`;
+      try{ const csv=await fetchCsv(ids[i]); ok++; manifest.push(ids[i]+',ok');
+        if(zip) zip.file(ids[i].replace(/[^\w.-]+/g,'_')+'.csv', csv); else saveBlob(ids[i].replace(/[^\w.-]+/g,'_')+'.csv', csv);
+      }catch(e){ fail++; manifest.push(ids[i]+',FAILED:'+e.message); if(e.message==='AUTH'){ toast('API key rejected'); break; } }
+    }
+    if(zip){ zip.file('MANIFEST.csv', manifest.join('\n')); btn.textContent='Zipping…'; const blob=await zip.generateAsync({type:'blob'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='econdatalibrary_bundle_'+ok+'series.zip'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000); }
+    toast(`Downloaded ${ok} series${fail?`, ${fail} failed`:''}`+(zip?' as .zip':' as separate files'));
+  }finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+// toast
+let toastTimer=null;
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),2600); }
+
+// populate source facet from /v1/sources
+async function loadSources(){
+  try{ const r=await fetch(`${API}/v1/sources`); const d=await r.json();
+    const list=(d.sources||d.results||d||[]); const sel=document.getElementById('fsource');
+    const arr=Array.isArray(list)?list:Object.keys(list);
+    arr.map(s=>typeof s==='string'?s:(s.source||s.id||s.source_id)).filter(Boolean).sort().forEach(s=>{ const o=document.createElement('option'); o.value=s; o.textContent=s; sel.appendChild(o); });
+    if(state.source) sel.value=state.source; // reflect a deep-linked ?source=
+  }catch(_){}
+}
+// deep link: download.html?source=edgar_jrc or ?q=CO2 prefills + searches
+(function(){ const p=new URLSearchParams(location.search);
+  const src=p.get('source'), qq=p.get('q');
+  if(src) state.source=src;
+  if(qq){ document.getElementById('q').value=qq; state.q=qq; }
+  if(src||qq) runSearch(true);
+})();
+loadKey(); loadSources();
+</script>
+</body>
+</html>

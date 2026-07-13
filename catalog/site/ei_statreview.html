@@ -142,7 +142,7 @@ border-bottom:3px solid var(--gold)}
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -168,9 +168,9 @@ border-bottom:3px solid var(--gold)}
 <blockquote class="cite">Energy Institute -- Statistical Review of World Energy. Retrieved from https://www.energyinst.org/statistical-review. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/ei_statreview.html">https://econdatalibrary.com/ei_statreview.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-ei_statreview">https://huggingface.co/datasets/econdatalibrary-ei_statreview</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=ei_statreview">Select &amp; download ei_statreview series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/ei_statreview.html">https://econdatalibrary.com/ei_statreview.html</a></dd>
 <dt>Update cadence</dt><dd>annual</dd>
 <dt>Update strategy</dt><dd>overwrite if changed</dd>
 <dt>Storage layout</dt><dd>Single Parquet: data/clean_full/ei_statreview/ei_statreview.parquet, columns series_key (EISR:{variable}:{country}), obs_date (date32, Dec-31 annual), value (float64). No raw cache, no per-variable files. Side logs _ei_statreview_log.txt / _ei_statreview_err.txt.</dd></dl>
@@ -242,5 +242,5 @@ border-bottom:3px solid var(--gold)}
   &quot;isAccessibleForFree&quot;: false,
   &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

@@ -100,8 +100,8 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "DataDownload",
-      "encodingFormat": "application/vnd.apache.parquet",
-      "contentUrl": "https://econdatalibrary.com/data/insee_sirene/",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=insee_sirene",
       "license": "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
     }
   ]
@@ -143,18 +143,18 @@ border-bottom:3px solid var(--gold)}
   "distribution": [
     {
       "@type": "cr:FileObject",
-      "@id": "insee_sirene-parquet",
-      "name": "insee_sirene-parquet",
-      "description": "Canonical long-format Parquet for this dataset.",
-      "contentUrl": "https://econdatalibrary.com/data/insee_sirene/",
-      "encodingFormat": "application/vnd.apache.parquet"
+      "@id": "insee_sirene-csv",
+      "name": "insee_sirene-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=insee_sirene",
+      "encodingFormat": "text/csv"
     }
   ]
 }
 </script>
 </head><body>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
 
 <div class="wrap">
 <div class="dhero">
@@ -177,9 +177,9 @@ border-bottom:3px solid var(--gold)}
 <dt>Provider homepage</dt><dd><a href="https://www.insee.fr">https://www.insee.fr</a></dd>
 <dt>Provider terms</dt><dd><a href="https://www.data.gouv.fr/pages/legal/licences/etalab-2.0">https://www.data.gouv.fr/pages/legal/licences/etalab-2.0</a></dd></dl>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/insee_sirene.html">https://econdatalibrary.com/insee_sirene.html</a></dd>
-<dt>Hugging Face (planned mirror)</dt><dd><a href="https://huggingface.co/datasets/econdatalibrary-insee_sirene">https://huggingface.co/datasets/econdatalibrary-insee_sirene</a> <span style="color:#9ca3af">(placeholder)</span></dd>
-<dt>Zenodo (planned DOI)</dt><dd><a href="https://zenodo.org/communities/econdatalibrary">https://zenodo.org/communities/econdatalibrary</a> <span style="color:#9ca3af">(placeholder)</span></dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=insee_sirene">Select &amp; download insee_sirene series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/insee_sirene.html">https://econdatalibrary.com/insee_sirene.html</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
 <dt>Storage layout</dt><dd>overwrite-multi-file — 6 fixed files under data/clean_full/insee_sirene/: StockUniteLegale (~0.7 GB), StockEtablissement (~2.2 GB), StockUniteLegaleHistorique (~0.8 GB), StockEtablissementHistorique (~0.9 GB), StockEtablissementLiensSuccession (~0.1 GB), StockDoublons (verified all 6 on disk, ~4.6 GB total = the actual 247M-row insee_sirene source).</dd></dl>
@@ -229,8 +229,8 @@ Run: python jobs/ingest_insee_sirene.py [siren|siret|both]</p>
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/insee_sirene/&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=insee_sirene&quot;,
       &quot;license&quot;: &quot;https://www.etalab.gouv.fr/licence-ouverte-open-licence/&quot;
     }
   ]
@@ -270,13 +270,13 @@ Run: python jobs/ingest_insee_sirene.py [siren|siret|both]</p>
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;cr:FileObject&quot;,
-      &quot;@id&quot;: &quot;insee_sirene-parquet&quot;,
-      &quot;name&quot;: &quot;insee_sirene-parquet&quot;,
-      &quot;description&quot;: &quot;Canonical long-format Parquet for this dataset.&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/data/insee_sirene/&quot;,
-      &quot;encodingFormat&quot;: &quot;application/vnd.apache.parquet&quot;
+      &quot;@id&quot;: &quot;insee_sirene-csv&quot;,
+      &quot;name&quot;: &quot;insee_sirene-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=insee_sirene&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-06-27 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>
