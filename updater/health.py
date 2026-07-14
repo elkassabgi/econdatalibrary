@@ -43,7 +43,15 @@ def _adapter_ready(e):
     strat = e.get("strategy")
     if strat not in SREG:
         return False
-    if strat in ("extend_by_date", "overwrite_if_changed"):
+    # MUST match orchestrate._has_adapter's strategy list exactly. It previously
+    # checked fetchers for only 2 of the orchestrator's 5 fetcher-backed
+    # strategies, so ~35 unbuilt-fetcher sources (sdmx_delta / manual_vintage /
+    # bulk_snapshot_if_changed) showed RED-UNRUN ("built but never ran") when the
+    # orchestrator was correctly no-opping them as PENDING ("no adapter built").
+    # Found 2026-07-14 ground-truthing the first-pass rollout: CI runs exited 0
+    # while ingesting nothing.
+    if strat in ("extend_by_date", "overwrite_if_changed", "sdmx_delta",
+                 "manual_vintage", "bulk_snapshot_if_changed"):
         return fimpl(e.get("source_id"))
     return True
 
