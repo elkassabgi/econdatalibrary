@@ -15,7 +15,7 @@ freshness is judged on DATA recency (last_obs drift), not just on last_success.
 from __future__ import annotations
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import config, registry
 from .state import StateStore
@@ -63,6 +63,32 @@ def _age_days(iso, now):
     return max(0.0, age)
 
 
+def _business_age_days(iso, now) -> "float | None":
+    """Age counted in BUSINESS days (Mon-Fri) — for daily-cadence market/FX
+    sources that legitimately publish nothing on weekends. A Friday observation
+    checked Monday 08:45 UTC is 3.04 calendar days old but only ~1 business day
+    old; the calendar version red-flagged every live FX source every Monday
+    morning (observed 2026-07-13: cnb + frankfurter, succ_age 0d, gate failure).
+    Weekend days between the observation and now simply don't count."""
+    cal = _age_days(iso, now)
+    if cal is None:
+        return None
+    s = str(iso)
+    if len(s) == 10:
+        s += "T00:00:00+00:00"
+    try:
+        obs = datetime.fromisoformat(s)
+    except Exception:
+        return cal
+    weekend = 0
+    d = obs.date()
+    while d < now.date():
+        if d.weekday() >= 5:  # Sat/Sun between obs and now
+            weekend += 1
+        d += timedelta(days=1)
+    return max(0.0, cal - weekend)
+
+
 def assess(store=None) -> dict:
     store = store or StateStore()
     now = datetime.now(timezone.utc)
@@ -89,6 +115,10 @@ def assess(store=None) -> dict:
         obs_vals += [u.get("last_obs_date") for u in units if u.get("last_obs_date")]
         newest_obs = max(obs_vals) if obs_vals else None
         obs_age = _age_days(newest_obs, now)
+        # staleness is judged in BUSINESS days for daily sources (FX/market feeds
+        # publish nothing Sat/Sun — calendar age red-flagged every Monday morning);
+        # calendar days for everything else. Display keeps calendar obs_age.
+        eff_obs_age = _business_age_days(newest_obs, now) if cadence == "daily" else obs_age
 
         # Discontinued series: individual series with no new obs in >2 years. These are
         # INFORMATIONAL only (old currencies like ATS/BEF/ECU, retired indicators) — a
@@ -109,7 +139,7 @@ def assess(store=None) -> dict:
             health = "RED-UNRUN"   # has state rows but never succeeded -> surface it
         elif succ_age > sla_days:
             health = "RED-SLA"            # job hasn't succeeded within tolerance
-        elif obs_age is not None and obs_age > data_days:
+        elif eff_obs_age is not None and eff_obs_age > data_days:
             health = "RED-DATA"           # job 'succeeds' but the source's NEWEST data has gone stale
         else:
             health = "OK"
