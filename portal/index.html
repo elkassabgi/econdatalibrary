@@ -3,97 +3,196 @@
 <title>ElkassabgiData — Free Research-Grade Data Libraries</title>
 <meta name="description" content="ElkassabgiData is a family of free, research-grade data libraries: 1-minute US equity data (HF Data Library) and global economic &amp; financial data (Econ Data Library). One free account works across every library.">
 <link rel="canonical" href="https://elkassabgidata.com/">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <meta property="og:title" content="ElkassabgiData — Free Research-Grade Data Libraries">
-<meta property="og:description" content="One free account. Every library: 1-minute US equities, 7.7B+ economic &amp; financial series — free, documented, citable.">
+<meta property="og:description" content="One free account. Every library: 1-minute US equities, billions of economic &amp; financial series — free, documented, citable.">
 <meta property="og:url" content="https://elkassabgidata.com/">
 <meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <style>
-:root{--ink:#0b1220;--gold:#c9a961;--g200:#e5e7eb;--g500:#6b7280;--g600:#4b5563;
---serif:Georgia,'Times New Roman',serif;--sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
-*{box-sizing:border-box;margin:0}body{font-family:var(--sans);color:#111827;background:#fafafa}
-.hero{background:var(--ink);color:#fff;padding:4.5rem 5vw 3.5rem;text-align:center}
-.eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:.78rem;color:var(--gold);margin-bottom:.9rem}
-h1{font-family:var(--serif);font-size:2.8rem;line-height:1.1;max-width:22ch;margin:0 auto}
-.tag{color:rgba(255,255,255,.75);font-size:1.08rem;margin:1rem auto 0;max-width:62ch;line-height:1.6}
-.stats{display:flex;gap:2.6rem;justify-content:center;flex-wrap:wrap;margin-top:2.2rem}
-.stats .n{font-family:var(--serif);font-size:1.9rem}.stats .l{font-size:.75rem;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.06em;margin-top:.3rem}
-.wrap{max-width:1000px;margin:0 auto;padding:3rem 5vw 4rem}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1.4rem}
-.lib{border:1px solid var(--g200);border-radius:14px;background:#fff;padding:1.7rem 1.7rem 1.5rem;display:flex;flex-direction:column}
-.lib h2{font-family:var(--serif);font-size:1.35rem}.lib h2 a{color:var(--ink);text-decoration:none}
-.lib .what{color:var(--g600);line-height:1.6;margin:.7rem 0 1rem;flex:1}
-.lib .go{align-self:flex-start;padding:.6rem 1.2rem;border-radius:8px;background:var(--ink);color:#fff;text-decoration:none;font-size:.92rem}
-.lib .go:hover{background:#1d2a44}
-.soon{border-style:dashed;color:var(--g500)}
-.account{margin-top:2.6rem;border:1px solid var(--g200);border-left:4px solid var(--gold);border-radius:12px;background:#fff;padding:1.5rem 1.6rem}
-.account h3{font-family:var(--serif);margin-bottom:.5rem}
-.account p{color:var(--g600);line-height:1.65}
-.account a.btn{display:inline-block;margin-top:1rem;padding:.65rem 1.3rem;border-radius:8px;background:var(--gold);color:var(--ink);font-weight:600;text-decoration:none}
-footer{color:var(--g500);font-size:.85rem;text-align:center;padding:0 5vw 3rem;line-height:1.7}
-footer a{color:var(--g600)}
+:root{--navy:#1a2332;--navy-light:#243044;--gold:#d4a843;--blue:#2563eb;--blue-light:#3b82f6;
+--blue-pale:#eff6ff;--g200:#e5e7eb;--g300:#d1d5db;--g500:#6b7280;--g600:#4b5563;--g700:#374151;
+--serif:Georgia,"Times New Roman",serif;--sans:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+--mono:"JetBrains Mono",monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:var(--sans);color:#1f2937;background:#fff;line-height:1.7;-webkit-font-smoothing:antialiased}
+.container{max-width:1100px;margin:0 auto;padding:0 1.5rem}
+a{color:var(--blue);text-decoration:none}
+/* hero */
+.hero{background:linear-gradient(135deg,var(--navy) 0%,var(--navy-light) 100%);color:#fff;
+padding:4rem 0 4rem;text-align:center;border-bottom:3px solid var(--gold)}
+.hero .logo{width:min(460px,84%);height:auto;margin:0 auto 1.8rem;display:block}
+.hero h1{font-family:var(--serif);color:#fff;font-size:2.4rem;line-height:1.15;margin-bottom:.6rem}
+.hero h1 span{color:var(--gold)}
+.hero .subtitle{font-size:1.2rem;color:rgba(255,255,255,.76);max-width:640px;margin:0 auto 2.4rem;font-weight:400}
+.stats-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:1.5rem;max-width:820px;margin:0 auto 2.6rem}
+.stat-item{text-align:center}
+.stat-number{font-family:var(--mono);font-size:1.9rem;font-weight:700;color:var(--gold);display:block}
+.stat-label{font-size:.78rem;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.05em;margin-top:.2rem;display:block}
+.btn-group{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:.5rem;padding:.75rem 1.75rem;border-radius:8px;
+font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:none}
+.btn-primary{background:var(--gold);color:var(--navy)}
+.btn-primary:hover{background:#f0d78c;transform:translateY(-1px)}
+.btn-outline{background:transparent;color:#fff;border:2px solid rgba(255,255,255,.3)}
+.btn-outline:hover{border-color:#fff}
+/* sections */
+.section{padding:4rem 0}
+.section-title{font-family:var(--serif);color:var(--navy);font-size:1.875rem;text-align:center;margin-bottom:.6rem}
+.section-sub{text-align:center;color:var(--g500);margin-bottom:2.5rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1.5rem}
+.lib{background:#fff;border:1px solid var(--g200);border-radius:12px;padding:2rem;display:flex;flex-direction:column;transition:all .2s}
+.lib:hover{box-shadow:0 4px 12px rgba(0,0,0,.07);border-color:var(--g300)}
+.lib .tag{font-family:var(--mono);font-size:.72rem;color:#8a6d27;text-transform:uppercase;letter-spacing:.06em}
+.lib h2{font-family:var(--serif);color:var(--navy);font-size:1.4rem;margin:.3rem 0 .1rem}
+.lib .metric{font-family:var(--mono);color:var(--blue);font-size:.85rem;margin-bottom:.7rem}
+.lib .what{color:var(--g600);font-size:.95rem;line-height:1.65;margin-bottom:1.3rem;flex:1}
+.lib .go{align-self:flex-start;padding:.6rem 1.3rem;border-radius:8px;background:var(--blue);color:#fff;font-weight:600;font-size:.9rem}
+.lib .go:hover{background:var(--blue-light)}
+.lib.soon{border-style:dashed;background:var(--blue-pale)}
+.lib.soon h2,.lib.soon .tag{color:var(--g500)}
+.panel{background:#fff;border:1px solid var(--g200);border-left:4px solid var(--gold);border-radius:12px;padding:1.75rem 2rem;margin-top:1.5rem}
+.panel h3{font-family:var(--serif);color:var(--navy);font-size:1.25rem;margin-bottom:.5rem}
+.panel p{color:var(--g600);font-size:.95rem}
+.panel code{font-family:var(--mono);font-size:.85rem;background:#f3f4f6;padding:.15rem .45rem;border-radius:5px;word-break:break-all}
+.panel .btn{margin-top:1.1rem}
+/* footer */
+.footer{background:var(--navy);color:rgba(255,255,255,.7);text-align:center;padding:2.5rem 0;font-size:.9rem}
+.footer a{color:var(--gold)}
+.footer .orcid{font-family:var(--mono);font-size:.8rem;color:rgba(255,255,255,.5);margin-top:.5rem}
+@media (max-width:700px){
+.hero h1{font-size:1.9rem}
+.stats-bar{grid-template-columns:repeat(2,1fr);gap:1rem}
+.stat-number{font-size:1.5rem}
+.section{padding:2.6rem 0}
+}
 </style></head><body>
-<div class="hero">
-  <div class="eyebrow">ElkassabgiData</div>
-  <h1>Free, research-grade data libraries</h1>
-  <p class="tag">Built for researchers, students, and practitioners: documented, version-controlled,
-  updated automatically, and citable — with one free account across every library.</p>
-  <div class="stats">
-    <div><div class="n">2</div><div class="l">libraries (more coming)</div></div>
-    <div><div class="n" id="n-series">&mdash;</div><div class="l">economic series</div></div>
-    <div><div class="n" id="n-bars">&mdash;</div><div class="l">1-minute equity bars</div></div>
-    <div><div class="n">Free</div><div class="l">open &amp; citable</div></div>
-  </div>
-</div>
-<div class="wrap">
-  <div class="grid">
-    <div class="lib">
-      <h2><a href="https://hfdatalibrary.com">HF Data Library</a></h2>
-      <div class="what">Research-grade <strong>1-minute OHLCV bars</strong> for 1,391 U.S. stocks and ETFs
-      back to 2002 — raw and cleaned versions, 25 pre-computed academic variables per ticker/day,
-      updated every trading day.</div>
-      <a class="go" href="https://hfdatalibrary.com">hfdatalibrary.com →</a>
+
+<section class="hero">
+  <div class="container">
+    <svg class="logo" viewBox="0 0 560 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ElkassabgiData">
+      <defs>
+        <linearGradient id="ekdGold" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#fff3c4"/><stop offset=".38" stop-color="#e9c05b"/>
+          <stop offset=".5" stop-color="#a87d24"/><stop offset=".62" stop-color="#d4a843"/><stop offset="1" stop-color="#f7e2a0"/>
+        </linearGradient>
+        <linearGradient id="ekdWhite" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#ffffff"/><stop offset=".38" stop-color="#eef1f6"/>
+          <stop offset=".5" stop-color="#b9c2d0"/><stop offset=".62" stop-color="#dfe5ec"/><stop offset="1" stop-color="#ffffff"/>
+        </linearGradient>
+        <linearGradient id="ekdFrameOuter" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#ffe9a8"/><stop offset=".5" stop-color="#c89b38"/><stop offset="1" stop-color="#6b5318"/>
+        </linearGradient>
+        <linearGradient id="ekdBg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#232f47"/><stop offset="1" stop-color="#0e1523"/>
+        </linearGradient>
+        <filter id="ekdShadow" x="-20%" y="-20%" width="140%" height="170%">
+          <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.6"/>
+        </filter>
+      </defs>
+      <g filter="url(#ekdShadow)">
+        <rect x="6" y="6" width="548" height="138" rx="16" fill="url(#ekdFrameOuter)"/>
+        <rect x="20" y="20" width="520" height="110" rx="8" fill="url(#ekdBg)"/>
+      </g>
+      <g font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-size="53" text-anchor="middle">
+        <g aria-hidden="true">
+          <text x="282.5" y="97.5" fill="#2e2205">Elkassabgi<tspan fill="#2a303c">Data</tspan></text>
+          <text x="280.5" y="93.5" fill="#815f14">Elkassabgi<tspan fill="#5e6878">Data</tspan></text>
+        </g>
+        <text x="279" y="91" fill="url(#ekdGold)">Elkassabgi<tspan fill="url(#ekdWhite)">Data</tspan></text>
+      </g>
+    </svg>
+    <h1>Free, research-grade data — <span>one account, every library.</span></h1>
+    <p class="subtitle">A family of free, documented, citable data libraries built for researchers, students, and practitioners. Register once; the same key unlocks every library, now and forever.</p>
+
+    <div class="stats-bar">
+      <div class="stat-item"><span class="stat-number">2+</span><span class="stat-label">Libraries</span></div>
+      <div class="stat-item"><span class="stat-number" id="n-series">&mdash;</span><span class="stat-label">Economic Series</span></div>
+      <div class="stat-item"><span class="stat-number" id="n-bars">&mdash;</span><span class="stat-label">1-Minute Equity Bars</span></div>
+      <div class="stat-item"><span class="stat-number">Free</span><span class="stat-label">Open &amp; Citable</span></div>
     </div>
-    <div class="lib">
-      <h2><a href="https://econdatalibrary.com">Econ Data Library</a></h2>
-      <div class="what">Global <strong>economic &amp; financial data</strong>: billions of individual series from
-      300+ sources — national accounts, prices, trade, labor, energy, markets — one namespace,
-      per-series licensing and citations, auto-updated.</div>
-      <a class="go" href="https://econdatalibrary.com">econdatalibrary.com →</a>
-    </div>
-    <div class="lib soon">
-      <h2>Next library</h2>
-      <div class="what">The family grows. Every future ElkassabgiData library plugs into the same
-      account system on day one — if you're registered, you already have access.</div>
+
+    <div class="btn-group">
+      <a class="btn btn-primary" href="https://hfdatalibrary.com/pages/download">Create your free account</a>
+      <a class="btn btn-outline" href="https://hfdatalibrary.com">HF Data Library</a>
+      <a class="btn btn-outline" href="https://econdatalibrary.com">Econ Data Library</a>
     </div>
   </div>
-  <div class="account">
-    <h3>Works inside Claude &amp; other AI assistants</h3>
-    <p>Every library is also available through the <strong>ElkassabgiData MCP server</strong> — connect
-    <code style="background:#f3f4f6;padding:.1rem .4rem;border-radius:5px">https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp</code>
-    in Claude or any MCP client and your assistant can search, fetch, and analyze the data with citations
-    attached. <a href="https://hfdatalibrary.com/pages/mcp">Setup guide →</a></p>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h2 class="section-title">The libraries</h2>
+    <p class="section-sub">Two today, more on the way — every one free, documented, and citable.</p>
+    <div class="grid">
+      <div class="lib">
+        <span class="tag">Equities &middot; live</span>
+        <h2>HF Data Library</h2>
+        <div class="metric" id="hf-metric">1-minute OHLCV bars</div>
+        <div class="what">Research-grade <strong>1-minute OHLCV bars</strong> for 1,391 U.S. stocks and ETFs back to 2002 — raw and cleaned versions, 25 pre-computed academic variables per ticker/day, updated every trading day. A free, citable TAQ/CRSP alternative.</div>
+        <a class="go" href="https://hfdatalibrary.com">hfdatalibrary.com →</a>
+      </div>
+      <div class="lib">
+        <span class="tag">Macro &amp; finance &middot; live</span>
+        <h2>Econ Data Library</h2>
+        <div class="metric" id="econ-metric">economic &amp; financial series</div>
+        <div class="what">Global <strong>economic &amp; financial data</strong>: billions of individual series from 250+ sources — national accounts, prices, trade, labor, energy, markets — in one namespace, with per-series licensing and producer-first citations, auto-updated.</div>
+        <a class="go" href="https://econdatalibrary.com">econdatalibrary.com →</a>
+      </div>
+      <div class="lib soon">
+        <span class="tag">Coming soon</span>
+        <h2>The next library</h2>
+        <div class="what">The family keeps growing. Every future ElkassabgiData library plugs into the same account on day one — if you're registered, you already have access.</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Works inside Claude &amp; other AI assistants</h3>
+      <p>Every library is also available through the <strong>ElkassabgiData MCP server</strong> — connect
+      <code>https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp</code>
+      in Claude or any MCP client and your assistant can search, fetch, and analyze the data with citations attached.
+      <a href="https://hfdatalibrary.com/pages/mcp">Setup guide →</a></p>
+    </div>
+
+    <div class="panel">
+      <h3>One account. Every library. Forever.</h3>
+      <p>Register once — here, on hfdatalibrary.com, or on econdatalibrary.com — and you're an
+      <strong>ElkassabgiData registered user</strong>: the same free API key downloads data from every
+      current and future library. No re-registration, ever.</p>
+      <a class="btn btn-primary" href="https://hfdatalibrary.com/pages/download">Create your free account</a>
+    </div>
   </div>
-  <div class="account">
-    <h3>One account. Every library. Forever.</h3>
-    <p>Register once — on this page, on hfdatalibrary.com, or on econdatalibrary.com — and you are an
-    <strong>ElkassabgiData registered user</strong>: the same free API key downloads data from every
-    current and future library. No re-registration, ever.</p>
-    <a class="btn" href="https://hfdatalibrary.com/pages/download">Create your free account</a>
+</section>
+
+<footer class="footer">
+  <div class="container">
+    <p>&copy; 2026 ElkassabgiData &middot; Ahmed Elkassabgi, University of Central Arkansas &middot;
+    <a href="https://hfdatalibrary.com/pages/cite">How to cite</a> &middot;
+    <a href="https://hfdatalibrary.com/pages/contact">Contact</a></p>
+    <p class="orcid">ORCID: 0000-0002-5926-7493</p>
   </div>
-</div>
-<footer>
-  © ElkassabgiData · Ahmed Elkassabgi ·
-  <a href="https://hfdatalibrary.com/pages/cite">How to cite</a> ·
-  <a href="https://hfdatalibrary.com/pages/contact">Contact</a>
 </footer>
+
 <script>
 (function () {
-  function fmtB(n) { return n >= 1e9 ? (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B+" : Number(n).toLocaleString(); }
+  // Floor, never round up — reported counts must never overstate the data.
+  function fmtB(n){ if(n>=1e9){var s=(Math.floor(n/1e8)/10).toFixed(1);if(s.slice(-2)===".0")s=s.slice(0,-2);return s+"B+";} return Number(n).toLocaleString(); }
+  // Economic series — Econ Data Library live stats.
   fetch("https://econdl-api.elkassabgi.workers.dev/v1/stats").then(function(r){return r.json();}).then(function(d){
-    if (d.individual_series) document.getElementById("n-series").textContent = fmtB(d.individual_series);
+    if (d.individual_series){ var v=fmtB(d.individual_series);
+      document.getElementById("n-series").textContent=v;
+      document.getElementById("econ-metric").textContent=v+" individual series"; }
   }).catch(function(){});
-  fetch("https://api.hfdatalibrary.com/v1/public-stats").then(function(r){return r.json();}).then(function(d){
-    if (d.dataset && d.dataset.bars_clean) document.getElementById("n-bars").textContent = fmtB(d.dataset.bars_clean);
+  // 1-minute bars — HF Data Library metadata.json (bars_raw is the served headline count;
+  // /v1/public-stats does NOT carry bar counts, which is why this used to show a dash).
+  fetch("https://hfdatalibrary.com/data/metadata.json").then(function(r){return r.json();}).then(function(d){
+    var bars = d.bars_raw || d.bars_clean;
+    if (bars){ var v=fmtB(bars);
+      document.getElementById("n-bars").textContent=v;
+      document.getElementById("hf-metric").textContent=v+" 1-minute bars"; }
   }).catch(function(){});
 })();
 </script>

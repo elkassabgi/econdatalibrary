@@ -1,12 +1,13 @@
 <!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MCP Guide — Use Econ Data Library inside Claude, Cursor, Gemini &amp; ChatGPT</title>
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <meta name="description" content="Connect the ElkassabgiData MCP server to Claude, Cursor, Gemini CLI, or ChatGPT: ask in plain English, and your AI finds the exact economic series and downloads it with citations. Step-by-step setup for every client.">
 <link rel="canonical" href="https://econdatalibrary.com/mcp">
 <style>
 :root{--navy:#0b1220;--gold:#c9a961;--g100:#f3f4f6;--g200:#e5e7eb;--g500:#6b7280;--g600:#4b5563;--g700:#374151;--g800:#1f2937;--blue:#2563eb;--serif:Georgia,serif;--sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;--mono:ui-monospace,Consolas,monospace}
 *{box-sizing:border-box;margin:0}body{font-family:var(--sans);color:#111827;background:#fafafa}
-.nav{display:flex;justify-content:space-between;align-items:center;padding:.9rem 5vw;background:var(--navy)}
+.nav{background:var(--navy);position:sticky;top:0;z-index:50}.nav-in{max-width:1200px;margin:0 auto;padding:.9rem 1.5rem;display:flex;justify-content:space-between;align-items:center}
 .nav a{color:#fff;text-decoration:none;margin-left:1.2rem}.brand a{font-family:var(--serif);font-size:1.15rem;margin:0}
 .brand .d{color:var(--gold)}
 .hero{background:var(--navy);color:#fff;padding:2.6rem 5vw 2.8rem}
@@ -54,10 +55,10 @@ ol li{margin:.4rem 0}
 .cb button:hover{background:rgba(255,255,255,.18)}.cb button.done{background:#059669;border-color:#059669;color:#fff}
 dl dt{font-weight:600;color:var(--navy);margin-top:1rem}dl dd{margin:.3rem 0 0;color:var(--g700);line-height:1.6}
 </style></head><body>
-<div class="nav"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" title="Part of the ElkassabgiData family" style="font-size:.62rem;color:#d4a843;border:1px solid rgba(212,168,67,.5);border-radius:999px;padding:.12rem .5rem;margin-left:.55rem;white-space:nowrap;font-weight:600;text-decoration:none;vertical-align:middle">part of ElkassabgiData</a></div>
+<div class="nav"><div class="nav-in"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" title="Part of the ElkassabgiData family" style="font-size:.62rem;color:#d4a843;border:1px solid rgba(212,168,67,.5);border-radius:999px;padding:.12rem .5rem;margin-left:.55rem;white-space:nowrap;font-weight:600;text-decoration:none;vertical-align:middle">part of ElkassabgiData</a></div>
 <div><a href="index.html">Catalog</a><a href="docs.html">Docs</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">MCP</a><a href="status.html">Status</a><a href="cite.html">Cite</a><a href="account.html" style="background:#d4a843;color:#1a2332;padding:.4rem .875rem;border-radius:6px;font-weight:600">Sign in</a></div></div>
 
-<div class="hero">
+</div><div class="hero">
   <p class="kicker">MCP Guide</p>
   <h1>Talk to the data. Your AI does the rest.</h1>
   <p>Connect Claude, Cursor, Gemini, or ChatGPT to the ElkassabgiData libraries once, then just ask in plain
