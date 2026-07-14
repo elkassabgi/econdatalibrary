@@ -59,6 +59,19 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
 .panel p{color:var(--g600);font-size:.95rem}
 .panel code{font-family:var(--mono);font-size:.85rem;background:#f3f4f6;padding:.15rem .45rem;border-radius:5px;word-break:break-all}
 .panel .btn{margin-top:1.1rem}
+/* by the numbers */
+.numbers{background:#f9fafb;border-top:1px solid var(--g200);border-bottom:1px solid var(--g200)}
+.numgrid{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;max-width:920px;margin:0 auto}
+.numcol{background:#fff;border:1px solid var(--g200);border-radius:12px;padding:1.75rem 1.9rem}
+.numcol-tag{font-family:var(--mono);font-size:.68rem;color:#8a6d27;text-transform:uppercase;letter-spacing:.06em}
+.numcol-head h3{font-family:var(--serif);color:var(--navy);font-size:1.3rem;margin:.15rem 0 0}
+.numcol-head{border-bottom:1px solid var(--g200);padding-bottom:.85rem;margin-bottom:1.1rem}
+.numlist{display:flex;flex-direction:column}
+.numlist>div{padding:.7rem 0;border-bottom:1px dotted var(--g200)}
+.numlist>div:last-child{border-bottom:none;padding-bottom:0}
+.numlist dt{font-family:var(--mono);font-weight:700;color:var(--blue);font-size:1.22rem;line-height:1.2}
+.numlist dd{color:var(--g600);font-size:.86rem;margin-top:.15rem}
+.numfoot{text-align:center;color:var(--g500);font-size:.82rem;margin-top:1.6rem}
 /* footer */
 .footer{background:var(--navy);color:rgba(255,255,255,.7);text-align:center;padding:2.5rem 0;font-size:.9rem}
 .footer a{color:var(--gold)}
@@ -68,6 +81,8 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
 .stats-bar{grid-template-columns:repeat(2,1fr);gap:1rem}
 .stat-number{font-size:1.5rem}
 .section{padding:2.6rem 0}
+.numgrid{grid-template-columns:1fr}
+.numlist dt{font-size:1.1rem}
 }
 </style></head><body>
 
@@ -109,10 +124,10 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
     <p class="subtitle">A family of free, documented, citable data libraries built for researchers, students, and practitioners. Register once; the same key unlocks every library, now and forever.</p>
 
     <div class="stats-bar">
-      <div class="stat-item"><span class="stat-number">2+</span><span class="stat-label">Libraries</span></div>
+      <div class="stat-item"><span class="stat-number" id="n-obs">&mdash;</span><span class="stat-label">Economic Observations</span></div>
       <div class="stat-item"><span class="stat-number" id="n-series">&mdash;</span><span class="stat-label">Economic Series</span></div>
       <div class="stat-item"><span class="stat-number" id="n-bars">&mdash;</span><span class="stat-label">1-Minute Equity Bars</span></div>
-      <div class="stat-item"><span class="stat-number">Free</span><span class="stat-label">Open &amp; Citable</span></div>
+      <div class="stat-item"><span class="stat-number" id="n-tickers">1,391</span><span class="stat-label">U.S. Stocks &amp; ETFs</span></div>
     </div>
 
     <div class="btn-group">
@@ -120,6 +135,36 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
       <a class="btn btn-outline" href="https://hfdatalibrary.com">HF Data Library</a>
       <a class="btn btn-outline" href="https://econdatalibrary.com">Econ Data Library</a>
     </div>
+  </div>
+</section>
+
+<section class="section numbers">
+  <div class="container">
+    <h2 class="section-title">By the numbers</h2>
+    <p class="section-sub">Everything both libraries hold today &mdash; the big counts are pulled live from each library, never hand-typed.</p>
+    <div class="numgrid">
+      <div class="numcol">
+        <div class="numcol-head"><span class="numcol-tag">Equities &middot; live</span><h3>HF Data Library</h3></div>
+        <dl class="numlist">
+          <div><dt id="hf-tickers">1,391</dt><dd>U.S. stocks &amp; ETFs</dd></div>
+          <div><dt id="hf-bars">&mdash;</dt><dd>1-minute OHLCV bars (raw)</dd></div>
+          <div><dt id="hf-days">5,847</dt><dd>trading days covered</dd></div>
+          <div><dt id="hf-vars">25</dt><dd>academic variables per ticker-day</dd></div>
+          <div><dt id="hf-range">2002 &rarr; today</dt><dd>daily-updated history (<span id="hf-years">23</span> years)</dd></div>
+        </dl>
+      </div>
+      <div class="numcol">
+        <div class="numcol-head"><span class="numcol-tag">Macro &amp; finance &middot; live</span><h3>Econ Data Library</h3></div>
+        <dl class="numlist">
+          <div><dt id="ec-obs">&mdash;</dt><dd>economic &amp; financial observations</dd></div>
+          <div><dt id="ec-series">&mdash;</dt><dd>individual series</dd></div>
+          <div><dt id="ec-sources">250+</dt><dd>official sources &amp; agencies</dd></div>
+          <div><dt id="ec-langs">6</dt><dd>interface languages</dd></div>
+          <div><dt id="ec-range">Year&nbsp;1&nbsp;CE &rarr; today</dt><dd>span of historical data</dd></div>
+        </dl>
+      </div>
+    </div>
+    <p class="numfoot">One free ElkassabgiData account unlocks every figure above &mdash; and every library still to come.</p>
   </div>
 </section>
 
@@ -178,21 +223,29 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
 
 <script>
 (function () {
-  // Floor, never round up — reported counts must never overstate the data.
+  function set(id,val){ var el=document.getElementById(id); if(el&&val!=null) el.textContent=val; }
+  // Compact headline: floor, never round up — reported counts must never overstate the data.
   function fmtB(n){ if(n>=1e9){var s=(Math.floor(n/1e8)/10).toFixed(1);if(s.slice(-2)===".0")s=s.slice(0,-2);return s+"B+";} return Number(n).toLocaleString(); }
-  // Economic series — Econ Data Library live stats.
+  var comma=function(n){ return Number(n).toLocaleString("en-US"); };
+
+  // Econ Data Library — live stats (observations + individual series).
   fetch("https://econdl-api.elkassabgi.workers.dev/v1/stats").then(function(r){return r.json();}).then(function(d){
+    if (d.observations){ set("n-obs",fmtB(d.observations)); set("ec-obs",comma(d.observations)); }
     if (d.individual_series){ var v=fmtB(d.individual_series);
-      document.getElementById("n-series").textContent=v;
-      document.getElementById("econ-metric").textContent=v+" individual series"; }
+      set("n-series",v); set("ec-series",comma(d.individual_series));
+      set("econ-metric",v+" individual series"); }
   }).catch(function(){});
-  // 1-minute bars — HF Data Library metadata.json (bars_raw is the served headline count;
-  // /v1/public-stats does NOT carry bar counts, which is why this used to show a dash).
+
+  // HF Data Library — live metadata.json (bars_raw is the served headline count;
+  // /v1/public-stats does NOT carry bar counts, which is why n-bars used to show a dash).
   fetch("https://hfdatalibrary.com/data/metadata.json").then(function(r){return r.json();}).then(function(d){
     var bars = d.bars_raw || d.bars_clean;
-    if (bars){ var v=fmtB(bars);
-      document.getElementById("n-bars").textContent=v;
-      document.getElementById("hf-metric").textContent=v+" 1-minute bars"; }
+    if (bars){ set("n-bars",fmtB(bars)); set("hf-bars",comma(bars)); set("hf-metric",fmtB(bars)+" 1-minute bars"); }
+    if (d.tickers){ set("n-tickers",comma(d.tickers)); set("hf-tickers",comma(d.tickers)); }
+    if (d.trading_days) set("hf-days",comma(d.trading_days));
+    if (d.academic_variables) set("hf-vars",comma(d.academic_variables));
+    if (d.years_of_data) set("hf-years",d.years_of_data);
+    if (d.start_date) set("hf-range",String(d.start_date).slice(0,4)+" → today");
   }).catch(function(){});
 })();
 </script>
