@@ -76,6 +76,12 @@ color:var(--g500);min-height:32px;line-height:32px;padding:0 1.5rem}
 align-items:center;flex-wrap:wrap;gap:.25rem}
 .nav .signin{background:var(--gold);color:var(--navy)!important;padding:.4rem .875rem;
 border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:1rem}
+.nav .brand{display:inline-flex;align-items:center;gap:.55rem}
+.nav .fam-tag{font-size:.62rem;color:var(--gold)!important;border:1px solid rgba(212,168,67,.5);
+border-radius:999px;padding:.12rem .5rem;white-space:nowrap;font-family:var(--sans);font-weight:600;
+letter-spacing:.01em;text-decoration:none;line-height:1.4}
+.nav .fam-tag:hover{background:rgba(212,168,67,.15)}
+@media (max-width:680px){.nav .fam-tag{display:none}}
 </style>
 <script type="application/ld+json">
 {
@@ -148,7 +154,7 @@ border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-lef
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
 <span style="display:flex;gap:1.5rem;flex-wrap:wrap"><span id="sb-site"></span><span id="sb-data"></span></span>
 </div></div>
-<div class="nav"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a></div>
+<div class="nav"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" class="fam-tag" title="Part of the ElkassabgiData family — one account, every library">part of ElkassabgiData</a></div>
 <div><a href="index.html">Catalog</a><a href="docs.html">Docs</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">MCP</a><a href="status.html">Status</a><a href="cite.html">Cite</a><a href="about.html">About</a><a href="account.html" class="signin">Sign in</a></div></div>
 <script>
 (function(){
@@ -271,4 +277,17 @@ Run: python jobs/ingest_maddison.py</p>
   &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
 }</pre></details>
 <div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-14 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
-</div></body></html>
+</div>
+<div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
+  <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
+    <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="300" height="80" style="max-width:78%;height:auto">
+  </a>
+  <p style="color:rgba(255,255,255,.82);font-family:Georgia,serif;font-size:1.05rem;margin:1.1rem 0 .35rem">One account. Every library.</p>
+  <p style="color:rgba(255,255,255,.5);font-size:.85rem;margin:0">
+    <a href="https://hfdatalibrary.com/" style="color:#d4a843;text-decoration:none">HF Data Library</a>
+    &nbsp;&middot;&nbsp;
+    <a href="https://econdatalibrary.com/" style="color:#d4a843;text-decoration:none">Econ Data Library</a>
+    &nbsp;&middot;&nbsp;<span style="color:rgba(255,255,255,.4)">more to come</span>
+  </p>
+</div>
+</body></html>
