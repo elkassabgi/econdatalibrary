@@ -538,7 +538,7 @@ border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-lef
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
 <span style="display:flex;gap:1.5rem;flex-wrap:wrap"><span id="sb-site"></span><span id="sb-data"></span></span>
 </div></div>
-<div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
+<div class="nav"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a></div>
 <div><a href="index.html">Catalog</a><a href="docs.html">Docs</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">MCP</a><a href="status.html">Status</a><a href="cite.html">Cite</a><a href="account.html" class="signin">Sign in</a></div></div>
 <script>
 (function(){{
@@ -946,7 +946,7 @@ transition:box-shadow .14s,border-color .14s,transform .14s}
 <!-- ── Hero (hfdatalibrary.com landing structure) ── -->
 <section class="hero">
   <div class="container">
-    <h1>Free Economic &amp; Financial <span>Time&#8209;Series</span> Data</h1>
+    <h1 style="font-size:2.6rem">Econ Data Library: Free Economic &amp; Financial <span>Time&#8209;Series</span> Data</h1>
     <p class="subtitle">Free, research-grade macro &amp; financial data — one namespace over the world's statistical sources. Every series carries its license, provenance, and producer-first citation. Reproducible, snapshot-pinned, and <strong>continuously updated</strong>.</p>
 
     <div class="stats-bar">
@@ -1196,7 +1196,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
     <div class="footer-grid">
       <div>
         <h4>Econ Data Library</h4>
-        <p>Free, citable economic &amp; financial time-series data with honest licensing and provenance. Built and maintained by Ahmed Elkassabgi at the University of Central Arkansas.</p>
+        <p>Econ Data Library is the largest totally free online database in the world — dedicated to bringing all of the world's freely available data into a single, easily accessible location, with the help of cutting-edge AI tools. Built and maintained by Ahmed Elkassabgi at the University of Central Arkansas.</p>
         <p style="margin-top:.75rem">Part of the <a href="https://hfdatalibrary.com/">ElkassabgiData</a> family — one free account for every library.</p>
       </div>
       <div>
