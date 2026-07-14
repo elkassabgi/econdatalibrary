@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Institut national de la statistique et des études économiques (INSEE) — BDM (Banque de Données Macroéconomiques) — Econ Data Library</title>
+<title>Insee Bdm — Econ Data Library</title>
 <meta name="description" content="INSEE BDM (Banque de Donnees Macroeconomiques) full ingest. 150,000+ French macroeconomic time series. No API key required. API: https://api.insee.fr/series/BDM/V1 (SDMX 2.1 StructureSpecific format) Strategy: 1. Get all categorisations -&gt; extract distinct Dataflow IDs (388 entries -&gt; ~100 uni">
 <link rel="canonical" href="https://econdatalibrary.com/insee_bdm.html">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -73,11 +73,11 @@ border-bottom:3px solid var(--gold)}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "Institut national de la statistique et des études économiques (INSEE) — BDM (Banque de Données Macroéconomiques)",
+  "name": "Insee Bdm",
   "description": "INSEE BDM (Banque de Donnees Macroeconomiques) full ingest. 150,000+ French macroeconomic time series. No API key required. API: https://api.insee.fr/series/BDM/V1 (SDMX 2.1 StructureSpecific format) Strategy: 1. Get all categorisations -> extract distinct Dataflow IDs (388 entries -> ~100 unique…",
   "url": "https://econdatalibrary.com/insee_bdm.html",
   "identifier": "insee_bdm",
-  "isAccessibleForFree": true,
+  "isAccessibleForFree": false,
   "publisher": {
     "@type": "Organization",
     "name": "Econ Data Library",
@@ -85,27 +85,17 @@ border-bottom:3px solid var(--gold)}
   },
   "creator": {
     "@type": "Organization",
-    "name": "Institut national de la statistique et des études économiques (INSEE) — BDM (Banque de Données Macroéconomiques)",
-    "url": "https://www.insee.fr"
+    "name": "Insee Bdm"
   },
-  "license": "https://www.etalab.gouv.fr/licence-ouverte-open-licence/",
   "keywords": [
     "insee_bdm"
   ],
   "temporalCoverage": "1901-12-31/2026-12-31",
-  "creditText": "Source: INSEE (Banque de Données Macroéconomiques), www.insee.fr — Licence Ouverte / Open Licence 2.0 (Etalab)",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-insee_bdm",
     "https://zenodo.org/communities/econdatalibrary"
   ],
-  "distribution": [
-    {
-      "@type": "DataDownload",
-      "encodingFormat": "text/csv",
-      "contentUrl": "https://econdatalibrary.com/download.html?source=insee_bdm",
-      "license": "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
-    }
-  ]
+  "usageInfo": "Metadata-only catalog entry. This source's license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms."
 }
 </script>
 <script type="application/ld+json">
@@ -133,25 +123,16 @@ border-bottom:3px solid var(--gold)}
   "url": "https://econdatalibrary.com/insee_bdm.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "Institut national de la statistique et des études économiques (INSEE) — BDM (Banque de Données Macroéconomiques)"
+    "name": "Insee Bdm"
   },
   "publisher": {
     "@type": "sc:Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "https://www.etalab.gouv.fr/licence-ouverte-open-licence/",
   "temporalCoverage": "1901-12-31/2026-12-31",
-  "distribution": [
-    {
-      "@type": "cr:FileObject",
-      "@id": "insee_bdm-csv",
-      "name": "insee_bdm-csv",
-      "description": "Per-series CSV, downloadable with a free API key.",
-      "contentUrl": "https://econdatalibrary.com/download.html?source=insee_bdm",
-      "encodingFormat": "text/csv"
-    }
-  ]
+  "isAccessibleForFree": false,
+  "usageInfo": "Metadata-only Croissant record; underlying data is not redistributed under this source's license."
 }
 </script>
 </head><body>
@@ -160,24 +141,20 @@ border-bottom:3px solid var(--gold)}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / Institut national de la statistique et des études économiques (INSEE) — BDM (Banque de Données Macroéconomiques)</div>
+<div class="crumb"><a href="index.html">Catalog</a> / Insee Bdm</div>
 <div class="pid">insee_bdm</div>
-<h1>Institut national de la statistique et des études économiques (INSEE) — BDM (Banque de Données Macroéconomiques)</h1>
-<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Etalab Open Licence 2.0</span></div>
+<h1>Insee Bdm</h1>
+<div class="badges"><span class="badge meta">Metadata only</span><span class="badge lic">License under review</span></div>
 <p class="lead">INSEE BDM (Banque de Donnees Macroeconomiques) full ingest. 150,000+ French macroeconomic time series. No API key required. API: https://api.insee.fr/series/BDM/V1 (SDMX 2.1 StructureSpecific format) Strategy: 1. Get all categorisations -&gt; extract distinct Dataflow IDs (388 entries -&gt; ~100 unique…</p>
 </div>
-<div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
+<div class="callout meta"><b>Metadata only.</b> This source’s license does not permit redistribution, so we catalog its metadata but do not re-serve the data. Use the provider link to obtain it under the original terms.</div>
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">101,768</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1901-12-31 – 2026-12-31</div></div><div class="metric"><div class="mlabel">Measured observations</div><div class="mval">10,799,719</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>Etalab Open Licence 2.0</dd>
-<dt>License URL</dt><dd><a href="https://www.etalab.gouv.fr/licence-ouverte-open-licence/">https://www.etalab.gouv.fr/licence-ouverte-open-licence/</a></dd>
-<dt>Required attribution</dt><dd>Source: INSEE (Banque de Données Macroéconomiques), www.insee.fr — Licence Ouverte / Open Licence 2.0 (Etalab)</dd>
-<dt>Redistribution</dt><dd>Permitted (served here)</dd>
-<dt>Commercial use</dt><dd>Yes</dd>
-<dt>Modification</dt><dd>Permitted</dd>
-<dt>Provider homepage</dt><dd><a href="https://www.insee.fr">https://www.insee.fr</a></dd>
-<dt>Provider terms</dt><dd><a href="https://www.data.gouv.fr/pages/legal/licences/etalab-2.0">https://www.data.gouv.fr/pages/legal/licences/etalab-2.0</a></dd></dl>
+<dl class="kv"><dt>License</dt><dd>License under review</dd>
+<dt>Redistribution</dt><dd>Not permitted (metadata only)</dd>
+<dt>Commercial use</dt><dd>Restricted / no</dd>
+<dt>Modification</dt><dd>Permitted</dd></dl>
 <h2>Access &amp; mirrors</h2>
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=insee_bdm">Select &amp; download insee_bdm series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
@@ -204,11 +181,11 @@ Run: python jobs/ingest_insee_bdm.py [--dry]</p>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;Institut national de la statistique et des études économiques (INSEE) — BDM (Banque de Données Macroéconomiques)&quot;,
+  &quot;name&quot;: &quot;Insee Bdm&quot;,
   &quot;description&quot;: &quot;INSEE BDM (Banque de Donnees Macroeconomiques) full ingest. 150,000+ French macroeconomic time series. No API key required. API: https://api.insee.fr/series/BDM/V1 (SDMX 2.1 StructureSpecific format) Strategy: 1. Get all categorisations -&gt; extract distinct Dataflow IDs (388 entries -&gt; ~100 unique…&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/insee_bdm.html&quot;,
   &quot;identifier&quot;: &quot;insee_bdm&quot;,
-  &quot;isAccessibleForFree&quot;: true,
+  &quot;isAccessibleForFree&quot;: false,
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
@@ -216,27 +193,17 @@ Run: python jobs/ingest_insee_bdm.py [--dry]</p>
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;Institut national de la statistique et des études économiques (INSEE) — BDM (Banque de Données Macroéconomiques)&quot;,
-    &quot;url&quot;: &quot;https://www.insee.fr&quot;
+    &quot;name&quot;: &quot;Insee Bdm&quot;
   },
-  &quot;license&quot;: &quot;https://www.etalab.gouv.fr/licence-ouverte-open-licence/&quot;,
   &quot;keywords&quot;: [
     &quot;insee_bdm&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1901-12-31/2026-12-31&quot;,
-  &quot;creditText&quot;: &quot;Source: INSEE (Banque de Données Macroéconomiques), www.insee.fr — Licence Ouverte / Open Licence 2.0 (Etalab)&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-insee_bdm&quot;,
     &quot;https://zenodo.org/communities/econdatalibrary&quot;
   ],
-  &quot;distribution&quot;: [
-    {
-      &quot;@type&quot;: &quot;DataDownload&quot;,
-      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=insee_bdm&quot;,
-      &quot;license&quot;: &quot;https://www.etalab.gouv.fr/licence-ouverte-open-licence/&quot;
-    }
-  ]
+  &quot;usageInfo&quot;: &quot;Metadata-only catalog entry. This source&#x27;s license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms.&quot;
 }</pre></details>
 <details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
   &quot;@context&quot;: {
@@ -262,25 +229,16 @@ Run: python jobs/ingest_insee_bdm.py [--dry]</p>
   &quot;url&quot;: &quot;https://econdatalibrary.com/insee_bdm.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;Institut national de la statistique et des études économiques (INSEE) — BDM (Banque de Données Macroéconomiques)&quot;
+    &quot;name&quot;: &quot;Insee Bdm&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;https://www.etalab.gouv.fr/licence-ouverte-open-licence/&quot;,
   &quot;temporalCoverage&quot;: &quot;1901-12-31/2026-12-31&quot;,
-  &quot;distribution&quot;: [
-    {
-      &quot;@type&quot;: &quot;cr:FileObject&quot;,
-      &quot;@id&quot;: &quot;insee_bdm-csv&quot;,
-      &quot;name&quot;: &quot;insee_bdm-csv&quot;,
-      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=insee_bdm&quot;,
-      &quot;encodingFormat&quot;: &quot;text/csv&quot;
-    }
-  ]
+  &quot;isAccessibleForFree&quot;: false,
+  &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-14 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

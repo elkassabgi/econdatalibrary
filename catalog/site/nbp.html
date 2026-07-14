@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Narodowy Bank Polski (National Bank of Poland) — NBP Web API — Econ Data Library</title>
+<title>Nbp — Econ Data Library</title>
 <meta name="description" content="NBP — National Bank of Poland exchange rates, 1984–present. License: Open data (nbp.pl) Source: https://api.nbp.pl/ No API key required. Coverage: * Table A: ~32 currencies vs PLN, mid rates, business days, 2002–present * Table B: ~100+ exotic currencies vs PLN, weekly, 2002–present * Each request…">
 <link rel="canonical" href="https://econdatalibrary.com/nbp.html">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -73,7 +73,7 @@ border-bottom:3px solid var(--gold)}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "Narodowy Bank Polski (National Bank of Poland) — NBP Web API",
+  "name": "Nbp",
   "description": "NBP — National Bank of Poland exchange rates, 1984–present. License: Open data (nbp.pl) Source: https://api.nbp.pl/ No API key required. Coverage: * Table A: ~32 currencies vs PLN, mid rates, business days, 2002–present * Table B: ~100+ exotic currencies vs PLN, weekly, 2002–present * Each request…",
   "url": "https://econdatalibrary.com/nbp.html",
   "identifier": "nbp",
@@ -85,14 +85,12 @@ border-bottom:3px solid var(--gold)}
   },
   "creator": {
     "@type": "Organization",
-    "name": "Narodowy Bank Polski (National Bank of Poland) — NBP Web API",
-    "url": "https://api.nbp.pl/en.html"
+    "name": "Nbp"
   },
   "keywords": [
     "nbp"
   ],
   "temporalCoverage": "2002-01-02/2026-06-09",
-  "creditText": "Source: Narodowy Bank Polski (National Bank of Poland)",
   "citation": "Narodowy Bank Polski (National Bank of Poland) — NBP Web API. Retrieved from https://api.nbp.pl/en.html. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-nbp",
@@ -126,7 +124,7 @@ border-bottom:3px solid var(--gold)}
   "url": "https://econdatalibrary.com/nbp.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "Narodowy Bank Polski (National Bank of Poland) — NBP Web API"
+    "name": "Nbp"
   },
   "publisher": {
     "@type": "sc:Organization",
@@ -145,9 +143,9 @@ border-bottom:3px solid var(--gold)}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / Narodowy Bank Polski (National Bank of Poland) — NBP Web API</div>
+<div class="crumb"><a href="index.html">Catalog</a> / Nbp</div>
 <div class="pid">nbp</div>
-<h1>Narodowy Bank Polski (National Bank of Poland) — NBP Web API</h1>
+<h1>Nbp</h1>
 <div class="badges"><span class="badge meta">Metadata only</span><span class="badge lic">License under review</span></div>
 <p class="lead">NBP — National Bank of Poland exchange rates, 1984–present. License: Open data (nbp.pl) Source: https://api.nbp.pl/ No API key required. Coverage: * Table A: ~32 currencies vs PLN, mid rates, business days, 2002–present * Table B: ~100+ exotic currencies vs PLN, weekly, 2002–present * Each request…</p>
 </div>
@@ -156,12 +154,9 @@ border-bottom:3px solid var(--gold)}
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">148</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">2002-01-02 – 2026-06-09</div></div></div>
 <h2>Licensing &amp; provenance</h2>
 <dl class="kv"><dt>License</dt><dd>License under review</dd>
-<dt>Required attribution</dt><dd>Source: Narodowy Bank Polski (National Bank of Poland)</dd>
 <dt>Redistribution</dt><dd>Not permitted (metadata only)</dd>
 <dt>Commercial use</dt><dd>Restricted / no</dd>
-<dt>Modification</dt><dd>Permitted</dd>
-<dt>Provider homepage</dt><dd><a href="https://api.nbp.pl/en.html">https://api.nbp.pl/en.html</a></dd>
-<dt>Provider terms</dt><dd><a href="https://api.nbp.pl/en.html">https://api.nbp.pl/en.html</a></dd></dl>
+<dt>Modification</dt><dd>Permitted</dd></dl>
 <h2>How to cite</h2>
 <blockquote class="cite">Narodowy Bank Polski (National Bank of Poland) — NBP Web API. Retrieved from https://api.nbp.pl/en.html. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
@@ -189,7 +184,7 @@ Run: python jobs/ingest_nbp.py</p>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;Narodowy Bank Polski (National Bank of Poland) — NBP Web API&quot;,
+  &quot;name&quot;: &quot;Nbp&quot;,
   &quot;description&quot;: &quot;NBP — National Bank of Poland exchange rates, 1984–present. License: Open data (nbp.pl) Source: https://api.nbp.pl/ No API key required. Coverage: * Table A: ~32 currencies vs PLN, mid rates, business days, 2002–present * Table B: ~100+ exotic currencies vs PLN, weekly, 2002–present * Each request…&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/nbp.html&quot;,
   &quot;identifier&quot;: &quot;nbp&quot;,
@@ -201,14 +196,12 @@ Run: python jobs/ingest_nbp.py</p>
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;Narodowy Bank Polski (National Bank of Poland) — NBP Web API&quot;,
-    &quot;url&quot;: &quot;https://api.nbp.pl/en.html&quot;
+    &quot;name&quot;: &quot;Nbp&quot;
   },
   &quot;keywords&quot;: [
     &quot;nbp&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;2002-01-02/2026-06-09&quot;,
-  &quot;creditText&quot;: &quot;Source: Narodowy Bank Polski (National Bank of Poland)&quot;,
   &quot;citation&quot;: &quot;Narodowy Bank Polski (National Bank of Poland) — NBP Web API. Retrieved from https://api.nbp.pl/en.html. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-nbp&quot;,
@@ -240,7 +233,7 @@ Run: python jobs/ingest_nbp.py</p>
   &quot;url&quot;: &quot;https://econdatalibrary.com/nbp.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;Narodowy Bank Polski (National Bank of Poland) — NBP Web API&quot;
+    &quot;name&quot;: &quot;Nbp&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
@@ -252,5 +245,5 @@ Run: python jobs/ingest_nbp.py</p>
   &quot;isAccessibleForFree&quot;: false,
   &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-14 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

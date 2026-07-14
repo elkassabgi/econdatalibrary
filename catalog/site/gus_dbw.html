@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Statistics Poland — Knowledge Databases / DBW API (Dziedzinowe Bazy Wiedzy) — Econ Data Library</title>
+<title>Gus Dbw — Econ Data Library</title>
 <meta name="description" content="GUS Poland — DBW (Dziedzinowe Bazy Wiedzy) API, full crawl. License: Open data (GUS public data policy, CC BY 4.0) Source: https://api-dbw.stat.gov.pl/ (replaces the dead sdmx.stat.gov.pl) No API key required; optional registered key via env GUS_DBW_CLIENT_ID (sent as X-ClientId header). Endpoints…">
 <link rel="canonical" href="https://econdatalibrary.com/gus_dbw.html">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -73,11 +73,11 @@ border-bottom:3px solid var(--gold)}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "Statistics Poland — Knowledge Databases / DBW API (Dziedzinowe Bazy Wiedzy)",
+  "name": "Gus Dbw",
   "description": "GUS Poland — DBW (Dziedzinowe Bazy Wiedzy) API, full crawl. License: Open data (GUS public data policy, CC BY 4.0) Source: https://api-dbw.stat.gov.pl/ (replaces the dead sdmx.stat.gov.pl) No API key required; optional registered key via env GUS_DBW_CLIENT_ID (sent as X-ClientId header). Endpoints…",
   "url": "https://econdatalibrary.com/gus_dbw.html",
   "identifier": "gus_dbw",
-  "isAccessibleForFree": true,
+  "isAccessibleForFree": false,
   "publisher": {
     "@type": "Organization",
     "name": "Econ Data Library",
@@ -85,26 +85,16 @@ border-bottom:3px solid var(--gold)}
   },
   "creator": {
     "@type": "Organization",
-    "name": "Statistics Poland — Knowledge Databases / DBW API (Dziedzinowe Bazy Wiedzy)",
-    "url": "https://api-dbw.stat.gov.pl"
+    "name": "Gus Dbw"
   },
-  "license": "https://creativecommons.org/licenses/by/4.0/",
   "keywords": [
     "gus_dbw"
   ],
-  "creditText": "Source: Statistics Poland (GUS), DBW. Licensed under CC BY 4.0.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-gus_dbw",
     "https://zenodo.org/communities/econdatalibrary"
   ],
-  "distribution": [
-    {
-      "@type": "DataDownload",
-      "encodingFormat": "text/csv",
-      "contentUrl": "https://econdatalibrary.com/download.html?source=gus_dbw",
-      "license": "https://creativecommons.org/licenses/by/4.0/"
-    }
-  ]
+  "usageInfo": "Metadata-only catalog entry. This source's license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms."
 }
 </script>
 <script type="application/ld+json">
@@ -132,24 +122,15 @@ border-bottom:3px solid var(--gold)}
   "url": "https://econdatalibrary.com/gus_dbw.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "Statistics Poland — Knowledge Databases / DBW API (Dziedzinowe Bazy Wiedzy)"
+    "name": "Gus Dbw"
   },
   "publisher": {
     "@type": "sc:Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "https://creativecommons.org/licenses/by/4.0/",
-  "distribution": [
-    {
-      "@type": "cr:FileObject",
-      "@id": "gus_dbw-csv",
-      "name": "gus_dbw-csv",
-      "description": "Per-series CSV, downloadable with a free API key.",
-      "contentUrl": "https://econdatalibrary.com/download.html?source=gus_dbw",
-      "encodingFormat": "text/csv"
-    }
-  ]
+  "isAccessibleForFree": false,
+  "usageInfo": "Metadata-only Croissant record; underlying data is not redistributed under this source's license."
 }
 </script>
 </head><body>
@@ -158,22 +139,18 @@ border-bottom:3px solid var(--gold)}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / Statistics Poland — Knowledge Databases / DBW API (Dziedzinowe Bazy Wiedzy)</div>
+<div class="crumb"><a href="index.html">Catalog</a> / Gus Dbw</div>
 <div class="pid">gus_dbw</div>
-<h1>Statistics Poland — Knowledge Databases / DBW API (Dziedzinowe Bazy Wiedzy)</h1>
-<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span></div>
+<h1>Gus Dbw</h1>
+<div class="badges"><span class="badge meta">Metadata only</span><span class="badge lic">License under review</span></div>
 <p class="lead">GUS Poland — DBW (Dziedzinowe Bazy Wiedzy) API, full crawl. License: Open data (GUS public data policy, CC BY 4.0) Source: https://api-dbw.stat.gov.pl/ (replaces the dead sdmx.stat.gov.pl) No API key required; optional registered key via env GUS_DBW_CLIENT_ID (sent as X-ClientId header). Endpoints…</p>
 </div>
-<div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
+<div class="callout meta"><b>Metadata only.</b> This source’s license does not permit redistribution, so we catalog its metadata but do not re-serve the data. Use the provider link to obtain it under the original terms.</div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 4.0 (CC BY 4.0)</dd>
-<dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/4.0/">https://creativecommons.org/licenses/by/4.0/</a></dd>
-<dt>Required attribution</dt><dd>Source: Statistics Poland (GUS), DBW. Licensed under CC BY 4.0.</dd>
-<dt>Redistribution</dt><dd>Permitted (served here)</dd>
-<dt>Commercial use</dt><dd>Yes</dd>
-<dt>Modification</dt><dd>Permitted</dd>
-<dt>Provider homepage</dt><dd><a href="https://api-dbw.stat.gov.pl">https://api-dbw.stat.gov.pl</a></dd>
-<dt>Provider terms</dt><dd><a href="https://api-dbw.stat.gov.pl">https://api-dbw.stat.gov.pl</a></dd></dl>
+<dl class="kv"><dt>License</dt><dd>License under review</dd>
+<dt>Redistribution</dt><dd>Not permitted (metadata only)</dd>
+<dt>Commercial use</dt><dd>Restricted / no</dd>
+<dt>Modification</dt><dd>Permitted</dd></dl>
 <h2>Access &amp; mirrors</h2>
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=gus_dbw">Select &amp; download gus_dbw series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
@@ -216,11 +193,11 @@ Run: python jobs/ingest_gus_dbw.py</p>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;Statistics Poland — Knowledge Databases / DBW API (Dziedzinowe Bazy Wiedzy)&quot;,
+  &quot;name&quot;: &quot;Gus Dbw&quot;,
   &quot;description&quot;: &quot;GUS Poland — DBW (Dziedzinowe Bazy Wiedzy) API, full crawl. License: Open data (GUS public data policy, CC BY 4.0) Source: https://api-dbw.stat.gov.pl/ (replaces the dead sdmx.stat.gov.pl) No API key required; optional registered key via env GUS_DBW_CLIENT_ID (sent as X-ClientId header). Endpoints…&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/gus_dbw.html&quot;,
   &quot;identifier&quot;: &quot;gus_dbw&quot;,
-  &quot;isAccessibleForFree&quot;: true,
+  &quot;isAccessibleForFree&quot;: false,
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
@@ -228,26 +205,16 @@ Run: python jobs/ingest_gus_dbw.py</p>
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;Statistics Poland — Knowledge Databases / DBW API (Dziedzinowe Bazy Wiedzy)&quot;,
-    &quot;url&quot;: &quot;https://api-dbw.stat.gov.pl&quot;
+    &quot;name&quot;: &quot;Gus Dbw&quot;
   },
-  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
   &quot;keywords&quot;: [
     &quot;gus_dbw&quot;
   ],
-  &quot;creditText&quot;: &quot;Source: Statistics Poland (GUS), DBW. Licensed under CC BY 4.0.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-gus_dbw&quot;,
     &quot;https://zenodo.org/communities/econdatalibrary&quot;
   ],
-  &quot;distribution&quot;: [
-    {
-      &quot;@type&quot;: &quot;DataDownload&quot;,
-      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=gus_dbw&quot;,
-      &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;
-    }
-  ]
+  &quot;usageInfo&quot;: &quot;Metadata-only catalog entry. This source&#x27;s license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms.&quot;
 }</pre></details>
 <details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
   &quot;@context&quot;: {
@@ -273,24 +240,15 @@ Run: python jobs/ingest_gus_dbw.py</p>
   &quot;url&quot;: &quot;https://econdatalibrary.com/gus_dbw.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;Statistics Poland — Knowledge Databases / DBW API (Dziedzinowe Bazy Wiedzy)&quot;
+    &quot;name&quot;: &quot;Gus Dbw&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
-  &quot;distribution&quot;: [
-    {
-      &quot;@type&quot;: &quot;cr:FileObject&quot;,
-      &quot;@id&quot;: &quot;gus_dbw-csv&quot;,
-      &quot;name&quot;: &quot;gus_dbw-csv&quot;,
-      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=gus_dbw&quot;,
-      &quot;encodingFormat&quot;: &quot;text/csv&quot;
-    }
-  ]
+  &quot;isAccessibleForFree&quot;: false,
+  &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-12 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-14 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div></body></html>

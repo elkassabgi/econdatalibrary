@@ -711,17 +711,82 @@ def render_index(records, generated):
     n_series_total = sum(r.get("n_series", 0) or 0 for r in records)
     n_active = sum(1 for r in records if (r.get("n_series", 0) or 0) > 0)
 
-    # Index JSON-LD: a DataCatalog describing the whole site.
+    # Index JSON-LD: DataCatalog + Organization + WebSite + FAQPage (mirrors the
+    # hfdatalibrary.com landing page's structured-data graph).
+    faq_pairs = [
+        ("Is the data really free?",
+         "Yes. Browsing, metadata, and the catalog need no account. Data downloads "
+         "use a free API key — no subscription, no paywall. One free ElkassabgiData "
+         "account works across the whole family, including hfdatalibrary.com."),
+        ("What does the library cover?",
+         f"{n_total} economic and financial data sources — national statistics, "
+         "central banks, international organizations, trade, development, energy, "
+         "and research datasets — indexed in one namespace with billions of "
+         "individual series (live counts are measured on the data store and shown "
+         "on this page)."),
+        ("How are licenses handled?",
+         "Every series carries its source's license and attribution requirements. "
+         "Sources whose license forbids re-hosting are catalogued as metadata-only "
+         "pointers to the original publisher — they are never redistributed."),
+        ("How do I cite a series?",
+         "Every series and every bundle ships a producer-first citation (the "
+         "original statistical agency first, the library second). Download bundles "
+         "are snapshot-pinned so a citation reproduces the exact data."),
+        ("Is there an API?",
+         "Yes — a free REST API for search, metadata, series CSV, and reproducible "
+         "bundles, plus an MCP server that lets AI assistants query the library "
+         "directly with licenses and citations attached."),
+        ("Which languages are supported?",
+         "Six (English, Arabic, Spanish, French, Russian, Chinese) using only the "
+         "sources' official translations — titles are never machine-translated."),
+    ]
     catalog_ld = {
         "@context": "https://schema.org/",
-        "@type": "DataCatalog",
-        "name": SITE_NAME,
-        "url": f"{SITE_BASE}/index.html",
-        "description": (
-            f"Searchable catalog of {n_total} economic and financial data sources "
-            "with license, provenance, and machine-readable Dataset + Croissant metadata."
-        ),
-        "publisher": PUBLISHER,
+        "@graph": [
+            {
+                "@type": "DataCatalog",
+                "@id": f"{SITE_BASE}/#catalog",
+                "name": SITE_NAME,
+                "url": f"{SITE_BASE}/index.html",
+                "description": (
+                    f"Searchable catalog of {n_total} economic and financial data sources "
+                    "with license, provenance, and machine-readable Dataset + Croissant metadata."
+                ),
+                "publisher": PUBLISHER,
+            },
+            {
+                "@type": "Organization",
+                "@id": f"{SITE_BASE}/#org",
+                "name": SITE_NAME,
+                "url": f"{SITE_BASE}/",
+                "founder": {
+                    "@type": "Person",
+                    "name": "Ahmed Elkassabgi",
+                    "identifier": "https://orcid.org/0000-0002-5926-7493",
+                    "affiliation": {"@type": "Organization",
+                                    "name": "University of Central Arkansas"},
+                },
+                "sameAs": ["https://hfdatalibrary.com/",
+                           "https://orcid.org/0000-0002-5926-7493"],
+            },
+            {
+                "@type": "WebSite",
+                "@id": f"{SITE_BASE}/#website",
+                "name": SITE_NAME,
+                "url": f"{SITE_BASE}/",
+                "inLanguage": "en",
+                "publisher": {"@id": f"{SITE_BASE}/#org"},
+            },
+            {
+                "@type": "FAQPage",
+                "@id": f"{SITE_BASE}/#faq",
+                "mainEntity": [
+                    {"@type": "Question", "name": q,
+                     "acceptedAnswer": {"@type": "Answer", "text": a}}
+                    for q, a in faq_pairs
+                ],
+            },
+        ],
     }
 
     head = HEAD.format(
@@ -730,15 +795,67 @@ def render_index(records, generated):
         canonical=f"{SITE_BASE}/index.html",
         css=PAGE_CSS
         + """
-.hero{background:var(--navy);color:#fff;margin:-2rem -1.5rem 1.5rem;padding:3.2rem 1.5rem 2.6rem;
-border-bottom:3px solid var(--gold)}
-.hero .eyebrow{font-family:var(--mono);font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;
-color:var(--gold);margin-bottom:.7rem}
-.hero h1{font-family:var(--serif);color:#fff;font-size:2.6rem;line-height:1.1;max-width:18ch}
-.hero .tag{color:rgba(255,255,255,.74);font-size:1.05rem;margin-top:.8rem;max-width:60ch;line-height:1.55}
-.heroStats{display:flex;gap:2.4rem;flex-wrap:wrap;margin-top:2rem}
-.heroStats .n{font-family:var(--serif);font-size:1.9rem;color:#fff;line-height:1}
-.heroStats .l{font-size:.78rem;color:rgba(255,255,255,.6);margin-top:.3rem;text-transform:uppercase;letter-spacing:.06em}
+/* ── HF-landing replica (mirrors hfdatalibrary.com css/style.css) ── */
+.container{max-width:1200px;margin:0 auto;padding:0 1.5rem}
+.container-narrow{max-width:920px;margin:0 auto;padding:0 1.5rem}
+.section{padding:5rem 0}
+.section-alt{background:var(--g50)}
+.hero{background:linear-gradient(135deg,var(--navy) 0%,var(--navy-light) 100%);
+color:#fff;padding:6rem 0 5rem;text-align:center;border-bottom:3px solid var(--gold)}
+.hero h1{font-family:var(--serif);color:#fff;font-size:3rem;line-height:1.2;margin-bottom:.5rem}
+.hero h1 span{color:var(--gold)}
+.hero .subtitle{font-size:1.25rem;color:rgba(255,255,255,.75);max-width:720px;margin:0 auto 2.5rem;font-weight:400}
+.stats-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:1.5rem;max-width:900px;margin:0 auto 3rem}
+.stat-item{text-align:center}
+.stat-item.hl{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);
+border-radius:12px;padding:1.25rem 1rem;box-shadow:0 4px 20px rgba(0,0,0,.3);margin-top:-.75rem}
+.stat-number{font-family:var(--mono);font-size:2rem;font-weight:700;color:var(--gold);display:block}
+.stat-label{font-size:.85rem;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.05em}
+.btn{display:inline-flex;align-items:center;gap:.5rem;padding:.75rem 1.75rem;border-radius:8px;
+font-weight:600;font-size:.95rem;cursor:pointer;border:none;transition:all .2s;text-decoration:none}
+.btn-primary{background:var(--blue);color:#fff}
+.btn-primary:hover{background:#3b82f6;color:#fff;transform:translateY(-1px);box-shadow:0 4px 6px rgba(0,0,0,.07)}
+.btn-outline{background:transparent;color:#fff;border:2px solid rgba(255,255,255,.3)}
+.btn-outline:hover{border-color:#fff;color:#fff}
+.btn-group{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap}
+.feature-row{display:grid;grid-template-columns:1fr 1fr;gap:4rem;align-items:center}
+.feature-text h2{font-family:var(--serif);color:var(--navy);font-size:1.875rem;margin:0 0 .75rem;border:none;padding:0}
+.feature-text p{color:var(--g600);margin-bottom:1rem}
+.feature-visual{background:var(--g50);border:1px solid var(--g200);border-radius:12px;padding:2rem}
+.feature-visual pre{background:var(--navy);color:#e2e8f0;padding:1.25rem 1.5rem;border-radius:8px;
+overflow-x:auto;font-size:.82rem;line-height:1.6;margin:0;font-family:var(--mono)}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.5rem}
+.acard{background:#fff;border:1px solid var(--g200);border-radius:12px;padding:2rem;transition:all .2s}
+.acard:hover{box-shadow:0 4px 6px rgba(0,0,0,.07);border-color:var(--g300)}
+.acard .card-icon{width:48px;height:48px;background:var(--blue-pale);border-radius:10px;
+display:flex;align-items:center;justify-content:center;font-size:1.5rem;margin-bottom:1rem}
+.acard h3{font-family:var(--sans);color:var(--navy);font-size:1.125rem;margin-bottom:.75rem}
+.acard p{color:var(--g600);font-size:.95rem;margin-bottom:0}
+.section-title{font-family:var(--serif);color:var(--navy);font-size:1.875rem;text-align:center;
+margin:0 0 2.5rem;border:none;padding:0}
+.table-wrap{overflow-x:auto;margin-bottom:1.5rem}
+.cmp{width:100%;border-collapse:collapse;font-size:.9rem}
+.cmp thead th{text-align:left;padding:.75rem 1rem;border-bottom:2px solid var(--g300);
+font-weight:600;color:var(--g700);white-space:nowrap}
+.cmp tbody td{padding:.625rem 1rem;border-bottom:1px solid var(--g200)}
+.cmp tbody tr:hover{background:var(--g50)}
+.comparison-highlight{background:var(--blue-pale)!important}
+.comparison-check{color:var(--green);font-weight:700}
+.comparison-x{color:var(--g300)}
+.faq-item h3{font-family:var(--serif);color:var(--navy);font-size:1.1rem;margin-bottom:.35rem}
+.faq-item p{color:var(--g700);font-size:.95rem}
+.faq-item{margin-bottom:1.5rem}
+.footer{background:var(--navy);color:rgba(255,255,255,.7);padding:3rem 0 2rem;font-size:.9rem;margin-top:0}
+.footer-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:2rem;margin-bottom:2rem}
+.footer h4{color:#fff;font-family:var(--sans);font-size:1rem;margin-bottom:.75rem}
+.footer a{color:rgba(255,255,255,.7);text-decoration:none}
+.footer a:hover{color:#fff}
+.footer ul{list-style:none}
+.footer li{margin-bottom:.4rem}
+.footer-bottom{border-top:1px solid rgba(255,255,255,.1);padding-top:1.5rem;
+display:flex;justify-content:space-between;align-items:center}
+.footer-bottom .orcid{font-family:var(--mono);font-size:.8rem}
+/* catalog search section (existing machinery) */
 .controls{display:flex;gap:.75rem;flex-wrap:wrap;margin:0 0 1.2rem}
 .controls input,.controls select{padding:.7rem .9rem;border:1px solid var(--g300);
 border-radius:10px;font-size:.95rem;font-family:var(--sans);background:#fff}
@@ -758,6 +875,15 @@ transition:box-shadow .14s,border-color .14s,transform .14s}
 [dir=rtl] .card .row{flex-direction:row-reverse}
 [dir=rtl] .hero,[dir=rtl] .card{text-align:right}
 [dir=rtl] .card h3{font-family:var(--sans)}
+@media (max-width:768px){
+.hero h1{font-size:2rem}
+.stats-bar{grid-template-columns:repeat(2,1fr);gap:1rem}
+.stat-number{font-size:1.5rem}
+.grid-3{grid-template-columns:1fr}
+.feature-row{grid-template-columns:1fr;gap:2rem}
+.footer-grid{grid-template-columns:1fr 1fr}
+.footer-bottom{flex-direction:column;gap:.5rem;text-align:center}
+}
 """,
         jsonld=jsonld_script(catalog_ld),
     )
@@ -765,40 +891,254 @@ transition:box-shadow .14s,border-color .14s,transform .14s}
     tpl = (
         head
         + """
-<div class="wrap">
-<div class="hero">
-<div class="eyebrow">Econ Data Library</div>
-<h1>Economic &amp; financial data, free and citable</h1>
-<p class="tag">One namespace over the world's macro &amp; financial sources — each series resolvable, reproducible as a snapshot-pinned bundle, and carrying its license, provenance, and producer-first citation.</p>
-<div class="heroStats">
-<div><div class="n" id="live-series">&mdash;</div><div class="l">individual series</div></div>
-<div><div class="n" id="live-obs">&mdash;</div><div class="l">observations</div></div>
-<div><div class="n">__N__</div><div class="l">sources catalogued</div></div>
-<div><div class="n">Free</div><div class="l">open &amp; reproducible</div></div>
-</div>
-<p class="tag" style="font-size:.78rem;opacity:.75;margin-top:.6rem">Measured on our data store (as of <span id="live-asof">&mdash;</span>): individual series = every fully-specified time series (distinct series key per source; ~1% estimation error, conservative floor); observations = exact row counts. The catalog below indexes these at dataset grain for browsing.</p>
-</div>
-<div class="controls">
-<input id="q" placeholder="Search by name, id, description, license…" oninput="render()" autofocus>
-<select id="f" onchange="render()">
-<option value="">All datasets</option>
-<option value="open">Redistributed only</option>
-<option value="meta">Metadata-only</option>
-</select>
-<select id="lang" onchange="onLang()" title="Search series in another language" aria-label="Language">
-<option value="en">English</option>
-<option value="ar">العربية</option>
-<option value="es">Español</option>
-<option value="fr">Français</option>
-<option value="ru">Русский</option>
-<option value="zh">中文</option>
-</select>
-</div>
-<div class="count" id="count"></div>
-<div id="results"></div>
-<div class="foot">Generated __GEN__ &middot; __N__ datasets &middot; metadata from the central registry &middot;
-<a href="sitemap.xml">sitemap.xml</a></div>
-</div>
+<!-- ── Hero (hfdatalibrary.com landing structure) ── -->
+<section class="hero">
+  <div class="container">
+    <h1>Free Economic &amp; Financial <span>Time-Series</span> Data</h1>
+    <p class="subtitle">Free, research-grade macro &amp; financial data — one namespace over the world's statistical sources. Every series carries its license, provenance, and producer-first citation. Reproducible, snapshot-pinned, and <strong>continuously updated</strong>.</p>
+
+    <div class="stats-bar">
+      <div class="stat-item">
+        <span class="stat-number">__N__</span>
+        <span class="stat-label">Sources</span>
+      </div>
+      <div class="stat-item hl">
+        <span class="stat-number" id="live-series">&mdash;</span>
+        <span class="stat-label">Individual Series</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-number" id="live-obs">&mdash;</span>
+        <span class="stat-label">Observations</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-number">6</span>
+        <span class="stat-label">Languages</span>
+      </div>
+    </div>
+
+    <div class="btn-group">
+      <a href="download.html" class="btn btn-primary">Download Data</a>
+      <a href="#catalog" class="btn btn-outline">Browse the Catalog</a>
+      <a href="mcp.html" class="btn btn-outline">MCP for AI</a>
+    </div>
+    <p style="font-size:.78rem;color:rgba(255,255,255,.5);margin-top:2rem">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded.</p>
+  </div>
+</section>
+
+<!-- ── What This Is ── -->
+<section class="section">
+  <div class="container">
+    <div class="feature-row">
+      <div class="feature-text">
+        <h2>What is this?</h2>
+        <p>A single, citable library over __N__ economic and financial data sources — national statistical offices, central banks, international organizations, trade, development, energy, and research datasets.</p>
+        <p>Every series lives in one namespace (<code>source:series:geography</code>), resolves over a free REST API, and ships with its license, attribution requirements, and a producer-first citation. Bundles are snapshot-pinned so your results reproduce exactly.</p>
+        <p>Sources whose licenses forbid re-hosting are catalogued honestly as metadata-only pointers to the original publisher — never silently redistributed.</p>
+        <p>No subscription. No paywall. One free key for the whole ElkassabgiData family, including <a href="https://hfdatalibrary.com/">HF Data Library</a>.</p>
+      </div>
+      <div class="feature-visual">
+        <pre><code># Python — any series in a few lines
+import io, requests, pandas as pd
+
+API = "https://econdl-api.elkassabgi.workers.dev"
+r = requests.get(
+    f"{API}/v1/series/worldbank:NY.GDP.MKTP.CD:USA.csv",
+    headers={"X-API-Key": "YOUR_FREE_KEY"})
+df = pd.read_csv(io.StringIO(r.text), comment="#")
+
+# -> tidy date,value rows with the license and
+#    producer-first citation in the CSV header</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── How to Access ── -->
+<section class="section section-alt">
+  <div class="container">
+    <h2 class="section-title">Multiple ways to access the data</h2>
+    <div class="grid-3">
+      <div class="acard">
+        <div class="card-icon">&#8681;</div>
+        <h3>Browser Download</h3>
+        <p>Search the catalog, pick series, and download citation-headed CSVs — individually or as a multi-series ZIP bundle built in your browser.</p>
+        <a href="download.html" class="btn btn-primary" style="margin-top:1rem;">Browse Downloads</a>
+      </div>
+      <div class="acard">
+        <div class="card-icon">{&thinsp;}</div>
+        <h3>REST API</h3>
+        <p>Programmatic search, metadata, series CSV, and reproducible snapshot-pinned bundles. Free key. Python and R clients available.</p>
+        <a href="download.html#api" class="btn btn-primary" style="margin-top:1rem;">Get API Access</a>
+      </div>
+      <div class="acard">
+        <div class="card-icon">&#129302;</div>
+        <h3>MCP for AI Assistants</h3>
+        <p>Let Claude or any MCP-capable assistant search and fetch series directly — with licenses, citations, and freshness attached to every answer.</p>
+        <a href="mcp.html" class="btn btn-primary" style="margin-top:1rem;">MCP Server</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Catalog search (live) ── -->
+<section class="section" id="catalog">
+  <div class="container-narrow">
+    <h2 class="section-title" style="margin-bottom:.5rem">Browse the catalog</h2>
+    <p style="text-align:center;color:var(--g500);margin-bottom:2rem">__N__ sources &middot; search datasets in English, or series in 6 languages via the live API</p>
+    <div class="controls">
+      <input id="q" placeholder="Search by name, id, description, license…" oninput="render()">
+      <select id="f" onchange="render()">
+        <option value="">All datasets</option>
+        <option value="open">Redistributed only</option>
+        <option value="meta">Metadata-only</option>
+      </select>
+      <select id="lang" onchange="onLang()" title="Search series in another language" aria-label="Language">
+        <option value="en">English</option>
+        <option value="ar">العربية</option>
+        <option value="es">Español</option>
+        <option value="fr">Français</option>
+        <option value="ru">Русский</option>
+        <option value="zh">中文</option>
+      </select>
+    </div>
+    <div class="count" id="count"></div>
+    <div id="results"></div>
+  </div>
+</section>
+
+<!-- ── Comparison ── -->
+<section class="section section-alt">
+  <div class="container">
+    <h2 class="section-title">How this compares</h2>
+    <div class="table-wrap">
+      <table class="cmp">
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th class="comparison-highlight">Econ Data Library</th>
+            <th>FRED</th>
+            <th>DBnomics</th>
+            <th>Bloomberg</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Price</strong></td>
+            <td class="comparison-highlight"><strong>Free</strong></td>
+            <td>Free</td>
+            <td>Free</td>
+            <td>$25,000+/yr</td>
+          </tr>
+          <tr>
+            <td><strong>Individual series</strong></td>
+            <td class="comparison-highlight"><strong id="cmp-series">billions</strong></td>
+            <td>~800k</td>
+            <td>1B+</td>
+            <td>Terminal-gated</td>
+          </tr>
+          <tr>
+            <td><strong>License on every series</strong></td>
+            <td class="comparison-highlight"><span class="comparison-check">Yes</span></td>
+            <td>Partial</td>
+            <td>Partial</td>
+            <td>Proprietary</td>
+          </tr>
+          <tr>
+            <td><strong>Producer-first citations</strong></td>
+            <td class="comparison-highlight"><span class="comparison-check">Every series</span></td>
+            <td><span class="comparison-x">No</span></td>
+            <td><span class="comparison-x">No</span></td>
+            <td><span class="comparison-x">No</span></td>
+          </tr>
+          <tr>
+            <td><strong>Reproducible bundles</strong></td>
+            <td class="comparison-highlight"><span class="comparison-check">Snapshot-pinned</span></td>
+            <td><span class="comparison-x">No</span></td>
+            <td><span class="comparison-x">No</span></td>
+            <td><span class="comparison-x">No</span></td>
+          </tr>
+          <tr>
+            <td><strong>AI/MCP access</strong></td>
+            <td class="comparison-highlight"><span class="comparison-check">Built-in</span></td>
+            <td><span class="comparison-x">No</span></td>
+            <td><span class="comparison-x">No</span></td>
+            <td>Paid add-on</td>
+          </tr>
+          <tr>
+            <td><strong>Machine-readable metadata</strong></td>
+            <td class="comparison-highlight"><span class="comparison-check">Dataset + Croissant</span></td>
+            <td>Partial</td>
+            <td>Partial</td>
+            <td><span class="comparison-x">No</span></td>
+          </tr>
+          <tr>
+            <td><strong>Multilingual search</strong></td>
+            <td class="comparison-highlight"><span class="comparison-check">6 languages</span></td>
+            <td>English</td>
+            <td>English</td>
+            <td>Multiple</td>
+          </tr>
+          <tr>
+            <td><strong>Update transparency</strong></td>
+            <td class="comparison-highlight"><span class="comparison-check">Public status board</span></td>
+            <td>Partial</td>
+            <td>Partial</td>
+            <td><span class="comparison-x">Opaque</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="text-align:center;color:var(--g500);font-size:.85rem">Series counts are approximate for third parties (their own published figures); ours is measured live on the data store.</p>
+  </div>
+</section>
+
+<!-- ── FAQ ── -->
+<section class="section">
+  <div class="container-narrow">
+    <h2 class="section-title">Frequently asked questions</h2>
+    __FAQ__
+  </div>
+</section>
+
+<!-- ── Footer (hf-style) ── -->
+<footer class="footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <h4>Econ Data Library</h4>
+        <p>Free, citable economic &amp; financial time-series data with honest licensing and provenance. Built and maintained by Ahmed Elkassabgi at the University of Central Arkansas.</p>
+        <p style="margin-top:.75rem">Part of the <a href="https://hfdatalibrary.com/">ElkassabgiData</a> family — one free account for every library.</p>
+      </div>
+      <div>
+        <h4>Data</h4>
+        <ul>
+          <li><a href="#catalog">Browse the Catalog</a></li>
+          <li><a href="download.html">Download</a></li>
+          <li><a href="status.html">Source Status</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Access</h4>
+        <ul>
+          <li><a href="download.html#api">REST API</a></li>
+          <li><a href="mcp.html">MCP Server</a></li>
+          <li><a href="account.html">Account</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Family</h4>
+        <ul>
+          <li><a href="https://hfdatalibrary.com/">HF Data Library</a></li>
+          <li><a href="sitemap.xml">Sitemap</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>&copy; 2026 Ahmed Elkassabgi. University of Central Arkansas. &middot; Generated __GEN__</p>
+      <p class="orcid">ORCID: <a href="https://orcid.org/0000-0002-5926-7493">0000-0002-5926-7493</a></p>
+    </div>
+  </div>
+</footer>
 <script>
 const IDX=__DATA__;
 // Live API: when a non-English language is picked, search the full series index
@@ -876,16 +1216,22 @@ fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (
   if (d.individual_series) document.getElementById("live-series").textContent = fmtB(d.individual_series);
   if (d.observations) document.getElementById("live-obs").textContent = fmtB(d.observations);
   if (d.as_of) document.getElementById("live-asof").textContent = d.as_of;
+  if (d.individual_series) { var c = document.getElementById("cmp-series"); if (c) c.textContent = fmtB(d.individual_series); }
 }).catch(function () {});
 </script>
 </body></html>
 """
+    )
+    faq_html = "\n".join(
+        f'<div class="faq-item"><h3>{esc(q)}</h3><p>{esc(a)}</p></div>'
+        for q, a in faq_pairs
     )
     # Headline stats are NOT baked in (owner rule: no stale hardcoded counts).
     # The page fetches /v1/stats live; the worker serves R2 _aqueduct/stats.json,
     # refreshed by each census run.
     return (
         tpl.replace("__DATA__", data)
+        .replace("__FAQ__", faq_html)
         .replace("__NSERIES__", f"{n_series_total/1e6:.2f}M" if n_series_total >= 1e6 else f"{n_series_total:,}")
         .replace("__NACTIVE__", str(n_active))
         .replace("__N__", str(n_total))
