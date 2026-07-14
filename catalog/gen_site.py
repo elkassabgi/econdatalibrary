@@ -567,6 +567,41 @@ def jsonld_script(obj):
     return f'<script type="application/ld+json">\n{payload}\n</script>'
 
 
+# ---------------------------------------------------------------------------- #
+#  Per-source embeds granted by the provider in writing. NEVER add one without a
+#  documented permission trail. Each entry: heading, permission note (shown on
+#  the page), and the provider-supplied embed HTML (cleaned of mail-relay link
+#  mangling; functionally identical to what the provider sent).
+# ---------------------------------------------------------------------------- #
+SOURCE_EMBEDS = {
+    # Social Progress Imperative — written permission from REDACTED
+    # (REDACTED, 2026-07-14, "Access for Econ Data Library"):
+    # embed of the PUBLIC Tableau of the 2026 Global Social Progress Index,
+    # student/academic use only, no charge. The DATASET itself is explicitly NOT
+    # licensed for free redistribution -> this source stays metadata-only.
+    # (Only change vs the provider's code: UI language es-ES -> en-US.)
+    "social_progress": {
+        "heading": "Explore the 2026 Global Social Progress Index",
+        "note": ("Embedded with written permission from the Social Progress "
+                 "Imperative (2026) for student and academic use, free of charge. "
+                 "The underlying dataset is not redistributed here — data licensing "
+                 "and premium access are available from "
+                 '<a href="https://www.socialprogress.org/">socialprogress.org</a>.'),
+        "html": """
+<div class='tableauPlaceholder' id='viz1784056164874' style='position: relative'><noscript><a href='https://www.socialprogress.org/'><img alt='2026 Global Social Progress Index' src='https://public.tableau.com/static/images/20/2026GlobalSocialProgressIndexPublicAccess/2026SPI/1_rss.png' style='border: none' /></a></noscript><object class='tableauViz' style='display:none;'><param name='host_url' value='https%3A%2F%2Fpublic.tableau.com%2F' /> <param name='embed_code_version' value='3' /> <param name='site_root' value='' /><param name='name' value='2026GlobalSocialProgressIndexPublicAccess&#47;2026SPI' /><param name='tabs' value='yes' /><param name='toolbar' value='yes' /><param name='static_image' value='https://public.tableau.com/static/images/20/2026GlobalSocialProgressIndexPublicAccess/2026SPI/1.png' /> <param name='animate_transition' value='yes' /><param name='display_static_image' value='yes' /><param name='display_spinner' value='yes' /><param name='display_overlay' value='yes' /><param name='display_count' value='yes' /><param name='language' value='en-US' /></object></div>
+<script type='text/javascript'>
+var divElement = document.getElementById('viz1784056164874');
+var vizElement = divElement.getElementsByTagName('object')[0];
+if ( divElement.offsetWidth > 800 ) { vizElement.style.width='1000px';vizElement.style.height='1250px';} else if ( divElement.offsetWidth > 500 ) { vizElement.style.width='1000px';vizElement.style.height='1250px';} else { vizElement.style.width='100%';vizElement.style.height='7250px';}
+var scriptElement = document.createElement('script');
+scriptElement.src = 'https://public.tableau.com/javascripts/api/viz_v1.js';
+vizElement.parentNode.insertBefore(scriptElement, vizElement);
+</script>
+""",
+    },
+}
+
+
 def render_dataset_page(rec):
     ds_ld = dataset_jsonld(rec)
     cr_ld = croissant_jsonld(rec)
@@ -667,6 +702,13 @@ def render_dataset_page(rec):
         body.append(f'<p class="lead">{esc(rec["desc_short"])}</p>')
     body.append('</div>')  # /dhero
     body.append(callout)
+
+    # Provider-granted embed (see SOURCE_EMBEDS — written permission required).
+    emb = SOURCE_EMBEDS.get(rec["id"])
+    if emb:
+        body.append(f"<h2>{emb['heading']}</h2>")
+        body.append(f'<div class="callout open" style="margin-bottom:1rem">{emb["note"]}</div>')
+        body.append(emb["html"])
 
     # Important notes (Task#5 caveats) — for hf_equities the survivorship-bias
     # disclosure is the first bullet; never fabricated, shown only when present.
