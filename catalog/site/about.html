@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Etr — Econ Data Library</title>
-<meta name="description" content="Etr">
-<link rel="canonical" href="https://econdatalibrary.com/etr.html">
+<title>About ElkassabgiData — Econ Data Library</title>
+<meta name="description" content="The story behind ElkassabgiData: a finance professor's journey to free the world's data — from the HF Data Library to a citable catalog of the world's economic sources.">
+<link rel="canonical" href="https://econdatalibrary.com/about.html">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
@@ -69,6 +69,14 @@ border-bottom:3px solid var(--gold)}
 .metric .mlabel{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g500)}
 .metric .mval{font-family:var(--serif);font-size:1.15rem;color:var(--navy);margin-top:.25rem;word-break:break-word}
 
+.wrap h2{margin-top:2rem}
+.wrap pre{background:var(--navy);color:#e2e8f0;padding:1.1rem 1.3rem;border-radius:8px;
+overflow-x:auto;font-size:.82rem;line-height:1.6;font-family:var(--mono);margin:.8rem 0 1.2rem}
+.wrap table{width:100%;border-collapse:collapse;font-size:.88rem;margin:.8rem 0 1.2rem}
+.wrap th{text-align:left;padding:.6rem .8rem;border-bottom:2px solid var(--g300);color:var(--g700)}
+.wrap td{padding:.55rem .8rem;border-bottom:1px solid var(--g200);vertical-align:top}
+.wrap td code{background:var(--g100);padding:.1em .35em;border-radius:4px;font-family:var(--mono);font-size:.85em}
+
 /* status bar + nav (hfdatalibrary.com parity) */
 .status-bar{background:var(--g50);border-bottom:1px solid var(--g200);font-size:.8rem;
 color:var(--g500);min-height:32px;line-height:32px;padding:0 1.5rem}
@@ -77,70 +85,7 @@ align-items:center;flex-wrap:wrap;gap:.25rem}
 .nav .signin{background:var(--gold);color:var(--navy)!important;padding:.4rem .875rem;
 border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:1rem}
 </style>
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org/",
-  "@type": "Dataset",
-  "name": "Etr",
-  "description": "Etr — dataset catalogued in the Econ Data Library.",
-  "url": "https://econdatalibrary.com/etr.html",
-  "identifier": "etr",
-  "isAccessibleForFree": false,
-  "publisher": {
-    "@type": "Organization",
-    "name": "Econ Data Library",
-    "url": "https://econdatalibrary.com"
-  },
-  "creator": {
-    "@type": "Organization",
-    "name": "Etr"
-  },
-  "keywords": [
-    "etr"
-  ],
-  "sameAs": [
-    "https://huggingface.co/datasets/econdatalibrary-etr",
-    "https://zenodo.org/communities/econdatalibrary"
-  ],
-  "usageInfo": "Metadata-only catalog entry. This source's license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms."
-}
-</script>
-<script type="application/ld+json">
-{
-  "@context": {
-    "@language": "en",
-    "@vocab": "https://schema.org/",
-    "cr": "http://mlcommons.org/croissant/",
-    "data": {
-      "@id": "cr:data",
-      "@type": "@json"
-    },
-    "dataType": {
-      "@id": "cr:dataType",
-      "@type": "@vocab"
-    },
-    "sc": "https://schema.org/",
-    "conformsTo": "dct:conformsTo",
-    "dct": "http://purl.org/dc/terms/"
-  },
-  "@type": "sc:Dataset",
-  "conformsTo": "http://mlcommons.org/croissant/1.0",
-  "name": "etr",
-  "description": "Etr — catalogued in the Econ Data Library.",
-  "url": "https://econdatalibrary.com/etr.html",
-  "creator": {
-    "@type": "sc:Organization",
-    "name": "Etr"
-  },
-  "publisher": {
-    "@type": "sc:Organization",
-    "name": "Econ Data Library",
-    "url": "https://econdatalibrary.com"
-  },
-  "isAccessibleForFree": false,
-  "usageInfo": "Metadata-only Croissant record; underlying data is not redistributed under this source's license."
-}
-</script>
+
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
@@ -167,84 +112,28 @@ border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-lef
   });
 })();
 </script>
+<div class="wrap"><h1>About ElkassabgiData</h1>
 
-<div class="wrap">
-<div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / Etr</div>
-<div class="pid">etr</div>
-<h1>Etr</h1>
-<div class="badges"><span class="badge meta">Metadata only</span><span class="badge lic">License under review</span></div>
+<div style="text-align:center;margin:.5rem 0 2rem">
+  <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="300" height="80"
+       style="max-width:80%;height:auto;background:var(--navy);padding:1rem 1.4rem;border-radius:12px">
 </div>
-<div class="callout meta"><b>Metadata only.</b> This source’s license does not permit redistribution, so we catalog its metadata but do not re-serve the data. Use the provider link to obtain it under the original terms.</div>
-<h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>License under review</dd>
-<dt>Redistribution</dt><dd>Not permitted (metadata only)</dd>
-<dt>Commercial use</dt><dd>Restricted / no</dd>
-<dt>Modification</dt><dd>Permitted</dd></dl>
-<h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=etr">Select &amp; download etr series as CSV &rarr;</a></dd>
-<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
-<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/etr.html">https://econdatalibrary.com/etr.html</a></dd></dl>
-<h2>Structured metadata</h2>
-<details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
-  &quot;@context&quot;: &quot;https://schema.org/&quot;,
-  &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;Etr&quot;,
-  &quot;description&quot;: &quot;Etr — dataset catalogued in the Econ Data Library.&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/etr.html&quot;,
-  &quot;identifier&quot;: &quot;etr&quot;,
-  &quot;isAccessibleForFree&quot;: false,
-  &quot;publisher&quot;: {
-    &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;Econ Data Library&quot;,
-    &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
-  },
-  &quot;creator&quot;: {
-    &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;Etr&quot;
-  },
-  &quot;keywords&quot;: [
-    &quot;etr&quot;
-  ],
-  &quot;sameAs&quot;: [
-    &quot;https://huggingface.co/datasets/econdatalibrary-etr&quot;,
-    &quot;https://zenodo.org/communities/econdatalibrary&quot;
-  ],
-  &quot;usageInfo&quot;: &quot;Metadata-only catalog entry. This source&#x27;s license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms.&quot;
-}</pre></details>
-<details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
-  &quot;@context&quot;: {
-    &quot;@language&quot;: &quot;en&quot;,
-    &quot;@vocab&quot;: &quot;https://schema.org/&quot;,
-    &quot;cr&quot;: &quot;http://mlcommons.org/croissant/&quot;,
-    &quot;data&quot;: {
-      &quot;@id&quot;: &quot;cr:data&quot;,
-      &quot;@type&quot;: &quot;@json&quot;
-    },
-    &quot;dataType&quot;: {
-      &quot;@id&quot;: &quot;cr:dataType&quot;,
-      &quot;@type&quot;: &quot;@vocab&quot;
-    },
-    &quot;sc&quot;: &quot;https://schema.org/&quot;,
-    &quot;conformsTo&quot;: &quot;dct:conformsTo&quot;,
-    &quot;dct&quot;: &quot;http://purl.org/dc/terms/&quot;
-  },
-  &quot;@type&quot;: &quot;sc:Dataset&quot;,
-  &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
-  &quot;name&quot;: &quot;etr&quot;,
-  &quot;description&quot;: &quot;Etr — catalogued in the Econ Data Library.&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/etr.html&quot;,
-  &quot;creator&quot;: {
-    &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;Etr&quot;
-  },
-  &quot;publisher&quot;: {
-    &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;Econ Data Library&quot;,
-    &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
-  },
-  &quot;isAccessibleForFree&quot;: false,
-  &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
-}</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-14 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
-</div></body></html>
+<p class="lead" style="font-size:1.25rem;font-family:var(--serif);color:var(--navy);font-weight:700;border:none">How ElkassabgiData started with a wall.</p>
+
+<p>I'm a finance professor, and for years my research ran into the same wall: the data I needed to answer real questions sat behind paywalls that cost tens of thousands of dollars a year. Intraday equity data through TAQ and CRSP. Macro series scattered across a hundred national statistics offices, central banks, and international agencies — each in its own format, its own license, its own language. If your institution could afford WRDS, you were in. If it couldn't — or if you were a graduate student, an independent researcher, or a scholar at a smaller university anywhere in the world — you were locked out of your own field's evidence.</p>
+
+<p>I decided that was a problem worth solving instead of tolerating.</p>
+
+<p>I started with the corner I knew best: high-frequency equity data. I kept running into the same difficulty — obtaining and updating it. I would write a paper using high-frequency data, only to have reviewers ask me to expand, reprocess, or update it. Most of the time that meant buying the data out of my own pocket, re-deriving it properly from the raw records, cleaning it, and reanalyzing everything to meet the reviewers' requests — a process that easily took weeks or months. So I wrote my own code to handle it and streamline the whole pipeline. Eventually it dawned on me to share that work with the rest of the world. It became the HF Data Library: minute-by-minute U.S. stock and ETF history going back to 2002, roughly a billion and a half bars, with the entire methodology written down so anyone could trust it and cite it. No subscription. No paywall. Just the data, honestly made.</p>
+
+<p>And I owe a particular debt to IEX. The Investors Exchange makes its historical market data freely available and openly redistributable — a genuinely uncommon act of generosity in an industry that keeps its data behind high walls. That openness is the foundation the HF Data Library stands on: it is what lets the library stay free, stay current, and keep growing. Put plainly, none of this could exist without IEX's help — and I am grateful for it.</p>
+
+<p>But equity prices were only one wall. The deeper I looked, the more the same story repeated across all of economics — the world's public data was free and yet almost impossible to actually use: buried in incompatible APIs, undocumented, un-citable, sometimes hidden behind licenses no one had bothered to read. So I set out to bring it all into one place: one namespace over hundreds of the world's sources, every series carrying its real license, its provenance, and a citation that credits the original agency first. Data you can reproduce exactly, cite without apology, and reach from anywhere.</p>
+
+<p>That's ElkassabgiData — and I built it deliberately at the frontier of what's now possible. Cloud infrastructure keeps it fast and low-cost, so I never have to charge for it; it all comes out of my own pocket. And I use modern automated tooling to do what one person otherwise couldn't: reconcile messy sources, keep hundreds of datasets current, translate discovery into six languages, and let researchers — or their AI assistants — query the world's data conversationally, with the license and citation attached to every answer.</p>
+
+<p>My ambitions run further. I'm constantly working to expand into new data frontiers — eventually bringing as much of the world's data as possible into a single outlet, with one objective: to make ElkassabgiData the largest single source of data in the world. My goal is simple, and I don't think it's small: make the world's data genuinely accessible to everyone who wants to learn from it — the student without a budget, the researcher without an institution, the curious person on the other side of the world. The knowledge was always supposed to be free. I'm just building the door.</p>
+
+<p style="margin-top:1.6rem;font-family:var(--serif);font-size:1.05rem;color:var(--navy)">— Ahmed Elkassabgi, University of Central Arkansas</p>
+
+<div class="foot">Generated 2026-07-14 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div></body></html>

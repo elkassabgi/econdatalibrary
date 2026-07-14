@@ -539,7 +539,7 @@ border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-lef
 <span style="display:flex;gap:1.5rem;flex-wrap:wrap"><span id="sb-site"></span><span id="sb-data"></span></span>
 </div></div>
 <div class="nav"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a></div>
-<div><a href="index.html">Catalog</a><a href="docs.html">Docs</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">MCP</a><a href="status.html">Status</a><a href="cite.html">Cite</a><a href="account.html" class="signin">Sign in</a></div></div>
+<div><a href="index.html">Catalog</a><a href="docs.html">Docs</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">MCP</a><a href="status.html">Status</a><a href="cite.html">Cite</a><a href="about.html">About</a><a href="account.html" class="signin">Sign in</a></div></div>
 <script>
 (function(){{
   var API="https://econdl-api.elkassabgi.workers.dev";
@@ -1271,8 +1271,10 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
         </ul>
       </div>
       <div>
-        <h4>Family</h4>
+        <h4>About</h4>
         <ul>
+          <li><a href="about.html">Our Story</a></li>
+          <li><a href="cite.html">How to Cite</a></li>
           <li><a href="https://hfdatalibrary.com/">HF Data Library</a></li>
           <li><a href="sitemap.xml">Sitemap</a></li>
         </ul>
@@ -1505,6 +1507,37 @@ def render_cite():
     return _info_page("How to Cite", "Producer-first citations for every series, plus how to cite the Econ Data Library itself.", "cite.html", body)
 
 
+def render_about():
+    # Ahmed's founder story (approved 2026-07-14, incl. the IEX acknowledgment).
+    # Verbatim from the text he signed off on — do not paraphrase.
+    body = """
+<div style="text-align:center;margin:.5rem 0 2rem">
+  <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="300" height="80"
+       style="max-width:80%;height:auto;background:var(--navy);padding:1rem 1.4rem;border-radius:12px">
+</div>
+<p class="lead" style="font-size:1.25rem;font-family:var(--serif);color:var(--navy);font-weight:700;border:none">How ElkassabgiData started with a wall.</p>
+
+<p>I'm a finance professor, and for years my research ran into the same wall: the data I needed to answer real questions sat behind paywalls that cost tens of thousands of dollars a year. Intraday equity data through TAQ and CRSP. Macro series scattered across a hundred national statistics offices, central banks, and international agencies — each in its own format, its own license, its own language. If your institution could afford WRDS, you were in. If it couldn't — or if you were a graduate student, an independent researcher, or a scholar at a smaller university anywhere in the world — you were locked out of your own field's evidence.</p>
+
+<p>I decided that was a problem worth solving instead of tolerating.</p>
+
+<p>I started with the corner I knew best: high-frequency equity data. I kept running into the same difficulty — obtaining and updating it. I would write a paper using high-frequency data, only to have reviewers ask me to expand, reprocess, or update it. Most of the time that meant buying the data out of my own pocket, re-deriving it properly from the raw records, cleaning it, and reanalyzing everything to meet the reviewers' requests — a process that easily took weeks or months. So I wrote my own code to handle it and streamline the whole pipeline. Eventually it dawned on me to share that work with the rest of the world. It became the HF Data Library: minute-by-minute U.S. stock and ETF history going back to 2002, roughly a billion and a half bars, with the entire methodology written down so anyone could trust it and cite it. No subscription. No paywall. Just the data, honestly made.</p>
+
+<p>And I owe a particular debt to IEX. The Investors Exchange makes its historical market data freely available and openly redistributable — a genuinely uncommon act of generosity in an industry that keeps its data behind high walls. That openness is the foundation the HF Data Library stands on: it is what lets the library stay free, stay current, and keep growing. Put plainly, none of this could exist without IEX's help — and I am grateful for it.</p>
+
+<p>But equity prices were only one wall. The deeper I looked, the more the same story repeated across all of economics — the world's public data was free and yet almost impossible to actually use: buried in incompatible APIs, undocumented, un-citable, sometimes hidden behind licenses no one had bothered to read. So I set out to bring it all into one place: one namespace over hundreds of the world's sources, every series carrying its real license, its provenance, and a citation that credits the original agency first. Data you can reproduce exactly, cite without apology, and reach from anywhere.</p>
+
+<p>That's ElkassabgiData — and I built it deliberately at the frontier of what's now possible. Cloud infrastructure keeps it fast and low-cost, so I never have to charge for it; it all comes out of my own pocket. And I use modern automated tooling to do what one person otherwise couldn't: reconcile messy sources, keep hundreds of datasets current, translate discovery into six languages, and let researchers — or their AI assistants — query the world's data conversationally, with the license and citation attached to every answer.</p>
+
+<p>My ambitions run further. I'm constantly working to expand into new data frontiers — eventually bringing as much of the world's data as possible into a single outlet, with one objective: to make ElkassabgiData the largest single source of data in the world. My goal is simple, and I don't think it's small: make the world's data genuinely accessible to everyone who wants to learn from it — the student without a budget, the researcher without an institution, the curious person on the other side of the world. The knowledge was always supposed to be free. I'm just building the door.</p>
+
+<p style="margin-top:1.6rem;font-family:var(--serif);font-size:1.05rem;color:var(--navy)">— Ahmed Elkassabgi, University of Central Arkansas</p>
+"""
+    return _info_page("About ElkassabgiData",
+                      "The story behind ElkassabgiData: a finance professor's journey to free the world's data — from the HF Data Library to a citable catalog of the world's economic sources.",
+                      "about.html", body)
+
+
 def render_sitemap(records):
     parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -1566,6 +1599,7 @@ def main():
     _write(os.path.join(OUT_DIR, "docs.html"), render_docs())
     _write(os.path.join(OUT_DIR, "api.html"), render_api())
     _write(os.path.join(OUT_DIR, "cite.html"), render_cite())
+    _write(os.path.join(OUT_DIR, "about.html"), render_about())
 
     # sitemap.xml
     with open(os.path.join(OUT_DIR, "sitemap.xml"), "w", encoding="utf-8") as f:
