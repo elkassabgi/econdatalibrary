@@ -523,11 +523,42 @@ HEAD = """<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-<style>{css}</style>
+<style>{css}
+/* status bar + nav (hfdatalibrary.com parity) */
+.status-bar{{background:var(--g50);border-bottom:1px solid var(--g200);font-size:.8rem;
+color:var(--g500);min-height:32px;line-height:32px;padding:0 1.5rem}}
+.status-bar .sb-in{{max-width:1200px;margin:0 auto;display:flex;justify-content:space-between;
+align-items:center;flex-wrap:wrap;gap:.25rem}}
+.nav .signin{{background:var(--gold);color:var(--navy)!important;padding:.4rem .875rem;
+border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:1rem}}
+</style>
 {jsonld}
 </head><body>
+<div class="status-bar" id="status-bar"><div class="sb-in">
+<span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
+<span style="display:flex;gap:1.5rem;flex-wrap:wrap"><span id="sb-site"></span><span id="sb-data"></span></span>
+</div></div>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="docs.html">Docs</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">MCP</a><a href="status.html">Status</a><a href="cite.html">Cite</a><a href="account.html" class="signin">Sign in</a></div></div>
+<script>
+(function(){{
+  var API="https://econdl-api.elkassabgi.workers.dev";
+  function fdate(s){{try{{
+    var m=/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})/.exec(s);
+    var d=m?new Date(+m[1],+m[2]-1,+m[3]):new Date(s); /* date-only: local, no UTC shift */
+    if(isNaN(d))return s;
+    return d.toLocaleDateString('en-US',{{year:'numeric',month:'long',day:'numeric'}});}}catch(e){{return s;}}}}
+  fetch(API+"/v1/stats?t="+Date.now()).then(function(r){{if(!r.ok)throw 0;return r.json();}}).then(function(d){{
+    document.getElementById('sb-dot').style.color='#059669';
+    document.getElementById('sb-text').textContent='All systems operational';
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('__SITE_UPDATED__');
+    if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
+  }}).catch(function(){{
+    document.getElementById('sb-dot').style.color='#d97706';
+    document.getElementById('sb-text').textContent='Status check unavailable';
+  }});
+}})();
+</script>
 """
 
 
@@ -687,6 +718,27 @@ def render_dataset_page(rec):
     )
     body.append("</div></body></html>")
     return "\n".join(body)
+
+
+def _earliest_data_year():
+    """Measured 'years of history' for the hero stat (never hardcoded): the
+    earliest series start_date in catalog.db. Real: the Maddison Project / GGDC
+    historical GDP series genuinely begin in year 1 CE. Floored to a century so
+    the claim always understates ('2,000+'). Returns None if unmeasurable."""
+    try:
+        db = sqlite3.connect(os.path.join(HERE, "..", "data", "catalog.db"))
+        row = db.execute(
+            "SELECT MIN(start_date) FROM series "
+            "WHERE start_date IS NOT NULL AND start_date != '' AND start_date >= '0001'"
+        ).fetchone()
+        db.close()
+        if not row or not row[0]:
+            return None
+        first_year = int(str(row[0])[:4])
+        span = date.today().year - first_year
+        return (span // 100) * 100  # floor to century: 2025 -> 2000
+    except Exception:
+        return None
 
 
 def render_index(records, generated):
@@ -894,34 +946,34 @@ transition:box-shadow .14s,border-color .14s,transform .14s}
 <!-- ── Hero (hfdatalibrary.com landing structure) ── -->
 <section class="hero">
   <div class="container">
-    <h1>Free Economic &amp; Financial <span>Time-Series</span> Data</h1>
+    <h1>Free Economic &amp; Financial <span>Time&#8209;Series</span> Data</h1>
     <p class="subtitle">Free, research-grade macro &amp; financial data — one namespace over the world's statistical sources. Every series carries its license, provenance, and producer-first citation. Reproducible, snapshot-pinned, and <strong>continuously updated</strong>.</p>
 
     <div class="stats-bar">
       <div class="stat-item">
-        <span class="stat-number">__N__</span>
-        <span class="stat-label">Sources</span>
-      </div>
-      <div class="stat-item hl">
         <span class="stat-number" id="live-series">&mdash;</span>
         <span class="stat-label">Individual Series</span>
       </div>
-      <div class="stat-item">
-        <span class="stat-number" id="live-obs">&mdash;</span>
+      <div class="stat-item hl">
+        <span class="stat-number" id="obs-counter" style="font-size:1.55rem">&mdash;</span>
         <span class="stat-label">Observations</span>
       </div>
       <div class="stat-item">
-        <span class="stat-number">6</span>
-        <span class="stat-label">Languages</span>
+        <span class="stat-number">__YEARS__</span>
+        <span class="stat-label">Years of History</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-number">__N__</span>
+        <span class="stat-label">Sources</span>
       </div>
     </div>
 
     <div class="btn-group">
       <a href="download.html" class="btn btn-primary">Download Data</a>
-      <a href="#catalog" class="btn btn-outline">Browse the Catalog</a>
-      <a href="mcp.html" class="btn btn-outline">MCP for AI</a>
+      <a href="docs.html" class="btn btn-outline">Read the Docs</a>
+      <a href="api.html" class="btn btn-outline">API Access</a>
     </div>
-    <p style="font-size:.78rem;color:rgba(255,255,255,.5);margin-top:2rem">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded.</p>
+    <p style="font-size:.78rem;color:rgba(255,255,255,.5);margin-top:2rem">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded. Years of history: the earliest catalogued series (Maddison Project / GGDC) begin in year 1&nbsp;CE.</p>
   </div>
 </section>
 
@@ -949,6 +1001,44 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
 # -> tidy date,value rows with the license and
 #    producer-first citation in the CSV header</code></pre>
       </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Two access tiers (hf 'Two cleaning versions' parallel) ── -->
+<section class="section section-alt">
+  <div class="container">
+    <h2 class="section-title">Two catalog tiers. Always honest.</h2>
+    <div class="grid-2" style="max-width:900px;margin:0 auto;display:grid;grid-template-columns:repeat(2,1fr);gap:1.5rem">
+      <div class="acard" style="border-left:4px solid var(--green)">
+        <span class="badge open" style="margin-bottom:.5rem;display:inline-block">Redistributed</span>
+        <h3>Tier 1: Redistributed</h3>
+        <p>__NOPEN__ sources whose licenses permit re-hosting. Full data served from our store — CSV downloads, API access, snapshot-pinned bundles. License and attribution attached to every series.</p>
+        <p style="margin-top:.5rem"><strong>Best for:</strong> direct downloads, reproducible research bundles, API pipelines.</p>
+      </div>
+      <div class="acard" style="border-left:4px solid var(--amber)">
+        <span class="badge meta" style="margin-bottom:.5rem;display:inline-block">Metadata only</span>
+        <h3>Tier 2: Metadata-only</h3>
+        <p>__NMETA__ sources whose licenses forbid re-hosting. Fully catalogued — searchable metadata, machine-readable Dataset/Croissant records, and pointers to the original publisher. The data itself stays with its owner.</p>
+        <p style="margin-top:.5rem"><strong>Best for:</strong> discovery, license checking, citing the original source correctly.</p>
+      </div>
+    </div>
+    <p style="text-align:center;margin-top:2rem;color:var(--g500);font-size:.9rem;max-width:700px;margin-left:auto;margin-right:auto">We never silently redistribute restricted data — a direct request for a restricted series returns an honest HTTP 451 with a link to the publisher.</p>
+  </div>
+</section>
+
+<!-- ── Coverage (hf '25 academic variables' parallel) ── -->
+<section class="section">
+  <div class="container">
+    <h2 class="section-title" style="margin-bottom:.5rem">What the library covers</h2>
+    <p style="text-align:center;color:var(--g500);margin-bottom:2.5rem">__N__ sources across the pillars of empirical economics and finance.</p>
+    <div class="grid-3">
+      <div class="acard"><div class="card-icon">&#128200;</div><h3>Macro &amp; National Accounts</h3><p>GDP, employment, production — national statistical offices (ABS, INSEE, ISTAT, StatCan, Eurostat) and the IMF/World Bank.</p></div>
+      <div class="acard"><div class="card-icon">&#128176;</div><h3>Prices, Money &amp; Central Banks</h3><p>Inflation, interest rates, FX — ECB, Fed Board, BIS, Bundesbank, and dozens of national central banks.</p></div>
+      <div class="acard"><div class="card-icon">&#128674;</div><h3>Trade &amp; Development</h3><p>Bilateral trade (CEPII BACI), tariffs, development indicators (World Bank WDI, UN SDG, UNDP HDR).</p></div>
+      <div class="acard"><div class="card-icon">&#9889;</div><h3>Energy &amp; Environment</h3><p>EIA, IRENA, Ember, Global Carbon Budget, NASA GISS — production, prices, emissions, climate.</p></div>
+      <div class="acard"><div class="card-icon">&#127963;</div><h3>Institutions &amp; Society</h3><p>Governance (WGI, V-Dem, Freedom House), conflict (UCDP, COW), inequality (WID, SWIID), well-being (WHR).</p></div>
+      <div class="acard"><div class="card-icon">&#128218;</div><h3>Research Datasets</h3><p>Maddison Project (year 1 CE onward), Penn World Table, Shiller, Fama-French, Barro-Lee, and more.</p></div>
     </div>
   </div>
 </section>
@@ -1210,11 +1300,31 @@ async function renderApi(){
  }
 }
 render();
+// Animated counter (ported from hfdatalibrary.com js/site.js): counts up over
+// ~2s, then shows the FULL written-out number with the billions label beneath.
+// Floor, never round up - reported counts must never overstate the store.
+function animateCounter(el, target) {
+  var duration = 2000, startTime = null;
+  function step(ts) {
+    if (!startTime) startTime = ts;
+    var progress = Math.min((ts - startTime) / duration, 1);
+    var eased = 1 - Math.pow(1 - progress, 3);
+    el.textContent = Math.floor(eased * target).toLocaleString();
+    if (progress < 1) { requestAnimationFrame(step); }
+    else {
+      var billions = (Math.floor(target / 1e8) / 10).toFixed(1) + "+ Billion";
+      el.style.lineHeight = "1.1";
+      el.innerHTML = target.toLocaleString() +
+        '<br><span style="font-size:0.45em; opacity:0.7; line-height:1;">(' + billions + ")</span>";
+    }
+  }
+  requestAnimationFrame(step);
+}
 // Live headline counts from /v1/stats - never hardcoded in the page.
 fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (d) {
-  function fmtB(n) { if (n < 1e9) return Number(n).toLocaleString(); var s = (n / 1e9).toFixed(1); if (s.slice(-2) === ".0") s = s.slice(0, -2); return s + "B+"; }
+  function fmtB(n) { if (n < 1e9) return Number(n).toLocaleString(); var s = (Math.floor(n / 1e8) / 10).toFixed(1); if (s.slice(-2) === ".0") s = s.slice(0, -2); return s + "B+"; }
   if (d.individual_series) document.getElementById("live-series").textContent = fmtB(d.individual_series);
-  if (d.observations) document.getElementById("live-obs").textContent = fmtB(d.observations);
+  if (d.observations) animateCounter(document.getElementById("obs-counter"), d.observations);
   if (d.as_of) document.getElementById("live-asof").textContent = d.as_of;
   if (d.individual_series) { var c = document.getElementById("cmp-series"); if (c) c.textContent = fmtB(d.individual_series); }
 }).catch(function () {});
@@ -1229,9 +1339,11 @@ fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (
     # Headline stats are NOT baked in (owner rule: no stale hardcoded counts).
     # The page fetches /v1/stats live; the worker serves R2 _aqueduct/stats.json,
     # refreshed by each census run.
+    years = _earliest_data_year()
     return (
         tpl.replace("__DATA__", data)
         .replace("__FAQ__", faq_html)
+        .replace("__YEARS__", f"{years:,}+" if years else "&mdash;")
         .replace("__NSERIES__", f"{n_series_total/1e6:.2f}M" if n_series_total >= 1e6 else f"{n_series_total:,}")
         .replace("__NACTIVE__", str(n_active))
         .replace("__N__", str(n_total))
@@ -1239,6 +1351,103 @@ fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (
         .replace("__NMETA__", str(n_meta))
         .replace("__GEN__", generated or TODAY)
     )
+
+
+_INFO_CSS = """
+.wrap h2{margin-top:2rem}
+.wrap pre{background:var(--navy);color:#e2e8f0;padding:1.1rem 1.3rem;border-radius:8px;
+overflow-x:auto;font-size:.82rem;line-height:1.6;font-family:var(--mono);margin:.8rem 0 1.2rem}
+.wrap table{width:100%;border-collapse:collapse;font-size:.88rem;margin:.8rem 0 1.2rem}
+.wrap th{text-align:left;padding:.6rem .8rem;border-bottom:2px solid var(--g300);color:var(--g700)}
+.wrap td{padding:.55rem .8rem;border-bottom:1px solid var(--g200);vertical-align:top}
+.wrap td code{background:var(--g100);padding:.1em .35em;border-radius:4px;font-family:var(--mono);font-size:.85em}
+"""
+
+
+def _info_page(title, meta_desc, page, body):
+    head = HEAD.format(
+        title=f"{title} — {SITE_NAME}",
+        meta_desc=meta_desc,
+        canonical=f"{SITE_BASE}/{page}",
+        css=PAGE_CSS + _INFO_CSS,
+        jsonld="",
+    )
+    return (head
+            + f'<div class="wrap"><h1>{title}</h1>\n{body}\n'
+            + f'<div class="foot">Generated __SITE_UPDATED__ &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div></body></html>')
+
+
+def render_docs():
+    body = """
+<p class="lead">How the library works: one namespace, honest licensing, reproducible downloads, and a public update pipeline.</p>
+<h2>The namespace</h2>
+<p>Every series has a stable id of the form <code>source:series_key[:geography]</code> — for example <code>worldbank:NY.GDP.MKTP.CD:USA</code>. The id is permanent, appears in every download, and resolves over the API.</p>
+<h2>Two catalog tiers</h2>
+<p><strong>Redistributed</strong> sources have licenses that permit re-hosting: their data is served from our store as citation-headed CSV, over the API, and in bundles. <strong>Metadata-only</strong> sources have licenses that forbid re-hosting: they are fully searchable and carry machine-readable metadata and pointers, but the data stays with the publisher — a direct request returns an honest HTTP 451 with the publisher's link. Nothing restricted is ever silently redistributed.</p>
+<h2>Reproducibility</h2>
+<p>Bundles are snapshot-pinned: a bundle manifest records the snapshot date and the exact member series, so the same request reproduces the same data. Every CSV carries its license and producer-first citation in a comment header.</p>
+<h2>The update pipeline</h2>
+<p>Sources are refreshed by a cadence-aware pipeline (daily, weekly, monthly, annual — matching each publisher's own schedule). Freshness is never fabricated: a series' date advances only when observations were actually fetched, and failures surface on the public <a href="status.html">status board</a> rather than being hidden.</p>
+<h2>Multilingual titles</h2>
+<p>Series search is available in six languages (English, Arabic, Spanish, French, Russian, Chinese) using only the sources' official translations — titles are never machine-translated.</p>
+<h2>One account, one family</h2>
+<p>The free ElkassabgiData key works across the family — this library and <a href="https://hfdatalibrary.com/">HF Data Library</a> (1-minute U.S. equity data). Get a key from the <a href="download.html">Download page</a>.</p>
+"""
+    return _info_page("Documentation", "How Econ Data Library works: namespace, licensing tiers, reproducible bundles, update pipeline.", "docs.html", body)
+
+
+def render_api():
+    api = "https://econdl-api.elkassabgi.workers.dev"
+    body = f"""
+<p class="lead">A free REST API over the full catalog. Search and metadata need no key; data downloads use a free key (<code>X-API-Key</code> header, <code>Authorization: Bearer</code>, or <code>?api_key=</code>).</p>
+<h2>Base URL</h2>
+<pre>{api}</pre>
+<h2>Endpoints</h2>
+<table>
+<tr><th>Endpoint</th><th>What it returns</th><th>Key</th></tr>
+<tr><td><code>GET /v1/catalog</code></td><td>Series search. Params: <code>q</code>, <code>source</code>, <code>limit</code>, <code>offset</code>, <code>lang</code> (en/ar/es/fr/ru/zh).</td><td>No</td></tr>
+<tr><td><code>GET /v1/series/{{id}}.csv</code></td><td>The series as tidy <code>date,value</code> CSV with license + citation header. Params: <code>from</code>, <code>to</code>, <code>raw=1</code> (bare CSV).</td><td>Yes</td></tr>
+<tr><td><code>GET /v1/series/{{id}}.metadata.json</code></td><td>Full metadata: title, frequency, geography, unit, license (incl. commercial-use flag), attribution, coverage.</td><td>No</td></tr>
+<tr><td><code>GET /v1/sources</code></td><td>Every source with license and freshness summary.</td><td>No</td></tr>
+<tr><td><code>GET /v1/bundle</code></td><td>Snapshot-pinned bundle manifest (Frictionless datapackage). Params: <code>ids=</code> or <code>source=</code>, <code>snapshot=</code>.</td><td>No</td></tr>
+<tr><td><code>GET /v1/stats</code></td><td>Live store-measured counts (series, observations, as-of date).</td><td>No</td></tr>
+<tr><td><code>GET /v1/last-updates</code></td><td>Per-source freshness board (the data behind <a href="status.html">Status</a>).</td><td>No</td></tr>
+</table>
+<p>Requests for series from metadata-only sources return HTTP <code>451</code> with the publisher's link — see <a href="docs.html">Documentation</a>.</p>
+<h2>Quick start</h2>
+<pre># curl — one series as CSV
+curl -H "X-API-Key: $KEY" \\
+  "{api}/v1/series/worldbank:NY.GDP.MKTP.CD:USA.csv"
+
+# Python
+import io, requests, pandas as pd
+r = requests.get("{api}/v1/series/worldbank:NY.GDP.MKTP.CD:USA.csv",
+                 headers={{"X-API-Key": KEY}})
+df = pd.read_csv(io.StringIO(r.text), comment="#")</pre>
+<p>Get a free key on the <a href="download.html">Download page</a> — one key for the whole ElkassabgiData family.</p>
+"""
+    return _info_page("API Reference", "Free REST API for economic & financial time series: search, metadata, CSV, reproducible bundles.", "api.html", body)
+
+
+def render_cite():
+    body = """
+<p class="lead">Citations here are <strong>producer-first</strong>: credit the original statistical agency before the library. Every series and bundle ships its own ready-made citation.</p>
+<h2>Citing a series</h2>
+<p>Each series' citation (original producer, license, retrieval date, series id) is included in its CSV download header and its <code>metadata.json</code>. Use that citation — it names the agency that actually produced the numbers.</p>
+<h2>Citing the library</h2>
+<blockquote class="cite">Elkassabgi, A. (2026). Econ Data Library: a citable catalog of economic and financial time series. https://econdatalibrary.com</blockquote>
+<h2>BibTeX</h2>
+<pre>@misc{econdatalibrary,
+  author = {Elkassabgi, Ahmed},
+  title  = {Econ Data Library: a citable catalog of economic
+            and financial time series},
+  year   = {2026},
+  url    = {https://econdatalibrary.com}
+}</pre>
+<h2>Reproducibility note</h2>
+<p>For exact reproducibility, cite the <em>bundle snapshot date</em> shown in your download's manifest — the same snapshot always resolves to the same data.</p>
+"""
+    return _info_page("How to Cite", "Producer-first citations for every series, plus how to cite the Econ Data Library itself.", "cite.html", body)
 
 
 def render_sitemap(records):
@@ -1283,17 +1492,25 @@ def main():
         )
         records.append(rec)
 
+    def _write(path, html):
+        # single post-process point: the status bar's "Website updated" date is
+        # the generation date on every page (mirrors hf's metadata.website_updated).
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(html.replace("__SITE_UPDATED__", TODAY))
+
     # Per-dataset pages
     n_pages = 0
     for rec in records:
-        path = os.path.join(OUT_DIR, f"{rec['id']}.html")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(render_dataset_page(rec))
+        _write(os.path.join(OUT_DIR, f"{rec['id']}.html"), render_dataset_page(rec))
         n_pages += 1
 
     # index.html
-    with open(os.path.join(OUT_DIR, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render_index(records, generated))
+    _write(os.path.join(OUT_DIR, "index.html"), render_index(records, generated))
+
+    # docs / api / cite (hf-parity information pages)
+    _write(os.path.join(OUT_DIR, "docs.html"), render_docs())
+    _write(os.path.join(OUT_DIR, "api.html"), render_api())
+    _write(os.path.join(OUT_DIR, "cite.html"), render_cite())
 
     # sitemap.xml
     with open(os.path.join(OUT_DIR, "sitemap.xml"), "w", encoding="utf-8") as f:

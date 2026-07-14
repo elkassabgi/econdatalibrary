@@ -68,6 +68,14 @@ border-bottom:3px solid var(--gold)}
 .metric{background:var(--g50);border:1px solid var(--g200);border-radius:10px;padding:.75rem .9rem}
 .metric .mlabel{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g500)}
 .metric .mval{font-family:var(--serif);font-size:1.15rem;color:var(--navy);margin-top:.25rem;word-break:break-word}
+
+/* status bar + nav (hfdatalibrary.com parity) */
+.status-bar{background:var(--g50);border-bottom:1px solid var(--g200);font-size:.8rem;
+color:var(--g500);min-height:32px;line-height:32px;padding:0 1.5rem}
+.status-bar .sb-in{max-width:1200px;margin:0 auto;display:flex;justify-content:space-between;
+align-items:center;flex-wrap:wrap;gap:.25rem}
+.nav .signin{background:var(--gold);color:var(--navy)!important;padding:.4rem .875rem;
+border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:1rem}
 </style>
 <script type="application/ld+json">
 {
@@ -172,8 +180,31 @@ border-bottom:3px solid var(--gold)}
 }
 </script>
 </head><body>
+<div class="status-bar" id="status-bar"><div class="sb-in">
+<span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
+<span style="display:flex;gap:1.5rem;flex-wrap:wrap"><span id="sb-site"></span><span id="sb-data"></span></span>
+</div></div>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="docs.html">Docs</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">MCP</a><a href="status.html">Status</a><a href="cite.html">Cite</a><a href="account.html" class="signin">Sign in</a></div></div>
+<script>
+(function(){
+  var API="https://econdl-api.elkassabgi.workers.dev";
+  function fdate(s){try{
+    var m=/^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+    var d=m?new Date(+m[1],+m[2]-1,+m[3]):new Date(s); /* date-only: local, no UTC shift */
+    if(isNaN(d))return s;
+    return d.toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});}catch(e){return s;}}
+  fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
+    document.getElementById('sb-dot').style.color='#059669';
+    document.getElementById('sb-text').textContent='All systems operational';
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-14');
+    if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
+  }).catch(function(){
+    document.getElementById('sb-dot').style.color='#d97706';
+    document.getElementById('sb-text').textContent='Status check unavailable';
+  });
+})();
+</script>
 
 <div class="wrap">
 <div class="dhero">

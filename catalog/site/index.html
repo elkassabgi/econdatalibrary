@@ -158,6 +158,14 @@ transition:box-shadow .14s,border-color .14s,transform .14s}
 .footer-grid{grid-template-columns:1fr 1fr}
 .footer-bottom{flex-direction:column;gap:.5rem;text-align:center}
 }
+
+/* status bar + nav (hfdatalibrary.com parity) */
+.status-bar{background:var(--g50);border-bottom:1px solid var(--g200);font-size:.8rem;
+color:var(--g500);min-height:32px;line-height:32px;padding:0 1.5rem}
+.status-bar .sb-in{max-width:1200px;margin:0 auto;display:flex;justify-content:space-between;
+align-items:center;flex-wrap:wrap;gap:.25rem}
+.nav .signin{background:var(--gold);color:var(--navy)!important;padding:.4rem .875rem;
+border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:1rem}
 </style>
 <script type="application/ld+json">
 {
@@ -262,40 +270,63 @@ transition:box-shadow .14s,border-color .14s,transform .14s}
 }
 </script>
 </head><body>
+<div class="status-bar" id="status-bar"><div class="sb-in">
+<span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
+<span style="display:flex;gap:1.5rem;flex-wrap:wrap"><span id="sb-site"></span><span id="sb-data"></span></span>
+</div></div>
 <div class="nav"><div class="brand"><a href="index.html">econ<span class="d">datalibrary</span></a></div>
-<div><a href="index.html">Catalog</a><a href="download.html">Download</a><a href="status.html">Status</a><a href="mcp.html">MCP</a><a href="account.html">Account</a><a href="sitemap.xml">Sitemap</a></div></div>
+<div><a href="index.html">Catalog</a><a href="docs.html">Docs</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">MCP</a><a href="status.html">Status</a><a href="cite.html">Cite</a><a href="account.html" class="signin">Sign in</a></div></div>
+<script>
+(function(){
+  var API="https://econdl-api.elkassabgi.workers.dev";
+  function fdate(s){try{
+    var m=/^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+    var d=m?new Date(+m[1],+m[2]-1,+m[3]):new Date(s); /* date-only: local, no UTC shift */
+    if(isNaN(d))return s;
+    return d.toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});}catch(e){return s;}}
+  fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
+    document.getElementById('sb-dot').style.color='#059669';
+    document.getElementById('sb-text').textContent='All systems operational';
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-14');
+    if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
+  }).catch(function(){
+    document.getElementById('sb-dot').style.color='#d97706';
+    document.getElementById('sb-text').textContent='Status check unavailable';
+  });
+})();
+</script>
 
 <!-- ── Hero (hfdatalibrary.com landing structure) ── -->
 <section class="hero">
   <div class="container">
-    <h1>Free Economic &amp; Financial <span>Time-Series</span> Data</h1>
+    <h1>Free Economic &amp; Financial <span>Time&#8209;Series</span> Data</h1>
     <p class="subtitle">Free, research-grade macro &amp; financial data — one namespace over the world's statistical sources. Every series carries its license, provenance, and producer-first citation. Reproducible, snapshot-pinned, and <strong>continuously updated</strong>.</p>
 
     <div class="stats-bar">
       <div class="stat-item">
-        <span class="stat-number">255</span>
-        <span class="stat-label">Sources</span>
-      </div>
-      <div class="stat-item hl">
         <span class="stat-number" id="live-series">&mdash;</span>
         <span class="stat-label">Individual Series</span>
       </div>
-      <div class="stat-item">
-        <span class="stat-number" id="live-obs">&mdash;</span>
+      <div class="stat-item hl">
+        <span class="stat-number" id="obs-counter" style="font-size:1.55rem">&mdash;</span>
         <span class="stat-label">Observations</span>
       </div>
       <div class="stat-item">
-        <span class="stat-number">6</span>
-        <span class="stat-label">Languages</span>
+        <span class="stat-number">2,000+</span>
+        <span class="stat-label">Years of History</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-number">255</span>
+        <span class="stat-label">Sources</span>
       </div>
     </div>
 
     <div class="btn-group">
       <a href="download.html" class="btn btn-primary">Download Data</a>
-      <a href="#catalog" class="btn btn-outline">Browse the Catalog</a>
-      <a href="mcp.html" class="btn btn-outline">MCP for AI</a>
+      <a href="docs.html" class="btn btn-outline">Read the Docs</a>
+      <a href="api.html" class="btn btn-outline">API Access</a>
     </div>
-    <p style="font-size:.78rem;color:rgba(255,255,255,.5);margin-top:2rem">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded.</p>
+    <p style="font-size:.78rem;color:rgba(255,255,255,.5);margin-top:2rem">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded. Years of history: the earliest catalogued series (Maddison Project / GGDC) begin in year 1&nbsp;CE.</p>
   </div>
 </section>
 
@@ -323,6 +354,44 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
 # -> tidy date,value rows with the license and
 #    producer-first citation in the CSV header</code></pre>
       </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Two access tiers (hf 'Two cleaning versions' parallel) ── -->
+<section class="section section-alt">
+  <div class="container">
+    <h2 class="section-title">Two catalog tiers. Always honest.</h2>
+    <div class="grid-2" style="max-width:900px;margin:0 auto;display:grid;grid-template-columns:repeat(2,1fr);gap:1.5rem">
+      <div class="acard" style="border-left:4px solid var(--green)">
+        <span class="badge open" style="margin-bottom:.5rem;display:inline-block">Redistributed</span>
+        <h3>Tier 1: Redistributed</h3>
+        <p>32 sources whose licenses permit re-hosting. Full data served from our store — CSV downloads, API access, snapshot-pinned bundles. License and attribution attached to every series.</p>
+        <p style="margin-top:.5rem"><strong>Best for:</strong> direct downloads, reproducible research bundles, API pipelines.</p>
+      </div>
+      <div class="acard" style="border-left:4px solid var(--amber)">
+        <span class="badge meta" style="margin-bottom:.5rem;display:inline-block">Metadata only</span>
+        <h3>Tier 2: Metadata-only</h3>
+        <p>223 sources whose licenses forbid re-hosting. Fully catalogued — searchable metadata, machine-readable Dataset/Croissant records, and pointers to the original publisher. The data itself stays with its owner.</p>
+        <p style="margin-top:.5rem"><strong>Best for:</strong> discovery, license checking, citing the original source correctly.</p>
+      </div>
+    </div>
+    <p style="text-align:center;margin-top:2rem;color:var(--g500);font-size:.9rem;max-width:700px;margin-left:auto;margin-right:auto">We never silently redistribute restricted data — a direct request for a restricted series returns an honest HTTP 451 with a link to the publisher.</p>
+  </div>
+</section>
+
+<!-- ── Coverage (hf '25 academic variables' parallel) ── -->
+<section class="section">
+  <div class="container">
+    <h2 class="section-title" style="margin-bottom:.5rem">What the library covers</h2>
+    <p style="text-align:center;color:var(--g500);margin-bottom:2.5rem">255 sources across the pillars of empirical economics and finance.</p>
+    <div class="grid-3">
+      <div class="acard"><div class="card-icon">&#128200;</div><h3>Macro &amp; National Accounts</h3><p>GDP, employment, production — national statistical offices (ABS, INSEE, ISTAT, StatCan, Eurostat) and the IMF/World Bank.</p></div>
+      <div class="acard"><div class="card-icon">&#128176;</div><h3>Prices, Money &amp; Central Banks</h3><p>Inflation, interest rates, FX — ECB, Fed Board, BIS, Bundesbank, and dozens of national central banks.</p></div>
+      <div class="acard"><div class="card-icon">&#128674;</div><h3>Trade &amp; Development</h3><p>Bilateral trade (CEPII BACI), tariffs, development indicators (World Bank WDI, UN SDG, UNDP HDR).</p></div>
+      <div class="acard"><div class="card-icon">&#9889;</div><h3>Energy &amp; Environment</h3><p>EIA, IRENA, Ember, Global Carbon Budget, NASA GISS — production, prices, emissions, climate.</p></div>
+      <div class="acard"><div class="card-icon">&#127963;</div><h3>Institutions &amp; Society</h3><p>Governance (WGI, V-Dem, Freedom House), conflict (UCDP, COW), inequality (WID, SWIID), well-being (WHR).</p></div>
+      <div class="acard"><div class="card-icon">&#128218;</div><h3>Research Datasets</h3><p>Maddison Project (year 1 CE onward), Penn World Table, Shiller, Fama-French, Barro-Lee, and more.</p></div>
     </div>
   </div>
 </section>
@@ -589,11 +658,31 @@ async function renderApi(){
  }
 }
 render();
+// Animated counter (ported from hfdatalibrary.com js/site.js): counts up over
+// ~2s, then shows the FULL written-out number with the billions label beneath.
+// Floor, never round up - reported counts must never overstate the store.
+function animateCounter(el, target) {
+  var duration = 2000, startTime = null;
+  function step(ts) {
+    if (!startTime) startTime = ts;
+    var progress = Math.min((ts - startTime) / duration, 1);
+    var eased = 1 - Math.pow(1 - progress, 3);
+    el.textContent = Math.floor(eased * target).toLocaleString();
+    if (progress < 1) { requestAnimationFrame(step); }
+    else {
+      var billions = (Math.floor(target / 1e8) / 10).toFixed(1) + "+ Billion";
+      el.style.lineHeight = "1.1";
+      el.innerHTML = target.toLocaleString() +
+        '<br><span style="font-size:0.45em; opacity:0.7; line-height:1;">(' + billions + ")</span>";
+    }
+  }
+  requestAnimationFrame(step);
+}
 // Live headline counts from /v1/stats - never hardcoded in the page.
 fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (d) {
-  function fmtB(n) { if (n < 1e9) return Number(n).toLocaleString(); var s = (n / 1e9).toFixed(1); if (s.slice(-2) === ".0") s = s.slice(0, -2); return s + "B+"; }
+  function fmtB(n) { if (n < 1e9) return Number(n).toLocaleString(); var s = (Math.floor(n / 1e8) / 10).toFixed(1); if (s.slice(-2) === ".0") s = s.slice(0, -2); return s + "B+"; }
   if (d.individual_series) document.getElementById("live-series").textContent = fmtB(d.individual_series);
-  if (d.observations) document.getElementById("live-obs").textContent = fmtB(d.observations);
+  if (d.observations) animateCounter(document.getElementById("obs-counter"), d.observations);
   if (d.as_of) document.getElementById("live-asof").textContent = d.as_of;
   if (d.individual_series) { var c = document.getElementById("cmp-series"); if (c) c.textContent = fmtB(d.individual_series); }
 }).catch(function () {});
