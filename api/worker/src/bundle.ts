@@ -17,6 +17,7 @@
 import type { Env, SourceRow, LicenseRow, SeriesRow, SeriesIdRow } from "./types";
 import { SELECT_SOURCE, SELECT_LICENSE, SELECT_SERIES, SERIES_IDS_FOR_SOURCE } from "./sql";
 import { json, badRequest, licenseBlock, supportedSources, sourceOf } from "./util";
+import { NON_REDISTRIBUTABLE } from "./denylist";
 
 const PROFILE = "tabular-data-package";
 const SCHEMA_VERSION = "1.0";
@@ -75,6 +76,9 @@ export async function handleBundle(url: URL, env: Env): Promise<Response> {
   let ids = collectIds(url);
 
   if (ids.length === 0 && source) {
+    if (NON_REDISTRIBUTABLE.has(source)) {
+      return badRequest(`source '${source}' cannot be bundled: its licence forbids re-hosting (HTTP 451)`);
+    }
     const res = await env.CATALOG.prepare(SERIES_IDS_FOR_SOURCE).bind(source).all<SeriesIdRow>();
     ids = (res.results ?? []).map((r) => r.series_id);
     if (ids.length === 0) return badRequest(`no catalog series found for source '${source}'`);
@@ -91,6 +95,14 @@ export async function handleBundle(url: URL, env: Env): Promise<Response> {
   // client's request size). Group resolvable ids by source for one resource each.
   for (const id of ids) {
     const src = sourceOf(id);
+    // Redistribution gate FIRST (compliance before catalog semantics): a series
+    // from a denylisted source must never appear in a bundle manifest, even as a
+    // stable URL — the /v1/series handler also 451s it, but the manifest itself
+    // must not advertise it (same rule as /v1/sources and the site).
+    if (NON_REDISTRIBUTABLE.has(src)) {
+      unresolved.push({ id, reason: `not_redistributable: source '${src}' licence forbids re-hosting (HTTP 451 on direct fetch)` });
+      continue;
+    }
     // Canonical order (CONTRACT.md v1.1, matches the dev shim): catalog membership
     // FIRST -> not_found for an unknown id; THEN resolver support -> not_migrated.
     const row = await env.CATALOG.prepare(SELECT_SERIES).bind(id).first<SeriesRow>();

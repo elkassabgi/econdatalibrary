@@ -16,6 +16,23 @@
 
 // catalog.db (D1 binding `CATALOG`) ----------------------------------------
 
+import { NON_REDISTRIBUTABLE } from "./denylist";
+
+/** Compliance layer ON TOP of the shim-mirrored statements: series from
+ *  non-redistributable sources must never surface in catalog search/browse
+ *  (matching /v1/sources, /v1/series's 451, and the bundle gate). Generated
+ *  from denylist.ts so SQL and handler logic cannot drift. The dev shim runs
+ *  the un-excluded statements; the divergence is deliberate and documented —
+ *  redistribution gating is a SERVING concern, not a catalog-semantics one.
+ *  (source ids are static compile-time identifiers; no injection surface.) */
+const DENY_LIST_SQL = [...NON_REDISTRIBUTABLE].map((s) => `'${s}'`).join(",");
+const EXCL_ALIASED = NON_REDISTRIBUTABLE.size
+  ? `AND s.source_id NOT IN (${DENY_LIST_SQL})` : "";
+const EXCL_BARE = NON_REDISTRIBUTABLE.size
+  ? `AND source_id NOT IN (${DENY_LIST_SQL})` : "";
+const EXCL_BARE_WHERE = NON_REDISTRIBUTABLE.size
+  ? `WHERE source_id NOT IN (${DENY_LIST_SQL})` : "";
+
 /** One series row, exact id. Mirrors _catalog.get_series. */
 export const SELECT_SERIES = `SELECT * FROM series WHERE series_id = ?`;
 
@@ -43,7 +60,7 @@ export const SEARCH_FTS = `
 SELECT s.series_id, s.source_id, s.title, s.frequency, s.unit, s.geography,
        s.license_id, s.start_date, s.end_date, s.metadata
 FROM series_fts f JOIN series s ON s.series_id = f.series_id
-WHERE series_fts MATCH ? LIMIT ? OFFSET ?`;
+WHERE series_fts MATCH ? ${EXCL_ALIASED} LIMIT ? OFFSET ?`;
 
 /** LIKE fallback when FTS errors / matches nothing. Mirrors the Python fallback,
  *  extended with series_id LIKE (as _catalog.py does) so an id substring also hits. */
@@ -51,17 +68,17 @@ export const SEARCH_LIKE = `
 SELECT series_id, source_id, title, frequency, unit, geography,
        license_id, start_date, end_date, metadata
 FROM series
-WHERE title LIKE ? OR series_id LIKE ?
+WHERE (title LIKE ? OR series_id LIKE ?) ${EXCL_BARE}
 LIMIT ? OFFSET ?`;
 
 /** Total count for a LIKE search (for the `total` field). */
 export const SEARCH_LIKE_COUNT = `
-SELECT COUNT(*) AS n FROM series WHERE title LIKE ? OR series_id LIKE ?`;
+SELECT COUNT(*) AS n FROM series WHERE (title LIKE ? OR series_id LIKE ?) ${EXCL_BARE}`;
 
 /** Total count for an FTS search. */
 export const SEARCH_FTS_COUNT = `
 SELECT COUNT(*) AS n FROM series_fts f JOIN series s ON s.series_id = f.series_id
-WHERE series_fts MATCH ?`;
+WHERE series_fts MATCH ? ${EXCL_ALIASED}`;
 
 /** FTS search constrained to ONE source (q + source combined). Mirrors the dev
  *  shim, which ANDs the source filter onto the FTS JOIN. Binds: q, source, limit, offset. */
@@ -98,9 +115,9 @@ export const BROWSE_SOURCE_COUNT = `SELECT COUNT(*) AS n FROM series WHERE sourc
 export const BROWSE_ALL = `
 SELECT series_id, source_id, title, frequency, unit, geography,
        license_id, start_date, end_date, metadata
-FROM series ORDER BY series_id LIMIT ? OFFSET ?`;
+FROM series ${EXCL_BARE_WHERE} ORDER BY series_id LIMIT ? OFFSET ?`;
 
-export const BROWSE_ALL_COUNT = `SELECT COUNT(*) AS n FROM series`;
+export const BROWSE_ALL_COUNT = `SELECT COUNT(*) AS n FROM series ${EXCL_BARE_WHERE}`;
 
 /** Every series id of one source (for /v1/bundle?source=). Mirrors _bundle.bundle. */
 export const SERIES_IDS_FOR_SOURCE = `

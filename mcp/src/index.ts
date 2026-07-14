@@ -240,7 +240,10 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     }, async ({ contains }) => {
       const r = await upstream(`${ECON}/v1/sources`);
       if (!r.ok) return relayError(r, "list_econ_sources");
-      let list = await r.json() as Array<Record<string, any>>;
+      // /v1/sources returns {total, sources:[...]}, not a bare array — casting
+      // the body to an array made .filter throw on every call (verified live).
+      const payload = await r.json() as { sources?: Array<Record<string, any>> };
+      let list = payload.sources ?? [];
       if (contains) {
         const c = contains.toLowerCase();
         list = list.filter((x) =>

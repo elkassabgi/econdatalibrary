@@ -27,6 +27,18 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
   const limit = clampInt(url.searchParams.get("limit"), 50, 1, 500);
   const offset = offsetInt(url.searchParams.get("offset"));
 
+  // Redistribution gate: a denylisted source is not browsable at all — same
+  // rule as /v1/sources (hidden), /v1/series (451), and /v1/bundle (rejected).
+  // The unscoped statements exclude these sources at the SQL layer (sql.ts);
+  // a direct ?source= ask gets the honest refusal, not an empty result.
+  if (src && NON_REDISTRIBUTABLE.has(src)) {
+    return json({
+      error: "non_redistributable",
+      detail: `source '${src}' cannot be re-hosted under its licence; ` +
+              "fetch it from the original publisher (see /v1/sources terms links)",
+    }, 451);
+  }
+
   let results: CatalogResultRow[] = [];
   let total = 0;
 
