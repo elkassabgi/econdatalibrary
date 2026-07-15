@@ -44,6 +44,7 @@ licenses:
   audit-restricted: {reservable: false, commercial_ok: false, attribution: required, no_modify: false, url: ""}  # Stage 0b: verbatim audit flagged NOT clearable (third-party carve-out / permission required / unresolved) -- gated pending review
   spi-embed-2026: {reservable: false, commercial_ok: false, attribution: required, no_modify: true, url: ""}  # SPI written permission 2026: official Tableau embed only, no dataset redistribution
   damodaran-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: false, url: "https://pages.stern.nyu.edu/~adamodar/"}  # written grant 2026-07-15 (ad4@stern.nyu.edu): "I don't have a problem with you hosting this data." NC + attribution per our request
+  bundesbank-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: true, url: "https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706"}  # written reply 2026-07-15 (info@bundesbank.de, inquiry 2026/005812): "you may save, distribute or reproduce ... provided that you do so free of charge. The information must not be altered or distorted" + must cite "Copyright: Deutsche Bundesbank, Frankfurt am Main, Germany" and send them a copy
 sources:
 
   # ---- US federal, public domain ----
@@ -791,6 +792,9 @@ sources:
     attribution: "Source: Social Progress Imperative (embed permission 2026)"
   bundesbank:
     name: "Deutsche Bundesbank time series"
+    # GRANTED 2026-07-15 (email trail) — to un-gate: license -> bundesbank-granted,
+    # attribution -> "Copyright: Deutsche Bundesbank, Frankfurt am Main, Germany",
+    # remove "bundesbank" from denylist.ts, sync D1, deploy. Awaiting owner go-ahead.
     license: audit-restricted
     attribution: "Source: Deutsche Bundesbank time series (not redistributed; obtain from provider)"
   cboe:
