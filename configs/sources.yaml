@@ -42,6 +42,7 @@ licenses:
   verified-nc: {reservable: true, commercial_ok: false, attribution: required, no_modify: false, url: ""}  # Stage 0b verified (Verified: non-commercial redistribution permitted (see source terms_url))
   verified-open: {reservable: true, commercial_ok: true, attribution: false, no_modify: false, url: ""}  # Stage 0b verified (Verified: redistribution permitted (see source terms_url))
   audit-restricted: {reservable: false, commercial_ok: false, attribution: required, no_modify: false, url: ""}  # Stage 0b: verbatim audit flagged NOT clearable (third-party carve-out / permission required / unresolved) -- gated pending review
+  spi-embed-2026: {reservable: false, commercial_ok: false, attribution: required, no_modify: true, url: ""}  # SPI written permission 2026: official Tableau embed only, no dataset redistribution
 sources:
 
   # ---- US federal, public domain ----
@@ -781,6 +782,105 @@ sources:
     license: cc-by-nc-sa-4.0
     terms_url: "https://epi.yale.edu/faq/epi-faq"
     attribution: "Source: Yale Environmental Performance Index"
+
+  # --- Stage 0b: definitive statuses for audited-restricted sources (2026-07-14) ---
+  social_progress:
+    name: "Social Progress Index (Social Progress Imperative)"
+    license: spi-embed-2026
+    terms_url: "https://www.socialprogress.org/"
+    attribution: "Source: Social Progress Imperative (embed permission 2026)"
+  bundesbank:
+    name: "Deutsche Bundesbank time series"
+    license: audit-restricted
+    attribution: "Source: Deutsche Bundesbank time series (not redistributed; obtain from provider)"
+  cboe:
+    name: "Cboe index data"
+    license: audit-restricted
+    attribution: "Source: Cboe index data (not redistributed; obtain from provider)"
+  cow:
+    name: "Correlates of War"
+    license: audit-restricted
+    attribution: "Source: Correlates of War (not redistributed; obtain from provider)"
+  damodaran:
+    name: "Damodaran Online (NYU Stern)"
+    license: audit-restricted
+    attribution: "Source: Damodaran Online (NYU Stern) (not redistributed; obtain from provider)"
+  ei_statreview:
+    name: "Energy Institute Statistical Review"
+    license: audit-restricted
+    attribution: "Source: Energy Institute Statistical Review (not redistributed; obtain from provider)"
+  famafrench:
+    name: "Kenneth French Data Library"
+    license: audit-restricted
+    attribution: "Source: Kenneth French Data Library (not redistributed; obtain from provider)"
+  freedomhouse:
+    name: "Freedom House Freedom in the World"
+    license: audit-restricted
+    attribution: "Source: Freedom House Freedom in the World (not redistributed; obtain from provider)"
+  idb:
+    name: "Inter-American Development Bank Open Data"
+    license: audit-restricted
+    attribution: "Source: Inter-American Development Bank Open Data (not redistributed; obtain from provider)"
+  irena:
+    name: "IRENA IRENASTAT"
+    license: audit-restricted
+    attribution: "Source: IRENA IRENASTAT (not redistributed; obtain from provider)"
+  nbp:
+    name: "Narodowy Bank Polski"
+    license: audit-restricted
+    attribution: "Source: Narodowy Bank Polski (not redistributed; obtain from provider)"
+  polity:
+    name: "Polity5 (Center for Systemic Peace)"
+    license: audit-restricted
+    attribution: "Source: Polity5 (Center for Systemic Peace) (not redistributed; obtain from provider)"
+  shiller:
+    name: "Robert Shiller Online Data (Yale)"
+    license: audit-restricted
+    attribution: "Source: Robert Shiller Online Data (Yale) (not redistributed; obtain from provider)"
+  sipri:
+    name: "SIPRI Military Expenditure"
+    license: audit-restricted
+    attribution: "Source: SIPRI Military Expenditure (not redistributed; obtain from provider)"
+  tcmb:
+    name: "Central Bank of Turkey EVDS"
+    license: audit-restricted
+    attribution: "Source: Central Bank of Turkey EVDS (not redistributed; obtain from provider)"
+  whr:
+    name: "World Happiness Report"
+    license: audit-restricted
+    attribution: "Source: World Happiness Report (not redistributed; obtain from provider)"
+  wto_hs_a_0010:
+    name: "WTO Tariff & Trade (IDB/CTS)"
+    license: audit-restricted
+    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
+  wto_hs_a_0015:
+    name: "WTO Tariff & Trade (IDB/CTS)"
+    license: audit-restricted
+    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
+  wto_hs_a_0020:
+    name: "WTO Tariff & Trade (IDB/CTS)"
+    license: audit-restricted
+    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
+  wto_hs_a_0025:
+    name: "WTO Tariff & Trade (IDB/CTS)"
+    license: audit-restricted
+    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
+  wto_hs_a_0030:
+    name: "WTO Tariff & Trade (IDB/CTS)"
+    license: audit-restricted
+    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
+  wto_hs_a_0040:
+    name: "WTO Tariff & Trade (IDB/CTS)"
+    license: audit-restricted
+    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
+  wto_its_mtv_am:
+    name: "WTO Stats merchandise trade"
+    license: audit-restricted
+    attribution: "Source: WTO Stats merchandise trade (not redistributed; obtain from provider)"
+  wto_its_mtv_ax:
+    name: "WTO Stats merchandise trade"
+    license: audit-restricted
+    attribution: "Source: WTO Stats merchandise trade (not redistributed; obtain from provider)"
 
 dropped:
   coingecko:      "Free tier is personal/non-commercial; forbids redistribute/syndicate; discourages caching. Use DeFiLlama for crypto."
