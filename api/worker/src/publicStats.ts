@@ -202,6 +202,11 @@ export async function handlePublicStats(env: Env): Promise<Response> {
   const weekDl = await U.prepare(
     "SELECT COUNT(*) AS c FROM econ_download_log WHERE ts > datetime('now','-7 days')",
   ).first<{ c: number }>();
+  // Data served (bytes). Recorded per-download since byte tracking was added; the
+  // column is 0/NULL for downloads logged before then, so this is a rising floor.
+  const totalBytes = await U.prepare(
+    "SELECT COALESCE(SUM(bytes),0) AS b FROM econ_download_log",
+  ).first<{ b: number }>();
 
   // Per-country DISTINCT active users: self-declared profile country UNION any
   // country they've logged in from. UNION dedupes so a user counts once/country.
@@ -273,6 +278,7 @@ export async function handlePublicStats(env: Env): Promise<Response> {
     total_downloads: totalDl?.c ?? 0,
     downloads_today: todayDl?.c ?? 0,
     downloads_this_week: weekDl?.c ?? 0,
+    total_bytes_served: totalBytes?.b ?? 0,
     countries: userCountryMap,
     country_count: Object.keys(userCountryMap).length,
     institutions,

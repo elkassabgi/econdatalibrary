@@ -92,7 +92,13 @@ export function json(body: unknown, status = 200, extra?: Record<string, string>
 }
 
 export function csv(body: string, extra?: Record<string, string>): Response {
-  return new Response(body, { status: 200, headers: { ...CSV_HEADERS, ...(extra ?? {}) } });
+  // Exact UTF-8 byte length so the download gate can record real "data served"
+  // (econ_download_log.bytes) without re-reading the streamed body.
+  const bytes = new TextEncoder().encode(body).length;
+  return new Response(body, {
+    status: 200,
+    headers: { ...CSV_HEADERS, "content-length": String(bytes), ...(extra ?? {}) },
+  });
 }
 
 // --- honest-status error bodies (machine-readable `error` codes) -----------

@@ -117,7 +117,7 @@ export async function requireDownloadAuth(
 /** Record a served download in econ's OWN log table (shared db, separate
  *  counters). Never throws — logging must not break a download. */
 export async function logDownload(
-  env: Env, userId: number, seriesId: string, request: Request,
+  env: Env, userId: number, seriesId: string, request: Request, bytes = 0,
 ): Promise<void> {
   try {
     const ip = request.headers.get("cf-connecting-ip") || "";
@@ -132,8 +132,8 @@ export async function logDownload(
       client === "mcp" || ua.includes("elkassabgidata-mcp") || via === "mcp" ? "mcp" :
       (ref.includes("econdatalibrary.com") || ref.includes("elkassabgidata.com") || ref.includes("hfdatalibrary.com")) ? "web" : "api";
     await env.USERS.prepare(
-      "INSERT INTO econ_download_log (user_id, series_id, ip, channel) VALUES (?, ?, ?, ?)",
-    ).bind(userId, seriesId, ip, channel).run();
+      "INSERT INTO econ_download_log (user_id, series_id, ip, channel, bytes) VALUES (?, ?, ?, ?, ?)",
+    ).bind(userId, seriesId, ip, channel, bytes).run();
   } catch (e) {
     console.log("econ_download_log insert failed:", String(e));
   }
