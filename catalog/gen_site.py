@@ -1640,9 +1640,9 @@ def render_stats():
 <p class="lead">Real-time usage for the Econ Data Library, updated live from the database.</p>
 
 <div class="statgrid">
+  <div class="bigstat"><div class="bnum" id="s-visitors">&mdash;</div><div class="blabel">Total Visitors</div></div>
   <div class="bigstat"><div class="bnum" id="s-users">&mdash;</div><div class="blabel">Registered Users</div></div>
-  <div class="bigstat"><div class="bnum" id="s-obs">&mdash;</div><div class="blabel">Economic Observations</div></div>
-  <div class="bigstat"><div class="bnum" id="s-downloads">&mdash;</div><div class="blabel">Data Downloads</div></div>
+  <div class="bigstat"><div class="bnum" id="s-downloads">&mdash;</div><div class="blabel">Total Downloads</div></div>
   <div class="bigstat"><div class="bnum" id="s-bytes">&mdash;</div><div class="blabel">Data Served</div></div>
 </div>
 <h2>Global Reach</h2>
@@ -1657,9 +1657,9 @@ def render_stats():
 
 <h2>At a Glance</h2>
 <div class="actgrid">
-  <div class="actcard"><div class="anum" id="s-series">&mdash;</div><div class="alabel">Individual Series</div></div>
+  <div class="actcard"><div class="anum" id="s-today">&mdash;</div><div class="alabel">Downloads Today</div></div>
   <div class="actcard"><div class="anum" id="s-week">&mdash;</div><div class="alabel">Downloads This Week</div></div>
-  <div class="actcard"><div class="anum" id="s-usercountries2">&mdash;</div><div class="alabel">Countries with Users</div></div>
+  <div class="actcard"><div class="anum" id="s-pageviews">&mdash;</div><div class="alabel">Page Views</div></div>
 </div>
 
 <script src="https://www.gstatic.com/charts/loader.js"></script>
@@ -1700,9 +1700,12 @@ function instIcon(name){var val=INST_DOMAINS[name]; var inner=''; if(val){var ur
 async function load(){
   try{ var r=await fetch(ECON+'/v1/public-stats'); if(r.ok){var d=await r.json();
     set('s-users',(d.total_users||0).toLocaleString());
+    if(d.total_visitors!=null)set('s-visitors',Number(d.total_visitors).toLocaleString());
     if(d.total_downloads!=null)set('s-downloads',Number(d.total_downloads).toLocaleString());
     if(d.total_bytes_served!=null)set('s-bytes',fmtBytes(d.total_bytes_served));
+    if(d.downloads_today!=null)set('s-today',Number(d.downloads_today).toLocaleString());
     if(d.downloads_this_week!=null)set('s-week',Number(d.downloads_this_week).toLocaleString());
+    if(d.total_page_views!=null)set('s-pageviews',Number(d.total_page_views).toLocaleString());
     var cc=d.country_count||Object.keys(d.countries||{}).length;
     set('s-usercountries',cc); set('s-usercountries2',cc);
     var vcc=d.visitor_country_count||Object.keys(d.visitor_countries||{}).length;
@@ -1728,10 +1731,6 @@ async function load(){
       document.getElementById('institution-list').innerHTML=html;
     } else { document.getElementById('institution-list').innerHTML='<p style="color:var(--g500)">No institutions yet.</p>'; }
   }}catch(e){}
-  try{ var s=await (await fetch(ECON+'/v1/stats')).json();
-    if(s.observations)set('s-obs',fmtB(s.observations));
-    if(s.individual_series)set('s-series',fmtB(s.individual_series));
-  }catch(e){}
 }
 load();
 </script>
