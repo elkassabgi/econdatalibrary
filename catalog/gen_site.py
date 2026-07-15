@@ -1014,6 +1014,7 @@ transition:box-shadow .14s,border-color .14s,transform .14s}
         head
         + """
 <!-- ── Hero (hfdatalibrary.com landing structure) ── -->
+<div role="status" style="background:linear-gradient(90deg,#d4a843,#e8c368);color:#14203a;text-align:center;padding:1rem 1.2rem;font-size:1.08rem;font-weight:600;line-height:1.5;border-bottom:4px solid #14203a;letter-spacing:.01em">&#128679; <strong>Under Construction</strong> &mdash; the Econ Data Library is being finalized. Datasets and their licensing are still being verified and may change.</div>
 <section class="hero">
   <div class="container">
     <h1 style="font-size:2.6rem">Econ Data Library: Free Economic &amp; Financial <span>Time&#8209;Series</span> Data</h1>
