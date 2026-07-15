@@ -305,23 +305,114 @@ TOPIC_LABELS = {
 _TOPIC_WARNED = set()
 
 # Source-level topics: most sources carry NO per-series category tags, so a
-# tags-only topic filter hides them (e.g. every international-trade source).
-# These labels are ADDED to a source's series-derived topics. Keyed by exact
-# id or by prefix ("unctad_" covers every UNCTADstat facet).
+# tags-only topic filter hid them (e.g. every international-trade source —
+# owner-reported as "I only have Australian trade numbers"). These labels are
+# ADDED to a source's series-derived topics; any source still untagged falls
+# back to its pillar's default topic, so EVERY source appears under at least
+# one topic. Keyed by exact id or prefix ("unctad_" covers every facet).
 _SOURCE_TOPICS = {
+    # international trade & development
     "comtrade": ["International Trade"],
     "cepii_baci": ["International Trade"],
     "cepii_gravity": ["International Trade"],
     "harvard_atlas": ["International Trade"],
-    "bea": ["International Trade", "National Accounts"],
     "unctad_": ["International Trade"],
+    "imf_bop*": ["International Trade"],
+    "bea": ["International Trade", "National Accounts"],
+    "idb": ["Development Indicators"],
+    "adb": ["Development Indicators"],
+    "worldbank_wdi": ["Development Indicators"],
+    "gapminder": ["Development Indicators"],
+    "worldbank_pink": ["Commodities"],
+    "fao_": ["Agriculture & Food"],
+    "faostat": ["Agriculture & Food"],
+    # markets, money & finance
+    "cboe": ["Equities & Markets"],
+    "cftc": ["Equities & Markets"],
+    "hf_equities": ["Equities & Markets"],
+    "famafrench": ["Equities & Markets"],
+    "shiller": ["Equities & Markets", "Housing & Real Estate"],
+    "damodaran": ["Company Fundamentals", "Equities & Markets"],
+    "sec_edgar": ["Company Fundamentals", "Equities & Markets"],
+    "edgar_13f": ["Company Fundamentals", "Equities & Markets"],
+    "edgar_insider": ["Company Fundamentals", "Equities & Markets"],
+    "edgar_pointers": ["Company Fundamentals"],
+    "defillama": ["Digital Assets"],
+    "frankfurter": ["Exchange Rates"],
+    "fdic": ["Money & Banking"],
+    "ofr": ["Money & Banking"],
+    "global_findex": ["Money & Banking", "Development Indicators"],
+    "treasury": ["Government Finance", "Government Bonds & Yields"],
+    "imf_gfs*": ["Government Finance"],
+    "imf_commodity": ["Commodities"],
+    "imf_cpi": ["Prices & Inflation"],
+    "zillow": ["Housing & Real Estate"],
+    "fhfa": ["Housing & Real Estate"],
+    # institutions & society
+    "vdem": ["Governance & Institutions"],
+    "freedomhouse": ["Governance & Institutions"],
+    "polity": ["Governance & Institutions"],
+    "wgi": ["Governance & Institutions"],
+    "transparency_ti": ["Governance & Institutions"],
+    "fsi": ["Governance & Institutions"],
+    "fsi_fundforpeace": ["Governance & Institutions"],
+    "ucdp": ["Conflict & Security"],
+    "cow": ["Conflict & Security"],
+    "sipri": ["Conflict & Security"],
+    "sipri_polity": ["Conflict & Security", "Governance & Institutions"],
+    "gpi": ["Conflict & Security", "Society & Well-Being"],
+    "gti": ["Conflict & Security"],
+    "wid": ["Inequality & Poverty"],
+    "swiid": ["Inequality & Poverty"],
+    "pip": ["Inequality & Poverty", "Development Indicators"],
+    "whr": ["Society & Well-Being"],
+    "social_progress": ["Society & Well-Being"],
+    "ppi": ["Society & Well-Being"],
+    "etr": ["Society & Well-Being"],
+    "oxcgrt": ["Society & Well-Being"],
+    "un_wpp": ["Population & Demographics"],
+    "ilo": ["Labour Markets"],
+    "ilostat": ["Labour Markets"],
+    "gleif": ["Reference Data"],
+    "barro_lee": ["Education"],
+    "kof_globalization": ["International Trade", "Society & Well-Being"],
+    # energy & environment
+    "eia": ["Energy"],
+    "irena": ["Energy"],
+    "ember": ["Energy"],
+    "ei_statreview": ["Energy"],
+    "gppd": ["Energy"],
+    "owid": ["Energy", "Environment & Climate"],
+    "gcb": ["Environment & Climate"],
+    "nasa_giss": ["Environment & Climate"],
+    "noaa": ["Environment & Climate"],
+    "edgar_jrc": ["Environment & Climate"],
+    "yale_epi": ["Environment & Climate"],
+    # long-run research datasets
+    "maddison": ["Long-Run & Historical", "Macroeconomics"],
+    "pwt": ["Long-Run & Historical", "Macroeconomics"],
+    "penn_world_table": ["Long-Run & Historical", "Macroeconomics"],
+    "ggdc": ["Long-Run & Historical"],
+    "epu": ["Macroeconomics"],
+}
+
+# Untagged sources take their pillar's headline topic (classify_pillar only
+# needs id+name, so build_record can call it with a stub record).
+_PILLAR_DEFAULT_TOPIC = {
+    "macro": "Macroeconomics",
+    "money": "Money & Banking",
+    "trade": "International Trade",
+    "energy": "Energy",
+    "society": "Society & Well-Being",
+    "research": "Long-Run & Historical",
 }
 
 
 def source_topics(sid):
     out = []
     for key, labels in _SOURCE_TOPICS.items():
-        if sid == key or (key.endswith("_") and sid.startswith(key)):
+        prefix = key.endswith("_") or key.endswith("*")
+        if sid == key or (prefix and sid.startswith(key.rstrip("*"))):
             out.extend(labels)
     return out
 
@@ -380,8 +471,10 @@ def build_record(sid, src, lic, roll, side, s5=None):
         "cov_start": cov_start,
         "cov_end": cov_end,
         "frequencies": (roll or {}).get("frequencies", []),
-        "categories": sorted(set(topic_labels((roll or {}).get("categories", []))
-                                 + source_topics(sid))),
+        "categories": (sorted(set(topic_labels((roll or {}).get("categories", []))
+                                  + source_topics(sid)))
+                       or [_PILLAR_DEFAULT_TOPIC[classify_pillar(
+                           {"id": sid, "name": src.get("name") or sid})]]),
         "n_geo": (roll or {}).get("n_geo", 0),
         "last_updated": sane_date((roll or {}).get("last_updated")),
         # operational (sidecar) extras -- display only
@@ -1063,6 +1156,13 @@ def _catalog_idx(records):
     from collections import Counter
     dist = Counter(x["pillar"] for x in idx)
     print("  catalog pillars:", {k: dist.get(k, 0) for k, _i, _l in PILLARS})
+    tdist = Counter(c for x in idx for c in (x["cats"] or []))
+    zero = [x["id"] for x in idx if not x["cats"]]
+    print(f"  catalog topics: {len(tdist)} groups; untopiced sources: {len(zero)}"
+          + (f" {zero}" if zero else ""))
+    thin = {t: n for t, n in tdist.items() if n == 1}
+    if thin:
+        print(f"  single-source topics (fine, but check labels): {thin}")
     return idx
 
 
@@ -1756,7 +1856,17 @@ function renderLocal(){
  if(sort==='series'){rows.sort((a,b)=>(b.n_series||0)-(a.n_series||0));}
  else if(sort==='updated'){rows.sort((a,b)=>(b.updated||'').localeCompare(a.updated||''));}
  else{rows.sort((a,b)=>a.name.localeCompare(b.name));}
- document.getElementById('count').textContent=rows.length+' of '+IDX.length+' datasets';
+ // Name the active filters next to the count — filters combine (AND), and an
+ // unnamed combination reads as "the filter is broken" when it yields 0.
+ const parts=[];
+ if(PILLAR){const c=document.querySelector('.chip[data-pillar="'+PILLAR+'"]');
+  if(c)parts.push('Pillar: '+c.textContent.replace(/^[^ ]+ /,''));}
+ if(topic)parts.push('Topic: '+topic);
+ if(region)parts.push('Region: '+region);
+ if(f)parts.push(f==='open'?'Redistributed only':'Metadata-only');
+ if(q)parts.push('Search: “'+q+'”');
+ const desc=parts.join(' · ');
+ document.getElementById('count').textContent=rows.length+' of '+IDX.length+' datasets'+(desc?' — '+desc:'');
  const out=rows.map(r=>{
   const badge=r.reservable?'<span class="badge open">redistributed</span>':'<span class="badge meta">metadata only</span>';
   const cats=(r.cats||[]).slice(0,4).map(c=>'<span class="badge cat">'+esc(c)+'</span>').join('');
@@ -1765,7 +1875,19 @@ function renderLocal(){
    '<h3>'+esc(r.name)+'</h3>'+
    '<div class="row">'+badge+'<span class="badge lic">'+esc(r.license)+'</span>'+cats+' '+ser+'</div></a>';
  }).join('');
- document.getElementById('results').innerHTML=out||'<p style="color:#6b7280">No datasets match.</p>';
+ document.getElementById('results').innerHTML=out||('<p style="color:#6b7280">No datasets match'+
+  (desc?' the combined filters ('+esc(desc)+')':'')+'. '+
+  '<a href="#" onclick="clearFilters();return false" style="font-weight:600">Clear all filters</a></p>');
+}
+function clearFilters(){
+ PILLAR='';
+ document.querySelectorAll('.chip').forEach(function(x){x.classList.remove('active')});
+ document.querySelector('.chip[data-pillar=""]').classList.add('active');
+ document.getElementById('q').value='';
+ document.getElementById('topic').value='';
+ document.getElementById('region').value='';
+ document.getElementById('f').value='';
+ render();
 }
 async function renderApi(){
  const L=curLang();
