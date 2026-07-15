@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.elkassabgi/elkassabgidata",
+  "name": "com.elkassabgidata/elkassabgidata",
   "title": "ElkassabgiData",
   "description": "Free academic US equity 1-minute bar data and global economic time series (ElkassabgiData).",
   "version": "1.0.0",
