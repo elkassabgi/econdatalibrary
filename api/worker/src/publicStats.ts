@@ -273,6 +273,45 @@ export async function handlePublicStats(env: Env): Promise<Response> {
     .slice(0, 5)
     .map((r) => ({ source_id: r.source, name: catName[r.source], downloads: r.downloads }));
 
+  // Visitor layer for the map — THIS site's own Cloudflare traffic (light-blue in
+  // the two-tone map, distinct from the shared dark-blue user layer). Runs only
+  // when analytics creds are configured; any failure is swallowed so an analytics
+  // hiccup never breaks the endpoint. countryMap keys are ISO-2 already.
+  const visitorCountryMap: Record<string, number> = {};
+  let totalVisitors = 0;
+  let totalPageViews = 0;
+  if (env.CF_API_TOKEN && env.CF_ZONE_ID) {
+    try {
+      const since = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+      const gql =
+        `query { viewer { zones(filter: {zoneTag: "${env.CF_ZONE_ID}"}) { ` +
+        `httpRequests1dGroups(limit: 10000, filter: {date_geq: "${since}"}) { ` +
+        `sum { pageViews countryMap { clientCountryName requests } } uniq { uniques } } } } }`;
+      const cfRes = await fetch("https://api.cloudflare.com/client/v4/graphql", {
+        method: "POST",
+        headers: { authorization: `Bearer ${env.CF_API_TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ query: gql }),
+      });
+      const cfData = await cfRes.json() as {
+        data?: { viewer?: { zones?: Array<{ httpRequests1dGroups?: Array<{
+          sum?: { pageViews?: number; countryMap?: Array<{ clientCountryName?: string; requests?: number }> };
+          uniq?: { uniques?: number };
+        }> }> } };
+      };
+      const zones = cfData?.data?.viewer?.zones ?? [];
+      for (const g of zones[0]?.httpRequests1dGroups ?? []) {
+        totalVisitors += g.uniq?.uniques ?? 0;
+        totalPageViews += g.sum?.pageViews ?? 0;
+        for (const c of g.sum?.countryMap ?? []) {
+          const code = (c.clientCountryName ?? "").toUpperCase();
+          if (code && code !== "XX") {
+            visitorCountryMap[code] = (visitorCountryMap[code] ?? 0) + (c.requests ?? 0);
+          }
+        }
+      }
+    } catch { /* analytics optional — never fail the endpoint over it */ }
+  }
+
   return json({
     total_users: totalUsers?.c ?? 0,
     total_downloads: totalDl?.c ?? 0,
@@ -281,6 +320,10 @@ export async function handlePublicStats(env: Env): Promise<Response> {
     total_bytes_served: totalBytes?.b ?? 0,
     countries: userCountryMap,
     country_count: Object.keys(userCountryMap).length,
+    visitor_countries: visitorCountryMap,
+    visitor_country_count: Object.keys(visitorCountryMap).length,
+    total_visitors: totalVisitors,
+    total_page_views: totalPageViews,
     institutions,
     institution_count: institutions.length,
     top_sources: topSources,
