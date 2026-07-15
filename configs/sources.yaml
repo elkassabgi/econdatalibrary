@@ -72,7 +72,7 @@ sources:
   eurostat:         {name: Eurostat, license: cc-by-4.0, schedule: "0 6 * * 2", attribution: "Source: Eurostat (CC BY 4.0)", carve_out: see-carve_outs}
   imf:              {name: IMF Data, license: imf-terms, schedule: "0 6 * * 2", attribution: "Source: IMF -- this data is available free of charge"}
   ilostat:          {name: ILOSTAT, license: cc-by-4.0, schedule: "0 6 * * 2", attribution: "Source: ILOSTAT (CC BY 4.0)"}
-  faostat:          {name: FAOSTAT, license: audit-restricted, schedule: "0 6 * * 3", attribution: "Source: FAO FAOSTAT (CC BY 4.0)"}
+  faostat:          {name: FAOSTAT, license: verified-nc, schedule: "0 6 * * 3", attribution: "Source: FAO FAOSTAT (CC BY 4.0)"}
   penn_world_table: {name: Penn World Table 11.0, license: cc-by-4.0, schedule: "0 6 1 */3 *", attribution: "Source: Penn World Table 11.0 (CC BY 4.0)"}
   statcan:          {name: Statistics Canada, license: statcan-open, schedule: "0 6 * * *", attribution: "Source: Statistics Canada (Open Licence)"}
   abs:              {name: Australian Bureau of Statistics, license: cc-by-4.0, schedule: "0 6 * * 2", attribution: "Source: ABS (CC BY 4.0)"}
@@ -87,7 +87,7 @@ sources:
 
   # ---- Free-with-attribution ----
   ecb:              {name: ECB Data Portal / euro reference rates, license: ecb-attrib-nomodify, schedule: "30 16 * * *", attribution: "Source: ECB -- available free at the ECB; values not modified"}
-  frankfurter:      {name: Frankfurter API (ECB FX), license: audit-restricted, schedule: "30 16 * * *", attribution: "FX data from the ECB via Frankfurter"}
+  frankfurter:      {name: Frankfurter API (ECB FX), license: verified-attribution, schedule: "30 16 * * *", attribution: "Source: European Central Bank"}
   zillow:           {name: Zillow Research, license: audit-restricted, schedule: "0 6 * * 4", attribution: "Data Provided by Zillow Group"}
   defillama:        {name: DeFiLlama, license: audit-restricted, schedule: "0 */6 * * *", attribution: "Source: DeFiLlama"}
 
@@ -143,127 +143,127 @@ sources:
     attribution: "Source: Economic Policy Uncertainty Index (Baker/Bloom/Davis)"
   fao_ae:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_af:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_ec:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_ep:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_es:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_et:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_ew:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_fo:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_ga:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_gb:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_ge:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_gf:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_gl:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_gn:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_gr:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_gt:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_gy:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_ic:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_oa:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_pp:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_qa:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_qcl:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_ql:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_qp:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fao_rp:
     name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
-    license: cc-by-4.0
+    license: verified-nc
     terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
     attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
   fsi_fundforpeace:
