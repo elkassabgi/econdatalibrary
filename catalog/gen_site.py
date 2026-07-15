@@ -257,6 +257,65 @@ def load_sidecar():
 # ---------------------------------------------------------------------------- #
 #  Build the per-dataset metadata model (the registry-grounded record)
 # ---------------------------------------------------------------------------- #
+# ------------------------------------------------------------------ #
+# Human-facing topic labels. The per-series `category` column carries raw
+# ingest tags (gilt_yield, treasury_cmt, fx, ...). Everywhere a human sees
+# them — catalog cards, the topic filter, dataset-page badges, keywords —
+# they are consolidated into these professional groups. Covers ALL 33
+# distinct values in the registry (2026-07-15); an unmapped value falls
+# back to Title Case and prints a warning at generation, never silently.
+TOPIC_LABELS = {
+    "Environmental": "Environment & Climate",
+    "climate": "Environment & Climate",
+    "Governance": "Governance & Institutions",
+    "Social": "Society & Well-Being",
+    "agriculture": "Agriculture & Food",
+    "commodities": "Commodities",
+    "crypto": "Digital Assets",
+    "demography": "Population & Demographics",
+    "deposit_rate": "Interest Rates",
+    "lending_rate": "Interest Rates",
+    "policy_rate": "Interest Rates",
+    "reference_rate": "Interest Rates",
+    "rates": "Interest Rates",
+    "energy": "Energy",
+    "equities": "Equities & Markets",
+    "fundamentals": "Company Fundamentals",
+    "exchange_rate": "Exchange Rates",
+    "fx": "Exchange Rates",
+    "fiscal": "Government Finance",
+    "gilt_yield": "Government Bonds & Yields",
+    "gilt_yield_real": "Government Bonds & Yields",
+    "treasury_bill": "Government Bonds & Yields",
+    "treasury_cmt": "Government Bonds & Yields",
+    "treasury_tips": "Government Bonds & Yields",
+    "housing": "Housing & Real Estate",
+    "labour": "Labour Markets",
+    "macro": "Macroeconomics",
+    "monetary_aggregate": "Money & Banking",
+    "national-accounts": "National Accounts",
+    "output": "National Accounts",
+    "prices": "Prices & Inflation",
+    "reference": "Reference Data",
+    "trade": "Trade",
+}
+_TOPIC_WARNED = set()
+
+
+def topic_labels(cats):
+    out = []
+    for c in cats or []:
+        label = TOPIC_LABELS.get(c)
+        if label is None:
+            label = c.replace("_", " ").replace("-", " ").title()
+            if c not in _TOPIC_WARNED:
+                _TOPIC_WARNED.add(c)
+                print(f"  WARNING: unmapped topic tag {c!r} -> fallback {label!r} (add to TOPIC_LABELS)")
+        if label not in out:
+            out.append(label)
+    return sorted(out)
+
+
 def build_record(sid, src, lic, roll, side, s5=None):
     """Assemble everything we know about one dataset from the registry + sidecar.
     Returns a plain dict; downstream renderers never touch the DB again.
@@ -297,7 +356,7 @@ def build_record(sid, src, lic, roll, side, s5=None):
         "cov_start": cov_start,
         "cov_end": cov_end,
         "frequencies": (roll or {}).get("frequencies", []),
-        "categories": (roll or {}).get("categories", []),
+        "categories": topic_labels((roll or {}).get("categories", [])),
         "n_geo": (roll or {}).get("n_geo", 0),
         "last_updated": sane_date((roll or {}).get("last_updated")),
         # operational (sidecar) extras -- display only
