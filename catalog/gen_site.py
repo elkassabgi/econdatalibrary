@@ -566,7 +566,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}}
 <span style="display:flex;gap:1.5rem;white-space:nowrap"><span id="sb-site"></span><span id="sb-data"></span></span>
 </div></div>
 <div class="nav"><div class="nav-in"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" class="fam-tag" title="Part of the ElkassabgiData family — one account, every library">part of ElkassabgiData</a></div>
-<div class="nav-links"><a href="index.html">Catalog</a><a href="docs.html">Documentation</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">AI Tools</a><a href="cite.html">Cite</a><a href="stats.html">Stats</a><a href="status.html">Status</a><a href="contact.html">Contact</a><a href="account.html" class="signin">Sign in</a></div></div></div>
+<div class="nav-links"><a href="catalog.html">Catalog</a><a href="docs.html">Documentation</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">AI Tools</a><a href="cite.html">Cite</a><a href="stats.html">Stats</a><a href="status.html">Status</a><a href="contact.html">Contact</a><a href="account.html" class="signin">Sign in</a></div></div></div>
 <script>
 (function(){{
   var API="https://econdl-api.elkassabgi.workers.dev";
@@ -857,8 +857,104 @@ def _earliest_data_year():
         return None
 
 
-def render_index(records, generated):
-    # Lightweight client-side search over an embedded JSON index.
+# ------------------------------------------------------------------ #
+# Catalog facets. The six pillars mirror the homepage "What the library
+# covers" tiles; every visible source gets ONE primary pillar and ONE
+# region so catalog.html can filter on them. These are browse/UX facets,
+# not licensing statements. Distribution is printed at generation time so
+# a bad rule is visible, never silent.
+PILLARS = [
+    ("macro",    "&#128200;", "Macro & National Accounts"),
+    ("money",    "&#128176;", "Prices, Money & Central Banks"),
+    ("trade",    "&#128674;", "Trade & Development"),
+    ("energy",   "&#9889;",   "Energy & Environment"),
+    ("society",  "&#127963;", "Institutions & Society"),
+    ("research", "&#128218;", "Research Datasets"),
+]
+REGIONS = ["Global & International", "Europe", "Americas", "Asia-Pacific"]
+
+_PILLAR_BY_ID = {
+    # research datasets (named on the tile or scholar-built)
+    "maddison": "research", "pwt": "research", "penn_world_table": "research",
+    "shiller": "research", "famafrench": "research", "barro_lee": "research",
+    "damodaran": "research", "ggdc": "research", "epu": "research",
+    "kof_globalization": "research", "oxcgrt": "research", "gapminder": "research",
+    "hf_equities": "research", "qog": "research", "harvard_atlas": "research",
+    # institutions & society
+    "vdem": "society", "freedomhouse": "society", "polity": "society",
+    "cow": "society", "ucdp": "society", "sipri": "society",
+    "sipri_polity": "society", "wid": "society", "swiid": "society",
+    "whr": "society", "wgi": "society", "transparency_ti": "society",
+    "fsi": "society", "fsi_fundforpeace": "society", "gpi": "society",
+    "gti": "society", "ppi": "society", "etr": "society",
+    "social_progress": "society", "global_findex": "society", "pip": "society",
+    "un_wpp": "society", "gleif": "society", "ilo": "society", "ilostat": "society",
+    # energy & environment
+    "eia": "energy", "irena": "energy", "ember": "energy", "gcb": "energy",
+    "nasa_giss": "energy", "noaa": "energy", "ei_statreview": "energy",
+    "owid": "energy", "gppd": "energy", "edgar_jrc": "energy", "yale_epi": "energy",
+    # trade & development
+    "comtrade": "trade", "cepii_baci": "trade", "cepii_gravity": "trade",
+    "idb": "trade", "adb": "trade", "worldbank_pink": "trade",
+    "worldbank_wdi": "trade", "faostat": "trade",
+    # prices, money, markets & central banks
+    "cboe": "money", "defillama": "money", "frankfurter": "money",
+    "cftc": "money", "fdic": "money", "ofr": "money", "treasury": "money",
+    "sec_edgar": "money", "edgar_13f": "money", "edgar_insider": "money",
+    "edgar_pointers": "money", "zillow": "money", "fhfa": "money",
+    "imf_commodity": "money", "imf_cpi": "money",
+}
+_MONEY_KEYS = ("central bank", "bank of", "banco", "bundesbank", "reserve bank",
+               "federal reserve", "riksbank", "norges", "national bank",
+               "monetary", "evds")
+_MONEY_IDS = {"ecb", "ecb_sdmx", "bis", "rba", "nbp", "snb", "boe", "tcmb",
+              "cnb", "bcb", "bcrp", "boc", "nyfed", "fed_board", "bundesbank",
+              "norgesbank", "riksbank"}
+
+
+def classify_pillar(rec):
+    sid = rec["id"]
+    if sid in _PILLAR_BY_ID:
+        return _PILLAR_BY_ID[sid]
+    hay = (sid + " " + (rec["name"] or "")).lower()
+    if sid in _MONEY_IDS or any(k in hay for k in _MONEY_KEYS):
+        return "money"
+    if sid.startswith(("unctad", "fao")) or "trade" in hay:
+        return "trade"
+    # IMF facets, World Bank, OECD, NSOs, Eurostat: the Macro pillar
+    # (the tile itself names "the IMF/World Bank" + the NSOs).
+    return "macro"
+
+
+_REGION_EUROPE = {"eurostat", "ecb", "ecb_sdmx", "frankfurter", "bundesbank",
+                  "boe", "ons_uk", "insee", "insee_bdm", "insee_melodi",
+                  "insee_sdmx", "insee_sirene", "istat", "ine_spain", "cbs_nl",
+                  "dst", "ssb", "scb", "statfin", "hagstofa", "stat_estonia",
+                  "stat_latvia", "stat_slovenia", "gus", "gus_dbw", "ksh",
+                  "ksh_stadat", "cso", "cnb", "nbp", "riksbank", "norgesbank",
+                  "snb", "bfs", "tcmb"}
+_REGION_AMERICAS = {"bea", "bls", "census", "fred", "fred_releases", "fed_board",
+                    "nyfed", "treasury", "cftc", "fdic", "sec_edgar", "edgar_13f",
+                    "edgar_insider", "edgar_pointers", "eia", "fhfa", "ofr",
+                    "statcan", "boc", "bcb", "bcrp", "ibge", "ipea", "idb",
+                    "hf_equities", "cboe", "zillow", "shiller", "famafrench",
+                    "damodaran", "noaa", "nasa_giss"}
+_REGION_ASIAPAC = {"abs", "rba", "stats_nz", "adb"}
+
+
+def classify_region(rec):
+    sid = rec["id"]
+    if sid in _REGION_EUROPE:
+        return "Europe"
+    if sid in _REGION_AMERICAS:
+        return "Americas"
+    if sid in _REGION_ASIAPAC:
+        return "Asia-Pacific"
+    return "Global & International"
+
+
+def _catalog_idx(records):
+    """The embedded JSON the catalog page filters/sorts client-side."""
     idx = [
         {
             "id": r["id"],
@@ -874,10 +970,53 @@ def render_index(records, generated):
             "cats": r["categories"],
             "n_series": r["n_series"],
             "page": f"{r['id']}.html",
+            "pillar": classify_pillar(r),
+            "region": classify_region(r),
+            "updated": r.get("last_updated") or "",
         }
         for r in records
     ]
-    data = json.dumps(idx, ensure_ascii=False).replace("</", "<\\/")
+    from collections import Counter
+    dist = Counter(x["pillar"] for x in idx)
+    print("  catalog pillars:", {k: dist.get(k, 0) for k, _i, _l in PILLARS})
+    return idx
+
+
+# Card-grid + filter-bar CSS for catalog.html (moved off the homepage).
+CATALOG_UI_CSS = """
+.wrapc{max-width:960px;margin:0 auto;padding:2.2rem 1.5rem 4rem}
+.controls{display:flex;gap:.75rem;flex-wrap:wrap;margin:0 0 .9rem}
+.controls input,.controls select{padding:.7rem .9rem;border:1px solid var(--g300);
+border-radius:10px;font-size:.95rem;font-family:var(--sans);background:#fff}
+.controls input{flex:1;min-width:240px}
+.controls input:focus,.controls select:focus{outline:none;border-color:var(--blue);
+box-shadow:0 0 0 3px var(--blue-pale)}
+.chips{display:flex;gap:.5rem;flex-wrap:wrap;margin:0 0 1.2rem}
+.chip{appearance:none;border:1px solid var(--g300);background:#fff;color:var(--g600);
+font-family:var(--sans);font-weight:600;font-size:.84rem;padding:.45rem .85rem;
+border-radius:999px;cursor:pointer;transition:all .12s}
+.chip:hover{border-color:var(--gold);color:var(--navy)}
+.chip.active{background:var(--navy);border-color:var(--navy);color:#fff}
+.card{display:block;border:1px solid var(--g200);border-radius:12px;padding:1.1rem 1.2rem;
+margin-bottom:.75rem;text-decoration:none;color:inherit;background:#fff;
+transition:box-shadow .14s,border-color .14s,transform .14s}
+.card:hover{box-shadow:0 6px 22px rgba(26,35,50,.10);border-color:var(--gold);transform:translateY(-1px)}
+.card .cid{font-family:var(--mono);font-size:.76rem;color:var(--gold-deep)}
+.card h3{font-family:var(--serif);color:var(--navy);font-size:1.16rem;margin:.15rem 0 .3rem}
+.card .row{display:flex;gap:.4rem;flex-wrap:wrap;align-items:center}
+.count{color:var(--g500);font-size:.82rem;margin-left:auto;font-family:var(--mono)}
+.cat-hero{background:linear-gradient(135deg,var(--navy) 0%,var(--navy-light) 100%);
+color:#fff;padding:2.6rem 0 2.4rem;text-align:center;border-bottom:3px solid var(--gold)}
+.cat-hero h1{font-family:var(--serif);color:#fff;font-size:2.1rem;margin:0 0 .35rem}
+.cat-hero p{color:rgba(255,255,255,.75);margin:0}
+[dir=rtl] .count{margin-left:0;margin-right:auto}
+[dir=rtl] .card .row{flex-direction:row-reverse}
+[dir=rtl] .card{text-align:right}
+[dir=rtl] .card h3{font-family:var(--sans)}
+"""
+
+
+def render_index(records, generated):
     n_total = len(records)
     n_open = sum(1 for r in records if r["reservable"])
     n_meta = n_total - n_open
@@ -920,7 +1059,7 @@ def render_index(records, generated):
                 "@type": "DataCatalog",
                 "@id": f"{SITE_BASE}/#catalog",
                 "name": SITE_NAME,
-                "url": f"{SITE_BASE}/index.html",
+                "url": f"{SITE_BASE}/catalog.html",
                 "description": (
                     f"Searchable catalog of {n_total} economic and financial data sources "
                     "with license, provenance, and machine-readable Dataset + Croissant metadata."
@@ -963,8 +1102,8 @@ def render_index(records, generated):
     }
 
     head = HEAD.format(
-        title=f"Data Catalog — {SITE_NAME}",
-        meta_desc=f"Searchable catalog of {n_total} economic & financial data sources with license, provenance, and schema.org Dataset metadata.",
+        title=f"{SITE_NAME} — Free Economic & Financial Time-Series Data",
+        meta_desc=f"Free, research-grade economic & financial data: {n_total} sources in one namespace, with licenses, provenance, and producer-first citations on every series.",
         canonical=f"{SITE_BASE}/index.html",
         css=PAGE_CSS
         + """
@@ -1049,6 +1188,10 @@ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hi
 [dir=rtl] .card .row{flex-direction:row-reverse}
 [dir=rtl] .hero,[dir=rtl] .card{text-align:right}
 [dir=rtl] .card h3{font-family:var(--sans)}
+/* pillar tiles are links into catalog.html */
+a.tile-link{display:block;text-decoration:none;color:inherit}
+a.tile-link:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(26,35,50,.12);border-color:var(--gold)}
+a.tile-link .tile-go{display:inline-block;margin-top:.9rem;color:var(--blue);font-weight:600;font-size:.86rem}
 @media (max-width:768px){
 .hero h1{font-size:2rem}
 .stats-bar{grid-template-columns:repeat(2,1fr);gap:1rem}
@@ -1154,15 +1297,16 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
 <section class="section">
   <div class="container">
     <h2 class="section-title" style="margin-bottom:.5rem">What the library covers</h2>
-    <p style="text-align:center;color:var(--g500);margin-bottom:2.5rem">__N__ sources across the pillars of empirical economics and finance.</p>
+    <p style="text-align:center;color:var(--g500);margin-bottom:2.5rem">__N__ sources across the pillars of empirical economics and finance — click a pillar to browse its sources.</p>
     <div class="grid-3">
-      <div class="acard"><div class="card-icon">&#128200;</div><h3>Macro &amp; National Accounts</h3><p>GDP, employment, production — national statistical offices (ABS, INSEE, ISTAT, StatCan, Eurostat) and the IMF/World Bank.</p></div>
-      <div class="acard"><div class="card-icon">&#128176;</div><h3>Prices, Money &amp; Central Banks</h3><p>Inflation, interest rates, FX — ECB, Fed Board, BIS, Bundesbank, and dozens of national central banks.</p></div>
-      <div class="acard"><div class="card-icon">&#128674;</div><h3>Trade &amp; Development</h3><p>Bilateral trade (CEPII BACI), tariffs, development indicators (World Bank WDI, UN SDG, UNDP HDR).</p></div>
-      <div class="acard"><div class="card-icon">&#9889;</div><h3>Energy &amp; Environment</h3><p>EIA, IRENA, Ember, Global Carbon Budget, NASA GISS — production, prices, emissions, climate.</p></div>
-      <div class="acard"><div class="card-icon">&#127963;</div><h3>Institutions &amp; Society</h3><p>Governance (WGI, V-Dem, Freedom House), conflict (UCDP, COW), inequality (WID, SWIID), well-being (WHR).</p></div>
-      <div class="acard"><div class="card-icon">&#128218;</div><h3>Research Datasets</h3><p>Maddison Project (year 1 CE onward), Penn World Table, Shiller, Fama-French, Barro-Lee, and more.</p></div>
+      <a class="acard tile-link" href="catalog.html?pillar=macro"><div class="card-icon">&#128200;</div><h3>Macro &amp; National Accounts</h3><p>GDP, employment, production — national statistical offices (ABS, INSEE, ISTAT, StatCan, Eurostat) and the IMF/World Bank.</p><span class="tile-go">Browse sources &rarr;</span></a>
+      <a class="acard tile-link" href="catalog.html?pillar=money"><div class="card-icon">&#128176;</div><h3>Prices, Money &amp; Central Banks</h3><p>Inflation, interest rates, FX — ECB, Fed Board, BIS, Bundesbank, and dozens of national central banks.</p><span class="tile-go">Browse sources &rarr;</span></a>
+      <a class="acard tile-link" href="catalog.html?pillar=trade"><div class="card-icon">&#128674;</div><h3>Trade &amp; Development</h3><p>Bilateral trade (CEPII BACI), tariffs, development indicators (World Bank WDI, UN SDG, UNDP HDR).</p><span class="tile-go">Browse sources &rarr;</span></a>
+      <a class="acard tile-link" href="catalog.html?pillar=energy"><div class="card-icon">&#9889;</div><h3>Energy &amp; Environment</h3><p>EIA, IRENA, Ember, Global Carbon Budget, NASA GISS — production, prices, emissions, climate.</p><span class="tile-go">Browse sources &rarr;</span></a>
+      <a class="acard tile-link" href="catalog.html?pillar=society"><div class="card-icon">&#127963;</div><h3>Institutions &amp; Society</h3><p>Governance (WGI, V-Dem, Freedom House), conflict (UCDP, COW), inequality (WID, SWIID), well-being (WHR).</p><span class="tile-go">Browse sources &rarr;</span></a>
+      <a class="acard tile-link" href="catalog.html?pillar=research"><div class="card-icon">&#128218;</div><h3>Research Datasets</h3><p>Maddison Project (year 1 CE onward), Penn World Table, Shiller, Fama-French, Barro-Lee, and more.</p><span class="tile-go">Browse sources &rarr;</span></a>
     </div>
+    <p style="text-align:center;margin-top:2.5rem"><a href="catalog.html" class="btn btn-primary" style="font-size:1.05rem;padding:.85rem 2.2rem">Browse the full catalog &rarr;</a></p>
   </div>
 </section>
 
@@ -1193,29 +1337,12 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
   </div>
 </section>
 
-<!-- ── Catalog search (live) ── -->
-<section class="section" id="catalog">
-  <div class="container-narrow">
+<!-- ── Catalog CTA (the full grid lives on catalog.html) ── -->
+<section class="section" id="catalog" style="padding:3.5rem 0">
+  <div class="container-narrow" style="text-align:center">
     <h2 class="section-title" style="margin-bottom:.5rem">Browse the catalog</h2>
-    <p style="text-align:center;color:var(--g500);margin-bottom:2rem">__N__ sources &middot; search datasets in English, or series in 6 languages via the live API</p>
-    <div class="controls">
-      <input id="q" placeholder="Search by name, id, description, license…" oninput="render()">
-      <select id="f" onchange="render()">
-        <option value="">All datasets</option>
-        <option value="open">Redistributed only</option>
-        <option value="meta">Metadata-only</option>
-      </select>
-      <select id="lang" onchange="onLang()" title="Search series in another language" aria-label="Language">
-        <option value="en">English</option>
-        <option value="ar">العربية</option>
-        <option value="es">Español</option>
-        <option value="fr">Français</option>
-        <option value="ru">Русский</option>
-        <option value="zh">中文</option>
-      </select>
-    </div>
-    <div class="count" id="count"></div>
-    <div id="results"></div>
+    <p style="color:var(--g500);margin-bottom:1.5rem">All __N__ sources — searchable and filterable by pillar, region, topic, and access tier; series search in 6 languages.</p>
+    <a href="catalog.html" class="btn btn-primary" style="font-size:1.05rem;padding:.85rem 2.2rem">Open the Data Catalog &rarr;</a>
   </div>
 </section>
 
@@ -1325,7 +1452,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
       <div>
         <h4>Data</h4>
         <ul>
-          <li><a href="#catalog">Browse the Catalog</a></li>
+          <li><a href="catalog.html">Browse the Catalog</a></li>
           <li><a href="download.html">Download</a></li>
           <li><a href="status.html">Source Status</a></li>
         </ul>
@@ -1341,7 +1468,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
       <div>
         <h4>About</h4>
         <ul>
-          <li><a href="about.html">Our Story</a></li>
+          <li><a href="https://elkassabgidata.com/about">Our Story</a></li>
           <li><a href="cite.html">How to Cite</a></li>
           <li><a href="https://hfdatalibrary.com/">HF Data Library</a></li>
           <li><a href="sitemap.xml">Sitemap</a></li>
@@ -1355,76 +1482,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
   </div>
 </footer>
 <script>
-const IDX=__DATA__;
-// Live API: when a non-English language is picked, search the full series index
-// and show OFFICIAL localized titles (World Bank /v2/<lang>, IMF SDMX, ILOSTAT).
-// English keeps the instant client-side dataset search below, unchanged.
 const API="https://econdl-api.elkassabgi.workers.dev";
-function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-function curLang(){return document.getElementById('lang').value;}
-function onLang(){
- const L=curLang(), ar=(L==='ar');
- document.documentElement.dir=ar?'rtl':'ltr';
- document.documentElement.lang=L;
- document.getElementById('f').style.display=(L==='en')?'':'none';
- document.getElementById('q').placeholder=(L==='en')
-  ?'Search by name, id, description, license…':'Search series in this language…';
- render();
-}
-function render(){
- if(curLang()!=='en'){clearTimeout(render._t);render._t=setTimeout(renderApi,250);return;}
- renderLocal();
-}
-function renderLocal(){
- const q=document.getElementById('q').value.toLowerCase().trim();
- const f=document.getElementById('f').value;
- let rows=IDX.filter(r=>{
-  if(f==='open'&&!r.reservable)return false;
-  if(f==='meta'&&r.reservable)return false;
-  if(q){const h=(r.id+' '+r.name+' '+r.desc+' '+r.license+' '+(r.cats||[]).join(' ')).toLowerCase();
-   if(!h.includes(q))return false;}
-  return true;});
- rows.sort((a,b)=>a.name.localeCompare(b.name));
- document.getElementById('count').textContent=rows.length+' of '+IDX.length+' datasets';
- const out=rows.map(r=>{
-  const badge=r.reservable?'<span class="badge open">redistributed</span>':'<span class="badge meta">metadata only</span>';
-  const cats=(r.cats||[]).slice(0,4).map(c=>'<span class="badge cat">'+esc(c)+'</span>').join('');
-  const ser=r.n_series?'<span class="count">'+r.n_series.toLocaleString()+' series</span>':'';
-  return '<a class="card" href="'+r.page+'"><div class="cid">'+esc(r.id)+'</div>'+
-   '<h3>'+esc(r.name)+'</h3>'+
-   (r.desc?'<p>'+esc(r.desc)+'</p>':'')+
-   '<div class="row">'+badge+'<span class="badge lic">'+esc(r.license)+'</span>'+cats+' '+ser+'</div></a>';
- }).join('');
- document.getElementById('results').innerHTML=out||'<p style="color:#6b7280">No datasets match.</p>';
-}
-async function renderApi(){
- const L=curLang();
- const q=document.getElementById('q').value.trim();
- const cnt=document.getElementById('count');
- cnt.textContent='Searching…';
- try{
-  const u=API+'/v1/catalog?lang='+encodeURIComponent(L)+'&limit=50'+(q?('&q='+encodeURIComponent(q)):'');
-  const r=await fetch(u);
-  if(!r.ok)throw new Error('http '+r.status);
-  const d=await r.json();
-  const rows=d.results||[];
-  cnt.textContent=(d.total||rows.length).toLocaleString()+' series';
-  const out=rows.map(s=>{
-   const src=(s.series_id||'').split(':')[0];
-   return '<a class="card" href="'+esc(src)+'.html"><div class="cid">'+esc(s.series_id)+'</div>'+
-    '<h3>'+esc(s.title)+'</h3>'+
-    '<div class="row"><span class="badge lic">'+esc(s.source)+'</span>'+
-    (s.geography?'<span class="badge cat">'+esc(s.geography)+'</span>':'')+
-    (s.frequency?'<span class="badge cat">'+esc(s.frequency)+'</span>':'')+'</div></a>';
-  }).join('');
-  document.getElementById('results').innerHTML=out||'<p style="color:#6b7280">No series match.</p>';
- }catch(e){
-  cnt.textContent='';
-  document.getElementById('results').innerHTML=
-   '<p style="color:#6b7280">Live multilingual search is temporarily unavailable. Switch to English for the dataset catalog.</p>';
- }
-}
-render();
 // Animated counter (ported from hfdatalibrary.com js/site.js): counts up over
 // ~2s, then shows the FULL written-out number with the billions label beneath.
 // Floor, never round up - reported counts must never overstate the store.
@@ -1466,7 +1524,7 @@ fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (
     # refreshed by each census run.
     years = _earliest_data_year()
     return (
-        tpl.replace("__DATA__", data)
+        tpl
         .replace("__FAQ__", faq_html)
         .replace("__YEARS__", f"{years:,}+" if years else "&mdash;")
         .replace("__NSERIES__", f"{n_series_total/1e6:.2f}M" if n_series_total >= 1e6 else f"{n_series_total:,}")
@@ -1475,6 +1533,205 @@ fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (
         .replace("__NOPEN__", str(n_open))
         .replace("__NMETA__", str(n_meta))
         .replace("__GEN__", generated or TODAY)
+    )
+
+
+def render_catalog(records, generated):
+    """The full, filterable source catalog (moved off the homepage).
+
+    Filters: free-text search, the six homepage pillars (chips, deep-linkable
+    via ?pillar=), topic (the per-source category tags), region, access tier
+    (redistributed vs metadata-only); sorts: name / most series / recently
+    updated. Non-English languages switch to the live multilingual series
+    search against the API, unchanged from the old homepage behavior.
+    """
+    idx = _catalog_idx(records)
+    data = json.dumps(idx, ensure_ascii=False).replace("</", "<\\/")
+    n_total = len(records)
+    n_open = sum(1 for r in records if r["reservable"])
+    n_meta = n_total - n_open
+
+    catalog_ld = {
+        "@context": "https://schema.org/",
+        "@type": "DataCatalog",
+        "@id": f"{SITE_BASE}/#catalog",
+        "name": SITE_NAME,
+        "url": f"{SITE_BASE}/catalog.html",
+        "description": (
+            f"Searchable catalog of {n_total} economic and financial data sources "
+            "with license, provenance, and machine-readable Dataset + Croissant metadata."
+        ),
+        "publisher": PUBLISHER,
+    }
+
+    chips = '<button class="chip active" data-pillar="">All pillars</button>' + "".join(
+        f'<button class="chip" data-pillar="{slug}">{icon} {label}</button>'
+        for slug, icon, label in PILLARS
+    )
+    region_opts = '<option value="">All regions</option>' + "".join(
+        f'<option value="{esc(x)}">{esc(x)}</option>' for x in REGIONS
+    )
+
+    head = HEAD.format(
+        title=f"Data Catalog — {SITE_NAME}",
+        meta_desc=(
+            f"Browse all {n_total} economic & financial data sources — filter by "
+            "pillar, region, topic, and access tier; search series in 6 languages."
+        ),
+        canonical=f"{SITE_BASE}/catalog.html",
+        css=PAGE_CSS + CATALOG_UI_CSS,
+        jsonld=jsonld_script(catalog_ld),
+    )
+
+    body = (
+        head
+        + """
+<section class="cat-hero">
+  <div style="max-width:960px;margin:0 auto;padding:0 1.5rem">
+    <h1>Data Catalog</h1>
+    <p>__N__ sources &middot; __NOPEN__ redistributed, __NMETA__ metadata-only &middot; search datasets in English, or series in 6 languages via the live API</p>
+  </div>
+</section>
+<div class="wrapc">
+  <div class="controls">
+    <input id="q" placeholder="Search by name, id, license, topic…" oninput="render()">
+    <select id="lang" onchange="onLang()" title="Search series in another language" aria-label="Language">
+      <option value="en">English</option>
+      <option value="ar">العربية</option>
+      <option value="es">Español</option>
+      <option value="fr">Français</option>
+      <option value="ru">Русский</option>
+      <option value="zh">中文</option>
+    </select>
+  </div>
+  <div class="chips" id="chips">__CHIPS__</div>
+  <div class="controls" id="fine">
+    <select id="topic" onchange="render()"><option value="">All topics</option></select>
+    <select id="region" onchange="render()">__REGIONS__</select>
+    <select id="f" onchange="render()">
+      <option value="">All access tiers</option>
+      <option value="open">Redistributed only</option>
+      <option value="meta">Metadata-only</option>
+    </select>
+    <select id="sort" onchange="render()">
+      <option value="name">Sort: Name A&ndash;Z</option>
+      <option value="series">Sort: Most series</option>
+      <option value="updated">Sort: Recently updated</option>
+    </select>
+  </div>
+  <div class="count" id="count"></div>
+  <div id="results"></div>
+</div>
+<script>
+const IDX=__DATA__;
+const API="https://econdl-api.elkassabgi.workers.dev";
+let PILLAR='';
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function curLang(){return document.getElementById('lang').value;}
+function onLang(){
+ const L=curLang(), ar=(L==='ar');
+ document.documentElement.dir=ar?'rtl':'ltr';
+ document.documentElement.lang=L;
+ // pillar/topic/region/access/sort are dataset facets; the multilingual mode
+ // searches individual series live, so hide them there.
+ document.getElementById('fine').style.display=(L==='en')?'':'none';
+ document.getElementById('chips').style.display=(L==='en')?'':'none';
+ document.getElementById('q').placeholder=(L==='en')
+  ?'Search by name, id, license, topic…':'Search series in this language…';
+ render();
+}
+document.querySelectorAll('.chip').forEach(function(c){c.addEventListener('click',function(){
+ document.querySelectorAll('.chip').forEach(function(x){x.classList.remove('active')});
+ c.classList.add('active');PILLAR=c.getAttribute('data-pillar');render();
+});});
+(function(){ // populate the topic dropdown from the per-source category tags
+ const seen={};IDX.forEach(function(r){(r.cats||[]).forEach(function(c){seen[c]=1})});
+ const sel=document.getElementById('topic');
+ Object.keys(seen).sort().forEach(function(c){
+  const o=document.createElement('option');o.value=c;o.textContent=c;sel.appendChild(o);});
+})();
+function render(){
+ if(curLang()!=='en'){clearTimeout(render._t);render._t=setTimeout(renderApi,250);return;}
+ renderLocal();
+}
+function renderLocal(){
+ const q=document.getElementById('q').value.toLowerCase().trim();
+ const f=document.getElementById('f').value;
+ const topic=document.getElementById('topic').value;
+ const region=document.getElementById('region').value;
+ const sort=document.getElementById('sort').value;
+ let rows=IDX.filter(r=>{
+  if(PILLAR&&r.pillar!==PILLAR)return false;
+  if(f==='open'&&!r.reservable)return false;
+  if(f==='meta'&&r.reservable)return false;
+  if(topic&&!(r.cats||[]).includes(topic))return false;
+  if(region&&r.region!==region)return false;
+  if(q){const h=(r.id+' '+r.name+' '+r.license+' '+(r.cats||[]).join(' ')).toLowerCase();
+   if(!h.includes(q))return false;}
+  return true;});
+ if(sort==='series'){rows.sort((a,b)=>(b.n_series||0)-(a.n_series||0));}
+ else if(sort==='updated'){rows.sort((a,b)=>(b.updated||'').localeCompare(a.updated||''));}
+ else{rows.sort((a,b)=>a.name.localeCompare(b.name));}
+ document.getElementById('count').textContent=rows.length+' of '+IDX.length+' datasets';
+ const out=rows.map(r=>{
+  const badge=r.reservable?'<span class="badge open">redistributed</span>':'<span class="badge meta">metadata only</span>';
+  const cats=(r.cats||[]).slice(0,4).map(c=>'<span class="badge cat">'+esc(c)+'</span>').join('');
+  const ser=r.n_series?'<span class="count">'+r.n_series.toLocaleString()+' series</span>':'';
+  return '<a class="card" href="'+r.page+'"><div class="cid">'+esc(r.id)+'</div>'+
+   '<h3>'+esc(r.name)+'</h3>'+
+   '<div class="row">'+badge+'<span class="badge lic">'+esc(r.license)+'</span>'+cats+' '+ser+'</div></a>';
+ }).join('');
+ document.getElementById('results').innerHTML=out||'<p style="color:#6b7280">No datasets match.</p>';
+}
+async function renderApi(){
+ const L=curLang();
+ const q=document.getElementById('q').value.trim();
+ const cnt=document.getElementById('count');
+ cnt.textContent='Searching…';
+ try{
+  const u=API+'/v1/catalog?lang='+encodeURIComponent(L)+'&limit=50'+(q?('&q='+encodeURIComponent(q)):'');
+  const r=await fetch(u);
+  if(!r.ok)throw new Error('http '+r.status);
+  const d=await r.json();
+  const rows=d.results||[];
+  cnt.textContent=(d.total||rows.length).toLocaleString()+' series';
+  const out=rows.map(s=>{
+   const src=(s.series_id||'').split(':')[0];
+   return '<a class="card" href="'+esc(src)+'.html"><div class="cid">'+esc(s.series_id)+'</div>'+
+    '<h3>'+esc(s.title)+'</h3>'+
+    '<div class="row"><span class="badge lic">'+esc(s.source)+'</span>'+
+    (s.geography?'<span class="badge cat">'+esc(s.geography)+'</span>':'')+
+    (s.frequency?'<span class="badge cat">'+esc(s.frequency)+'</span>':'')+'</div></a>';
+  }).join('');
+  document.getElementById('results').innerHTML=out||'<p style="color:#6b7280">No series match.</p>';
+ }catch(e){
+  cnt.textContent='';
+  document.getElementById('results').innerHTML=
+   '<p style="color:#6b7280">Live multilingual search is temporarily unavailable. Switch to English for the dataset catalog.</p>';
+ }
+}
+// Deep links: catalog.html?pillar=macro (the homepage tiles), plus ?q= and ?f=.
+(function(){
+ const p=new URLSearchParams(location.search);
+ const pl=p.get('pillar');
+ if(pl){const c=document.querySelector('.chip[data-pillar="'+pl+'"]');
+  if(c){document.querySelectorAll('.chip').forEach(function(x){x.classList.remove('active')});
+   c.classList.add('active');PILLAR=pl;}}
+ if(p.get('q'))document.getElementById('q').value=p.get('q');
+ if(p.get('f'))document.getElementById('f').value=p.get('f');
+})();
+render();
+</script>
+</body></html>
+"""
+    )
+    return (
+        body.replace("__DATA__", data)
+        .replace("__CHIPS__", chips)
+        .replace("__REGIONS__", region_opts)
+        .replace("__N__", str(n_total))
+        .replace("__NOPEN__", str(n_open))
+        .replace("__NMETA__", str(n_meta))
     )
 
 
@@ -1762,6 +2019,11 @@ def render_sitemap(records):
         f"    <lastmod>{TODAY}</lastmod>",
         "    <changefreq>daily</changefreq>",
         "  </url>",
+        "  <url>",
+        f"    <loc>{xml_esc(SITE_BASE)}/catalog.html</loc>",
+        f"    <lastmod>{TODAY}</lastmod>",
+        "    <changefreq>daily</changefreq>",
+        "  </url>",
     ]
     for r in records:
         parts.append("  <url>")
@@ -1831,6 +2093,7 @@ def main():
 
     # index.html
     _write(os.path.join(OUT_DIR, "index.html"), render_index(records, generated))
+    _write(os.path.join(OUT_DIR, "catalog.html"), render_catalog(records, generated))
 
     # docs / api / cite (hf-parity information pages)
     _write(os.path.join(OUT_DIR, "docs.html"), render_docs())

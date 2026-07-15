@@ -6,6 +6,11 @@
     <changefreq>daily</changefreq>
   </url>
   <url>
+    <loc>https://econdatalibrary.com/catalog.html</loc>
+    <lastmod>2026-07-15</lastmod>
+    <changefreq>daily</changefreq>
+  </url>
+  <url>
     <loc>https://econdatalibrary.com/abs.html</loc>
     <lastmod>2026-07-15</lastmod>
     <changefreq>weekly</changefreq>
