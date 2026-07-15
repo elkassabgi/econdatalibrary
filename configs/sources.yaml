@@ -850,38 +850,6 @@ sources:
     name: "World Happiness Report"
     license: audit-restricted
     attribution: "Source: World Happiness Report (not redistributed; obtain from provider)"
-  wto_hs_a_0010:
-    name: "WTO Tariff & Trade (IDB/CTS)"
-    license: audit-restricted
-    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
-  wto_hs_a_0015:
-    name: "WTO Tariff & Trade (IDB/CTS)"
-    license: audit-restricted
-    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
-  wto_hs_a_0020:
-    name: "WTO Tariff & Trade (IDB/CTS)"
-    license: audit-restricted
-    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
-  wto_hs_a_0025:
-    name: "WTO Tariff & Trade (IDB/CTS)"
-    license: audit-restricted
-    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
-  wto_hs_a_0030:
-    name: "WTO Tariff & Trade (IDB/CTS)"
-    license: audit-restricted
-    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
-  wto_hs_a_0040:
-    name: "WTO Tariff & Trade (IDB/CTS)"
-    license: audit-restricted
-    attribution: "Source: WTO Tariff & Trade (IDB/CTS) (not redistributed; obtain from provider)"
-  wto_its_mtv_am:
-    name: "WTO Stats merchandise trade"
-    license: audit-restricted
-    attribution: "Source: WTO Stats merchandise trade (not redistributed; obtain from provider)"
-  wto_its_mtv_ax:
-    name: "WTO Stats merchandise trade"
-    license: audit-restricted
-    attribution: "Source: WTO Stats merchandise trade (not redistributed; obtain from provider)"
 
 dropped:
   coingecko:      "Free tier is personal/non-commercial; forbids redistribute/syndicate; discourages caching. Use DeFiLlama for crypto."
