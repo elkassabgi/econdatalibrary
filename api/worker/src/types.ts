@@ -28,6 +28,13 @@ export interface Env {
   // to econ_download_log inside the SAME db (separate table — hf's download
   // counts are never inflated by econ traffic).
   USERS: D1Database;
+
+  // Optional Cloudflare Analytics access for the stats page's visitor map layer.
+  // CF_API_TOKEN = a Zone Analytics:Read token; CF_ZONE_ID = econdatalibrary.com's
+  // zone. When both are set, /v1/public-stats adds visitor_countries / visitors /
+  // page_views (this site's own traffic). Absent -> the map stays user-only.
+  CF_API_TOKEN?: string;
+  CF_ZONE_ID?: string;
 }
 
 // --- D1 row shapes (one per SELECT column list in sql.ts) ------------------

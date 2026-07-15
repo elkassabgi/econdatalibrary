@@ -1614,7 +1614,9 @@ def render_stats():
 .dlnote{font-size:.82rem;color:var(--g500);margin:.1rem 0 2rem}
 #world-map{width:100%;height:460px;margin:.2rem auto 0}
 #country-badges{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center;margin-top:1.3rem}
-.cbadge{padding:.28rem .7rem;border-radius:20px;font-size:.82rem;font-weight:500;background:#1e3a8a;color:#fff}
+.cbadge{padding:.28rem .7rem;border-radius:20px;font-size:.82rem;font-weight:500}
+.cbadge-u{background:#1e3a8a;color:#fff}
+.cbadge-v{background:#dbeafe;color:#1e40af}
 .reach-key{text-align:center;color:var(--g500);font-size:.9rem;margin:.2rem 0 1rem}
 .twocol{display:grid;grid-template-columns:1fr 1fr;gap:2rem;margin:.5rem 0}
 .dlbar{margin-bottom:.85rem}
@@ -1644,7 +1646,7 @@ def render_stats():
   <div class="bigstat"><div class="bnum" id="s-bytes">&mdash;</div><div class="blabel">Data Served</div></div>
 </div>
 <h2>Global Reach</h2>
-<p class="reach-key"><span id="s-usercountries">&mdash;</span> countries with registered users. Darker = more users.</p>
+<p class="reach-key"><span style="color:#1e3a8a;font-weight:700">Dark</span> = registered users (<span id="s-usercountries">&mdash;</span> countries) &middot; <span style="color:#60a5fa;font-weight:700">Light</span> = site visitors (<span id="s-visitorcountries">&mdash;</span>)</p>
 <div id="world-map"><p style="text-align:center;color:var(--g500);padding-top:190px">Loading map&hellip;</p></div>
 <div id="country-badges"></div>
 
@@ -1674,16 +1676,20 @@ var COUNTRY_NAMES={AF:'Afghanistan',AL:'Albania',DZ:'Algeria',AO:'Angola',AR:'Ar
 function countryName(c){return COUNTRY_NAMES[c]||c;}
 function drawMap(){
   var users=Object.assign({},mapData.users||{});
+  var visitors=mapData.visitors||{};
   if(!users['PS'])users['PS']=1;
-  var codes=Object.keys(users);
-  if(!codes.length)return;
-  var rows=[['Country','Users']];
-  codes.forEach(function(c){rows.push([c, users[c]]);});
+  var codes=new Set(Object.keys(users).concat(Object.keys(visitors)));
+  if(!codes.size)return;
+  var rows=[['Country','Type']];
+  codes.forEach(function(c){rows.push([c, users[c]?2:1]);});
   var data=google.visualization.arrayToDataTable(rows);
-  var opts={colorAxis:{colors:['#93c5fd','#1e3a8a']},backgroundColor:'#fff',datalessRegionColor:'#e5e7eb',defaultColor:'#e5e7eb',legend:'none'};
+  var opts={colorAxis:{minValue:1,maxValue:2,colors:['#93c5fd','#1e3a8a']},backgroundColor:'#fff',datalessRegionColor:'#e5e7eb',defaultColor:'#e5e7eb',legend:'none'};
   new google.visualization.GeoChart(document.getElementById('world-map')).draw(data,opts);
   var us=Object.entries(users).sort(function(a,b){return b[1]-a[1];});
-  document.getElementById('country-badges').innerHTML=us.map(function(e){return '<span class="cbadge">'+flag(e[0])+' '+countryName(e[0])+'</span>';}).join('');
+  var vo=Object.entries(visitors).filter(function(e){return !users[e[0]];}).sort(function(a,b){return b[1]-a[1];});
+  document.getElementById('country-badges').innerHTML=
+    us.map(function(e){return '<span class="cbadge cbadge-u">'+flag(e[0])+' '+countryName(e[0])+'</span>';}).join('') +
+    vo.slice(0,40).map(function(e){return '<span class="cbadge cbadge-v">'+flag(e[0])+' '+countryName(e[0])+'</span>';}).join('');
 }
 function toggleInst(){var m=document.getElementById('inst-more'),s=document.getElementById('inst-sign'); if(!m||!s)return; var o=m.style.display!=='none'; m.style.display=o?'none':'block'; s.textContent=o?'+':'-';}
 // Verified school domains -> favicon (mirrors hf). Only mapped names get an
@@ -1699,7 +1705,9 @@ async function load(){
     if(d.downloads_this_week!=null)set('s-week',Number(d.downloads_this_week).toLocaleString());
     var cc=d.country_count||Object.keys(d.countries||{}).length;
     set('s-usercountries',cc); set('s-usercountries2',cc);
-    mapData={users:d.countries||{}};
+    var vcc=d.visitor_country_count||Object.keys(d.visitor_countries||{}).length;
+    set('s-visitorcountries', vcc+' countries');
+    mapData={users:d.countries||{},visitors:d.visitor_countries||{}};
     if(chartsReady)drawMap();
     // Most downloaded sources — endpoint already whitelists against the catalog
     // (purged sources like WTO can never appear); names are the catalog's own.
