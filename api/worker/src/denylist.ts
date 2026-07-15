@@ -39,7 +39,6 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "cftc",
   "cow",
   "cso",
-  "dbnomics",
   "defillama",
   "dst",
   "ecb_sdmx",
@@ -111,6 +110,7 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "worldbank_pink",
   "zillow",
   // legacy/phantom ids (not currently in the catalog; kept as a safety floor):
+  "dbnomics",
   "fraser_efw",
   "sdmx_nso",
   "sipri_polity",

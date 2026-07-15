@@ -37,7 +37,7 @@ GRANTED_EXCEPTIONS = {
 # is a safety floor: unioning it guarantees the regenerated set never UN-gates
 # anything the previous curated denylist blocked.
 LEGACY_KEEP = {
-    "qog", "cboe",
+    "qog", "cboe", "dbnomics",
     "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025",
     "wto_hs_a_0030", "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax",
     "whr", "social_progress", "spi", "ei_statreview", "cow",

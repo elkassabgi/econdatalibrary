@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Irena — Econ Data Library</title>
-<meta name="description" content="Irena">
+<title>IRENA IRENASTAT — Econ Data Library</title>
+<meta name="description" content="Source: IRENA IRENASTAT (not redistributed; obtain from provider)">
 <link rel="canonical" href="https://econdatalibrary.com/irena.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -89,8 +89,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "Irena",
-  "description": "Irena — dataset catalogued in the Econ Data Library.",
+  "name": "IRENA IRENASTAT",
+  "description": "Source: IRENA IRENASTAT (not redistributed; obtain from provider)",
   "url": "https://econdatalibrary.com/irena.html",
   "identifier": "irena",
   "isAccessibleForFree": false,
@@ -101,13 +101,15 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "Irena"
+    "name": "IRENA IRENASTAT"
   },
+  "license": "Not redistributable — restricted provider terms (data available from the original provider)",
   "keywords": [
     "irena"
   ],
   "temporalCoverage": "2000-12-31/2025-12-31",
-  "citation": "International Renewable Energy Agency (IRENA) — IRENASTAT. Retrieved from https://www.irena.org/Data. Compiled and redistributed by the Elkassabgi Data Library.",
+  "creditText": "Source: IRENA IRENASTAT (not redistributed; obtain from provider)",
+  "citation": "International Renewable Energy Agency (IRENA) — IRENASTAT. Retrieved from https://www.irena.org/Data. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-irena",
     "https://zenodo.org/communities/econdatalibrary"
@@ -136,19 +138,20 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "name": "irena",
-  "description": "Irena — catalogued in the Econ Data Library.",
+  "description": "Source: IRENA IRENASTAT (not redistributed; obtain from provider)",
   "url": "https://econdatalibrary.com/irena.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "Irena"
+    "name": "IRENA IRENASTAT"
   },
   "publisher": {
     "@type": "sc:Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
+  "license": "Not redistributable — restricted provider terms (data available from the original provider)",
   "temporalCoverage": "2000-12-31/2025-12-31",
-  "citation": "International Renewable Energy Agency (IRENA) — IRENASTAT. Retrieved from https://www.irena.org/Data. Compiled and redistributed by the Elkassabgi Data Library.",
+  "citation": "International Renewable Energy Agency (IRENA) — IRENASTAT. Retrieved from https://www.irena.org/Data. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.",
   "isAccessibleForFree": false,
   "usageInfo": "Metadata-only Croissant record; underlying data is not redistributed under this source's license."
 }
@@ -171,7 +174,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-14');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-15');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -182,25 +185,26 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / Irena</div>
+<div class="crumb"><a href="index.html">Catalog</a> / IRENA IRENASTAT</div>
 <div class="pid">irena</div>
-<h1>Irena</h1>
-<div class="badges"><span class="badge meta">Metadata only</span><span class="badge lic">License under review</span></div>
+<h1>IRENA IRENASTAT</h1>
+<div class="badges"><span class="badge meta">Metadata only</span><span class="badge lic">Not redistributable — restricted provider terms (data available from the original provider)</span></div>
+<p class="lead">Source: IRENA IRENASTAT (not redistributed; obtain from provider)</p>
 </div>
 <div class="callout meta"><b>Metadata only.</b> This source’s license does not permit redistribution, so we catalog its metadata but do not re-serve the data. Use the provider link to obtain it under the original terms.</div>
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">10,754</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">2000-12-31 – 2025-12-31</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>License under review</dd>
+<dl class="kv"><dt>License</dt><dd>Not redistributable — restricted provider terms (data available from the original provider)</dd>
+<dt>Required attribution</dt><dd>Source: IRENA IRENASTAT (not redistributed; obtain from provider)</dd>
 <dt>Redistribution</dt><dd>Not permitted (metadata only)</dd>
 <dt>Commercial use</dt><dd>Restricted / no</dd>
 <dt>Modification</dt><dd>Permitted</dd></dl>
 <h2>How to cite</h2>
-<blockquote class="cite">International Renewable Energy Agency (IRENA) — IRENASTAT. Retrieved from https://www.irena.org/Data. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
-<p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
+<blockquote class="cite">International Renewable Energy Agency (IRENA) — IRENASTAT. Retrieved from https://www.irena.org/Data. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.</blockquote>
+<p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.</p>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=irena">Select &amp; download irena series as CSV &rarr;</a></dd>
-<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dl class="kv"><dt>Download</dt><dd>Not available here — this provider's terms do not permit redistribution. Obtain the data from the original provider.</dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/irena.html">https://econdatalibrary.com/irena.html</a></dd>
 <dt>Update cadence</dt><dd>irregular</dd>
 <dt>Update strategy</dt><dd>overwrite if changed</dd>
@@ -209,8 +213,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;Irena&quot;,
-  &quot;description&quot;: &quot;Irena — dataset catalogued in the Econ Data Library.&quot;,
+  &quot;name&quot;: &quot;IRENA IRENASTAT&quot;,
+  &quot;description&quot;: &quot;Source: IRENA IRENASTAT (not redistributed; obtain from provider)&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/irena.html&quot;,
   &quot;identifier&quot;: &quot;irena&quot;,
   &quot;isAccessibleForFree&quot;: false,
@@ -221,13 +225,15 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;Irena&quot;
+    &quot;name&quot;: &quot;IRENA IRENASTAT&quot;
   },
+  &quot;license&quot;: &quot;Not redistributable — restricted provider terms (data available from the original provider)&quot;,
   &quot;keywords&quot;: [
     &quot;irena&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;2000-12-31/2025-12-31&quot;,
-  &quot;citation&quot;: &quot;International Renewable Energy Agency (IRENA) — IRENASTAT. Retrieved from https://www.irena.org/Data. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;creditText&quot;: &quot;Source: IRENA IRENASTAT (not redistributed; obtain from provider)&quot;,
+  &quot;citation&quot;: &quot;International Renewable Energy Agency (IRENA) — IRENASTAT. Retrieved from https://www.irena.org/Data. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-irena&quot;,
     &quot;https://zenodo.org/communities/econdatalibrary&quot;
@@ -254,23 +260,24 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
   &quot;name&quot;: &quot;irena&quot;,
-  &quot;description&quot;: &quot;Irena — catalogued in the Econ Data Library.&quot;,
+  &quot;description&quot;: &quot;Source: IRENA IRENASTAT (not redistributed; obtain from provider)&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/irena.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;Irena&quot;
+    &quot;name&quot;: &quot;IRENA IRENASTAT&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
+  &quot;license&quot;: &quot;Not redistributable — restricted provider terms (data available from the original provider)&quot;,
   &quot;temporalCoverage&quot;: &quot;2000-12-31/2025-12-31&quot;,
-  &quot;citation&quot;: &quot;International Renewable Energy Agency (IRENA) — IRENASTAT. Retrieved from https://www.irena.org/Data. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;citation&quot;: &quot;International Renewable Energy Agency (IRENA) — IRENASTAT. Retrieved from https://www.irena.org/Data. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.&quot;,
   &quot;isAccessibleForFree&quot;: false,
   &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-14 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-15 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

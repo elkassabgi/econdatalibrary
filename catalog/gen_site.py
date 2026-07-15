@@ -1641,6 +1641,7 @@ def main():
         "bundesbank", "cboe", "cow", "defillama", "ei_statreview", "famafrench",
         "freedomhouse", "idb", "irena", "nbp", "polity", "shiller", "sipri",
         "tcmb", "whr", "worldbank_pink", "zillow",
+        "owid",  # pending via the Energy Institute request (covers OWID's energy series)
         # written EMBED permission on file (official Tableau embed, no data):
         "social_progress",
     }

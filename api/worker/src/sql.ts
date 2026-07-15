@@ -46,8 +46,10 @@ export const SELECT_SOURCE = `SELECT * FROM source WHERE source_id = ?`;
 /** One license row, exact id. Mirrors _catalog.get_license. */
 export const SELECT_LICENSE = `SELECT * FROM license WHERE license_id = ?`;
 
-/** Every source + its license + freshness summary (309 rows). LEFT JOINs so a
- *  source with no license row or no freshness row still appears (never dropped). */
+/** Every source WITH DATA + its license + freshness summary. LEFT JOINs so a
+ *  source with no license row or no freshness row still appears. Sources with
+ *  ZERO series are excluded (owner display policy 2026-07-15: no references to
+ *  databases we don't host; gated-pending sources have series and remain). */
 export const SELECT_SOURCES = `
 SELECT s.source_id, s.name, s.homepage, s.license_id, s.attribution, s.terms_url,
        l.name AS license_name, l.url AS license_url,
@@ -56,6 +58,7 @@ SELECT s.source_id, s.name, s.homepage, s.license_id, s.attribution, s.terms_url
 FROM source s
 LEFT JOIN license l ON l.license_id = s.license_id
 LEFT JOIN source_state ss ON ss.source_id = s.source_id
+WHERE EXISTS (SELECT 1 FROM series se WHERE se.source_id = s.source_id)
 ORDER BY s.source_id`;
 
 /** FTS5 search. Identical to core/catalog.py + _catalog.py::search (primary path).
