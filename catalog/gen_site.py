@@ -558,7 +558,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}}
 @media (max-width:680px){{.nav .fam-tag{{display:none}}}}
 </style>
 {jsonld}
-<script src="assets/sso.js"></script>
+<script src="assets/sso.js?v=20260715a"></script>
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
