@@ -1640,8 +1640,8 @@ def render_stats():
 <div class="statgrid">
   <div class="bigstat"><div class="bnum" id="s-users">&mdash;</div><div class="blabel">Registered Users</div></div>
   <div class="bigstat"><div class="bnum" id="s-obs">&mdash;</div><div class="blabel">Economic Observations</div></div>
-  <div class="bigstat"><div class="bnum" id="s-series">&mdash;</div><div class="blabel">Individual Series</div></div>
   <div class="bigstat"><div class="bnum" id="s-downloads">&mdash;</div><div class="blabel">Data Downloads</div></div>
+  <div class="bigstat"><div class="bnum" id="s-bytes">&mdash;</div><div class="blabel">Data Served</div></div>
 </div>
 <h2>Global Reach</h2>
 <p class="reach-key"><span id="s-usercountries">&mdash;</span> countries with registered users. Darker = more users.</p>
@@ -1655,7 +1655,7 @@ def render_stats():
 
 <h2>At a Glance</h2>
 <div class="actgrid">
-  <div class="actcard"><div class="anum" id="s-today">&mdash;</div><div class="alabel">Downloads Today</div></div>
+  <div class="actcard"><div class="anum" id="s-series">&mdash;</div><div class="alabel">Individual Series</div></div>
   <div class="actcard"><div class="anum" id="s-week">&mdash;</div><div class="alabel">Downloads This Week</div></div>
   <div class="actcard"><div class="anum" id="s-usercountries2">&mdash;</div><div class="alabel">Countries with Users</div></div>
 </div>
@@ -1668,6 +1668,7 @@ var mapData=null, chartsReady=false;
 google.charts.setOnLoadCallback(function(){chartsReady=true; if(mapData) drawMap();});
 function set(id,v){var e=document.getElementById(id); if(e&&v!=null)e.textContent=v;}
 function fmtB(n){ if(n>=1e9){var s=(Math.floor(n/1e8)/10).toFixed(1); if(s.slice(-2)==='.0')s=s.slice(0,-2); return s+'B+';} return Number(n).toLocaleString();}
+function fmtBytes(n){ n=Number(n)||0; if(n>=1e9)return (n/1e9).toFixed(1)+' GB'; if(n>=1e6)return (n/1e6).toFixed(1)+' MB'; if(n>=1e3)return (n/1e3).toFixed(1)+' KB'; return n+' B'; }
 function flag(c){ if(!c||c.length!==2)return ''; return '<img src="https://flagcdn.com/16x12/'+c.toLowerCase()+'.png" width="16" height="12" alt="'+c+'" style="vertical-align:middle;margin-right:4px">';}
 var COUNTRY_NAMES={AF:'Afghanistan',AL:'Albania',DZ:'Algeria',AO:'Angola',AR:'Argentina',AM:'Armenia',AU:'Australia',AT:'Austria',AZ:'Azerbaijan',BH:'Bahrain',BD:'Bangladesh',BY:'Belarus',BE:'Belgium',BO:'Bolivia',BA:'Bosnia and Herzegovina',BR:'Brazil',BN:'Brunei',BG:'Bulgaria',KH:'Cambodia',CM:'Cameroon',CA:'Canada',CL:'Chile',CN:'China',CO:'Colombia',CR:'Costa Rica',HR:'Croatia',CU:'Cuba',CY:'Cyprus',CZ:'Czechia',DK:'Denmark',DO:'Dominican Republic',EC:'Ecuador',EG:'Egypt',SV:'El Salvador',EE:'Estonia',ET:'Ethiopia',FI:'Finland',FR:'France',GE:'Georgia',DE:'Germany',GH:'Ghana',GR:'Greece',GT:'Guatemala',HT:'Haiti',HN:'Honduras',HK:'Hong Kong',HU:'Hungary',IS:'Iceland',IN:'India',ID:'Indonesia',IR:'Iran',IQ:'Iraq',IE:'Ireland',IL:'Israel',IT:'Italy',JM:'Jamaica',JP:'Japan',JO:'Jordan',KZ:'Kazakhstan',KE:'Kenya',KP:'North Korea',KR:'South Korea',KW:'Kuwait',LA:'Laos',LV:'Latvia',LB:'Lebanon',LT:'Lithuania',LU:'Luxembourg',MY:'Malaysia',MX:'Mexico',MN:'Mongolia',MA:'Morocco',MM:'Myanmar',NP:'Nepal',NL:'Netherlands',NZ:'New Zealand',NI:'Nicaragua',NG:'Nigeria',NO:'Norway',OM:'Oman',PK:'Pakistan',PS:'Palestine',PA:'Panama',PY:'Paraguay',PE:'Peru',PH:'Philippines',PL:'Poland',PT:'Portugal',PR:'Puerto Rico',QA:'Qatar',RO:'Romania',RU:'Russia',SA:'Saudi Arabia',SN:'Senegal',RS:'Serbia',SG:'Singapore',SK:'Slovakia',SI:'Slovenia',ZA:'South Africa',ES:'Spain',LK:'Sri Lanka',SY:'Syria',TW:'Taiwan',TZ:'Tanzania',TH:'Thailand',TT:'Trinidad and Tobago',TN:'Tunisia',TR:'Turkey',UG:'Uganda',UA:'Ukraine',AE:'United Arab Emirates',GB:'United Kingdom',US:'United States',UY:'Uruguay',UZ:'Uzbekistan',VE:'Venezuela',VN:'Vietnam',YE:'Yemen',ZW:'Zimbabwe'};
 function countryName(c){return COUNTRY_NAMES[c]||c;}
@@ -1694,7 +1695,7 @@ async function load(){
   try{ var r=await fetch(ECON+'/v1/public-stats'); if(r.ok){var d=await r.json();
     set('s-users',(d.total_users||0).toLocaleString());
     if(d.total_downloads!=null)set('s-downloads',Number(d.total_downloads).toLocaleString());
-    if(d.downloads_today!=null)set('s-today',Number(d.downloads_today).toLocaleString());
+    if(d.total_bytes_served!=null)set('s-bytes',fmtBytes(d.total_bytes_served));
     if(d.downloads_this_week!=null)set('s-week',Number(d.downloads_this_week).toLocaleString());
     var cc=d.country_count||Object.keys(d.countries||{}).length;
     set('s-usercountries',cc); set('s-usercountries2',cc);

@@ -114,7 +114,10 @@ export default {
           const auth = await requireDownloadAuth(request, env);
           if (auth instanceof Response) return auth;
           const resp = await handleSeriesCsv(id, url, env);
-          if (resp.status === 200) await logDownload(env, auth.user.id, id, request);
+          if (resp.status === 200) {
+            const bytes = Number(resp.headers.get("content-length")) || 0;
+            await logDownload(env, auth.user.id, id, request, bytes);
+          }
           return resp;
         }
         return json(
