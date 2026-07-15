@@ -836,8 +836,10 @@ specific citation + copy duty that presupposes third-party publication; (b) sent
 ANSWER to "may I re-host publicly?", not free-floating boilerplate. **Residual caution:**
 the reply never uses the word "granted", and "for your personal or professional use"
 still appears — a stricter reader could call it a canned terms restatement. Decision
-tier stays **human review = Ahmed's explicit deploy decision** (un-gate staged 2026-07-15,
-not live). Full verbatim + status in `REDISTRIBUTION_EMAIL_TRAIL.md`.
+tier: **human review completed — Ahmed approved the un-gate 2026-07-15** (send-reply-
+then-deploy flow; confirmation reply to the Bundesbank restates our reading and
+compliance). Un-gated + LIVE 2026-07-15, verified 451→401 with the exact credit on
+every page. Full verbatim + status in `REDISTRIBUTION_EMAIL_TRAIL.md`.
 
 Caveat: this review covers only the general website terms at the cited URL. Bundesbank time series are also distributed via its SDMX/statistics API, which may carry its own separate terms; if the library ingests data through that channel, those terms should be reviewed separately rather than relying on this page.
 

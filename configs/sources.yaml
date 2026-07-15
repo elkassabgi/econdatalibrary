@@ -792,11 +792,10 @@ sources:
     attribution: "Source: Social Progress Imperative (embed permission 2026)"
   bundesbank:
     name: "Deutsche Bundesbank time series"
-    # GRANTED 2026-07-15 (email trail) — to un-gate: license -> bundesbank-granted,
-    # attribution -> "Copyright: Deutsche Bundesbank, Frankfurt am Main, Germany",
-    # remove "bundesbank" from denylist.ts, sync D1, deploy. Awaiting owner go-ahead.
-    license: audit-restricted
-    attribution: "Source: Deutsche Bundesbank time series (not redistributed; obtain from provider)"
+    # GRANTED 2026-07-15 (inquiry 2026/005812, verbatim in REDISTRIBUTION_EMAIL_TRAIL.md);
+    # un-gate approved by Ahmed 2026-07-15 (send-reply-then-deploy flow).
+    license: bundesbank-granted
+    attribution: "Copyright: Deutsche Bundesbank, Frankfurt am Main, Germany"
   cboe:
     name: "Cboe index data"
     license: audit-restricted
