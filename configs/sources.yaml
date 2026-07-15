@@ -43,6 +43,7 @@ licenses:
   verified-open: {reservable: true, commercial_ok: true, attribution: false, no_modify: false, url: ""}  # Stage 0b verified (Verified: redistribution permitted (see source terms_url))
   audit-restricted: {reservable: false, commercial_ok: false, attribution: required, no_modify: false, url: ""}  # Stage 0b: verbatim audit flagged NOT clearable (third-party carve-out / permission required / unresolved) -- gated pending review
   spi-embed-2026: {reservable: false, commercial_ok: false, attribution: required, no_modify: true, url: ""}  # SPI written permission 2026: official Tableau embed only, no dataset redistribution
+  damodaran-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: false, url: "https://pages.stern.nyu.edu/~adamodar/"}  # written grant 2026-07-15 (ad4@stern.nyu.edu): "I don't have a problem with you hosting this data." NC + attribution per our request
 sources:
 
   # ---- US federal, public domain ----
@@ -803,8 +804,8 @@ sources:
     attribution: "Source: Correlates of War (not redistributed; obtain from provider)"
   damodaran:
     name: "Damodaran Online (NYU Stern)"
-    license: audit-restricted
-    attribution: "Source: Damodaran Online (NYU Stern) (not redistributed; obtain from provider)"
+    license: damodaran-granted
+    attribution: "Source: Aswath Damodaran, Damodaran Online (NYU Stern) - hosted with written permission"
   ei_statreview:
     name: "Energy Institute Statistical Review"
     license: audit-restricted
