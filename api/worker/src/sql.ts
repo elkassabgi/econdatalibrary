@@ -16,7 +16,7 @@
 
 // catalog.db (D1 binding `CATALOG`) ----------------------------------------
 
-import { NON_REDISTRIBUTABLE } from "./denylist";
+import { NON_REDISTRIBUTABLE, SERIES_CARVEOUT_LIKE } from "./denylist";
 
 /** Compliance layer ON TOP of the shim-mirrored statements: series from
  *  non-redistributable sources must never surface in catalog search/browse
@@ -26,12 +26,16 @@ import { NON_REDISTRIBUTABLE } from "./denylist";
  *  redistribution gating is a SERVING concern, not a catalog-semantics one.
  *  (source ids are static compile-time identifiers; no injection surface.) */
 const DENY_LIST_SQL = [...NON_REDISTRIBUTABLE].map((s) => `'${s}'`).join(",");
-const EXCL_ALIASED = NON_REDISTRIBUTABLE.size
-  ? `AND s.source_id NOT IN (${DENY_LIST_SQL})` : "";
-const EXCL_BARE = NON_REDISTRIBUTABLE.size
-  ? `AND source_id NOT IN (${DENY_LIST_SQL})` : "";
+// Series-level carve-outs (denylist.ts SERIES_CARVEOUTS): exclude specific
+// third-party indicators within an otherwise-served source (e.g. worldbank's
+// IMF-sourced CPI + ILO-sourced unemployment). Prefix match on `<src>:<ind>:`.
+const SERIES_EXCL_A = SERIES_CARVEOUT_LIKE.map((p) => `AND s.series_id NOT LIKE '${p}%'`).join(" ");
+const SERIES_EXCL_B = SERIES_CARVEOUT_LIKE.map((p) => `AND series_id NOT LIKE '${p}%'`).join(" ");
+const EXCL_ALIASED = `${NON_REDISTRIBUTABLE.size ? `AND s.source_id NOT IN (${DENY_LIST_SQL})` : ""} ${SERIES_EXCL_A}`.trim();
+const EXCL_BARE = `${NON_REDISTRIBUTABLE.size ? `AND source_id NOT IN (${DENY_LIST_SQL})` : ""} ${SERIES_EXCL_B}`.trim();
 const EXCL_BARE_WHERE = NON_REDISTRIBUTABLE.size
-  ? `WHERE source_id NOT IN (${DENY_LIST_SQL})` : "";
+  ? `WHERE source_id NOT IN (${DENY_LIST_SQL}) ${SERIES_EXCL_B}`.trim()
+  : (SERIES_EXCL_B ? `WHERE 1=1 ${SERIES_EXCL_B}`.trim() : "");
 
 /** One series row, exact id. Mirrors _catalog.get_series. */
 export const SELECT_SERIES = `SELECT * FROM series WHERE series_id = ?`;

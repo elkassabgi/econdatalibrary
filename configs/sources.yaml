@@ -64,7 +64,7 @@ sources:
   fhfa:     {name: FHFA House Price Index, license: us-public-domain, schedule: "0 6 * * 1", attribution: "Source: U.S. FHFA (public domain)"}
 
   # ---- CC BY 4.0 / open-government ----
-  worldbank:        {name: World Bank Open Data (WDI), license: audit-restricted, schedule: "0 6 * * 1", attribution: "Source: World Bank, World Development Indicators (CC BY 4.0)"}
+  worldbank:        {name: World Bank Open Data (WDI), license: cc-by-4.0, schedule: "0 6 * * 1", attribution: "Source: World Bank, World Development Indicators (CC BY 4.0)"}
   worldbank_esg:    {name: World Bank Sovereign ESG, license: cc-by-4.0, schedule: "0 6 * * 1", attribution: "Source: World Bank Sovereign ESG (CC BY 4.0)"}
   worldbank_pink:   {name: World Bank Pink Sheet (commodities), license: audit-restricted, schedule: "0 6 5 * *", attribution: "Source: World Bank Commodity Markets (CC BY 4.0)"}
   global_findex:    {name: World Bank Global Findex Database (financial inclusion), license: cc-by-4.0, schedule: "0 6 8 * *", homepage: "https://www.worldbank.org/en/publication/globalfindex", attribution: "Source: World Bank Global Findex Database (CC BY 4.0)"}

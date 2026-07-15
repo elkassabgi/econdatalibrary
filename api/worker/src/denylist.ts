@@ -157,7 +157,6 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "whr",
   "wid",
   "wiid",
-  "worldbank",
   "worldbank_extra",
   "worldbank_pink",
   "wto_bat_bv_m",
@@ -188,3 +187,39 @@ export function seriesSource(seriesId: string): string {
 export function isNonRedistributable(seriesId: string): boolean {
   return NON_REDISTRIBUTABLE.has(seriesSource(seriesId));
 }
+
+/**
+ * Series-level carve-outs. The SOURCE is redistributable, but specific indicators
+ * within it embed third-party data the source's licence does not cover, so those
+ * series are gated individually. Keyed by source id -> indicator codes (the part
+ * of a series_id between the first and second ':'). Hand-maintained; keep in sync
+ * with THIRD_PARTY_CARVEOUTS.md.
+ *
+ * worldbank: GDP (NY.GDP.MKTP.CD) is World-Bank-compiled and served; CPI
+ * (FP.CPI.TOTL.ZG) is IMF-sourced and unemployment (SL.UEM.TOTL.ZS) is ILO-sourced
+ * -- WB terms bar redistributing third-party data, so those two are gated.
+ */
+export const SERIES_CARVEOUTS: Readonly<Record<string, readonly string[]>> = {
+  worldbank: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
+};
+
+function seriesIndicator(seriesId: string): string {
+  const p = seriesId.split(":");
+  return p.length > 1 ? p[1] : "";
+}
+
+/** True if this specific series is a third-party carve-out of a served source. */
+export function isSeriesCarvedOut(seriesId: string): boolean {
+  const carved = SERIES_CARVEOUTS[seriesSource(seriesId)];
+  return carved ? carved.includes(seriesIndicator(seriesId)) : false;
+}
+
+/** Combined data gate: the whole source is non-redistributable, OR this specific
+ *  series is a third-party carve-out. Every DATA endpoint must use this. */
+export function isGated(seriesId: string): boolean {
+  return isNonRedistributable(seriesId) || isSeriesCarvedOut(seriesId);
+}
+
+/** LIKE prefixes (`<source>:<indicator>:`) for SQL exclusion of carved series. */
+export const SERIES_CARVEOUT_LIKE: readonly string[] = Object.entries(SERIES_CARVEOUTS)
+  .flatMap(([src, inds]) => inds.map((ind) => `${src}:${ind}:`));
