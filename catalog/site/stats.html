@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>About ElkassabgiData — Econ Data Library</title>
-<meta name="description" content="The story behind ElkassabgiData: a finance professor's journey to free the world's data — from the HF Data Library to a citable catalog of the world's economic sources.">
-<link rel="canonical" href="https://econdatalibrary.com/about.html">
+<title>Live Statistics — Econ Data Library</title>
+<meta name="description" content="Live usage for the Econ Data Library: registered users and global reach (shared across the ElkassabgiData family), plus this library's data volume and downloads.">
+<link rel="canonical" href="https://econdatalibrary.com/stats.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -120,29 +120,105 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   });
 })();
 </script>
-<div class="wrap"><h1>About ElkassabgiData</h1>
+<div class="wrap"><h1>Live Statistics</h1>
 
-<div style="text-align:center;margin:.5rem 0 2rem">
-  <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="300" height="80"
-       style="max-width:80%;height:auto;background:var(--navy);padding:1rem 1.4rem;border-radius:12px">
+<style>
+.statgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin:1.4rem 0 .5rem}
+.bigstat{background:var(--g50);border:1px solid var(--g200);border-radius:12px;padding:1.3rem .7rem;text-align:center}
+.bnum{font-family:var(--mono);font-size:1.85rem;font-weight:700;color:var(--navy);line-height:1.1}
+.blabel{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g500);margin-top:.45rem}
+.dlnote{font-size:.82rem;color:var(--g500);margin:.1rem 0 2rem}
+#world-map{width:100%;height:460px;margin:.2rem auto 0}
+#country-badges{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center;margin-top:1.3rem}
+.cbadge{padding:.28rem .7rem;border-radius:20px;font-size:.82rem;font-weight:500;background:#1e3a8a;color:#fff}
+.reach-key{text-align:center;color:var(--g500);font-size:.9rem;margin:.2rem 0 1rem}
+.inst-list{font-size:.92rem;columns:2;column-gap:2.2rem;margin-top:.4rem}
+.inst-row{padding:.26rem 0;break-inside:avoid;color:var(--navy)}
+.inst-more{cursor:pointer;color:var(--blue);font-weight:600;padding:.55rem 0;column-span:all;border-top:1px solid var(--g200);margin-top:.5rem}
+.inst-more:hover{color:var(--gold-deep)}
+.inst-sign{display:inline-block;width:16px;font-family:var(--mono)}
+.actgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:.4rem 0}
+.actcard{background:var(--g50);border:1px solid var(--g200);border-radius:10px;padding:1.1rem;text-align:center}
+.anum{font-family:var(--mono);font-size:1.45rem;font-weight:700;color:var(--navy)}
+.alabel{font-size:.78rem;color:var(--g500);margin-top:.2rem}
+@media(max-width:640px){.statgrid{grid-template-columns:repeat(2,1fr)}.actgrid{grid-template-columns:1fr}.inst-list{columns:1}}
+</style>
+
+<p class="lead">Live usage for the Econ Data Library. Registered users, the world map, and the institutions are the <strong>shared ElkassabgiData community</strong> &mdash; one free account works across every library, so they're identical to the HF Data Library. Data volume and downloads are this library's own.</p>
+
+<div class="statgrid">
+  <div class="bigstat"><div class="bnum" id="s-users">&mdash;</div><div class="blabel">Registered Users</div></div>
+  <div class="bigstat"><div class="bnum" id="s-obs">&mdash;</div><div class="blabel">Economic Observations</div></div>
+  <div class="bigstat"><div class="bnum" id="s-series">&mdash;</div><div class="blabel">Individual Series</div></div>
+  <div class="bigstat"><div class="bnum" id="s-downloads">&mdash;</div><div class="blabel">Data Downloads</div></div>
 </div>
-<p class="lead" style="font-size:1.25rem;font-family:var(--serif);color:var(--navy);font-weight:700;border:none">How ElkassabgiData started with a wall.</p>
+<p class="dlnote">Downloads are this library's own, counted separately from the HF Data Library (shared login, per-library counters).</p>
 
-<p>I'm a finance professor, and for years my research ran into the same wall: the data I needed to answer real questions sat behind paywalls that cost tens of thousands of dollars a year. Intraday equity data through TAQ and CRSP. Macro series scattered across a hundred national statistics offices, central banks, and international agencies — each in its own format, its own license, its own language. If your institution could afford WRDS, you were in. If it couldn't — or if you were a graduate student, an independent researcher, or a scholar at a smaller university anywhere in the world — you were locked out of your own field's evidence.</p>
+<h2>Global Reach</h2>
+<p class="reach-key">The shared ElkassabgiData community &mdash; <span id="s-usercountries">&mdash;</span> countries with registered users. Darker = more users.</p>
+<div id="world-map"><p style="text-align:center;color:var(--g500);padding-top:190px">Loading map&hellip;</p></div>
+<div id="country-badges"></div>
 
-<p>I decided that was a problem worth solving instead of tolerating.</p>
+<h2>Institutions Represented</h2>
+<div id="institution-list"><p style="color:var(--g500)">Loading&hellip;</p></div>
 
-<p>I started with the corner I knew best: high-frequency equity data. I kept running into the same difficulty — obtaining and updating it. I would write a paper using high-frequency data, only to have reviewers ask me to expand, reprocess, or update it. Most of the time that meant buying the data out of my own pocket, re-deriving it properly from the raw records, cleaning it, and reanalyzing everything to meet the reviewers' requests — a process that easily took weeks or months. So I wrote my own code to handle it and streamline the whole pipeline. Eventually it dawned on me to share that work with the rest of the world. It became the HF Data Library: minute-by-minute U.S. stock and ETF history going back to 2002, roughly a billion and a half bars, with the entire methodology written down so anyone could trust it and cite it. No subscription. No paywall. Just the data, honestly made.</p>
+<h2>At a Glance</h2>
+<div class="actgrid">
+  <div class="actcard"><div class="anum" id="s-usercountries2">&mdash;</div><div class="alabel">Countries with Users</div></div>
+  <div class="actcard"><div class="anum">6</div><div class="alabel">Interface Languages</div></div>
+  <div class="actcard"><div class="anum">Year&nbsp;1&nbsp;CE</div><div class="alabel">Data Reaches Back To</div></div>
+</div>
 
-<p>And I owe a particular debt to IEX. The Investors Exchange makes its historical market data freely available and openly redistributable — a genuinely uncommon act of generosity in an industry that keeps its data behind high walls. That openness is the foundation the HF Data Library stands on: it is what lets the library stay free, stay current, and keep growing. Put plainly, none of this could exist without IEX's help — and I am grateful for it.</p>
-
-<p>But equity prices were only one wall. The deeper I looked, the more the same story repeated across all of economics — the world's public data was free and yet almost impossible to actually use: buried in incompatible APIs, undocumented, un-citable, sometimes hidden behind licenses no one had bothered to read. So I set out to bring it all into one place: one namespace over hundreds of the world's sources, every series carrying its real license, its provenance, and a citation that credits the original agency first. Data you can reproduce exactly, cite without apology, and reach from anywhere.</p>
-
-<p>That's ElkassabgiData — and I built it deliberately at the frontier of what's now possible. Cloud infrastructure keeps it fast and low-cost, so I never have to charge for it; it all comes out of my own pocket. And I use modern automated tooling to do what one person otherwise couldn't: reconcile messy sources, keep hundreds of datasets current, translate discovery into six languages, and let researchers — or their AI assistants — query the world's data conversationally, with the license and citation attached to every answer.</p>
-
-<p>My ambitions run further. I'm constantly working to expand into new data frontiers — eventually bringing as much of the world's data as possible into a single outlet, with one objective: to make ElkassabgiData the largest single source of data in the world. My goal is simple, and I don't think it's small: make the world's data genuinely accessible to everyone who wants to learn from it — the student without a budget, the researcher without an institution, the curious person on the other side of the world. The knowledge was always supposed to be free. I'm just building the door.</p>
-
-<p style="margin-top:1.6rem;font-family:var(--serif);font-size:1.05rem;color:var(--navy)">— Ahmed Elkassabgi, University of Central Arkansas</p>
+<script src="https://www.gstatic.com/charts/loader.js"></script>
+<script>
+var ECON='https://econdl-api.elkassabgi.workers.dev';
+google.charts.load('current',{packages:['geochart']});
+var mapData=null, chartsReady=false;
+google.charts.setOnLoadCallback(function(){chartsReady=true; if(mapData) drawMap();});
+function set(id,v){var e=document.getElementById(id); if(e&&v!=null)e.textContent=v;}
+function fmtB(n){ if(n>=1e9){var s=(Math.floor(n/1e8)/10).toFixed(1); if(s.slice(-2)==='.0')s=s.slice(0,-2); return s+'B+';} return Number(n).toLocaleString();}
+function flag(c){ if(!c||c.length!==2)return ''; return '<img src="https://flagcdn.com/16x12/'+c.toLowerCase()+'.png" width="16" height="12" alt="'+c+'" style="vertical-align:middle;margin-right:4px">';}
+var COUNTRY_NAMES={AF:'Afghanistan',AL:'Albania',DZ:'Algeria',AO:'Angola',AR:'Argentina',AM:'Armenia',AU:'Australia',AT:'Austria',AZ:'Azerbaijan',BH:'Bahrain',BD:'Bangladesh',BY:'Belarus',BE:'Belgium',BO:'Bolivia',BA:'Bosnia and Herzegovina',BR:'Brazil',BN:'Brunei',BG:'Bulgaria',KH:'Cambodia',CM:'Cameroon',CA:'Canada',CL:'Chile',CN:'China',CO:'Colombia',CR:'Costa Rica',HR:'Croatia',CU:'Cuba',CY:'Cyprus',CZ:'Czechia',DK:'Denmark',DO:'Dominican Republic',EC:'Ecuador',EG:'Egypt',SV:'El Salvador',EE:'Estonia',ET:'Ethiopia',FI:'Finland',FR:'France',GE:'Georgia',DE:'Germany',GH:'Ghana',GR:'Greece',GT:'Guatemala',HT:'Haiti',HN:'Honduras',HK:'Hong Kong',HU:'Hungary',IS:'Iceland',IN:'India',ID:'Indonesia',IR:'Iran',IQ:'Iraq',IE:'Ireland',IL:'Israel',IT:'Italy',JM:'Jamaica',JP:'Japan',JO:'Jordan',KZ:'Kazakhstan',KE:'Kenya',KP:'North Korea',KR:'South Korea',KW:'Kuwait',LA:'Laos',LV:'Latvia',LB:'Lebanon',LT:'Lithuania',LU:'Luxembourg',MY:'Malaysia',MX:'Mexico',MN:'Mongolia',MA:'Morocco',MM:'Myanmar',NP:'Nepal',NL:'Netherlands',NZ:'New Zealand',NI:'Nicaragua',NG:'Nigeria',NO:'Norway',OM:'Oman',PK:'Pakistan',PS:'Palestine',PA:'Panama',PY:'Paraguay',PE:'Peru',PH:'Philippines',PL:'Poland',PT:'Portugal',PR:'Puerto Rico',QA:'Qatar',RO:'Romania',RU:'Russia',SA:'Saudi Arabia',SN:'Senegal',RS:'Serbia',SG:'Singapore',SK:'Slovakia',SI:'Slovenia',ZA:'South Africa',ES:'Spain',LK:'Sri Lanka',SY:'Syria',TW:'Taiwan',TZ:'Tanzania',TH:'Thailand',TT:'Trinidad and Tobago',TN:'Tunisia',TR:'Turkey',UG:'Uganda',UA:'Ukraine',AE:'United Arab Emirates',GB:'United Kingdom',US:'United States',UY:'Uruguay',UZ:'Uzbekistan',VE:'Venezuela',VN:'Vietnam',YE:'Yemen',ZW:'Zimbabwe'};
+function countryName(c){return COUNTRY_NAMES[c]||c;}
+function drawMap(){
+  var users=Object.assign({},mapData.users||{});
+  if(!users['PS'])users['PS']=1;
+  var codes=Object.keys(users);
+  if(!codes.length)return;
+  var rows=[['Country','Users']];
+  codes.forEach(function(c){rows.push([c, users[c]]);});
+  var data=google.visualization.arrayToDataTable(rows);
+  var opts={colorAxis:{colors:['#93c5fd','#1e3a8a']},backgroundColor:'#fff',datalessRegionColor:'#e5e7eb',defaultColor:'#e5e7eb',legend:'none'};
+  new google.visualization.GeoChart(document.getElementById('world-map')).draw(data,opts);
+  var us=Object.entries(users).sort(function(a,b){return b[1]-a[1];});
+  document.getElementById('country-badges').innerHTML=us.map(function(e){return '<span class="cbadge">'+flag(e[0])+' '+countryName(e[0])+'</span>';}).join('');
+}
+function toggleInst(){var m=document.getElementById('inst-more'),s=document.getElementById('inst-sign'); if(!m||!s)return; var o=m.style.display!=='none'; m.style.display=o?'none':'block'; s.textContent=o?'+':'-';}
+async function load(){
+  try{ var r=await fetch(ECON+'/v1/public-stats'); if(r.ok){var d=await r.json();
+    set('s-users',(d.total_users||0).toLocaleString());
+    if(d.total_downloads!=null)set('s-downloads',Number(d.total_downloads).toLocaleString());
+    var cc=d.country_count||Object.keys(d.countries||{}).length;
+    set('s-usercountries',cc); set('s-usercountries2',cc);
+    mapData={users:d.countries||{}};
+    if(chartsReady)drawMap();
+    if(d.institutions&&d.institutions.length){
+      var names=d.institutions.map(function(i){return i.institution;}).filter(Boolean);
+      var TOP=24, top=names.slice(0,TOP), rest=names.slice(TOP);
+      var row=function(n){return '<div class="inst-row">'+n+'</div>';};
+      var html='<div class="inst-list">'+top.map(row).join('');
+      if(rest.length){html+='<div class="inst-more" onclick="toggleInst()"><span id="inst-sign" class="inst-sign">+</span> Other institutions ('+rest.length+')</div><div id="inst-more" style="display:none">'+rest.map(row).join('')+'</div>';}
+      html+='</div>';
+      document.getElementById('institution-list').innerHTML=html;
+    } else { document.getElementById('institution-list').innerHTML='<p style="color:var(--g500)">No institutions yet.</p>'; }
+  }}catch(e){}
+  try{ var s=await (await fetch(ECON+'/v1/stats')).json();
+    if(s.observations)set('s-obs',fmtB(s.observations));
+    if(s.individual_series)set('s-series',fmtB(s.individual_series));
+  }catch(e){}
+}
+load();
+</script>
 
 <div class="foot">Generated 2026-07-15 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
