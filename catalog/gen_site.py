@@ -297,9 +297,33 @@ TOPIC_LABELS = {
     "output": "National Accounts",
     "prices": "Prices & Inflation",
     "reference": "Reference Data",
-    "trade": "Trade",
+    # ABS 'RT' retail turnover is the ONLY series tagged 'trade' — it is the
+    # ABS Retail Trade survey, not international trade. Labeling it "Trade"
+    # made the Trade topic show one Australian retail series (owner-reported).
+    "trade": "Retail Trade",
 }
 _TOPIC_WARNED = set()
+
+# Source-level topics: most sources carry NO per-series category tags, so a
+# tags-only topic filter hides them (e.g. every international-trade source).
+# These labels are ADDED to a source's series-derived topics. Keyed by exact
+# id or by prefix ("unctad_" covers every UNCTADstat facet).
+_SOURCE_TOPICS = {
+    "comtrade": ["International Trade"],
+    "cepii_baci": ["International Trade"],
+    "cepii_gravity": ["International Trade"],
+    "harvard_atlas": ["International Trade"],
+    "bea": ["International Trade", "National Accounts"],
+    "unctad_": ["International Trade"],
+}
+
+
+def source_topics(sid):
+    out = []
+    for key, labels in _SOURCE_TOPICS.items():
+        if sid == key or (key.endswith("_") and sid.startswith(key)):
+            out.extend(labels)
+    return out
 
 
 def topic_labels(cats):
@@ -356,7 +380,8 @@ def build_record(sid, src, lic, roll, side, s5=None):
         "cov_start": cov_start,
         "cov_end": cov_end,
         "frequencies": (roll or {}).get("frequencies", []),
-        "categories": topic_labels((roll or {}).get("categories", [])),
+        "categories": sorted(set(topic_labels((roll or {}).get("categories", []))
+                                 + source_topics(sid))),
         "n_geo": (roll or {}).get("n_geo", 0),
         "last_updated": sane_date((roll or {}).get("last_updated")),
         # operational (sidecar) extras -- display only
