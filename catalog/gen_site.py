@@ -861,7 +861,12 @@ def render_index(records, generated):
         {
             "id": r["id"],
             "name": r["name"],
-            "desc": r["desc_short"] or "",
+            # No blurb on catalog cards: the operational `description` is an
+            # internal ingest note (URLs, "grouped ingest", "License:/Source:")
+            # with no clean human lead for most sources. The card is already
+            # informative from name + license + category badges + series count;
+            # the full description stays on each dataset page.
+            "desc": "",
             "license": r["license_label"],
             "reservable": r["reservable"],
             "cats": r["categories"],
@@ -1034,7 +1039,8 @@ transition:box-shadow .14s,border-color .14s,transform .14s}
 .card:hover{box-shadow:0 6px 22px rgba(26,35,50,.10);border-color:var(--gold);transform:translateY(-1px)}
 .card .cid{font-family:var(--mono);font-size:.76rem;color:var(--gold-deep)}
 .card h3{font-family:var(--serif);color:var(--navy);font-size:1.16rem;margin:.15rem 0 .3rem}
-.card p{font-size:.88rem;color:var(--g600);margin:.2rem 0 .6rem;line-height:1.5}
+.card p{font-size:.88rem;color:var(--g600);margin:.2rem 0 .6rem;line-height:1.5;
+display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .card .row{display:flex;gap:.4rem;flex-wrap:wrap;align-items:center}
 .count{color:var(--g500);font-size:.82rem;margin-left:auto;font-family:var(--mono)}
 [dir=rtl] .count{margin-left:0;margin-right:auto}
