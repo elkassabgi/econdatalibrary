@@ -89,7 +89,22 @@ LICENSE_LABEL = {
     "etalab-2.0": "Etalab Open Licence 2.0",
     "odbl-1.0": "Open Data Commons Open Database License (ODbL) 1.0",
     "nlod-2.0": "Norwegian Licence for Open Government Data 2.0",
-    "NEEDS-REVIEW": "License under review",
+    # Post-audit statuses (2026-07-14 verbatim license audit): every with-series
+    # source now has a DEFINITIVE class; NEEDS-REVIEW remains only on empty
+    # (not-yet-served) sources still being crawled.
+    "NEEDS-REVIEW": "License not yet verified (no data served)",
+    "verified-attribution": "Redistributable with attribution (provider terms verified)",
+    "verified-nc": "Redistributable, non-commercial (provider terms verified)",
+    "verified-open": "Freely redistributable (provider terms verified)",
+    "audit-restricted": "Not redistributable — restricted provider terms (data available from the original provider)",
+    "imf-terms": "IMF Terms of Use (redistribution with attribution)",
+    "statcan-open": "Statistics Canada Open Licence",
+    "ecb-attrib-nomodify": "ECB terms (attribution required, no modification)",
+    "bis-attrib-nc": "BIS terms (attribution, non-commercial)",
+    "zillow-research": "Zillow Research terms",
+    "defillama-open": "DeFiLlama open terms",
+    "whr-granted": "World Happiness Report (written permission, Figure 2.1 scope)",
+    "spi-embed-2026": "Social Progress Imperative (written permission: official embed only)",
     "custom-terms": "Custom provider terms",
     "dbnomics-passthrough": "Pass-through (see original provider terms)",
 }
@@ -328,12 +343,13 @@ def dataset_jsonld(rec):
         creator["url"] = rec["homepage"]
     obj["creator"] = creator
 
-    # license: prefer a resolvable URL; else the machine license_id token (NOT the
-    # human label); omit entirely for unverified so we never assert a fake license.
+    # license: prefer a resolvable URL; else the HUMAN label for our internal
+    # status ids (audit-restricted / verified-*) so JSON-LD never leaks a bare
+    # internal token; omit entirely for unverified so we never assert a fake license.
     if rec["license_url"]:
         obj["license"] = rec["license_url"]
     elif rec["license_id"] and rec["license_id"] != "NEEDS-REVIEW":
-        obj["license"] = rec["license_id"]
+        obj["license"] = LICENSE_LABEL.get(rec["license_id"], rec["license_id"])
 
     # keywords from registry categories + provider id.
     kw = list(rec["categories"]) + [rec["id"]]
@@ -419,7 +435,7 @@ def croissant_jsonld(rec):
     if rec["license_url"]:
         obj["license"] = rec["license_url"]
     elif rec["license_id"] and rec["license_id"] != "NEEDS-REVIEW":
-        obj["license"] = rec["license_id"]
+        obj["license"] = LICENSE_LABEL.get(rec["license_id"], rec["license_id"])
     if rec["categories"]:
         obj["keywords"] = list(rec["categories"])
     if rec["cov_start"] and rec["cov_end"]:
