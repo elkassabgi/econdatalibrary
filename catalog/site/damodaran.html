@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Damodaran — Econ Data Library</title>
+<title>Damodaran Online (NYU Stern) — Econ Data Library</title>
 <meta name="description" content="Damodaran Online Financial Data ingest (NYU Stern — Aswath Damodaran). Source: http://pages.stern.nyu.edu/~adamodar/ License: Free for academic use (publicly posted data) Coverage: Country risk premiums, industry statistics, equity risk premiums, betas, cost of capital, etc. Annual snapshots…">
 <link rel="canonical" href="https://econdatalibrary.com/damodaran.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
@@ -89,11 +89,11 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "Damodaran",
+  "name": "Damodaran Online (NYU Stern)",
   "description": "Damodaran Online Financial Data ingest (NYU Stern — Aswath Damodaran). Source: http://pages.stern.nyu.edu/~adamodar/ License: Free for academic use (publicly posted data) Coverage: Country risk premiums, industry statistics, equity risk premiums, betas, cost of capital, etc. Annual snapshots…",
   "url": "https://econdatalibrary.com/damodaran.html",
   "identifier": "damodaran",
-  "isAccessibleForFree": false,
+  "isAccessibleForFree": true,
   "publisher": {
     "@type": "Organization",
     "name": "Econ Data Library",
@@ -101,18 +101,27 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "Damodaran"
+    "name": "Damodaran Online (NYU Stern)"
   },
+  "license": "https://pages.stern.nyu.edu/~adamodar/",
   "keywords": [
     "damodaran"
   ],
   "temporalCoverage": "1927-12-31/2026-01-01",
+  "creditText": "Source: Aswath Damodaran, Damodaran Online (NYU Stern) - hosted with written permission",
   "citation": "Damodaran Online (Aswath Damodaran, NYU Stern School of Business). Retrieved from https://pages.stern.nyu.edu/~adamodar/. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-damodaran",
     "https://zenodo.org/communities/econdatalibrary"
   ],
-  "usageInfo": "Metadata-only catalog entry. This source's license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms."
+  "distribution": [
+    {
+      "@type": "DataDownload",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=damodaran",
+      "license": "https://pages.stern.nyu.edu/~adamodar/"
+    }
+  ]
 }
 </script>
 <script type="application/ld+json">
@@ -140,17 +149,26 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "url": "https://econdatalibrary.com/damodaran.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "Damodaran"
+    "name": "Damodaran Online (NYU Stern)"
   },
   "publisher": {
     "@type": "sc:Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
+  "license": "https://pages.stern.nyu.edu/~adamodar/",
   "temporalCoverage": "1927-12-31/2026-01-01",
   "citation": "Damodaran Online (Aswath Damodaran, NYU Stern School of Business). Retrieved from https://pages.stern.nyu.edu/~adamodar/. Compiled and redistributed by the Elkassabgi Data Library.",
-  "isAccessibleForFree": false,
-  "usageInfo": "Metadata-only Croissant record; underlying data is not redistributed under this source's license."
+  "distribution": [
+    {
+      "@type": "cr:FileObject",
+      "@id": "damodaran-csv",
+      "name": "damodaran-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=damodaran",
+      "encodingFormat": "text/csv"
+    }
+  ]
 }
 </script>
 </head><body>
@@ -171,7 +189,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-14');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-15');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -182,18 +200,20 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / Damodaran</div>
+<div class="crumb"><a href="index.html">Catalog</a> / Damodaran Online (NYU Stern)</div>
 <div class="pid">damodaran</div>
-<h1>Damodaran</h1>
-<div class="badges"><span class="badge meta">Metadata only</span><span class="badge lic">License under review</span></div>
+<h1>Damodaran Online (NYU Stern)</h1>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Written permission (A. Damodaran, 2026) — attribution required, non-commercial</span></div>
 <p class="lead">Damodaran Online Financial Data ingest (NYU Stern — Aswath Damodaran). Source: http://pages.stern.nyu.edu/~adamodar/ License: Free for academic use (publicly posted data) Coverage: Country risk premiums, industry statistics, equity risk premiums, betas, cost of capital, etc. Annual snapshots…</p>
 </div>
-<div class="callout meta"><b>Metadata only.</b> This source’s license does not permit redistribution, so we catalog its metadata but do not re-serve the data. Use the provider link to obtain it under the original terms.</div>
+<div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">23,343</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1927-12-31 – 2026-01-01</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>License under review</dd>
-<dt>Redistribution</dt><dd>Not permitted (metadata only)</dd>
+<dl class="kv"><dt>License</dt><dd>Written permission (A. Damodaran, 2026) — attribution required, non-commercial</dd>
+<dt>License URL</dt><dd><a href="https://pages.stern.nyu.edu/~adamodar/">https://pages.stern.nyu.edu/~adamodar/</a></dd>
+<dt>Required attribution</dt><dd>Source: Aswath Damodaran, Damodaran Online (NYU Stern) - hosted with written permission</dd>
+<dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Restricted / no</dd>
 <dt>Modification</dt><dd>Permitted</dd></dl>
 <h2>How to cite</h2>
@@ -222,11 +242,11 @@ Run: python jobs/ingest_damodaran.py</p>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;Damodaran&quot;,
+  &quot;name&quot;: &quot;Damodaran Online (NYU Stern)&quot;,
   &quot;description&quot;: &quot;Damodaran Online Financial Data ingest (NYU Stern — Aswath Damodaran). Source: http://pages.stern.nyu.edu/~adamodar/ License: Free for academic use (publicly posted data) Coverage: Country risk premiums, industry statistics, equity risk premiums, betas, cost of capital, etc. Annual snapshots…&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/damodaran.html&quot;,
   &quot;identifier&quot;: &quot;damodaran&quot;,
-  &quot;isAccessibleForFree&quot;: false,
+  &quot;isAccessibleForFree&quot;: true,
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
@@ -234,18 +254,27 @@ Run: python jobs/ingest_damodaran.py</p>
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;Damodaran&quot;
+    &quot;name&quot;: &quot;Damodaran Online (NYU Stern)&quot;
   },
+  &quot;license&quot;: &quot;https://pages.stern.nyu.edu/~adamodar/&quot;,
   &quot;keywords&quot;: [
     &quot;damodaran&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1927-12-31/2026-01-01&quot;,
+  &quot;creditText&quot;: &quot;Source: Aswath Damodaran, Damodaran Online (NYU Stern) - hosted with written permission&quot;,
   &quot;citation&quot;: &quot;Damodaran Online (Aswath Damodaran, NYU Stern School of Business). Retrieved from https://pages.stern.nyu.edu/~adamodar/. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-damodaran&quot;,
     &quot;https://zenodo.org/communities/econdatalibrary&quot;
   ],
-  &quot;usageInfo&quot;: &quot;Metadata-only catalog entry. This source&#x27;s license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms.&quot;
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=damodaran&quot;,
+      &quot;license&quot;: &quot;https://pages.stern.nyu.edu/~adamodar/&quot;
+    }
+  ]
 }</pre></details>
 <details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
   &quot;@context&quot;: {
@@ -271,19 +300,28 @@ Run: python jobs/ingest_damodaran.py</p>
   &quot;url&quot;: &quot;https://econdatalibrary.com/damodaran.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;Damodaran&quot;
+    &quot;name&quot;: &quot;Damodaran Online (NYU Stern)&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
+  &quot;license&quot;: &quot;https://pages.stern.nyu.edu/~adamodar/&quot;,
   &quot;temporalCoverage&quot;: &quot;1927-12-31/2026-01-01&quot;,
   &quot;citation&quot;: &quot;Damodaran Online (Aswath Damodaran, NYU Stern School of Business). Retrieved from https://pages.stern.nyu.edu/~adamodar/. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
-  &quot;isAccessibleForFree&quot;: false,
-  &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;cr:FileObject&quot;,
+      &quot;@id&quot;: &quot;damodaran-csv&quot;,
+      &quot;name&quot;: &quot;damodaran-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=damodaran&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
+    }
+  ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-14 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-15 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

@@ -43,3 +43,6 @@ EconGuard.cmd
 
 # Local notes
 scratch/
+
+# MCP registry DNS-auth private seed (Ed25519) — never commit
+mcp/dns_key.hex

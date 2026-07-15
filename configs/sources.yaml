@@ -94,7 +94,6 @@ sources:
   defillama:        {name: DeFiLlama, license: audit-restricted, schedule: "0 */6 * * *", attribution: "Source: DeFiLlama"}
 
   # ---- DBnomics: ingest accelerator, NOT a wholesale source ----
-  dbnomics:         {name: DBnomics (87 providers), license: dbnomics-passthrough, schedule: "0 5 * * 1", attribution: "Via DBnomics -- per-series provider license applies", note: "use for breadth; dedupe vs direct connectors; store per-series license"}
 
   # ---- Your own asset ----
   hf_equities:      {name: HF Data Library intraday US equities, license: cc-by-4.0, schedule: bridge, attribution: "Source: HF Data Library (CC BY 4.0)", note: "bridge to existing hfdatalibrary R2 data"}

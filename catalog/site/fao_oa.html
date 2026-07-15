@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Fao Oa — Econ Data Library</title>
-<meta name="description" content="Fao Oa">
+<title>FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases — Econ Data Library</title>
+<meta name="description" content="Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas">
 <link rel="canonical" href="https://econdatalibrary.com/fao_oa.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -89,11 +89,11 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "Fao Oa",
-  "description": "Fao Oa — dataset catalogued in the Econ Data Library.",
+  "name": "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases",
+  "description": "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas",
   "url": "https://econdatalibrary.com/fao_oa.html",
   "identifier": "fao_oa",
-  "isAccessibleForFree": false,
+  "isAccessibleForFree": true,
   "publisher": {
     "@type": "Organization",
     "name": "Econ Data Library",
@@ -101,18 +101,26 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "Fao Oa"
+    "name": "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
   },
+  "license": "Redistributable, non-commercial (provider terms verified)",
   "keywords": [
     "fao_oa"
   ],
   "temporalCoverage": "1950-01-01/..",
+  "creditText": "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas",
   "citation": "Food and Agriculture Organization of the United Nations (FAO) — FAOSTAT, Population and Employment: Annual population (domain OA). Retrieved from https://www.fao.org/faostat/en/. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-fao_oa",
     "https://zenodo.org/communities/econdatalibrary"
   ],
-  "usageInfo": "Metadata-only catalog entry. This source's license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms."
+  "distribution": [
+    {
+      "@type": "DataDownload",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=fao_oa"
+    }
+  ]
 }
 </script>
 <script type="application/ld+json">
@@ -136,20 +144,29 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "name": "fao_oa",
-  "description": "Fao Oa — catalogued in the Econ Data Library.",
+  "description": "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas",
   "url": "https://econdatalibrary.com/fao_oa.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "Fao Oa"
+    "name": "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
   },
   "publisher": {
     "@type": "sc:Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
+  "license": "Redistributable, non-commercial (provider terms verified)",
   "citation": "Food and Agriculture Organization of the United Nations (FAO) — FAOSTAT, Population and Employment: Annual population (domain OA). Retrieved from https://www.fao.org/faostat/en/. Compiled and redistributed by the Elkassabgi Data Library.",
-  "isAccessibleForFree": false,
-  "usageInfo": "Metadata-only Croissant record; underlying data is not redistributed under this source's license."
+  "distribution": [
+    {
+      "@type": "cr:FileObject",
+      "@id": "fao_oa-csv",
+      "name": "fao_oa-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=fao_oa",
+      "encodingFormat": "text/csv"
+    }
+  ]
 }
 </script>
 </head><body>
@@ -170,7 +187,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-14');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-15');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -181,19 +198,22 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / Fao Oa</div>
+<div class="crumb"><a href="index.html">Catalog</a> / FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases</div>
 <div class="pid">fao_oa</div>
-<h1>Fao Oa</h1>
-<div class="badges"><span class="badge meta">Metadata only</span><span class="badge lic">License under review</span></div>
+<h1>FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases</h1>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Redistributable, non-commercial (provider terms verified)</span></div>
+<p class="lead">Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas</p>
 </div>
-<div class="callout meta"><b>Metadata only.</b> This source’s license does not permit redistribution, so we catalog its metadata but do not re-serve the data. Use the provider link to obtain it under the original terms.</div>
+<div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">1,388</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1950-01-01 – present</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>License under review</dd>
-<dt>Redistribution</dt><dd>Not permitted (metadata only)</dd>
+<dl class="kv"><dt>License</dt><dd>Redistributable, non-commercial (provider terms verified)</dd>
+<dt>Required attribution</dt><dd>Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas</dd>
+<dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Restricted / no</dd>
-<dt>Modification</dt><dd>Permitted</dd></dl>
+<dt>Modification</dt><dd>Permitted</dd>
+<dt>Provider terms</dt><dd><a href="https://www.fao.org/contact-us/terms/db-terms-of-use/en/">https://www.fao.org/contact-us/terms/db-terms-of-use/en/</a></dd></dl>
 <h2>How to cite</h2>
 <blockquote class="cite">Food and Agriculture Organization of the United Nations (FAO) — FAOSTAT, Population and Employment: Annual population (domain OA). Retrieved from https://www.fao.org/faostat/en/. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
@@ -205,11 +225,11 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;Fao Oa&quot;,
-  &quot;description&quot;: &quot;Fao Oa — dataset catalogued in the Econ Data Library.&quot;,
+  &quot;name&quot;: &quot;FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases&quot;,
+  &quot;description&quot;: &quot;Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/fao_oa.html&quot;,
   &quot;identifier&quot;: &quot;fao_oa&quot;,
-  &quot;isAccessibleForFree&quot;: false,
+  &quot;isAccessibleForFree&quot;: true,
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
@@ -217,18 +237,26 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;Fao Oa&quot;
+    &quot;name&quot;: &quot;FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases&quot;
   },
+  &quot;license&quot;: &quot;Redistributable, non-commercial (provider terms verified)&quot;,
   &quot;keywords&quot;: [
     &quot;fao_oa&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1950-01-01/..&quot;,
+  &quot;creditText&quot;: &quot;Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas&quot;,
   &quot;citation&quot;: &quot;Food and Agriculture Organization of the United Nations (FAO) — FAOSTAT, Population and Employment: Annual population (domain OA). Retrieved from https://www.fao.org/faostat/en/. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-fao_oa&quot;,
     &quot;https://zenodo.org/communities/econdatalibrary&quot;
   ],
-  &quot;usageInfo&quot;: &quot;Metadata-only catalog entry. This source&#x27;s license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms.&quot;
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=fao_oa&quot;
+    }
+  ]
 }</pre></details>
 <details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
   &quot;@context&quot;: {
@@ -250,22 +278,31 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
   &quot;name&quot;: &quot;fao_oa&quot;,
-  &quot;description&quot;: &quot;Fao Oa — catalogued in the Econ Data Library.&quot;,
+  &quot;description&quot;: &quot;Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/fao_oa.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;Fao Oa&quot;
+    &quot;name&quot;: &quot;FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
+  &quot;license&quot;: &quot;Redistributable, non-commercial (provider terms verified)&quot;,
   &quot;citation&quot;: &quot;Food and Agriculture Organization of the United Nations (FAO) — FAOSTAT, Population and Employment: Annual population (domain OA). Retrieved from https://www.fao.org/faostat/en/. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
-  &quot;isAccessibleForFree&quot;: false,
-  &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;cr:FileObject&quot;,
+      &quot;@id&quot;: &quot;fao_oa-csv&quot;,
+      &quot;name&quot;: &quot;fao_oa-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=fao_oa&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
+    }
+  ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-14 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-15 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
