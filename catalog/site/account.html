@@ -65,6 +65,22 @@ account any time at <a href="https://hfdatalibrary.com/pages/account">your accou
 </div>
 <script>
 const API = 'https://api.hfdatalibrary.com';
+
+// Carry the econ page the user came FROM into the create-account link, so HF's
+// "← Back to Econ Data Library" returns them to that exact page (not the
+// homepage). Same-origin referrers only; URL API keeps the #register hash.
+document.addEventListener('DOMContentLoaded', function () {
+  var a = document.querySelector('a.alt[href*="hfdatalibrary.com/pages/download"]');
+  if (!a) return;
+  var back = location.origin + '/';
+  try {
+    var ref = new URL(document.referrer);
+    if (ref.origin === location.origin && ref.pathname !== location.pathname) back = ref.href;
+  } catch (e) { /* no/foreign referrer -> homepage */ }
+  var u = new URL(a.href);
+  u.searchParams.set('return', back);
+  a.href = u.href;
+});
 async function login(ev) {
   ev.preventDefault();
   const msg = document.getElementById('msg');
@@ -82,6 +98,11 @@ async function login(ev) {
     const u = await me.json();
     const key = (u && (u.api_key || (u.user && u.user.api_key))) || null;
     if (key) {
+      // Persist for the family SSO (assets/sso.js): nav flips to "Account" and
+      // every other econ page knows you're signed in without re-asking.
+      localStorage.setItem('edl_key', key);
+      var uname = (u && (u.name || (u.user && u.user.name))) || '';
+      if (uname) localStorage.setItem('edl_name', uname);
       msg.className = 'msg ok'; msg.textContent = 'Signed in. Your ElkassabgiData API key:';
       const kb = document.getElementById('keybox'); kb.hidden = false; kb.textContent = key;
       window._mcpUrl = 'https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=' + key;
@@ -111,6 +132,9 @@ function copyMcp(ev) {
   if (!key) return;
   var name = localStorage.getItem('edl_name');
   document.addEventListener('DOMContentLoaded', function () {
+    // Signed in -> the "New here? Create your account" card is noise; hide it.
+    var newHere = document.querySelectorAll('.card')[0];
+    if (newHere) newHere.style.display = 'none';
     var card = document.querySelectorAll('.card')[1];
     var h2 = card && card.querySelector('h2');
     if (h2) h2.textContent = name ? ('Signed in as ' + name) : "You're signed in";
