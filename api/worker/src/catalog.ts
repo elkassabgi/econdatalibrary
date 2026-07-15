@@ -14,7 +14,7 @@ import {
   BROWSE_SOURCE, BROWSE_SOURCE_COUNT, BROWSE_ALL, BROWSE_ALL_COUNT,
 } from "./sql";
 import { json, clampInt, offsetInt, reqLang, localizedTitle } from "./util";
-import { NON_REDISTRIBUTABLE } from "./denylist";
+import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
 
 const COVERAGE = "series-level for 33 sources; source-level for the rest";
 
@@ -116,8 +116,12 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
     };
   });
 
-  // Redistribution gate: hide sources whose licence forbids re-hosting (denylist.ts).
-  const visible = mapped.filter((m) => !NON_REDISTRIBUTABLE.has(m.source as string));
+  // Redistribution gate: hide sources whose licence forbids re-hosting, and hide
+  // individual third-party carve-out series within an otherwise-served source
+  // (denylist.ts). Belt-and-suspenders over the SQL exclusion (covers the browse path).
+  const visible = mapped.filter(
+    (m) => !NON_REDISTRIBUTABLE.has(m.source as string) && !isSeriesCarvedOut(m.series_id as string),
+  );
 
   // For lang=en this body is byte-identical to the pre-i18n contract (no `lang`).
   const body: Record<string, unknown> = {

@@ -23,7 +23,7 @@ import { handleMetadata } from "./metadata";
 import { handleSeriesCsv } from "./series";
 import { handleBundle } from "./bundle";
 import { requireDownloadAuth, logDownload } from "./auth";
-import { isNonRedistributable } from "./denylist";
+import { isGated } from "./denylist";
 import { json, reqLang } from "./util";
 
 const CORS_PREFLIGHT: Record<string, string> = {
@@ -97,8 +97,9 @@ export default {
           const id = decodeURIComponent(enc);
           if (!id) return json({ error: "bad_request", detail: "empty series id" }, 400);
           // Redistribution gate (denylist.ts): some sources' licences forbid
-          // third-party re-hosting of the data. Hard-block the DATA with 451.
-          if (isNonRedistributable(id)) {
+          // third-party re-hosting, and some individual series are third-party
+          // carve-outs of an otherwise-served source. Hard-block the DATA with 451.
+          if (isGated(id)) {
             return json({ error: "not_redistributable", detail: "This source's licence does not permit third-party redistribution of the data. Please obtain it directly from the original provider." }, 451);
           }
           // Shared-login gate (auth.ts): data downloads need the free family

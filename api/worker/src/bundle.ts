@@ -17,7 +17,7 @@
 import type { Env, SourceRow, LicenseRow, SeriesRow, SeriesIdRow } from "./types";
 import { SELECT_SOURCE, SELECT_LICENSE, SELECT_SERIES, SERIES_IDS_FOR_SOURCE } from "./sql";
 import { json, badRequest, licenseBlock, supportedSources, sourceOf } from "./util";
-import { NON_REDISTRIBUTABLE } from "./denylist";
+import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
 
 const PROFILE = "tabular-data-package";
 const SCHEMA_VERSION = "1.0";
@@ -99,8 +99,11 @@ export async function handleBundle(url: URL, env: Env): Promise<Response> {
     // from a denylisted source must never appear in a bundle manifest, even as a
     // stable URL — the /v1/series handler also 451s it, but the manifest itself
     // must not advertise it (same rule as /v1/sources and the site).
-    if (NON_REDISTRIBUTABLE.has(src)) {
-      unresolved.push({ id, reason: `not_redistributable: source '${src}' licence forbids re-hosting (HTTP 451 on direct fetch)` });
+    if (NON_REDISTRIBUTABLE.has(src) || isSeriesCarvedOut(id)) {
+      const reason = NON_REDISTRIBUTABLE.has(src)
+        ? `not_redistributable: source '${src}' licence forbids re-hosting (HTTP 451 on direct fetch)`
+        : `not_redistributable: this series embeds third-party data and is gated (HTTP 451 on direct fetch)`;
+      unresolved.push({ id, reason });
       continue;
     }
     // Canonical order (CONTRACT.md v1.1, matches the dev shim): catalog membership
