@@ -126,9 +126,9 @@ dl dt{font-weight:600;color:var(--navy);margin-top:1rem}dl dd{margin:.3rem 0 0;c
   never fake data.</p>
 
   <h2 id="setup">Set it up — pick your AI tool</h2>
-  <p>You need a free <a href="account.html">ElkassabgiData API key</a>. Browsing and searching work without one;
+  <p id="keyhint">You need a free <a href="account.html">ElkassabgiData API key</a>. Browsing and searching work without one;
   downloading data needs it. Replace <code>YOUR_KEY</code> below with your key — it's the same key you use on
-  hfdatalibrary.com.</p>
+  hfdatalibrary.com. <a href="account.html">Sign in</a> and every snippet fills with your real key automatically.</p>
 
   <div class="tabs">
     <button class="tb active" data-tab="claude">Claude (app)</button>
@@ -275,6 +275,32 @@ document.querySelectorAll('.cb button').forEach(function(btn){btn.addEventListen
   if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t).then(done).catch(function(){})}
   else{var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();try{document.execCommand('copy');done()}catch(e){}document.body.removeChild(ta)}
 });});
+
+// Fill the signed-in user's REAL API key into every snippet (parity with the HF
+// MCP guide). Econ's canonical key store is localStorage.edl_key, set by the
+// family SSO (assets/sso.js) and the account page; if the user is only signed in
+// on hfdatalibrary.com, fall back to their hfd_session and cache the key here.
+(function () {
+  function fill(key) {
+    if (!key) return;
+    document.querySelectorAll('.ekey').forEach(function (el) { el.textContent = key; });
+    var hint = document.getElementById('keyhint');
+    if (hint) {
+      hint.innerHTML = '✓ <strong>Signed in</strong> — your real API key is already filled into every snippet below. Just copy and paste.';
+      hint.style.color = '#15803d';
+    }
+  }
+  var key = localStorage.getItem('edl_key');
+  if (key) { fill(key); return; }
+  var token = localStorage.getItem('hfd_session');
+  if (!token) return;
+  fetch('https://api.hfdatalibrary.com/v1/auth/me', { headers: { 'Authorization': 'Bearer ' + token } })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (u) {
+      var k = u && (u.api_key || (u.user && u.user.api_key));
+      if (k) { localStorage.setItem('edl_key', k); fill(k); }
+    }).catch(function () {});
+})();
 </script>
 
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
