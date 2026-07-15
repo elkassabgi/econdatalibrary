@@ -821,6 +821,24 @@ STEP 2/3 (classification): FAIL — too permissive. The finding quoted only the 
 
 This is the classic "use permitted, redistribution not granted" pattern the review guards against (cf. mistake-ledger M-20260714-10: a grant is narrower than its permissive-sounding summary). A public data library re-hosting Bundesbank series for anyone to download and bulk-extract exceeds "your personal or professional use." Per the skeptical default — not confident redistribution is genuinely permitted — the redistributable_attribution classification must not be confirmed. Corrected to non_redistributable (use-only, attribution + no-derivatives), pending explicit written permission from the Bundesbank.
 
+**PERMISSION UPDATE 2026-07-15 (email, inquiry 2026/005812):** the Bundesbank's Communication
+division answered our explicit public-re-hosting request (sent to presse@bundesbank.de
+2026-07-14) with the current terms, whose operative wording DIFFERS from the website text
+audited above: "you may save, **distribute** or reproduce information provided by the
+Deutsche Bundesbank in printed or electronic form for your personal or professional use
+provided that you do so **free of charge**. The information must not be altered or
+distorted in any way. … If you **distribute** or reproduce the information provided by the
+Deutsche Bundesbank, you must cite the source as **'Copyright: Deutsche Bundesbank,
+Frankfurt am Main, Germany'** and **send us a copy**." A fee-document clause further
+regulates (not prohibits) republication to paying audiences. Cures for the adversary's
+objections: (a) "distribute" is now an expressly permitted verb, with a distribution-
+specific citation + copy duty that presupposes third-party publication; (b) sent as the
+ANSWER to "may I re-host publicly?", not free-floating boilerplate. **Residual caution:**
+the reply never uses the word "granted", and "for your personal or professional use"
+still appears — a stricter reader could call it a canned terms restatement. Decision
+tier stays **human review = Ahmed's explicit deploy decision** (un-gate staged 2026-07-15,
+not live). Full verbatim + status in `REDISTRIBUTION_EMAIL_TRAIL.md`.
+
 Caveat: this review covers only the general website terms at the cited URL. Bundesbank time series are also distributed via its SDMX/statistics API, which may carry its own separate terms; if the library ingests data through that channel, those terms should be reviewed separately rather than relying on this page.
 
 *Researcher reasoning:* The Bundesbank time-series database's own help/terms pages now return HTTP 404 (the classic time series database is being retired ~30 June 2026), so the governing legal document is the Bundesbank's site-wide "Conditions for the general use of the website," which applies to all "information produced ... by the Deutsche Bundesbank" — this expressly includes the macroeconomic/ESCB time series offered as free "public use files" for CSV/SDMX download. Two independent WebFetch reads of that page returned identical wording for the core clauses.
@@ -1558,6 +1576,20 @@ Conservative classification: redistributable_attribution. A free, non-commercial
 *Verifier notes:* STEP 1 (quote verification): WebFetch returned HTTP 403 (bot block), so I loaded the URL in the browser. The page is live and genuine (title "2020 Better Jobs Index Database: Latin America"; DOI 10.60966/prxb-w968; published 2020-02-21, modified 2026-06-25). The "Metadata & use" table shows the label "License" and the value hyperlink "Creative Commons Attribution–NonCommercial–NoDerivs 3.0 IGO" pointing to the CC BY-NC-ND 3.0 IGO deed. Both fragments of the researcher's verbatim_quote appear WORD-FOR-WORD (identical en-dash characters); the "..." bridges the label and its value. So the quote is accurate and fetch_status fetched_ok is correct.
 
 STEP 2 (stricter-clause search): The stricter clause the classification missed is the ND (NoDerivatives) term, which is part of the license name itself. CC BY-NC-ND permits non-commercial redistribution of UNMODIFIED copies only; distributing modified/derived material is prohibited. This is material for this library, which reformats data (parquet) and computes derived variables — those are derivatives ND forbids. I also confirmed via WebSearch that IDB licensing is mixed (some sources cite CC BY 4.0), consistent with the finding's own admission of a mixed/predominantly-unlicensed catalog.
+
+**PERMISSION UPDATE 2026-07-15 (email from opendata@iadb.org):** written blanket grant in
+reply to our re-hosting request: "Because our open datasets are published under the
+Creative Commons Attribution 4.0 International (CC-BY 4.0) license, **you have our full
+permission to re-host and redistribute them.** A formal data-sharing agreement is not
+required." Three conditions: (1) citation format "Inter-American Development Bank (year).
+[Dataset title]. IDB Open Data. [DOI or URL]" + no implied IDB sponsorship; (2) "The
+CC-BY 4.0 license applies exclusively to **institutional IDB data**… exclude any series
+or indicators sourced from **proprietary third-party data providers**" (check CKAN
+metadata); (3) permanent live link to each dataset's portal page. This written grant
+supersedes the mixed per-dataset labels above for IDB-institutional data, but condition
+(2) requires a per-dataset `package_show` metadata pass (our store kept none) before
+serving — **`idb` stays gated until that pass runs.** Full verbatim in
+`REDISTRIBUTION_EMAIL_TRAIL.md`.
 
 STEP 3 (defensibility): "noncommercial_only" is TOO PERMISSIVE in two ways: (a) it drops the NoDerivatives restriction that is literally in the quoted license name, greenlighting derivative redistribution the terms forbid; (b) applied source-wide it implies the ~86% unlicensed datasets are redistributable under NC terms, when an absent license grants no redistribution rights at all. Redistribution of this specific dataset IS permitted, but only verbatim + non-commercial + attributed — the classification must reflect the ND restriction. Verdict: DISPUTED. The verbatim quote is accurate; the classification is not defensible as stated.
 
