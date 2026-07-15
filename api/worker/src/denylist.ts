@@ -31,7 +31,6 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "adb",
   "barro_lee",
   "bfs",
-  "bundesbank",
   "cboe",
   "cbs_nl",
   "cepii_baci",

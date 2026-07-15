@@ -93,7 +93,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "description": "Deutsche Bundesbank SDMX REST connector — keyless open data. License: DL-DE-BY-2.0 Source: https://api.statistiken.bundesbank.de/rest/data/{flowID} No API key required. Available flows discovered via probe (catalog endpoint not supported): BBEX3 — Exchange rates (EUR vs. all currencies) ~2M obs…",
   "url": "https://econdatalibrary.com/bundesbank.html",
   "identifier": "bundesbank",
-  "isAccessibleForFree": false,
+  "isAccessibleForFree": true,
   "publisher": {
     "@type": "Organization",
     "name": "Econ Data Library",
@@ -103,18 +103,25 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "@type": "Organization",
     "name": "Deutsche Bundesbank time series"
   },
-  "license": "Not redistributable — restricted provider terms (data available from the original provider)",
+  "license": "https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706",
   "keywords": [
     "bundesbank"
   ],
   "temporalCoverage": "1945-01-01/2026-06-23",
-  "creditText": "Source: Deutsche Bundesbank time series (not redistributed; obtain from provider)",
-  "citation": "Deutsche Bundesbank. Retrieved from https://www.bundesbank.de. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.",
+  "creditText": "Copyright: Deutsche Bundesbank, Frankfurt am Main, Germany",
+  "citation": "Deutsche Bundesbank. Retrieved from https://www.bundesbank.de. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-bundesbank",
     "https://zenodo.org/communities/econdatalibrary"
   ],
-  "usageInfo": "Metadata-only catalog entry. This source's license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms."
+  "distribution": [
+    {
+      "@type": "DataDownload",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=bundesbank",
+      "license": "https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706"
+    }
+  ]
 }
 </script>
 <script type="application/ld+json">
@@ -149,11 +156,19 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "Not redistributable — restricted provider terms (data available from the original provider)",
+  "license": "https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706",
   "temporalCoverage": "1945-01-01/2026-06-23",
-  "citation": "Deutsche Bundesbank. Retrieved from https://www.bundesbank.de. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.",
-  "isAccessibleForFree": false,
-  "usageInfo": "Metadata-only Croissant record; underlying data is not redistributed under this source's license."
+  "citation": "Deutsche Bundesbank. Retrieved from https://www.bundesbank.de. Compiled and redistributed by the Elkassabgi Data Library.",
+  "distribution": [
+    {
+      "@type": "cr:FileObject",
+      "@id": "bundesbank-csv",
+      "name": "bundesbank-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=bundesbank",
+      "encodingFormat": "text/csv"
+    }
+  ]
 }
 </script>
 <script src="assets/sso.js?v=20260715a"></script>
@@ -189,23 +204,25 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <div class="crumb"><a href="index.html">Catalog</a> / Deutsche Bundesbank time series</div>
 <div class="pid">bundesbank</div>
 <h1>Deutsche Bundesbank time series</h1>
-<div class="badges"><span class="badge meta">Metadata only</span><span class="badge lic">Not redistributable — restricted provider terms (data available from the original provider)</span></div>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Bundesbank terms, confirmed in writing (2026) — free of charge, unaltered, exact source credit required</span></div>
 <p class="lead">Deutsche Bundesbank SDMX REST connector — keyless open data. License: DL-DE-BY-2.0 Source: https://api.statistiken.bundesbank.de/rest/data/{flowID} No API key required. Available flows discovered via probe (catalog endpoint not supported): BBEX3 — Exchange rates (EUR vs. all currencies) ~2M obs…</p>
 </div>
-<div class="callout meta"><b>Metadata only.</b> This source’s license does not permit redistribution, so we catalog its metadata but do not re-serve the data. Use the provider link to obtain it under the original terms.</div>
+<div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">6,872</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1945-01-01 – 2026-06-23</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>Not redistributable — restricted provider terms (data available from the original provider)</dd>
-<dt>Required attribution</dt><dd>Source: Deutsche Bundesbank time series (not redistributed; obtain from provider)</dd>
-<dt>Redistribution</dt><dd>Not permitted (metadata only)</dd>
+<dl class="kv"><dt>License</dt><dd>Bundesbank terms, confirmed in writing (2026) — free of charge, unaltered, exact source credit required</dd>
+<dt>License URL</dt><dd><a href="https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706">https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706</a></dd>
+<dt>Required attribution</dt><dd>Copyright: Deutsche Bundesbank, Frankfurt am Main, Germany</dd>
+<dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Restricted / no</dd>
-<dt>Modification</dt><dd>Permitted</dd></dl>
+<dt>Modification</dt><dd>Restricted</dd></dl>
 <h2>How to cite</h2>
-<blockquote class="cite">Deutsche Bundesbank. Retrieved from https://www.bundesbank.de. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.</blockquote>
-<p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.</p>
+<blockquote class="cite">Deutsche Bundesbank. Retrieved from https://www.bundesbank.de. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
+<p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Download</dt><dd>Not available here — this provider's terms do not permit redistribution. Obtain the data from the original provider.</dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=bundesbank">Select &amp; download bundesbank series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/bundesbank.html">https://econdatalibrary.com/bundesbank.html</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
 <dt>Update strategy</dt><dd>overwrite if changed</dd>
@@ -238,7 +255,7 @@ Run: python jobs/ingest_bundesbank.py</p>
   &quot;description&quot;: &quot;Deutsche Bundesbank SDMX REST connector — keyless open data. License: DL-DE-BY-2.0 Source: https://api.statistiken.bundesbank.de/rest/data/{flowID} No API key required. Available flows discovered via probe (catalog endpoint not supported): BBEX3 — Exchange rates (EUR vs. all currencies) ~2M obs…&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/bundesbank.html&quot;,
   &quot;identifier&quot;: &quot;bundesbank&quot;,
-  &quot;isAccessibleForFree&quot;: false,
+  &quot;isAccessibleForFree&quot;: true,
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
@@ -248,18 +265,25 @@ Run: python jobs/ingest_bundesbank.py</p>
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Deutsche Bundesbank time series&quot;
   },
-  &quot;license&quot;: &quot;Not redistributable — restricted provider terms (data available from the original provider)&quot;,
+  &quot;license&quot;: &quot;https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706&quot;,
   &quot;keywords&quot;: [
     &quot;bundesbank&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1945-01-01/2026-06-23&quot;,
-  &quot;creditText&quot;: &quot;Source: Deutsche Bundesbank time series (not redistributed; obtain from provider)&quot;,
-  &quot;citation&quot;: &quot;Deutsche Bundesbank. Retrieved from https://www.bundesbank.de. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.&quot;,
+  &quot;creditText&quot;: &quot;Copyright: Deutsche Bundesbank, Frankfurt am Main, Germany&quot;,
+  &quot;citation&quot;: &quot;Deutsche Bundesbank. Retrieved from https://www.bundesbank.de. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-bundesbank&quot;,
     &quot;https://zenodo.org/communities/econdatalibrary&quot;
   ],
-  &quot;usageInfo&quot;: &quot;Metadata-only catalog entry. This source&#x27;s license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms.&quot;
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=bundesbank&quot;,
+      &quot;license&quot;: &quot;https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706&quot;
+    }
+  ]
 }</pre></details>
 <details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
   &quot;@context&quot;: {
@@ -292,11 +316,19 @@ Run: python jobs/ingest_bundesbank.py</p>
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;Not redistributable — restricted provider terms (data available from the original provider)&quot;,
+  &quot;license&quot;: &quot;https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706&quot;,
   &quot;temporalCoverage&quot;: &quot;1945-01-01/2026-06-23&quot;,
-  &quot;citation&quot;: &quot;Deutsche Bundesbank. Retrieved from https://www.bundesbank.de. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.&quot;,
-  &quot;isAccessibleForFree&quot;: false,
-  &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
+  &quot;citation&quot;: &quot;Deutsche Bundesbank. Retrieved from https://www.bundesbank.de. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;cr:FileObject&quot;,
+      &quot;@id&quot;: &quot;bundesbank-csv&quot;,
+      &quot;name&quot;: &quot;bundesbank-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=bundesbank&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
+    }
+  ]
 }</pre></details>
 <div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-15 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
