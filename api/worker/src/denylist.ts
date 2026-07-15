@@ -109,8 +109,12 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "wid",
   "worldbank_extra",
   "worldbank_pink",
-  "wto_bat_bv_m",
-  "wto_bat_bv_x",
+  "zillow",
+  // legacy/phantom ids (not currently in the catalog; kept as a safety floor):
+  "fraser_efw",
+  "sdmx_nso",
+  "sipri_polity",
+  "spi",
   "wto_hs_a_0010",
   "wto_hs_a_0015",
   "wto_hs_a_0020",
@@ -119,12 +123,6 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "wto_hs_a_0040",
   "wto_its_mtv_am",
   "wto_its_mtv_ax",
-  "zillow",
-  // legacy/phantom ids (not currently in the catalog; kept as a safety floor):
-  "fraser_efw",
-  "sdmx_nso",
-  "sipri_polity",
-  "spi",
 ]);
 
 /** The source id is the part of a series_id before the first ':'. */

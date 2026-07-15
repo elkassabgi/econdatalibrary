@@ -1628,6 +1628,22 @@ def main():
 
     os.makedirs(OUT_DIR, exist_ok=True)
 
+    # ------------------------------------------------------------------ #
+    # DISPLAY POLICY (owner decision 2026-07-15): the site shows a page ONLY
+    # for (a) sources whose data we DIRECTLY HOST (reservable + has series),
+    # and (b) sources gated PENDING a permission reply (reference kept, data
+    # 451). Metadata-only listings for anything else are misleading — no page,
+    # no links, no mention. Refused sources (WTO) are purged entirely.
+    # ------------------------------------------------------------------ #
+    PENDING_PERMISSION = {
+        # permission requested, awaiting reply (see REDISTRIBUTION_EMAIL_TRAIL
+        # + PERMISSION_EMAIL_DRAFTS): reference stays, data gated.
+        "bundesbank", "cboe", "cow", "defillama", "ei_statreview", "famafrench",
+        "freedomhouse", "idb", "irena", "nbp", "polity", "shiller", "sipri",
+        "tcmb", "whr", "worldbank_pink", "zillow",
+        # written EMBED permission on file (official Tableau embed, no data):
+        "social_progress",
+    }
     records = []
     for sid in sorted(sources):
         rec = build_record(
@@ -1638,7 +1654,9 @@ def main():
             sidecar.get(sid),
             source_meta.get(sid),
         )
-        records.append(rec)
+        hosted = bool(rec["reservable"]) and bool(series_roll.get(sid))
+        if hosted or sid in PENDING_PERMISSION:
+            records.append(rec)
 
     def _write(path, html):
         # single post-process point: stamp the generation date, and append the
