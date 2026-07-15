@@ -39,7 +39,6 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "cftc",
   "cow",
   "cso",
-  "damodaran",
   "dbnomics",
   "defillama",
   "dst",
