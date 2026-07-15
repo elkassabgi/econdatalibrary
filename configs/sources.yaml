@@ -36,6 +36,12 @@ licenses:
 # ---------------------------------------------------------------------------
 # SOURCES WE HOST (cache on R2 + re-serve). schedule = per-source cadence.
 # ---------------------------------------------------------------------------
+  # --- Stage 0b: verified-license classes (verbatim audit 2026-07-14) ---
+  cc-by-3.0-igo: {reservable: true, commercial_ok: true, attribution: required, no_modify: false, url: "https://creativecommons.org/licenses/by/3.0/igo/"}  # Stage 0b verified (CC BY 3.0 IGO)
+  verified-attribution: {reservable: true, commercial_ok: true, attribution: required, no_modify: false, url: ""}  # Stage 0b verified (Verified: redistribution permitted with attribution (see source terms_url))
+  verified-nc: {reservable: true, commercial_ok: false, attribution: required, no_modify: false, url: ""}  # Stage 0b verified (Verified: non-commercial redistribution permitted (see source terms_url))
+  verified-open: {reservable: true, commercial_ok: true, attribution: false, no_modify: false, url: ""}  # Stage 0b verified (Verified: redistribution permitted (see source terms_url))
+  audit-restricted: {reservable: false, commercial_ok: false, attribution: required, no_modify: false, url: ""}  # Stage 0b: verbatim audit flagged NOT clearable (third-party carve-out / permission required / unresolved) -- gated pending review
 sources:
 
   # ---- US federal, public domain ----
@@ -58,21 +64,21 @@ sources:
   fhfa:     {name: FHFA House Price Index, license: us-public-domain, schedule: "0 6 * * 1", attribution: "Source: U.S. FHFA (public domain)"}
 
   # ---- CC BY 4.0 / open-government ----
-  worldbank:        {name: World Bank Open Data (WDI), license: cc-by-4.0, schedule: "0 6 * * 1", attribution: "Source: World Bank, World Development Indicators (CC BY 4.0)"}
+  worldbank:        {name: World Bank Open Data (WDI), license: audit-restricted, schedule: "0 6 * * 1", attribution: "Source: World Bank, World Development Indicators (CC BY 4.0)"}
   worldbank_esg:    {name: World Bank Sovereign ESG, license: cc-by-4.0, schedule: "0 6 * * 1", attribution: "Source: World Bank Sovereign ESG (CC BY 4.0)"}
-  worldbank_pink:   {name: World Bank Pink Sheet (commodities), license: cc-by-4.0, schedule: "0 6 5 * *", attribution: "Source: World Bank Commodity Markets (CC BY 4.0)"}
+  worldbank_pink:   {name: World Bank Pink Sheet (commodities), license: audit-restricted, schedule: "0 6 5 * *", attribution: "Source: World Bank Commodity Markets (CC BY 4.0)"}
   global_findex:    {name: World Bank Global Findex Database (financial inclusion), license: cc-by-4.0, schedule: "0 6 8 * *", homepage: "https://www.worldbank.org/en/publication/globalfindex", attribution: "Source: World Bank Global Findex Database (CC BY 4.0)"}
   oecd:             {name: OECD Data Explorer (from 2024-07-01), license: cc-by-4.0, schedule: "0 6 * * 2", attribution: "Source: OECD (CC BY 4.0)"}
   eurostat:         {name: Eurostat, license: cc-by-4.0, schedule: "0 6 * * 2", attribution: "Source: Eurostat (CC BY 4.0)", carve_out: see-carve_outs}
   imf:              {name: IMF Data, license: imf-terms, schedule: "0 6 * * 2", attribution: "Source: IMF -- this data is available free of charge"}
   ilostat:          {name: ILOSTAT, license: cc-by-4.0, schedule: "0 6 * * 2", attribution: "Source: ILOSTAT (CC BY 4.0)"}
-  faostat:          {name: FAOSTAT, license: cc-by-4.0, schedule: "0 6 * * 3", attribution: "Source: FAO FAOSTAT (CC BY 4.0)"}
+  faostat:          {name: FAOSTAT, license: audit-restricted, schedule: "0 6 * * 3", attribution: "Source: FAO FAOSTAT (CC BY 4.0)"}
   penn_world_table: {name: Penn World Table 11.0, license: cc-by-4.0, schedule: "0 6 1 */3 *", attribution: "Source: Penn World Table 11.0 (CC BY 4.0)"}
   statcan:          {name: Statistics Canada, license: statcan-open, schedule: "0 6 * * *", attribution: "Source: Statistics Canada (Open Licence)"}
   abs:              {name: Australian Bureau of Statistics, license: cc-by-4.0, schedule: "0 6 * * 2", attribution: "Source: ABS (CC BY 4.0)"}
   boe:              {name: Bank of England, license: ogl-uk-3.0, schedule: "0 6 * * *", attribution: "Source: Bank of England (OGL v3.0)"}
   insee:            {name: INSEE (France), license: etalab-2.0, schedule: "0 6 * * 2", needs_key: true, attribution: "Source: INSEE (Etalab 2.0)"}
-  owid:             {name: Our World in Data, license: cc-by-4.0, schedule: "0 6 * * 3", attribution: "Source: Our World in Data (CC BY 4.0)", carve_out: see-carve_outs}
+  owid:             {name: Our World in Data, license: audit-restricted, schedule: "0 6 * * 3", attribution: "Source: Our World in Data (CC BY 4.0)", carve_out: see-carve_outs}
   ember:            {name: Ember (electricity), license: cc-by-4.0, schedule: "0 6 * * 3", attribution: "Source: Ember (CC BY 4.0)"}
   bis:              {name: Bank for International Settlements, license: bis-attrib-nc, schedule: "0 6 * * 4", attribution: "Source: BIS (non-commercial reuse, attribution)"}
 
@@ -81,9 +87,9 @@ sources:
 
   # ---- Free-with-attribution ----
   ecb:              {name: ECB Data Portal / euro reference rates, license: ecb-attrib-nomodify, schedule: "30 16 * * *", attribution: "Source: ECB -- available free at the ECB; values not modified"}
-  frankfurter:      {name: Frankfurter API (ECB FX), license: ecb-attrib-nomodify, schedule: "30 16 * * *", attribution: "FX data from the ECB via Frankfurter"}
-  zillow:           {name: Zillow Research, license: zillow-research, schedule: "0 6 * * 4", attribution: "Data Provided by Zillow Group"}
-  defillama:        {name: DeFiLlama, license: defillama-open, schedule: "0 */6 * * *", attribution: "Source: DeFiLlama"}
+  frankfurter:      {name: Frankfurter API (ECB FX), license: audit-restricted, schedule: "30 16 * * *", attribution: "FX data from the ECB via Frankfurter"}
+  zillow:           {name: Zillow Research, license: audit-restricted, schedule: "0 6 * * 4", attribution: "Data Provided by Zillow Group"}
+  defillama:        {name: DeFiLlama, license: audit-restricted, schedule: "0 */6 * * *", attribution: "Source: DeFiLlama"}
 
   # ---- DBnomics: ingest accelerator, NOT a wholesale source ----
   dbnomics:         {name: DBnomics (87 providers), license: dbnomics-passthrough, schedule: "0 5 * * 1", attribution: "Via DBnomics -- per-series provider license applies", note: "use for breadth; dedupe vs direct connectors; store per-series license"}
@@ -94,6 +100,688 @@ sources:
 # ---------------------------------------------------------------------------
 # DROPPED -- do NOT ingest (per the storage-doc adversarial critic)
 # ---------------------------------------------------------------------------
+  # --- Stage 0b: verified per-source licenses (verbatim audit 2026-07-14) ---
+  barro_lee:
+    name: "Barro-Lee Educational Attainment Dataset (Robert J. Barro and Jong-Wha Lee)"
+    license: verified-attribution
+    terms_url: "https://raw.githubusercontent.com/barrolee/BarroLeeDataSet/master/LICENSE"
+    attribution: "Source: Barro-Lee Educational Attainment Dataset (Robert J. Barro and Jong-Wha Lee)"
+  bcb:
+    name: "Banco Central do Brasil (BCB) — SGS / Open Data Portal (opendata.bcb.gov.br)"
+    license: verified-attribution
+    terms_url: "https://opendata.bcb.gov.br/dataset/27443-icc-spread/resource/997a20f0-3955-4719-8dd4-2bda754c7ff8"
+    attribution: "Source: Banco Central do Brasil (BCB) — SGS / Open Data Portal (opendata.bcb.gov.br)"
+  bcrp:
+    name: "Banco Central de Reserva del Perú (BCRP)"
+    license: verified-attribution
+    terms_url: "https://www.bcrp.gob.pe/condiciones-de-uso.html"
+    attribution: "Source: Banco Central de Reserva del Perú (BCRP)"
+  boc:
+    name: "Bank of Canada Valet"
+    license: verified-attribution
+    terms_url: "https://www.bankofcanada.ca/terms/"
+    attribution: "Source: Bank of Canada Valet"
+  cnb:
+    name: "Czech National Bank (CNB) — ARAD"
+    license: verified-attribution
+    terms_url: "https://www.cnb.cz/en/privacy-statement-and-disclaimer/disclaimer-copyright/"
+    attribution: "Source: Czech National Bank (CNB) — ARAD"
+  comtrade:
+    name: "UN Comtrade"
+    license: verified-attribution
+    terms_url: "https://uncomtrade.org/docs/policy-on-use-and-re-dissemination/"
+    attribution: "Source: UN Comtrade (written permission on file; <=100,000 records)"
+  edgar_jrc:
+    name: "EU JRC EDGAR (Emissions Database for Global Atmospheric Research)"
+    license: verified-attribution
+    terms_url: "https://data.jrc.ec.europa.eu/dataset/b54d8149-2864-4fb9-96b9-5fd3a020c224"
+    attribution: "Source: EU JRC EDGAR (Emissions Database for Global Atmospheric Research)"
+  epu:
+    name: "Economic Policy Uncertainty Index (Baker/Bloom/Davis)"
+    license: cc-by-4.0
+    terms_url: "https://www.policyuncertainty.com/"
+    attribution: "Source: Economic Policy Uncertainty Index (Baker/Bloom/Davis)"
+  fao_ae:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_af:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_ec:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_ep:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_es:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_et:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_ew:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_fo:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_ga:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_gb:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_ge:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_gf:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_gl:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_gn:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_gr:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_gt:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_gy:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_ic:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_oa:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_pp:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_qa:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_qcl:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_ql:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_qp:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fao_rp:
+    name: "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    license: cc-by-4.0
+    terms_url: "https://www.fao.org/contact-us/terms/db-terms-of-use/en/"
+    attribution: "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas"
+  fsi_fundforpeace:
+    name: "Fund for Peace — Fragile States Index (fsi_fundforpeace)"
+    license: cc-by-nc-sa-4.0
+    terms_url: "https://fragilestatesindex.org/contact-us/request-to-republish-material/"
+    attribution: "Source: Fund for Peace — Fragile States Index (fsi_fundforpeace)"
+  gcb:
+    name: "Global Carbon Budget / Global Carbon Project"
+    license: cc-by-4.0
+    terms_url: "https://robbieandrew.github.io/GCB2024/"
+    attribution: "Source: Global Carbon Budget / Global Carbon Project"
+  ggdc:
+    name: "Groningen Growth and Development Centre"
+    license: cc-by-4.0
+    terms_url: "https://www.rug.nl/ggdc/productivity/pld/releases/pld-2023?lang=en"
+    attribution: "Source: Groningen Growth and Development Centre"
+  gppd:
+    name: "Global Power Plant Database (World Resources Institute)"
+    license: cc-by-4.0
+    terms_url: "https://raw.githubusercontent.com/wri/global-power-plant-database/master/README.md"
+    attribution: "Source: Global Power Plant Database (World Resources Institute)"
+  imf_afrreo:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_apdreo:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_bopagg:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_cofer:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_commodity:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_cpi:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_fas:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_fdi:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_fiscaldecentralization:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_fm:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_fsire:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_gender_budgeting:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_gender_equality:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_gfscofog:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_gfse:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_gfsfalcs:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_gfsibs:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_gfsmab:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_gfsssuc:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_hpdd:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_mcdreo:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_namain_idc_n:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_pctot:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_pgcs:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_pgi:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_psbsfad:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_unsdg_imf_inputs:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_weo:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_whdreo:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  imf_world:
+    name: "International Monetary Fund (IMF)"
+    license: imf-terms
+    terms_url: "https://www.imf.org/en/about/copyright-and-terms"
+    attribution: "Source: International Monetary Fund (IMF)"
+  insee_bdm:
+    name: "INSEE (Institut national de la statistique et des études économiques, France)"
+    license: etalab-2.0
+    terms_url: "https://www.insee.fr/en/information/2409130"
+    attribution: "Source: INSEE (Institut national de la statistique et des études économiques, France)"
+  ipea:
+    name: "IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)"
+    license: verified-attribution
+    terms_url: "http://www.ipeadata.gov.br/iframe_direitouso.aspx"
+    attribution: "Source: IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)"
+  kof_globalization:
+    name: "KOF Swiss Economic Institute, ETH Zurich"
+    license: verified-nc
+    terms_url: "https://kof.ethz.ch/en/forecasts-and-indicators/indicators/kof-globalisation-index.html"
+    attribution: "Source: KOF, ETH Zurich (written permission on file; non-commercial)"
+  ksh:
+    name: "KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / HCSO)"
+    license: cc-by-4.0
+    terms_url: "https://www.ksh.hu/copyright_hungarian_central_statistical_office"
+    attribution: "Source: KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / H"
+  maddison:
+    name: "Maddison Project Database (Groningen)"
+    license: cc-by-4.0
+    terms_url: "https://www.rug.nl/ggdc/historicaldevelopment/maddison/releases/maddison-project-database-2023?lang=en"
+    attribution: "Source: Maddison Project Database (Groningen)"
+  nasa_giss:
+    name: "NASA GISS (Goddard Institute for Space Studies) — GISTEMP Surface Temperature Analysis (v4"
+    license: us-public-domain
+    terms_url: "https://www.nasa.gov/nasa-brand-center/images-and-media/"
+    attribution: "Source: NASA GISS (Goddard Institute for Space Studies) — GISTEMP Surface Temperature Anal"
+  nyfed:
+    name: "Federal Reserve Bank of New York"
+    license: verified-attribution
+    terms_url: "https://www.newyorkfed.org/privacy/termsofuse"
+    attribution: "Source: Federal Reserve Bank of New York"
+  ofr:
+    name: "US Office of Financial Research (OFR), U.S. Department of the Treasury"
+    license: us-public-domain
+    terms_url: "https://www.financialresearch.gov/legal-notices/"
+    attribution: "Source: US Office of Financial Research (OFR), U.S. Department of the Treasury"
+  oxcgrt:
+    name: "Oxford COVID-19 Government Response Tracker (OxCGRT), Blavatnik School of Government, Univ"
+    license: cc-by-4.0
+    terms_url: "https://github.com/OxCGRT/covid-policy-dataset/blob/main/README.md"
+    attribution: "Source: Oxford COVID-19 Government Response Tracker (OxCGRT), Blavatnik School of Governme"
+  pip:
+    name: "World Bank Poverty & Inequality Platform (PIP)"
+    license: cc-by-4.0
+    terms_url: "https://data.worldbank.org/summary-terms-of-use"
+    attribution: "Source: World Bank Poverty & Inequality Platform (PIP)"
+  pwt:
+    name: "Penn World Table (Groningen Growth and Development Centre, University of Groningen / UC Da"
+    license: cc-by-4.0
+    terms_url: "https://www.rug.nl/ggdc/productivity/pwt/?lang=en"
+    attribution: "Source: Penn World Table (Groningen Growth and Development Centre, University of Groningen"
+  rba:
+    name: "Reserve Bank of Australia (RBA)"
+    license: cc-by-4.0
+    terms_url: "https://www.rba.gov.au/copyright/"
+    attribution: "Source: Reserve Bank of Australia (RBA)"
+  riksbank:
+    name: "Sveriges Riksbank"
+    license: verified-attribution
+    terms_url: "https://www.riksbank.se/en-gb/about-the-riksbank/about-the-website/open-data--information-available-for-re-use/"
+    attribution: "Source: Sveriges Riksbank"
+  snb:
+    name: "Swiss National Bank (SNB) data portal"
+    license: verified-nc
+    terms_url: "https://www.snb.ch/en/srv/disclaimer_copyright"
+    attribution: "Source: Swiss National Bank (SNB) data portal"
+  stats_nz:
+    name: "Stats NZ"
+    license: cc-by-4.0
+    terms_url: "https://www.stats.govt.nz/about-us/copyright/"
+    attribution: "Source: Stats NZ"
+  swiid:
+    name: "Standardized World Income Inequality Database (SWIID)"
+    license: verified-open
+    terms_url: "https://dataverse.harvard.edu/api/datasets/export?exporter=dataverse_json&persistentId=doi:10.7910/DVN/LM4OWF"
+    attribution: "Source: Standardized World Income Inequality Database (SWIID)"
+  transparency_ti:
+    name: "Transparency International (CPI)"
+    license: cc-by-4.0
+    terms_url: "https://transparency.org/permissions"
+    attribution: "Source: Transparency International (CPI)"
+  ucdp:
+    name: "Uppsala Conflict Data Program (UCDP)"
+    license: cc-by-4.0
+    terms_url: "https://ucdp.uu.se/downloads/"
+    attribution: "Source: Uppsala Conflict Data Program (UCDP)"
+  unctad_bopcaba:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_ciocgeaia:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_cioiuibbicoeair4a:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_cpa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_cpia:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_cpta:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_fdiiaofasa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_fmcpa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_fmcpia21:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_gasbeaiogasa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_gasbtbia:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_gasbtoia:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_gdpgbtoevbkoeatasa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_gdptapccac2pa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_lscia:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_lsciq:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_mfbcoboa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_mmcascioeaiopa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_mpcadioeaia:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_mtba:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_mttasa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_mttgra:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_neera:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_reericba:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_reerigdba:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_rfia:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_rgdptapcgra:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_sbeaiotsvsaga:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_sbtisvsaga:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_soigapotta:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_sotwmfvbcoboa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_srbca:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_tabbapotta:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_tabmcioeaiopa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_tabmscioeaiopa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_tabpcioeaia:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_taupa:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  unctad_wstbtocabgoea:
+    name: "UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+    license: cc-by-3.0-igo
+    terms_url: "https://unctadstat.unctad.org/EN/About.html"
+    attribution: "Source: UNCTAD (UN Conference on Trade and Development) — UNCTADstat / UNCTAD Data Hub"
+  undp_hdr:
+    name: "UNDP Human Development Report (Human Development Report Office, UNDP)"
+    license: cc-by-3.0-igo
+    terms_url: "https://hdr.undp.org/copyright-and-terms-use"
+    attribution: "Source: UNDP Human Development Report (Human Development Report Office, UNDP)"
+  unesco_clte:
+    name: "UNESCO Institute for Statistics (UIS)"
+    license: cc-by-sa-4.0
+    terms_url: "https://databrowser.uis.unesco.org/terms-and-conditions"
+    attribution: "Source: UNESCO Institute for Statistics (UIS)"
+  unesco_cltt:
+    name: "UNESCO Institute for Statistics (UIS)"
+    license: cc-by-sa-4.0
+    terms_url: "https://databrowser.uis.unesco.org/terms-and-conditions"
+    attribution: "Source: UNESCO Institute for Statistics (UIS)"
+  unesco_dem:
+    name: "UNESCO Institute for Statistics (UIS)"
+    license: cc-by-sa-4.0
+    terms_url: "https://databrowser.uis.unesco.org/terms-and-conditions"
+    attribution: "Source: UNESCO Institute for Statistics (UIS)"
+  unesco_film:
+    name: "UNESCO Institute for Statistics (UIS)"
+    license: cc-by-sa-4.0
+    terms_url: "https://databrowser.uis.unesco.org/terms-and-conditions"
+    attribution: "Source: UNESCO Institute for Statistics (UIS)"
+  unesco_inno:
+    name: "UNESCO Institute for Statistics (UIS)"
+    license: cc-by-sa-4.0
+    terms_url: "https://databrowser.uis.unesco.org/terms-and-conditions"
+    attribution: "Source: UNESCO Institute for Statistics (UIS)"
+  unhcr:
+    name: "UNHCR (United Nations High Commissioner for Refugees) — Refugee Data Finder / Refugee Popu"
+    license: cc-by-4.0
+    terms_url: "https://www.unhcr.org/what-we-do/data-and-publications/data-and-statistics/terms-use-datasets"
+    attribution: "Source: UNHCR (United Nations High Commissioner for Refugees) — Refugee Data Finder / Refu"
+  wgi:
+    name: "World Bank Worldwide Governance Indicators (WGI)"
+    license: cc-by-4.0
+    terms_url: "https://data.worldbank.org/summary-terms-of-use"
+    attribution: "Source: World Bank Worldwide Governance Indicators (WGI)"
+  who_hwf:
+    name: "World Health Organization (WHO) — Global Health Observatory (GHO)"
+    license: cc-by-nc-sa-4.0
+    terms_url: "https://www.who.int/about/policies/publishing/copyright"
+    attribution: "Source: World Health Organization (WHO) — Global Health Observatory (GHO)"
+  who_rs:
+    name: "World Health Organization (WHO) — Global Health Observatory (GHO)"
+    license: cc-by-nc-sa-4.0
+    terms_url: "https://www.who.int/about/policies/publishing/copyright"
+    attribution: "Source: World Health Organization (WHO) — Global Health Observatory (GHO)"
+  who_sdg:
+    name: "World Health Organization (WHO) — Global Health Observatory (GHO)"
+    license: cc-by-nc-sa-4.0
+    terms_url: "https://www.who.int/about/policies/publishing/copyright"
+    attribution: "Source: World Health Organization (WHO) — Global Health Observatory (GHO)"
+  worldbank_wdi:
+    name: "World Bank World Development Indicators (WDI)"
+    license: cc-by-4.0
+    terms_url: "https://data.worldbank.org/summary-terms-of-use"
+    attribution: "Source: World Bank World Development Indicators (WDI)"
+  yale_epi:
+    name: "Yale Environmental Performance Index"
+    license: cc-by-nc-sa-4.0
+    terms_url: "https://epi.yale.edu/faq/epi-faq"
+    attribution: "Source: Yale Environmental Performance Index"
+
 dropped:
   coingecko:      "Free tier is personal/non-commercial; forbids redistribute/syndicate; discourages caching. Use DeFiLlama for crypto."
   alternative_me: "Dropped together with CoinGecko; DeFiLlama covers the crypto slot."

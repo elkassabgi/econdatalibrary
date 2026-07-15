@@ -1,0 +1,142 @@
+"""gen_denylist.py — regenerate api/worker/src/denylist.ts from catalog.db.
+
+Single source of truth for the redistribution gate. Historically the worker's
+NON_REDISTRIBUTABLE set was hand-maintained and drifted from the site, which
+gates on license.reservable — so a source could read "metadata only" on the
+page yet still serve its .csv (observed 2026-07-14: transparency_ti and 141
+other reservable=0 sources were downloadable). This script makes the gate
+DB-derived so the two can never disagree again:
+
+    NON_REDISTRIBUTABLE = { every source_id with license.reservable = 0 }
+                          ∪ LEGACY_KEEP            (never silently un-gate)
+                          − GRANTED_EXCEPTIONS     (written permission on file)
+
+Run:  python -m core.gen_denylist        (from the econ repo root)
+Then redeploy the worker.  Re-run whenever license flags change.
+"""
+from __future__ import annotations
+
+import os
+import sqlite3
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+DB = os.path.join(ROOT, "data", "catalog.db")
+OUT = os.path.join(ROOT, "api", "worker", "src", "denylist.ts")
+
+# Sources that carry WRITTEN redistribution permission — kept downloadable even
+# though their license row is still the conservative NEEDS-REVIEW default.
+# Provenance lives in the generated header below; keep the two in sync.
+GRANTED_EXCEPTIONS = {
+    "kof_globalization",  # Prof. Jan-Egbert Sturm (KOF director), 2026-07-06: NC academic re-hosting
+    "comtrade",           # UN Comtrade, 2026-07-07: free branch, holdings must stay <= 100k records
+}
+
+# Ids that were explicitly gated by hand and must never be dropped even if they
+# are not (or no longer) reservable=0 in the DB (e.g. phantom/renamed ids). This
+# is a safety floor: unioning it guarantees the regenerated set never UN-gates
+# anything the previous curated denylist blocked.
+LEGACY_KEEP = {
+    "qog", "cboe",
+    "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025",
+    "wto_hs_a_0030", "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax",
+    "whr", "social_progress", "spi", "ei_statreview", "cow",
+    "famafrench", "fraser_efw", "polity", "sipri", "sipri_polity", "tcmb",
+    "nbp", "wid", "barro_lee", "sdmx_nso",
+}
+
+HEADER = '''// ---------------------------------------------------------------------------
+// src/denylist.ts  --  redistribution gate (HTTP 451 + hidden from catalog).
+//
+// GENERATED FILE -- do not edit by hand. Regenerate with:
+//     python -m core.gen_denylist        (then redeploy the worker)
+//
+// The set below is DERIVED FROM catalog.db so it can never drift from the site,
+// which gates on license.reservable. A source is blocked iff its license is not
+// verified-redistributable (license.reservable = 0), minus the granted
+// exceptions below, plus a legacy safety floor so a regeneration never silently
+// un-gates a previously-blocked source.
+//
+// GRANTED EXCEPTIONS (written permission on file -> kept downloadable):
+//   kof_globalization -- Prof. Jan-Egbert Sturm (KOF director, index co-author),
+//     2026-07-06: non-commercial academic re-hosting. Honor: NC use only; cite
+//     "KOF, ETH Zurich"; link back to the official KOF Globalisation Index page;
+//     no commercial resale/sublicensing; KOF may request removal.
+//   comtrade -- UN Comtrade, 2026-07-07: our holdings sit in the free branch
+//     ("up to 100,000 records"). STANDING GUARD: comtrade holdings must STAY
+//     <= 100,000 records; growing past that leaves the free branch and requires
+//     re-gating. Cite "UN Comtrade" + link back.
+//
+// NonCommercial-but-free sources (WHO, Yale EPI, WIID, FSI, GPI, IRENA, SNB,
+// Freedom House, WTO stats) are governed by license.reservable in the DB; if any
+// appear here it is because their license row is reservable=0 (unverified) --
+// fix the license row and regenerate, don't special-case them here.
+// ---------------------------------------------------------------------------
+
+'''
+
+FOOTER = '''
+/** The source id is the part of a series_id before the first ':'. */
+export function seriesSource(seriesId: string): string {
+  const i = seriesId.indexOf(":");
+  return i < 0 ? seriesId : seriesId.slice(0, i);
+}
+
+export function isNonRedistributable(seriesId: string): boolean {
+  return NON_REDISTRIBUTABLE.has(seriesSource(seriesId));
+}
+'''
+
+
+def main() -> None:
+    c = sqlite3.connect(DB)
+    reservable0 = {
+        r[0] for r in c.execute(
+            "SELECT s.source_id FROM source s "
+            "JOIN license l ON l.license_id = s.license_id "
+            "WHERE l.reservable = 0"
+        )
+    }
+    all_sources = {r[0] for r in c.execute("SELECT source_id FROM source")}
+    c.close()
+
+    gated = (reservable0 | LEGACY_KEEP) - GRANTED_EXCEPTIONS
+    real = sorted(s for s in gated if s in all_sources)
+    phantom = sorted(s for s in gated if s not in all_sources)  # kept but flagged
+
+    lines = []
+    lines.append(HEADER)
+    lines.append("export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([")
+    for sid in real:
+        lines.append(f'  "{sid}",')
+    if phantom:
+        lines.append("  // legacy/phantom ids (not currently in the catalog; kept as a safety floor):")
+        for sid in phantom:
+            lines.append(f'  "{sid}",')
+    lines.append("]);")
+    lines.append(FOOTER)
+    text = "\n".join(lines)
+
+    with open(OUT, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+    print(f"reservable=0 sources:        {len(reservable0)}")
+    print(f"legacy-keep (union):         {len(LEGACY_KEEP)}")
+    print(f"granted exceptions (remove): {sorted(GRANTED_EXCEPTIONS)}")
+    print(f"-> NON_REDISTRIBUTABLE size: {len(real)} real + {len(phantom)} phantom = {len(real)+len(phantom)}")
+    print(f"wrote {OUT}")
+    # sanity: the granted ones must NOT be gated; a known leaker MUST be gated
+    for must_serve in GRANTED_EXCEPTIONS:
+        assert must_serve not in real and must_serve not in phantom, must_serve
+    # Known-restricted per the verbatim license audit (2026-07-14) MUST stay gated:
+    # WTO refused in writing; cboe/sipri/polity/famafrench = permission-required.
+    # (transparency_ti was formerly gated-unverified; the audit CONFIRMED its explicit
+    #  redistribution grant "Anyone can extract, download, and make copies... and may
+    #  also share that information with third parties", so it is now correctly served.)
+    for must_gate in ("wto_hs_a_0010", "cboe", "sipri", "polity", "famafrench"):
+        assert must_gate in real or must_gate in phantom, f"{must_gate} must be gated"
+    print("sanity OK: grants excluded; known-restricted (WTO/cboe/sipri/...) gated")
+
+
+if __name__ == "__main__":
+    main()
