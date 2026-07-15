@@ -648,6 +648,16 @@ vizElement.parentNode.insertBefore(scriptElement, vizElement);
 
 
 def render_dataset_page(rec):
+    # Honesty transform for GATED sources: the baked metadata sentence
+    # "Compiled and redistributed by the Elkassabgi Data Library." is true only
+    # for reservable sources. On a gated page it would misstate what we do.
+    if not rec["reservable"]:
+        _honest = ("Catalogued (metadata only) by the Elkassabgi Data Library; "
+                   "the data itself is not redistributed here.")
+        for _k in ("desc_short", "desc_full", "description_processing"):
+            if rec.get(_k):
+                rec[_k] = rec[_k].replace(
+                    "Compiled and redistributed by the Elkassabgi Data Library.", _honest)
     ds_ld = dataset_jsonld(rec)
     cr_ld = croissant_jsonld(rec)
     jsonld_block = jsonld_script(ds_ld) + "\n" + jsonld_script(cr_ld)
@@ -720,12 +730,22 @@ def render_dataset_page(rec):
     if rec["terms_url"]:
         lic_rows.append(("Provider terms", f'<a href="{esc(rec["terms_url"])}">{esc(rec["terms_url"])}</a>'))
 
-    # Access / mirrors
-    acc_rows = [
-        ("Download", f'<a href="download.html?source={esc(rec["id"])}">Select &amp; download {esc(rec["id"])} series as CSV &rarr;</a>'),
-        ("API", f'<a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span>'),
-        ("Canonical landing", f'<a href="{esc(rec["page_url"])}">{esc(rec["page_url"])}</a>'),
-    ]
+    # Access / mirrors. Download + API rows ONLY for reservable sources — a gated
+    # source's page must never advertise a download of data we don't redistribute
+    # (the API 451s it anyway; the page must say the same thing).
+    if rec["reservable"]:
+        acc_rows = [
+            ("Download", f'<a href="download.html?source={esc(rec["id"])}">Select &amp; download {esc(rec["id"])} series as CSV &rarr;</a>'),
+            ("API", f'<a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span>'),
+            ("Canonical landing", f'<a href="{esc(rec["page_url"])}">{esc(rec["page_url"])}</a>'),
+        ]
+    else:
+        provider_link = rec["homepage"] or rec["terms_url"] or ""
+        acc_rows = [
+            ("Download", "Not available here — this provider's terms do not permit redistribution."
+             + (f' Obtain the data from the <a href="{esc(provider_link)}">original provider</a>.' if provider_link else " Obtain the data from the original provider.")),
+            ("Canonical landing", f'<a href="{esc(rec["page_url"])}">{esc(rec["page_url"])}</a>'),
+        ]
     if rec["cadence"]:
         acc_rows.append(("Update cadence", esc(rec["cadence"])))
     if rec["strategy"]:
@@ -804,7 +824,14 @@ def render_dataset_page(rec):
         '<a href="index.html">browse all datasets</a></div>'
     )
     body.append("</div></body></html>")
-    return "\n".join(body)
+    html = "\n".join(body)
+    if not rec["reservable"]:
+        # Page-level honesty sweep for gated sources: baked per-series sample
+        # descriptions also carry the "Compiled and redistributed" sentence.
+        html = html.replace(
+            "Compiled and redistributed by the Elkassabgi Data Library.",
+            "Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.")
+    return html
 
 
 def _earliest_data_year():
