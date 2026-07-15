@@ -564,7 +564,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}}
 <span style="display:flex;gap:1.5rem;flex-wrap:wrap"><span id="sb-site"></span><span id="sb-data"></span></span>
 </div></div>
 <div class="nav"><div class="nav-in"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" class="fam-tag" title="Part of the ElkassabgiData family — one account, every library">part of ElkassabgiData</a></div>
-<div class="nav-links"><a href="index.html">Catalog</a><a href="docs.html">Documentation</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">AI Tools</a><a href="cite.html">Cite</a><a href="status.html">Status</a><a href="about.html">About</a><a href="account.html" class="signin">Sign in</a></div></div></div>
+<div class="nav-links"><a href="index.html">Catalog</a><a href="docs.html">Documentation</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">AI Tools</a><a href="cite.html">Cite</a><a href="stats.html">Stats</a><a href="status.html">Status</a><a href="about.html">About</a><a href="account.html" class="signin">Sign in</a></div></div></div>
 <script>
 (function(){{
   var API="https://econdl-api.elkassabgi.workers.dev";
@@ -1598,6 +1598,117 @@ def render_about():
                       "about.html", body)
 
 
+def render_stats():
+    # Live usage. USER figures (count, world map, institutions) are the SHARED
+    # ElkassabgiData community — served by the econ worker's /v1/public-stats,
+    # which reads the shared identity DB with hf's exact aggregation, so they
+    # match the HF Data Library by construction (one login, one user base).
+    # DATA volume comes from /v1/stats; DOWNLOADS are this library's own
+    # (econ_download_log). Every number is fetched live — nothing hardcoded.
+    body = """
+<style>
+.statgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin:1.4rem 0 .5rem}
+.bigstat{background:var(--g50);border:1px solid var(--g200);border-radius:12px;padding:1.3rem .7rem;text-align:center}
+.bnum{font-family:var(--mono);font-size:1.85rem;font-weight:700;color:var(--navy);line-height:1.1}
+.blabel{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g500);margin-top:.45rem}
+.dlnote{font-size:.82rem;color:var(--g500);margin:.1rem 0 2rem}
+#world-map{width:100%;height:460px;margin:.2rem auto 0}
+#country-badges{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center;margin-top:1.3rem}
+.cbadge{padding:.28rem .7rem;border-radius:20px;font-size:.82rem;font-weight:500;background:#1e3a8a;color:#fff}
+.reach-key{text-align:center;color:var(--g500);font-size:.9rem;margin:.2rem 0 1rem}
+.inst-list{font-size:.92rem;columns:2;column-gap:2.2rem;margin-top:.4rem}
+.inst-row{padding:.26rem 0;break-inside:avoid;color:var(--navy)}
+.inst-more{cursor:pointer;color:var(--blue);font-weight:600;padding:.55rem 0;column-span:all;border-top:1px solid var(--g200);margin-top:.5rem}
+.inst-more:hover{color:var(--gold-deep)}
+.inst-sign{display:inline-block;width:16px;font-family:var(--mono)}
+.actgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:.4rem 0}
+.actcard{background:var(--g50);border:1px solid var(--g200);border-radius:10px;padding:1.1rem;text-align:center}
+.anum{font-family:var(--mono);font-size:1.45rem;font-weight:700;color:var(--navy)}
+.alabel{font-size:.78rem;color:var(--g500);margin-top:.2rem}
+@media(max-width:640px){.statgrid{grid-template-columns:repeat(2,1fr)}.actgrid{grid-template-columns:1fr}.inst-list{columns:1}}
+</style>
+
+<p class="lead">Live usage for the Econ Data Library. Registered users, the world map, and the institutions are the <strong>shared ElkassabgiData community</strong> &mdash; one free account works across every library, so they're identical to the HF Data Library. Data volume and downloads are this library's own.</p>
+
+<div class="statgrid">
+  <div class="bigstat"><div class="bnum" id="s-users">&mdash;</div><div class="blabel">Registered Users</div></div>
+  <div class="bigstat"><div class="bnum" id="s-obs">&mdash;</div><div class="blabel">Economic Observations</div></div>
+  <div class="bigstat"><div class="bnum" id="s-series">&mdash;</div><div class="blabel">Individual Series</div></div>
+  <div class="bigstat"><div class="bnum" id="s-downloads">&mdash;</div><div class="blabel">Data Downloads</div></div>
+</div>
+<p class="dlnote">Downloads are this library's own, counted separately from the HF Data Library (shared login, per-library counters).</p>
+
+<h2>Global Reach</h2>
+<p class="reach-key">The shared ElkassabgiData community &mdash; <span id="s-usercountries">&mdash;</span> countries with registered users. Darker = more users.</p>
+<div id="world-map"><p style="text-align:center;color:var(--g500);padding-top:190px">Loading map&hellip;</p></div>
+<div id="country-badges"></div>
+
+<h2>Institutions Represented</h2>
+<div id="institution-list"><p style="color:var(--g500)">Loading&hellip;</p></div>
+
+<h2>At a Glance</h2>
+<div class="actgrid">
+  <div class="actcard"><div class="anum" id="s-usercountries2">&mdash;</div><div class="alabel">Countries with Users</div></div>
+  <div class="actcard"><div class="anum">6</div><div class="alabel">Interface Languages</div></div>
+  <div class="actcard"><div class="anum">Year&nbsp;1&nbsp;CE</div><div class="alabel">Data Reaches Back To</div></div>
+</div>
+
+<script src="https://www.gstatic.com/charts/loader.js"></script>
+<script>
+var ECON='https://econdl-api.elkassabgi.workers.dev';
+google.charts.load('current',{packages:['geochart']});
+var mapData=null, chartsReady=false;
+google.charts.setOnLoadCallback(function(){chartsReady=true; if(mapData) drawMap();});
+function set(id,v){var e=document.getElementById(id); if(e&&v!=null)e.textContent=v;}
+function fmtB(n){ if(n>=1e9){var s=(Math.floor(n/1e8)/10).toFixed(1); if(s.slice(-2)==='.0')s=s.slice(0,-2); return s+'B+';} return Number(n).toLocaleString();}
+function flag(c){ if(!c||c.length!==2)return ''; return '<img src="https://flagcdn.com/16x12/'+c.toLowerCase()+'.png" width="16" height="12" alt="'+c+'" style="vertical-align:middle;margin-right:4px">';}
+var COUNTRY_NAMES={AF:'Afghanistan',AL:'Albania',DZ:'Algeria',AO:'Angola',AR:'Argentina',AM:'Armenia',AU:'Australia',AT:'Austria',AZ:'Azerbaijan',BH:'Bahrain',BD:'Bangladesh',BY:'Belarus',BE:'Belgium',BO:'Bolivia',BA:'Bosnia and Herzegovina',BR:'Brazil',BN:'Brunei',BG:'Bulgaria',KH:'Cambodia',CM:'Cameroon',CA:'Canada',CL:'Chile',CN:'China',CO:'Colombia',CR:'Costa Rica',HR:'Croatia',CU:'Cuba',CY:'Cyprus',CZ:'Czechia',DK:'Denmark',DO:'Dominican Republic',EC:'Ecuador',EG:'Egypt',SV:'El Salvador',EE:'Estonia',ET:'Ethiopia',FI:'Finland',FR:'France',GE:'Georgia',DE:'Germany',GH:'Ghana',GR:'Greece',GT:'Guatemala',HT:'Haiti',HN:'Honduras',HK:'Hong Kong',HU:'Hungary',IS:'Iceland',IN:'India',ID:'Indonesia',IR:'Iran',IQ:'Iraq',IE:'Ireland',IL:'Israel',IT:'Italy',JM:'Jamaica',JP:'Japan',JO:'Jordan',KZ:'Kazakhstan',KE:'Kenya',KP:'North Korea',KR:'South Korea',KW:'Kuwait',LA:'Laos',LV:'Latvia',LB:'Lebanon',LT:'Lithuania',LU:'Luxembourg',MY:'Malaysia',MX:'Mexico',MN:'Mongolia',MA:'Morocco',MM:'Myanmar',NP:'Nepal',NL:'Netherlands',NZ:'New Zealand',NI:'Nicaragua',NG:'Nigeria',NO:'Norway',OM:'Oman',PK:'Pakistan',PS:'Palestine',PA:'Panama',PY:'Paraguay',PE:'Peru',PH:'Philippines',PL:'Poland',PT:'Portugal',PR:'Puerto Rico',QA:'Qatar',RO:'Romania',RU:'Russia',SA:'Saudi Arabia',SN:'Senegal',RS:'Serbia',SG:'Singapore',SK:'Slovakia',SI:'Slovenia',ZA:'South Africa',ES:'Spain',LK:'Sri Lanka',SY:'Syria',TW:'Taiwan',TZ:'Tanzania',TH:'Thailand',TT:'Trinidad and Tobago',TN:'Tunisia',TR:'Turkey',UG:'Uganda',UA:'Ukraine',AE:'United Arab Emirates',GB:'United Kingdom',US:'United States',UY:'Uruguay',UZ:'Uzbekistan',VE:'Venezuela',VN:'Vietnam',YE:'Yemen',ZW:'Zimbabwe'};
+function countryName(c){return COUNTRY_NAMES[c]||c;}
+function drawMap(){
+  var users=Object.assign({},mapData.users||{});
+  if(!users['PS'])users['PS']=1;
+  var codes=Object.keys(users);
+  if(!codes.length)return;
+  var rows=[['Country','Users']];
+  codes.forEach(function(c){rows.push([c, users[c]]);});
+  var data=google.visualization.arrayToDataTable(rows);
+  var opts={colorAxis:{colors:['#93c5fd','#1e3a8a']},backgroundColor:'#fff',datalessRegionColor:'#e5e7eb',defaultColor:'#e5e7eb',legend:'none'};
+  new google.visualization.GeoChart(document.getElementById('world-map')).draw(data,opts);
+  var us=Object.entries(users).sort(function(a,b){return b[1]-a[1];});
+  document.getElementById('country-badges').innerHTML=us.map(function(e){return '<span class="cbadge">'+flag(e[0])+' '+countryName(e[0])+'</span>';}).join('');
+}
+function toggleInst(){var m=document.getElementById('inst-more'),s=document.getElementById('inst-sign'); if(!m||!s)return; var o=m.style.display!=='none'; m.style.display=o?'none':'block'; s.textContent=o?'+':'-';}
+async function load(){
+  try{ var r=await fetch(ECON+'/v1/public-stats'); if(r.ok){var d=await r.json();
+    set('s-users',(d.total_users||0).toLocaleString());
+    if(d.total_downloads!=null)set('s-downloads',Number(d.total_downloads).toLocaleString());
+    var cc=d.country_count||Object.keys(d.countries||{}).length;
+    set('s-usercountries',cc); set('s-usercountries2',cc);
+    mapData={users:d.countries||{}};
+    if(chartsReady)drawMap();
+    if(d.institutions&&d.institutions.length){
+      var names=d.institutions.map(function(i){return i.institution;}).filter(Boolean);
+      var TOP=24, top=names.slice(0,TOP), rest=names.slice(TOP);
+      var row=function(n){return '<div class="inst-row">'+n+'</div>';};
+      var html='<div class="inst-list">'+top.map(row).join('');
+      if(rest.length){html+='<div class="inst-more" onclick="toggleInst()"><span id="inst-sign" class="inst-sign">+</span> Other institutions ('+rest.length+')</div><div id="inst-more" style="display:none">'+rest.map(row).join('')+'</div>';}
+      html+='</div>';
+      document.getElementById('institution-list').innerHTML=html;
+    } else { document.getElementById('institution-list').innerHTML='<p style="color:var(--g500)">No institutions yet.</p>'; }
+  }}catch(e){}
+  try{ var s=await (await fetch(ECON+'/v1/stats')).json();
+    if(s.observations)set('s-obs',fmtB(s.observations));
+    if(s.individual_series)set('s-series',fmtB(s.individual_series));
+  }catch(e){}
+}
+load();
+</script>
+"""
+    return _info_page("Live Statistics",
+                      "Live usage for the Econ Data Library: registered users and global reach (shared across the ElkassabgiData family), plus this library's data volume and downloads.",
+                      "stats.html", body)
+
+
 def render_sitemap(records):
     parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -1682,6 +1793,7 @@ def main():
     _write(os.path.join(OUT_DIR, "api.html"), render_api())
     _write(os.path.join(OUT_DIR, "cite.html"), render_cite())
     _write(os.path.join(OUT_DIR, "about.html"), render_about())
+    _write(os.path.join(OUT_DIR, "stats.html"), render_stats())
 
     # sitemap.xml
     with open(os.path.join(OUT_DIR, "sitemap.xml"), "w", encoding="utf-8") as f:

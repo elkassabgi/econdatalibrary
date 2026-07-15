@@ -24,6 +24,7 @@ import { handleSeriesCsv } from "./series";
 import { handleBundle } from "./bundle";
 import { requireDownloadAuth, logDownload } from "./auth";
 import { isGated } from "./denylist";
+import { handlePublicStats } from "./publicStats";
 import { json, reqLang } from "./util";
 
 const CORS_PREFLIGHT: Record<string, string> = {
@@ -51,6 +52,12 @@ export default {
       if (path === "/v1/sources") return await handleSources(env);
       if (path === "/v1/last-updates") return await handleLastUpdates(env);
       if (path === "/v1/bundle") return await handleBundle(url, env);
+
+      // Family usage stats for the stats page. USER figures come from the SHARED
+      // identity DB (env.USERS) with hf's exact aggregation, so users/map/
+      // institutions are identical across libraries; DOWNLOAD figures are this
+      // library's own (econ_download_log). Read-only, no auth, no PII.
+      if (path === "/v1/public-stats") return await handlePublicStats(env);
 
       // Headline stats. individual_series/observations are MEASURED on the full
       // data store (census 2026-07-02, D:\...\_series_census_hll.json): global
@@ -122,6 +129,7 @@ export default {
           version: "v1",
           endpoints: [
             "/v1/catalog", "/v1/sources", "/v1/last-updates", "/v1/stats",
+            "/v1/public-stats",
             "/v1/series/{id}.csv", "/v1/series/{id}.metadata.json", "/v1/bundle",
           ],
           contract: "api/CONTRACT.md",
