@@ -25,15 +25,20 @@ button:hover{background:#1d2a44}
 code{background:#f3f4f6;padding:.1rem .4rem;border-radius:5px;font-size:.85em;word-break:break-all}
 .keybox{background:#f8fafc;border:1px dashed var(--g200);border-radius:8px;padding:.8rem;margin-top:.8rem;font-family:ui-monospace,Consolas,monospace;font-size:.85rem;word-break:break-all}
 .note{font-size:.85rem;color:var(--g500);margin-top:1rem;line-height:1.6}
-</style><script src="assets/sso.js"></script>
+</style><script src="assets/sso.js?v=20260715a"></script>
 <script>
 // Clicking "Sign in" is explicit intent: if we're not signed in locally, always
 // re-check the family session — the silent once-per-session check may be stale
-// (e.g. you signed in on hfdatalibrary.com AFTER it ran). sso.js sets
-// window.__edl_ssoJustChecked when this page load IS the check's return trip,
-// which is what stops this from looping.
+// (e.g. you signed in on hfdatalibrary.com AFTER it ran). Loop protection must
+// NOT depend on sso.js being the matching version (browser caches hold old
+// copies): a return-trip fragment, the sso.js handshake, or a bounce started in
+// the last 30s each independently stop a re-bounce.
 (function () {
   if (localStorage.getItem('edl_key') || window.__edl_ssoJustChecked) return;
+  if (location.hash.indexOf('sso_key') !== -1) return;
+  var ts = +sessionStorage.getItem('edl_acct_bounce_ts') || 0;
+  if (Date.now() - ts < 30000) return;
+  sessionStorage.setItem('edl_acct_bounce_ts', String(Date.now()));
   location.replace('https://api.hfdatalibrary.com/v1/auth/sso?return=' + encodeURIComponent(location.origin + location.pathname));
 })();
 </script></head><body>
