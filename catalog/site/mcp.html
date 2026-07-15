@@ -69,6 +69,105 @@ dl dt{font-weight:600;color:var(--navy);margin-top:1rem}dl dd{margin:.3rem 0 0;c
 
 <div class="wrap">
 
+  <h2 id="setup">Set it up — pick your AI tool</h2>
+  <p id="keyhint">You need a free <a href="account.html">ElkassabgiData API key</a>. Browsing and searching work without one;
+  downloading data needs it. Replace <code>YOUR_KEY</code> below with your key — it's the same key you use on
+  hfdatalibrary.com. <a href="account.html">Sign in</a> and every snippet fills with your real key automatically.</p>
+
+  <div class="tabs">
+    <button class="tb active" data-tab="claude">Claude (app)</button>
+    <button class="tb" data-tab="claudecode">Claude Code</button>
+    <button class="tb" data-tab="cursor">Cursor</button>
+    <button class="tb" data-tab="gemini">Antigravity CLI</button>
+    <button class="tb" data-tab="chatgpt">ChatGPT</button>
+  </div>
+
+  <div class="tp active" id="tab-claude">
+    <h3>Claude — web, desktop &amp; mobile</h3>
+    <p class="req">Works on Free, Pro, Max, Team &amp; Enterprise (Free allows one custom connector). No install.</p>
+    <ol>
+      <li>Open <strong>Settings → Connectors</strong> in the Claude app or on claude.ai.</li>
+      <li>Click <strong>Add custom connector</strong>.</li>
+      <li>Name it <em>ElkassabgiData</em> and paste this URL (key embedded — nothing else to configure):
+        <div class="cb"><button>Copy</button><pre>https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=<span class="ekey">YOUR_KEY</span></pre></div>
+      </li>
+      <li>Click <strong>Add</strong>, then ask a data question. Claude will show the ElkassabgiData tools it uses.</li>
+    </ol>
+    <p style="font-size:.85rem;color:var(--g600)">Claude connects from Anthropic's cloud, so a hosted URL like ours works with no local setup.</p>
+  </div>
+
+  <div class="tp" id="tab-claudecode">
+    <h3>Claude Code (terminal)</h3>
+    <p class="req">One command. Install with <code>npm i -g @anthropic-ai/claude-code</code>.</p>
+    <ol>
+      <li>Add the server over HTTP transport:
+        <div class="cb"><button>Copy</button><pre>claude mcp add --transport http elkassabgidata \
+  "https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=<span class="ekey">YOUR_KEY</span>"</pre></div>
+      </li>
+      <li>Prefer a header instead of the URL? Use:
+        <div class="cb"><button>Copy</button><pre>claude mcp add --transport http elkassabgidata \
+  https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp \
+  --header "Authorization: Bearer <span class="ekey">YOUR_KEY</span>"</pre></div>
+      </li>
+      <li>Run <code>claude</code>, type <code>/mcp</code> to confirm it's connected, then ask away.</li>
+    </ol>
+  </div>
+
+  <div class="tp" id="tab-cursor">
+    <h3>Cursor</h3>
+    <p class="req">Add a global server in <code>~/.cursor/mcp.json</code> (or <strong>Settings → Tools &amp; MCP → New MCP Server</strong>).</p>
+    <ol>
+      <li>Open (or create) <code>~/.cursor/mcp.json</code>:
+        <div class="cb"><button>Copy</button><pre>{
+  "mcpServers": {
+    "elkassabgidata": {
+      "url": "https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp",
+      "headers": { "Authorization": "Bearer <span class="ekey">YOUR_KEY</span>" }
+    }
+  }
+}</pre></div>
+      </li>
+      <li>Save, then open <strong>Settings → Tools &amp; MCP</strong> and confirm <em>elkassabgidata</em> shows a green dot.</li>
+      <li>Ask a data question in Agent mode.</li>
+    </ol>
+  </div>
+
+  <div class="tp" id="tab-gemini">
+    <h3>Antigravity CLI</h3>
+    <p class="req">Google retired Gemini CLI on June 18, 2026 — its replacement is <strong>Antigravity CLI</strong> (the binary is <code>agy</code>). MCP servers live in a dedicated <code>mcp_config.json</code>, and remote servers use <code>serverUrl</code>.</p>
+    <ol>
+      <li>Add the server to <code>~/.gemini/antigravity-cli/mcp_config.json</code> (or <code>.agents/mcp_config.json</code> inside one project):
+        <div class="cb"><button>Copy</button><pre>{
+  "mcpServers": {
+    "elkassabgidata": {
+      "serverUrl": "https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp",
+      "headers": { "Authorization": "Bearer <span class="ekey">YOUR_KEY</span>" }
+    }
+  }
+}</pre></div>
+      </li>
+      <li>Start <code>agy</code> and ask it to list its tools — the <code>elkassabgidata</code> tools should appear.</li>
+      <li>Ask your question in the CLI.</li>
+    </ol>
+  </div>
+
+  <div class="tp" id="tab-chatgpt">
+    <h3>ChatGPT</h3>
+    <p class="req">Custom MCP connectors live in <strong>Developer Mode</strong> (web). Available on Plus, Pro, Business, Enterprise &amp; Edu.</p>
+    <ol>
+      <li>Go to <strong>Settings → Connectors → Advanced</strong> and turn on <strong>Developer Mode</strong>.</li>
+      <li>In <strong>Connectors</strong>, add a new remote MCP server with this URL:
+        <div class="cb"><button>Copy</button><pre>https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=<span class="ekey">YOUR_KEY</span></pre></div>
+      </li>
+      <li>Save and refresh the connector, then enable it from the tools menu in a chat and ask your question.</li>
+    </ol>
+    <p style="font-size:.85rem;color:var(--g600)">Note: ChatGPT is OpenAI's product (not built on Claude), but it speaks the same open MCP standard — so this one server works for Claude, ChatGPT, Gemini, and Cursor alike.</p>
+  </div>
+
+  <div class="warn"><strong>Your connect URL and configs contain your real key — treat them like a password.</strong>
+  Don't paste them into shared or public chats, or commit them to a public repo. If a key leaks, regenerate it from
+  <a href="account.html">your account page</a>; the old one revokes instantly.</div>
+
   <h2>New to MCP? Read this first.</h2>
   <div class="explain">
     <p><strong>MCP (Model Context Protocol)</strong> is a small, open standard that lets an AI assistant plug into an
@@ -125,104 +224,6 @@ dl dt{font-weight:600;color:var(--navy);margin-top:1rem}dl dd{margin:.3rem 0 0;c
   searches, reads real titles and units, and never invents a number — a wrong guess returns an honest "not found,"
   never fake data.</p>
 
-  <h2 id="setup">Set it up — pick your AI tool</h2>
-  <p id="keyhint">You need a free <a href="account.html">ElkassabgiData API key</a>. Browsing and searching work without one;
-  downloading data needs it. Replace <code>YOUR_KEY</code> below with your key — it's the same key you use on
-  hfdatalibrary.com. <a href="account.html">Sign in</a> and every snippet fills with your real key automatically.</p>
-
-  <div class="tabs">
-    <button class="tb active" data-tab="claude">Claude (app)</button>
-    <button class="tb" data-tab="claudecode">Claude Code</button>
-    <button class="tb" data-tab="cursor">Cursor</button>
-    <button class="tb" data-tab="gemini">Gemini CLI</button>
-    <button class="tb" data-tab="chatgpt">ChatGPT</button>
-  </div>
-
-  <div class="tp active" id="tab-claude">
-    <h3>Claude — web, desktop &amp; mobile</h3>
-    <p class="req">Works on Free, Pro, Max, Team &amp; Enterprise (Free allows one custom connector). No install.</p>
-    <ol>
-      <li>Open <strong>Settings → Connectors</strong> in the Claude app or on claude.ai.</li>
-      <li>Click <strong>Add custom connector</strong>.</li>
-      <li>Name it <em>ElkassabgiData</em> and paste this URL (key embedded — nothing else to configure):
-        <div class="cb"><button>Copy</button><pre>https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=<span class="ekey">YOUR_KEY</span></pre></div>
-      </li>
-      <li>Click <strong>Add</strong>, then ask a data question. Claude will show the ElkassabgiData tools it uses.</li>
-    </ol>
-    <p style="font-size:.85rem;color:var(--g600)">Claude connects from Anthropic's cloud, so a hosted URL like ours works with no local setup.</p>
-  </div>
-
-  <div class="tp" id="tab-claudecode">
-    <h3>Claude Code (terminal)</h3>
-    <p class="req">One command. Install with <code>npm i -g @anthropic-ai/claude-code</code>.</p>
-    <ol>
-      <li>Add the server over HTTP transport:
-        <div class="cb"><button>Copy</button><pre>claude mcp add --transport http elkassabgidata \
-  "https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=<span class="ekey">YOUR_KEY</span>"</pre></div>
-      </li>
-      <li>Prefer a header instead of the URL? Use:
-        <div class="cb"><button>Copy</button><pre>claude mcp add --transport http elkassabgidata \
-  https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp \
-  --header "Authorization: Bearer <span class="ekey">YOUR_KEY</span>"</pre></div>
-      </li>
-      <li>Run <code>claude</code>, type <code>/mcp</code> to confirm it's connected, then ask away.</li>
-    </ol>
-  </div>
-
-  <div class="tp" id="tab-cursor">
-    <h3>Cursor</h3>
-    <p class="req">Add a global server in <code>~/.cursor/mcp.json</code> (or <strong>Settings → Tools &amp; MCP → New MCP Server</strong>).</p>
-    <ol>
-      <li>Open (or create) <code>~/.cursor/mcp.json</code>:
-        <div class="cb"><button>Copy</button><pre>{
-  "mcpServers": {
-    "elkassabgidata": {
-      "url": "https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp",
-      "headers": { "Authorization": "Bearer <span class="ekey">YOUR_KEY</span>" }
-    }
-  }
-}</pre></div>
-      </li>
-      <li>Save, then open <strong>Settings → Tools &amp; MCP</strong> and confirm <em>elkassabgidata</em> shows a green dot.</li>
-      <li>Ask a data question in Agent mode.</li>
-    </ol>
-  </div>
-
-  <div class="tp" id="tab-gemini">
-    <h3>Gemini CLI</h3>
-    <p class="req">Configure in <code>~/.gemini/settings.json</code>. Gemini uses <code>httpUrl</code> (not <code>url</code>) for remote servers.</p>
-    <ol>
-      <li>Add the server:
-        <div class="cb"><button>Copy</button><pre>{
-  "mcpServers": {
-    "elkassabgidata": {
-      "httpUrl": "https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp",
-      "headers": { "Authorization": "Bearer <span class="ekey">YOUR_KEY</span>" }
-    }
-  }
-}</pre></div>
-      </li>
-      <li>Start <code>gemini</code> and run <code>/mcp</code> to verify the server and tools loaded.</li>
-      <li>Ask your question in the CLI.</li>
-    </ol>
-  </div>
-
-  <div class="tp" id="tab-chatgpt">
-    <h3>ChatGPT</h3>
-    <p class="req">Custom MCP connectors live in <strong>Developer Mode</strong> (web). Available on Plus, Pro, Business, Enterprise &amp; Edu.</p>
-    <ol>
-      <li>Go to <strong>Settings → Connectors → Advanced</strong> and turn on <strong>Developer Mode</strong>.</li>
-      <li>In <strong>Connectors</strong>, add a new remote MCP server with this URL:
-        <div class="cb"><button>Copy</button><pre>https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=<span class="ekey">YOUR_KEY</span></pre></div>
-      </li>
-      <li>Save and refresh the connector, then enable it from the tools menu in a chat and ask your question.</li>
-    </ol>
-    <p style="font-size:.85rem;color:var(--g600)">Note: ChatGPT is OpenAI's product (not built on Claude), but it speaks the same open MCP standard — so this one server works for Claude, ChatGPT, Gemini, and Cursor alike.</p>
-  </div>
-
-  <div class="warn"><strong>Your connect URL and configs contain your real key — treat them like a password.</strong>
-  Don't paste them into shared or public chats, or commit them to a public repo. If a key leaks, regenerate it from
-  <a href="account.html">your account page</a>; the old one revokes instantly.</div>
 
   <h2>The tools your AI gets</h2>
   <table>
@@ -252,7 +253,7 @@ dl dt{font-weight:600;color:var(--navy);margin-top:1rem}dl dd{margin:.3rem 0 0;c
   <h2>Troubleshooting</h2>
   <dl>
     <dt>The AI can't reach the server.</dt>
-    <dd>Confirm the URL is exactly <code>https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp</code>. In Claude Code and Gemini CLI, run <code>/mcp</code> to see status.</dd>
+    <dd>Confirm the URL is exactly <code>https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp</code>. In Claude Code, run <code>/mcp</code> to see the connection status.</dd>
     <dt>Search works, but downloads fail with an auth error.</dt>
     <dd>Your key is missing or wrong. Copy it from <a href="account.html">your account page</a>. Search and metadata are keyless; only <code>get_econ_series</code> and HF downloads need the key.</dd>
     <dt>It found the wrong series.</dt>
