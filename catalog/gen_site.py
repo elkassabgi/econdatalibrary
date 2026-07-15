@@ -177,6 +177,74 @@ def first_sentence(text, limit=300):
 # ---------------------------------------------------------------------------- #
 #  Load the registry + sidecar
 # ---------------------------------------------------------------------------- #
+_FREQ_WORDS = {"annually", "annual", "monthly", "quarterly", "daily", "weekly"}
+
+
+def _derive_subtitles(con):
+    """A short human subtitle per source, derived from its own series titles.
+
+    Whole facet families share one source name (38 UNCTAD tables, 30 IMF
+    datasets, 25 FAOSTAT domains, 3 WHO themes...), so cards were identical
+    and only the source id disambiguated (owner-reported). Per source: split
+    titles on dashes, drop frequency words and high-cardinality segments
+    (geographies/entities), and show the top remaining indicator stems.
+    Derived from the FULL registry, never invented; curated overrides in
+    SOURCE_SUBTITLES win where hand wording is better.
+    """
+    from collections import Counter, defaultdict
+    per = defaultdict(list)
+    for sid, title in con.execute("SELECT source_id, title FROM series"):
+        t = re.sub(r"\s+[–—]\s+", " - ", (title or "").strip())
+        t = re.sub(r"\s*\((?:Annually|Monthly|Quarterly|Daily|Weekly)\)\s*$", "", t, flags=re.I)
+        per[sid].append([p.strip() for p in t.split(" - ") if p.strip()])
+    subs = {}
+    for sid, rows in per.items():
+        n = len(rows)
+        if n <= 40:
+            c = Counter(" - ".join(r) for r in rows)
+            top = [s for s, _ in c.most_common(3)]
+        else:
+            width = max(len(r) for r in rows)
+            keep = []
+            for i in range(width):
+                vals = Counter(r[i] for r in rows if len(r) > i)
+                if not vals:
+                    continue
+                low_card = len(vals) <= 30
+                freqish = all(v.lower() in _FREQ_WORDS for v in vals)
+                if low_card and not freqish:
+                    keep.append(i)
+                if len(keep) >= 2:
+                    break
+            stems = Counter()
+            for r in rows:
+                s = " - ".join(r[i] for i in keep if len(r) > i)
+                stems[s or r[0]] += 1
+            top = [s for s, _ in stems.most_common(3) if s]
+        out = "; ".join(dict.fromkeys(t for t in top if t))
+        if len(out) > 140:
+            out = out[:137] + "…"
+        subs[sid] = out
+    return subs
+
+
+# Hand-curated subtitles where the derived stems read poorly. Wording is
+# checked against the store's actual series (never invented coverage).
+SOURCE_SUBTITLES = {
+    "who_hwf": "Health workforce — medical doctors, nurses, midwives and other health workers per 10,000 population",
+    "who_rs": "Road safety — traffic mortality, registered vehicles, and related population denominators",
+    "who_sdg": "Health-related SDG indicators — mortality and death rates, disease burden, pollution-attributable deaths",
+    "imf_weo": "World Economic Outlook — GDP, prices, fiscal and external balances across economies and country groups",
+    "imf_cofer": "Currency composition of official foreign exchange reserves (COFER)",
+    "eurostat": "European official statistics — economy, prices, population, industry, transport, environment",
+    "bundesbank": "Exchange rates, interest rates, money and banking, and macroeconomic time series for Germany and the euro area",
+    "worldbank_wdi": "World Development Indicators — economy, people, environment and infrastructure for all countries",
+    "comtrade": "Merchandise trade — total imports and exports by reporter country (HS, all commodities)",
+    "damodaran": "Valuation datasets — equity risk premiums, betas, margins, costs of capital by industry",
+    "social_progress": "Social Progress Index — official interactive embed (dataset not redistributed, by written permission)",
+}
+
+
 def load_registry():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
@@ -201,6 +269,10 @@ def load_registry():
     """
     for r in con.execute(q):
         series_roll[r["source_id"]] = dict(r)
+
+    for sid, s in _derive_subtitles(con).items():
+        if sid in series_roll:
+            series_roll[sid]["auto_subtitle"] = s
 
     # Distinct frequency / category per source (small sets -> fetch separately).
     freqs, cats, geos = {}, {}, {}
@@ -369,7 +441,13 @@ _SOURCE_TOPICS = {
     "social_progress": ["Society & Well-Being"],
     "ppi": ["Society & Well-Being"],
     "etr": ["Society & Well-Being"],
-    "oxcgrt": ["Society & Well-Being"],
+    "oxcgrt": ["Health", "Society & Well-Being"],
+    "who_": ["Health"],
+    "unesco_clte": ["Culture & Media"],
+    "unesco_cltt": ["Culture & Media", "International Trade"],
+    "unesco_film": ["Culture & Media"],
+    "unesco_dem": ["Population & Demographics"],
+    "unesco_inno": ["Science & Innovation"],
     "un_wpp": ["Population & Demographics"],
     "ilo": ["Labour Markets"],
     "ilostat": ["Labour Markets"],
@@ -475,6 +553,7 @@ def build_record(sid, src, lic, roll, side, s5=None):
                                   + source_topics(sid)))
                        or [_PILLAR_DEFAULT_TOPIC[classify_pillar(
                            {"id": sid, "name": src.get("name") or sid})]]),
+        "subtitle": SOURCE_SUBTITLES.get(sid) or (roll or {}).get("auto_subtitle") or "",
         "n_geo": (roll or {}).get("n_geo", 0),
         "last_updated": sane_date((roll or {}).get("last_updated")),
         # operational (sidecar) extras -- display only
@@ -1066,6 +1145,10 @@ _PILLAR_BY_ID = {
     "gti": "society", "ppi": "society", "etr": "society",
     "social_progress": "society", "global_findex": "society", "pip": "society",
     "un_wpp": "society", "gleif": "society", "ilo": "society", "ilostat": "society",
+    "who_gho": "society", "who_hwf": "society", "who_rs": "society",
+    "who_sdg": "society", "oxcgrt": "society", "unesco_clte": "society",
+    "unesco_cltt": "society", "unesco_dem": "society", "unesco_film": "society",
+    "unesco_inno": "society",
     # energy & environment
     "eia": "energy", "irena": "energy", "ember": "energy", "gcb": "energy",
     "nasa_giss": "energy", "noaa": "energy", "ei_statreview": "energy",
@@ -1081,9 +1164,10 @@ _PILLAR_BY_ID = {
     "edgar_pointers": "money", "zillow": "money", "fhfa": "money",
     "imf_commodity": "money", "imf_cpi": "money",
 }
+# NOTE: no "monetary" keyword — it would misfile every "International
+# Monetary Fund" dataset under the Money pillar; the Macro tile names the IMF.
 _MONEY_KEYS = ("central bank", "bank of", "banco", "bundesbank", "reserve bank",
-               "federal reserve", "riksbank", "norges", "national bank",
-               "monetary", "evds")
+               "federal reserve", "riksbank", "norges", "national bank", "evds")
 _MONEY_IDS = {"ecb", "ecb_sdmx", "bis", "rba", "nbp", "snb", "boe", "tcmb",
               "cnb", "bcb", "bcrp", "boc", "nyfed", "fed_board", "bundesbank",
               "norgesbank", "riksbank"}
@@ -1136,12 +1220,11 @@ def _catalog_idx(records):
         {
             "id": r["id"],
             "name": r["name"],
-            # No blurb on catalog cards: the operational `description` is an
-            # internal ingest note (URLs, "grouped ingest", "License:/Source:")
-            # with no clean human lead for most sources. The card is already
-            # informative from name + license + category badges + series count;
-            # the full description stays on each dataset page.
-            "desc": "",
+            # Card blurb = the per-source subtitle (curated or derived from the
+            # source's own series titles) — NOT the raw ingest `description`,
+            # which is an internal note. Disambiguates facet families that
+            # share one name (WHO/UNCTAD/IMF/FAO/UNESCO).
+            "desc": r.get("subtitle") or "",
             "license": r["license_label"],
             "reservable": r["reservable"],
             "cats": r["categories"],
