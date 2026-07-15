@@ -248,6 +248,26 @@ export async function handlePublicStats(env: Env): Promise<Response> {
     .sort((a, b) => b.users - a.users)
     .slice(0, 50);
 
+  // Most-downloaded sources. The log's source is the series_id prefix before
+  // the first ':'. CRITICAL: the log contains HISTORICAL downloads of sources
+  // that have since been PURGED from the catalog (e.g. WTO) — naming those
+  // would resurrect them. So we WHITELIST strictly against the current catalog
+  // `source` table: a downloaded source appears only if it is still catalogued,
+  // and is displayed with the catalog's own name. Purged sources vanish.
+  const dlBySource = await U.prepare(
+    "SELECT substr(series_id, 1, instr(series_id, ':') - 1) AS source, " +
+    "COUNT(*) AS downloads FROM econ_download_log WHERE instr(series_id, ':') > 0 " +
+    "GROUP BY source ORDER BY downloads DESC LIMIT 200",
+  ).all<{ source: string; downloads: number }>();
+  const catRows = await env.CATALOG.prepare("SELECT source_id, name FROM source")
+    .all<{ source_id: string; name: string }>();
+  const catName: Record<string, string> = {};
+  for (const r of catRows.results ?? []) catName[r.source_id] = r.name || r.source_id;
+  const topSources = (dlBySource.results ?? [])
+    .filter((r) => r.source && catName[r.source] !== undefined) // whitelist: still catalogued
+    .slice(0, 5)
+    .map((r) => ({ source_id: r.source, name: catName[r.source], downloads: r.downloads }));
+
   return json({
     total_users: totalUsers?.c ?? 0,
     total_downloads: totalDl?.c ?? 0,
@@ -257,5 +277,6 @@ export async function handlePublicStats(env: Env): Promise<Response> {
     country_count: Object.keys(userCountryMap).length,
     institutions,
     institution_count: institutions.length,
+    top_sources: topSources,
   });
 }

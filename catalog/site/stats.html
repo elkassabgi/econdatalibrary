@@ -132,19 +132,26 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 #country-badges{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center;margin-top:1.3rem}
 .cbadge{padding:.28rem .7rem;border-radius:20px;font-size:.82rem;font-weight:500;background:#1e3a8a;color:#fff}
 .reach-key{text-align:center;color:var(--g500);font-size:.9rem;margin:.2rem 0 1rem}
-.inst-list{font-size:.92rem;columns:2;column-gap:2.2rem;margin-top:.4rem}
-.inst-row{padding:.26rem 0;break-inside:avoid;color:var(--navy)}
-.inst-more{cursor:pointer;color:var(--blue);font-weight:600;padding:.55rem 0;column-span:all;border-top:1px solid var(--g200);margin-top:.5rem}
+.twocol{display:grid;grid-template-columns:1fr 1fr;gap:2rem;margin:.5rem 0}
+.dlbar{margin-bottom:.85rem}
+.dlname{font-size:.87rem;color:var(--navy);font-weight:600;display:block;margin-bottom:.28rem}
+.dlrow{display:flex;align-items:center;gap:.6rem}
+.dlfill{height:20px;background:var(--blue);border-radius:4px;min-width:3px}
+.dlcount{font-family:var(--mono);font-size:.8rem;color:var(--g500);white-space:nowrap}
+.inst-list{font-size:.92rem;margin-top:.4rem}
+.inst-row{display:flex;align-items:center;padding:.26rem 0;color:var(--navy)}
+.inst-ic{display:inline-block;width:20px;margin-right:8px;text-align:center;flex-shrink:0}
+.inst-more{cursor:pointer;color:var(--blue);font-weight:600;padding:.55rem 0;border-top:1px solid var(--g200);margin-top:.5rem}
 .inst-more:hover{color:var(--gold-deep)}
 .inst-sign{display:inline-block;width:16px;font-family:var(--mono)}
 .actgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:.4rem 0}
 .actcard{background:var(--g50);border:1px solid var(--g200);border-radius:10px;padding:1.1rem;text-align:center}
 .anum{font-family:var(--mono);font-size:1.45rem;font-weight:700;color:var(--navy)}
 .alabel{font-size:.78rem;color:var(--g500);margin-top:.2rem}
-@media(max-width:640px){.statgrid{grid-template-columns:repeat(2,1fr)}.actgrid{grid-template-columns:1fr}.inst-list{columns:1}}
+@media(max-width:640px){.statgrid{grid-template-columns:repeat(2,1fr)}.actgrid{grid-template-columns:1fr}.twocol{grid-template-columns:1fr}}
 </style>
 
-<p class="lead">Live usage for the Econ Data Library. Registered users, the world map, and the institutions are the <strong>shared ElkassabgiData community</strong> &mdash; one free account works across every library, so they're identical to the HF Data Library. Data volume and downloads are this library's own.</p>
+<p class="lead">Real-time usage for the Econ Data Library, updated live from the database.</p>
 
 <div class="statgrid">
   <div class="bigstat"><div class="bnum" id="s-users">&mdash;</div><div class="blabel">Registered Users</div></div>
@@ -152,21 +159,21 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   <div class="bigstat"><div class="bnum" id="s-series">&mdash;</div><div class="blabel">Individual Series</div></div>
   <div class="bigstat"><div class="bnum" id="s-downloads">&mdash;</div><div class="blabel">Data Downloads</div></div>
 </div>
-<p class="dlnote">Downloads are this library's own, counted separately from the HF Data Library (shared login, per-library counters).</p>
-
 <h2>Global Reach</h2>
-<p class="reach-key">The shared ElkassabgiData community &mdash; <span id="s-usercountries">&mdash;</span> countries with registered users. Darker = more users.</p>
+<p class="reach-key"><span id="s-usercountries">&mdash;</span> countries with registered users. Darker = more users.</p>
 <div id="world-map"><p style="text-align:center;color:var(--g500);padding-top:190px">Loading map&hellip;</p></div>
 <div id="country-badges"></div>
 
-<h2>Institutions Represented</h2>
-<div id="institution-list"><p style="color:var(--g500)">Loading&hellip;</p></div>
+<div class="twocol">
+  <div><h2>Most Downloaded Sources</h2><div id="dl-chart"><p style="color:var(--g500)">Loading&hellip;</p></div></div>
+  <div><h2>Institutions Represented</h2><div id="institution-list"><p style="color:var(--g500)">Loading&hellip;</p></div></div>
+</div>
 
 <h2>At a Glance</h2>
 <div class="actgrid">
+  <div class="actcard"><div class="anum" id="s-today">&mdash;</div><div class="alabel">Downloads Today</div></div>
+  <div class="actcard"><div class="anum" id="s-week">&mdash;</div><div class="alabel">Downloads This Week</div></div>
   <div class="actcard"><div class="anum" id="s-usercountries2">&mdash;</div><div class="alabel">Countries with Users</div></div>
-  <div class="actcard"><div class="anum">6</div><div class="alabel">Interface Languages</div></div>
-  <div class="actcard"><div class="anum">Year&nbsp;1&nbsp;CE</div><div class="alabel">Data Reaches Back To</div></div>
 </div>
 
 <script src="https://www.gstatic.com/charts/loader.js"></script>
@@ -194,18 +201,34 @@ function drawMap(){
   document.getElementById('country-badges').innerHTML=us.map(function(e){return '<span class="cbadge">'+flag(e[0])+' '+countryName(e[0])+'</span>';}).join('');
 }
 function toggleInst(){var m=document.getElementById('inst-more'),s=document.getElementById('inst-sign'); if(!m||!s)return; var o=m.style.display!=='none'; m.style.display=o?'none':'block'; s.textContent=o?'+':'-';}
+// Verified school domains -> favicon (mirrors hf). Only mapped names get an
+// icon; unmapped ones render a blank fixed-width slot (never a guessed/wrong logo).
+var INST_DOMAINS={'University of Central Arkansas':'uca.edu','Stanford University':'stanford.edu','Renmin University of China':'CUSTOM:https://upload.wikimedia.org/wikipedia/en/thumb/1/11/Renmin_University_of_China_logo.svg/250px-Renmin_University_of_China_logo.svg.png','Georgia Institute of Technology':'gatech.edu','Copenhagen Business School':'cbs.dk','Texas State University':'txst.edu','Texas A&M international University':'tamiu.edu','Konkuk University Graduate School':'www.konkuk.ac.kr','University of Southern Mississippi':'usm.edu','University of Wisconsin-Madison':'wisc.edu','University of Sydney':'sydney.edu.au','Shanghai University of Finance and Economics':'www.shufe.edu.cn','TeleAI':'teleai.com','Moscow Institute of Physics and Technology':'mipt.ru','University of Nottingham':'nottingham.ac.uk','University of Maryland, College Park':'umd.edu','University of Medicine and Pharmacy of Craiova':'umfcv.ro','University of Portsmouth':'port.ac.uk','Toronto Metropolitan University':'torontomu.ca','BITS Pilani':'bits-pilani.ac.in','Central China Normal University':'www.ccnu.edu.cn','Yanan University':'yau.edu.cn','University of North Carolina':'unc.edu','University of Arkansas':'uark.edu','Saint Peter\'s University':'saintpeters.edu','Erasmus Universiteit Rotterdam':'eur.nl','Stanford':'stanford.edu','University of Manchester':'manchester.ac.uk','Singapore university of technology and design':'sutd.edu.sg','Hongkong university':'hku.hk','HKUST':'hkust.edu.hk','Michigan':'umich.edu','University of Bath':'bath.ac.uk','University of bath':'bath.ac.uk','University of Milan-Bicocca':'CUSTOM:https://upload.wikimedia.org/wikipedia/commons/thumb/7/7b/Milano-Bicocca_University_logo_on_transparent_background.svg/250px-Milano-Bicocca_University_logo_on_transparent_background.svg.png','Salem University':'CUSTOM:https://upload.wikimedia.org/wikipedia/commons/thumb/2/29/Salem_University_logo_green.svg/250px-Salem_University_logo_green.svg.png','École de Technologie Supérieure':'etsmtl.ca','Creative Robots':'creative-robots.com','Harvard University':'harvard.edu','MIT':'mit.edu','Massachusetts Institute of Technology':'mit.edu','Yale University':'yale.edu','Princeton University':'princeton.edu','Columbia University':'columbia.edu','University of Chicago':'uchicago.edu','New York University':'nyu.edu','University of Pennsylvania':'upenn.edu','Duke University':'duke.edu','Northwestern University':'northwestern.edu','University of Michigan':'umich.edu','University of California, Berkeley':'berkeley.edu','UCLA':'ucla.edu','London School of Economics':'lse.ac.uk','University of Oxford':'ox.ac.uk','University of Cambridge':'cam.ac.uk','London Business School':'london.edu','University of Toronto':'utoronto.ca','National University of Singapore':'nus.edu.sg','Peking University':'pku.edu.cn','Tsinghua University':'www.tsinghua.edu.cn','University of Hong Kong':'hku.hk','ETH Zurich':'ethz.ch','University of Texas at Austin':'utexas.edu','University of Illinois':'illinois.edu','Cornell University':'cornell.edu','Carnegie Mellon University':'cmu.edu','University of Wisconsin':'wisc.edu','University of Minnesota':'umn.edu','Ohio State University':'osu.edu','University of Florida':'ufl.edu','University of Washington':'uw.edu','Boston University':'bu.edu','University of Southern California':'usc.edu','Erasmus University Rotterdam':'eur.nl','Fordham University':'fordham.edu','Old Dominion University':'odu.edu','East Carolina University':'ecu.edu','Oregon State University':'oregonstate.edu','Portland State University':'pdx.edu','Queensland University of Technology':'qut.edu.au','Postech':'postech.ac.kr','Erciyes Universitesi':'erciyes.edu.tr','Escuela superior politecnica de chimborazo':'espoch.edu.ec','Faculty of Economics and Business, University of Zagreb':'efzg.hr','Hasso Plattner Institute':'hpi.de','American Public University System':'apus.edu','College of Marin':'marin.edu','IIITG':'iiitg.ac.in','Amazon':'amazon.com','NVIDIA':'nvidia.com','MBBANK':'www.mbbank.com.vn','Heidelberg University':'uni-heidelberg.de','Hanyang':'hanyang.ac.kr','National Chengchi University':'www.nccu.edu.tw','Abertay':'abertay.ac.uk','CMU':'cmu.edu'};
+var INST_PRESTIGE={'Stanford University':10,'Stanford':10,'National University of Singapore':20,'Cornell University':30,'University of Hong Kong':40,'Hongkong university':40,'HKUST':45,'University of Sydney':50,'University of Manchester':60,'University of Michigan':70,'Michigan':70,'University of Maryland, College Park':80,'Georgia Institute of Technology':90,'University of Illinois':100,'University of Nottingham':110,'University of Bath':115,'University of bath':115,'University of North Carolina':120,'Erasmus Universiteit Rotterdam':130,'University of Wisconsin-Madison':140,'University of Minnesota':150,'Ohio State University':160,'Moscow Institute of Physics and Technology':170,'Copenhagen Business School':180,'Singapore university of technology and design':190,'Toronto Metropolitan University':200,'Renmin University of China':210,'Shanghai University of Finance and Economics':220,'BITS Pilani':230,'Konkuk University Graduate School':240,'Central China Normal University':250,'University of Portsmouth':260,'University of Arkansas':270,'Texas State University':280,'University of Central Arkansas':290,'University of Southern Mississippi':300,'Yanan University':310,'University of Milan-Bicocca':315,'École de Technologie Supérieure':318,'Saint Peter\'s University':320,'Texas A&M international University':330,'University of Medicine and Pharmacy of Craiova':340,'Salem University':350,'Harvard University':5,'University of Oxford':8,'University of Cambridge':9,'Columbia University':25,'Northwestern University':35,'Postech':55,'Erasmus University Rotterdam':130,'Oregon State University':165,'Hasso Plattner Institute':175,'Queensland University of Technology':205,'IIITG':235,'Faculty of Economics and Business, University of Zagreb':255,'Fordham University':285,'Portland State University':295,'Old Dominion University':305,'East Carolina University':308,'Erciyes Universitesi':325,'Escuela superior politecnica de chimborazo':345,'American Public University System':360,'Kantonsschule Zug':370,'College of Marin':372,'Amazon':9000,'NVIDIA':9000,'MBBANK':9000,'Soros Fund Management':9000,'Creative Robots':9000};
+function instIcon(name){var val=INST_DOMAINS[name]; var inner=''; if(val){var url=val.indexOf('CUSTOM:')===0?val.substring(7):'https://www.google.com/s2/favicons?sz=32&domain='+val; inner='<img src="'+url+'" width="20" height="20" style="vertical-align:middle;border-radius:3px;object-fit:contain" onerror="this.style.display=\'none\'" alt="">';} return '<span class="inst-ic">'+inner+'</span>';}
 async function load(){
   try{ var r=await fetch(ECON+'/v1/public-stats'); if(r.ok){var d=await r.json();
     set('s-users',(d.total_users||0).toLocaleString());
     if(d.total_downloads!=null)set('s-downloads',Number(d.total_downloads).toLocaleString());
+    if(d.downloads_today!=null)set('s-today',Number(d.downloads_today).toLocaleString());
+    if(d.downloads_this_week!=null)set('s-week',Number(d.downloads_this_week).toLocaleString());
     var cc=d.country_count||Object.keys(d.countries||{}).length;
     set('s-usercountries',cc); set('s-usercountries2',cc);
     mapData={users:d.countries||{}};
     if(chartsReady)drawMap();
+    // Most downloaded sources — endpoint already whitelists against the catalog
+    // (purged sources like WTO can never appear); names are the catalog's own.
+    if(d.top_sources&&d.top_sources.length){
+      var maxDl=d.top_sources[0].downloads||1;
+      document.getElementById('dl-chart').innerHTML=d.top_sources.map(function(t){
+        return '<div class="dlbar"><span class="dlname">'+t.name+'</span><div class="dlrow"><div class="dlfill" style="width:'+Math.max(3,(t.downloads/maxDl)*100)+'%"></div><span class="dlcount">'+Number(t.downloads).toLocaleString()+'</span></div></div>';
+      }).join('');
+    } else { document.getElementById('dl-chart').innerHTML='<p style="color:var(--g500)">No downloads yet.</p>'; }
+    // Institutions — prestige-ordered, with verified icons (mirrors hf)
     if(d.institutions&&d.institutions.length){
-      var names=d.institutions.map(function(i){return i.institution;}).filter(Boolean);
-      var TOP=24, top=names.slice(0,TOP), rest=names.slice(TOP);
-      var row=function(n){return '<div class="inst-row">'+n+'</div>';};
+      var sorted=d.institutions.slice().sort(function(a,b){var ar=INST_PRESTIGE[a.institution]||9999, br=INST_PRESTIGE[b.institution]||9999; if(ar!==br)return ar-br; return a.institution.localeCompare(b.institution);});
+      var TOP=20, top=sorted.slice(0,TOP), rest=sorted.slice(TOP);
+      var row=function(i){return '<div class="inst-row">'+instIcon(i.institution)+'<span>'+i.institution+'</span></div>';};
       var html='<div class="inst-list">'+top.map(row).join('');
       if(rest.length){html+='<div class="inst-more" onclick="toggleInst()"><span id="inst-sign" class="inst-sign">+</span> Other institutions ('+rest.length+')</div><div id="inst-more" style="display:none">'+rest.map(row).join('')+'</div>';}
       html+='</div>';
