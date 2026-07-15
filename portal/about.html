@@ -19,6 +19,13 @@ body{font-family:var(--sans);color:#1f2937;background:#fff;line-height:1.75}
 .wrap p{margin:0 0 1.15rem;color:#374151;font-size:1.02rem}
 .leadline{font-size:1.3rem;font-family:var(--serif);color:var(--navy);font-weight:700;margin-bottom:1.3rem}
 .sig{margin-top:1.6rem;font-family:var(--serif);font-size:1.05rem;color:var(--navy)}
+.founder{display:flex;align-items:center;gap:1.4rem;margin:0 0 2rem;padding:1.2rem 1.4rem;
+border:1px solid var(--g200);border-radius:14px;background:#fafafa}
+.founder img{width:120px;height:120px;border-radius:50%;object-fit:cover;object-position:top;
+border:3px solid var(--gold);flex-shrink:0}
+.founder .fname{font-family:var(--serif);font-weight:700;font-size:1.15rem;color:var(--navy);margin:0 0 .2rem}
+.founder p{margin:0;color:var(--g600);font-size:.95rem}
+@media (max-width:560px){.founder{flex-direction:column;text-align:center}}
 a{color:var(--blue)}
 .back{display:inline-block;margin-top:2rem;color:var(--blue);text-decoration:none;font-weight:600}
 .footer{background:var(--navy);color:rgba(255,255,255,.7);text-align:center;padding:2rem 0;font-size:.9rem}
@@ -62,6 +69,15 @@ a{color:var(--blue)}
 </section>
 
 <div class="wrap">
+<div class="founder">
+  <img src="ahmed-elkassabgi.png" alt="Ahmed Elkassabgi" width="426" height="600">
+  <div>
+    <p class="fname">Ahmed Elkassabgi</p>
+    <p>Associate Professor of Finance, University of Central Arkansas<br>
+    Founder &amp; maintainer of the ElkassabgiData libraries<br>
+    <a href="https://orcid.org/0000-0002-5926-7493">ORCID 0000-0002-5926-7493</a></p>
+  </div>
+</div>
 <p class="leadline">How ElkassabgiData started with a wall.</p>
 
 <p>I'm a finance professor, and for years my research ran into the same wall: the data I needed to answer real questions sat behind paywalls that cost tens of thousands of dollars a year. Intraday equity data through TAQ and CRSP. Macro series scattered across a hundred national statistics offices, central banks, and international agencies — each in its own format, its own license, its own language. If your institution could afford WRDS, you were in. If it couldn't — or if you were a graduate student, an independent researcher, or a scholar at a smaller university anywhere in the world — you were locked out of your own field's evidence.</p>
