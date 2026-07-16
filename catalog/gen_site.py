@@ -2236,7 +2236,7 @@ def render_contact():
     body = """
 <div style="text-align:center;margin:1.2rem 0 2.2rem">
   <h2 style="border:none;margin:0 0 .3rem;font-size:1.45rem">Ahmed Elkassabgi</h2>
-  <p style="color:var(--g500);margin:.1rem 0">Associate Professor of Finance</p>
+  <p style="color:var(--g500);margin:.1rem 0">Assistant Professor of Finance</p>
   <p style="color:var(--g500);margin:.1rem 0">University of Central Arkansas</p>
 </div>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;margin-bottom:2.2rem">
