@@ -230,7 +230,7 @@ async function load(){
     mapData={users:d.countries||{},visitors:d.visitor_countries||{}};
     if(chartsReady)drawMap();
     // Most downloaded sources — endpoint already whitelists against the catalog
-    // (purged sources like WTO can never appear); names are the catalog's own.
+    // (purged sources can never appear); names are the catalog's own.
     if(d.top_sources&&d.top_sources.length){
       var maxDl=d.top_sources[0].downloads||1;
       document.getElementById('dl-chart').innerHTML=d.top_sources.map(function(t){
