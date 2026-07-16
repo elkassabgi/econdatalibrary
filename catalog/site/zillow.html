@@ -16,12 +16,18 @@
 --sans:"Inter",system-ui,sans-serif;--mono:"JetBrains Mono",monospace}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--sans);color:var(--g800);background:#fff;line-height:1.6}
-.nav{background:var(--navy);color:#fff;position:sticky;top:0;z-index:50}
-.nav-in{max-width:1200px;margin:0 auto;padding:0 1.5rem;height:60px;display:flex;
+.nav{background:var(--navy);color:#fff;position:sticky;top:0;z-index:50;
+box-shadow:0 2px 8px rgba(0,0,0,.15)}
+.nav-in{max-width:1200px;margin:0 auto;padding:0 1.5rem;height:64px;display:flex;
 align-items:center;justify-content:space-between}
 .brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}
 .brand .d{color:var(--gold)}.brand a{color:#fff;text-decoration:none}
-.nav a{color:rgba(255,255,255,.8);text-decoration:none;font-size:.9rem;margin-left:1rem}
+/* nav links mirror hfdatalibrary.com exactly: padded pills, hover + active
+   highlight (rgba white .1 background), same rhythm and bar height (64px). */
+.nav-links{display:flex;gap:.1rem;align-items:center;white-space:nowrap}
+.nav-links a{color:rgba(255,255,255,.8);text-decoration:none;padding:.5rem .75rem;
+border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-space:nowrap}
+.nav-links a:hover,.nav-links a.active{color:#fff;background:rgba(255,255,255,.1)}
 .wrap{max-width:920px;margin:0 auto;padding:2rem 1.5rem}
 .crumb{font-size:.82rem;color:var(--g500);margin-bottom:1rem}
 .crumb a{color:var(--blue);text-decoration:none}
@@ -77,7 +83,8 @@ color:var(--g500);min-height:32px;line-height:32px;padding:0 1.5rem}
 .status-bar .sb-in{max-width:1200px;margin:0 auto;display:flex;justify-content:space-between;
 align-items:center;flex-wrap:wrap;gap:.25rem}
 .nav .signin{background:var(--gold);color:var(--navy)!important;padding:.4rem .875rem;
-border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:1rem}
+border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:.65rem}
+.nav .signin:hover{background:#e0b955}
 .nav .brand{display:inline-flex;align-items:center;gap:.55rem}
 .nav .fam-tag{font-size:.62rem;color:var(--gold)!important;border:1px solid rgba(212,168,67,.5);
 border-radius:999px;padding:.12rem .5rem;white-space:nowrap;font-family:var(--sans);font-weight:600;
@@ -161,7 +168,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "usageInfo": "Metadata-only Croissant record; underlying data is not redistributed under this source's license."
 }
 </script>
-<script src="assets/sso.js?v=20260715a"></script>
+<script src="assets/sso.js?v=20260715c"></script>
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
