@@ -22,7 +22,11 @@ body{font-family:var(--sans);color:#1f2937;background:#fff;line-height:1.7;-webk
 .container{max-width:1100px;margin:0 auto;padding:0 1.5rem}
 a{color:var(--blue);text-decoration:none}
 /* hero */
-.hero{background:linear-gradient(135deg,var(--navy) 0%,var(--navy-light) 100%);color:#fff;
+.about-link{position:absolute;top:1.2rem;right:1.5rem;color:var(--gold);border:1px solid rgba(212,168,67,.55);
+border-radius:999px;padding:.4rem 1.05rem;font-weight:600;font-size:.88rem;text-decoration:none;z-index:5;
+transition:background .15s}
+.about-link:hover{background:rgba(212,168,67,.15)}
+.hero{position:relative;background:linear-gradient(135deg,var(--navy) 0%,var(--navy-light) 100%);color:#fff;
 padding:4rem 0 4rem;text-align:center;border-bottom:3px solid var(--gold)}
 .hero .logo{width:min(460px,84%);height:auto;margin:0 auto 1.8rem;display:block}
 .hero h1{font-family:var(--serif);color:#fff;font-size:2.4rem;line-height:1.15;margin-bottom:.6rem}
@@ -87,6 +91,7 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
 </style></head><body>
 
 <section class="hero">
+  <a class="about-link" href="about.html">About</a>
   <div class="container">
     <svg class="logo" viewBox="0 0 560 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ElkassabgiData">
       <defs>
