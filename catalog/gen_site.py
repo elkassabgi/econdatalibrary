@@ -106,6 +106,7 @@ LICENSE_LABEL = {
     "whr-granted": "World Happiness Report (written permission, Figure 2.1 scope)",
     "damodaran-granted": "Written permission (A. Damodaran, 2026) — attribution required, non-commercial",
     "bundesbank-granted": "Bundesbank terms, confirmed in writing (2026) — free of charge, unaltered, exact source credit required",
+    "idb-granted": "Written permission (IDB Open Data, 2026) — CC BY 4.0 institutional data; attribution + dataset link-back required",
     "spi-embed-2026": "Social Progress Imperative (written permission: official embed only)",
     "custom-terms": "Custom provider terms",
     "dbnomics-passthrough": "Pass-through (see original provider terms)",

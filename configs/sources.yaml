@@ -45,6 +45,7 @@ licenses:
   spi-embed-2026: {reservable: false, commercial_ok: false, attribution: required, no_modify: true, url: ""}  # SPI written permission 2026: official Tableau embed only, no dataset redistribution
   damodaran-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: false, url: "https://pages.stern.nyu.edu/~adamodar/"}  # written grant 2026-07-15 (ad4@stern.nyu.edu): "I don't have a problem with you hosting this data." NC + attribution per our request
   bundesbank-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: true, url: "https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706"}  # written reply 2026-07-15 (info@bundesbank.de, inquiry 2026/005812): "you may save, distribute or reproduce ... provided that you do so free of charge. The information must not be altered or distorted" + must cite "Copyright: Deutsche Bundesbank, Frankfurt am Main, Germany" and send them a copy
+  idb-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: false, url: "https://data.iadb.org"}  # written grant 2026-07-15 (opendata@iadb.org): "you have our full permission to re-host and redistribute them" (CC-BY 4.0, institutional IDB data). Third-party carve-out pass run 2026-07-15: all 21 ingested datasets institutional, none excluded (data/_idb_carveout_audit.json). Citation format + per-dataset link-back required (CSV header Dataset row).
 sources:
 
   # ---- US federal, public domain ----
@@ -822,8 +823,13 @@ sources:
     attribution: "Source: Freedom House Freedom in the World (not redistributed; obtain from provider)"
   idb:
     name: "Inter-American Development Bank Open Data"
-    license: audit-restricted
-    attribution: "Source: Inter-American Development Bank Open Data (not redistributed; obtain from provider)"
+    # GRANTED 2026-07-15 (opendata@iadb.org; verbatim in REDISTRIBUTION_EMAIL_TRAIL.md).
+    # Their condition 2 (exclude third-party-sourced series) discharged 2026-07-15:
+    # all 21 ingested datasets are institutional ("IDB Datasets" org, no third-party
+    # markers) — evidence in data/_idb_carveout_audit.json. Owner directed the un-gate.
+    license: idb-granted
+    homepage: "https://data.iadb.org"
+    attribution: "Inter-American Development Bank (year). [Dataset title]. IDB Open Data. https://data.iadb.org - hosted with written permission"
   irena:
     name: "IRENA IRENASTAT"
     license: audit-restricted

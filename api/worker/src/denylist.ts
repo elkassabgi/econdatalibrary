@@ -60,7 +60,6 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "hagstofa",
   "harvard_atlas",
   "ibge",
-  "idb",
   "ilo",
   "imf_bop",
   "imf_cdis",

@@ -93,7 +93,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "description": "IDB (Inter-American Development Bank) CKAN open-data ingest. Source: https://data.iadb.org (CKAN portal, no API key required) License: CC BY (IDB open data) Fetches all 217+ datasets from the IDB CKAN portal via the datastore API. Converts each resource to long-format parquet: {series_key,…",
   "url": "https://econdatalibrary.com/idb.html",
   "identifier": "idb",
-  "isAccessibleForFree": false,
+  "isAccessibleForFree": true,
   "publisher": {
     "@type": "Organization",
     "name": "Econ Data Library",
@@ -101,21 +101,29 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "Inter-American Development Bank Open Data"
+    "name": "Inter-American Development Bank Open Data",
+    "url": "https://data.iadb.org"
   },
-  "license": "Not redistributable — restricted provider terms (data available from the original provider)",
+  "license": "https://data.iadb.org",
   "keywords": [
     "Development Indicators",
     "idb"
   ],
   "temporalCoverage": "1932-12-31/2026-12-31",
-  "creditText": "Source: Inter-American Development Bank Open Data (not redistributed; obtain from provider)",
-  "citation": "Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.",
+  "creditText": "Inter-American Development Bank (year). [Dataset title]. IDB Open Data. https://data.iadb.org - hosted with written permission",
+  "citation": "Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-idb",
     "https://zenodo.org/communities/econdatalibrary"
   ],
-  "usageInfo": "Metadata-only catalog entry. This source's license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms."
+  "distribution": [
+    {
+      "@type": "DataDownload",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=idb",
+      "license": "https://data.iadb.org"
+    }
+  ]
 }
 </script>
 <script type="application/ld+json">
@@ -150,14 +158,22 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "Not redistributable — restricted provider terms (data available from the original provider)",
+  "license": "https://data.iadb.org",
   "keywords": [
     "Development Indicators"
   ],
   "temporalCoverage": "1932-12-31/2026-12-31",
-  "citation": "Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.",
-  "isAccessibleForFree": false,
-  "usageInfo": "Metadata-only Croissant record; underlying data is not redistributed under this source's license."
+  "citation": "Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Compiled and redistributed by the Elkassabgi Data Library.",
+  "distribution": [
+    {
+      "@type": "cr:FileObject",
+      "@id": "idb-csv",
+      "name": "idb-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=idb",
+      "encodingFormat": "text/csv"
+    }
+  ]
 }
 </script>
 <script src="assets/sso.js?v=20260715a"></script>
@@ -193,23 +209,26 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <div class="crumb"><a href="index.html">Catalog</a> / Inter-American Development Bank Open Data</div>
 <div class="pid">idb</div>
 <h1>Inter-American Development Bank Open Data</h1>
-<div class="badges"><span class="badge meta">Metadata only</span><span class="badge lic">Not redistributable — restricted provider terms (data available from the original provider)</span><span class="badge cat">Development Indicators</span></div>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Written permission (IDB Open Data, 2026) — CC BY 4.0 institutional data; attribution + dataset link-back required</span><span class="badge cat">Development Indicators</span></div>
 <p class="lead">IDB (Inter-American Development Bank) CKAN open-data ingest. Source: https://data.iadb.org (CKAN portal, no API key required) License: CC BY (IDB open data) Fetches all 217+ datasets from the IDB CKAN portal via the datastore API. Converts each resource to long-format parquet: {series_key,…</p>
 </div>
-<div class="callout meta"><b>Metadata only.</b> This source’s license does not permit redistribution, so we catalog its metadata but do not re-serve the data. Use the provider link to obtain it under the original terms.</div>
+<div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">18,838</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1932-12-31 – 2026-12-31</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Development Indicators</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>Not redistributable — restricted provider terms (data available from the original provider)</dd>
-<dt>Required attribution</dt><dd>Source: Inter-American Development Bank Open Data (not redistributed; obtain from provider)</dd>
-<dt>Redistribution</dt><dd>Not permitted (metadata only)</dd>
+<dl class="kv"><dt>License</dt><dd>Written permission (IDB Open Data, 2026) — CC BY 4.0 institutional data; attribution + dataset link-back required</dd>
+<dt>License URL</dt><dd><a href="https://data.iadb.org">https://data.iadb.org</a></dd>
+<dt>Required attribution</dt><dd>Inter-American Development Bank (year). [Dataset title]. IDB Open Data. https://data.iadb.org - hosted with written permission</dd>
+<dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Restricted / no</dd>
-<dt>Modification</dt><dd>Permitted</dd></dl>
+<dt>Modification</dt><dd>Permitted</dd>
+<dt>Provider homepage</dt><dd><a href="https://data.iadb.org">https://data.iadb.org</a></dd></dl>
 <h2>How to cite</h2>
-<blockquote class="cite">Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.</blockquote>
-<p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.</p>
+<blockquote class="cite">Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
+<p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Download</dt><dd>Not available here — this provider's terms do not permit redistribution. Obtain the data from the original provider.</dd>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=idb">Select &amp; download idb series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/idb.html">https://econdatalibrary.com/idb.html</a></dd>
 <dt>Update cadence</dt><dd>irregular</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
@@ -236,7 +255,7 @@ Run: python jobs/ingest_idb.py
   &quot;description&quot;: &quot;IDB (Inter-American Development Bank) CKAN open-data ingest. Source: https://data.iadb.org (CKAN portal, no API key required) License: CC BY (IDB open data) Fetches all 217+ datasets from the IDB CKAN portal via the datastore API. Converts each resource to long-format parquet: {series_key,…&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/idb.html&quot;,
   &quot;identifier&quot;: &quot;idb&quot;,
-  &quot;isAccessibleForFree&quot;: false,
+  &quot;isAccessibleForFree&quot;: true,
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
@@ -244,21 +263,29 @@ Run: python jobs/ingest_idb.py
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;Inter-American Development Bank Open Data&quot;
+    &quot;name&quot;: &quot;Inter-American Development Bank Open Data&quot;,
+    &quot;url&quot;: &quot;https://data.iadb.org&quot;
   },
-  &quot;license&quot;: &quot;Not redistributable — restricted provider terms (data available from the original provider)&quot;,
+  &quot;license&quot;: &quot;https://data.iadb.org&quot;,
   &quot;keywords&quot;: [
     &quot;Development Indicators&quot;,
     &quot;idb&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1932-12-31/2026-12-31&quot;,
-  &quot;creditText&quot;: &quot;Source: Inter-American Development Bank Open Data (not redistributed; obtain from provider)&quot;,
-  &quot;citation&quot;: &quot;Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.&quot;,
+  &quot;creditText&quot;: &quot;Inter-American Development Bank (year). [Dataset title]. IDB Open Data. https://data.iadb.org - hosted with written permission&quot;,
+  &quot;citation&quot;: &quot;Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-idb&quot;,
     &quot;https://zenodo.org/communities/econdatalibrary&quot;
   ],
-  &quot;usageInfo&quot;: &quot;Metadata-only catalog entry. This source&#x27;s license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms.&quot;
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=idb&quot;,
+      &quot;license&quot;: &quot;https://data.iadb.org&quot;
+    }
+  ]
 }</pre></details>
 <details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
   &quot;@context&quot;: {
@@ -291,14 +318,22 @@ Run: python jobs/ingest_idb.py
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;Not redistributable — restricted provider terms (data available from the original provider)&quot;,
+  &quot;license&quot;: &quot;https://data.iadb.org&quot;,
   &quot;keywords&quot;: [
     &quot;Development Indicators&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1932-12-31/2026-12-31&quot;,
-  &quot;citation&quot;: &quot;Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.&quot;,
-  &quot;isAccessibleForFree&quot;: false,
-  &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
+  &quot;citation&quot;: &quot;Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;cr:FileObject&quot;,
+      &quot;@id&quot;: &quot;idb-csv&quot;,
+      &quot;name&quot;: &quot;idb-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=idb&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
+    }
+  ]
 }</pre></details>
 <div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-15 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
