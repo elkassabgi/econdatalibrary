@@ -101,6 +101,9 @@ async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Pr
     row("Series", `${series.title ?? seriesId}  [${seriesId}]`) +
     row("Source", src?.attribution?.replace(/^\s*source:\s*/i, "")) +
     licLine +
+    // IDB written permission (2026-07-15) requires "a clear, permanent link
+    // back to the original dataset page" — ids are idb:IDB:<dataset-slug>:...
+    row("Dataset", source === "idb" ? `https://data.iadb.org/dataset/${seriesId.split(":")[2] ?? ""}` : null) +
     row("Homepage", src?.homepage) +
     row("Terms", src?.terms_url) +
     row("Cite as", citation) +
