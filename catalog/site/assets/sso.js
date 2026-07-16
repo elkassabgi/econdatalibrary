@@ -17,6 +17,22 @@
   var API = 'https://api.hfdatalibrary.com';
   var K = 'edl_key', N = 'edl_name', C = 'edl_sso_checked';
 
+  // Highlight the current page's nav link (parity with hfdatalibrary.com,
+  // whose .nav-links a.active gets the same pill background as :hover).
+  // Runs on every page regardless of which SSO branch returns below.
+  (function () {
+    function mark() {
+      var here = (location.pathname.split('/').pop() || 'index').replace(/\.html$/, '') || 'index';
+      var links = document.querySelectorAll('.nav-links a, .nav a');
+      for (var i = 0; i < links.length; i++) {
+        var href = (links[i].getAttribute('href') || '').split('?')[0].split('#')[0].replace(/\.html$/, '');
+        if (href && href === here) links[i].classList.add('active');
+      }
+    }
+    if (document.readyState !== 'loading') mark();
+    else document.addEventListener('DOMContentLoaded', mark);
+  })();
+
   function signedIn() { return !!localStorage.getItem(K); }
 
   function updateUI() {
@@ -76,7 +92,15 @@
   // 4) Already checked this browser session and found no HF session — don't loop.
   if (sessionStorage.getItem(C)) return;
 
-  // 5) Not signed in, not yet checked → one silent SSO check for this session.
+  // 5) Only the production origins may auto-bounce: the SSO endpoint 403s any
+  //    other return origin (e.g. *.pages.dev deployment previews), which would
+  //    strand the visitor on the auth server's error page.
+  if (!/^(www\.)?econdatalibrary\.com$/.test(location.hostname)) {
+    sessionStorage.setItem(C, '1');
+    return;
+  }
+
+  // 6) Not signed in, not yet checked → one silent SSO check for this session.
   sessionStorage.setItem(C, '1');
   bounce();
 })();
