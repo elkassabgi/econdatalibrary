@@ -2257,7 +2257,7 @@ def render_contact():
 </ul>
 <p>Every reported issue is investigated against the original publisher's data.</p>
 <h2>Requesting new sources or series</h2>
-<p>The catalog covers 183 sources. If you need a source or series that isn't included, email me the source, what you need from it, and the research use &mdash; sources are added in batches as licensing permits.</p>
+<p>If you need a source or series that isn't included, email me the source, what you need from it, and the research use &mdash; sources are added in batches as licensing permits.</p>
 <h2>University of Central Arkansas</h2>
 <p style="color:var(--g600)">College of Business<br>201 Donaghey Avenue<br>Conway, AR 72035<br>United States</p>
 """
