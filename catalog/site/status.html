@@ -84,7 +84,7 @@ fetch(API+'/v1/last-updates?cb='+Date.now(),{cache:'no-store'}).then(r=>r.json()
     '<b>'+rows.length+'</b> databases in the update ledger — '+
     '<span class="dot ok"></span>'+ok+' current · <span class="dot warn"></span>'+warn+
     ' retrying · <span class="dot bad"></span>'+bad+' attention. '+
-    'The wider catalog (309 sources) joins this ledger phase by phase.';
+    'The wider catalog joins this ledger phase by phase.';
 }).catch(()=>{document.getElementById('summary').textContent='Status API unreachable.';});
 })();
 </script>
