@@ -1,33 +1,31 @@
-# Econ Data Library — A Citable Catalog of Economic & Financial Time Series
+# Economic Data Library — Free Economic and Financial Data
 
 **Author:** Ahmed Elkassabgi
 **Affiliation:** University of Central Arkansas
 **ORCID:** 0000-0002-5926-7493
 **Version:** 1.0
-**Release date:** 2026-07-16
+**Release date:** 2026-07-17
 **License (this compilation):** Creative Commons Attribution 4.0 International (CC BY 4.0)
-**DOI:** (assigned by Zenodo on publication)
+**DOI:** 10.5281/zenodo.21405120
 
 ---
 
 ## About this dataset
 
-The Econ Data Library is a free, non-commercial academic data library that gives
+The Economic Data Library is a free, non-commercial academic data library that gives
 students and researchers one clean, well-documented, citable place to find
 economic and financial statistics. It is part of the ElkassabgiData family of
 research libraries (one free account works across every library).
 
-**Scale (measured on the complete data store, census of 2026-07-02):**
-- ~7.73 billion individual time series held across all sources
-  (global distinct series keys per source, HyperLogLog estimate, ~1% error —
-  a conservative floor)
-- ~79.8 billion observations (exact Parquet row counts)
-- 1,234,073 curated, searchable catalog entries (as of 2026-07-16)
-- 182 sources served (as of 2026-07-16), spanning international organizations
-  (World Bank, IMF, UN, OECD, Eurostat, ECB, BIS, ILO, FAO), national
-  statistical offices and central banks (U.S. federal agencies, Statistics
-  Canada, ABS, INSEE, Destatis-Bundesbank, CBS Netherlands, Statistics Poland,
-  and many more), and curated research datasets hosted with written permission.
+**Coverage:**
+Economic and financial time series brought together from international
+organizations (World Bank, IMF, UN, OECD, Eurostat, ECB, BIS, ILO, FAO),
+national statistical offices and central banks (U.S. federal agencies,
+Statistics Canada, ABS, INSEE, Deutsche Bundesbank, CBS Netherlands, Statistics
+Poland, and many more), and curated research datasets hosted with written
+permission — all surfaced through a continuously-growing, searchable catalog.
+Current totals are shown live on the site's Stats page; they are deliberately
+kept off this permanent record because they change.
 
 Every series is served with full source attribution: the CSV download header
 and the per-series `metadata.json` carry the original producer, its license,
@@ -80,21 +78,20 @@ library as the access point.
 
 If you use the library in your research, please cite it as:
 
-> Elkassabgi, Ahmed. 2026. *Econ Data Library: A Citable Catalog of Economic
-> & Financial Time Series* (version 1.0) [Data set]. Zenodo.
-> https://doi.org/(DOI assigned on publication)
+> Elkassabgi, Ahmed. 2026. *Economic Data Library: Free Economic and Financial
+> Data* (version 1.0) [Data set]. Zenodo.
+> https://doi.org/10.5281/zenodo.21405120
 
 ### BibTeX
 
 ```bibtex
 @dataset{elkassabgi2026econdatalibrary,
   author    = {Elkassabgi, Ahmed},
-  title     = {{Econ Data Library: A Citable Catalog of Economic
-               \& Financial Time Series}},
+  title     = {{Economic Data Library: Free Economic and Financial Data}},
   year      = {2026},
   version   = {1.0},
   publisher = {Zenodo},
-  doi       = {(assigned on publication)},
+  doi       = {10.5281/zenodo.21405120},
   url       = {https://econdatalibrary.com}
 }
 ```
