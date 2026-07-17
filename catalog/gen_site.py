@@ -1447,6 +1447,11 @@ def render_index(records, generated):
                     "with license, provenance, and machine-readable Dataset + Croissant metadata."
                 ),
                 "publisher": PUBLISHER,
+                # Permanent citable DOI (Zenodo) — lets Google Dataset Search and
+                # scholarly indexers tie the catalog to its citation. Only emitted
+                # once ZENODO_DOI is set.
+                **({"identifier": f"https://doi.org/{ZENODO_DOI}",
+                    "sameAs": f"https://doi.org/{ZENODO_DOI}"} if ZENODO_DOI else {}),
             },
             {
                 "@type": "Organization",
