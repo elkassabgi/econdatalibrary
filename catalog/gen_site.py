@@ -57,6 +57,12 @@ PUBLISHER = {
 HF_ORG = "https://huggingface.co/datasets/econdatalibrary"
 ZENODO_COMMUNITY = "https://zenodo.org/communities/econdatalibrary"
 
+# Permanent dataset DOI (Zenodo, mirrors hfdatalibrary's 10.5281/zenodo.19501605
+# pattern). EMPTY until the deposit is published under Ahmed's Zenodo account —
+# while empty, the cite page renders URL-only citations (no placeholder text).
+# The moment the DOI is minted: set it here, regenerate, redeploy.
+ZENODO_DOI = ""  # e.g. "10.5281/zenodo.XXXXXXXX"
+
 # Canonical license URLs for well-known license IDs. Used ONLY as a fallback when
 # the registry's license.url is blank. This is a fixed, auditable mapping of
 # standard licenses -- not per-source guessing.
@@ -103,6 +109,7 @@ LICENSE_LABEL = {
     "bis-attrib-nc": "BIS terms (attribution, non-commercial)",
     "zillow-research": "Zillow Research terms",
     "defillama-open": "DeFiLlama open terms",
+    "defillama-granted": "Written permission (DeFiLlama, 2026) — attribution required, non-commercial",
     "whr-granted": "World Happiness Report (written permission, Figure 2.1 scope)",
     "damodaran-granted": "Written permission (A. Damodaran, 2026) — attribution required, non-commercial",
     "bundesbank-granted": "Bundesbank terms, confirmed in writing (2026) — free of charge, unaltered, exact source credit required",
@@ -2215,7 +2222,30 @@ def render_cite():
 <h2>Citing a series</h2>
 <p>Each series' citation (original producer, license, retrieval date, series id) is included in its CSV download header and its <code>metadata.json</code>. Use that citation — it names the agency that actually produced the numbers.</p>
 <h2>Citing the library</h2>
-<blockquote class="cite">Elkassabgi, A. (2026). Econ Data Library: a citable catalog of economic and financial time series. https://econdatalibrary.com</blockquote>
+__LIB_CITATION__
+<h2>Reproducibility note</h2>
+<p>For exact reproducibility, cite the <em>bundle snapshot date</em> shown in your download's manifest — the same snapshot always resolves to the same data.</p>
+"""
+    # DOI-aware library citation: URL-only until ZENODO_DOI is minted, then the
+    # permanent DOI becomes the canonical citation (same pattern as hf's cite page).
+    if ZENODO_DOI:
+        doi_url = f"https://doi.org/{ZENODO_DOI}"
+        lib = f"""<blockquote class="cite">Elkassabgi, A. (2026). <em>Econ Data Library: a citable catalog of economic and financial time series</em> (version 1.0) [Data set]. Zenodo. <a href="{doi_url}">{doi_url}</a></blockquote>
+<h2>BibTeX</h2>
+<pre>@dataset{{econdatalibrary,
+  author    = {{Elkassabgi, Ahmed}},
+  title     = {{{{Econ Data Library: a citable catalog of economic
+               and financial time series}}}},
+  year      = {{2026}},
+  version   = {{1.0}},
+  publisher = {{Zenodo}},
+  doi       = {{{ZENODO_DOI}}},
+  url       = {{https://econdatalibrary.com}}
+}}</pre>
+<h2>Permanent DOI</h2>
+<p><a href="{doi_url}" style="font-family:var(--mono, monospace);">{ZENODO_DOI}</a></p>"""
+    else:
+        lib = """<blockquote class="cite">Elkassabgi, A. (2026). Econ Data Library: a citable catalog of economic and financial time series. https://econdatalibrary.com</blockquote>
 <h2>BibTeX</h2>
 <pre>@misc{econdatalibrary,
   author = {Elkassabgi, Ahmed},
@@ -2223,10 +2253,8 @@ def render_cite():
             and financial time series},
   year   = {2026},
   url    = {https://econdatalibrary.com}
-}</pre>
-<h2>Reproducibility note</h2>
-<p>For exact reproducibility, cite the <em>bundle snapshot date</em> shown in your download's manifest — the same snapshot always resolves to the same data.</p>
-"""
+}</pre>"""
+    body = body.replace("__LIB_CITATION__", lib)
     return _info_page("How to Cite", "Producer-first citations for every series, plus how to cite the Econ Data Library itself.", "cite.html", body)
 
 
@@ -2453,8 +2481,11 @@ def main():
     PENDING_PERMISSION = {
         # permission requested, awaiting reply (see REDISTRIBUTION_EMAIL_TRAIL
         # + PERMISSION_EMAIL_DRAFTS): reference stays, data gated.
-        "bundesbank", "cboe", "cow", "defillama", "ei_statreview", "famafrench",
-        "freedomhouse", "idb", "irena", "nbp", "polity", "shiller", "sipri",
+        # (bundesbank + idb GRANTED 2026-07-15, defillama GRANTED 2026-07-16 —
+        #  now hosted via their *-granted licenses, so they render as data pages
+        #  regardless of this set; removed here for accurate bookkeeping.)
+        "cboe", "cow", "ei_statreview", "famafrench",
+        "freedomhouse", "irena", "nbp", "polity", "shiller", "sipri",
         "tcmb", "whr", "worldbank_pink", "zillow",
         "owid",  # pending via the Energy Institute request (covers OWID's energy series)
         # written EMBED permission on file (official Tableau embed, no data):

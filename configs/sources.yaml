@@ -46,6 +46,7 @@ licenses:
   damodaran-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: false, url: "https://pages.stern.nyu.edu/~adamodar/"}  # written grant 2026-07-15 (ad4@stern.nyu.edu): "I don't have a problem with you hosting this data." NC + attribution per our request
   bundesbank-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: true, url: "https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706"}  # written reply 2026-07-15 (info@bundesbank.de, inquiry 2026/005812): "you may save, distribute or reproduce ... provided that you do so free of charge. The information must not be altered or distorted" + must cite "Copyright: Deutsche Bundesbank, Frankfurt am Main, Germany" and send them a copy
   idb-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: false, url: "https://data.iadb.org"}  # written grant 2026-07-15 (opendata@iadb.org): "you have our full permission to re-host and redistribute them" (CC-BY 4.0, institutional IDB data). Third-party carve-out pass run 2026-07-15: all 21 ingested datasets institutional, none excluded (data/_idb_carveout_audit.json). Citation format + per-dataset link-back required (CSV header Dataset row).
+  defillama-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: false, url: "https://defillama.com"}  # written grant 2026-07-16 (support@defillama.com, "Rick"): "feel free to use our data ... as long as its non-commercial use and we get properly cited." NC + attribution.
 sources:
 
   # ---- US federal, public domain ----
@@ -93,7 +94,7 @@ sources:
   ecb:              {name: ECB Data Portal / euro reference rates, license: ecb-attrib-nomodify, schedule: "30 16 * * *", attribution: "Source: ECB -- available free at the ECB; values not modified"}
   frankfurter:      {name: Frankfurter API (ECB FX), license: verified-attribution, schedule: "30 16 * * *", attribution: "Source: European Central Bank"}
   zillow:           {name: Zillow Research, license: audit-restricted, schedule: "0 6 * * 4", attribution: "Data Provided by Zillow Group"}
-  defillama:        {name: DeFiLlama, license: audit-restricted, schedule: "0 */6 * * *", attribution: "Source: DeFiLlama"}
+  defillama:        {name: DeFiLlama, license: defillama-granted, schedule: "0 */6 * * *", attribution: "Source: DeFiLlama"}
 
   # ---- DBnomics: ingest accelerator, NOT a wholesale source ----
 

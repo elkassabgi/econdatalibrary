@@ -1,0 +1,33 @@
+{
+  "title": "Econ Data Library: A Citable Catalog of Economic & Financial Time Series",
+  "upload_type": "dataset",
+  "version": "1.0",
+  "publication_date": "2026-07-16",
+  "license": "cc-by-4.0",
+  "creators": [
+    {
+      "name": "Elkassabgi, Ahmed",
+      "affiliation": "University of Central Arkansas",
+      "orcid": "0000-0002-5926-7493"
+    }
+  ],
+  "description": "<p>The Econ Data Library (<a href=\"https://econdatalibrary.com\">econdatalibrary.com</a>) is a free, non-commercial academic data library giving students and researchers one clean, well-documented, citable place to find economic and financial statistics. Measured on the complete data store (census 2026-07-02): ~7.73 billion individual time series and ~79.8 billion observations, surfaced through a curated catalog of 1,234,073 searchable entries from 182 served sources — international organizations (World Bank, IMF, UN, OECD, Eurostat, ECB, BIS, ILO, FAO), national statistical offices and central banks, and research datasets hosted with written permission.</p><p>Every series ships with producer-first attribution: the CSV header and per-series metadata carry the original producer, its license, a ready-made citation, and a link back to the authoritative source. Access is via the website, a free REST API, an MCP server for AI assistants, and Python/R clients. This record is the citable reference for the library; the compilation and documentation are CC BY 4.0, while each underlying series remains governed by its original producer's terms (surfaced per-series; non-redistributable sources are not served).</p><p>Part of the ElkassabgiData family of research libraries (<a href=\"https://elkassabgidata.com\">elkassabgidata.com</a>).</p>",
+  "keywords": [
+    "economic data",
+    "financial time series",
+    "macroeconomics",
+    "official statistics",
+    "panel data",
+    "cross-country data",
+    "economic indicators",
+    "statistical agencies",
+    "open data",
+    "REST API"
+  ],
+  "related_identifiers": [
+    {"identifier": "https://econdatalibrary.com", "relation": "isSupplementTo", "scheme": "url"},
+    {"identifier": "https://elkassabgidata.com", "relation": "isPartOf", "scheme": "url"},
+    {"identifier": "https://doi.org/10.5281/zenodo.19501605", "relation": "references", "scheme": "doi"}
+  ],
+  "communities": [{"identifier": "econdatalibrary"}]
+}
