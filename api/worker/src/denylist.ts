@@ -38,7 +38,6 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "cftc",
   "cow",
   "cso",
-  "defillama",
   "dst",
   "ecb_sdmx",
   "edgar_13f",
@@ -146,12 +145,6 @@ export function isNonRedistributable(seriesId: string): boolean {
  */
 export const SERIES_CARVEOUTS: Readonly<Record<string, readonly string[]>> = {
   worldbank: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
-  // worldbank_pink aggregates third-party benchmark prices. LME (base metals)
-  // and LBMA/IBA (precious metals) REFUSED redistribution in writing on
-  // 2026-07-15 (REDISTRIBUTION_EMAIL_TRAIL.md) — these series must never
-  // serve, even if the source is un-gated later. Cocoa (ICCO), coffee (ICO)
-  // and cotton (Cotlook) origins are still awaiting permission replies.
-  worldbank_pink: ["aluminum", "copper", "nickel", "zinc", "gold", "platinum", "silver"],
 };
 
 function seriesIndicator(seriesId: string): string {
