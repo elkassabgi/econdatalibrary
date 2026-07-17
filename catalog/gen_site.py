@@ -903,6 +903,7 @@ border-bottom:3px solid var(--gold)}
 HEAD = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
 <title>{title}</title>
 <meta name="description" content="{meta_desc}">
 <link rel="canonical" href="{canonical}">
@@ -2537,6 +2538,13 @@ def main():
     # sitemap.xml
     with open(os.path.join(OUT_DIR, "sitemap.xml"), "w", encoding="utf-8") as f:
         f.write(render_sitemap(records))
+
+    # robots.txt — allow crawlers, keep the account page out of the index, and
+    # point them at the sitemap (hfdatalibrary parity; previously the SPA served
+    # index.html for /robots.txt, so there was no Sitemap directive for crawlers).
+    with open(os.path.join(OUT_DIR, "robots.txt"), "w", encoding="utf-8") as f:
+        f.write("User-agent: *\nAllow: /\nDisallow: /account.html\n\n"
+                f"Sitemap: {SITE_BASE}/sitemap.xml\n")
 
     n_open = sum(1 for r in records if r["reservable"])
     print(f"Wrote {n_pages} dataset pages to {OUT_DIR}")
