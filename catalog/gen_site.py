@@ -61,7 +61,7 @@ ZENODO_COMMUNITY = "https://zenodo.org/communities/econdatalibrary"
 # pattern). EMPTY until the deposit is published under Ahmed's Zenodo account —
 # while empty, the cite page renders URL-only citations (no placeholder text).
 # The moment the DOI is minted: set it here, regenerate, redeploy.
-ZENODO_DOI = ""  # e.g. "10.5281/zenodo.XXXXXXXX"
+ZENODO_DOI = "10.5281/zenodo.21405120"  # published 2026-07-17
 
 # Canonical license URLs for well-known license IDs. Used ONLY as a fallback when
 # the registry's license.url is blank. This is a fixed, auditable mapping of
@@ -2230,12 +2230,11 @@ __LIB_CITATION__
     # permanent DOI becomes the canonical citation (same pattern as hf's cite page).
     if ZENODO_DOI:
         doi_url = f"https://doi.org/{ZENODO_DOI}"
-        lib = f"""<blockquote class="cite">Elkassabgi, A. (2026). <em>Econ Data Library: a citable catalog of economic and financial time series</em> (version 1.0) [Data set]. Zenodo. <a href="{doi_url}">{doi_url}</a></blockquote>
+        lib = f"""<blockquote class="cite">Elkassabgi, A. (2026). <em>Economic Data Library: Free Economic and Financial Data</em> (version 1.0) [Data set]. Zenodo. <a href="{doi_url}">{doi_url}</a></blockquote>
 <h2>BibTeX</h2>
 <pre>@dataset{{econdatalibrary,
   author    = {{Elkassabgi, Ahmed}},
-  title     = {{{{Econ Data Library: a citable catalog of economic
-               and financial time series}}}},
+  title     = {{{{Economic Data Library: Free Economic and Financial Data}}}},
   year      = {{2026}},
   version   = {{1.0}},
   publisher = {{Zenodo}},
@@ -2245,12 +2244,11 @@ __LIB_CITATION__
 <h2>Permanent DOI</h2>
 <p><a href="{doi_url}" style="font-family:var(--mono, monospace);">{ZENODO_DOI}</a></p>"""
     else:
-        lib = """<blockquote class="cite">Elkassabgi, A. (2026). Econ Data Library: a citable catalog of economic and financial time series. https://econdatalibrary.com</blockquote>
+        lib = """<blockquote class="cite">Elkassabgi, A. (2026). Economic Data Library: Free Economic and Financial Data. https://econdatalibrary.com</blockquote>
 <h2>BibTeX</h2>
 <pre>@misc{econdatalibrary,
   author = {Elkassabgi, Ahmed},
-  title  = {Econ Data Library: a citable catalog of economic
-            and financial time series},
+  title  = {Economic Data Library: Free Economic and Financial Data},
   year   = {2026},
   url    = {https://econdatalibrary.com}
 }</pre>"""

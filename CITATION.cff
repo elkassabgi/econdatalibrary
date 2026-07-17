@@ -1,6 +1,6 @@
 cff-version: 1.2.0
-# doi: (add the Zenodo DOI here the moment it is minted)
-title: "Econ Data Library"
+doi: 10.5281/zenodo.21405120
+title: "Economic Data Library: Free Economic and Financial Data"
 message: "If you use this data, please cite the original producer of each series (shipped in every download) and the library as below."
 type: dataset
 authors:
@@ -23,11 +23,10 @@ keywords:
   - economic indicators
   - open data
 abstract: >-
-  Free, non-commercial academic data library for economic and financial
-  statistics: ~7.73 billion individual time series and ~79.8 billion
-  observations (store census 2026-07-02), surfaced through a curated catalog
-  of 1.23 million searchable entries from 182 served sources — international
-  organizations, national statistical offices, central banks, and research
-  datasets hosted with written permission. Producer-first attribution ships
-  with every download; access via website, free REST API, MCP server, and
-  Python/R clients. Part of the ElkassabgiData family.
+  Free, non-commercial academic data library for economic and financial time
+  series, bringing together data from international organizations, national
+  statistical offices, central banks, and research datasets hosted with written
+  permission — surfaced through a curated, continuously-growing searchable
+  catalog. Producer-first attribution ships with every download; access via
+  website, free REST API, MCP server, and Python/R clients. Part of the
+  ElkassabgiData family.

@@ -120,7 +120,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-16');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-17');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -134,19 +134,23 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>Citing a series</h2>
 <p>Each series' citation (original producer, license, retrieval date, series id) is included in its CSV download header and its <code>metadata.json</code>. Use that citation — it names the agency that actually produced the numbers.</p>
 <h2>Citing the library</h2>
-<blockquote class="cite">Elkassabgi, A. (2026). Econ Data Library: a citable catalog of economic and financial time series. https://econdatalibrary.com</blockquote>
+<blockquote class="cite">Elkassabgi, A. (2026). <em>Economic Data Library: Free Economic and Financial Data</em> (version 1.0) [Data set]. Zenodo. <a href="https://doi.org/10.5281/zenodo.21405120">https://doi.org/10.5281/zenodo.21405120</a></blockquote>
 <h2>BibTeX</h2>
-<pre>@misc{econdatalibrary,
-  author = {Elkassabgi, Ahmed},
-  title  = {Econ Data Library: a citable catalog of economic
-            and financial time series},
-  year   = {2026},
-  url    = {https://econdatalibrary.com}
+<pre>@dataset{econdatalibrary,
+  author    = {Elkassabgi, Ahmed},
+  title     = {{Economic Data Library: Free Economic and Financial Data}},
+  year      = {2026},
+  version   = {1.0},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.21405120},
+  url       = {https://econdatalibrary.com}
 }</pre>
+<h2>Permanent DOI</h2>
+<p><a href="https://doi.org/10.5281/zenodo.21405120" style="font-family:var(--mono, monospace);">10.5281/zenodo.21405120</a></p>
 <h2>Reproducibility note</h2>
 <p>For exact reproducibility, cite the <em>bundle snapshot date</em> shown in your download's manifest — the same snapshot always resolves to the same data.</p>
 
-<div class="foot">Generated 2026-07-16 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div>
+<div class="foot">Generated 2026-07-17 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
     <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="300" height="80" style="max-width:78%;height:auto">
