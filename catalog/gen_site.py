@@ -1490,7 +1490,11 @@ def render_index(records, generated):
     }
 
     head = HEAD.format(
-        title=f"{SITE_NAME} — Free Economic & Financial Time-Series Data",
+        # Formal/official title = the Zenodo DOI title (10.5281/zenodo.21405120) so the
+        # <title> tag, search results, and the citation record agree. The visible brand
+        # LABEL stays SITE_NAME "Econ Data Library" (nav + per-page titles) — cf. HF /
+        # High-Frequency, IHOP / International House of Pancakes.
+        title="Economic Data Library: Free Economic and Financial Data",
         meta_desc=f"Free, research-grade economic & financial data: {n_total} sources in one namespace, with licenses, provenance, and producer-first citations on every series.",
         canonical=f"{SITE_BASE}/index.html",
         css=PAGE_CSS
