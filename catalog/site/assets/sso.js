@@ -13,6 +13,33 @@
 //      family site or with #sso_recheck — otherwise signing in on hfdatalibrary
 //      AFTER the silent check ran would leave econ stuck on "signed out" for the
 //      rest of the browser session.
+// ── Notice banner (auto-expires; mirrors hfdatalibrary.com's site.js banner) ──
+(function () {
+  try {
+    var EXP = Date.UTC(2026, 7, 1, 0, 0, 0); // 2026-08-01 00:00Z
+    if (Date.now() > EXP) return;
+    if (sessionStorage.getItem('apinotice-dismissed') === '1') return;
+    function inject() {
+      try {
+        if (document.getElementById('maint-banner')) return;
+        var bar = document.createElement('div');
+        bar.id = 'maint-banner';
+        bar.style.cssText = 'background:#1e3a5f;color:#fff;padding:0.6rem 2.2rem 0.6rem 1rem;' +
+          'font-size:0.88rem;line-height:1.45;text-align:center;position:relative;z-index:1500;';
+        bar.textContent = '⚙️ API access will be temporarily unavailable during a scheduled upgrade.';
+        var x = document.createElement('button');
+        x.textContent = '×'; x.setAttribute('aria-label', 'Dismiss');
+        x.style.cssText = 'position:absolute;right:0.7rem;top:50%;transform:translateY(-50%);' +
+          'background:none;border:none;color:#fff;font-size:1.1rem;cursor:pointer;';
+        x.onclick = function () { bar.remove(); sessionStorage.setItem('apinotice-dismissed', '1'); };
+        bar.appendChild(x);
+        document.body.insertBefore(bar, document.body.firstChild);
+      } catch (e) { /* banner must never break the page */ }
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', inject); else inject();
+  } catch (e) { /* never break the page */ }
+})();
+
 (function () {
   var API = 'https://api.hfdatalibrary.com';
   var K = 'edl_key', N = 'edl_name', C = 'edl_sso_checked';
