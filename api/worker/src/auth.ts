@@ -45,6 +45,77 @@ function extractKey(request: Request): string | null {
   return q ? q.trim() : null;
 }
 
+// ── M2c: family-token (edl_at) validation — ADDITIVE. The api_key path below is
+// unchanged. A family_access edl_at (Bearer, stored HASHED as sessions.id by the
+// IdP at accounts.elkassabgidata.com) authorizes downloads for the SAME shared
+// account. env.USERS is the shared hfdatalibrary-db, so `sessions`/`sso_clients`
+// are readable directly. Reduced scope: bound to the request Origin (audience),
+// which must be an ACTIVE registered client. Mirrors hf validateFamilyToken.
+async function sha256Hex(raw: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function extractBearer(request: Request): string | null {
+  const a = request.headers.get("Authorization") || "";
+  return a.startsWith("Bearer ") ? a.slice(7).trim() : null;
+}
+async function validateFamilyToken(request: Request, env: Env): Promise<UserRow | null> {
+  const raw = extractBearer(request);
+  if (!raw) return null;
+  const idHash = await sha256Hex(raw);
+  const row = await env.USERS.prepare(
+    "SELECT u.id, u.email, u.is_vip, u.is_active, s.audience AS audience " +
+    "FROM sessions s JOIN users u ON s.user_id = u.id " +
+    "WHERE s.id = ? AND s.kind = 'family_access' AND s.expires_at > datetime('now')",
+  ).bind(idHash).first<{ id: number; email: string | null; is_vip: number | null; is_active: number | null; audience: string | null }>();
+  if (!row || !row.is_active) return null;
+  const origin = request.headers.get("Origin") || "";
+  if (!row.audience || row.audience !== origin) return null;
+  const client = await env.USERS.prepare(
+    "SELECT status FROM sso_clients WHERE origin = ?",
+  ).bind(origin).first<{ status: string }>();
+  if (!client || client.status !== "active") return null;
+  return { id: row.id, email: row.email, is_vip: row.is_vip };
+}
+
+// Shared fixed-window download limit (econ:download namespace, keyed on user.id).
+// Used by BOTH the family-token and api_key paths — extracted verbatim from the
+// original api_key tail so behaviour is byte-identical.
+async function applyDownloadLimit(user: UserRow, env: Env): Promise<{ user: AuthedUser } | Response> {
+  const fullKey = `econ:download:${user.id}`;
+  const row = await env.USERS.prepare(
+    "SELECT count, window_start FROM rate_limits WHERE key = ?",
+  ).bind(fullKey).first<RateRow>();
+  const now = Date.now();
+  if (!row || now - Date.parse(row.window_start + "Z") > LIMIT_WINDOW_S * 1000) {
+    await env.USERS.prepare(
+      'INSERT OR REPLACE INTO rate_limits (key, count, window_start) ' +
+      'VALUES (?, 1, datetime("now"))',
+    ).bind(fullKey).run();
+    return { user: { id: user.id, email: user.email } };
+  }
+  const limitMax = user.is_vip ? LIMIT_MAX_VIP : LIMIT_MAX;
+  if (row.count >= limitMax) {
+    return new Response(JSON.stringify({
+      error: "rate_limited",
+      detail: `Limit is ${limitMax} downloads per minute per account (same as ` +
+        "hfdatalibrary). Slow down and retry.",
+    }), {
+      status: 429,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "access-control-allow-origin": "*",
+        "retry-after": String(LIMIT_WINDOW_S),
+        "cache-control": "no-store",
+      },
+    });
+  }
+  await env.USERS.prepare(
+    "UPDATE rate_limits SET count = count + 1 WHERE key = ?",
+  ).bind(fullKey).run();
+  return { user: { id: user.id, email: user.email } };
+}
+
 /** Gate a data download. Returns the authed user, or a ready 401/429 Response.
  *  Failure messages are specific and actionable (missing vs invalid/expired),
  *  matching hf's explainAuthFailure philosophy — a programmatic user must know
@@ -52,6 +123,11 @@ function extractKey(request: Request): string | null {
 export async function requireDownloadAuth(
   request: Request, env: Env,
 ): Promise<{ user: AuthedUser } | Response> {
+  // M2c: a family token (edl_at) authorizes the SAME shared account. Additive —
+  // tried first; the api_key path below is byte-for-byte unchanged.
+  const fam = await validateFamilyToken(request, env);
+  if (fam) return applyDownloadLimit(fam, env);
+
   const key = extractKey(request);
   if (!key) {
     return json({
@@ -78,40 +154,8 @@ export async function requireDownloadAuth(
     }, 401);
   }
 
-  // Fixed-window limit in the shared rate_limits table (hf's own mechanism,
-  // own namespace so the two libraries' windows never collide).
-  const fullKey = `econ:download:${user.id}`;
-  const row = await env.USERS.prepare(
-    "SELECT count, window_start FROM rate_limits WHERE key = ?",
-  ).bind(fullKey).first<RateRow>();
-  const now = Date.now();
-  if (!row || now - Date.parse(row.window_start + "Z") > LIMIT_WINDOW_S * 1000) {
-    await env.USERS.prepare(
-      'INSERT OR REPLACE INTO rate_limits (key, count, window_start) ' +
-      'VALUES (?, 1, datetime("now"))',
-    ).bind(fullKey).run();
-    return { user };
-  }
-  const limitMax = user.is_vip ? LIMIT_MAX_VIP : LIMIT_MAX;
-  if (row.count >= limitMax) {
-    return new Response(JSON.stringify({
-      error: "rate_limited",
-      detail: `Limit is ${limitMax} downloads per minute per account (same as ` +
-        "hfdatalibrary). Slow down and retry.",
-    }), {
-      status: 429,
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        "access-control-allow-origin": "*",
-        "retry-after": String(LIMIT_WINDOW_S),
-        "cache-control": "no-store",
-      },
-    });
-  }
-  await env.USERS.prepare(
-    "UPDATE rate_limits SET count = count + 1 WHERE key = ?",
-  ).bind(fullKey).run();
-  return { user };
+  // Shared fixed-window limit (same helper the family-token path uses).
+  return applyDownloadLimit(user, env);
 }
 
 /** Record a served download in econ's OWN log table (shared db, separate
