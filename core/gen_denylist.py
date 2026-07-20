@@ -32,6 +32,18 @@ GRANTED_EXCEPTIONS = {
     "comtrade",           # UN Comtrade, 2026-07-07: free branch, holdings must stay <= 100k records
 }
 
+# PERMANENT series-level carve-outs that must survive EVERY regeneration of the
+# FOOTER template below. Guard added 2026-07-20: the 2026-07-16 regen (DeFiLlama
+# un-gate, commit be939627f) silently WIPED the worldbank_pink carve-outs that
+# commit 5fc56cea1 had added by hand to denylist.ts, because this template only
+# carried the worldbank entry. main() asserts each of these appears in the
+# generated SERIES_CARVEOUTS block and refuses to write the file otherwise.
+REQUIRED_CARVEOUTS = {
+    "worldbank": ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
+    "worldbank_pink": ["aluminum", "copper", "nickel", "zinc",
+                       "gold", "platinum", "silver"],   # LME/LBMA written refusals 2026-07-15
+}
+
 # Ids that were explicitly gated by hand and must never be dropped even if they
 # are not (or no longer) reservable=0 in the DB (e.g. phantom/renamed ids). This
 # is a safety floor: unioning it guarantees the regenerated set never UN-gates
@@ -99,6 +111,12 @@ export function isNonRedistributable(seriesId: string): boolean {
  */
 export const SERIES_CARVEOUTS: Readonly<Record<string, readonly string[]>> = {
   worldbank: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
+  // worldbank_pink aggregates third-party benchmark prices. LME (base metals)
+  // and LBMA/IBA (precious metals) REFUSED redistribution in writing on
+  // 2026-07-15 (REDISTRIBUTION_EMAIL_TRAIL.md) — these series must never
+  // serve, even if the source is un-gated later. Cocoa (ICCO), coffee (ICO)
+  // and cotton (Cotlook) origins are still awaiting permission replies.
+  worldbank_pink: ["aluminum", "copper", "nickel", "zinc", "gold", "platinum", "silver"],
 };
 
 function seriesIndicator(seriesId: string): string {
@@ -152,6 +170,19 @@ def main() -> None:
     lines.append("]);")
     lines.append(FOOTER)
     text = "\n".join(lines)
+
+    # REGENERATION GUARD (fail closed BEFORE writing): every permanent carve-out
+    # must be present in the generated SERIES_CARVEOUTS block, or we refuse to
+    # write at all — a template edit can never silently drop a written refusal.
+    block = text.split("export const SERIES_CARVEOUTS", 1)[1].split("};", 1)[0]
+    for src, inds in REQUIRED_CARVEOUTS.items():
+        assert f"{src}:" in block, (
+            f"REFUSING to write: carve-out source '{src}' missing from the "
+            f"generated SERIES_CARVEOUTS (template regression — see 5fc56cea1)")
+        for ind in inds:
+            assert f'"{ind}"' in block, (
+                f"REFUSING to write: carve-out {src}:{ind} missing from the "
+                f"generated SERIES_CARVEOUTS")
 
     with open(OUT, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
