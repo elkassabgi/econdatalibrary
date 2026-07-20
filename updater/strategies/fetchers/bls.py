@@ -36,26 +36,28 @@ ON-DISK FORMAT (verified, June 2026) — two schemas coexist and we MATCH each f
                     period:string, footnote:string)  [written by jobs/ingest_bls.py]
 The emitted table is conformed PER FILE to the existing schema (obs_date dtype +
 optional footnote column) so merge._concat sees an identical schema and EXTENDS,
-never duplicating via a schema-mismatch union. The key column is `series_id`
-(NOT the framework default `series_key`); we pass dedup_keys=("series_id","obs_date")
-explicitly, like ofr.py/tcmb.py do with their own keys.
+never duplicating via a schema-mismatch union. The key is the 3-col identity
+dedup_keys=("series_id","obs_date","period") — NOT the framework default
+`series_key`, and NOT 2 cols: quarterly Q03 and semiannual S02/S03 legitimately
+map to the SAME derived obs_date with different values, so obs_date under-keys
+mixed-frequency series (see DEDUP above).
 
-DUPLICATION INVARIANT: series_id is the production key (whitespace-stripped, no
-vintage/date token), so re-merging the same Current cut dedups to 0 new rows and a
-revised cut UPDATES the affected (series_id, obs_date) rows — it can never duplicate
-nor shrink. The per-survey Last-Modified vintage lives ONLY in the
-`_bulk_vintages.json` sidecar + unit_state.upstream_vintage, never in the data.
+DUPLICATION INVARIANT: (series_id, obs_date, period) is the production identity,
+so re-merging the same Current cut dedups to 0 new rows and a revised cut UPDATES
+the affected rows — it can never duplicate nor shrink. The per-survey
+Last-Modified vintage lives ONLY in the `_bulk_vintages.json` sidecar +
+unit_state.upstream_vintage, never in the data.
 
-KNOWN EXISTING-DATA DEFECT (flagged as a data-op, NOT fixed here): the legacy
-ingest_bls_full.py wrote several surveys with EXACT-DUPLICATE rows (e.g. cu's
-CUUR0000SA0 = 4796 rows / 1472 unique; the whole cu file ~3.26M rows / ~1.66M
-unique). This fetcher merges on (series_id, obs_date) so it CANNOT add new dups and
-its incremental writes are dedup'd — but it deliberately does NOT rewrite the
-pre-existing duplicated production parquet (a one-time offline dedup is the data-op).
-NOTE: merge.merge_and_write's never-shrink guard (min_ratio) compares against the
-INFLATED existing row count; a healthy Current merge only ever grows the file, so
-the guard is not tripped by the legacy dups — but a future offline dedup that
-genuinely halves a file must be done OUTSIDE the never-shrink path.
+LEGACY DEFECT — FIXED LOCALLY 2026-07-20: the retired ingest_bls_full.py had
+written 39/63 surveys with massive exact-repeat inflation (154.5M repeat rows;
+cu 49%, sm 69%), which froze those surveys: the clean merge shrank below
+merge.merge_and_write's never-shrink floor (min_ratio=0.97) and was correctly
+refused every tick. tools/dedup_bls_legacy.py deduped the local store on the
+3-col identity (verified lossless; ee's 2,152 true value conflicts resolved
+keep-last with an audit CSV); backups in data/_backup_bls_dedup_20260720/.
+The R2 copies of the survey parquets still carry the inflation until the
+separately-approved R2 replacement — do not run r2-backend bls merges until
+then. NEVER run ingest_bls_full.py (it caused the inflation; QCEW dbl-count).
 
 HONEST STATUS (Tally/finalize): each SURVEY is one sub-unit.
   * directory listing / manifest unreachable in update()      -> TransientError (retry)
@@ -90,7 +92,12 @@ from jobs import ingest_bls as ig
 SOURCE = "bls"
 BASE = ig.BASE                       # https://download.bls.gov/pub/time.series
 UA = {"User-Agent": ig.UA}           # BLS blocks generic User-Agents
-DEDUP = ("series_id", "obs_date")    # the on-disk key column is series_id, not series_key
+DEDUP = ("series_id", "obs_date", "period")  # 3-col identity: quarterly Q03 and
+# semiannual S02/S03 legitimately map to the SAME obs_date with different values
+# (e.g. cu CUUS0300SACL1E 1984-07-01 S02=105.8 vs S03=104.8), so obs_date alone
+# under-keys and a 2-col merge would collapse real observations (cu: 97,452 rows)
+# and trip never-shrink. Verified 2026-07-20: 3-col key is value-conflict-free in
+# 39/40 dup-affected surveys (logs/_bls_key3_check_0719.json).
 VINTAGE_SIDECAR = "_bulk_vintages.json"
 _TRANSIENT_HTTP = (429, 500, 502, 503, 504)
 RATE = 0.2                           # polite gap between survey downloads
@@ -220,18 +227,20 @@ def _save_vintages(out_dir: str, vintages: dict) -> None:
 # survey shape; never run the destructive full rebuild)
 # --------------------------------------------------------------------------- #
 def _preexisting_dups(path: str) -> int:
-    """Count EXACT (series_id, obs_date) duplicate rows already in an existing
-    parquet (the legacy ingest_bls_full.py defect). 0 if the file is clean/missing.
+    """Count EXACT (series_id, obs_date, period) duplicate rows already in an
+    existing parquet (the legacy ingest_bls_full.py defect). Uses the same 3-col
+    identity as DEDUP so legitimate period collisions (Q03/S02 on one obs_date)
+    are never miscounted as dups. 0 if the file is clean/missing.
     Read-only — never modifies production."""
     if not blob.exists(path):
         return 0
     try:
         import pyarrow.compute as pc
-        t = pq.read_table(path, columns=["series_id", "obs_date"])
+        t = pq.read_table(path, columns=["series_id", "obs_date", "period"])
         n = t.num_rows
         if n == 0:
             return 0
-        grp = t.group_by(["series_id", "obs_date"]).aggregate([])
+        grp = t.group_by(["series_id", "obs_date", "period"]).aggregate([])
         return n - grp.num_rows
     except Exception:
         return 0
@@ -505,18 +514,18 @@ def update(unit, since) -> Result:
                     vintages[sv] = vintage
                 continue
 
-            # 4) merge (dedup series_id+obs_date, never-shrink, atomic). A would-shrink
-            # / column-drop / 0-row merge keeps old data and surfaces partial; we do
-            # NOT advance the vintage so it is reattempted.
+            # 4) merge (dedup on the 3-col identity, never-shrink, atomic). A
+            # would-shrink / column-drop / 0-row merge keeps old data and surfaces
+            # partial; we do NOT advance the vintage so it is reattempted.
             #
-            # KNOWN-INFLATED SURVEYS (legacy ingest_bls_full.py dups, e.g. cu): the
-            # dedup'd union of (inflated existing + clean Current) is SMALLER than the
-            # inflated existing file, so merge_and_write trips its never-shrink guard
-            # and refuses — correctly leaving production untouched. We surface that as
-            # `partial` with an explicit DATA-OP reason so it is NOT mistaken for a
-            # flaky upstream: such a survey stays `partial` until the one-time offline
-            # dedup of the existing parquet is performed (do NOT lower min_ratio here —
-            # that would let a genuinely-truncated upstream silently shrink good data).
+            # LEGACY-INFLATED SURVEYS (fixed locally 2026-07-20, see module docstring):
+            # if a store copy still carries the ingest_bls_full.py repeat inflation
+            # (e.g. the R2 objects until their replacement is approved), the dedup'd
+            # union is SMALLER than the inflated file, merge_and_write trips its
+            # never-shrink guard and refuses — correctly leaving data untouched and
+            # surfacing `partial` with the DATA-OP reason below (do NOT lower
+            # min_ratio — that would let a genuinely-truncated upstream silently
+            # shrink good data; run tools/dedup_bls_legacy.py on that store instead).
             try:
                 n, last = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
             except DefinitiveError as e:
