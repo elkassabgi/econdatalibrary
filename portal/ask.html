@@ -50,6 +50,12 @@ body{font-family:var(--sans);color:#111827;background:#f7f7f8;display:flex;flex-
   <div class="brand">elkassabgi<span class="d">data</span></div>
   <div class="who" id="who">Browsing as guest</div>
 </div>
+<script>
+  // Pre-resolve the sign-in label synchronously (before paint) so a returning user never
+  // flashes "Browsing as guest": if a family refresh token is already stored, show a neutral
+  // "Signing in…" until the SDK confirms the name (or clears it). [2.3 flash polish]
+  try { if (localStorage.getItem('ekd_rt')) document.getElementById('who').textContent = 'Signing in…'; } catch (e) {}
+</script>
 
 <div class="wrap">
   <div class="head">
@@ -107,8 +113,10 @@ body{font-family:var(--sans);color:#111827;background:#f7f7f8;display:flex;flex-
     $('who').textContent = 'Signed in' + (name ? ' as ' + name : '');  // textContent auto-escapes (G-11b)
   }
   function initEkd() {
-    if (!window.EKD) return;                 // SDK blocked → stays "Browsing as guest"
+    const who = $('who');
+    if (!window.EKD) { who.textContent = 'Browsing as guest'; return; }  // SDK blocked → not stuck on "Signing in…"
     EKD.init();                              // clientId=https://elkassabgidata.com, callback=/auth/callback
+    if (!EKD.isLoggedIn()) who.textContent = 'Browsing as guest';        // confirmed signed out (no stored session)
     EKD.on('login', async function () {
       try {
         const at = await EKD.getAccessToken();
