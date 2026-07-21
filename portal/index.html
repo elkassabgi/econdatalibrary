@@ -136,7 +136,7 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
     </div>
 
     <div class="btn-group">
-      <a class="btn btn-primary" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create your free account</a>
+      <a class="btn btn-primary js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create your free account</a>
       <a class="btn btn-outline" href="https://hfdatalibrary.com">HF Data Library</a>
       <a class="btn btn-outline" href="https://econdatalibrary.com">Econ Data Library</a>
     </div>
@@ -212,7 +212,7 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
       <p>Register once — here, on hfdatalibrary.com, or on econdatalibrary.com — and you're an
       <strong>ElkassabgiData registered user</strong>: the same free API key downloads data from every
       current and future library. No re-registration, ever.</p>
-      <a class="btn btn-primary" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create your free account</a>
+      <a class="btn btn-primary js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create your free account</a>
     </div>
   </div>
 </section>
@@ -253,6 +253,29 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
     if (d.years_of_data) set("hf-years",d.years_of_data);
     if (d.start_date) set("hf-range",String(d.start_date).slice(0,4)+" → today");
   }).catch(function(){});
+})();
+</script>
+
+<script src="https://accounts.elkassabgidata.com/sdk/ekd-sso.js"></script>
+<script>
+(function () {
+  // [Phase 2.2] Family-SSO popup register. The "Create your free account" CTAs open
+  // the EKD popup IN PLACE — the user never leaves elkassabgidata.com, and on success
+  // the one family session is live across every library. The existing href stays as
+  // the no-JS / SDK-blocked / popup-blocked fallback (full-page register on hf).
+  if (!window.EKD) return;                 // SDK blocked → CTAs keep their href, unchanged
+  EKD.init();                              // clientId=https://elkassabgidata.com, callback=/auth/callback
+  document.querySelectorAll('.js-ekd-register').forEach(function (a) {
+    a.addEventListener('click', function (e) {
+      e.preventDefault();                  // G-12a: EKD.login() is invoked synchronously below
+      EKD.login({ tab: 'register' }).catch(function (err) {
+        // §9: popup blocked / insecure context → fall back to the full-page register.
+        var m = err && err.message;
+        if (m === 'popup_blocked' || m === 'insecure_context') location.href = a.href;
+        // popup_closed (user dismissed) or a transient exchange error → stay put.
+      });
+    });
+  });
 })();
 </script>
 </body></html>

@@ -77,6 +77,7 @@ body{font-family:var(--sans);color:#111827;background:#f7f7f8;display:flex;flex-
   </div>
 </div>
 
+<script src="https://accounts.elkassabgidata.com/sdk/ekd-sso.js"></script>
 <script>
 (function () {
   // ---- config ----
@@ -86,24 +87,40 @@ body{font-family:var(--sans);color:#111827;background:#f7f7f8;display:flex;flex-
   const HF_API = 'https://api.hfdatalibrary.com';
 
   // ---- state ----
-  let session = localStorage.getItem('hfd_session') || '';
-  let signedIn = false, apiKey = '', anonPass = '';
+  // hfd_session is an hfdatalibrary.com cookie — never readable cross-origin here, so
+  // this stays '' and the chat/Turnstile path is UNCHANGED. Identity now comes from the
+  // ElkassabgiData family SSO (initEkd, below). [2.3 conservative]
+  let session = '';
+  let signedIn = false, apiKey = '', anonPass = '', ekdSignedIn = false;
   let tsRequired = false, tsSitekey = ''; // learned from the Worker's /health (one source of truth)
   const history = []; // {role, content}
   const $ = (id) => document.getElementById(id);
   const log = $('log');
 
-  // ---- identity ----
-  async function loadMe() {
-    if (!session) return;
-    try {
-      const r = await fetch(HF_API + '/v1/auth/me', { headers: { Authorization: 'Bearer ' + session } });
-      if (!r.ok) return;
-      const u = await r.json();
-      if (!u || !u.api_key) return;
-      signedIn = true; apiKey = u.api_key;
-      $('who').innerHTML = 'Signed in' + (u.name ? ' as ' + escapeHtml(u.name) : '') + ' · downloads enabled';
-    } catch (e) {}
+  // ---- identity (family SSO) ----
+  // Popup sign-in via the EKD SDK. On login we show a NAME greeting from the scrubbed
+  // /v1/auth/me (family tokens return name, never the api_key — §7). Downloads still
+  // need the api_key, which the family token does not carry, so the download gate is
+  // deliberately unchanged (see downloadOffer) — this makes the signed-in STATE visible
+  // without promising family-token downloads (the assistant worker doesn't validate them yet).
+  function greet(name) {
+    $('who').textContent = 'Signed in' + (name ? ' as ' + name : '');  // textContent auto-escapes (G-11b)
+  }
+  function initEkd() {
+    if (!window.EKD) return;                 // SDK blocked → stays "Browsing as guest"
+    EKD.init();                              // clientId=https://elkassabgidata.com, callback=/auth/callback
+    EKD.on('login', async function () {
+      try {
+        const at = await EKD.getAccessToken();
+        if (!at) return;
+        const r = await fetch(HF_API + '/v1/auth/me', { headers: { Authorization: 'Bearer ' + at } });
+        if (!r.ok) return;
+        const u = await r.json();
+        ekdSignedIn = true;
+        greet(u && u.name ? u.name : '');
+      } catch (e) {}
+    });
+    EKD.on('logout', function () { ekdSignedIn = false; $('who').textContent = 'Browsing as guest'; });
   }
 
   // ---- rendering ----
@@ -198,16 +215,30 @@ body{font-family:var(--sans);color:#111827;background:#f7f7f8;display:flex;flex-
     });
     if (data.registerNeeded && !signedIn) {
       const a = document.createElement('a'); a.className = 'btn gold'; a.href = data.registerUrl || 'https://hfdatalibrary.com/pages/download#register';
-      a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Create a free account to download →'; acts.appendChild(a);
+      a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Create a free account to download →'; wireRegister(a); acts.appendChild(a);
     }
     if (acts.children.length) host.appendChild(acts);
   }
 
   async function downloadOffer(o, btn) {
-    if (o.kind !== 'hf' && !apiKey) { alert('Please sign in to download.'); return; }
+    if (o.kind !== 'hf' && !apiKey) {
+      // [2.3] Family sign-in proves identity but does NOT carry the api_key (§7), so a
+      // download here still needs it. Be honest about where to get it — do NOT promise
+      // family-token downloads (the assistant-worker validator is parked in §8).
+      alert(ekdSignedIn
+        ? 'You\'re signed in, but downloads here need your API key, which this page isn\'t given. Download directly on hfdatalibrary.com or econdatalibrary.com — you\'re already signed in there — or copy your key from accounts.elkassabgidata.com/account.'
+        : 'A free account is needed to download. Use "Create a free account" above, then download on hfdatalibrary.com / econdatalibrary.com — one account works across every library.');
+      return;
+    }
     const orig = btn.textContent; btn.textContent = 'Downloading…'; btn.setAttribute('disabled', '');
     try {
-      const r = await fetch(o.url, { headers: apiKey ? { 'X-API-Key': apiKey } : {} });
+      // [D58] Only ever attach the api_key to a HARD-CODED family data host — never to a
+      // server-supplied o.url on an unknown origin. A poisoned assistant offer OR the
+      // ?api= base override (top of file) must not exfiltrate the key to an attacker host.
+      const KEY_HOSTS = { 'api.hfdatalibrary.com': 1, 'econdl-api.elkassabgi.workers.dev': 1 };
+      let sendKey = false;
+      try { sendKey = !!apiKey && KEY_HOSTS[new URL(o.url).host] === 1; } catch (e) {}
+      const r = await fetch(o.url, { headers: sendKey ? { 'X-API-Key': apiKey } : {} });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const blob = await r.blob(); const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -222,12 +253,26 @@ body{font-family:var(--sans);color:#111827;background:#f7f7f8;display:flex;flex-
     if (gold && !signedIn) {
       const acts = document.createElement('div'); acts.className = 'acts';
       const a = document.createElement('a'); a.className = 'btn ghost'; a.href = 'https://hfdatalibrary.com/pages/download#register';
-      a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Sign in / create free account'; acts.appendChild(a);
+      a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Sign in / create free account'; wireRegister(a); acts.appendChild(a);
       host.parentElement.querySelector('.bubble').appendChild(acts);
     }
   }
   function finishErr(msg) { renderNotice(msg, false); done(); }
   function done() { busy = false; $('send').removeAttribute('disabled'); }
+
+  // [2.3] Turn a register anchor into an in-place popup register (G-12a: EKD.login is
+  // called synchronously in the click handler). The href stays as the no-JS / SDK-
+  // blocked / popup-blocked fallback (full register on hfdatalibrary.com).
+  function wireRegister(a) {
+    a.addEventListener('click', function (e) {
+      if (!window.EKD) return;               // SDK blocked → the anchor's href/target does the work
+      e.preventDefault();
+      EKD.login({ tab: 'register' }).catch(function (err) {
+        var m = err && err.message;
+        if (m === 'popup_blocked' || m === 'insecure_context') location.href = a.href;  // §9 fallback
+      });
+    });
+  }
 
   // ---- wire up ----
   $('send').onclick = () => send();
@@ -251,7 +296,8 @@ body{font-family:var(--sans);color:#111827;background:#f7f7f8;display:flex;flex-
     } catch (e) {}
   }
 
-  (async function () { await loadMe(); await loadHealth(); })();
+  initEkd();
+  (async function () { await loadHealth(); })();
 })();
 </script>
 </body></html>
