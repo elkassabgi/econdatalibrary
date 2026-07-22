@@ -340,7 +340,8 @@ def _fetch_table(sess, db, path, prefix, since_date):
         # (treat as quiet); on a full fetch of a table with no history it's empty.
         return [], ("quiet" if since_date is not None else "empty")
 
-    rows = parse_jsonstat2(resp, prefix)
+    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    rows = parse_jsonstat2(resp, prefix, meta_time_code)
     if not rows:
         # 200 but parse yielded nothing.
         body_has_values = bool(resp.get("value")) if isinstance(resp, dict) else False
