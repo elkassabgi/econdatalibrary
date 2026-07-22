@@ -65,7 +65,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, sane_since
+from ._common import Tally, finalize, sane_since, structural_on_zero_rows
 
 SOURCE = "stat_estonia"
 DEDUP = ("series_key", "obs_date")
@@ -361,7 +361,6 @@ def update(unit, since) -> Result:
         subj_tables = by_subject[subj]
         path = os.path.join(out_dir, f"{subj}.parquet")
         before = blob.row_count(path)
-        had_existing = before > 0
         stored = _max_by_table(path)     # per-table max within this subject file
 
         # seed cursors from the on-disk frontier so untouched tables still report a cursor
@@ -393,10 +392,6 @@ def update(unit, since) -> Result:
             # up any real new period. A genuine recent stored_max is returned unchanged.
             raw_stored_max = stored.get(prefix)
             stored_max = sane_since(raw_stored_max)
-            # genuinely-never-landed (no on-disk rows for this table) vs a real table
-            # whose boundary was a corrupt far-future sentinel that we just demoted to a
-            # full pull. Only the former may be a structural break on a 0-row parse.
-            never_landed = raw_stored_max is None
             url = f"{base}/{tpath}"        # no trailing slash (ingester note)
 
             # 1) metadata
@@ -438,19 +433,16 @@ def update(unit, since) -> Result:
             rows = ing.parse_jsonstat2(resp, prefix, meta_time_code)
 
             if not rows:
-                # 200 with a real body. Structural ONLY when this was a FULL pull of a
-                # GENUINELY never-landed table (never_landed) of a body that DID carry a
-                # time dimension yet yielded 0 parseable observations, AND the subject
-                # already had data on disk (a populated source that just stopped parsing).
-                # A date-tail (stored_max set) returning 0 is a normal quiet table; and a
-                # table whose corrupt far-future boundary we just demoted to a full pull
-                # (stored_max forced None but raw_stored_max set) is NOT a new break — it
-                # already had its sentinel data on disk — so it must not false-trip
-                # structural.
-                resp_has_time = any(
-                    ing.is_time_dim(did, _idx_codes(resp, did))
-                    for did in resp.get("id", []))
-                if never_landed and resp_has_time and resp.get("value") and had_existing:
+                # 200 with a real body but 0 parsed rows. Classify via the shared PxWeb
+                # rule (identical to statfin/hagstofa; MISTAKES R25): a STRUCTURAL break is
+                # only the loss of data we ALREADY serve — a table with a SANE on-disk
+                # boundary (stored_max is not None) whose real json-stat2 envelope still
+                # carries >=1 non-null value yet parsed to nothing. A never-landed table, a
+                # corrupt-boundary table demoted to a full pull (stored_max None), or a
+                # newer period slot published ahead of its (all-null) data is benign empty.
+                # NB: the OLD gate was INVERTED — it fired on never-landed tables and stayed
+                # silent when a populated table went dark (the real break). Fixed here.
+                if structural_on_zero_rows(stored_max, resp):
                     tally.structural_unit()
                 else:
                     tally.empty_unit()
@@ -512,20 +504,3 @@ def update(unit, since) -> Result:
     # tables are simply "nothing newer" is legitimate no_change and must NOT.
     return finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
                     empty_window_floor=n_subunits - 1)
-
-
-def _idx_codes(resp: dict, did: str) -> list[str]:
-    """Recover a dimension's category codes from a json-stat2 response (for the
-    structural-break time-dimension probe). Mirrors parse_jsonstat2's index handling."""
-    cat = resp.get("dimension", {}).get(did, {}).get("category", {})
-    idx = cat.get("index", {})
-    if isinstance(idx, dict):
-        size = max(idx.values(), default=-1) + 1
-        codes = [""] * size
-        for code, pos in idx.items():
-            if 0 <= pos < size:
-                codes[pos] = code
-        return codes
-    if isinstance(idx, list):
-        return list(idx)
-    return []

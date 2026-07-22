@@ -127,16 +127,51 @@ def check_resolver() -> list[str]:
     return problems
 
 
+def check_classifier() -> list[str]:
+    """CHECK 3 — the shared PxWeb-family 0-row classifier
+    (updater/strategies/fetchers/_common.structural_on_zero_rows). Guards the
+    stat_estonia inversion fix: a populated table going dark -> structural; a
+    never-landed / all-null / no-envelope body -> benign empty."""
+    from datetime import date
+    try:
+        from updater.strategies.fetchers._common import structural_on_zero_rows as S
+    except Exception as e:  # pragma: no cover
+        print(f"  [FAIL] import structural_on_zero_rows: {e}")
+        return [f"import: {e}"]
+    d = date(2020, 1, 1)
+    cases = [
+        # name, stored_max, resp, expected
+        ("never-landed -> empty",       None, {"id": ["Tid"], "value": [1.0]},         False),
+        ("populated+realval -> struct", d,    {"id": ["Tid"], "value": [1.0, 2.0]},    True),
+        ("populated+allnull -> empty",  d,    {"id": ["Tid"], "value": [None, None]},  False),
+        ("no-dims-envelope -> empty",   d,    {"id": [], "value": [1.0]},              False),
+        ("no-value-key -> empty",       d,    {"id": ["Tid"]},                         False),
+        ("sparse-dict-value -> struct", d,    {"id": ["Tid"], "value": {"0": 1.0}},    True),
+        ("non-dict-resp -> empty",      d,    "junk",                                  False),
+    ]
+    problems = []
+    for name, sm, resp, exp in cases:
+        got = S(sm, resp)
+        ok = (got == exp)
+        print(f"  [{'OK ' if ok else 'FAIL'}] {name:<30} -> {got}  (expected {exp})")
+        if not ok:
+            problems.append(f"{name}: got {got}, expected {exp}")
+    return problems
+
+
 def main() -> int:
     print("CHECK 1 — TIME_CODES superset (re-derived from source):")
     p1 = check_superset()
     print("\nCHECK 2 — resolve_time_dim unit cases:")
     p2 = check_resolver()
+    print("\nCHECK 3 — structural_on_zero_rows classifier (PxWeb S3 family):")
+    p3 = check_classifier()
     print()
-    if p1 or p2:
-        print(f"FAIL: {len(p1)} superset gap(s), {len(p2)} resolver failure(s)")
+    if p1 or p2 or p3:
+        print(f"FAIL: {len(p1)} superset gap(s), {len(p2)} resolver failure(s), "
+              f"{len(p3)} classifier failure(s)")
         return 1
-    print("ALL PASS — resolver superset + failure-mode selection verified")
+    print("ALL PASS — resolver superset + failure-mode selection + classifier verified")
     return 0
 
 
