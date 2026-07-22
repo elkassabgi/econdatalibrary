@@ -431,8 +431,11 @@ def update(unit, since) -> Result:
                 time.sleep(RATE)
                 continue
 
-            # 4) parse with the ingester's parser (identical keys/dates as bulk ingest)
-            rows = ing.parse_jsonstat2(resp, prefix)
+            # 4) parse with the ingester's parser (identical keys/dates as bulk ingest).
+            # Thread the AUTHORITATIVE PxWeb `time: true` flag so the shared value-first
+            # resolver locks onto it; None (Estonia omits it on some tables) -> value-first.
+            meta_time_code = next((v.get("code") for v in meta["variables"] if v.get("time") is True), None)
+            rows = ing.parse_jsonstat2(resp, prefix, meta_time_code)
 
             if not rows:
                 # 200 with a real body. Structural ONLY when this was a FULL pull of a

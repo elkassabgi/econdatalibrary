@@ -346,7 +346,8 @@ def update(unit, since) -> Result:
             time.sleep(RATE)
             continue
 
-        rows = parse_jsonstat2_bfs(resp, f"BFS:{dbid}")
+        meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+        rows = parse_jsonstat2_bfs(resp, f"BFS:{dbid}", meta_time_code)
         if not rows:
             # 200 with a real JSON-stat2 envelope but 0 parsed rows from a non-trivial
             # selection -> schema/structural break; an envelope with no value array is

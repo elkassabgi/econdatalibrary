@@ -28,6 +28,16 @@ import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
 ROOT = r"D:/research/econfindatalibrary"
+import sys as _sys
+# The shared value-first time-axis resolver lives in THIS module's own repo (jobs/ and
+# core/ are siblings). Derive the repo root from __file__ so `from core import pxweb`
+# resolves both when this file is run standalone AND when the fetcher importlib-loads it
+# (same convention as updater/config.py and tools/pxweb_regression.py). The hardcoded ROOT
+# above is the DATA tree, which does not carry core/pxweb.py on this branch.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in _sys.path:
+    _sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
 OUT  = os.path.join(ROOT, "data", "clean_full", "bfs")
 BASE_EN = "https://www.pxweb.bfs.admin.ch/api/v1/en"  # for table listing
 BASE_DE = "https://www.pxweb.bfs.admin.ch/api/v1/de"  # for data queries
@@ -111,7 +121,7 @@ def is_time_dim(code: str) -> bool:
                        "année", "año", "año_mes", "quartal", "monat")
 
 
-def parse_jsonstat2_bfs(data: dict, prefix: str) -> list[tuple[str, dt.date, float]]:
+def parse_jsonstat2_bfs(data: dict, prefix: str, time_code: str | None = None) -> list[tuple[str, dt.date, float]]:
     """Parse BFS JSON-stat2 where time codes are numeric indices, labels are dates."""
     results = []
     try:
@@ -148,15 +158,17 @@ def parse_jsonstat2_bfs(data: dict, prefix: str) -> list[tuple[str, dt.date, flo
             dim_codes.append(pos_to_code)
             dim_labels.append(pos_to_label)
 
-            # Identify time dimension: by name or by content of labels
-            if time_dim_idx is None:
-                if is_time_dim(did):
-                    time_dim_idx = i
-                elif pos_to_label:
-                    sample = pos_to_label[:5]
-                    yr_count = sum(1 for v in sample if re.match(r"^\d{4}[MQKHW]?\d*$", str(v).strip()))
-                    if yr_count >= len(sample) * 0.6:
-                        time_dim_idx = i
+        # Pick the time dimension via the shared value-first resolver (core/pxweb.py).
+        # bfs is INDEX-CODED: the category CODES are positional indices ('0','1',...) that
+        # parse to NO date; the real period strings live in the LABELS ('1994','1994M03',
+        # ...). So we score dim_LABELS (exactly what parse_date reads dates from below) -- NOT
+        # the codes, or the resolver would reject the real axis. Scoring labels also makes a
+        # 'Hochschule'/'Fachrichtung'/'Relevante Vortrittsregelung' dim whose numeric CODES
+        # coincidentally fall in a year range lose to the real year axis (whose LABELS are the
+        # years). Authoritative `time: true` (threaded) / role.time still win first.
+        time_dim_idx = _pxweb.resolve_time_dim(
+            dim_ids, dim_labels, meta_time_code=time_code,
+            role_time=_pxweb.role_time_of(data), parse_fn=parse_date)
 
         if time_dim_idx is None:
             return results
@@ -284,7 +296,8 @@ def main():
             continue
 
         prefix = f"BFS:{dbid}"
-        rows = parse_jsonstat2_bfs(resp, prefix)
+        meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+        rows = parse_jsonstat2_bfs(resp, prefix, meta_time_code)
         n = 0
         for key, d, v in rows:
             tok = (key, d)

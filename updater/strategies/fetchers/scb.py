@@ -65,6 +65,18 @@ from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import Tally, finalize
 
+import sys
+# The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
+# (core/pxweb.py). Derive the repo root from __file__ — updater/strategies/fetchers/ is
+# four levels below it — so `from core import pxweb` resolves to THIS checkout's copy both
+# when the updater imports this fetcher as a package and if it is loaded standalone. No
+# hardcoded ROOT: only the worktree carries core/pxweb.py on this branch (same __file__
+# convention as jobs/ingest_hagstofa.py and tools/pxweb_regression.py).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
+
 SOURCE = "scb"
 BASE = "https://api.scb.se/OV0104/v1/doris/en/ssd"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
@@ -150,7 +162,7 @@ def _time_dim_index(dim_ids, candidates):
     return other[0] if other else None
 
 
-def _parse_jsonstat2(data: dict, table_path: str) -> list[tuple[str, dt.date, float]]:
+def _parse_jsonstat2(data: dict, table_path: str, meta_time_code: str | None = None) -> list[tuple[str, dt.date, float]]:
     """Parse JSON-stat2 into (series_key, date, value) — verbatim ingester logic."""
     results: list[tuple[str, dt.date, float]] = []
     try:
@@ -159,22 +171,6 @@ def _parse_jsonstat2(data: dict, table_path: str) -> list[tuple[str, dt.date, fl
         dims = data.get("dimension", {})
         values = data.get("value", [])
         if not dim_ids or not values:
-            return results
-
-        candidates = {}
-        for did in dim_ids:
-            cat_idx = dims.get(did, {}).get("category", {}).get("index", {})
-            if isinstance(cat_idx, dict):
-                all_vals = list(cat_idx.keys())
-            else:
-                all_vals = list(cat_idx) if cat_idx else []
-            candidates[did] = (_is_time_dim(did, all_vals), all_vals)
-        # Prefer an explicitly NAMED time dim (Tid/Time/...) over a coincidental
-        # year-like non-time variable — see _time_dim_index. This is the only deviation
-        # from the ingester's first-match pick, and it only changes the result for the
-        # handful of tables that carry both a real Tid and a year-like category code.
-        time_dim_idx = _time_dim_index(dim_ids, candidates)
-        if time_dim_idx is None:
             return results
 
         dim_codes: list[list[str]] = []
@@ -191,6 +187,18 @@ def _parse_jsonstat2(data: dict, table_path: str) -> list[tuple[str, dt.date, fl
             else:
                 pos_to_code = []
             dim_codes.append(pos_to_code)
+
+        # Pick the time dimension via the shared value-first resolver (core/pxweb.py):
+        # authoritative `time: true` / role.time, else highest date-parse-rate, else name.
+        # Value-first stops a non-time axis whose codes merely look year-like — a Kommun
+        # Region code '0114' (read as year 114), '2584', or an 8-digit ContentsCode — from
+        # outranking the real Tid axis; the name-first defect that corrupted scb obs_dates
+        # (MISTAKES R19/R22). _parse_date keeps scb's exact grammar so working tables stay
+        # byte-identical.
+        time_dim_idx = _pxweb.resolve_time_dim(dim_ids, dim_codes, meta_time_code=meta_time_code, role_time=_pxweb.role_time_of(data), parse_fn=_parse_date)
+
+        if time_dim_idx is None:
+            return results
 
         strides = [1] * len(dim_sizes)
         for i in range(len(dim_sizes) - 2, -1, -1):
@@ -570,7 +578,8 @@ def update(unit, since) -> Result:
                 tally.empty_unit()
                 continue
 
-            rows = _parse_jsonstat2(resp, tpath)
+            meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+            rows = _parse_jsonstat2(resp, tpath, meta_time_code)
             # keep only rows strictly newer than the stored frontier (guard against an
             # echoed boundary period or a parser that returned the whole slice), and
             # never accept an implausible far-future date (the same ingester time-dim
