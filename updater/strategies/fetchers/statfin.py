@@ -161,14 +161,31 @@ def parse_date(s: str) -> dt.date | None:
     return None
 
 
+# Fallback time-dimension names (copied verbatim from jobs/ingest_statfin.py — the
+# authoritative signal is the metadata `time: true` flag; these back it up).
+TIME_CODES = (
+    "vuosi", "tid", "time", "year", "kuukausi", "kk", "period", "quarter",
+    "neljännes", "neljannes", "kvartal", "kausi", "viikko", "week", "month",
+    "maaned", "datum", "aika", "timeperiod_y", "timeperiod_m", "timeperiod_q",
+)
+
+
 def is_time_dim(code: str, values: list[str]) -> bool:
-    code_l = code.lower()
-    if code_l in ("vuosi", "tid", "time", "year", "kuukausi", "period", "quarter", "neljännes"):
+    """The INGESTER's per-variable time test (copied verbatim from
+    jobs/ingest_statfin.py). No longer used to pick the tailed axis — that is
+    resolve_time_dim's job in _build_query — but still needed there for
+    ingester keep-full PARITY: over MAX_CELLS the ingester keeps every variable
+    this test flags at its FULL value list, so the stored series_keys cover it
+    and the date-tail must select it identically."""
+    if str(code).strip().lower() in TIME_CODES:
         return True
     if values:
-        sample = values[:5]
-        yr_count = sum(1 for v in sample if re.match(r"^\d{4}[MQKHW]?\d*$", str(v).strip()))
-        return yr_count >= len(sample) * 0.6
+        sample = [str(v).strip() for v in values[:8]]
+        cur = dt.date.today().year
+        sane = sum(1 for v in sample
+                   if (d := parse_date(v)) is not None and 1900 <= d.year <= cur + 2)
+        if sample and sane >= max(1, int(len(sample) * 0.6)):
+            return True
     return False
 
 
@@ -443,9 +460,21 @@ def _table_frontier(out_dir: str, subject: str) -> dict[str, dt.date]:
 # per-table query (date-tail) — REUSES the ingester's selection logic
 # --------------------------------------------------------------------------- #
 def _build_query(variables: list[dict], since_date: dt.date | None):
-    """Build the json-stat2 query body restricting the time dimension to codes
+    """Build the json-stat2 query body restricting THE time dimension to codes
     >= since_date (re-fetch the boundary). Non-time dims replicate the ingester's
     MAX_CELLS rule so the reconstructed series_key matches the stored data.
+
+    THE time dimension is picked with the shared value-first resolver
+    (core/pxweb.py) fed the SAME inputs parse_jsonstat2 resolves with — the
+    authoritative `time: true` code, else highest date-parse-rate, else literal
+    name, using this source's parse_date grammar — so the axis restricted to
+    ">= since_date" is EXACTLY the axis the parser will key obs_date on. The OLD
+    per-variable test (`var.time OR is_time_dim`) could mark BOTH a month axis
+    (codes '00'..'12', named "kuukausi") AND the year axis as time: the month
+    codes parse to no date, so its ">= since" filter matched nothing and fell
+    back to a single arbitrary month code — permanently excluding every other
+    month's series from the tail while the run reported a healthy quiet state (a
+    silent freeze, and an axis mismatch with the parser).
 
     Returns (body, time_var_present). If a time var exists but NO code is >= since_date
     the body is None (nothing to ask — PxWeb 400s on an empty selection)."""
@@ -454,15 +483,22 @@ def _build_query(variables: list[dict], since_date: dt.date | None):
         total_cells *= max(len(var.get("values", [])), 1)
     small = total_cells <= MAX_CELLS
 
+    # THE time axis, exactly as parse_jsonstat2 will pick it on the response
+    # (same authoritative flag, same parse_date grammar, same precedence).
+    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    time_idx = _pxweb.resolve_time_dim(
+        [v.get("code", "") for v in variables],
+        [[str(c) for c in (v.get("values") or [])] for v in variables],
+        meta_time_code=meta_time_code, parse_fn=parse_date)
+
     query_vars = []
     time_present = False
-    for var in variables:
+    for i, var in enumerate(variables):
         code = var.get("code", "")
         vals = var.get("values", [])
         if not vals:
             continue
-        is_time = bool(var.get("time")) or is_time_dim(code, vals)
-        if is_time:
+        if i == time_idx:
             time_present = True
             if since_date is not None:
                 sel = [c for c in vals if (parse_date(c) or dt.date.min) >= since_date]
@@ -474,6 +510,14 @@ def _build_query(variables: list[dict], since_date: dt.date | None):
                 sel = vals  # first-time backfill: full history
             query_vars.append({"code": code, "selection": {"filter": "item", "values": sel}})
         elif small:
+            query_vars.append({"code": code, "selection": {"filter": "item", "values": vals}})
+        elif ((code == meta_time_code) if meta_time_code is not None
+              else is_time_dim(code, vals)):
+            # Ingester keep-full PARITY (jobs/ingest_statfin.py query_table): over
+            # MAX_CELLS the ingester keeps every variable its own is_time test flags
+            # at the FULL value list — e.g. the demoted month axis of a month+year
+            # cube — so the stored keys cover all its values. Collapsing it to the
+            # aggregate here would tail only a sliver of those stored series.
             query_vars.append({"code": code, "selection": {"filter": "item", "values": vals}})
         else:
             agg = [v for v in vals if str(v).upper() in AGG_CODES]
