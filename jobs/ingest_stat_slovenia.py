@@ -24,6 +24,16 @@ import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
 ROOT = r"D:/research/econfindatalibrary"
+import sys as _sys
+# The shared value-first time-axis resolver lives in THIS module's own repo (jobs/ and
+# core/ are siblings). Derive the repo root from __file__ so `from core import pxweb`
+# resolves both when this file is run standalone AND when the fetcher importlib-loads it
+# (same convention as updater/config.py and tools/pxweb_regression.py). The hardcoded ROOT
+# above is the DATA tree, which does not carry core/pxweb.py on this branch.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in _sys.path:
+    _sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
 OUT  = os.path.join(ROOT, "data", "clean_full", "stat_slovenia")
 BASE = "https://pxweb.stat.si/SiStatData/api/v1/en/Data"
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
@@ -145,7 +155,16 @@ def is_time_dim(code: str, values: list[str]) -> bool:
     return False
 
 
-def parse_jsonstat2(data: dict, prefix: str) -> list[tuple[str, dt.date, float]]:
+def parse_jsonstat2(data: dict, prefix: str, meta_time_code: str | None = None) -> list[tuple[str, dt.date, float]]:
+    """Parse JSON-stat2 response into (series_key, date, value) tuples.
+
+    `meta_time_code` is the AUTHORITATIVE time dimension id from the PxWeb metadata
+    (the variable flagged `time: true`). When provided the shared resolver locks onto
+    that dimension instead of guessing. Falls back to the value-first selection
+    (highest date-parse-rate, literal name only as a last resort) when the flag is
+    absent — this fixes the MESEC+LETO (month+year) cube where the literally-named
+    MESEC month axis came first and was picked over LETO, keying every obs_date on
+    unparseable month-of-year codes and writing 0 rows."""
     results = []
     try:
         dim_ids   = data.get("id", [])
@@ -155,7 +174,6 @@ def parse_jsonstat2(data: dict, prefix: str) -> list[tuple[str, dt.date, float]]
         if not dim_ids or not values:
             return results
 
-        time_dim_idx = None
         dim_codes = []
         for i, did in enumerate(dim_ids):
             cat = dims.get(did, {}).get("category", {})
@@ -172,18 +190,11 @@ def parse_jsonstat2(data: dict, prefix: str) -> list[tuple[str, dt.date, float]]
                 pos_to_code = []
             dim_codes.append(pos_to_code)
 
-        # Pick the time dimension: PREFER a literally-named time dim (LETO/MESEC/
-        # ČETRTLETJE/...), and only then fall back to value-parsing — so a numeric
-        # category dimension can never beat the real time axis.
-        for i, did in enumerate(dim_ids):
-            if str(did).strip().lower() in TIME_CODES:
-                time_dim_idx = i
-                break
-        if time_dim_idx is None:
-            for i, did in enumerate(dim_ids):
-                if is_time_dim(did, dim_codes[i]):
-                    time_dim_idx = i
-                    break
+        # Pick the time dimension via the shared value-first resolver (core/pxweb.py):
+        # authoritative `time: true` / role.time, else highest date-parse-rate, else name.
+        # Value-first stops a MESEC month axis (codes that parse to no date) from
+        # outranking the LETO year axis when it comes first in a MESEC+LETO cube.
+        time_dim_idx = _pxweb.resolve_time_dim(dim_ids, dim_codes, meta_time_code=meta_time_code, role_time=_pxweb.role_time_of(data), parse_fn=parse_date)
 
         if time_dim_idx is None:
             return results
@@ -241,6 +252,9 @@ def query_table(table_id: str) -> list[tuple[str, dt.date, float]]:
     if not variables:
         return []
 
+    # Authoritative time dimension: PxWeb metadata flags the time variable `time: true`.
+    time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+
     total_cells = 1
     for var in variables:
         total_cells *= max(len(var.get("values", [])), 1)
@@ -275,7 +289,7 @@ def query_table(table_id: str) -> list[tuple[str, dt.date, float]]:
 
     tid_clean = table_id.replace(".px", "")
     prefix = f"SI:{tid_clean}"
-    return parse_jsonstat2(resp, prefix)
+    return parse_jsonstat2(resp, prefix, time_code)
 
 
 def main():
