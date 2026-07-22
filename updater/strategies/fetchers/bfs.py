@@ -64,6 +64,18 @@ from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import Tally, finalize
 
+import sys
+# The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
+# (core/pxweb.py). Derive the repo root from __file__ — updater/strategies/fetchers/ is
+# four levels below it — so `from core import pxweb` resolves to THIS checkout's copy both
+# when the updater imports this fetcher as a package and if it is loaded standalone. No
+# hardcoded ROOT: only the worktree carries core/pxweb.py on this branch (same __file__
+# convention as jobs/ingest_hagstofa.py and tools/pxweb_regression.py).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
+
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 BASE_EN = "https://www.pxweb.bfs.admin.ch/api/v1/en"   # table listing
 BASE_DE = "https://www.pxweb.bfs.admin.ch/api/v1/de"   # metadata + data queries
@@ -172,44 +184,86 @@ def _post_json(sess, url, body):
 # TIME variable restricted to periods >= the stored max for this dbid.
 # --------------------------------------------------------------------------- #
 def _is_time_var(var) -> bool:
-    """Match the ingester's notion of a time variable (PxWeb time flag, or a known
-    time code name, or first valueText that looks like a bare year)."""
+    """The INGESTER's per-variable time-ish test (PxWeb time flag, or a known time
+    code name, or first valueText that looks like a bare year). No longer used to
+    pick the axis the date-tail restricts — that is _time_var_index's job — but
+    still needed for ingester keep-full PARITY: over MAX_CELLS, jobs/ingest_bfs.py
+    keeps every variable this test flags at its FULL value list (that is what the
+    stored series_keys cover), so the date-tail must select it identically."""
     code = var.get("code", "")
     vt = var.get("valueTexts", var.get("values", []))
     return bool(var.get("time")) or is_time_dim(code) or bool(
         vt and re.match(r"^\d{4}$", str(vt[0]).strip()))
 
 
+def _time_var_index(variables):
+    """Index of THE time variable, resolved exactly as parse_jsonstat2_bfs keys
+    obs_date: the shared value-first resolver (core/pxweb.py) fed the same
+    authoritative `time: true` code and parse_date grammar the parser is given.
+    bfs is INDEX-CODED — the category CODES are positional indices ('0','1',...)
+    that parse to NO date; the real period strings live in the LABELS — so we
+    score each variable's valueTexts (falling back per-position to the code,
+    mirroring the parser's cat_label.get(code, code)), NOT its values. The OLD
+    per-variable test (_is_time_var) could flag BOTH a month axis and a year
+    axis as time: the month's ">= since" filter emptied its selection (labels
+    like 'Januar' parse to no date), producing a degenerate/rejected query — or
+    an n_time=0 quiet verdict from whichever time-ish variable happened to be
+    LAST — and the table froze silently while the parser keyed the year axis.
+    Returns None when no axis carries dates at all."""
+    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    dim_ids = [v.get("code", "") for v in variables]
+    dim_texts = []
+    for v in variables:
+        vals = v.get("values") or []
+        texts = v.get("valueTexts") or []
+        dim_texts.append([str(texts[i]) if i < len(texts) else str(vals[i])
+                          for i in range(len(vals))])
+    return _pxweb.resolve_time_dim(dim_ids, dim_texts,
+                                   meta_time_code=meta_time_code, parse_fn=parse_date)
+
+
 def _build_query(variables, since_max: dt.date | None):
     """Reproduce the ingester's per-variable selection on the FULL cell count, then
-    restrict the time variable to codes whose parsed date is >= since_max (boundary
+    restrict THE time variable — the axis parse_jsonstat2_bfs keys obs_date on
+    (_time_var_index) — to codes whose parsed date is >= since_max (boundary
     re-fetched for revisions). Returns (query_vars, n_new_time_codes).
+
+    Variables the ingester's own time-ish test flags (_is_time_var) keep their FULL
+    value list in the over-MAX_CELLS branch exactly as jobs/ingest_bfs.py does —
+    including a demoted second time-ish axis (e.g. the month axis of a month+year
+    cube), whose stored series_keys cover every value.
 
     n_new_time_codes is the count of selected time codes after restriction; 0 means
     upstream has no period >= our stored max -> legitimately quiet (skip the POST)."""
+    time_idx = _time_var_index(variables)
+
     total_cells = 1
     for v in variables:
         total_cells *= max(len(v.get("values", [])), 1)
 
     query_vars = []
     n_time = None
-    for var in variables:
+    legacy_timeish_present = False
+    for vi, var in enumerate(variables):
         vals = var.get("values", [])
         if not vals:
             continue
         code = var.get("code", "")
-        timeflag = _is_time_var(var)
+        legacy_timeish = _is_time_var(var)
+        if legacy_timeish:
+            legacy_timeish_present = True
+        is_time = (vi == time_idx)
 
         if total_cells <= MAX_CELLS:
             selected = list(vals)
         else:
-            if timeflag:
+            if legacy_timeish or is_time:
                 selected = list(vals)
             else:
                 agg = [x for x in vals if str(x).lower() in ("tot", "total", "0", "all", "t")]
                 selected = agg[:1] if agg else vals[:1]
 
-        if timeflag:
+        if is_time:
             if since_max is not None:
                 kept = []
                 for code_val in selected:
@@ -231,9 +285,18 @@ def _build_query(variables, since_max: dt.date | None):
 
         query_vars.append({"code": code, "selection": {"filter": "item", "values": selected}})
 
-    # If there is no detectable time variable, n_time stays None — we then treat the
-    # whole table as a full (re)fetch (n_time -> count of any selected, or 1 sentinel).
+    # No resolvable time axis (or the resolved axis carried no values): the parser
+    # will key obs_date on nothing, so there is no date tail to restrict.
     if n_time is None:
+        if time_idx is None and since_max is not None and legacy_timeish_present:
+            # A stored table whose only time-ish signal is the OLD heuristic's (the
+            # parser resolves NO axis and would parse 0 rows): the OLD code's since-
+            # filter emptied that pseudo-time selection and PxWeb rejected the empty
+            # selection -> empty_unit. Return n_time=0 so the caller records the same
+            # legitimately-quiet verdict without the doomed POST.
+            return query_vars, 0
+        # Never-stored table or no time-ish signal at all: full (re)fetch semantics
+        # (n_time -> 1 sentinel when there is anything to ask, as before).
         n_time = 1 if query_vars else 0
     return query_vars, n_time
 

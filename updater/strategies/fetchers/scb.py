@@ -403,20 +403,36 @@ def _build_query(variables: list[dict], stored_max: dt.date | None):
     Non-time variables follow the ingester: all values within the cell budget, else
     the aggregate/first value. Returns has_time=False when no time dim is present.
     """
-    # locate the time variable — prefer an explicitly NAMED time dim (Tid/Time/...)
-    # over a coincidental year-like non-time variable, matching the parser's pick so
-    # the query restriction and the parse agree on the same dimension.
-    time_candidates = [v for v in variables
-                       if _is_time_dim(v.get("code", ""), v.get("values", []))]
-    time_var = None
-    for v in time_candidates:
-        if _is_named_time(v.get("code", "")):
-            time_var = v
-            break
-    if time_var is None and time_candidates:
-        time_var = time_candidates[0]
-    if time_var is None:
+    # locate THE time variable with the shared value-first resolver (core/pxweb.py),
+    # fed the SAME inputs _parse_jsonstat2 resolves with — the authoritative
+    # `time: true` code, else highest date-parse-rate, else literal name, using
+    # _parse_date's grammar — so the query restriction and the parse key the SAME
+    # dimension. The OLD candidate scan (_is_time_dim + named-first preference)
+    # could still pick an axis whose codes parse to no date: an index-coded
+    # "Period"/"Datum" listed before the real "Tid" (both name-matched), or — with
+    # no named candidate at all — a first-listed Region/Kommun axis whose 4-digit
+    # codes merely LOOK year-like. Its "strictly newer" filter then selected
+    # nothing and the table was reported permanently current: a silent freeze on
+    # exactly the axis mismatch the parser migration fixed.
+    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    t_idx = _pxweb.resolve_time_dim(
+        [v.get("code", "") for v in variables],
+        [[str(c) for c in (v.get("values") or [])] for v in variables],
+        meta_time_code=meta_time_code, parse_fn=_parse_date)
+    if t_idx is None:
+        # No axis the parser could key obs_date on — it will parse 0 rows however we
+        # restrict. If the OLD heuristic still sees a time-ish candidate, this is the
+        # documented unparseable-table class (a year-like category variable; on disk
+        # with garbage dates or never landed — see the kept==0 comment in update()):
+        # report "time present, nothing newer" so the caller records the same quiet
+        # empty_unit as today's steady state, minus the doomed POST. Only a table
+        # with NO time-ish signal at all keeps the has_time=False structural signal.
+        legacy = [v for v in variables
+                  if _is_time_dim(v.get("code", ""), v.get("values", []))]
+        if legacy:
+            return [], legacy[0].get("code"), True, []
         return [], None, False, []
+    time_var = variables[t_idx]
 
     all_time = time_var.get("values", []) or []
     if stored_max is None:
