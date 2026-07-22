@@ -47,7 +47,25 @@ licenses:
   bundesbank-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: true, url: "https://www.bundesbank.de/en/homepage/user-information/conditions-for-the-general-use-of-the-website-764706"}  # written reply 2026-07-15 (info@bundesbank.de, inquiry 2026/005812): "you may save, distribute or reproduce ... provided that you do so free of charge. The information must not be altered or distorted" + must cite "Copyright: Deutsche Bundesbank, Frankfurt am Main, Germany" and send them a copy
   idb-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: false, url: "https://data.iadb.org"}  # written grant 2026-07-15 (opendata@iadb.org): "you have our full permission to re-host and redistribute them" (CC-BY 4.0, institutional IDB data). Third-party carve-out pass run 2026-07-15: all 21 ingested datasets institutional, none excluded (data/_idb_carveout_audit.json). Citation format + per-dataset link-back required (CSV header Dataset row).
   defillama-granted: {reservable: true, commercial_ok: false, attribution: required, no_modify: false, url: "https://defillama.com"}  # written grant 2026-07-16 (support@defillama.com, "Rick"): "feel free to use our data ... as long as its non-commercial use and we get properly cited." NC + attribution.
+  # --- National statistical offices (PxWeb/SDMX): licences verified verbatim 2026-07-21 (see DATABASE_LICENSES_VERBATIM.md) ---
+  surs-open:            {reservable: true,  commercial_ok: true,  attribution: required, url: "https://www.stat.si/StatWeb/en/StaticPages/Index/copyright"}   # SURS open terms (CC BY-equivalent); verified 2026-07-21
+  opendata-swiss-by:    {reservable: true,  commercial_ok: true,  attribution: required, url: "https://opendata.swiss/en/terms-of-use"}   # opendata.swiss "terms_by": open use + source credit, commercial OK (BFS); verified 2026-07-21
+  un-data-terms:        {reservable: true,  commercial_ok: true,  attribution: required, url: "https://data.un.org/Host.aspx?Content=UNdataUse"}   # UNdata Terms of Use: data/metadata "may be copied freely, duplicated and further distributed provided that UNdata is cited as the reference"; verified 2026-07-21 (governs UNSD statistical data incl. the SDG Global Database; the restrictive un.org WEBSITE terms do NOT apply to the data service)
 sources:
+
+  # ---- National statistical offices (PxWeb/SDMX) + UN SDG Global Database — licences verified verbatim 2026-07-21 ----
+  scb:           {name: "Statistics Sweden (SCB)", license: cc0, homepage: "https://www.scb.se", terms_url: "https://scb.se/en/About-us/about-the-website-and-terms-of-use/open-data-api", attribution: "Source: Statistics Sweden (SCB), CC0"}
+  ssb:           {name: "Statistics Norway (SSB)", license: cc-by-4.0, homepage: "https://www.ssb.no/en/statbank/", terms_url: "https://www.ssb.no/en/diverse/lisens", attribution: "Source: Statistics Norway (SSB), CC BY 4.0"}
+  statfin:       {name: "Statistics Finland (StatFin)", license: cc-by-4.0, homepage: "https://stat.fi/en", terms_url: "https://stat.fi/en/services/statistical-data-services/open-data-and-interfaces", attribution: "Source: Statistics Finland, CC BY 4.0"}
+  dst:           {name: "Statistics Denmark (StatBank)", license: cc-by-4.0, homepage: "https://www.dst.dk/en", terms_url: "https://www.dst.dk/en/presse/kildeangivelse", attribution: "Source: Statistics Denmark, CC BY 4.0"}
+  hagstofa:      {name: "Statistics Iceland (Hagstofa Islands)", license: cc-by-4.0, homepage: "https://www.statice.is", terms_url: "https://statice.is/publications/open-data-access/", attribution: "Source: Statistics Iceland, CC BY 4.0"}
+  cso:           {name: "CSO Ireland (Central Statistics Office)", license: cc-by-4.0, homepage: "https://www.cso.ie", terms_url: "https://www.cso.ie/en/aboutus/whoweare/copyrightpolicy/", attribution: "Contains Irish Public Sector Data (CSO) licensed under CC BY 4.0"}
+  stat_latvia:   {name: "Official Statistics Portal of Latvia", license: cc-by-4.0, homepage: "https://data.stat.gov.lv", terms_url: "https://stat.gov.lv/en/about-osp", attribution: "Source: Official Statistics Portal of Latvia, CC BY 4.0"}
+  stat_estonia:  {name: "Statistics Estonia", license: cc-by-sa-4.0, homepage: "https://www.stat.ee/en", terms_url: "https://andmed.stat.ee/en/stat", attribution: "Source: Statistics Estonia, CC BY-SA 4.0 (share-alike)"}
+  stat_slovenia: {name: "Statistical Office of Slovenia (SURS)", license: surs-open, homepage: "https://www.stat.si", terms_url: "https://www.stat.si/StatWeb/en/StaticPages/Index/copyright", attribution: "Source: SURS, Statistical Office of the Republic of Slovenia"}
+  bfs:           {name: "Swiss Federal Statistical Office (BFS/OFS)", license: opendata-swiss-by, homepage: "https://www.bfs.admin.ch", terms_url: "https://opendata.swiss/en/terms-of-use", attribution: "Source: Swiss Federal Statistical Office (BFS)"}
+  norgesbank:    {name: "Norges Bank", license: nlod-2.0, homepage: "https://www.norges-bank.no", terms_url: "https://data.norge.no/nlod/en/2.0", attribution: "Source: Norges Bank (NLOD 2.0)"}
+  unsdg:         {name: "UN SDG Global Database (UN Statistics Division)", license: un-data-terms, homepage: "https://unstats.un.org/sdgs/dataportal/database", terms_url: "https://data.un.org/Host.aspx?Content=UNdataUse", attribution: "Source: United Nations, SDG Global Database (UN Statistics Division / UNdata)"}
 
   # ---- US federal, public domain ----
   sec_edgar:
@@ -857,8 +875,8 @@ sources:
     attribution: "Source: Central Bank of Turkey EVDS (not redistributed; obtain from provider)"
   whr:
     name: "World Happiness Report"
-    license: audit-restricted
-    attribution: "Source: World Happiness Report (not redistributed; obtain from provider)"
+    license: whr-granted
+    attribution: "Source: World Happiness Report / Gallup (hosted with written permission 2026-07-09; non-commercial, attribution required)"
 
 dropped:
   coingecko:      "Free tier is personal/non-commercial; forbids redistribute/syndicate; discourages caching. Use DeFiLlama for crypto."
