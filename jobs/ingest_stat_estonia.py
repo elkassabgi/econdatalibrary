@@ -26,6 +26,16 @@ import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
 ROOT = r"D:/research/econfindatalibrary"
+import sys as _sys
+# The shared value-first time-axis resolver lives in THIS module's own repo (jobs/ and
+# core/ are siblings). Derive the repo root from __file__ so `from core import pxweb`
+# resolves both when this file is run standalone AND when the fetcher importlib-loads it
+# (same convention as updater/config.py and tools/pxweb_regression.py). The hardcoded ROOT
+# above is the DATA tree, which does not carry core/pxweb.py on this branch.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in _sys.path:
+    _sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
 OUT  = os.path.join(ROOT, "data", "clean_full", "stat_estonia")
 BASE = "https://andmed.stat.ee/api/v1/en/stat"
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
@@ -202,25 +212,10 @@ def parse_jsonstat2(data: dict, prefix: str, time_code: str | None = None) -> li
                 pos_to_code = []
             dim_codes.append(pos_to_code)
 
-        # Pick the time dimension. 1) AUTHORITATIVE: the PxWeb metadata `time: true`
-        # code, if supplied. 2) two-pass fallback: a literally-named time dim wins
-        # first, and only then value-parsing — so a numeric category dimension can
-        # never beat the real time axis.
-        if time_code is not None:
-            for i, did in enumerate(dim_ids):
-                if did == time_code:
-                    time_dim_idx = i
-                    break
-        if time_dim_idx is None:
-            for i, did in enumerate(dim_ids):
-                if str(did).strip().lower() in TIME_CODES:
-                    time_dim_idx = i
-                    break
-        if time_dim_idx is None:
-            for i, did in enumerate(dim_ids):
-                if is_time_dim(did, dim_codes[i]):
-                    time_dim_idx = i
-                    break
+        # Pick the time dimension via the shared value-first resolver (core/pxweb.py):
+        # authoritative `time: true` / role.time, else highest date-parse-rate, else name.
+        # Value-first stops a month axis (codes '0'..'11') from outranking a year axis.
+        time_dim_idx = _pxweb.resolve_time_dim(dim_ids, dim_codes, meta_time_code=time_code, role_time=_pxweb.role_time_of(data), parse_fn=parse_date)
 
         if time_dim_idx is None:
             return results

@@ -67,6 +67,18 @@ from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import Tally, finalize, sane_since
 
+import sys
+# The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
+# (core/pxweb.py). Derive the repo root from __file__ — updater/strategies/fetchers/ is
+# four levels below it — so `from core import pxweb` resolves to THIS checkout's copy both
+# when the updater imports this fetcher as a package and if it is loaded standalone. No
+# hardcoded ROOT: only the worktree carries core/pxweb.py on this branch (same __file__
+# convention as jobs/ingest_hagstofa.py and tools/pxweb_regression.py).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
+
 SOURCE = "statfin"
 BASE = "https://pxdata.stat.fi/PxWeb/api/v1/en/StatFin"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
@@ -160,7 +172,7 @@ def is_time_dim(code: str, values: list[str]) -> bool:
     return False
 
 
-def parse_jsonstat2(data: dict, table_path: str) -> list[tuple[str, dt.date, float]]:
+def parse_jsonstat2(data: dict, table_path: str, meta_time_code: str | None = None) -> list[tuple[str, dt.date, float]]:
     """Parse JSON-stat2 -> (series_key, date, value). Copied from the ingester so the
     series_key is byte-identical to what is already stored (merge dedup relies on it)."""
     results: list[tuple[str, dt.date, float]] = []
@@ -172,7 +184,6 @@ def parse_jsonstat2(data: dict, table_path: str) -> list[tuple[str, dt.date, flo
         if not dim_ids or not values:
             return results
 
-        time_dim_idx = None
         dim_codes: list[list[str]] = []
         for i, did in enumerate(dim_ids):
             cat = dims.get(did, {}).get("category", {})
@@ -188,8 +199,13 @@ def parse_jsonstat2(data: dict, table_path: str) -> list[tuple[str, dt.date, flo
             else:
                 pos_to_code = []
             dim_codes.append(pos_to_code)
-            if time_dim_idx is None and is_time_dim(did, pos_to_code):
-                time_dim_idx = i
+
+        # Pick the time dimension via the shared value-first resolver (core/pxweb.py):
+        # authoritative `time: true` / role.time, else highest date-parse-rate, else name.
+        # Value-first stops a month axis (codes '0'..'11') from outranking a year axis —
+        # the name-first defect that froze hagstofa/statfin (MISTAKES R19/R22). parse_date
+        # keeps statfin's exact grammar so working tables stay byte-identical.
+        time_dim_idx = _pxweb.resolve_time_dim(dim_ids, dim_codes, meta_time_code=meta_time_code, role_time=_pxweb.role_time_of(data), parse_fn=parse_date)
 
         if time_dim_idx is None:
             return results
@@ -500,7 +516,8 @@ def _query_table(sess, path, since_date):
         # 400/403/404 on the restricted selection -> nothing for this tail.
         return [], "empty"
 
-    rows = parse_jsonstat2(resp, path)
+    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    rows = parse_jsonstat2(resp, path, meta_time_code)
     if rows:
         return rows, "data"
 
