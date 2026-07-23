@@ -27,11 +27,19 @@ from core import pxweb  # noqa: E402
 # Every file carrying a PxWeb time-name list (module TIME_CODES or an inline
 # is_time_dim `code ... in (...)`). Grepped 2026-07-21.
 SOURCE_FILES = [
+    # ---- ingesters (first-pass / full pulls): all 9 PxWeb sources + the generic one
     "jobs/ingest_hagstofa.py", "jobs/ingest_pxweb.py", "jobs/ingest_scb.py",
     "jobs/ingest_ssb.py", "jobs/ingest_statfin.py", "jobs/ingest_stat_estonia.py",
     "jobs/ingest_stat_slovenia.py", "jobs/ingest_dst.py", "jobs/ingest_bfs.py",
+    "jobs/ingest_stat_latvia.py",
+    # ---- daily-updater fetchers: ALL 9. Only 3 were listed before, so a time-name list
+    # added to any of the other 6 could drift from core/pxweb.TIME_CODES without the harness
+    # noticing -- the same silent-drift class this file exists to prevent.
     "updater/strategies/fetchers/ssb.py", "updater/strategies/fetchers/statfin.py",
-    "updater/strategies/fetchers/stat_slovenia.py",
+    "updater/strategies/fetchers/stat_slovenia.py", "updater/strategies/fetchers/stat_latvia.py",
+    "updater/strategies/fetchers/hagstofa.py", "updater/strategies/fetchers/scb.py",
+    "updater/strategies/fetchers/stat_estonia.py", "updater/strategies/fetchers/dst.py",
+    "updater/strategies/fetchers/bfs.py",
 ]
 
 _DEF_RE = re.compile(r"TIME_CODES\s*=|(?:code\w*|\.lower\(\))\s*in\s*\(")
