@@ -28,7 +28,8 @@ from core import pxweb  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 
 DATA = r"D:/research/econfindatalibrary/data/clean_full"
-SOURCES = ["hagstofa", "statfin", "scb", "stat_estonia", "bfs"]
+SOURCES = ["hagstofa", "statfin", "scb", "stat_estonia", "bfs",
+           "ssb", "stat_latvia", "stat_slovenia", "dst"]
 MIN_RATE = 0.6
 
 
