@@ -63,7 +63,6 @@ import time
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 import requests
 
 from ... import config, blob, merge
@@ -282,7 +281,7 @@ def _flow_layout(path: str):
     Key columns are fixed by the layout: series_key, obs_date, value; series_key
     splits as ADB:FLOW:IND:ECO (exactly 3 colons), so parts[2]=IND, parts[3]=ECO.
     """
-    t = pq.read_table(path, columns=["series_key", "obs_date"])
+    t = blob.read_table(path, columns=["series_key", "obs_date"])
     if t.num_rows == 0:
         return [], [], "A", None
     inds, ecos = set(), set()
@@ -306,11 +305,10 @@ def _flow_layout(path: str):
 # --------------------------------------------------------------------------- #
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
-    if not os.path.isdir(out_dir):
-        raise DefinitiveError(f"adb source dir missing: {out_dir}")
 
-    pfiles = sorted(f for f in os.listdir(out_dir)
-                    if f.endswith(".parquet") and not f.startswith("_"))
+    # blob-routed enumeration: the flow set must be visible under AQUEDUCT_BACKEND=r2
+    # (the local store dir is absent on a CI runner).
+    pfiles = [f for f in blob.list_parquets(out_dir) if not f.startswith("_")]
     if not pfiles:
         raise DefinitiveError(f"no adb parquet files under {out_dir}")
 

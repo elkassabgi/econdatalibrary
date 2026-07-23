@@ -48,7 +48,6 @@ TRULY wholesale all-empty window (every file empty/404) is treated as a break.
 from __future__ import annotations
 
 import datetime as dt
-import glob
 import gzip
 import json
 import os
@@ -59,9 +58,8 @@ import xml.etree.ElementTree as ET
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 
-from ... import config, merge
+from ... import blob, config, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import Tally, finalize
@@ -412,7 +410,7 @@ def _parse_csv(raw: bytes):
 def _file_max_and_keys(path: str):
     """(max_obs_date|None, freq|None, sample_distinct_series_keys[list])."""
     try:
-        t = pq.read_table(path, columns=["series_key", "obs_date", "freq"])
+        t = blob.read_table(path, columns=["series_key", "obs_date", "freq"])
     except Exception:
         return None, None, []
     if t.num_rows == 0:
@@ -470,12 +468,10 @@ def _load_catalog(out_dir: str) -> dict:
 # --------------------------------------------------------------------------- #
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
-    if not os.path.isdir(out_dir):
-        raise DefinitiveError(f"ecb source dir missing: {out_dir}")
 
-    pfiles = sorted(
-        os.path.basename(p) for p in glob.glob(os.path.join(out_dir, "*.parquet"))
-        if not os.path.basename(p).startswith("_"))
+    # blob-routed enumeration: the file set must be visible under AQUEDUCT_BACKEND=r2
+    # (the local store dir is absent on a CI runner).
+    pfiles = [f for f in blob.list_parquets(out_dir) if not f.startswith("_")]
     if not pfiles:
         raise DefinitiveError(f"no ecb parquet files under {out_dir}")
 
@@ -489,11 +485,7 @@ def update(unit, since) -> Result:
     for fn in pfiles:
         path = os.path.join(out_dir, fn)
         stem = fn[:-len(".parquet")]
-        before = 0
-        try:
-            before = pq.read_metadata(path).num_rows
-        except Exception:
-            pass
+        before = blob.row_count(path)
 
         decoded = _decode_filename(stem)
         max_obs, file_freq, sample_keys = _file_max_and_keys(path)

@@ -60,7 +60,6 @@ from collections import defaultdict
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 import requests
 
 from ... import config, blob, merge
@@ -249,7 +248,7 @@ def _max_by_table(parquet_path: str) -> dict[str, dt.date]:
     out: dict[str, dt.date] = {}
     if not blob.exists(parquet_path):
         return out
-    t = pq.read_table(parquet_path, columns=["series_key", "obs_date"])
+    t = blob.read_table(parquet_path, columns=["series_key", "obs_date"])
     if t.num_rows == 0:
         return out
     keys = t.column("series_key").to_pylist()
@@ -356,8 +355,9 @@ def update(unit, since) -> Result:
     ing = _ingester()
     base = ing.BASE
     out_dir = config.source_dir(SOURCE)
-    if not os.path.isdir(out_dir):
-        raise DefinitiveError(f"{SOURCE} source dir missing: {out_dir}")
+    # No isdir guard: sub-units come from the upstream catalog (below), and every
+    # store touch is blob-routed — the local dir legitimately does not exist on a
+    # CI runner under AQUEDUCT_BACKEND=r2.
 
     tables = ing.crawl_catalog()          # cached _catalog.json; no re-discovery
     if not tables:

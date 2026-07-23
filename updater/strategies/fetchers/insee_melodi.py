@@ -55,7 +55,6 @@ import time
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 import requests
 
 from ... import config, blob, merge
@@ -256,7 +255,7 @@ def _flow_max_obs(path):
     if not blob.exists(path):
         return None
     try:
-        od = pq.read_table(path, columns=["obs_date"]).column("obs_date")
+        od = blob.read_table(path, columns=["obs_date"]).column("obs_date")
         mx = pc.max(od).as_py() if od.length() else None
         if isinstance(mx, dt.datetime):
             mx = mx.date()

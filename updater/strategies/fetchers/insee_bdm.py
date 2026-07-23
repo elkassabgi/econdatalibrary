@@ -49,7 +49,6 @@ import xml.etree.ElementTree as ET
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 import requests
 
 from ... import config, blob, merge
@@ -204,13 +203,12 @@ def _parse_obs(root, flow_id):
 # --------------------------------------------------------------------------- #
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
-    if not os.path.isdir(out_dir):
-        raise DefinitiveError(f"insee_bdm source dir missing: {out_dir}")
 
     # Sub-units = the dataflow parquet files we maintain (one per flow). This reuses the
     # ingester's enumeration result on disk; the 42 BDM flows that legitimately carry no
-    # observations have no file and so nothing to refresh.
-    pfiles = sorted(f for f in os.listdir(out_dir) if f.endswith(".parquet"))
+    # observations have no file and so nothing to refresh. Enumeration is blob-routed so
+    # the flow set is visible under AQUEDUCT_BACKEND=r2.
+    pfiles = blob.list_parquets(out_dir)
     if not pfiles:
         raise DefinitiveError(f"no insee_bdm parquet files under {out_dir}")
 
@@ -228,7 +226,7 @@ def update(unit, since) -> Result:
         # Learn this flow's frontier from its own parquet.
         existing_max = None
         try:
-            od = pq.read_table(path, columns=["obs_date"]).column("obs_date")
+            od = blob.read_table(path, columns=["obs_date"]).column("obs_date")
             mx = pc.max(od).as_py() if od.length() else None
             if isinstance(mx, dt.datetime):
                 mx = mx.date()

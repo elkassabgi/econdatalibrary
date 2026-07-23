@@ -31,10 +31,12 @@ from __future__ import annotations
 import csv
 import datetime as _dt
 import io
+import os
 
 import pyarrow as pa
 
 from ..base import Result
+from ... import blob, config
 from ...errors import DefinitiveError
 from . import _giant
 from ._giant import http_get
@@ -199,15 +201,14 @@ def _require_rekeyed() -> None:
     the unstable 'LAST UPDATE=' prefix from existing series_key. Running before that
     splits keys (stable new tail vs unstable history) and GROWS the file with the
     same (series,obs_date) under two key schemes — which never-shrink cannot catch.
-    Self-protecting guard; see the eurostat re-key data-op."""
-    import os, glob
-    import pyarrow.parquet as pq
-    from ...errors import DefinitiveError
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-    files = glob.glob(os.path.join(root, "data", "clean_full", "eurostat", "*.parquet"))
-    for f in files[:5]:
+    Self-protecting guard; see the eurostat re-key data-op. Enumerates and reads
+    through blob so the guard still bites under AQUEDUCT_BACKEND=r2 — a raw local
+    glob returns [] on a CI runner and would silently DISABLE the guard exactly
+    where un-re-keyed data would do the most damage."""
+    out_dir = config.source_dir("eurostat")
+    for fn in blob.list_parquets(out_dir)[:5]:
         try:
-            t = pq.read_table(f, columns=["series_key"])
+            t = blob.read_table(os.path.join(out_dir, fn), columns=["series_key"])
         except Exception:
             continue
         if t.num_rows and any("LAST UPDATE" in (k or "") for k in t.column("series_key")[:50].to_pylist()):
