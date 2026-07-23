@@ -48,7 +48,6 @@ import time
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 import requests
 
 from ... import config, blob, merge
@@ -263,11 +262,11 @@ def _build_table(endpoint, date_field, out_cols, rows):
 # --------------------------------------------------------------------------- #
 def update(unit, since) -> Result:
     out_dir = config.source_dir(unit.source_id)
-    if not os.path.isdir(out_dir):
-        raise DefinitiveError(f"treasury source dir missing: {out_dir}")
 
     cat, fmap = _load_catalog()
-    pfiles = sorted(f for f in os.listdir(out_dir) if f.endswith(".parquet"))
+    # blob-routed enumeration: the endpoint-file set must be visible under
+    # AQUEDUCT_BACKEND=r2 (the local store dir is absent on a CI runner).
+    pfiles = blob.list_parquets(out_dir)
     if not pfiles:
         raise DefinitiveError(f"no treasury parquet files under {out_dir}")
 
@@ -287,14 +286,14 @@ def update(unit, since) -> Result:
             continue
 
         # Learn the file's exact column layout + per-endpoint last obs_date.
-        schema = pq.read_schema(path)
+        schema = blob.read_schema(path)
         all_cols = list(schema.names)
         data_cols = [c for c in all_cols if c not in ("series_key", "obs_date")]
         date_field = _pick_date_field(all_cols)
 
         since_date = None
         if date_field and "obs_date" in all_cols:
-            od = pq.read_table(path, columns=["obs_date"]).column("obs_date")
+            od = blob.read_table(path, columns=["obs_date"]).column("obs_date")
             mx = pc.max(od).as_py() if od.length() else None
             since_date = mx  # re-fetch boundary (:gte:) so same-date revisions are seen
 
@@ -361,7 +360,7 @@ def update(unit, since) -> Result:
 def _existing_max(path) -> str | None:
     """Max obs_date already on disk for an endpoint (for the cursor map on no-write paths)."""
     try:
-        od = pq.read_table(path, columns=["obs_date"]).column("obs_date")
+        od = blob.read_table(path, columns=["obs_date"]).column("obs_date")
         mx = pc.max(od).as_py() if od.length() else None
         return mx.isoformat() if mx is not None else None
     except Exception:

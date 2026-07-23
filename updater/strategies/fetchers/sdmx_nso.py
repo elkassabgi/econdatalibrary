@@ -102,7 +102,6 @@ import time
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 import requests
 
 from ... import config, blob, merge
@@ -237,7 +236,7 @@ def _disk_key_style(path) -> str:
     exactly like the ingester. The choice is per-FLOW because one provider (ECB) mixes
     both styles across its flows."""
     try:
-        t = pq.read_table(path, columns=["series_key"])
+        t = blob.read_table(path, columns=["series_key"])
         if t.num_rows == 0:
             return "csv-first"
         k = t.column("series_key")[0].as_py() or ""
@@ -379,17 +378,13 @@ def _fetch_flow(sess, cfg, flow_id, start_period, style, had_prior):
 # disk helpers
 # --------------------------------------------------------------------------- #
 def _flow_files(out_dir):
-    if not os.path.isdir(out_dir):
-        return []
-    return sorted(
-        f for f in os.listdir(out_dir)
-        if f.endswith(".parquet") and f not in _SKIP_FILES
-    )
+    # blob-routed: the flow set must be visible under AQUEDUCT_BACKEND=r2.
+    return [f for f in blob.list_parquets(out_dir) if f not in _SKIP_FILES]
 
 
 def _max_obs(path):
     try:
-        od = pq.read_table(path, columns=["obs_date"]).column("obs_date")
+        od = blob.read_table(path, columns=["obs_date"]).column("obs_date")
         mx = pc.max(od).as_py() if od.length() else None
         if isinstance(mx, dt.datetime):
             mx = mx.date()

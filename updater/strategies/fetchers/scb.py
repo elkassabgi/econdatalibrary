@@ -57,7 +57,6 @@ import time
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 import requests
 
 from ... import config, blob, merge
@@ -367,7 +366,7 @@ def _table_frontiers(path: str) -> dict[str, dt.date]:
     if not blob.exists(path):
         return out
     # read only the two columns we need (cheap projection on a wide/large subject file)
-    t = pq.read_table(path, columns=["series_key", "obs_date"])
+    t = blob.read_table(path, columns=["series_key", "obs_date"])
     if t.num_rows == 0 or "series_key" not in t.column_names:
         return out
     ceiling = _frontier_ceiling()
@@ -475,18 +474,18 @@ def _build_query(variables: list[dict], stored_max: dt.date | None):
 # --------------------------------------------------------------------------- #
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
-    if not os.path.isdir(out_dir):
-        raise DefinitiveError(f"scb source dir missing: {out_dir}")
 
     # Load the table catalog the ingester crawled (table path/id/text). REUSE it
-    # rather than re-discovering the tree.
+    # rather than re-discovering the tree. blob-routed: under AQUEDUCT_BACKEND=r2 the
+    # catalog is an R2 object — a local open() would always raise "catalog missing".
     import json
     cat_file = os.path.join(out_dir, "_catalog.json")
-    if not os.path.exists(cat_file):
+    cat_raw = blob.read_bytes(cat_file)
+    if cat_raw is None:
         raise DefinitiveError(f"scb catalog missing: {cat_file}")
     try:
-        catalog = json.load(open(cat_file, encoding="utf-8"))
-    except (ValueError, OSError) as e:
+        catalog = json.loads(cat_raw.decode("utf-8"))
+    except ValueError as e:
         raise DefinitiveError(f"scb catalog unreadable: {e}")
 
     # Tables grouped by SUBJECT (first path component) = the on-disk parquet name.
@@ -497,8 +496,8 @@ def update(unit, since) -> Result:
         by_subject[subj].append(t)
 
     # Only the subjects that ALREADY have a parquet are managed (each is a merge unit).
-    subj_files = sorted(f[:-len(".parquet")] for f in os.listdir(out_dir)
-                        if f.endswith(".parquet"))
+    # blob-routed enumeration: visible under AQUEDUCT_BACKEND=r2.
+    subj_files = [f[:-len(".parquet")] for f in blob.list_parquets(out_dir)]
     if not subj_files:
         raise DefinitiveError(f"no scb parquet files under {out_dir}")
 

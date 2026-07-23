@@ -49,7 +49,6 @@ import datetime as dt
 import os
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 import pyarrow.compute as pc
 
 from ... import config, blob, merge
@@ -67,7 +66,7 @@ DEDUP = ("series_key", "obs_date")
 def _flow_max_obs(path: str):
     """Max obs_date already on disk for a flow's parquet (a datetime.date) or None."""
     try:
-        od = pq.read_table(path, columns=["obs_date"]).column("obs_date")
+        od = blob.read_table(path, columns=["obs_date"]).column("obs_date")
         if od.length() == 0:
             return None
         m = pc.max(od).as_py()
@@ -111,14 +110,14 @@ def _series_maxes(keys, dates):
 
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
-    if not os.path.isdir(out_dir):
-        raise DefinitiveError(f"abs source dir missing: {out_dir}")
 
     # On-disk flows = the authoritative sub-unit set (one parquet per dataflow). We
     # date-tail every existing flow. (Brand-new dataflows added to the ABS catalog are
     # not back-discovered here — that's a re-ingest concern; this fetcher keeps the
-    # existing ~1222 flows fresh, which is the S3 contract.)
-    pfiles = sorted(f for f in os.listdir(out_dir) if f.endswith(".parquet"))
+    # existing ~1222 flows fresh, which is the S3 contract.) Enumeration goes through
+    # blob so the flow set is visible under AQUEDUCT_BACKEND=r2 (the local store dir
+    # is absent on a CI runner).
+    pfiles = blob.list_parquets(out_dir)
     if not pfiles:
         raise DefinitiveError(f"no abs parquet files under {out_dir}")
 

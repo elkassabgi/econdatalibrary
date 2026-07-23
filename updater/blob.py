@@ -127,6 +127,68 @@ def write_table_atomic(path: str, table, compression: str = "zstd") -> None:
             r2.put_atomic(_path_to_key(path), fh.read())
 
 
+def list_parquets(dir_path: str) -> list[str]:
+    """Sorted parquet filenames directly inside a store dir, R2-routed.
+
+    Replaces ``os.listdir(out_dir)`` / ``glob.glob(out_dir/*.parquet)`` in fetchers:
+    the local store dir is absent on a CI runner (AQUEDUCT_BACKEND=r2) — a raw
+    listdir either trips the fetcher's "source dir missing" DefinitiveError or,
+    worse, silently yields zero flows (ledger R36, same class as raw reads).
+    Returns basenames only (nested keys are never returned), so existing callers
+    keep their ``os.path.join(out_dir, fn)`` shape."""
+    r2 = _r2_routed()
+    if r2 is not None:
+        prefix = _path_to_key(dir_path).rstrip("/") + "/"
+        names = []
+        paginator = r2.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=r2.bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                name = obj["Key"][len(prefix):]
+                if name and "/" not in name and name.endswith(".parquet"):
+                    names.append(name)
+        return sorted(names)
+    if not os.path.isdir(dir_path):
+        return []
+    return sorted(f for f in os.listdir(dir_path)
+                  if f.endswith(".parquet")
+                  and os.path.isfile(os.path.join(dir_path, f)))
+
+
+def read_bytes(path: str) -> bytes | None:
+    """Raw bytes of a store-adjacent non-parquet sidecar (…/data/<tier>/<src>/_x.json),
+    R2-routed like read_table; None when absent. A fetcher that keeps per-survey
+    state beside the data (e.g. bls's _vintages.json) must read it through here —
+    a plain open(path) sees nothing on a CI runner and the state resets every run."""
+    r2 = _r2_routed()
+    if r2 is not None:
+        return r2.get(_path_to_key(path))
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def write_bytes_atomic(path: str, data: bytes) -> None:
+    """Atomic publish of a non-parquet sidecar, R2-routed (tmp + os.replace locally,
+    single PUT on R2; the local file doubles as the scratch-store mirror, same
+    contract as write_table_atomic)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    r2 = _r2_routed()
+    if r2 is not None:
+        r2.put_atomic(_path_to_key(path), data)
+
+
 def row_count(path: str) -> int:
     r2 = _r2_routed()
     if r2 is not None:

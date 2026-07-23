@@ -46,7 +46,6 @@ import time
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 import requests
 
 from ... import config, blob, merge
@@ -280,16 +279,14 @@ def _fetch_flow(sess, flow_id, start_period, had_prior: bool):
 # disk helpers
 # --------------------------------------------------------------------------- #
 def _flow_files(out_dir):
-    return sorted(
-        f for f in os.listdir(out_dir)
-        if f.endswith(".parquet") and f not in _SKIP_FILES
-    )
+    # blob-routed: the flow set must be visible under AQUEDUCT_BACKEND=r2.
+    return [f for f in blob.list_parquets(out_dir) if f not in _SKIP_FILES]
 
 
 def _max_obs(path):
     """Max obs_date on disk for a flow, or None."""
     try:
-        od = pq.read_table(path, columns=["obs_date"]).column("obs_date")
+        od = blob.read_table(path, columns=["obs_date"]).column("obs_date")
         mx = pc.max(od).as_py() if od.length() else None
         if isinstance(mx, dt.datetime):
             mx = mx.date()

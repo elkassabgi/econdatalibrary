@@ -77,7 +77,6 @@ import re
 import tempfile
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 import requests
 
 from ... import config, blob, merge
@@ -197,29 +196,22 @@ def _sidecar_path(out_dir: str) -> str:
 
 
 def _load_vintages(out_dir: str) -> dict:
-    p = _sidecar_path(out_dir)
-    if not os.path.exists(p):
+    # blob-routed: the sidecar lives beside the data, so under AQUEDUCT_BACKEND=r2
+    # it is an R2 object — a plain open() would see nothing on a CI runner and
+    # every survey's vintage would reset (full re-fetch every tick).
+    data = blob.read_bytes(_sidecar_path(out_dir))
+    if data is None:
         return {}
     try:
-        with open(p, encoding="utf-8") as f:
-            return json.load(f)
+        return json.loads(data.decode("utf-8"))
     except Exception:
         return {}
 
 
 def _save_vintages(out_dir: str, vintages: dict) -> None:
-    p = _sidecar_path(out_dir)
-    tmp = f"{p}.{os.getpid()}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(vintages, f, separators=(",", ":"))
-        os.replace(tmp, p)
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+    blob.write_bytes_atomic(
+        _sidecar_path(out_dir),
+        json.dumps(vintages, separators=(",", ":")).encode("utf-8"))
 
 
 # --------------------------------------------------------------------------- #
@@ -236,7 +228,7 @@ def _preexisting_dups(path: str) -> int:
         return 0
     try:
         import pyarrow.compute as pc
-        t = pq.read_table(path, columns=["series_id", "obs_date", "period"])
+        t = blob.read_table(path, columns=["series_id", "obs_date", "period"])
         n = t.num_rows
         if n == 0:
             return 0
@@ -253,10 +245,8 @@ def _record_dataop(out_dir: str, survey: str, dups: int, reason: str) -> None:
     update-tick action. We record what needs doing so it is visible to monitoring."""
     p = os.path.join(out_dir, "_dataops_needed.json")
     try:
-        cur = {}
-        if os.path.exists(p):
-            with open(p, encoding="utf-8") as f:
-                cur = json.load(f)
+        raw = blob.read_bytes(p)
+        cur = json.loads(raw.decode("utf-8")) if raw is not None else {}
     except Exception:
         cur = {}
     cur[survey] = {
@@ -268,27 +258,13 @@ def _record_dataop(out_dir: str, survey: str, dups: int, reason: str) -> None:
                   f"production parquet left untouched.",
         "flagged_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
     }
-    tmp = f"{p}.{os.getpid()}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cur, f, indent=2)
-        os.replace(tmp, p)
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+    blob.write_bytes_atomic(p, json.dumps(cur, indent=2).encode("utf-8"))
 
 
 def _existing_surveys(out_dir: str) -> list[str]:
-    if not os.path.isdir(out_dir):
-        return []
-    out = []
-    for fn in os.listdir(out_dir):
-        if fn.endswith(".parquet") and not fn.startswith("_"):
-            out.append(fn[:-len(".parquet")])
-    return sorted(out)
+    # blob-routed: the survey set must be visible under AQUEDUCT_BACKEND=r2.
+    return [fn[:-len(".parquet")] for fn in blob.list_parquets(out_dir)
+            if not fn.startswith("_")]
 
 
 # --------------------------------------------------------------------------- #
@@ -322,7 +298,7 @@ def _existing_schema(path: str) -> pa.Schema | None:
     if not blob.exists(path):
         return None
     try:
-        return pq.ParquetFile(path).schema_arrow
+        return blob.read_schema(path)
     except Exception:
         return None
 
