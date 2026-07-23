@@ -4211,6 +4211,7 @@ sources:
     - single parquet (~4KB), columns series_key(TI_CPI:cpi_score:{iso3}), obs_date(Dec-31 of year), value(float64 CPI score).
       ~180 countries x ~13 years.
 - source_id: treasury
+  live: true
   scripts:
   - jobs/ingest_treasury.py
   strategy: extend_by_date
