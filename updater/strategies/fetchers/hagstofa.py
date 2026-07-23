@@ -108,15 +108,17 @@ def _catalog_path() -> str:
 
 
 def _load_catalog() -> list[dict]:
-    """Reuse the ingester's crawled catalog (db / path / id / text). If the cached
-    file is absent, fall back to a fresh crawl via the ingester (slow, but correct)."""
-    cp = _catalog_path()
-    if os.path.exists(cp):
+    """Reuse the ingester's crawled catalog (db / path / id / text). The cache read is
+    blob-routed so CI (AQUEDUCT_BACKEND=r2) uses the R2 copy instead of re-crawling all
+    1906 tables every run (ledger R36); if the cache is absent everywhere, fall back to a
+    fresh crawl via the ingester (slow, but correct)."""
+    raw = blob.read_bytes(_catalog_path())
+    if raw is not None:
         try:
-            cat = json.load(open(cp, encoding="utf-8"))
+            cat = json.loads(raw.decode("utf-8"))
             if isinstance(cat, list) and cat:
                 return cat
-        except (ValueError, OSError):
+        except ValueError:
             pass
     # No cached catalog -> let the ingester crawl (it writes the cache too).
     cat = _ING.crawl_catalog()
@@ -394,8 +396,9 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
     from ..base import Result  # local import keeps the module importable standalone
 
     out_dir = config.source_dir(SOURCE)
-    if not os.path.isdir(out_dir):
-        raise DefinitiveError(f"hagstofa source dir missing: {out_dir}")
+    # No isdir guard: the table set comes from the (blob-routed) catalog and every store
+    # touch is blob-routed, so the local dir legitimately does not exist on a CI runner
+    # under AQUEDUCT_BACKEND=r2 (ledger R36).
 
     catalog = _load_catalog()
     # Optional bounded subset for the LIVE one-shot test only (production passes nothing).
