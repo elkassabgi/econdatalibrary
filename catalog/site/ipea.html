@@ -2,7 +2,7 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil) — Econ Data Library</title>
+<title>Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados — Econ Data Library</title>
 <meta name="description" content="IPEA Data — Instituto de Pesquisa Econômica Aplicada, Brazil. License: Open data (dadosabertos.ipea.gov.br) Source: http://www.ipeadata.gov.br/ No API key required. Coverage (~2,900 series): * Macroeconomic: GDP, inflation, interest rates, exchange rates, trade, fiscal * Regional: state-level data…">
 <link rel="canonical" href="https://econdatalibrary.com/ipea.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
@@ -97,7 +97,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)",
+  "name": "Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados",
   "description": "IPEA Data — Instituto de Pesquisa Econômica Aplicada, Brazil. License: Open data (dadosabertos.ipea.gov.br) Source: http://www.ipeadata.gov.br/ No API key required. Coverage (~2,900 series): * Macroeconomic: GDP, inflation, interest rates, exchange rates, trade, fiscal * Regional: state-level data…",
   "url": "https://econdatalibrary.com/ipea.html",
   "identifier": "ipea",
@@ -109,15 +109,16 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)"
+    "name": "Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados",
+    "url": "http://www.ipeadata.gov.br"
   },
-  "license": "Redistributable with attribution (provider terms verified)",
+  "license": "custom-terms-ipea",
   "keywords": [
     "Macroeconomics",
     "ipea"
   ],
   "temporalCoverage": "1821-01-01/..",
-  "creditText": "Source: IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)",
+  "creditText": "Source: Ipeadata, Instituto de Pesquisa Econômica Aplicada (Ipea), via Ipea Extrator de Dados",
   "citation": "Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados. Retrieved from http://www.ipeadata.gov.br. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-ipea",
@@ -157,14 +158,14 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "url": "https://econdatalibrary.com/ipea.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)"
+    "name": "Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados"
   },
   "publisher": {
     "@type": "sc:Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "Redistributable with attribution (provider terms verified)",
+  "license": "custom-terms-ipea",
   "keywords": [
     "Macroeconomics"
   ],
@@ -200,7 +201,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-22');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -211,22 +212,23 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)</div>
+<div class="crumb"><a href="index.html">Catalog</a> / Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados</div>
 <div class="pid">ipea</div>
-<h1>IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)</h1>
-<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Redistributable with attribution (provider terms verified)</span><span class="badge cat">Macroeconomics</span></div>
+<h1>Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados</h1>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">custom-terms-ipea</span><span class="badge cat">Macroeconomics</span></div>
 <p class="lead">IPEA Data — Instituto de Pesquisa Econômica Aplicada, Brazil. License: Open data (dadosabertos.ipea.gov.br) Source: http://www.ipeadata.gov.br/ No API key required. Coverage (~2,900 series): * Macroeconomic: GDP, inflation, interest rates, exchange rates, trade, fiscal * Regional: state-level data…</p>
 </div>
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">1,241</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1821-01-01 – present</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Macroeconomics</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>Redistributable with attribution (provider terms verified)</dd>
-<dt>Required attribution</dt><dd>Source: IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)</dd>
+<dl class="kv"><dt>License</dt><dd>custom-terms-ipea</dd>
+<dt>Required attribution</dt><dd>Source: Ipeadata, Instituto de Pesquisa Econômica Aplicada (Ipea), via Ipea Extrator de Dados</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
-<dt>Commercial use</dt><dd>Yes</dd>
+<dt>Commercial use</dt><dd>Restricted / no</dd>
 <dt>Modification</dt><dd>Permitted</dd>
-<dt>Provider terms</dt><dd><a href="http://www.ipeadata.gov.br/iframe_direitouso.aspx">http://www.ipeadata.gov.br/iframe_direitouso.aspx</a></dd></dl>
+<dt>Provider homepage</dt><dd><a href="http://www.ipeadata.gov.br">http://www.ipeadata.gov.br</a></dd>
+<dt>Provider terms</dt><dd><a href="http://www.ipea.gov.br/extrator/termos_condicoes.html">http://www.ipea.gov.br/extrator/termos_condicoes.html</a></dd></dl>
 <h2>How to cite</h2>
 <blockquote class="cite">Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados. Retrieved from http://www.ipeadata.gov.br. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
@@ -258,7 +260,7 @@ Run: python jobs/ingest_ipea.py</p>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)&quot;,
+  &quot;name&quot;: &quot;Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados&quot;,
   &quot;description&quot;: &quot;IPEA Data — Instituto de Pesquisa Econômica Aplicada, Brazil. License: Open data (dadosabertos.ipea.gov.br) Source: http://www.ipeadata.gov.br/ No API key required. Coverage (~2,900 series): * Macroeconomic: GDP, inflation, interest rates, exchange rates, trade, fiscal * Regional: state-level data…&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/ipea.html&quot;,
   &quot;identifier&quot;: &quot;ipea&quot;,
@@ -270,15 +272,16 @@ Run: python jobs/ingest_ipea.py</p>
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)&quot;
+    &quot;name&quot;: &quot;Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados&quot;,
+    &quot;url&quot;: &quot;http://www.ipeadata.gov.br&quot;
   },
-  &quot;license&quot;: &quot;Redistributable with attribution (provider terms verified)&quot;,
+  &quot;license&quot;: &quot;custom-terms-ipea&quot;,
   &quot;keywords&quot;: [
     &quot;Macroeconomics&quot;,
     &quot;ipea&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1821-01-01/..&quot;,
-  &quot;creditText&quot;: &quot;Source: IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)&quot;,
+  &quot;creditText&quot;: &quot;Source: Ipeadata, Instituto de Pesquisa Econômica Aplicada (Ipea), via Ipea Extrator de Dados&quot;,
   &quot;citation&quot;: &quot;Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados. Retrieved from http://www.ipeadata.gov.br. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-ipea&quot;,
@@ -316,14 +319,14 @@ Run: python jobs/ingest_ipea.py</p>
   &quot;url&quot;: &quot;https://econdatalibrary.com/ipea.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;IPEA / Ipeadata (Instituto de Pesquisa Econômica Aplicada, Brazil)&quot;
+    &quot;name&quot;: &quot;Instituto de Pesquisa Econômica Aplicada (Ipea) — Ipeadata / Ipea Extrator de Dados&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;Redistributable with attribution (provider terms verified)&quot;,
+  &quot;license&quot;: &quot;custom-terms-ipea&quot;,
   &quot;keywords&quot;: [
     &quot;Macroeconomics&quot;
   ],
@@ -339,7 +342,7 @@ Run: python jobs/ingest_ipea.py</p>
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-17 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-22 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

@@ -2,7 +2,7 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / HCSO) — Econ Data Library</title>
+<title>Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH) — Econ Data Library</title>
 <meta name="description" content="KSH Hungary (Központi Statisztikai Hivatal) — STADAT CSV tables. License: Open data (free to use) Source: https://www.ksh.hu/stadat Format: CSV files at https://www.ksh.hu/stadat_files/{theme}/en/{theme}{NNNN}.csv Coverage: ~1,600+ annual statistical tables across 27 themes including: * nep —…">
 <link rel="canonical" href="https://econdatalibrary.com/ksh.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
@@ -97,7 +97,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / HCSO)",
+  "name": "Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH)",
   "description": "KSH Hungary (Központi Statisztikai Hivatal) — STADAT CSV tables. License: Open data (free to use) Source: https://www.ksh.hu/stadat Format: CSV files at https://www.ksh.hu/stadat_files/{theme}/en/{theme}{NNNN}.csv Coverage: ~1,600+ annual statistical tables across 27 themes including: * nep —…",
   "url": "https://econdatalibrary.com/ksh.html",
   "identifier": "ksh",
@@ -109,7 +109,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / HCSO)"
+    "name": "Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH)",
+    "url": "https://www.ksh.hu"
   },
   "license": "https://creativecommons.org/licenses/by/4.0/",
   "keywords": [
@@ -117,7 +118,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "ksh"
   ],
   "temporalCoverage": "1941-12-31/2026-12-31",
-  "creditText": "Source: KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / H",
+  "creditText": "Source: HCSO / ksh.hu (Hungarian Central Statistical Office), licensed under CC BY 4.0",
   "citation": "Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH). Retrieved from https://www.ksh.hu. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-ksh",
@@ -158,7 +159,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "url": "https://econdatalibrary.com/ksh.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / HCSO)"
+    "name": "Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH)"
   },
   "publisher": {
     "@type": "sc:Organization",
@@ -202,7 +203,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-22');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -213,9 +214,9 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / HCSO)</div>
+<div class="crumb"><a href="index.html">Catalog</a> / Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH)</div>
 <div class="pid">ksh</div>
-<h1>KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / HCSO)</h1>
+<h1>Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Macroeconomics</span></div>
 <p class="lead">KSH Hungary (Központi Statisztikai Hivatal) — STADAT CSV tables. License: Open data (free to use) Source: https://www.ksh.hu/stadat Format: CSV files at https://www.ksh.hu/stadat_files/{theme}/en/{theme}{NNNN}.csv Coverage: ~1,600+ annual statistical tables across 27 themes including: * nep —…</p>
 </div>
@@ -225,10 +226,11 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>Licensing &amp; provenance</h2>
 <dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 4.0 (CC BY 4.0)</dd>
 <dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/4.0/">https://creativecommons.org/licenses/by/4.0/</a></dd>
-<dt>Required attribution</dt><dd>Source: KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / H</dd>
+<dt>Required attribution</dt><dd>Source: HCSO / ksh.hu (Hungarian Central Statistical Office), licensed under CC BY 4.0</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Yes</dd>
 <dt>Modification</dt><dd>Permitted</dd>
+<dt>Provider homepage</dt><dd><a href="https://www.ksh.hu">https://www.ksh.hu</a></dd>
 <dt>Provider terms</dt><dd><a href="https://www.ksh.hu/copyright_hungarian_central_statistical_office">https://www.ksh.hu/copyright_hungarian_central_statistical_office</a></dd></dl>
 <h2>How to cite</h2>
 <blockquote class="cite">Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH). Retrieved from https://www.ksh.hu. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
@@ -262,7 +264,7 @@ Run: python jobs/ingest_ksh_hungary.py</p>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / HCSO)&quot;,
+  &quot;name&quot;: &quot;Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH)&quot;,
   &quot;description&quot;: &quot;KSH Hungary (Központi Statisztikai Hivatal) — STADAT CSV tables. License: Open data (free to use) Source: https://www.ksh.hu/stadat Format: CSV files at https://www.ksh.hu/stadat_files/{theme}/en/{theme}{NNNN}.csv Coverage: ~1,600+ annual statistical tables across 27 themes including: * nep —…&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/ksh.html&quot;,
   &quot;identifier&quot;: &quot;ksh&quot;,
@@ -274,7 +276,8 @@ Run: python jobs/ingest_ksh_hungary.py</p>
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / HCSO)&quot;
+    &quot;name&quot;: &quot;Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH)&quot;,
+    &quot;url&quot;: &quot;https://www.ksh.hu&quot;
   },
   &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
   &quot;keywords&quot;: [
@@ -282,7 +285,7 @@ Run: python jobs/ingest_ksh_hungary.py</p>
     &quot;ksh&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1941-12-31/2026-12-31&quot;,
-  &quot;creditText&quot;: &quot;Source: KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / H&quot;,
+  &quot;creditText&quot;: &quot;Source: HCSO / ksh.hu (Hungarian Central Statistical Office), licensed under CC BY 4.0&quot;,
   &quot;citation&quot;: &quot;Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH). Retrieved from https://www.ksh.hu. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-ksh&quot;,
@@ -321,7 +324,7 @@ Run: python jobs/ingest_ksh_hungary.py</p>
   &quot;url&quot;: &quot;https://econdatalibrary.com/ksh.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;KSH Hungarian Central Statistical Office (Hungarian Central Statistical Office / HCSO)&quot;
+    &quot;name&quot;: &quot;Hungarian Central Statistical Office (Központi Statisztikai Hivatal, HCSO/KSH)&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
@@ -345,7 +348,7 @@ Run: python jobs/ingest_ksh_hungary.py</p>
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-17 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-22 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

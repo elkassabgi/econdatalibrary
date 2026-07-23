@@ -1421,8 +1421,8 @@ def render_index(records, generated):
          "on this page)."),
         ("How are licenses handled?",
          "Every series carries its source's license and attribution requirements. "
-         "Sources whose license forbids re-hosting are catalogued as metadata-only "
-         "pointers to the original publisher — they are never redistributed."),
+         "We only list sources whose license permits re-hosting; anything we can't "
+         "redistribute isn't catalogued at all — never silently served."),
         ("How do I cite a series?",
          "Every series and every bundle ships a producer-first citation (the "
          "original statistical agency first, the library second). Download bundles "
@@ -1643,7 +1643,7 @@ a.tile-link .tile-go{display:inline-block;margin-top:.9rem;color:var(--blue);fon
         <h2>What is this?</h2>
         <p>A single, citable library over __N__ economic and financial data sources — national statistical offices, central banks, international organizations, trade, development, energy, and research datasets.</p>
         <p>Every series lives in one namespace (<code>source:series:geography</code>), resolves over a free REST API, and ships with its license, attribution requirements, and a producer-first citation. Bundles are snapshot-pinned so your results reproduce exactly.</p>
-        <p>Sources whose licenses forbid re-hosting are catalogued honestly as metadata-only pointers to the original publisher — never silently redistributed.</p>
+        <p>Everything in the library is real, downloadable data — if we can’t host a source, we don’t list it.</p>
         <p>No subscription. No paywall. One free key for the whole ElkassabgiData family, including <a href="https://hfdatalibrary.com/">HF Data Library</a>.</p>
       </div>
       <div class="feature-visual">
@@ -1663,25 +1663,19 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
   </div>
 </section>
 
-<!-- ── Two access tiers (hf 'Two cleaning versions' parallel) ── -->
+<!-- ── Every source is fully hosted ── -->
 <section class="section section-alt">
   <div class="container">
-    <h2 class="section-title">Two catalog tiers. Always honest.</h2>
-    <div class="grid-2" style="max-width:900px;margin:0 auto;display:grid;grid-template-columns:repeat(2,1fr);gap:1.5rem">
+    <h2 class="section-title">Every source, fully hosted</h2>
+    <div style="max-width:680px;margin:0 auto">
       <div class="acard" style="border-left:4px solid var(--green)">
         <span class="badge open" style="margin-bottom:.5rem;display:inline-block">Redistributed</span>
-        <h3>Tier 1: Redistributed</h3>
-        <p>__NOPEN__ sources whose licenses permit re-hosting. Full data served from our store — CSV downloads, API access, snapshot-pinned bundles. License and attribution attached to every series.</p>
+        <h3>__NOPEN__ sources — all real, all downloadable</h3>
+        <p>Every dataset here is served from our store as citation-headed CSV, over the free REST API, and in snapshot-pinned bundles — with license and attribution attached to every series. Licensed for re-hosting, with Python and R clients ready to go.</p>
         <p style="margin-top:.5rem"><strong>Best for:</strong> direct downloads, reproducible research bundles, API pipelines.</p>
       </div>
-      <div class="acard" style="border-left:4px solid var(--amber)">
-        <span class="badge meta" style="margin-bottom:.5rem;display:inline-block">Metadata only</span>
-        <h3>Tier 2: Metadata-only</h3>
-        <p>__NMETA__ sources whose licenses forbid re-hosting. Fully catalogued — searchable metadata, machine-readable Dataset/Croissant records, and pointers to the original publisher. The data itself stays with its owner.</p>
-        <p style="margin-top:.5rem"><strong>Best for:</strong> discovery, license checking, citing the original source correctly.</p>
-      </div>
     </div>
-    <p style="text-align:center;margin-top:2rem;color:var(--g500);font-size:.9rem;max-width:700px;margin-left:auto;margin-right:auto">We never silently redistribute restricted data — a direct request for a restricted series returns an honest HTTP 451 with a link to the publisher.</p>
+    <p style="text-align:center;margin-top:2rem;color:var(--g500);font-size:.9rem;max-width:700px;margin-left:auto;margin-right:auto">If a source's license doesn't permit re-hosting, we simply don't list it — no dead-end pages, no teasers. The moment a publisher grants permission, its data appears here as a full download.</p>
   </div>
 </section>
 
@@ -1981,7 +1975,7 @@ def render_catalog(records, generated):
 <section class="cat-hero">
   <div style="max-width:960px;margin:0 auto;padding:0 1.5rem">
     <h1>Data Catalog</h1>
-    <p>__N__ sources &middot; __NOPEN__ redistributed, __NMETA__ metadata-only &middot; search datasets in English, or series in 6 languages via the live API</p>
+    <p>__N__ sources, all downloadable &middot; search datasets in English, or series in 6 languages via the live API</p>
   </div>
 </section>
 <div class="wrapc">
@@ -2000,11 +1994,6 @@ def render_catalog(records, generated):
   <div class="controls" id="fine">
     <select id="topic" onchange="render()"><option value="">All topics</option></select>
     <select id="region" onchange="render()">__REGIONS__</select>
-    <select id="f" onchange="render()">
-      <option value="">All access tiers</option>
-      <option value="open">Redistributed only</option>
-      <option value="meta">Metadata-only</option>
-    </select>
     <select id="sort" onchange="render()">
       <option value="name">Sort: Name A&ndash;Z</option>
       <option value="series">Sort: Most series</option>
@@ -2048,7 +2037,7 @@ function render(){
 }
 function renderLocal(){
  const q=document.getElementById('q').value.toLowerCase().trim();
- const f=document.getElementById('f').value;
+ const f='';  // access-tier filter removed — every source is redistributed/hosted
  const topic=document.getElementById('topic').value;
  const region=document.getElementById('region').value;
  const sort=document.getElementById('sort').value;
@@ -2071,12 +2060,12 @@ function renderLocal(){
   if(c)parts.push('Pillar: '+c.textContent.replace(/^[^ ]+ /,''));}
  if(topic)parts.push('Topic: '+topic);
  if(region)parts.push('Region: '+region);
- if(f)parts.push(f==='open'?'Redistributed only':'Metadata-only');
+ if(f)parts.push('Redistributed only');
  if(q)parts.push('Search: “'+q+'”');
  const desc=parts.join(' · ');
  document.getElementById('count').textContent=rows.length+' of '+IDX.length+' datasets'+(desc?' — '+desc:'');
  const out=rows.map(r=>{
-  const badge=r.reservable?'<span class="badge open">redistributed</span>':'<span class="badge meta">metadata only</span>';
+  const badge='<span class="badge open">redistributed</span>';
   const cats=(r.cats||[]).slice(0,4).map(c=>'<span class="badge cat">'+esc(c)+'</span>').join('');
   const ser=r.n_series?'<span class="count">'+r.n_series.toLocaleString()+' series</span>':'';
   return '<a class="card" href="'+r.page+'"><div class="cid">'+esc(r.id)+'</div>'+
@@ -2180,7 +2169,7 @@ def render_docs():
 <h2>The namespace</h2>
 <p>Every series has a stable id of the form <code>source:series_key[:geography]</code> — for example <code>worldbank:NY.GDP.MKTP.CD:USA</code>. The id is permanent, appears in every download, and resolves over the API.</p>
 <h2>Two catalog tiers</h2>
-<p><strong>Redistributed</strong> sources have licenses that permit re-hosting: their data is served from our store as citation-headed CSV, over the API, and in bundles. <strong>Metadata-only</strong> sources have licenses that forbid re-hosting: they are fully searchable and carry machine-readable metadata and pointers, but the data stays with the publisher — a direct request returns an honest HTTP 451 with the publisher's link. Nothing restricted is ever silently redistributed.</p>
+<p>Every source in the library has a license that permits re-hosting: its data is served from our store as citation-headed CSV, over the API, and in bundles, with license and attribution attached to every series. Sources whose licenses forbid re-hosting are not listed at all — we never catalog a dead-end we can't actually serve. Nothing restricted is ever silently redistributed.</p>
 <h2>Reproducibility</h2>
 <p>Bundles are snapshot-pinned: a bundle manifest records the snapshot date and the exact member series, so the same request reproduces the same data. Every CSV carries its license and producer-first citation in a comment header.</p>
 <h2>The update pipeline</h2>
@@ -2210,7 +2199,7 @@ def render_api():
 <tr><td><code>GET /v1/stats</code></td><td>Live store-measured counts (series, observations, as-of date).</td><td>No</td></tr>
 <tr><td><code>GET /v1/last-updates</code></td><td>Per-source freshness board (the data behind <a href="status.html">Status</a>).</td><td>No</td></tr>
 </table>
-<p>Requests for series from metadata-only sources return HTTP <code>451</code> with the publisher's link — see <a href="docs.html">Documentation</a>.</p>
+<p>Requests for series we are not licensed to redistribute return HTTP <code>451</code> with the publisher's link — see <a href="docs.html">Documentation</a>.</p>
 <h2>Quick start</h2>
 <pre># curl — one series as CSV
 curl -H "X-API-Key: $KEY" \\
@@ -2480,25 +2469,15 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
 
     # ------------------------------------------------------------------ #
-    # DISPLAY POLICY (owner decision 2026-07-15): the site shows a page ONLY
-    # for (a) sources whose data we DIRECTLY HOST (reservable + has series),
-    # and (b) sources gated PENDING a permission reply (reference kept, data
-    # 451). Metadata-only listings for anything else are misleading — no page,
-    # no links, no mention. Refused sources (WTO) are purged entirely.
+    # DISPLAY POLICY (owner decision 2026-07-22): the site shows a page ONLY
+    # for sources whose data we DIRECTLY HOST (reservable + has series). There
+    # are NO metadata-only listings — "if we can't host it, we don't mention
+    # it." Sources awaiting a permission reply are simply ABSENT; each returns
+    # as a full download page automatically the moment its license flips to
+    # granted (reservable=1). Email tracking lives in REDISTRIBUTION_EMAIL_TRAIL,
+    # not on the public site. (Supersedes the 2026-07-15 "keep pending as a
+    # metadata-only reference" rule; refused sources like WTO stay purged.)
     # ------------------------------------------------------------------ #
-    PENDING_PERMISSION = {
-        # permission requested, awaiting reply (see REDISTRIBUTION_EMAIL_TRAIL
-        # + PERMISSION_EMAIL_DRAFTS): reference stays, data gated.
-        # (bundesbank + idb GRANTED 2026-07-15, defillama GRANTED 2026-07-16 —
-        #  now hosted via their *-granted licenses, so they render as data pages
-        #  regardless of this set; removed here for accurate bookkeeping.)
-        "cboe", "cow", "ei_statreview", "famafrench",
-        "freedomhouse", "irena", "nbp", "polity", "shiller", "sipri",
-        "tcmb", "whr", "worldbank_pink", "zillow",
-        "owid",  # pending via the Energy Institute request (covers OWID's energy series)
-        # written EMBED permission on file (official Tableau embed, no data):
-        "social_progress",
-    }
     records = []
     for sid in sorted(sources):
         rec = build_record(
@@ -2509,8 +2488,7 @@ def main():
             sidecar.get(sid),
             source_meta.get(sid),
         )
-        hosted = bool(rec["reservable"]) and bool(series_roll.get(sid))
-        if hosted or sid in PENDING_PERMISSION:
+        if bool(rec["reservable"]) and bool(series_roll.get(sid)):
             records.append(rec)
 
     def _write(path, html):

@@ -2,8 +2,8 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>World Health Organization (WHO) — Global Health Observatory (GHO) — Econ Data Library</title>
-<meta name="description" content="Source: World Health Organization (WHO) — Global Health Observatory (GHO)">
+<title>World Health Organization (WHO) — Global Health Observatory / SDG health indicators — Econ Data Library</title>
+<meta name="description" content="Source: World Health Organization (WHO), Global Health Observatory. Licence: CC BY-NC-SA 3.0 IGO.">
 <link rel="canonical" href="https://econdatalibrary.com/who_sdg.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -97,8 +97,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "World Health Organization (WHO) — Global Health Observatory (GHO)",
-  "description": "Source: World Health Organization (WHO) — Global Health Observatory (GHO)",
+  "name": "World Health Organization (WHO) — Global Health Observatory / SDG health indicators",
+  "description": "Source: World Health Organization (WHO), Global Health Observatory. Licence: CC BY-NC-SA 3.0 IGO.",
   "url": "https://econdatalibrary.com/who_sdg.html",
   "identifier": "who_sdg",
   "isAccessibleForFree": true,
@@ -109,15 +109,16 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "World Health Organization (WHO) — Global Health Observatory (GHO)"
+    "name": "World Health Organization (WHO) — Global Health Observatory / SDG health indicators",
+    "url": "https://www.who.int/data/gho"
   },
-  "license": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+  "license": "https://www.who.int/about/policies/publishing/copyright",
   "keywords": [
     "Health",
     "who_sdg"
   ],
   "temporalCoverage": "1990-01-01/2025-01-01",
-  "creditText": "Source: World Health Organization (WHO) — Global Health Observatory (GHO)",
+  "creditText": "Source: World Health Organization (WHO), Global Health Observatory. Licence: CC BY-NC-SA 3.0 IGO.",
   "citation": "World Health Organization (WHO) — Global Health Observatory / SDG health indicators. Retrieved from https://www.who.int/data/gho. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-who_sdg",
@@ -128,7 +129,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
       "@type": "DataDownload",
       "encodingFormat": "text/csv",
       "contentUrl": "https://econdatalibrary.com/download.html?source=who_sdg",
-      "license": "https://creativecommons.org/licenses/by-nc-sa/4.0/"
+      "license": "https://www.who.int/about/policies/publishing/copyright"
     }
   ]
 }
@@ -154,18 +155,18 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "name": "who_sdg",
-  "description": "Source: World Health Organization (WHO) — Global Health Observatory (GHO)",
+  "description": "Source: World Health Organization (WHO), Global Health Observatory. Licence: CC BY-NC-SA 3.0 IGO.",
   "url": "https://econdatalibrary.com/who_sdg.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "World Health Organization (WHO) — Global Health Observatory (GHO)"
+    "name": "World Health Organization (WHO) — Global Health Observatory / SDG health indicators"
   },
   "publisher": {
     "@type": "sc:Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+  "license": "https://www.who.int/about/policies/publishing/copyright",
   "keywords": [
     "Health"
   ],
@@ -202,7 +203,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-22');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -213,23 +214,24 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / World Health Organization (WHO) — Global Health Observatory (GHO)</div>
+<div class="crumb"><a href="index.html">Catalog</a> / World Health Organization (WHO) — Global Health Observatory / SDG health indicators</div>
 <div class="pid">who_sdg</div>
-<h1>World Health Organization (WHO) — Global Health Observatory (GHO)</h1>
-<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons BY-NC-SA 4.0</span><span class="badge cat">Health</span></div>
-<p class="lead">Source: World Health Organization (WHO) — Global Health Observatory (GHO)</p>
+<h1>World Health Organization (WHO) — Global Health Observatory / SDG health indicators</h1>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">cc-by-nc-sa-3.0-igo-who_sdg</span><span class="badge cat">Health</span></div>
+<p class="lead">Source: World Health Organization (WHO), Global Health Observatory. Licence: CC BY-NC-SA 3.0 IGO.</p>
 </div>
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">28,160</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1990-01-01 – 2025-01-01</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Health</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>Creative Commons BY-NC-SA 4.0</dd>
-<dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">https://creativecommons.org/licenses/by-nc-sa/4.0/</a></dd>
-<dt>Required attribution</dt><dd>Source: World Health Organization (WHO) — Global Health Observatory (GHO)</dd>
+<dl class="kv"><dt>License</dt><dd>cc-by-nc-sa-3.0-igo-who_sdg</dd>
+<dt>License URL</dt><dd><a href="https://www.who.int/about/policies/publishing/copyright">https://www.who.int/about/policies/publishing/copyright</a></dd>
+<dt>Required attribution</dt><dd>Source: World Health Organization (WHO), Global Health Observatory. Licence: CC BY-NC-SA 3.0 IGO.</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
-<dt>Commercial use</dt><dd>Restricted / no</dd>
-<dt>Modification</dt><dd>Permitted</dd>
-<dt>Provider terms</dt><dd><a href="https://www.who.int/about/policies/publishing/copyright">https://www.who.int/about/policies/publishing/copyright</a></dd></dl>
+<dt>Commercial use</dt><dd>Yes</dd>
+<dt>Modification</dt><dd>Restricted</dd>
+<dt>Provider homepage</dt><dd><a href="https://www.who.int/data/gho">https://www.who.int/data/gho</a></dd>
+<dt>Provider terms</dt><dd><a href="https://www.who.int/about/policies/terms-of-use">https://www.who.int/about/policies/terms-of-use</a></dd></dl>
 <h2>How to cite</h2>
 <blockquote class="cite">World Health Organization (WHO) — Global Health Observatory / SDG health indicators. Retrieved from https://www.who.int/data/gho. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
@@ -241,8 +243,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;World Health Organization (WHO) — Global Health Observatory (GHO)&quot;,
-  &quot;description&quot;: &quot;Source: World Health Organization (WHO) — Global Health Observatory (GHO)&quot;,
+  &quot;name&quot;: &quot;World Health Organization (WHO) — Global Health Observatory / SDG health indicators&quot;,
+  &quot;description&quot;: &quot;Source: World Health Organization (WHO), Global Health Observatory. Licence: CC BY-NC-SA 3.0 IGO.&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/who_sdg.html&quot;,
   &quot;identifier&quot;: &quot;who_sdg&quot;,
   &quot;isAccessibleForFree&quot;: true,
@@ -253,15 +255,16 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;World Health Organization (WHO) — Global Health Observatory (GHO)&quot;
+    &quot;name&quot;: &quot;World Health Organization (WHO) — Global Health Observatory / SDG health indicators&quot;,
+    &quot;url&quot;: &quot;https://www.who.int/data/gho&quot;
   },
-  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by-nc-sa/4.0/&quot;,
+  &quot;license&quot;: &quot;https://www.who.int/about/policies/publishing/copyright&quot;,
   &quot;keywords&quot;: [
     &quot;Health&quot;,
     &quot;who_sdg&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1990-01-01/2025-01-01&quot;,
-  &quot;creditText&quot;: &quot;Source: World Health Organization (WHO) — Global Health Observatory (GHO)&quot;,
+  &quot;creditText&quot;: &quot;Source: World Health Organization (WHO), Global Health Observatory. Licence: CC BY-NC-SA 3.0 IGO.&quot;,
   &quot;citation&quot;: &quot;World Health Organization (WHO) — Global Health Observatory / SDG health indicators. Retrieved from https://www.who.int/data/gho. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-who_sdg&quot;,
@@ -272,7 +275,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
       &quot;@type&quot;: &quot;DataDownload&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
       &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=who_sdg&quot;,
-      &quot;license&quot;: &quot;https://creativecommons.org/licenses/by-nc-sa/4.0/&quot;
+      &quot;license&quot;: &quot;https://www.who.int/about/policies/publishing/copyright&quot;
     }
   ]
 }</pre></details>
@@ -296,18 +299,18 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
   &quot;name&quot;: &quot;who_sdg&quot;,
-  &quot;description&quot;: &quot;Source: World Health Organization (WHO) — Global Health Observatory (GHO)&quot;,
+  &quot;description&quot;: &quot;Source: World Health Organization (WHO), Global Health Observatory. Licence: CC BY-NC-SA 3.0 IGO.&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/who_sdg.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;World Health Organization (WHO) — Global Health Observatory (GHO)&quot;
+    &quot;name&quot;: &quot;World Health Organization (WHO) — Global Health Observatory / SDG health indicators&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by-nc-sa/4.0/&quot;,
+  &quot;license&quot;: &quot;https://www.who.int/about/policies/publishing/copyright&quot;,
   &quot;keywords&quot;: [
     &quot;Health&quot;
   ],
@@ -324,7 +327,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-17 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-22 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

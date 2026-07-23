@@ -109,7 +109,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "Reserve Bank of Australia (RBA)"
+    "name": "Reserve Bank of Australia (RBA)",
+    "url": "https://www.rba.gov.au/"
   },
   "license": "https://creativecommons.org/licenses/by/4.0/",
   "keywords": [
@@ -117,7 +118,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "rba"
   ],
   "temporalCoverage": "1922-06-30/2028-06-09",
-  "creditText": "Source: Reserve Bank of Australia (RBA)",
+  "creditText": "Source: Reserve Bank of Australia [year] (or Source: RBA [year])",
   "citation": "Reserve Bank of Australia (RBA). Retrieved from https://www.rba.gov.au/. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-rba",
@@ -202,7 +203,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-22');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -225,10 +226,11 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>Licensing &amp; provenance</h2>
 <dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 4.0 (CC BY 4.0)</dd>
 <dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/4.0/">https://creativecommons.org/licenses/by/4.0/</a></dd>
-<dt>Required attribution</dt><dd>Source: Reserve Bank of Australia (RBA)</dd>
+<dt>Required attribution</dt><dd>Source: Reserve Bank of Australia [year] (or Source: RBA [year])</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Yes</dd>
 <dt>Modification</dt><dd>Permitted</dd>
+<dt>Provider homepage</dt><dd><a href="https://www.rba.gov.au/">https://www.rba.gov.au/</a></dd>
 <dt>Provider terms</dt><dd><a href="https://www.rba.gov.au/copyright/">https://www.rba.gov.au/copyright/</a></dd></dl>
 <h2>How to cite</h2>
 <blockquote class="cite">Reserve Bank of Australia (RBA). Retrieved from https://www.rba.gov.au/. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
@@ -281,7 +283,8 @@ Run: python jobs/ingest_rba.py</p>
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;Reserve Bank of Australia (RBA)&quot;
+    &quot;name&quot;: &quot;Reserve Bank of Australia (RBA)&quot;,
+    &quot;url&quot;: &quot;https://www.rba.gov.au/&quot;
   },
   &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
   &quot;keywords&quot;: [
@@ -289,7 +292,7 @@ Run: python jobs/ingest_rba.py</p>
     &quot;rba&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1922-06-30/2028-06-09&quot;,
-  &quot;creditText&quot;: &quot;Source: Reserve Bank of Australia (RBA)&quot;,
+  &quot;creditText&quot;: &quot;Source: Reserve Bank of Australia [year] (or Source: RBA [year])&quot;,
   &quot;citation&quot;: &quot;Reserve Bank of Australia (RBA). Retrieved from https://www.rba.gov.au/. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-rba&quot;,
@@ -352,7 +355,7 @@ Run: python jobs/ingest_rba.py</p>
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-17 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-22 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
