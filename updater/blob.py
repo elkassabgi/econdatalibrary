@@ -74,14 +74,35 @@ def exists(path: str) -> bool:
     return os.path.exists(path)
 
 
-def read_table(path: str):
+def read_table(path: str, columns=None):
+    """A stored parquet as an Arrow table, R2-routed. `columns` projects the
+    read (same semantics as pq.read_table's columns=) so a fetcher learning each
+    series' last obs_date can pull just the two columns it needs. columns=None
+    (the default) reads every column, so existing callers are unchanged.
+
+    THIS is the CI-safe read: a raw pq.read_table(path) reads the local path,
+    which does not exist on a GitHub runner (AQUEDUCT_BACKEND=r2) even though the
+    parquet is in R2 -> the fetcher silently ingests nothing (ledger R36)."""
     r2 = _r2_routed()
     if r2 is not None:
         data = r2.get(_path_to_key(path))
         if data is None:
             raise FileNotFoundError(f"R2 object absent for {path!r}")
-        return pq.read_table(io.BytesIO(data))
-    return pq.read_table(path)
+        return pq.read_table(io.BytesIO(data), columns=columns)
+    return pq.read_table(path, columns=columns)
+
+
+def read_schema(path: str):
+    """The Arrow schema of a stored parquet, R2-routed like read_table.
+    Replaces a raw pq.ParquetFile(path).schema_arrow, which reads a local path
+    absent on a CI runner under AQUEDUCT_BACKEND=r2 (ledger R36)."""
+    r2 = _r2_routed()
+    if r2 is not None:
+        data = r2.get(_path_to_key(path))
+        if data is None:
+            raise FileNotFoundError(f"R2 object absent for {path!r}")
+        return pq.read_schema(io.BytesIO(data))
+    return pq.read_schema(path)
 
 
 def write_table_atomic(path: str, table, compression: str = "zstd") -> None:
