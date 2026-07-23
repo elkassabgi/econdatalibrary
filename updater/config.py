@@ -25,7 +25,14 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   gti (Global Terrorism Index), ppi (Positive Peace Index) and etr (Ecological
 #   Threat Report) were added alongside gpi (which was already counted; its dead
 #   URLs were repaired with the granted IEP source). See [[project_redistributability]].
-EXPECTED_SOURCE_COUNT = 133
+# 2026-07-22: -10 -> 123. Ten sources we are NOT permitted to re-host were purged from
+#   the catalog, but the crawler kept fetching them daily: cow, sipri, cboe, famafrench,
+#   nbp, tcmb, irena, freedomhouse, shiller, whr. Crawling data we can never serve wastes
+#   the run, and for the providers who declined us in writing it means hitting their API
+#   every day after they said no. Removed from registry.yaml; the ingest scripts stay on
+#   disk so any future permission is a re-add, not a rewrite. NOTE sipri_polity is a
+#   DIFFERENT source (Polity) and deliberately remains.
+EXPECTED_SOURCE_COUNT = 123
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
