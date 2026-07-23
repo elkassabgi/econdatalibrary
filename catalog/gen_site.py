@@ -106,6 +106,10 @@ LICENSE_LABEL = {
     "etalab-2.0": "Etalab Open Licence 2.0",
     "odbl-1.0": "Open Data Commons Open Database License (ODbL) 1.0",
     "nlod-2.0": "Norwegian Licence for Open Government Data 2.0",
+    # Added 2026-07-22 when ssb/stat_slovenia/bfs were repointed to their audit-verified
+    # licences (the local ids had gone stale against D1 and the verbatim audit).
+    "surs-open": "SURS open data (CC BY-equivalent, attribution required)",
+    "opendata-swiss-by": "opendata.swiss — open use, source must be provided",
     # Post-audit statuses (2026-07-14 verbatim license audit): every with-series
     # source now has a DEFINITIVE class; NEEDS-REVIEW remains only on empty
     # (not-yet-served) sources still being crawled.
