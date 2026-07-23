@@ -52,18 +52,23 @@ import re as _re
 TIME_CODES = frozenset({
     # generic
     "tid", "time", "aika", "date", "datum", "period", "periode",
+    "datums", "periods",                                    # lv
     # year
     "year", "ar", "år", "ár", "aar", "aasta", "vuosi", "leto", "jahr", "gads",
     "année", "año",
+    "gadi", "gadu",                                         # lv (plural/genitive)
     # month
     "month", "manad", "månad", "maaned", "måned", "maned", "manudur", "mánuður",
     "kuukausi", "kk", "mesec", "kuu", "monat", "kuupaev", "kuupäev", "año_mes",
+    "menesis", "menesi", "manesis",                         # lv
     # quarter / half
     "quarter", "kvartal", "kvartaal", "quartal", "neljannes", "neljännes",
     "kausi", "half", "arsfjordungur", "ársfjórðungur", "ceturksnis",
     "cetrtletje", "četrtletje",
+    "kvartals", "kvartalls",                                # lv
     # week
     "week", "uke", "vecka", "vika", "woche", "uge", "nadal", "nädal", "viikko",
+    "nedela",                                               # lv
     # other-language variants
     "tími", "timi", "periood",
     # StatFin explicit period-role codes
