@@ -126,6 +126,11 @@
     <changefreq>weekly</changefreq>
   </url>
   <url>
+    <loc>https://econdatalibrary.com/etr.html</loc>
+    <lastmod>2026-07-23</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
     <loc>https://econdatalibrary.com/eurostat.html</loc>
     <lastmod>2026-07-23</lastmod>
     <changefreq>weekly</changefreq>
@@ -291,7 +296,17 @@
     <changefreq>weekly</changefreq>
   </url>
   <url>
+    <loc>https://econdatalibrary.com/gpi.html</loc>
+    <lastmod>2026-07-23</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
     <loc>https://econdatalibrary.com/gppd.html</loc>
+    <lastmod>2026-07-23</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/gti.html</loc>
     <lastmod>2026-07-23</lastmod>
     <changefreq>weekly</changefreq>
   </url>
@@ -537,6 +552,11 @@
   </url>
   <url>
     <loc>https://econdatalibrary.com/pip.html</loc>
+    <lastmod>2026-07-23</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/ppi.html</loc>
     <lastmod>2026-07-23</lastmod>
     <changefreq>weekly</changefreq>
   </url>
