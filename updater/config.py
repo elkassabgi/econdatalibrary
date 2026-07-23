@@ -36,7 +36,11 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   ~2026-07-08 and two weeks of silence is a NO. Sources we may not host -- refused,
 #   silent, or never assessed -- are DELETED, not gated, and must stop being crawled or
 #   the daily run just re-uploads them: fred, gus, ibge, ine_spain, norgesbank, qog, unsdg, vdem, who_gho, wid.
-EXPECTED_SOURCE_COUNT = 113
+#   Also -2 same day: fred_releases and sdmx_nso were still being crawled while GATED, so a
+#   run would have re-uploaded to R2 exactly what the purge deleted.
+#   Also -6 same day: gated sources with no adapter -- we may not host them, so building a
+#   fetcher would be work in service of data we must delete: central_banks, fraser_efw, imf_dbnomics, social_progress, spi, wiid.
+EXPECTED_SOURCE_COUNT = 105
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
