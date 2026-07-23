@@ -26,6 +26,20 @@ STORE = os.path.join(ROOT, "data", "clean_full")
 CATALOG = os.path.join(ROOT, "data", "catalog.db")
 OUTDIR = os.path.join(ROOT, "dist", "broaden")
 PROTECTED = {"cbs_nl", "gus_dbw", "dbnomics"}
+
+# NEVER catalog a source we are not allowed to host. Sources purged from the catalog on
+# 2026-07-22/23 (WTO, cow, polity, sipri, cboe, famafrench, nbp, tcmb, irena, freedomhouse,
+# shiller, whr, dbnomics ...) still have their parquet in data/clean_full as an archive, so a
+# later `broaden_catalog` run would happily re-catalog them and SILENTLY UNDO the purge.
+# Derived from the redistribution gate's own safety floor rather than a second hand-maintained
+# list, so the two can never drift.
+try:
+    from core.gen_denylist import LEGACY_KEEP as _GATE_FLOOR
+except ImportError:      # running as a script rather than a module
+    import sys as _sys
+    _sys.path.insert(0, ROOT)
+    from core.gen_denylist import LEGACY_KEEP as _GATE_FLOOR
+UNHOSTABLE = set(_GATE_FLOOR)
 SERIES_CAP = 50_000      # per-source; above this the per-series grain is wrong -> defer
 FILE_CAP = 2_000         # ibge (8221 tiny files) etc. -> defer (flow-grain, later wave)
 _SKIP = ("__series.parquet",)
@@ -83,10 +97,20 @@ def main():
     cataloged = {r[0] for r in conn.execute("SELECT DISTINCT source_id FROM series")}
     src_license = {r["source_id"]: r["license_id"] for r in conn.execute("SELECT source_id, license_id FROM source")}
 
+    # Sources whose licence is not verified-redistributable must never be cataloged either.
+    # (UNHOSTABLE above covers the PURGED ones, which no longer have a source row at all.)
+    not_reservable = {r[0] for r in conn.execute(
+        "SELECT s.source_id FROM source s LEFT JOIN license l ON s.license_id = l.license_id "
+        "WHERE COALESCE(l.reservable, 0) = 0")}
+
     todo = []
+    skipped_unhostable = []
     for d in sorted(os.listdir(STORE)):
         p = os.path.join(STORE, d)
         if not os.path.isdir(p) or d.startswith("_") or d in cataloged or d in PROTECTED:
+            continue
+        if d in UNHOSTABLE or d in not_reservable:
+            skipped_unhostable.append(d)
             continue
         if a.source and d not in a.source:
             continue
@@ -168,6 +192,10 @@ def main():
     nk = len(prog["kept"]); nd = len(prog["deferred"]); ne = len(prog["errored"])
     print(f"\n=== {nk} sources KEPT ({prog['total_new_series']:,} series) | {nd} deferred | {ne} errored ===")
     print("deferred:", ", ".join(x["source"] for x in prog["deferred"]))
+    # Never silent: cataloging something we cannot host would undo a deliberate purge.
+    if skipped_unhostable:
+        print(f"SKIPPED as un-hostable ({len(skipped_unhostable)}): "
+              + ", ".join(sorted(skipped_unhostable)))
 
 
 if __name__ == "__main__":
