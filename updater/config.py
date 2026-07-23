@@ -32,7 +32,11 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   every day after they said no. Removed from registry.yaml; the ingest scripts stay on
 #   disk so any future permission is a re-add, not a rewrite. NOTE sipri_polity is a
 #   DIFFERENT source (Polity) and deliberately remains.
-EXPECTED_SOURCE_COUNT = 123
+# 2026-07-23: -10 -> 113. Ahmed's ruling: permission emails went out
+#   ~2026-07-08 and two weeks of silence is a NO. Sources we may not host -- refused,
+#   silent, or never assessed -- are DELETED, not gated, and must stop being crawled or
+#   the daily run just re-uploads them: fred, gus, ibge, ine_spain, norgesbank, qog, unsdg, vdem, who_gho, wid.
+EXPECTED_SOURCE_COUNT = 113
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

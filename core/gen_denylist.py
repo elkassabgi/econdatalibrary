@@ -84,6 +84,22 @@ LEGACY_KEEP = {
     #   freedomhouse "third-party re-hosting for open public download is not authorized"
     #   shiller      unclear_not_found; gate+email pending
     "irena", "freedomhouse", "shiller",
+    # Purged 2026-07-23 (second wave). Ahmed's ruling: the permission emails went out
+    # ~2026-07-08, and two weeks of silence is a NO -- refusal and non-response are treated
+    # identically, so these are DELETED rather than gated. All 14,469 of their R2 objects are
+    # gone and their empty source rows are removed, which means the reservable=0 scan can no
+    # longer see them: without this pin they would silently fall out of the gate, exactly as
+    # irena/freedomhouse/shiller did above. Pinned so a re-ingest can never land un-gated.
+    #   fred, fred_releases  copyrighted-series carve-outs never applied (S&P/Case-Shiller, VIX,
+    #                        ICE/BofA, Michigan sentiment) -- cannot host wholesale
+    #   polity               audit: permission_required -> "RESTRICTED (keep gated)"
+    #   qog, vdem, wid, unicef, ibge, gus, ine_spain, norgesbank, unsdg, who_gho,
+    #   unesco_natmon, unesco_sci, unesco_sdg
+    #                        no reply to the permission request / never assessed.
+    # NOTE the UIS siblings unesco_clte/cltt/dem/film/inno are CLEARED (re-host OK,
+    # attribution) and are deliberately NOT here -- their 64,615 objects stay live.
+    "fred", "fred_releases", "gus", "ibge", "ine_spain", "norgesbank",
+    "unesco_natmon", "unesco_sci", "unesco_sdg", "unicef", "unsdg", "vdem", "who_gho",
     # barro_lee REMOVED from the floor 2026-07-22. It was originally gated as
     # "unclear -- gate until confirmed"; DATABASE_LICENSES_VERBATIM.md has since
     # CONFIRMED it `redistributable_attribution` / "CLEARED - re-host OK (attribution)",
