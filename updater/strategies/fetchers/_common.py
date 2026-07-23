@@ -127,3 +127,32 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
     return Result(status=status, obs=total_rows, last_obs_date=last_obs, new_vintage="date-tail",
                   series_cursors=series_cursors,
                   error=(f"+{tally.added} new rows" if tally.added else "no new rows"))
+
+
+def structural_on_zero_rows(stored_max, resp) -> bool:
+    """Uniform PxWeb-family rule for a 200 body that parsed to 0 observations: is it a
+    STRUCTURAL break (True) or a benign empty/quiet (False)?  Shared by the PxWeb S3
+    fetchers so they classify identically (statfin / stat_estonia / hagstofa).
+
+    A break is ONLY the loss of data we ALREADY serve: `stored_max` is the table's SANE
+    on-disk boundary (callers pass sane_since(raw_max), so a corrupt far-future sentinel
+    is already demoted to None), the body is a real json-stat2 envelope (declared `id`
+    dimensions + a `value` array), and that array still carries at least one NON-NULL
+    value — real observations are present yet none parsed, i.e. the cube's shape / time
+    coding regressed. Everything else is benign:
+      - stored_max is None   -> never-landed, or a corrupt-boundary table demoted to a
+                                full pull: not (yet) part of the data we serve.
+      - no `id` / no `value`  -> not a real time-series envelope.
+      - every value is null   -> a period slot published ahead of its data, not a break.
+
+    (Fixes the stat_estonia inversion — its old gate fired on never-landed tables and
+    stayed silent when a populated table went dark, the actual break. MISTAKES R25.)
+    """
+    if stored_max is None or not isinstance(resp, dict):
+        return False
+    if not resp.get("id"):
+        return False
+    vals = resp.get("value")
+    if isinstance(vals, dict):
+        vals = list(vals.values())
+    return any(v is not None for v in (vals or []))

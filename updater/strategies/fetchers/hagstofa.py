@@ -60,6 +60,18 @@ from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ._common import Tally, finalize, sane_since
 
+import sys
+# The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
+# (core/pxweb.py). Derive the repo root from __file__ — updater/strategies/fetchers/ is
+# four levels below it — so `from core import pxweb` resolves to THIS checkout's copy both
+# when the updater imports this fetcher as a package and if it is loaded standalone. No
+# hardcoded ROOT: only the worktree carries core/pxweb.py on this branch (same __file__
+# convention as jobs/ingest_hagstofa.py and tools/pxweb_regression.py).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
+
 SOURCE = "hagstofa"
 DEDUP = ("series_key", "obs_date")
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
@@ -222,14 +234,23 @@ def _post_data(sess, url, body):
 
 
 def _time_var(variables):
-    """The PxWeb time variable: prefer the explicit time:True flag, else heuristic."""
-    for v in variables:
-        if v.get("time"):
-            return v
-    for v in variables:
-        if is_time_dim(v.get("code", ""), v.get("values", [])):
-            return v
-    return None
+    """THE PxWeb time variable, resolved exactly as parse_jsonstat2 keys obs_date:
+    the shared value-first resolver (core/pxweb.py) fed the same authoritative
+    `time: true` code and parse_date grammar the parser is given — authoritative
+    flag, else highest date-parse-rate, else literal name. The OLD fallback took
+    the FIRST is_time_dim() match in variable order, which in a Mánuður+Ár
+    (month+year) cube picked the month axis (index-like codes, no dates): its
+    unparseable codes were all kept by _newer_time_codes, so the "tail"
+    degenerated into a full-cube request (small cubes) or a first-year-only
+    slice (over-budget cubes) — never the real year tail the parser keys —
+    silently freezing the table. Resolving the parser's own axis kills that
+    class. Returns None when the cube has no date axis at all."""
+    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    idx = _pxweb.resolve_time_dim(
+        [v.get("code", "") for v in variables],
+        [[str(c) for c in (v.get("values") or [])] for v in variables],
+        meta_time_code=meta_time_code, parse_fn=parse_date)
+    return variables[idx] if idx is not None else None
 
 
 def _newer_time_codes(tvar, since_date: dt.date | None) -> list[str]:
@@ -262,8 +283,11 @@ def _newer_time_codes(tvar, since_date: dt.date | None) -> list[str]:
 
 def _build_query(variables, tvar, time_codes):
     """Non-time selection mirrors the ingester (all values if the restricted cube fits
-    MAX_CELLS, else the aggregate/first slice per non-time dim). Time dim is restricted
-    to the supplied (newer) codes."""
+    MAX_CELLS; over MAX_CELLS a variable the ingester's own is_time test keeps full —
+    the flagged code when `time: true` is present, else is_time_dim, e.g. the demoted
+    month axis of a month+year cube whose stored keys cover every month — stays FULL,
+    and the rest take the aggregate/first slice). Time dim is restricted to the
+    supplied (newer) codes."""
     # restricted cube size with the chosen time codes
     total_cells = max(len(time_codes), 1)
     for v in variables:
@@ -271,6 +295,7 @@ def _build_query(variables, tvar, time_codes):
             continue
         total_cells *= max(len(v.get("values", [])), 1)
 
+    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
     query = []
     for v in variables:
         code = v.get("code", "")
@@ -281,6 +306,13 @@ def _build_query(variables, tvar, time_codes):
         if not vals:
             continue
         if total_cells <= MAX_CELLS:
+            query.append({"code": code, "selection": {"filter": "item", "values": vals}})
+        elif ((code == meta_time_code) if meta_time_code is not None
+              else is_time_dim(code, vals)):
+            # Ingester keep-full PARITY (jobs/ingest_hagstofa.py query builder): over
+            # MAX_CELLS the ingester keeps every variable its own is_time test flags at
+            # the FULL value list, so the stored series_keys cover all its values;
+            # collapsing it here would tail only a sliver of those stored series.
             query.append({"code": code, "selection": {"filter": "item", "values": vals}})
         else:
             agg = [x for x in vals if str(x).upper() in ("0", "000", "TOTAL", "T", "ALL", "HEILD")]
@@ -340,7 +372,8 @@ def _fetch_table(sess, db, path, prefix, since_date):
         # (treat as quiet); on a full fetch of a table with no history it's empty.
         return [], ("quiet" if since_date is not None else "empty")
 
-    rows = parse_jsonstat2(resp, prefix)
+    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    rows = parse_jsonstat2(resp, prefix, meta_time_code)
     if not rows:
         # 200 but parse yielded nothing.
         body_has_values = bool(resp.get("value")) if isinstance(resp, dict) else False
