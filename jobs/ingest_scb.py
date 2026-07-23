@@ -27,6 +27,16 @@ import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
 ROOT = r"D:/research/econfindatalibrary"
+import sys as _sys
+# The shared value-first time-axis resolver lives in THIS module's own repo (jobs/ and
+# core/ are siblings). Derive the repo root from __file__ so `from core import pxweb`
+# resolves both when this file is run standalone AND when the fetcher importlib-loads it
+# (same convention as updater/config.py and tools/pxweb_regression.py). The hardcoded ROOT
+# above is the DATA tree, which does not carry core/pxweb.py on this branch.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in _sys.path:
+    _sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
 OUT  = os.path.join(ROOT, "data", "clean_full", "scb")
 BASE = "https://api.scb.se/OV0104/v1/doris/en/ssd"
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
@@ -175,8 +185,16 @@ def is_time_dim(code: str, values: list[str]) -> bool:
     return False
 
 
-def parse_jsonstat2(data: dict, table_path: str) -> list[tuple[str, dt.date, float]]:
-    """Parse JSON-stat2 response into (series_key, date, value) tuples."""
+def parse_jsonstat2(data: dict, table_path: str, meta_time_code: str | None = None) -> list[tuple[str, dt.date, float]]:
+    """Parse JSON-stat2 response into (series_key, date, value) tuples.
+
+    `meta_time_code` is the AUTHORITATIVE time dimension id from the PxWeb metadata
+    (the variable flagged `time: true`). When provided the shared resolver locks onto
+    that dimension instead of guessing — this prevents a numeric category dimension
+    (e.g. Region municipality codes '0114'/'1280', which parse to garbage years
+    114/1280) from being mistaken for the time axis. Falls back to the value-first
+    selection (highest date-parse-rate, literal name only as a last resort) when the
+    flag is absent."""
     results = []
     try:
         dim_ids   = data.get("id", [])
@@ -185,30 +203,6 @@ def parse_jsonstat2(data: dict, table_path: str) -> list[tuple[str, dt.date, flo
         values    = data.get("value", [])
 
         if not dim_ids or not values:
-            return results
-
-        # Identify the time dimension. PREFER a dimension whose CODE literally names a
-        # time dimension (Tid/Time/...); only if none exists fall back to a dimension
-        # whose VALUES parse as sane dates. This guarantees a real Tid is never beaten
-        # by a non-time category variable whose numeric codes happen to look date-ish.
-        def _vals_for(did):
-            cat_idx = dims.get(did, {}).get("category", {}).get("index", {})
-            if isinstance(cat_idx, dict):
-                return list(cat_idx.keys())
-            return list(cat_idx) if cat_idx else []
-
-        time_dim_idx = None
-        for i, did in enumerate(dim_ids):          # pass 1: literally-named time dim
-            if str(did).strip().lower() in TIME_CODES:
-                time_dim_idx = i
-                break
-        if time_dim_idx is None:                   # pass 2: values parse as sane dates
-            for i, did in enumerate(dim_ids):
-                if is_time_dim(did, _vals_for(did)):
-                    time_dim_idx = i
-                    break
-
-        if time_dim_idx is None:
             return results
 
         # Build index → code maps for all dimensions
@@ -229,6 +223,14 @@ def parse_jsonstat2(data: dict, table_path: str) -> list[tuple[str, dt.date, flo
             else:
                 pos_to_code = []
             dim_codes.append(pos_to_code)
+
+        # Pick the time dimension via the shared value-first resolver (core/pxweb.py):
+        # authoritative `time: true` / role.time, else highest date-parse-rate, else name.
+        # Value-first stops a category axis (Region codes '0114'/'1280') from outranking Tid.
+        time_dim_idx = _pxweb.resolve_time_dim(dim_ids, dim_codes, meta_time_code=meta_time_code, role_time=_pxweb.role_time_of(data), parse_fn=parse_date)
+
+        if time_dim_idx is None:
+            return results
 
         # Compute strides for index arithmetic
         strides = [1] * len(dim_sizes)
@@ -296,6 +298,9 @@ def query_table(table_info: dict) -> list[tuple[str, dt.date, float]]:
     if not variables:
         return []
 
+    # Authoritative time dimension: PxWeb metadata flags the time variable `time: true`.
+    time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+
     # Compute total cells to check size
     total_cells = 1
     for var in variables:
@@ -341,7 +346,7 @@ def query_table(table_info: dict) -> list[tuple[str, dt.date, float]]:
     if not resp:
         return []
 
-    return parse_jsonstat2(resp, path)
+    return parse_jsonstat2(resp, path, time_code)
 
 
 def main():

@@ -29,6 +29,16 @@ import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
 ROOT = r"D:/research/econfindatalibrary"
+import sys as _sys
+# The shared value-first time-axis resolver lives in THIS module's own repo (jobs/ and
+# core/ are siblings). Derive the repo root from __file__ so `from core import pxweb`
+# resolves both when this file is run standalone AND when the fetcher importlib-loads it
+# (same convention as updater/config.py and tools/pxweb_regression.py). The hardcoded ROOT
+# above is the DATA tree, which does not carry core/pxweb.py on this branch.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in _sys.path:
+    _sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
 OUT  = os.path.join(ROOT, "data", "clean_full", "dst")
 BASE = "https://api.statbank.dk/v1"
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
@@ -111,9 +121,14 @@ TIME_CODES = ("tid", "time", "year", "aar", "år", "periode", "period", "datum",
 
 
 def is_time_dim(code: str, values: list[str]) -> bool:
-    """FALLBACK time-dim detector. The AUTHORITATIVE path is the JSON-stat
-    `dimension.role.time` array (DST always populates it with "Tid") — see
-    parse_jsonstat. This is used ONLY when role.time is absent.
+    """RETAINED BUT NO LONGER CALLED. Time-axis selection now goes through the
+    shared value-first resolver core.pxweb.resolve_time_dim (see parse_jsonstat),
+    which takes the JSON-stat `dimension.role.time` array as its authoritative
+    step (DST always populates it with "Tid") and value-parses before any name
+    match. Kept defined for parity with sibling ingesters and because the
+    pxweb_regression superset check re-derives per-source time-name tokens from
+    this file's TIME_CODES tuple. DST's over-cap branch (query_table) uses the
+    tableinfo `time` flag, not this function.
 
     A dimension is 'time' only if its code names a time dim, OR its values parse via
     parse_date() to a SANE year (~1900..current_year+2). The old fallback matched
@@ -135,7 +150,18 @@ def is_time_dim(code: str, values: list[str]) -> bool:
 
 
 def parse_jsonstat(data: dict, table_id: str) -> list[tuple[str, dt.date, float]]:
-    """Parse JSON-stat (v1) format from DST."""
+    """Parse JSON-stat (v1) format from DST.
+
+    Time-axis selection goes through the shared value-first resolver
+    (core/pxweb.py): authoritative JSON-stat role.time first (DST always
+    populates it with "Tid"; note v1 nests `role` under `dimension`, so it is
+    read from dim_obj, NOT the response root as in JSON-stat2), else highest
+    date-parse-rate, else literal name as a last resort. Value-first stops a
+    month axis (non-date codes) from outranking a year axis when role.time is
+    absent — the old name-first fallback picked the month dim of a month+year
+    cube and produced 0 rows. DST is code-coded: the dates live in the
+    category.index CODES (the key/date assembly below reads dim_codes), so
+    dim_codes is what the resolver scores."""
     results = []
     try:
         ds = data.get("dataset", data)  # handle both root and wrapped
@@ -143,7 +169,6 @@ def parse_jsonstat(data: dict, table_id: str) -> list[tuple[str, dt.date, float]
         dim_ids = dim_obj.get("id", [])
         dim_sizes = dim_obj.get("size", [])
         role = dim_obj.get("role", {})
-        time_dims = set(role.get("time", []))
         metric_dims = set(role.get("metric", []))
         values = ds.get("value", [])
 
@@ -151,7 +176,6 @@ def parse_jsonstat(data: dict, table_id: str) -> list[tuple[str, dt.date, float]
             return results
 
         # Build dimension code maps
-        time_dim_idx = None
         dim_codes = []
         for i, did in enumerate(dim_ids):
             dim_info = dim_obj.get(did, {})
@@ -168,21 +192,11 @@ def parse_jsonstat(data: dict, table_id: str) -> list[tuple[str, dt.date, float]
             else:
                 pos_to_code = []
             dim_codes.append(pos_to_code)
-            if did in time_dims and time_dim_idx is None:
-                time_dim_idx = i
 
-        # Fallback (only if JSON-stat role.time was absent). Two-pass so a real time
-        # dimension can never be beaten by a non-time numeric category:
-        #   pass 1 — a dimension whose CODE literally names a time axis (Tid/Time/...);
-        #   pass 2 — a dimension whose VALUES parse to SANE dates via is_time_dim().
-        if time_dim_idx is None:
-            for i, did in enumerate(dim_ids):       # pass 1: literally-named time dim
-                if str(did).strip().lower() in TIME_CODES:
-                    time_dim_idx = i; break
-        if time_dim_idx is None:
-            for i, (did, codes) in enumerate(zip(dim_ids, dim_codes)):  # pass 2: sane dates
-                if is_time_dim(did, codes):
-                    time_dim_idx = i; break
+        # Pick the time dimension via the shared value-first resolver (core/pxweb.py):
+        # authoritative role.time (v1: nested under `dimension`, hence role.get("time")
+        # rather than _pxweb.role_time_of(data)), else highest date-parse-rate, else name.
+        time_dim_idx = _pxweb.resolve_time_dim(dim_ids, dim_codes, meta_time_code=None, role_time=role.get("time"), parse_fn=parse_date)
 
         if time_dim_idx is None:
             return results

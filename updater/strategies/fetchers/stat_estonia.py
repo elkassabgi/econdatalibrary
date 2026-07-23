@@ -21,12 +21,13 @@ rule — so the keys/dates we write are byte-identical to what the bulk ingester
 We do NOT re-discover the catalog or re-implement the parser.
 
 TIME-DIM SUBTLETY (must match the parser exactly): a PxWeb table can carry TWO
-time-ish variables (e.g. Aasta=year AND Kuu=month). parse_jsonstat2 derives obs_date
-from the FIRST dimension (in PxWeb's variable order) for which is_time_dim() is true,
-and pushes every OTHER dimension — including a second time-ish one like Kuu — into the
-series_key. So the date-tail must restrict ONLY that first time dimension to newer
-period codes and request ALL values of every other variable (exactly as a full pull
-would), or whole month-keys would be dropped. We replicate that selection here.
+time-ish variables (e.g. Aasta=year AND Kuu=month). parse_jsonstat2 keys obs_date on
+the axis picked by the shared value-first resolver (core/pxweb.py: authoritative
+`time: true` code, else highest date-parse-rate, else literal name) and pushes every
+OTHER dimension — including a second time-ish one like Kuu — into the series_key. So
+the date-tail must restrict ONLY that resolved dimension to newer period codes and
+request the other variables exactly as a full pull would, or whole month-keys would
+be dropped. _build_query resolves the axis with the SAME inputs the parser uses.
 
 HONEST STATUS (Tally + finalize): each table is a sub-unit. We do our OWN HTTP (rather
 than the ingester's error-swallowing get_json/post_json) so we can tell apart:
@@ -65,7 +66,19 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, sane_since
+from ._common import Tally, finalize, sane_since, structural_on_zero_rows
+
+import sys
+# The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
+# (core/pxweb.py). Derive the repo root from __file__ — updater/strategies/fetchers/ is
+# four levels below it — so `from core import pxweb` resolves to THIS checkout's copy both
+# when the updater imports this fetcher as a package and if it is loaded standalone. No
+# hardcoded ROOT: only the worktree carries core/pxweb.py on this branch (same __file__
+# convention as jobs/ingest_hagstofa.py and tools/pxweb_regression.py).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
 
 SOURCE = "stat_estonia"
 DEDUP = ("series_key", "obs_date")
@@ -260,24 +273,36 @@ def _max_by_table(parquet_path: str) -> dict[str, dt.date]:
 # Build the date-tail query for one table (only periods AFTER stored max).
 # --------------------------------------------------------------------------- #
 def _build_query(ing, variables, stored_max: dt.date | None):
-    """Construct the PxWeb query restricting the FIRST time dimension to newer codes.
+    """Construct the PxWeb query restricting THE time dimension to newer codes.
 
     Returns (query, time_code, n_new_periods) or (None, None, 0) if there is nothing
     new to ask for (the time dim has no code parsing to a date > stored_max).
 
+    THE time dimension is picked with the shared value-first resolver
+    (core/pxweb.py) fed the SAME inputs ing.parse_jsonstat2 resolves with — the
+    authoritative `time: true` code, else highest date-parse-rate, else literal
+    name, using ing.parse_date's grammar — so the axis restricted here is EXACTLY
+    the axis the parser keys obs_date on. The OLD selection took the FIRST
+    is_time_dim() match in variable order, which in a Kuu+Aasta (month+year) cube
+    picked the month axis: its codes ('01'..'12') parse to no date, so
+    "codes > stored_max" selected NOTHING and the table was reported permanently
+    current — a silent freeze — while the parser keyed obs_date on Aasta.
+
     Mirrors the ingester's selection exactly:
-      * the first variable (in PxWeb order) for which is_time_dim() is true is THE time
-        dimension parse_jsonstat2 will key obs_date on; restrict it to newer codes;
+      * THE resolved time dimension is restricted to newer codes;
       * every OTHER variable is requested in FULL when total cells <= MAX_CELLS; over
-        MAX_CELLS, non-time variables are aggregated to a single TOTAL/first code
-        (identical to jobs/ingest_stat_estonia.query_table).
+        MAX_CELLS, a variable the ingester's own is_time test keeps full (the flagged
+        code when `time: true` is present, else ing.is_time_dim — e.g. the demoted
+        month axis, whose stored keys cover every month) stays FULL, and the rest
+        aggregate to a single TOTAL/first code (identical to
+        jobs/ingest_stat_estonia.query_table).
     """
-    # locate the parser's time dimension (first is_time_dim true, in metadata order)
-    time_idx = None
-    for i, v in enumerate(variables):
-        if ing.is_time_dim(v.get("code", ""), v.get("values", [])):
-            time_idx = i
-            break
+    # THE time axis, exactly as ing.parse_jsonstat2 will pick it on the response.
+    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    time_idx = _pxweb.resolve_time_dim(
+        [v.get("code", "") for v in variables],
+        [[str(c) for c in (v.get("values") or [])] for v in variables],
+        meta_time_code=meta_time_code, parse_fn=ing.parse_date)
     if time_idx is None:
         return None, None, 0  # no time dimension -> nothing date-tailable (census snapshot)
 
@@ -309,6 +334,13 @@ def _build_query(ing, variables, stored_max: dt.date | None):
         if not vals:
             continue
         if total_cells <= ing.MAX_CELLS:
+            query.append({"code": code, "selection": {"filter": "item", "values": vals}})
+        elif ((code == meta_time_code) if meta_time_code is not None
+              else ing.is_time_dim(code, vals)):
+            # Ingester keep-full PARITY (jobs/ingest_stat_estonia.query_table): over
+            # MAX_CELLS the ingester keeps every variable its own is_time test flags at
+            # the FULL value list — e.g. the demoted month axis — so the stored keys
+            # cover all its values; collapsing it here would tail only a sliver of them.
             query.append({"code": code, "selection": {"filter": "item", "values": vals}})
         else:
             agg = [x for x in vals if str(x).upper() in ("0", "000", "TOTAL", "T", "ALL", "KOKKU")]
@@ -361,7 +393,6 @@ def update(unit, since) -> Result:
         subj_tables = by_subject[subj]
         path = os.path.join(out_dir, f"{subj}.parquet")
         before = blob.row_count(path)
-        had_existing = before > 0
         stored = _max_by_table(path)     # per-table max within this subject file
 
         # seed cursors from the on-disk frontier so untouched tables still report a cursor
@@ -393,10 +424,6 @@ def update(unit, since) -> Result:
             # up any real new period. A genuine recent stored_max is returned unchanged.
             raw_stored_max = stored.get(prefix)
             stored_max = sane_since(raw_stored_max)
-            # genuinely-never-landed (no on-disk rows for this table) vs a real table
-            # whose boundary was a corrupt far-future sentinel that we just demoted to a
-            # full pull. Only the former may be a structural break on a 0-row parse.
-            never_landed = raw_stored_max is None
             url = f"{base}/{tpath}"        # no trailing slash (ingester note)
 
             # 1) metadata
@@ -431,23 +458,23 @@ def update(unit, since) -> Result:
                 time.sleep(RATE)
                 continue
 
-            # 4) parse with the ingester's parser (identical keys/dates as bulk ingest)
-            rows = ing.parse_jsonstat2(resp, prefix)
+            # 4) parse with the ingester's parser (identical keys/dates as bulk ingest).
+            # Thread the AUTHORITATIVE PxWeb `time: true` flag so the shared value-first
+            # resolver locks onto it; None (Estonia omits it on some tables) -> value-first.
+            meta_time_code = next((v.get("code") for v in meta["variables"] if v.get("time") is True), None)
+            rows = ing.parse_jsonstat2(resp, prefix, meta_time_code)
 
             if not rows:
-                # 200 with a real body. Structural ONLY when this was a FULL pull of a
-                # GENUINELY never-landed table (never_landed) of a body that DID carry a
-                # time dimension yet yielded 0 parseable observations, AND the subject
-                # already had data on disk (a populated source that just stopped parsing).
-                # A date-tail (stored_max set) returning 0 is a normal quiet table; and a
-                # table whose corrupt far-future boundary we just demoted to a full pull
-                # (stored_max forced None but raw_stored_max set) is NOT a new break — it
-                # already had its sentinel data on disk — so it must not false-trip
-                # structural.
-                resp_has_time = any(
-                    ing.is_time_dim(did, _idx_codes(resp, did))
-                    for did in resp.get("id", []))
-                if never_landed and resp_has_time and resp.get("value") and had_existing:
+                # 200 with a real body but 0 parsed rows. Classify via the shared PxWeb
+                # rule (identical to statfin/hagstofa; MISTAKES R25): a STRUCTURAL break is
+                # only the loss of data we ALREADY serve — a table with a SANE on-disk
+                # boundary (stored_max is not None) whose real json-stat2 envelope still
+                # carries >=1 non-null value yet parsed to nothing. A never-landed table, a
+                # corrupt-boundary table demoted to a full pull (stored_max None), or a
+                # newer period slot published ahead of its (all-null) data is benign empty.
+                # NB: the OLD gate was INVERTED — it fired on never-landed tables and stayed
+                # silent when a populated table went dark (the real break). Fixed here.
+                if structural_on_zero_rows(stored_max, resp):
                     tally.structural_unit()
                 else:
                     tally.empty_unit()
@@ -509,20 +536,3 @@ def update(unit, since) -> Result:
     # tables are simply "nothing newer" is legitimate no_change and must NOT.
     return finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
                     empty_window_floor=n_subunits - 1)
-
-
-def _idx_codes(resp: dict, did: str) -> list[str]:
-    """Recover a dimension's category codes from a json-stat2 response (for the
-    structural-break time-dimension probe). Mirrors parse_jsonstat2's index handling."""
-    cat = resp.get("dimension", {}).get(did, {}).get("category", {})
-    idx = cat.get("index", {})
-    if isinstance(idx, dict):
-        size = max(idx.values(), default=-1) + 1
-        codes = [""] * size
-        for code, pos in idx.items():
-            if 0 <= pos < size:
-                codes[pos] = code
-        return codes
-    if isinstance(idx, list):
-        return list(idx)
-    return []

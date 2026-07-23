@@ -29,6 +29,16 @@ import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
 ROOT = r"D:/research/econfindatalibrary"
+import sys as _sys
+# The shared value-first time-axis resolver lives in THIS module's own repo (jobs/ and
+# core/ are siblings). Derive the repo root from __file__ so `from core import pxweb`
+# resolves both when this file is run standalone AND when the fetcher importlib-loads it
+# (same convention as updater/config.py and tools/pxweb_regression.py). The hardcoded ROOT
+# above is the DATA tree, which does not carry core/pxweb.py on this branch.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in _sys.path:
+    _sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
 OUT  = os.path.join(ROOT, "data", "clean_full", "ssb")
 BASE = "https://data.ssb.no/api/v0/en/table"
 BASE_CATALOG = "https://data.ssb.no/api/v0/en/table"
@@ -170,7 +180,9 @@ def parse_jsonstat2(data: dict, table_id: str, time_code: str | None = None) -> 
     `time_code` is the AUTHORITATIVE time dimension id from the PxWeb metadata (the
     variable flagged `time: true`). When provided we lock onto that dimension instead
     of guessing — this prevents the Region dimension (municipality codes like 5001/9610)
-    from being mistaken for the time axis. Falls back to is_time_dim only if absent."""
+    from being mistaken for the time axis. Falls back to the value-first selection
+    (highest date-parse-rate, literal name only as a last resort) when the flag is
+    absent."""
     results = []
     try:
         dim_ids   = data.get("id", [])
@@ -180,8 +192,7 @@ def parse_jsonstat2(data: dict, table_id: str, time_code: str | None = None) -> 
         if not dim_ids or not values:
             return results
 
-        # Find time dimension
-        time_dim_idx = None
+        # Build index → code maps for all dimensions first.
         dim_codes = []
         for i, did in enumerate(dim_ids):
             cat = dims.get(did, {}).get("category", {})
@@ -197,11 +208,11 @@ def parse_jsonstat2(data: dict, table_id: str, time_code: str | None = None) -> 
             else:
                 pos_to_code = []
             dim_codes.append(pos_to_code)
-            if time_code is not None:
-                if did == time_code:
-                    time_dim_idx = i
-            elif time_dim_idx is None and is_time_dim(did, pos_to_code):
-                time_dim_idx = i
+
+        # Pick the time dimension via the shared value-first resolver (core/pxweb.py):
+        # authoritative `time: true` / role.time, else highest date-parse-rate, else name.
+        # Value-first stops a month axis (codes '0'..'11') from outranking a year axis.
+        time_dim_idx = _pxweb.resolve_time_dim(dim_ids, dim_codes, meta_time_code=time_code, role_time=_pxweb.role_time_of(data), parse_fn=parse_date)
 
         if time_dim_idx is None:
             return results

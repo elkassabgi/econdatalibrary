@@ -26,8 +26,14 @@ group-wide max would therefore silently skip newer monthly/quarterly data, so we
 compute max(obs_date) PER TABLE from its key-prefix slice and restrict that
 table's TIME variable to codes parsing strictly after it (the stored boundary day
 is re-fetched too, so an in-place revision of the latest period is captured; merge
-dedups the overlap). REUSES the ingester's endpoints, catalog crawl, time-dim
-detection, json-stat2 parse, and date parsing verbatim (imported, not re-coded).
+dedups the overlap). REUSES the ingester's endpoints, catalog crawl, json-stat2
+parse, and date parsing verbatim (imported, not re-coded). THE tailed time axis is
+picked by the shared value-first resolver (core/pxweb.py: authoritative `time: true`
+code, else highest date-parse-rate, else literal name) and threaded into
+parse_jsonstat2 as its authoritative time_code, so the axis the delta restricts is
+EXACTLY the axis the parser keys obs_date on (the OLD name-first is_time_dim scan
+picked a month axis on month+year cubes — its codes '01'..'12' parse to no date, the
+">= boundary" tail matched nothing, and the table froze silently).
 
 Honest status (Tally + finalize), one sub-unit PER TABLE:
   added_unit(n)    rows merged for the table (n>0 new / n==0 nothing newer)
@@ -56,6 +62,18 @@ from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import Tally, finalize, sane_since
+
+import sys
+# The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
+# (core/pxweb.py). Derive the repo root from __file__ — updater/strategies/fetchers/ is
+# four levels below it — so `from core import pxweb` resolves to THIS checkout's copy both
+# when the updater imports this fetcher as a package and if it is loaded standalone. No
+# hardcoded ROOT: only the worktree carries core/pxweb.py on this branch (same __file__
+# convention as jobs/ingest_hagstofa.py and tools/pxweb_regression.py).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
 
 # Reuse the ingester's endpoints + parse/enumeration logic verbatim (do not re-discover).
 from jobs.ingest_stat_latvia import (
@@ -234,19 +252,28 @@ def _query_table_delta(sess, table_info, boundary):
         # table (boundary set); for a never-landed table it's honest empty (zero_status).
         return [], zero_status
 
-    # Identify the time variable (ingester heuristic) and which of its codes are NEW.
-    time_code = None
-    time_var = None
-    for v in variables:
-        if is_time_dim(v.get("code", ""), v.get("values", [])):
-            time_code = v.get("code")
-            time_var = v
-            break
-    if time_code is None:
+    # Identify THE time variable with the shared value-first resolver (core/pxweb.py)
+    # fed the metadata's authoritative `time: true` code, else highest date-parse-rate,
+    # else literal name — with this source's parse_date grammar. The resolved code is
+    # ALSO threaded into parse_jsonstat2 below as its authoritative time_code, so the
+    # axis tailed here is EXACTLY the axis the parser keys obs_date on. The OLD
+    # selection took the FIRST is_time_dim() match in variable order, which in a
+    # month+year cube picked the month axis: its codes ('01'..'12') parse to no date,
+    # so the ">= boundary" filter matched NOTHING and the table was reported
+    # permanently current — a silent freeze (and, left unthreaded, the imported
+    # parser name-matched the same month axis and parsed 0 rows).
+    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    time_idx = _pxweb.resolve_time_dim(
+        [v.get("code", "") for v in variables],
+        [[str(c) for c in (v.get("values") or [])] for v in variables],
+        meta_time_code=meta_time_code, parse_fn=parse_date)
+    if time_idx is None:
         # No detectable time dimension. For a previously-landed table that's a break
         # (it used to be a time series); for a never-landed table the ingester also
         # produced nothing -> honest empty (zero_status).
         return [], zero_status
+    time_var = variables[time_idx]
+    time_code = time_var.get("code")
 
     all_time_vals = time_var.get("values", []) or []
     if boundary is not None:
@@ -286,7 +313,16 @@ def _query_table_delta(sess, table_info, boundary):
                 continue
             if code == time_code:
                 query_vars.append({"code": code, "selection": {"filter": "item", "values": wanted_time}})
-            elif is_time_dim(code, vals):
+            elif ((code == meta_time_code) if meta_time_code is not None
+                  else is_time_dim(code, vals)):
+                # Ingester keep-full PARITY (jobs/ingest_stat_latvia.query_table): over
+                # MAX_CELLS the ingester keeps every variable its own is_time test flags
+                # at the FULL value list — ONLY the flagged code when `time: true` is
+                # present, else every is_time_dim() match — so the stored series_keys
+                # cover exactly those values and the date-tail must select them
+                # identically (full where the ingester kept full, aggregated where it
+                # aggregated), or the tail would refresh a different key-slice than the
+                # one on disk.
                 query_vars.append({"code": code, "selection": {"filter": "item", "values": vals}})
             else:
                 agg = [v for v in vals if v.upper() in ("0", "000", "TOTAL", "TOT", "T", "ALL", "KOPA", "KOPAA")]
@@ -304,7 +340,12 @@ def _query_table_delta(sess, table_info, boundary):
         return [], "empty"
 
     prefix = _table_prefix(db, path)
-    rows = parse_jsonstat2(resp, prefix)
+    # Thread the RESOLVED axis code as the parser's authoritative time_code (the same
+    # pass-1 lock the ingester's own query_table passes). Left unthreaded, the imported
+    # parser falls back to its NAME-FIRST scan and can key obs_date on a DIFFERENT axis
+    # than the one tailed above (month+year cube: it name-matches the month axis, every
+    # obs_date parses to None, 0 rows -> false structural / permanent freeze).
+    rows = parse_jsonstat2(resp, prefix, time_code)
     # Keep only rows strictly relevant to the delta: parse_jsonstat2 already filters
     # to the codes we asked for, but guard the boundary explicitly (re-pulls the
     # boundary day for revision capture; merge dedups it).

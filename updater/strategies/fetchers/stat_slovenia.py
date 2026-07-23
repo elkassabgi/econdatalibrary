@@ -19,11 +19,16 @@ Each CATALOG TABLE is a sub-unit. For every table we:
   1. read its group parquet to learn THIS table's max(obs_date) and the exact codes it
      already wrote (per-table, by splitting series_key on ':'),
   2. GET the table's PxWeb metadata (variables + value lists),
-  3. detect the time dimension EXACTLY like the ingester (is_time_dim), parse every time
-     code to a date, and keep ONLY codes whose date > stored max  (date-tail: tiny query),
+  3. resolve THE time dimension with the shared value-first resolver (core/pxweb.py:
+     authoritative `time: true` code, else highest date-parse-rate, else literal name —
+     the SAME axis _parse_jsonstat2 keys obs_date on), parse every time code to a date,
+     and keep ONLY codes whose date > stored max  (date-tail: tiny query),
   4. replicate the ingester's dimension selection — the all-values-vs-one-aggregate branch
      is decided on the FULL total_cells (NOT the date-restricted count) so the series_keys
-     produced match the ones already on disk EXACTLY (no parallel keys),
+     produced match the ones already on disk EXACTLY (no parallel keys); ONLY the resolved
+     time axis is restricted to the new codes (the OLD builder restricted EVERY time-ish
+     variable, so a month+year cube had BOTH axes filtered to "newer" period codes — the
+     month selection was emptied of valid codes and the tail silently froze),
   5. POST the query, parse JSON-stat2 with the SAME parser as the ingester, accumulate the
      rows under the table's group,
   6. merge each touched group file via merge.merge_and_write(..., mode="merge",
@@ -58,6 +63,18 @@ from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import Tally, finalize, sane_since
 
+import sys
+# The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
+# (core/pxweb.py). Derive the repo root from __file__ — updater/strategies/fetchers/ is
+# four levels below it — so `from core import pxweb` resolves to THIS checkout's copy both
+# when the updater imports this fetcher as a package and if it is loaded standalone. No
+# hardcoded ROOT: only the worktree carries core/pxweb.py on this branch (same __file__
+# convention as jobs/ingest_hagstofa.py and tools/pxweb_regression.py).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from core import pxweb as _pxweb
+
 SOURCE = "stat_slovenia"
 BASE = "https://pxweb.stat.si/SiStatData/api/v1/en/Data"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
@@ -83,8 +100,10 @@ def _out_dir() -> str:
 
 
 # --------------------------------------------------------------------------- #
-# date / time-dim helpers — copied verbatim from jobs/ingest_stat_slovenia.py
-# so parsed obs_date and time-dim detection are byte-for-byte identical.
+# date / time-dim helpers — parse grammar and key assembly copied verbatim from
+# jobs/ingest_stat_slovenia.py so parsed obs_date and series_keys are byte-for-byte
+# identical. THE time axis is picked by the shared value-first resolver
+# (core/pxweb.py) — same precedence in the parser and the delta-query builder.
 # --------------------------------------------------------------------------- #
 def _parse_date(s: str):
     s = (s or "").strip()
@@ -113,6 +132,13 @@ def _parse_date(s: str):
 
 
 def _is_time_dim(code: str, values: list) -> bool:
+    """The fetcher's LEGACY per-variable time-ish test (name list, else a loose
+    4-digit value regex). No longer used to pick the axis the date-tail restricts —
+    that is _time_var_index's job (shared value-first resolver) — but kept
+    byte-identical for the over-MAX_CELLS keep-full PARITY branch of _build_query:
+    the ingester keeps every variable its own is_time test flags at the FULL value
+    list (the stored series_keys cover those values, e.g. a demoted month axis of a
+    month+year cube), so the date-tail must keep selecting them identically."""
     code_l = (code or "").lower()
     if code_l in ("mesec", "leto", "kvartal", "year", "time", "period", "tid",
                   "month", "quarter", "half", "week"):
@@ -124,8 +150,15 @@ def _is_time_dim(code: str, values: list) -> bool:
     return False
 
 
-def _parse_jsonstat2(data: dict, prefix: str):
-    """JSON-stat2 -> [(series_key, obs_date, value)] — same logic as the ingester."""
+def _parse_jsonstat2(data: dict, prefix: str, meta_time_code: str | None = None):
+    """JSON-stat2 -> [(series_key, obs_date, value)] — decoding, date grammar and key
+    assembly identical to the ingester's parser. THE time axis is picked by the shared
+    value-first resolver (core/pxweb.py): authoritative `time: true` code / role.time,
+    else highest date-parse-rate, else literal name. Value-first stops a month axis
+    (codes that parse to no date) from outranking the year axis — the name-first
+    defect that froze the PxWeb family — and it is the SAME resolution _build_query
+    tails, so the restricted axis is exactly the axis keyed here. _parse_date keeps
+    this source's exact grammar so working tables stay byte-identical."""
     results = []
     try:
         dim_ids = data.get("id", [])
@@ -135,7 +168,6 @@ def _parse_jsonstat2(data: dict, prefix: str):
         if not dim_ids or not values:
             return results
 
-        time_dim_idx = None
         dim_codes = []
         for i, did in enumerate(dim_ids):
             cat = dims.get(did, {}).get("category", {})
@@ -151,8 +183,10 @@ def _parse_jsonstat2(data: dict, prefix: str):
             else:
                 pos_to_code = []
             dim_codes.append(pos_to_code)
-            if time_dim_idx is None and _is_time_dim(did, pos_to_code):
-                time_dim_idx = i
+
+        time_dim_idx = _pxweb.resolve_time_dim(
+            dim_ids, dim_codes, meta_time_code=meta_time_code,
+            role_time=_pxweb.role_time_of(data), parse_fn=_parse_date)
 
         if time_dim_idx is None:
             return results
@@ -359,52 +393,88 @@ def _table_max_by_group(path: str) -> dict:
 # --------------------------------------------------------------------------- #
 # query building (mirror ingester's dim selection, but date-tail the time dim)
 # --------------------------------------------------------------------------- #
+def _time_var_index(variables: list):
+    """Index of THE time variable, resolved exactly as _parse_jsonstat2 keys
+    obs_date: the shared value-first resolver (core/pxweb.py) fed the same
+    authoritative `time: true` code and _parse_date grammar the parser uses —
+    authoritative flag first, else highest date-parse-rate, else literal name.
+    SURS is CODE-coded (the category codes ARE the period strings, '2024M01'),
+    so the metadata `values` are scored directly. The OLD selection took the
+    FIRST _is_time_dim match in variable order, which in a month+year cube
+    picked whichever time-ish axis came first — e.g. a MESEC axis whose codes
+    parse to no date — so the tail froze while the parser keyed the year axis.
+    Returns None when no axis carries dates at all (the parser writes nothing
+    for such a cube either)."""
+    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    return _pxweb.resolve_time_dim(
+        [v.get("code", "") for v in variables],
+        [[str(c) for c in (v.get("values") or [])] for v in variables],
+        meta_time_code=meta_time_code, parse_fn=_parse_date)
+
+
 def _build_query(variables: list, new_time_codes: list):
     """Build the PxWeb query var list, replicating jobs/ingest_stat_slovenia.query_table.
 
     The all-values-vs-one-aggregate branch is decided on the FULL total_cells (the
     product over ALL value counts), NOT the date-restricted count, so the dimension
     selection — and therefore the produced series_keys — match what is already on disk.
-    The time dimension is then restricted to `new_time_codes` only (date-tail).
-    """
+
+    ONLY the resolved time axis (_time_var_index — the axis _parse_jsonstat2 keys
+    obs_date on) is restricted to `new_time_codes` (date-tail); every OTHER variable
+    is requested per the ingester's normal rule: full when total_cells <= MAX_CELLS;
+    over the cap, keep-full for variables the legacy _is_time_dim flags (ingester
+    PARITY — the stored series_keys cover every value of e.g. a demoted month axis)
+    and the single aggregate/first code for the rest. The OLD builder restricted
+    EVERY _is_time_dim variable to new_time_codes, so in a month+year cube BOTH axes
+    were filtered to "newer" period codes — the month axis's selection was emptied
+    of valid codes, the POST degenerated, and the tail silently froze.
+
+    Returns [] when no time axis resolves (nothing is date-tailable): the caller
+    records the legitimately-quiet verdict without a doomed POST — the same fringe
+    handling bfs uses for a stored table with no resolvable axis."""
+    time_idx = _time_var_index(variables)
+    if time_idx is None:
+        return []
+
     total_cells = 1
     for var in variables:
         total_cells *= max(len(var.get("values", [])), 1)
+    small = total_cells <= MAX_CELLS
 
     query_vars = []
-    if total_cells <= MAX_CELLS:
-        for var in variables:
-            vals = var.get("values", [])
-            code = var.get("code", "")
-            if not vals:
-                continue
-            if _is_time_dim(code, vals):
-                query_vars.append({"code": code, "selection": {"filter": "item", "values": new_time_codes}})
-            else:
-                query_vars.append({"code": code, "selection": {"filter": "item", "values": vals}})
-    else:
-        for var in variables:
-            vals = var.get("values", [])
-            code = var.get("code", "")
-            if not vals:
-                continue
-            if _is_time_dim(code, vals):
-                query_vars.append({"code": code, "selection": {"filter": "item", "values": new_time_codes}})
-            else:
-                agg = [v for v in vals if v.upper() in ("0", "000", "TOTAL", "TOT", "T", "ALL", "SKUPAJ")]
-                selected = agg[:1] if agg else vals[:1]
-                query_vars.append({"code": code, "selection": {"filter": "item", "values": selected}})
+    for vi, var in enumerate(variables):
+        vals = var.get("values", [])
+        code = var.get("code", "")
+        if not vals:
+            continue
+        if vi == time_idx:
+            query_vars.append({"code": code, "selection": {"filter": "item", "values": new_time_codes}})
+        elif small:
+            query_vars.append({"code": code, "selection": {"filter": "item", "values": vals}})
+        elif _is_time_dim(code, vals):
+            # Ingester keep-full PARITY (jobs/ingest_stat_slovenia.query_table): over
+            # MAX_CELLS the ingester keeps every variable its own is_time test flags
+            # at the FULL value list — e.g. the demoted month axis of a month+year
+            # cube — so the stored series_keys cover all its values; collapsing it
+            # here would tail only a sliver of those stored series.
+            query_vars.append({"code": code, "selection": {"filter": "item", "values": vals}})
+        else:
+            agg = [v for v in vals if v.upper() in ("0", "000", "TOTAL", "TOT", "T", "ALL", "SKUPAJ")]
+            selected = agg[:1] if agg else vals[:1]
+            query_vars.append({"code": code, "selection": {"filter": "item", "values": selected}})
     return query_vars
 
 
 def _time_var(variables: list):
-    """Return (code, values) of the table's time dimension, or (None, None)."""
-    for var in variables:
-        vals = var.get("values", [])
-        code = var.get("code", "")
-        if _is_time_dim(code, vals):
-            return code, vals
-    return None, None
+    """Return (code, values) of THE table's time dimension — the axis
+    _time_var_index resolves (the same one _build_query date-tails and
+    _parse_jsonstat2 keys obs_date on) — or (None, None) when the cube has
+    no resolvable date axis."""
+    idx = _time_var_index(variables)
+    if idx is None:
+        return None, None
+    var = variables[idx]
+    return var.get("code", ""), var.get("values", [])
 
 
 def _sane(d):
@@ -506,20 +576,20 @@ def update(unit, since) -> Result:
                 current += 1
                 continue
 
-            # Codes whose value actually PARSES to a date under the ingester's parser.
-            # The SURS catalog holds tables whose detected "time" dimension is in fact a
-            # numeric *category* dim (e.g. 6-digit product codes 010000/011000) that the
-            # shared is_time_dim value-heuristic mis-reads; those parse to NO dates and the
-            # ingester likewise wrote nothing for them (hence they have no on-disk history).
+            # Codes whose value actually PARSES to a date under the ingester's grammar.
+            # The value-first resolver picks a date-parsing axis whenever one exists, so
+            # an empty `parseable` here can only mean an authoritative `time: true` axis
+            # (or a last-resort name-matched one) whose codes parse to no date — a cube
+            # the parser writes nothing for either.
             parseable = [c for c in tvals if _parse_date(c) is not None]
 
             stored_max = tbl_max.get(tid_clean)   # date or None (new table)
             if not parseable:
-                # The detected time dim yields no real dates -> a known-unparseable table
-                # under the shared heuristic (the ingester skipped it too). Alive but not
-                # writable here: a confirmed sub-unit, NOT a structural break and NOT an
-                # outage-feeding empty. (If it somehow had on-disk history yet now parses to
-                # nothing, that IS a break -> structural.)
+                # The resolved time dim yields no real dates -> a date-less table under
+                # the shared resolver (the parser writes nothing for it either). Alive but
+                # not writable here: a confirmed sub-unit, NOT a structural break and NOT
+                # an outage-feeding empty. (If it somehow had on-disk history yet now
+                # parses to nothing, that IS a break -> structural.)
                 if stored_max is not None:
                     tally.structural_unit()
                 else:
@@ -579,7 +649,10 @@ def update(unit, since) -> Result:
                 continue
 
             prefix = f"SI:{tid_clean}"
-            rows = _parse_jsonstat2(resp, prefix)
+            # Thread the AUTHORITATIVE PxWeb `time: true` flag so the parser's shared
+            # resolver locks onto the same axis the query tailed; None -> value-first.
+            meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+            rows = _parse_jsonstat2(resp, prefix, meta_time_code)
 
             if not rows:
                 # 200 POST but parsed 0 rows even though the requested time codes WERE
