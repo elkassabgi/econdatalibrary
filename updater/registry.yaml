@@ -139,6 +139,7 @@ sources:
     - 'single parquet: data/clean_full/barro_lee/barro_lee.parquet (zstd), columns (series_key=BARRO_LEE:{var}:{agefrom}_{ageto}:{sex}:{iso3},
       obs_date, value). ~239K obs.'
 - source_id: bcb
+  live: true
   scripts:
   - jobs/ingest_bcb.py
   strategy: extend_by_date
