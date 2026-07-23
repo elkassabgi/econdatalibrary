@@ -58,7 +58,6 @@ from ._common import Tally, finalize
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
       "Accept": "application/json"}
 API = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service"
-CATALOG = os.path.join(config.ROOT, "data", "_treasury_catalog_final.json")
 PAGE_SIZE = 10000          # API hard cap
 MAX_ATTEMPTS = 6
 TIMEOUT = 90
@@ -124,12 +123,18 @@ def _identity_keys(cols):
     return ["series_key", "obs_date"] + dims
 
 
-def _load_catalog():
-    if not os.path.exists(CATALOG):
-        raise DefinitiveError(f"treasury catalog missing: {CATALOG}")
+def _load_catalog(out_dir):
+    # blob-routed + co-located under the source dir: under AQUEDUCT_BACKEND=r2 the catalog is
+    # an R2 object (clean_full/treasury/_treasury_catalog_final.json) — a raw local open() of
+    # the old root-data/ path sees nothing on a CI runner and aborts every run (ledger R36,
+    # the same two-part bug scb had). Local mode falls back to the co-located file.
+    cat_file = os.path.join(out_dir, "_treasury_catalog_final.json")
+    cat_raw = blob.read_bytes(cat_file)
+    if cat_raw is None:
+        raise DefinitiveError(f"treasury catalog missing: {cat_file}")
     try:
-        cat = json.load(open(CATALOG, encoding="utf-8"))
-    except (ValueError, OSError) as e:
+        cat = json.loads(cat_raw.decode("utf-8"))
+    except ValueError as e:
         raise DefinitiveError(f"treasury catalog unreadable: {e}")
     # filename -> endpoint (matches ingester's <slug>__<leaf>.parquet)
     fmap = {}
@@ -263,7 +268,7 @@ def _build_table(endpoint, date_field, out_cols, rows):
 def update(unit, since) -> Result:
     out_dir = config.source_dir(unit.source_id)
 
-    cat, fmap = _load_catalog()
+    cat, fmap = _load_catalog(out_dir)
     # blob-routed enumeration: the endpoint-file set must be visible under
     # AQUEDUCT_BACKEND=r2 (the local store dir is absent on a CI runner).
     pfiles = blob.list_parquets(out_dir)

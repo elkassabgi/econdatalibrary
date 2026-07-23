@@ -601,10 +601,12 @@ def update(unit, since) -> Result:
             # mis-classification that produced the 2584-12-31 artifacts) — so a corrupt
             # period can't pollute the merged data, the cursors, or the reported frontier.
             kept = 0
+            le_ceiling = 0   # parsed rows WITHIN the sane horizon (kept or echoed-old).
             tmax: dt.date | None = None
             for sk, d, v in rows:
                 if d > ceiling:
                     continue
+                le_ceiling += 1
                 if stored_max is not None and d <= stored_max:
                     continue
                 new_keys.append(sk)
@@ -633,7 +635,16 @@ def update(unit, since) -> Result:
                 #    LIVE break of a healthy series. Flagging it structural would fail the
                 #    whole SCB source on every tick. Existing (garbage) data is preserved
                 #    by never-shrink; we simply do not make it worse.
-                if stored_max is not None and rows:
+                #
+                #  * ALSO empty (not structural) when EVERY parsed row was beyond the future
+                #    horizon (le_ceiling==0): SCB Befolkningsframskrivningar (subject BE)
+                #    project population to ~2070, so once stored_max is pinned at the ceiling
+                #    (today.year+2) the delta legitimately returns only >ceiling codes. That
+                #    is a benign future-projection tail, NOT an "asked-newer-got-older" break.
+                #    Requiring le_ceiling>0 fires structural only on a row WITHIN the sane
+                #    horizon that is still not newer than stored_max (the real regression),
+                #    clearing the ~117 subject-BE false partials. (verified: scb parser diag)
+                if stored_max is not None and le_ceiling > 0:
                     tally.structural_unit()
                 else:
                     tally.empty_unit()

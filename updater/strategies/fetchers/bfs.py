@@ -62,7 +62,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Tally, finalize, sane_since, structural_on_zero_rows
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -412,11 +412,14 @@ def update(unit, since) -> Result:
         meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
         rows = parse_jsonstat2_bfs(resp, f"BFS:{dbid}", meta_time_code)
         if not rows:
-            # 200 with a real JSON-stat2 envelope but 0 parsed rows from a non-trivial
-            # selection -> schema/structural break; an envelope with no value array is
-            # an empty answer (quiet tail). Distinguish via the response body.
-            has_envelope = isinstance(resp, dict) and bool(resp.get("id")) and bool(resp.get("value"))
-            if has_envelope:
+            # 200 with a JSON-stat2 envelope but 0 parsed rows. Structural ONLY if we are
+            # losing data we ALREADY serve (sane on-disk boundary + a value-bearing envelope
+            # with >=1 non-null). A never-landed table (since_max None) or a genuinely
+            # date-LESS BFS census cross-section (buildings by municipality x category, no
+            # time dim) is benign, not a break. Uses the shared PxWeb-family rule (R25: ONE
+            # helper) that hagstofa/statfin/stat_estonia already use -- bfs was missing the
+            # sane_since guard + the any-non-null check, causing ~90 false structurals.
+            if structural_on_zero_rows(sane_since(since_max), resp):
                 tally.structural_unit()
             else:
                 tally.empty_unit()
