@@ -110,6 +110,13 @@ export function isNonRedistributable(seriesId: string): boolean {
  */
 export const SERIES_CARVEOUTS: Readonly<Record<string, readonly string[]>> = {
   worldbank: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
+  // worldbank_wdi carries the SAME third-party indicators as worldbank, but the
+  // carve-out was keyed only on `worldbank` — so IMF-sourced CPI and ILO-sourced
+  // unemployment were SERVED through worldbank_wdi, bypassing the control.
+  // Confirmed LIVE 2026-07-22: worldbank_wdi:SL.UEM.TOTL.ZS returned 401 (served)
+  // while the identical indicator was gated under worldbank. Same WB terms apply:
+  // third-party data may not be redistributed regardless of which id carries it.
+  worldbank_wdi: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
   // worldbank_pink aggregates third-party benchmark prices. LME (base metals)
   // and LBMA/IBA (precious metals) REFUSED redistribution in writing on
   // 2026-07-15 (REDISTRIBUTION_EMAIL_TRAIL.md) — these series must never

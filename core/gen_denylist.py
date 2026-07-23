@@ -40,6 +40,10 @@ GRANTED_EXCEPTIONS = {
 # generated SERIES_CARVEOUTS block and refuses to write the file otherwise.
 REQUIRED_CARVEOUTS = {
     "worldbank": ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
+    # Same third-party indicators were served through worldbank_wdi because the
+    # carve-out was keyed on `worldbank` alone (live leak confirmed 2026-07-22:
+    # worldbank_wdi:SL.UEM.TOTL.ZS served 401 while worldbank's copy was gated).
+    "worldbank_wdi": ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
     "worldbank_pink": ["aluminum", "copper", "nickel", "zinc",
                        "gold", "platinum", "silver"],   # LME/LBMA written refusals 2026-07-15
 }
@@ -50,6 +54,12 @@ REQUIRED_CARVEOUTS = {
 # anything the previous curated denylist blocked.
 LEGACY_KEEP = {
     "qog", "cboe", "dbnomics",
+    # imf_dbnomics was gated only because its licence row happens to be reservable=0.
+    # It was NOT on the floor, so deleting/reclassifying its source row would silently
+    # drop it from the gate on the next regeneration (the assertions below would not
+    # catch it). It is a live monthly ingest (updater/registry.yaml) feeding
+    # imf_ifs/imf_dot/imf_bop, and a DBnomics passthrough, so it must stay pinned.
+    "imf_dbnomics",
     "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025",
     "wto_hs_a_0030", "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax",
     "whr", "social_progress", "spi", "cow",
@@ -129,6 +139,13 @@ export function isNonRedistributable(seriesId: string): boolean {
  */
 export const SERIES_CARVEOUTS: Readonly<Record<string, readonly string[]>> = {
   worldbank: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
+  // worldbank_wdi carries the SAME third-party indicators as worldbank, but the
+  // carve-out was keyed only on `worldbank` — so IMF-sourced CPI and ILO-sourced
+  // unemployment were SERVED through worldbank_wdi, bypassing the control.
+  // Confirmed LIVE 2026-07-22: worldbank_wdi:SL.UEM.TOTL.ZS returned 401 (served)
+  // while the identical indicator was gated under worldbank. Same WB terms apply:
+  // third-party data may not be redistributed regardless of which id carries it.
+  worldbank_wdi: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
   // worldbank_pink aggregates third-party benchmark prices. LME (base metals)
   // and LBMA/IBA (precious metals) REFUSED redistribution in writing on
   // 2026-07-15 (REDISTRIBUTION_EMAIL_TRAIL.md) — these series must never
