@@ -76,6 +76,14 @@ LEGACY_KEEP = {
     # Standing obligation: annual June refresh when EI publishes the new edition.
     "famafrench", "fraser_efw", "polity", "sipri", "sipri_polity", "tcmb",
     "nbp", "wid", "sdmx_nso",
+    # Purged from the catalog 2026-07-23 (cannot host -> must not live in the DB). Their rows
+    # are gone, so they no longer appear via the reservable=0 scan and would have SILENTLY
+    # dropped out of the gate -- verified: they DID leak on the first regeneration after the
+    # purge. Pinned so a future re-ingest can never land un-gated.
+    #   irena        audit unclear_not_found / NEEDS HUMAN REVIEW
+    #   freedomhouse "third-party re-hosting for open public download is not authorized"
+    #   shiller      unclear_not_found; gate+email pending
+    "irena", "freedomhouse", "shiller",
     # barro_lee REMOVED from the floor 2026-07-22. It was originally gated as
     # "unclear -- gate until confirmed"; DATABASE_LICENSES_VERBATIM.md has since
     # CONFIRMED it `redistributable_attribution` / "CLEARED - re-host OK (attribution)",
