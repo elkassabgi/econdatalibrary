@@ -121,7 +121,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-22');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -135,7 +135,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>The namespace</h2>
 <p>Every series has a stable id of the form <code>source:series_key[:geography]</code> — for example <code>worldbank:NY.GDP.MKTP.CD:USA</code>. The id is permanent, appears in every download, and resolves over the API.</p>
 <h2>Two catalog tiers</h2>
-<p><strong>Redistributed</strong> sources have licenses that permit re-hosting: their data is served from our store as citation-headed CSV, over the API, and in bundles. <strong>Metadata-only</strong> sources have licenses that forbid re-hosting: they are fully searchable and carry machine-readable metadata and pointers, but the data stays with the publisher — a direct request returns an honest HTTP 451 with the publisher's link. Nothing restricted is ever silently redistributed.</p>
+<p>Every source in the library has a license that permits re-hosting: its data is served from our store as citation-headed CSV, over the API, and in bundles, with license and attribution attached to every series. Sources whose licenses forbid re-hosting are not listed at all — we never catalog a dead-end we can't actually serve. Nothing restricted is ever silently redistributed.</p>
 <h2>Reproducibility</h2>
 <p>Bundles are snapshot-pinned: a bundle manifest records the snapshot date and the exact member series, so the same request reproduces the same data. Every CSV carries its license and producer-first citation in a comment header.</p>
 <h2>The update pipeline</h2>
@@ -145,7 +145,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>One account, one family</h2>
 <p>The free ElkassabgiData key works across the family — this library and <a href="https://hfdatalibrary.com/">HF Data Library</a> (1-minute U.S. equity data). Get a key from the <a href="download.html">Download page</a>.</p>
 
-<div class="foot">Generated 2026-07-17 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div>
+<div class="foot">Generated 2026-07-22 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
     <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="300" height="80" style="max-width:78%;height:auto">

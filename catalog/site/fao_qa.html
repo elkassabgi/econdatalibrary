@@ -2,8 +2,8 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases — Econ Data Library</title>
-<meta name="description" content="Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas">
+<title>FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA — Econ Data Library</title>
+<meta name="description" content="FAO">
 <link rel="canonical" href="https://econdatalibrary.com/fao_qa.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -97,8 +97,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases",
-  "description": "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas",
+  "name": "FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA",
+  "description": "FAO",
   "url": "https://econdatalibrary.com/fao_qa.html",
   "identifier": "fao_qa",
   "isAccessibleForFree": true,
@@ -109,15 +109,16 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    "name": "FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA",
+    "url": "https://www.fao.org/faostat/en/"
   },
-  "license": "Redistributable, non-commercial (provider terms verified)",
+  "license": "https://creativecommons.org/licenses/by/4.0/",
   "keywords": [
     "Agriculture & Food",
     "fao_qa"
   ],
   "temporalCoverage": "1961-01-01/2019-01-01",
-  "creditText": "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas",
+  "creditText": "FAO",
   "citation": "FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA. Retrieved from https://www.fao.org/faostat/en/. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-fao_qa",
@@ -127,7 +128,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     {
       "@type": "DataDownload",
       "encodingFormat": "text/csv",
-      "contentUrl": "https://econdatalibrary.com/download.html?source=fao_qa"
+      "contentUrl": "https://econdatalibrary.com/download.html?source=fao_qa",
+      "license": "https://creativecommons.org/licenses/by/4.0/"
     }
   ]
 }
@@ -153,18 +155,18 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "name": "fao_qa",
-  "description": "Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas",
+  "description": "FAO",
   "url": "https://econdatalibrary.com/fao_qa.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases"
+    "name": "FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA"
   },
   "publisher": {
     "@type": "sc:Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "Redistributable, non-commercial (provider terms verified)",
+  "license": "https://creativecommons.org/licenses/by/4.0/",
   "keywords": [
     "Agriculture & Food"
   ],
@@ -201,7 +203,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-22');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -212,21 +214,23 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases</div>
+<div class="crumb"><a href="index.html">Catalog</a> / FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA</div>
 <div class="pid">fao_qa</div>
-<h1>FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases</h1>
-<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Redistributable, non-commercial (provider terms verified)</span><span class="badge cat">Agriculture &amp; Food</span></div>
-<p class="lead">Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas</p>
+<h1>FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA</h1>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Agriculture &amp; Food</span></div>
+<p class="lead">FAO</p>
 </div>
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">3,182</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1961-01-01 – 2019-01-01</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Agriculture & Food</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>Redistributable, non-commercial (provider terms verified)</dd>
-<dt>Required attribution</dt><dd>Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas</dd>
+<dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 4.0 (CC BY 4.0)</dd>
+<dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/4.0/">https://creativecommons.org/licenses/by/4.0/</a></dd>
+<dt>Required attribution</dt><dd>FAO</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
-<dt>Commercial use</dt><dd>Restricted / no</dd>
+<dt>Commercial use</dt><dd>Yes</dd>
 <dt>Modification</dt><dd>Permitted</dd>
+<dt>Provider homepage</dt><dd><a href="https://www.fao.org/faostat/en/">https://www.fao.org/faostat/en/</a></dd>
 <dt>Provider terms</dt><dd><a href="https://www.fao.org/contact-us/terms/db-terms-of-use/en/">https://www.fao.org/contact-us/terms/db-terms-of-use/en/</a></dd></dl>
 <h2>How to cite</h2>
 <blockquote class="cite">FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA. Retrieved from https://www.fao.org/faostat/en/. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
@@ -239,8 +243,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases&quot;,
-  &quot;description&quot;: &quot;Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas&quot;,
+  &quot;name&quot;: &quot;FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA&quot;,
+  &quot;description&quot;: &quot;FAO&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/fao_qa.html&quot;,
   &quot;identifier&quot;: &quot;fao_qa&quot;,
   &quot;isAccessibleForFree&quot;: true,
@@ -251,15 +255,16 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases&quot;
+    &quot;name&quot;: &quot;FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA&quot;,
+    &quot;url&quot;: &quot;https://www.fao.org/faostat/en/&quot;
   },
-  &quot;license&quot;: &quot;Redistributable, non-commercial (provider terms verified)&quot;,
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
   &quot;keywords&quot;: [
     &quot;Agriculture &amp; Food&quot;,
     &quot;fao_qa&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1961-01-01/2019-01-01&quot;,
-  &quot;creditText&quot;: &quot;Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas&quot;,
+  &quot;creditText&quot;: &quot;FAO&quot;,
   &quot;citation&quot;: &quot;FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA. Retrieved from https://www.fao.org/faostat/en/. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-fao_qa&quot;,
@@ -269,7 +274,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=fao_qa&quot;
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=fao_qa&quot;,
+      &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;
     }
   ]
 }</pre></details>
@@ -293,18 +299,18 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
   &quot;name&quot;: &quot;fao_qa&quot;,
-  &quot;description&quot;: &quot;Source: FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databas&quot;,
+  &quot;description&quot;: &quot;FAO&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/fao_qa.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;FAO (UN Food and Agriculture Organization) — FAOSTAT corporate statistical databases&quot;
+    &quot;name&quot;: &quot;FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QA&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;Redistributable, non-commercial (provider terms verified)&quot;,
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
   &quot;keywords&quot;: [
     &quot;Agriculture &amp; Food&quot;
   ],
@@ -321,7 +327,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-17 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-22 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

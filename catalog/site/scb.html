@@ -2,9 +2,9 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>Social Progress Index (Social Progress Imperative) — Econ Data Library</title>
-<meta name="description" content="Social Progress Index (SPI) ingest. Source: https://www.socialprogress.org/ Publisher: Social Progress Imperative License: Creative Commons Attribution-NonCommercial 4.0 Coverage: 170+ countries, 2011-2023, 3 dimensions, 12 components, 54 indicators Dimensions: 1. Basic Human Needs (nutrition,…">
-<link rel="canonical" href="https://econdatalibrary.com/social_progress.html">
+<title>Statistics Sweden (Statistiska centralbyrån, SCB) — Econ Data Library</title>
+<meta name="description" content="Statistics Sweden (SCB) — full PxWeb ingest. License: Creative Commons Attribution 4.0 (CC BY 4.0) Source: https://www.scb.se/en/services/open-data-api/api-for-the-statistical-database/ No API key required. Coverage: ~10,000+ tables in the SCB statistical database: * National accounts (GDP, GNI,…">
+<link rel="canonical" href="https://econdatalibrary.com/scb.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -97,11 +97,11 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "Social Progress Index (Social Progress Imperative)",
-  "description": "Social Progress Index (SPI) ingest. Source: https://www.socialprogress.org/ Publisher: Social Progress Imperative License: Creative Commons Attribution-NonCommercial 4.0 Coverage: 170+ countries, 2011-2023, 3 dimensions, 12 components, 54 indicators Dimensions: 1. Basic Human Needs (nutrition,…",
-  "url": "https://econdatalibrary.com/social_progress.html",
-  "identifier": "social_progress",
-  "isAccessibleForFree": false,
+  "name": "Statistics Sweden (Statistiska centralbyrån, SCB)",
+  "description": "Statistics Sweden (SCB) — full PxWeb ingest. License: Creative Commons Attribution 4.0 (CC BY 4.0) Source: https://www.scb.se/en/services/open-data-api/api-for-the-statistical-database/ No API key required. Coverage: ~10,000+ tables in the SCB statistical database: * National accounts (GDP, GNI,…",
+  "url": "https://econdatalibrary.com/scb.html",
+  "identifier": "scb",
+  "isAccessibleForFree": true,
   "publisher": {
     "@type": "Organization",
     "name": "Econ Data Library",
@@ -109,19 +109,26 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "Social Progress Index (Social Progress Imperative)"
+    "name": "Statistics Sweden (Statistiska centralbyrån, SCB)",
+    "url": "https://www.scb.se/en/"
   },
-  "license": "Social Progress Imperative (written permission: official embed only)",
+  "license": "https://creativecommons.org/publicdomain/zero/1.0/",
   "keywords": [
-    "Society & Well-Being",
-    "social_progress"
+    "Macroeconomics",
+    "scb"
   ],
-  "creditText": "Source: Social Progress Imperative (embed permission 2026)",
   "sameAs": [
-    "https://huggingface.co/datasets/econdatalibrary-social_progress",
+    "https://huggingface.co/datasets/econdatalibrary-scb",
     "https://zenodo.org/communities/econdatalibrary"
   ],
-  "usageInfo": "Metadata-only catalog entry. This source's license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms."
+  "distribution": [
+    {
+      "@type": "DataDownload",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=scb",
+      "license": "https://creativecommons.org/publicdomain/zero/1.0/"
+    }
+  ]
 }
 </script>
 <script type="application/ld+json">
@@ -144,24 +151,32 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
-  "name": "social_progress",
-  "description": "Social Progress Index (SPI) ingest. Source: https://www.socialprogress.org/ Publisher: Social Progress Imperative License: Creative Commons Attribution-NonCommercial 4.0 Coverage: 170+ countries, 2011-2023, 3 dimensions, 12 components, 54 indicators Dimensions: 1. Basic Human Needs (nutrition,…",
-  "url": "https://econdatalibrary.com/social_progress.html",
+  "name": "scb",
+  "description": "Statistics Sweden (SCB) — full PxWeb ingest. License: Creative Commons Attribution 4.0 (CC BY 4.0) Source: https://www.scb.se/en/services/open-data-api/api-for-the-statistical-database/ No API key required. Coverage: ~10,000+ tables in the SCB statistical database: * National accounts (GDP, GNI,…",
+  "url": "https://econdatalibrary.com/scb.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "Social Progress Index (Social Progress Imperative)"
+    "name": "Statistics Sweden (Statistiska centralbyrån, SCB)"
   },
   "publisher": {
     "@type": "sc:Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "Social Progress Imperative (written permission: official embed only)",
+  "license": "https://creativecommons.org/publicdomain/zero/1.0/",
   "keywords": [
-    "Society & Well-Being"
+    "Macroeconomics"
   ],
-  "isAccessibleForFree": false,
-  "usageInfo": "Metadata-only Croissant record; underlying data is not redistributed under this source's license."
+  "distribution": [
+    {
+      "@type": "cr:FileObject",
+      "@id": "scb-csv",
+      "name": "scb-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=scb",
+      "encodingFormat": "text/csv"
+    }
+  ]
 }
 </script>
 <script src="assets/sso.js?v=20260715c"></script>
@@ -183,7 +198,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-22');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -194,67 +209,61 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / Social Progress Index (Social Progress Imperative)</div>
-<div class="pid">social_progress</div>
-<h1>Social Progress Index (Social Progress Imperative)</h1>
-<div class="badges"><span class="badge meta">Metadata only</span><span class="badge lic">Social Progress Imperative (written permission: official embed only)</span><span class="badge cat">Society &amp; Well-Being</span></div>
-<p class="lead">Social Progress Index (SPI) ingest. Source: https://www.socialprogress.org/ Publisher: Social Progress Imperative License: Creative Commons Attribution-NonCommercial 4.0 Coverage: 170+ countries, 2011-2023, 3 dimensions, 12 components, 54 indicators Dimensions: 1. Basic Human Needs (nutrition,…</p>
+<div class="crumb"><a href="index.html">Catalog</a> / Statistics Sweden (Statistiska centralbyrån, SCB)</div>
+<div class="pid">scb</div>
+<h1>Statistics Sweden (Statistiska centralbyrån, SCB)</h1>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Zero (CC0)</span><span class="badge cat">Macroeconomics</span></div>
+<p class="lead">Statistics Sweden (SCB) — full PxWeb ingest. License: Creative Commons Attribution 4.0 (CC BY 4.0) Source: https://www.scb.se/en/services/open-data-api/api-for-the-statistical-database/ No API key required. Coverage: ~10,000+ tables in the SCB statistical database: * National accounts (GDP, GNI,…</p>
 </div>
-<div class="callout meta"><b>Metadata only.</b> This source’s license does not permit redistribution, so we catalog its metadata but do not re-serve the data. Use the provider link to obtain it under the original terms.</div>
-<h2>Explore the 2026 Global Social Progress Index</h2>
-<div class="callout open" style="margin-bottom:1rem">Embedded with written permission from the Social Progress Imperative (2026) for student and academic use, free of charge. The underlying dataset is not redistributed here — data licensing and premium access are available from <a href="https://www.socialprogress.org/">socialprogress.org</a>.</div>
-
-<div class='tableauPlaceholder' id='viz1784056164874' style='position: relative'><noscript><a href='https://www.socialprogress.org/'><img alt='2026 Global Social Progress Index' src='https://public.tableau.com/static/images/20/2026GlobalSocialProgressIndexPublicAccess/2026SPI/1_rss.png' style='border: none' /></a></noscript><object class='tableauViz' style='display:none;'><param name='host_url' value='https%3A%2F%2Fpublic.tableau.com%2F' /> <param name='embed_code_version' value='3' /> <param name='site_root' value='' /><param name='name' value='2026GlobalSocialProgressIndexPublicAccess&#47;2026SPI' /><param name='tabs' value='yes' /><param name='toolbar' value='yes' /><param name='static_image' value='https://public.tableau.com/static/images/20/2026GlobalSocialProgressIndexPublicAccess/2026SPI/1.png' /> <param name='animate_transition' value='yes' /><param name='display_static_image' value='yes' /><param name='display_spinner' value='yes' /><param name='display_overlay' value='yes' /><param name='display_count' value='yes' /><param name='language' value='en-US' /></object></div>
-<script type='text/javascript'>
-var divElement = document.getElementById('viz1784056164874');
-var vizElement = divElement.getElementsByTagName('object')[0];
-if ( divElement.offsetWidth > 800 ) { vizElement.style.width='1000px';vizElement.style.height='1250px';} else if ( divElement.offsetWidth > 500 ) { vizElement.style.width='1000px';vizElement.style.height='1250px';} else { vizElement.style.width='100%';vizElement.style.height='7250px';}
-var scriptElement = document.createElement('script');
-scriptElement.src = 'https://public.tableau.com/javascripts/api/viz_v1.js';
-vizElement.parentNode.insertBefore(scriptElement, vizElement);
-</script>
-
+<div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
 <h2>Coverage</h2>
-<div class="metrics"><div class="metric"><div class="mlabel">Categories</div><div class="mval">Society & Well-Being</div></div></div>
+<div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">2,550</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Macroeconomics</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>Social Progress Imperative (written permission: official embed only)</dd>
-<dt>Required attribution</dt><dd>Source: Social Progress Imperative (embed permission 2026)</dd>
-<dt>Redistribution</dt><dd>Not permitted (metadata only)</dd>
-<dt>Commercial use</dt><dd>Restricted / no</dd>
-<dt>Modification</dt><dd>Restricted</dd>
-<dt>Provider terms</dt><dd><a href="https://www.socialprogress.org/">https://www.socialprogress.org/</a></dd></dl>
+<dl class="kv"><dt>License</dt><dd>Creative Commons Zero (CC0)</dd>
+<dt>License URL</dt><dd><a href="https://creativecommons.org/publicdomain/zero/1.0/">https://creativecommons.org/publicdomain/zero/1.0/</a></dd>
+<dt>Required attribution</dt><dd>Source: Statistics Sweden (recommended, not required for CC0 open data)</dd>
+<dt>Redistribution</dt><dd>Permitted (served here)</dd>
+<dt>Commercial use</dt><dd>Yes</dd>
+<dt>Modification</dt><dd>Permitted</dd>
+<dt>Provider homepage</dt><dd><a href="https://www.scb.se/en/">https://www.scb.se/en/</a></dd>
+<dt>Provider terms</dt><dd><a href="https://www.scb.se/en/services/open-data-api/">https://www.scb.se/en/services/open-data-api/</a></dd></dl>
 <h2>Access &amp; mirrors</h2>
-<dl class="kv"><dt>Download</dt><dd>Not available here — this provider's terms do not permit redistribution. Obtain the data from the <a href="https://www.socialprogress.org/">original provider</a>.</dd>
-<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/social_progress.html">https://econdatalibrary.com/social_progress.html</a></dd>
-<dt>Update cadence</dt><dd>annual</dd>
-<dt>Update strategy</dt><dd>manual vintage</dd>
-<dt>Storage layout</dt><dd>single parquet spi/spi.parquet (currently absent — never created). Shares the path with ingest_spi.py.</dd></dl>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=scb">Select &amp; download scb series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/scb.html">https://econdatalibrary.com/scb.html</a></dd>
+<dt>Update cadence</dt><dd>monthly</dd>
+<dt>Update strategy</dt><dd>sdmx delta</dd>
+<dt>Storage layout</dt><dd>multi-file, one parquet per subject area: data/clean_full/scb/&lt;SUBJ&gt;.parquet (AA, AM, BE, BO, EN, FM, HA, HE, JO ... observed). series_key = &#x27;&lt;table/path&gt;:&lt;dim&gt;=&lt;code&gt;:...&#x27; built from non-time dimensions of the JSON-stat2 cube; obs_date from PxWeb time codes; value float64. Per-subject in-run dedup via &#x27;seen&#x27; set on (key,date). Plus _catalog.json (crawl cache) and _scb_log.txt. MAX_CELLS=100000 caps each table query; oversized tables fall back to selecting only the first/aggregate value of non-time dims (partial coverage).</dd></dl>
 <h2>Full description</h2>
-<p class="lead">Social Progress Index (SPI) ingest.
+<p class="lead">Statistics Sweden (SCB) — full PxWeb ingest.
 
-Source: https://www.socialprogress.org/
-Publisher: Social Progress Imperative
-License: Creative Commons Attribution-NonCommercial 4.0
-Coverage: 170+ countries, 2011-2023, 3 dimensions, 12 components, 54 indicators
+License: Creative Commons Attribution 4.0 (CC BY 4.0)
+Source: https://www.scb.se/en/services/open-data-api/api-for-the-statistical-database/
+No API key required.
 
-Dimensions:
-  1. Basic Human Needs (nutrition, water, shelter, safety)
-  2. Foundations of Wellbeing (education, health, environment, info access)
-  3. Opportunity (rights, freedom, inclusiveness, advanced education)
+Coverage: ~10,000+ tables in the SCB statistical database:
+  * National accounts (GDP, GNI, output by industry)
+  * Labour force survey (employment, unemployment, wages)
+  * Consumer/Producer price indices
+  * Trade in goods and services
+  * Population and demography
+  * Industrial and business surveys
+  * Financial accounts and public sector
+  * Housing and construction
 
-series_key: SPI:{indicator}:{iso3}   e.g. SPI:SPI_score:USA
+PxWeb API: GET {BASE}/{path}  →  catalog list
+           POST {BASE}/{path}/{tableId}/  →  data (JSON-stat2)
 
-Output: data/clean_full/spi/spi.parquet
-Run: python jobs/ingest_social_progress.py</p>
+Run: python jobs/ingest_scb.py</p>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;Social Progress Index (Social Progress Imperative)&quot;,
-  &quot;description&quot;: &quot;Social Progress Index (SPI) ingest. Source: https://www.socialprogress.org/ Publisher: Social Progress Imperative License: Creative Commons Attribution-NonCommercial 4.0 Coverage: 170+ countries, 2011-2023, 3 dimensions, 12 components, 54 indicators Dimensions: 1. Basic Human Needs (nutrition,…&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/social_progress.html&quot;,
-  &quot;identifier&quot;: &quot;social_progress&quot;,
-  &quot;isAccessibleForFree&quot;: false,
+  &quot;name&quot;: &quot;Statistics Sweden (Statistiska centralbyrån, SCB)&quot;,
+  &quot;description&quot;: &quot;Statistics Sweden (SCB) — full PxWeb ingest. License: Creative Commons Attribution 4.0 (CC BY 4.0) Source: https://www.scb.se/en/services/open-data-api/api-for-the-statistical-database/ No API key required. Coverage: ~10,000+ tables in the SCB statistical database: * National accounts (GDP, GNI,…&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/scb.html&quot;,
+  &quot;identifier&quot;: &quot;scb&quot;,
+  &quot;isAccessibleForFree&quot;: true,
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
@@ -262,19 +271,26 @@ Run: python jobs/ingest_social_progress.py</p>
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;Social Progress Index (Social Progress Imperative)&quot;
+    &quot;name&quot;: &quot;Statistics Sweden (Statistiska centralbyrån, SCB)&quot;,
+    &quot;url&quot;: &quot;https://www.scb.se/en/&quot;
   },
-  &quot;license&quot;: &quot;Social Progress Imperative (written permission: official embed only)&quot;,
+  &quot;license&quot;: &quot;https://creativecommons.org/publicdomain/zero/1.0/&quot;,
   &quot;keywords&quot;: [
-    &quot;Society &amp; Well-Being&quot;,
-    &quot;social_progress&quot;
+    &quot;Macroeconomics&quot;,
+    &quot;scb&quot;
   ],
-  &quot;creditText&quot;: &quot;Source: Social Progress Imperative (embed permission 2026)&quot;,
   &quot;sameAs&quot;: [
-    &quot;https://huggingface.co/datasets/econdatalibrary-social_progress&quot;,
+    &quot;https://huggingface.co/datasets/econdatalibrary-scb&quot;,
     &quot;https://zenodo.org/communities/econdatalibrary&quot;
   ],
-  &quot;usageInfo&quot;: &quot;Metadata-only catalog entry. This source&#x27;s license does not permit redistribution, so the data itself is not served here; use the provider link to obtain the data under its terms.&quot;
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=scb&quot;,
+      &quot;license&quot;: &quot;https://creativecommons.org/publicdomain/zero/1.0/&quot;
+    }
+  ]
 }</pre></details>
 <details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
   &quot;@context&quot;: {
@@ -295,26 +311,34 @@ Run: python jobs/ingest_social_progress.py</p>
   },
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
-  &quot;name&quot;: &quot;social_progress&quot;,
-  &quot;description&quot;: &quot;Social Progress Index (SPI) ingest. Source: https://www.socialprogress.org/ Publisher: Social Progress Imperative License: Creative Commons Attribution-NonCommercial 4.0 Coverage: 170+ countries, 2011-2023, 3 dimensions, 12 components, 54 indicators Dimensions: 1. Basic Human Needs (nutrition,…&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/social_progress.html&quot;,
+  &quot;name&quot;: &quot;scb&quot;,
+  &quot;description&quot;: &quot;Statistics Sweden (SCB) — full PxWeb ingest. License: Creative Commons Attribution 4.0 (CC BY 4.0) Source: https://www.scb.se/en/services/open-data-api/api-for-the-statistical-database/ No API key required. Coverage: ~10,000+ tables in the SCB statistical database: * National accounts (GDP, GNI,…&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/scb.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;Social Progress Index (Social Progress Imperative)&quot;
+    &quot;name&quot;: &quot;Statistics Sweden (Statistiska centralbyrån, SCB)&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;Social Progress Imperative (written permission: official embed only)&quot;,
+  &quot;license&quot;: &quot;https://creativecommons.org/publicdomain/zero/1.0/&quot;,
   &quot;keywords&quot;: [
-    &quot;Society &amp; Well-Being&quot;
+    &quot;Macroeconomics&quot;
   ],
-  &quot;isAccessibleForFree&quot;: false,
-  &quot;usageInfo&quot;: &quot;Metadata-only Croissant record; underlying data is not redistributed under this source&#x27;s license.&quot;
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;cr:FileObject&quot;,
+      &quot;@id&quot;: &quot;scb-csv&quot;,
+      &quot;name&quot;: &quot;scb-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=scb&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
+    }
+  ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-17 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-22 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

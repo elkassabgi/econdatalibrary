@@ -2,7 +2,7 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>UNDP Human Development Report (Human Development Report Office, UNDP) — Econ Data Library</title>
+<title>United Nations Development Programme, Human Development Report Office (HDRO) — Econ Data Library</title>
 <meta name="description" content="UNDP Human Development Report (HDR) Statistical Annexes — 190+ countries. License: CC BY 3.0 IGO Source: https://hdr.undp.org/data-center/documentation-and-downloads No API key required (direct XLSX download from hdr.undp.org). Coverage: * HDI (Human Development Index), 1990–2023 * GDI (Gender…">
 <link rel="canonical" href="https://econdatalibrary.com/undp_hdr.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
@@ -97,7 +97,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "UNDP Human Development Report (Human Development Report Office, UNDP)",
+  "name": "United Nations Development Programme, Human Development Report Office (HDRO)",
   "description": "UNDP Human Development Report (HDR) Statistical Annexes — 190+ countries. License: CC BY 3.0 IGO Source: https://hdr.undp.org/data-center/documentation-and-downloads No API key required (direct XLSX download from hdr.undp.org). Coverage: * HDI (Human Development Index), 1990–2023 * GDI (Gender…",
   "url": "https://econdatalibrary.com/undp_hdr.html",
   "identifier": "undp_hdr",
@@ -109,16 +109,17 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "UNDP Human Development Report (Human Development Report Office, UNDP)"
+    "name": "United Nations Development Programme, Human Development Report Office (HDRO)",
+    "url": "https://hdr.undp.org"
   },
-  "license": "https://creativecommons.org/licenses/by/3.0/igo/",
+  "license": "https://data.adb.org/terms-use-data",
   "keywords": [
     "Development Indicators",
     "Society & Well-Being",
     "undp_hdr"
   ],
   "temporalCoverage": "1990-12-31/2023-12-31",
-  "creditText": "Source: UNDP Human Development Report (Human Development Report Office, UNDP)",
+  "creditText": "United Nations Development Programme, Human Development Report Office",
   "citation": "United Nations Development Programme, Human Development Report Office (HDRO). Retrieved from https://hdr.undp.org. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-undp_hdr",
@@ -129,7 +130,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
       "@type": "DataDownload",
       "encodingFormat": "text/csv",
       "contentUrl": "https://econdatalibrary.com/download.html?source=undp_hdr",
-      "license": "https://creativecommons.org/licenses/by/3.0/igo/"
+      "license": "https://data.adb.org/terms-use-data"
     }
   ]
 }
@@ -159,14 +160,14 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "url": "https://econdatalibrary.com/undp_hdr.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "UNDP Human Development Report (Human Development Report Office, UNDP)"
+    "name": "United Nations Development Programme, Human Development Report Office (HDRO)"
   },
   "publisher": {
     "@type": "sc:Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "https://creativecommons.org/licenses/by/3.0/igo/",
+  "license": "https://data.adb.org/terms-use-data",
   "keywords": [
     "Development Indicators",
     "Society & Well-Being"
@@ -204,7 +205,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-22');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -215,9 +216,9 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / UNDP Human Development Report (Human Development Report Office, UNDP)</div>
+<div class="crumb"><a href="index.html">Catalog</a> / United Nations Development Programme, Human Development Report Office (HDRO)</div>
 <div class="pid">undp_hdr</div>
-<h1>UNDP Human Development Report (Human Development Report Office, UNDP)</h1>
+<h1>United Nations Development Programme, Human Development Report Office (HDRO)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 3.0 IGO (CC BY 3.0 IGO)</span><span class="badge cat">Development Indicators</span><span class="badge cat">Society &amp; Well-Being</span></div>
 <p class="lead">UNDP Human Development Report (HDR) Statistical Annexes — 190+ countries. License: CC BY 3.0 IGO Source: https://hdr.undp.org/data-center/documentation-and-downloads No API key required (direct XLSX download from hdr.undp.org). Coverage: * HDI (Human Development Index), 1990–2023 * GDI (Gender…</p>
 </div>
@@ -226,11 +227,12 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">8,199</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1990-12-31 – 2023-12-31</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Development Indicators, Society & Well-Being</div></div></div>
 <h2>Licensing &amp; provenance</h2>
 <dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 3.0 IGO (CC BY 3.0 IGO)</dd>
-<dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/3.0/igo/">https://creativecommons.org/licenses/by/3.0/igo/</a></dd>
-<dt>Required attribution</dt><dd>Source: UNDP Human Development Report (Human Development Report Office, UNDP)</dd>
+<dt>License URL</dt><dd><a href="https://data.adb.org/terms-use-data">https://data.adb.org/terms-use-data</a></dd>
+<dt>Required attribution</dt><dd>United Nations Development Programme, Human Development Report Office</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Yes</dd>
 <dt>Modification</dt><dd>Permitted</dd>
+<dt>Provider homepage</dt><dd><a href="https://hdr.undp.org">https://hdr.undp.org</a></dd>
 <dt>Provider terms</dt><dd><a href="https://hdr.undp.org/copyright-and-terms-use">https://hdr.undp.org/copyright-and-terms-use</a></dd></dl>
 <h2>How to cite</h2>
 <blockquote class="cite">United Nations Development Programme, Human Development Report Office (HDRO). Retrieved from https://hdr.undp.org. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
@@ -265,7 +267,7 @@ Run: python jobs/ingest_undp_hdr.py</p>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;UNDP Human Development Report (Human Development Report Office, UNDP)&quot;,
+  &quot;name&quot;: &quot;United Nations Development Programme, Human Development Report Office (HDRO)&quot;,
   &quot;description&quot;: &quot;UNDP Human Development Report (HDR) Statistical Annexes — 190+ countries. License: CC BY 3.0 IGO Source: https://hdr.undp.org/data-center/documentation-and-downloads No API key required (direct XLSX download from hdr.undp.org). Coverage: * HDI (Human Development Index), 1990–2023 * GDI (Gender…&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/undp_hdr.html&quot;,
   &quot;identifier&quot;: &quot;undp_hdr&quot;,
@@ -277,16 +279,17 @@ Run: python jobs/ingest_undp_hdr.py</p>
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;UNDP Human Development Report (Human Development Report Office, UNDP)&quot;
+    &quot;name&quot;: &quot;United Nations Development Programme, Human Development Report Office (HDRO)&quot;,
+    &quot;url&quot;: &quot;https://hdr.undp.org&quot;
   },
-  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;,
+  &quot;license&quot;: &quot;https://data.adb.org/terms-use-data&quot;,
   &quot;keywords&quot;: [
     &quot;Development Indicators&quot;,
     &quot;Society &amp; Well-Being&quot;,
     &quot;undp_hdr&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1990-12-31/2023-12-31&quot;,
-  &quot;creditText&quot;: &quot;Source: UNDP Human Development Report (Human Development Report Office, UNDP)&quot;,
+  &quot;creditText&quot;: &quot;United Nations Development Programme, Human Development Report Office&quot;,
   &quot;citation&quot;: &quot;United Nations Development Programme, Human Development Report Office (HDRO). Retrieved from https://hdr.undp.org. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-undp_hdr&quot;,
@@ -297,7 +300,7 @@ Run: python jobs/ingest_undp_hdr.py</p>
       &quot;@type&quot;: &quot;DataDownload&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
       &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=undp_hdr&quot;,
-      &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;
+      &quot;license&quot;: &quot;https://data.adb.org/terms-use-data&quot;
     }
   ]
 }</pre></details>
@@ -325,14 +328,14 @@ Run: python jobs/ingest_undp_hdr.py</p>
   &quot;url&quot;: &quot;https://econdatalibrary.com/undp_hdr.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;UNDP Human Development Report (Human Development Report Office, UNDP)&quot;
+    &quot;name&quot;: &quot;United Nations Development Programme, Human Development Report Office (HDRO)&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;,
+  &quot;license&quot;: &quot;https://data.adb.org/terms-use-data&quot;,
   &quot;keywords&quot;: [
     &quot;Development Indicators&quot;,
     &quot;Society &amp; Well-Being&quot;
@@ -350,7 +353,7 @@ Run: python jobs/ingest_undp_hdr.py</p>
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-17 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-22 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

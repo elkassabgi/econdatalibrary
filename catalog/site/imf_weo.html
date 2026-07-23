@@ -2,7 +2,7 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>International Monetary Fund (IMF) — Econ Data Library</title>
+<title>International Monetary Fund — World Economic Outlook (WEO) — Econ Data Library</title>
 <meta name="description" content="IMF DataMapper — free public API, no key required. License: IMF Terms of Use (free for non-commercial research) Source: https://www.imf.org/external/datamapper/api/v1/ Coverage: * 132 WEO / IFS indicators: GDP growth, inflation, debt, current account, unemployment, REER, commodity prices, etc. *…">
 <link rel="canonical" href="https://econdatalibrary.com/imf_weo.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
@@ -97,7 +97,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "International Monetary Fund (IMF)",
+  "name": "International Monetary Fund — World Economic Outlook (WEO)",
   "description": "IMF DataMapper — free public API, no key required. License: IMF Terms of Use (free for non-commercial research) Source: https://www.imf.org/external/datamapper/api/v1/ Coverage: * 132 WEO / IFS indicators: GDP growth, inflation, debt, current account, unemployment, REER, commodity prices, etc. *…",
   "url": "https://econdatalibrary.com/imf_weo.html",
   "identifier": "imf_weo",
@@ -109,7 +109,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   },
   "creator": {
     "@type": "Organization",
-    "name": "International Monetary Fund (IMF)"
+    "name": "International Monetary Fund — World Economic Outlook (WEO)",
+    "url": "https://www.imf.org"
   },
   "license": "IMF Terms of Use (redistribution with attribution)",
   "keywords": [
@@ -117,7 +118,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "imf_weo"
   ],
   "temporalCoverage": "1800-12-31/..",
-  "creditText": "Source: International Monetary Fund (IMF)",
+  "creditText": "Source: International Monetary Fund, World Economic Outlook (WEO) Database, https://www.imf.org",
   "citation": "International Monetary Fund — World Economic Outlook (WEO). Retrieved from https://www.imf.org. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-imf_weo",
@@ -157,7 +158,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "url": "https://econdatalibrary.com/imf_weo.html",
   "creator": {
     "@type": "sc:Organization",
-    "name": "International Monetary Fund (IMF)"
+    "name": "International Monetary Fund — World Economic Outlook (WEO)"
   },
   "publisher": {
     "@type": "sc:Organization",
@@ -200,7 +201,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-22');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -211,9 +212,9 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 
 <div class="wrap">
 <div class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / International Monetary Fund (IMF)</div>
+<div class="crumb"><a href="index.html">Catalog</a> / International Monetary Fund — World Economic Outlook (WEO)</div>
 <div class="pid">imf_weo</div>
-<h1>International Monetary Fund (IMF)</h1>
+<h1>International Monetary Fund — World Economic Outlook (WEO)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">IMF Terms of Use (redistribution with attribution)</span><span class="badge cat">Macroeconomics</span></div>
 <p class="lead">IMF DataMapper — free public API, no key required. License: IMF Terms of Use (free for non-commercial research) Source: https://www.imf.org/external/datamapper/api/v1/ Coverage: * 132 WEO / IFS indicators: GDP growth, inflation, debt, current account, unemployment, REER, commodity prices, etc. *…</p>
 </div>
@@ -222,10 +223,11 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">19,242</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1800-12-31 – present</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Macroeconomics</div></div></div>
 <h2>Licensing &amp; provenance</h2>
 <dl class="kv"><dt>License</dt><dd>IMF Terms of Use (redistribution with attribution)</dd>
-<dt>Required attribution</dt><dd>Source: International Monetary Fund (IMF)</dd>
+<dt>Required attribution</dt><dd>Source: International Monetary Fund, World Economic Outlook (WEO) Database, https://www.imf.org</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Yes</dd>
 <dt>Modification</dt><dd>Permitted</dd>
+<dt>Provider homepage</dt><dd><a href="https://www.imf.org">https://www.imf.org</a></dd>
 <dt>Provider terms</dt><dd><a href="https://www.imf.org/en/about/copyright-and-terms">https://www.imf.org/en/about/copyright-and-terms</a></dd></dl>
 <h2>How to cite</h2>
 <blockquote class="cite">International Monetary Fund — World Economic Outlook (WEO). Retrieved from https://www.imf.org. Compiled and redistributed by the Elkassabgi Data Library.</blockquote>
@@ -259,7 +261,7 @@ Run: python jobs/ingest_imf_weo.py</p>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;International Monetary Fund (IMF)&quot;,
+  &quot;name&quot;: &quot;International Monetary Fund — World Economic Outlook (WEO)&quot;,
   &quot;description&quot;: &quot;IMF DataMapper — free public API, no key required. License: IMF Terms of Use (free for non-commercial research) Source: https://www.imf.org/external/datamapper/api/v1/ Coverage: * 132 WEO / IFS indicators: GDP growth, inflation, debt, current account, unemployment, REER, commodity prices, etc. *…&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/imf_weo.html&quot;,
   &quot;identifier&quot;: &quot;imf_weo&quot;,
@@ -271,7 +273,8 @@ Run: python jobs/ingest_imf_weo.py</p>
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;International Monetary Fund (IMF)&quot;
+    &quot;name&quot;: &quot;International Monetary Fund — World Economic Outlook (WEO)&quot;,
+    &quot;url&quot;: &quot;https://www.imf.org&quot;
   },
   &quot;license&quot;: &quot;IMF Terms of Use (redistribution with attribution)&quot;,
   &quot;keywords&quot;: [
@@ -279,7 +282,7 @@ Run: python jobs/ingest_imf_weo.py</p>
     &quot;imf_weo&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1800-12-31/..&quot;,
-  &quot;creditText&quot;: &quot;Source: International Monetary Fund (IMF)&quot;,
+  &quot;creditText&quot;: &quot;Source: International Monetary Fund, World Economic Outlook (WEO) Database, https://www.imf.org&quot;,
   &quot;citation&quot;: &quot;International Monetary Fund — World Economic Outlook (WEO). Retrieved from https://www.imf.org. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-imf_weo&quot;,
@@ -317,7 +320,7 @@ Run: python jobs/ingest_imf_weo.py</p>
   &quot;url&quot;: &quot;https://econdatalibrary.com/imf_weo.html&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;International Monetary Fund (IMF)&quot;
+    &quot;name&quot;: &quot;International Monetary Fund — World Economic Outlook (WEO)&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
@@ -340,7 +343,7 @@ Run: python jobs/ingest_imf_weo.py</p>
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-17 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-22 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

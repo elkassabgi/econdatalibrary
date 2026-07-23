@@ -54,7 +54,14 @@ LEGACY_KEEP = {
     "wto_hs_a_0030", "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax",
     "whr", "social_progress", "spi", "ei_statreview", "cow",
     "famafrench", "fraser_efw", "polity", "sipri", "sipri_polity", "tcmb",
-    "nbp", "wid", "barro_lee", "sdmx_nso",
+    "nbp", "wid", "sdmx_nso",
+    # barro_lee REMOVED from the floor 2026-07-22. It was originally gated as
+    # "unclear -- gate until confirmed"; DATABASE_LICENSES_VERBATIM.md has since
+    # CONFIRMED it `redistributable_attribution` / "CLEARED - re-host OK (attribution)",
+    # so the floor's purpose (don't un-gate an unconfirmed source) no longer applies.
+    # This is a deliberate, human-authorised un-gate (Ahmed, 2026-07-22) -- NOT a silent
+    # regeneration drop. It now carries its own licence row `custom-terms-barro_lee`
+    # (reservable=1) so the shared `custom-terms` row stays reservable=0 for SIPRI/Cboe/etc.
 }
 
 HEADER = '''// ---------------------------------------------------------------------------

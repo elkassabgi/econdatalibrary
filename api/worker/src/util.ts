@@ -49,6 +49,8 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
   "worldbank_wdi", "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025", "wto_hs_a_0030",
   "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax", "yale_epi", "zillow",
+  // 9 national-statistical PxWeb sources — flow-grain per-table publish (2026-07-22).
+  "ssb", "stat_slovenia", "stat_latvia", "dst", "scb", "statfin", "hagstofa", "stat_estonia", "bfs",
 ];
 
 // Languages with OFFICIAL, source-provided translations loaded into the catalog
