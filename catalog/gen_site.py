@@ -39,6 +39,17 @@ DB_PATH = os.path.join(ROOT, "data", "catalog.db")
 CATALOG_JSON = os.path.join(HERE, "catalog.json")
 OUT_DIR = os.path.join(HERE, "site")
 
+# Files that live in OUT_DIR but are NOT generated here. They are hand-maintained and
+# MUST survive the orphan sweep below. Deleting download.html in particular would break
+# every dataset page (its Croissant/schema.org distribution points at
+# /download.html?source=<id>), and _redirects carries the Pages redirect rules.
+KEEP_UNGENERATED = {
+    "_redirects", "download.html", "status.html", "mcp.html", "account.html", "404.html",
+}
+# Basenames written by this run; anything else *.html in OUT_DIR is a leftover from an
+# earlier run and gets removed at the end of main().
+_WRITTEN: set[str] = set()
+
 # --- Canonical publication identity ------------------------------------------
 # No production domain is wired yet (see STRATEGY.md: Worker/API not shipped).
 # This is the single place to set it; everything below derives from it. It is a
@@ -2499,6 +2510,7 @@ def main():
         html = html.replace("</body>", FAMILY_BAND + "</body>", 1)
         with open(path, "w", encoding="utf-8") as f:
             f.write(html)
+        _WRITTEN.add(os.path.basename(path))
 
     # Per-dataset pages
     n_pages = 0
@@ -2527,6 +2539,27 @@ def main():
     with open(os.path.join(OUT_DIR, "robots.txt"), "w", encoding="utf-8") as f:
         f.write("User-agent: *\nAllow: /\nDisallow: /account.html\n\n"
                 f"Sitemap: {SITE_BASE}/sitemap.xml\n")
+
+    # ---- orphan sweep -------------------------------------------------------------
+    # gen_site historically never cleaned OUT_DIR, so pages for sources that are no longer
+    # generated (e.g. one we stopped hosting) lingered and got deployed with the rest. That
+    # is exactly how "Metadata only" pages stayed LIVE after the display gate changed (163
+    # stale strings across 36 orphan pages, 2026-07-22). The sweep runs LAST, so if any
+    # render above raised, nothing has been deleted.
+    orphans = sorted(
+        fn for fn in os.listdir(OUT_DIR)
+        if fn.endswith(".html")
+        and fn not in _WRITTEN
+        and fn not in KEEP_UNGENERATED
+        and os.path.isfile(os.path.join(OUT_DIR, fn))
+    )
+    for fn in orphans:
+        os.remove(os.path.join(OUT_DIR, fn))
+    if orphans:
+        print(f"  removed {len(orphans)} orphaned page(s) from a previous run: "
+              + ", ".join(orphans[:8]) + (" ..." if len(orphans) > 8 else ""))
+    else:
+        print("  no orphaned pages (output dir clean)")
 
     n_open = sum(1 for r in records if r["reservable"])
     print(f"Wrote {n_pages} dataset pages to {OUT_DIR}")
