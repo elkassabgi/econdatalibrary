@@ -109,3 +109,34 @@ worldbank_extra worldbank_pink zillow`
 The next concrete milestone is **one source promoted end-to-end** — a clean dispatch → `live: true`
 → confirmed on the following cron. Recommended first: `bcb` or `wikidata` (monthly, currently `OK`,
 non-PxWeb, no derive issue) — a genuine clean win, then replicate down Phase 1.
+
+---
+
+## Verified diagnosis (2026-07-23, workflow wf_fc88e6a3 — 5 diagnose + 2 adversarial-verify agents)
+
+Every root cause code-grounded; the two hard classes independently refuted-or-confirmed. Key
+refutations: the PxWeb time-axis resolver is **correct** (not the culprit), and a first-draft
+CSV-coherence fix would have **corrupted the live `frankfurter`** source — both caught by verify.
+
+| Class | Sources | Verdict | Root cause | Fix status |
+|---|---|---|---|---|
+| PxWeb "0 rows" | **scb** | real | Far-future ceiling (today+2) drops legit population **projections to 2070** → false break every tick | ✅ FIXED (scb.py, status-only, `3304ea5`) |
+| | **bfs** | real | Parse-branch missing the `since_max` guard the other 3 carry → flags date-less census tables | ✅ FIXED (shared helper, `3304ea5`) |
+| | hagstofa, statfin, stat_estonia | **stale** | Old state from before the R25 fixes; current code reproduces **0** structural | re-dispatch to clear |
+| | pip | separate | Not PxWeb — World Bank poverty-line bad body | separate triage |
+| treasury "catalog missing" | **treasury** | real | `_load_catalog` raw local open + catalog not on R2 (same 2-part bug as scb) | ✅ FIXED + catalog uploaded (`3304ea5`) |
+| CSV-coherence | insee_bdm, ssb | real | Cursor key ≠ catalog series-id (grain mismatch) | align cursor keys (careful: keep derive-all cap — `frankfurter` depends on it) |
+| | bls | real | `finalize()` called without `series_cursors=` | populate series_cursors |
+| | stat_latvia | real | Grain-aligned but catalog **never uploaded to R2** (R28) | upload its catalog to R2 |
+| | norgesbank, unsdg | stale | Already deleted/denylisted | clear stale state |
+| Transient | bundesbank, cso, defillama, fred_releases, stat_slovenia | **by design** | Self-healing; data preserved, retries next tick | none (auto-retry once live) |
+| Memory | vdem | real | 77M-row OOM, mislabeled "transient" | overwrite-mode + keep OFF CI (giant → workstation) |
+| "dir missing" | abs, adb | **stale** | Already fixed by fcae3eb; stale recorded state | re-dispatch to clear |
+
+**Landmine noted:** `hagstofa.py:398`, `ssb.py:472`, `stat_latvia.py:382` still carry the raw
+`os.path.isdir` "source dir missing" pattern — they will fail in CI the moment they run there.
+Patch (blob.list_parquets) when each is promoted.
+
+**Net:** of ~20 "failing" sources, **most are stale state or by-design self-healing.** The genuine
+code defects were treasury + scb + bfs (now fixed) and the CSV-coherence grain-alignment (careful,
+next). The full agent transcripts: workflow wf_fc88e6a3 journal.
