@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
 // src/sources.ts  --  GET /v1/sources, fully live from D1.
 //
-// Every registered source (309 rows) with its license/attribution + a freshness
+// Every registered source (count intentionally not hard-coded here -- it changes when a
+// source is added, or removed because we cannot host it) with its license/attribution + a freshness
 // summary (status, last_updated, cadence) joined from source_state. LEFT JOINs
 // mean a source with no license or no freshness row still appears -- never
 // dropped, and freshness fields are null (not fabricated) when absent.
