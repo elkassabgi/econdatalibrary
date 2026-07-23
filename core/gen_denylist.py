@@ -52,7 +52,18 @@ LEGACY_KEEP = {
     "qog", "cboe", "dbnomics",
     "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025",
     "wto_hs_a_0030", "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax",
-    "whr", "social_progress", "spi", "ei_statreview", "cow",
+    "whr", "social_progress", "spi", "cow",
+    # ei_statreview REMOVED from the floor 2026-07-22: the Energy Institute GRANTED
+    # written permission (REDISTRIBUTION_EMAIL_TRAIL.md). Its binding exclusion --
+    # "no S&P Global Platts / Commodity Insights price series" -- is satisfied by
+    # construction: the 18,464 series we hold span 127 measures that are ALL energy
+    # volumes/shares/per-capita/changes plus gdp, population and emissions; a full-
+    # population scan found ZERO price-unit or benchmark markers ($/, /bbl, MMBtu,
+    # spot, Brent, WTI, Dubai, Henry Hub, TTF, JKM) in any title. The only titles
+    # containing "price" are `gdp` ("international-$ in 2011 prices" = a constant-
+    # price deflator, not a commodity price). Licence row now encodes the other
+    # conditions: reservable=1, commercial_ok=0 (NC only), attribution_required=1.
+    # Standing obligation: annual June refresh when EI publishes the new edition.
     "famafrench", "fraser_efw", "polity", "sipri", "sipri_polity", "tcmb",
     "nbp", "wid", "sdmx_nso",
     # barro_lee REMOVED from the floor 2026-07-22. It was originally gated as
