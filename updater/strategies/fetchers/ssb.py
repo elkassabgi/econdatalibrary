@@ -447,12 +447,16 @@ def _trailing_floor(today):
 # catalog — group tables exactly as jobs/ingest_ssb.py does
 # --------------------------------------------------------------------------- #
 def _load_catalog(out_dir):
+    # blob-routed: under AQUEDUCT_BACKEND=r2 the catalog is an R2 object
+    # (clean_full/ssb/_catalog.json) -- a raw local open() sees nothing on a CI runner and
+    # aborts every run (ledger R36, same two-part bug scb/treasury had).
     cat_file = os.path.join(out_dir, "_catalog.json")
-    if not os.path.exists(cat_file):
+    raw = blob.read_bytes(cat_file)
+    if raw is None:
         raise DefinitiveError(f"ssb catalog missing: {cat_file}")
     try:
-        cat = json.load(open(cat_file, encoding="utf-8"))
-    except (ValueError, OSError) as e:
+        cat = json.loads(raw.decode("utf-8"))
+    except ValueError as e:
         raise DefinitiveError(f"ssb catalog unreadable: {e}")
     if not isinstance(cat, list) or not cat:
         raise DefinitiveError(f"ssb catalog empty/malformed: {cat_file}")
@@ -468,8 +472,8 @@ def _group_of(table_id: str) -> str:
 # --------------------------------------------------------------------------- #
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
-    if not os.path.isdir(out_dir):
-        raise DefinitiveError(f"ssb source dir missing: {out_dir}")
+    # No isdir guard: catalog + parquet reads/enumeration are blob-routed, so the local dir
+    # legitimately does not exist on a CI runner under AQUEDUCT_BACKEND=r2 (ledger R36).
 
     cat = _load_catalog(out_dir)
 
@@ -489,8 +493,8 @@ def update(unit, since) -> Result:
     # Only process groups that already have an on-disk parquet (those are the units the
     # source HAS). A group prefix in the catalog with no file produced no usable data on
     # the full ingest; there is nothing to date-tail-extend.
-    pfiles = sorted(f for f in os.listdir(out_dir)
-                    if f.startswith("grp_") and f.endswith(".parquet"))
+    # blob-routed enumeration: the group-file set must be visible under AQUEDUCT_BACKEND=r2.
+    pfiles = [f for f in blob.list_parquets(out_dir) if f.startswith("grp_")]
     if not pfiles:
         raise DefinitiveError(f"no ssb group parquet files under {out_dir}")
 
