@@ -688,5 +688,12 @@ def update(unit, since) -> Result:
     # envelope is broken, is flagged via tally.structural_unit() -> DefinitiveError. That
     # catches real breaks exactly while letting an all-quiet run be honest no_change.
     floor = tally.attempted + 1
-    return finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
+    # CSV-coherence grain alignment (§5.7): the cursor dict is keyed internally by the bare
+    # table id (tid, e.g. "A1Skog"), but the catalog series_id is 'ssb:SSB:A1Skog'. The
+    # coherence gate maps a cursor key k -> '{source}:{k}', so it must receive 'SSB:<tid>' to
+    # hit 'ssb:SSB:<tid>' exactly (ssb has 5,568 series > the 5,000 derive-all cap, so an
+    # unmapped key can't be rescued and would demote every run to partial). Transform ONLY at
+    # this emission boundary; all internal logic stays tid-keyed. (verified: csv_coherence diag)
+    series_cursors = {f"SSB:{k}": v for k, v in cursors.items()}
+    return finalize(tally, total, last_obs, source=SOURCE, series_cursors=series_cursors,
                     empty_window_floor=floor)
