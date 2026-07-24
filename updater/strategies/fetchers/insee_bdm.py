@@ -216,7 +216,11 @@ def update(unit, since) -> Result:
     tally = Tally()
     total = 0
     maxd = None
-    cursors: dict[str, str] = {}   # flow_id -> max obs_date (per-flow freshness)
+    frontier = None                # max on-disk boundary across flows (last_obs on a fully-quiet run)
+    changed: dict[str, str] = {}   # IDBANK -> max obs_date, ONLY for flows that gained net-new rows.
+    # Keyed by idbank, NOT flow_id: the catalog series_id is 'insee_bdm:<idbank>', so a flow-keyed
+    # cursor never maps and the CSV-coherence gate demotes every run to partial (101,768 series >
+    # the 5,000 derive-all cap, so derive-all can't rescue it). (verified: csv_coherence diag)
 
     for fn in pfiles:
         flow_id = fn[:-len(".parquet")]
@@ -234,7 +238,9 @@ def update(unit, since) -> Result:
         except Exception:
             existing_max = None
         if existing_max is not None:
-            cursors[flow_id] = existing_max.isoformat()
+            iso = existing_max.isoformat()
+            if frontier is None or iso > frontier:
+                frontier = iso
 
         # Year-tail startPeriod: re-fetch from January of the boundary year forward
         # (uniform across M/Q/A; merge dedups the overlap and captures revisions).
@@ -321,16 +327,24 @@ def update(unit, since) -> Result:
         # DefinitiveError. The real net-new delta is reflected in `obs` / the note.
         tally.added_unit(len(idbanks))
         if md:
-            cursors[flow_id] = md
             if maxd is None or md > maxd:
                 maxd = md
+            if n > 0:
+                # Net-new rows landed -> this flow's series changed. Report each returned
+                # series by IDBANK (dict assignment dedups) so the coherence gate maps them
+                # to 'insee_bdm:<idbank>' and re-derives their CSVs. Bounded to the flows that
+                # actually gained data (n>0), not every active flow, so the changed-set stays
+                # small; pure value revisions with no new row are picked up on the next run.
+                for ib in idbanks:
+                    changed[ib] = md
         time.sleep(RATE)
 
-    if maxd is None and cursors:
-        maxd = max(cursors.values())
+    if maxd is None:
+        # Fully-quiet run (no flow merged): report the max on-disk boundary as last_obs.
+        maxd = frontier
 
     # empty_window_floor = (#sub-units) - 1, per the contract: only a near-total
     # all-empty window trips the wholesale-break floor; precise structural breaks are
     # already caught per-flow via tally.structural_unit().
-    return finalize(tally, total, maxd, source=SOURCE, series_cursors=cursors,
+    return finalize(tally, total, maxd, source=SOURCE, series_cursors=changed,
                     empty_window_floor=len(pfiles) - 1)
