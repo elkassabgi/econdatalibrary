@@ -4264,6 +4264,7 @@ sources:
       strings) plus series_key(endpoint path) and obs_date(date32). Plus _manifest.jsonl, _errors.log, _parts/ (transient
       checkpoint part files + .ckpt), and external catalog data/_treasury_catalog_final.json.'
 - source_id: ucdp
+  live: true
   scripts:
   - jobs/ingest_ucdp.py
   strategy: bulk_snapshot_if_changed
