@@ -359,7 +359,22 @@ def update(unit, since) -> Result:
     # store touch is blob-routed — the local dir legitimately does not exist on a
     # CI runner under AQUEDUCT_BACKEND=r2.
 
-    tables = ing.crawl_catalog()          # cached _catalog.json; no re-discovery
+    # Load the crawled catalog BLOB-FIRST: in CI (backend=r2) the ingester's local
+    # _catalog.json cache does not exist on the runner, so ing.crawl_catalog() would
+    # re-crawl all ~4,978 tables live (measured 1h41m/run). Read the R2 cache instead and
+    # fall back to a fresh crawl only if it is absent everywhere (ledger R36, hagstofa pattern).
+    import json as _json
+    tables = None
+    _craw = blob.read_bytes(os.path.join(out_dir, "_catalog.json"))
+    if _craw is not None:
+        try:
+            _t = _json.loads(_craw.decode("utf-8"))
+            if isinstance(_t, list) and _t:
+                tables = _t
+        except ValueError:
+            tables = None
+    if tables is None:
+        tables = ing.crawl_catalog()      # cached _catalog.json absent -> fresh crawl
     if not tables:
         raise DefinitiveError(f"{SOURCE}: empty catalog (crawl returned 0 tables)")
 
