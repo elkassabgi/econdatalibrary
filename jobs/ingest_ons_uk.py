@@ -119,66 +119,27 @@ def get_all_datasets() -> list[dict]:
     return results
 
 
-def ingest_dataset(dataset_id: str, title: str, out_dir: str) -> int:
-    """Download latest version of a dataset as CSV. Returns obs count."""
-    out_path = os.path.join(out_dir, f"{dataset_id}.parquet")
-    if os.path.exists(out_path):
-        n = pq.read_metadata(out_path).num_rows
-        log(f"  skip {dataset_id} ({n:,} rows)")
-        return n
+def parse_dataset_csv(dataset_id: str, content: bytes) -> tuple[list, list, list]:
+    """Parse one ONS dataset CSV -> (series_keys, obs_dates, values).
 
-    # Get latest version metadata
-    meta = get_json(f"{BASE}/datasets/{dataset_id}")
-    if not meta:
-        return 0
-
-    # Find latest edition + version
-    edition_url = (meta.get("links", {})
-                   .get("latest_version", {}).get("href", ""))
-    if not edition_url:
-        # Try navigating editions
-        editions = get_json(f"{BASE}/datasets/{dataset_id}/editions")
-        if not editions or not editions.get("items"):
-            return 0
-        latest_ed = editions["items"][0].get("id", "")
-        versions  = get_json(f"{BASE}/datasets/{dataset_id}/editions/{latest_ed}/versions")
-        if not versions or not versions.get("items"):
-            return 0
-        version_num = versions["items"][0].get("version", 1)
-        edition_url = f"{BASE}/datasets/{dataset_id}/editions/{latest_ed}/versions/{version_num}"
-
-    ver_meta = get_json(edition_url) if not edition_url.startswith("http") else get_json(edition_url)
-    if not ver_meta:
-        return 0
-
-    # Try CSV download link from version metadata
-    csv_url = None
-    for download in ver_meta.get("downloads", {}).values():
-        href = download.get("href", "")
-        if href.endswith(".csv") or "csv" in href.lower():
-            csv_url = href; break
-
-    if not csv_url:
-        # Build standard CSV URL
-        csv_url = edition_url.rstrip("/") + "/csv"
-
-    content = get_csv_bytes(csv_url)
-    if not content:
-        return 0
-
-    # Parse CSV
+    THE canonical series_key builder for this source: colon-joined `dim=value` pairs over every
+    column that is not the time/value column and does not contain 'uri', falling back to the
+    dataset_id when a row carries no dimensions. Extracted from ingest_dataset so the updater
+    fetcher can import it and emit byte-identical keys (the duplication invariant) instead of
+    re-deriving the logic. Returns three empty lists on any parse failure.
+    """
     try:
         text = content.decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(text))
         if not reader.fieldnames:
-            return 0
+            return [], [], []
         cols = [c.lower() for c in reader.fieldnames]
 
         # Find time and value columns
         time_col = next((reader.fieldnames[i] for i, c in enumerate(cols)
                          if c in ("time_period", "time", "period", "year", "date")), None)
-        val_col  = next((reader.fieldnames[i] for i, c in enumerate(cols)
-                         if c in ("observation", "value", "obs_value", "v4_0")), None)
+        val_col = next((reader.fieldnames[i] for i, c in enumerate(cols)
+                        if c in ("observation", "value", "obs_value", "v4_0")), None)
         if not time_col or not val_col:
             # ONS V4 format: v4_0, v4_1, v4_2, v4_3 etc.
             v4_col = next((reader.fieldnames[i] for i, c in enumerate(cols)
@@ -190,10 +151,10 @@ def ingest_dataset(dataset_id: str, title: str, out_dir: str) -> int:
 
         if not time_col or not val_col:
             log(f"  {dataset_id}: cannot find time/value cols: {reader.fieldnames[:8]}")
-            return 0
+            return [], [], []
 
         skip_cols = {time_col, val_col}
-        dim_cols  = [c for c in reader.fieldnames if c not in skip_cols and "uri" not in c.lower()]
+        dim_cols = [c for c in reader.fieldnames if c not in skip_cols and "uri" not in c.lower()]
 
         all_keys, all_dates, all_vals = [], [], []
         for row in reader:
@@ -211,9 +172,55 @@ def ingest_dataset(dataset_id: str, title: str, out_dir: str) -> int:
             all_keys.append(":".join(key_parts) or dataset_id)
             all_dates.append(d)
             all_vals.append(v)
-    except Exception as e:
-        log(f"  {dataset_id}: parse error: {e}"); return 0
+        return all_keys, all_dates, all_vals
+    except Exception as e:  # noqa: BLE001
+        log(f"  {dataset_id}: parse error: {e}")
+        return [], [], []
 
+
+def resolve_csv_url(dataset_id: str) -> str | None:
+    """Resolve a dataset's latest-version CSV download URL (shared by ingest + updater)."""
+    meta = get_json(f"{BASE}/datasets/{dataset_id}")
+    if not meta:
+        return None
+    edition_url = (meta.get("links", {}).get("latest_version", {}).get("href", ""))
+    if not edition_url:
+        editions = get_json(f"{BASE}/datasets/{dataset_id}/editions")
+        if not editions or not editions.get("items"):
+            return None
+        latest_ed = editions["items"][0].get("id", "")
+        versions = get_json(f"{BASE}/datasets/{dataset_id}/editions/{latest_ed}/versions")
+        if not versions or not versions.get("items"):
+            return None
+        version_num = versions["items"][0].get("version", 1)
+        edition_url = f"{BASE}/datasets/{dataset_id}/editions/{latest_ed}/versions/{version_num}"
+    ver_meta = get_json(edition_url)
+    if not ver_meta:
+        return None
+    for download in ver_meta.get("downloads", {}).values():
+        href = download.get("href", "")
+        if href.endswith(".csv") or "csv" in href.lower():
+            return href
+    return edition_url.rstrip("/") + "/csv"
+
+
+def ingest_dataset(dataset_id: str, title: str, out_dir: str) -> int:
+    """Download latest version of a dataset as CSV. Returns obs count."""
+    out_path = os.path.join(out_dir, f"{dataset_id}.parquet")
+    if os.path.exists(out_path):
+        n = pq.read_metadata(out_path).num_rows
+        log(f"  skip {dataset_id} ({n:,} rows)")
+        return n
+
+    csv_url = resolve_csv_url(dataset_id)
+    if not csv_url:
+        return 0
+
+    content = get_csv_bytes(csv_url)
+    if not content:
+        return 0
+
+    all_keys, all_dates, all_vals = parse_dataset_csv(dataset_id, content)
     if not all_vals:
         return 0
 
