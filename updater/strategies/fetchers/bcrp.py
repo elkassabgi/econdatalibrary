@@ -45,14 +45,20 @@ DEDUP = ("series_key", "obs_date")
 FILE = "bcrp.parquet"
 SOURCE = "bcrp"
 
-# (api_code, label) — daily exchange-rate series confirmed working via the API.
+# (api_code, label) — BCRP daily exchange-rate series. Verified against BCRP's daily FX
+# catalog 2026-07-24 (estadisticas.bcrp.gob.pe/estadisticas/series/diarias/tipo-de-cambio).
+# Labels for the USD series are kept as-is for on-disk series_key continuity.
 SERIES = [
-    ("PD04638PD", "USDPEN_mid"),    # USD/PEN interbank mid
-    ("PD04639PD", "USDPEN_buy"),    # USD/PEN buying
-    ("PD04640PD", "USDPEN_sell"),   # USD/PEN selling
-    ("PD04628PD", "EURPEN"),        # EUR/PEN
-    ("PD04635PD", "GBPPEN"),        # GBP/PEN
-    ("PD04629PD", "JPYPEN"),        # JPY/PEN
+    ("PD04638PD", "USDPEN_mid"),    # TC Interbancario (S/ por US$) - Venta
+    ("PD04639PD", "USDPEN_buy"),    # TC Sistema bancario SBS (S/ por US$) - Compra
+    ("PD04640PD", "USDPEN_sell"),   # TC Sistema bancario SBS (S/ por US$) - Venta
+    ("PD04647PD", "EURPEN_buy"),    # TC Euro (S/ por Euro) - Compra
+    ("PD04648PD", "EURPEN_sell"),   # TC Euro (S/ por Euro) - Venta
+    # DROPPED, no replacement: BCRP's daily FX catalog is USD + EUR ONLY — there is no
+    # daily GBP/PEN or JPY/PEN series (verified 2026-07-24). The prior codes PD04628PD
+    # (EUR), PD04635PD (GBP) and PD04629PD (JPY) were invalid: the API returns an
+    # anti-bot HTML page for them and they produced ZERO rows on disk. EUR is restored
+    # above with its correct codes; GBP/JPY have no daily equivalent to point to.
 ]
 
 EARLIEST = dt.date(1996, 1, 2)
