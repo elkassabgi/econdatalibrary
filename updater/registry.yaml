@@ -3572,6 +3572,7 @@ sources:
       value float64) plus sidecar _series_catalog.json (the /Series catalog) and a _riksbank_log.txt. Checkpoints overwrite
       the whole parquet every 10 series (lines 175-182) and again at the end.'
 - source_id: scb
+  live: true
   scripts:
   - jobs/ingest_scb.py
   strategy: sdmx_delta
