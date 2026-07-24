@@ -134,22 +134,21 @@ def current_vintage(unit) -> str | None:
 
 
 def _load_sidecar(out_dir: str) -> dict:
-    p = os.path.join(out_dir, VINTAGE_SIDECAR)
-    if not os.path.exists(p):
+    # blob-routed (R36): the vintage sidecar lives beside the data in the STORE (R2 in CI),
+    # not on the ephemeral runner disk — otherwise every CI run starts with an empty sidecar
+    # and re-downloads all 68 domains.
+    raw = blob.read_bytes(os.path.join(out_dir, VINTAGE_SIDECAR))
+    if not raw:
         return {}
     try:
-        with open(p, encoding="utf-8") as f:
-            return json.load(f)
-    except (ValueError, OSError):
+        return json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
         return {}
 
 
 def _save_sidecar_atomic(out_dir: str, data: dict) -> None:
-    p = os.path.join(out_dir, VINTAGE_SIDECAR)
-    tmp = f"{p}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-    os.replace(tmp, p)
+    payload = json.dumps(data, indent=2, sort_keys=True).encode("utf-8")
+    blob.write_bytes_atomic(os.path.join(out_dir, VINTAGE_SIDECAR), payload)
 
 
 # --------------------------------------------------------------------------- #
@@ -327,11 +326,11 @@ def update(unit, since) -> Result:
     # Persist the per-domain vintages we successfully published (atomic sidecar).
     _save_sidecar_atomic(out_dir, sidecar)
 
-    # Total published rows across all domains we own (honest obs count).
+    # Total published rows across all domains we own (honest obs count). blob-routed
+    # listing (R36): in CI the parquets live on R2, not the runner disk.
     total_rows = 0
-    for fn in os.listdir(out_dir):
-        if fn.endswith(".parquet"):
-            total_rows += blob.row_count(os.path.join(out_dir, fn))
+    for fn in blob.list_parquets(out_dir):
+        total_rows += blob.row_count(os.path.join(out_dir, fn))
 
     last_obs = _max_obs_date_over_dir(out_dir)
     # empty_window_floor=10: if a LARGE number of attempted domains all came back
@@ -358,15 +357,13 @@ def update(unit, since) -> Result:
 def _max_obs_date_over_dir(out_dir: str) -> str | None:
     import pyarrow.compute as pc
     mx = None
-    for fn in os.listdir(out_dir):
-        if not fn.endswith(".parquet"):
-            continue
+    for fn in blob.list_parquets(out_dir):   # blob-routed listing (R36)
         p = os.path.join(out_dir, fn)
         try:
-            t = blob.read_table(p)
+            t = blob.read_table(p, columns=["obs_date"])   # project: don't load whole domains
         except Exception:
             continue
-        if t.num_rows == 0 or "obs_date" not in t.column_names:
+        if t.num_rows == 0:
             continue
         m = pc.max(t.column("obs_date")).as_py()
         if m is not None:
