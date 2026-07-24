@@ -122,7 +122,10 @@ non-PxWeb, no derive issue) — a genuine clean win, then replicate down Phase 1
 
 Every root cause code-grounded; the two hard classes independently refuted-or-confirmed. Key
 refutations: the PxWeb time-axis resolver is **correct** (not the culprit), and a first-draft
-CSV-coherence fix would have **corrupted the live `frankfurter`** source — both caught by verify.
+CSV-coherence fix would have **corrupted the live `frankfurter`** source. Both were caught by
+**this workflow's own `verify:csv_coherence` adversarial agent (wf_fc88e6a3)** — an internal
+verification loop, NOT either external human/AI reviewer (record corrected 2026-07-24 per the
+second reviewer's note; attribution matters for knowing which loop caught what).
 
 | Class | Sources | Verdict | Root cause | Fix status |
 |---|---|---|---|---|
