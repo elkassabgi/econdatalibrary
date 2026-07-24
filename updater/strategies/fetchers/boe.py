@@ -37,7 +37,12 @@ SOURCE = "boe"
 CSV_URL = "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 DEDUP = ("series_key", "obs_date")
-BATCH = 50
+# The IADB CSV export takes the codes in the QUERY STRING, so the real cap is URL LENGTH,
+# not a code count: a SeriesCodes value of ~1,399 chars succeeds and ~1,599 chars returns 404
+# (measured 2026-07-24). Codes are NOT uniform width — XUD*/CFM* are 7 chars but VPQB4S9KY is
+# 9 and RPMB8ZZOTHE is 11 — so a fixed batch COUNT that works on one prefix silently 404s on
+# another. Batch by character budget instead, with headroom under the observed limit.
+MAX_CODES_CHARS = 1350
 LOOKBACK_DAYS = 120          # re-pull a trailing window to absorb BoE back-revisions
 EPOCH = dt.date(1963, 1, 1)  # the IADB epoch; dates before this are rejected
 MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -164,9 +169,24 @@ def _codes_and_max(path):
     return codes, (md if isinstance(md, dt.date) else None)
 
 
-def _chunk(lst, k):
-    for i in range(0, len(lst), k):
-        yield lst[i:i + k]
+def _chunk_by_len(codes, max_chars=MAX_CODES_CHARS):
+    """Group codes into batches whose comma-joined SeriesCodes value stays under `max_chars`.
+
+    Length-aware (not fixed-count) because BoE's limit is on the URL, and code widths vary by
+    prefix (7-11 chars) — a fixed count tuned on 7-char codes would 404 on the wider ones.
+    A single code longer than the budget still goes out alone rather than being dropped.
+    """
+    batch, n = [], 0
+    for c in codes:
+        add = len(c) + (1 if batch else 0)      # +1 for the joining comma
+        if batch and n + add > max_chars:
+            yield batch
+            batch, n = [c], len(c)
+        else:
+            batch.append(c)
+            n += add
+    if batch:
+        yield batch
 
 
 MAX_WORKERS = 5   # BoE tolerates ~6 concurrent (the ingester's proven level); stay under
@@ -210,7 +230,7 @@ def update(unit, since) -> Result:
         start = max(EPOCH, (smax - dt.timedelta(days=LOOKBACK_DAYS)) if smax else EPOCH)
         datefrom = _fmt(start)
         prefix_obs[pf] = []
-        for batch in _chunk(codes, BATCH):
+        for batch in _chunk_by_len(codes):
             tasks.append((pf, batch, datefrom))
 
     # Fetch+parse every batch concurrently; tag each result with its prefix.
