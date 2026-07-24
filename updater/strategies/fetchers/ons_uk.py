@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pyarrow as pa
@@ -37,10 +38,14 @@ from jobs import ingest_ons_uk as ig   # reuse catalog walk + THE key builder
 SOURCE = "ons_uk"
 DEDUP = ("series_key", "obs_date")
 SIDECAR = "_bulk_vintages.json"     # {dataset_id: "versionid|last_updated"}
-MAX_WORKERS = 5                     # ONS beta API; keep concurrency modest
+# ONS's beta API rate-limits HARD: a first attempt at 5 workers x 60 datasets drew 41 HTTP 429s
+# in 4 minutes (run 30133384687). R40 says parallelize many-request fetchers, but never past what
+# the server tolerates — 2 workers plus a per-request pace keeps us under the limit.
+MAX_WORKERS = 2
+REQUEST_PAUSE = 1.0                 # seconds between requests inside each worker
 # A first run backfills ~295 missing datasets; cap per-run work so a single CI run stays bounded
-# and the backlog drains over consecutive runs instead of one 5-hour job.
-MAX_PER_RUN = 60
+# and the backlog drains over consecutive runs instead of one very long job.
+MAX_PER_RUN = 25
 
 
 def _vintage(item) -> str:
@@ -91,15 +96,17 @@ def _save_sidecar(out_dir, data) -> None:
 
 def _fetch_one(ds_id):
     """Thread task: resolve the CSV url, download, parse. Returns (ds_id, keys, dates, vals)
-    or (ds_id, None, None, None) on a transport/parse failure."""
+    or (ds_id, None, None, None) on a transport/parse failure. Paced to respect ONS rate limits."""
     try:
         url = ig.resolve_csv_url(ds_id)
         if not url:
             return ds_id, None, None, None
+        time.sleep(REQUEST_PAUSE)
         content = ig.get_csv_bytes(url)
         if not content:
             return ds_id, None, None, None
         k, d, v = ig.parse_dataset_csv(ds_id, content)
+        time.sleep(REQUEST_PAUSE)
         return ds_id, k, d, v
     except Exception:
         return ds_id, None, None, None
