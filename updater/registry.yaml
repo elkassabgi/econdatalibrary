@@ -185,6 +185,7 @@ sources:
     - 'single parquet: data/clean_full/bcb/bcb.parquet (zstd), columns (series_key=''{label}:{sid}'', obs_date, value). ~300
       curated SGS series (deduped by sid). Plus _bcb_log.txt external log.'
 - source_id: bcrp
+  live: true
   scripts:
   - jobs/ingest_bcrp.py
   strategy: extend_by_date
@@ -459,6 +460,7 @@ sources:
       Schema: series_id, obs_date(STRING), value(float64), period. No sidecar, no raw cache (downloads to memory each run).
       Writes into the SAME dir as ingest_bls.py and would overwrite/duplicate-shape those files.'
 - source_id: boe
+  live: true
   scripts:
   - jobs/ingest_boe.py
   strategy: extend_by_date
