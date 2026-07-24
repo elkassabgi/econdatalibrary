@@ -3011,6 +3011,7 @@ sources:
       value (float64), attributes. Raw cache: data/raw/noaa/{gsom,gsoy}/*.csv (~214K station CSVs), plus _manifest.json, _<ds>_failures.json,
       station_ids.txt, doc/ghcnd-stations.txt.'
 - source_id: nyfed
+  live: true
   scripts:
   - jobs/ingest_nyfed.py
   strategy: extend_by_date
@@ -3526,6 +3527,7 @@ sources:
       fallback; obs_date parsed from DD-Mon-YYYY etc.; value float64). One file holds all ~216 tables. NO in-run dedup (keys/dates/vals
       just extended), so if two CSVs share a Series ID or the same file is linked twice, duplicate (key,date) rows are possible.'
 - source_id: riksbank
+  live: true
   scripts:
   - jobs/ingest_riksbank.py
   strategy: extend_by_date
