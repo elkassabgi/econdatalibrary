@@ -178,3 +178,49 @@ to 2150); 5,337,546 legit projection rows (to 2055/2075) preserved; backup kept 
 stat_estonia, ssb (bfs holds until its transients clear + a clean run). bls stays gated (R18).
 
 ## Live tier: 5 (bcb, cnb, frankfurter, scb, treasury). Gate before #6: the 06:00 UTC cron soak.
+
+---
+
+## 2026-07-24 session — live tier 5 → 7, batch-dispatch + first bulk template
+
+**Promoted to live (CI-proven `ok`, data through today):** `nyfed` (NY Fed SOFR/OBFR/TGCR via FRED
+date-tail), `riksbank` (SWEA ~117 series, /Series freshness pre-filter + per-series date-tail).
+Run 30101500855 batch-proved both. **Live tier now 7:** bcb, cnb, frankfurter, nyfed, riksbank, scb, treasury.
+
+**New fetchers built + pushed (all CI-safe, store I/O via `blob`):**
+- `nyfed`, `riksbank` — promoted (above).
+- `unhcr` (annual refugee stats, 3 endpoints, recent-years window), `boe` (BoE IADB, per-3char-prefix
+  files, real server-side Datefrom/Dateto date-tail) — proving in batch #2 (run 30104047711).
+- `rba` — **first bulk_snapshot template**: no server-side date filter, but RBA CSVs carry
+  Last-Modified and honour If-Modified-Since (verified 304+0 bytes). Per-file conditional GET against a
+  **blob-routed** Last-Modified sidecar; 304=skip cheap, 200=parse+merge. Template for the
+  scraped/fixed-URL + Last-Modified bulk sub-family. Proving in batch #2. Not yet live.
+
+**Infra / fixes:**
+- workflow `source` input now accepts a comma/space LIST → repeated `--source` (injection-safe:
+  env var, no-glob, `[a-z0-9_]`-validated). One run batch-proves many sources.
+- `catalog_complete boe` (+30,653 rows) + `refresh_r2_catalog 20260724c` → R2 coherence catalog 1,260,376.
+- **faostat CI-safety (R36):** its vintage sidecar + os.listdir scans used raw runner paths → would
+  re-download all 68 domains every CI run. Blob-routed sidecar (read_bytes/write_bytes_atomic) +
+  list_parquets + obs_date-projected max scan. Establishes the CI-safe bulk-sidecar pattern.
+
+**Concurrency lesson:** the `aqueduct-updater` group is `cancel-in-progress: false` → when 3 runs
+pile up it cancels the MIDDLE pending one. So CI proving is serial (1 in-progress + 1 pending); batch
+many sources per dispatch. Killed a 28h/99GB runaway bare-`updater.run` (vdem-OOM, R39).
+
+**Coverage inventory (fetcher present? by strategy):** MISSING = 41 (13 extend_by_date, 26
+bulk_snapshot, 1 overwrite [cbs_nl], 1 manual [gii]). Built 5 of the 13 date-tail this session
+(nyfed, riksbank, unhcr, boe + rba is bulk). Remaining date-tail clean clones exhausted; deferred:
+- `ipea` (OData $filter IGNORED → needs SERATUALIZACAO freshness-gate, 2899 series),
+- `comtrade` (preview API hard-capped 500 records/query → needs reporter/commodity pagination),
+- `imf_fsi` (data.imf.org/api/SDMX/BI = 404; migrated to SDMX 3.0 like imf_commodity — repoint+DSD).
+
+**Big uncatalogued sources (statcan ~4M, worldbank_wdi 289k, boe was 30k):** do NOT need full
+catalog_complete to auto-update — the coherence gate's `_DERIVE_ALL_CAP=5000` rescues small changed-sets
+and annual/current sources report no_change (coherence never triggers). statcan uses getChangedCubeList
+(only changed cubes processed/run) so it's CI-viable. Test empirically in batch #3; catalog only if a
+run actually reports coherence-unmet with >5000 changed series.
+
+**Next:** promote batch #2 passers (unhcr, boe, bcrp, ofr, rba); batch #3 = worldbank_wdi + statcan +
+insee_bdm re-prove; then the bulk_snapshot family (manifest sub-family via faostat pattern; conditional-GET
+sub-family via rba pattern).
