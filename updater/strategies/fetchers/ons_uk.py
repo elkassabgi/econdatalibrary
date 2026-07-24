@@ -1,0 +1,180 @@
+"""S5 bulk fetcher — ONS (UK Office for National Statistics) beta API. OGL-UK-3.0, no key.
+
+One parquet per ONS dataset under clean_full/ons_uk/{dataset_id}.parquet, schema
+(series_key, obs_date, value); series_key = colon-joined `dim=value` pairs over the CSV's
+dimension columns (built by jobs.ingest_ons_uk.parse_dataset_csv, which this fetcher IMPORTS so
+the keys are byte-identical to disk — the duplication invariant).
+
+The /v1/datasets catalog walk IS the machine manifest: each catalog item embeds
+links.latest_version.id and last_updated, so ONE paginated walk both (a) gives every dataset's
+vintage without a per-dataset GET and (b) surfaces brand-new datasets. Vintage token =
+"{latest_version_id}|{last_updated}"; unchanged datasets are skipped entirely, changed and NEW
+ones are downloaded, parsed and merged (dedup + never-shrink). The store currently holds only 42
+of the catalog's ~337 datasets, so early runs will also BACKFILL the missing ones.
+
+Store I/O via blob (R36); the vintage sidecar lives on the store, not the runner. Downloads run
+across a small thread pool (R40) since a first run touches hundreds of datasets.
+
+HONEST-STATUS: catalog walk failure -> TransientError (partial, retried, data kept). A per-dataset
+download/parse failure -> transient_unit for that dataset only. A changed dataset that parses to
+ZERO rows -> structural_unit and its vintage is NOT advanced. Cursors emitted for every merged
+series (R41).
+"""
+from __future__ import annotations
+import hashlib
+import json
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import pyarrow as pa
+
+from ... import config, blob, merge
+from ...errors import TransientError, DefinitiveError
+from ..base import Result
+from ._common import Tally, finalize
+from jobs import ingest_ons_uk as ig   # reuse catalog walk + THE key builder
+
+SOURCE = "ons_uk"
+DEDUP = ("series_key", "obs_date")
+SIDECAR = "_bulk_vintages.json"     # {dataset_id: "versionid|last_updated"}
+MAX_WORKERS = 5                     # ONS beta API; keep concurrency modest
+# A first run backfills ~295 missing datasets; cap per-run work so a single CI run stays bounded
+# and the backlog drains over consecutive runs instead of one 5-hour job.
+MAX_PER_RUN = 60
+
+
+def _vintage(item) -> str:
+    links = item.get("links") or {}
+    ver = (links.get("latest_version") or {}).get("id", "")
+    return f"{ver}|{item.get('last_updated', '')}"
+
+
+def _catalog(raise_transient: bool):
+    try:
+        items = ig.get_all_datasets()
+    except Exception as e:
+        if raise_transient:
+            raise TransientError(f"ons_uk: catalog walk failed: {e}")
+        return None
+    if not items:
+        if raise_transient:
+            raise TransientError("ons_uk: catalog walk returned no datasets")
+        return None
+    return items
+
+
+def current_vintage(unit) -> str | None:
+    """Cheap probe: hash over every catalog dataset's (id, version|last_updated)."""
+    items = _catalog(raise_transient=False)
+    if not items:
+        return None
+    h = hashlib.sha256()
+    for it in sorted(items, key=lambda x: str(x.get("id", ""))):
+        h.update(f"{it.get('id','')}={_vintage(it)};".encode())
+    return f"ons_uk:{h.hexdigest()[:16]}"
+
+
+def _load_sidecar(out_dir) -> dict:
+    raw = blob.read_bytes(os.path.join(out_dir, SIDECAR))
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+
+
+def _save_sidecar(out_dir, data) -> None:
+    blob.write_bytes_atomic(os.path.join(out_dir, SIDECAR),
+                            json.dumps(data, indent=2, sort_keys=True).encode("utf-8"))
+
+
+def _fetch_one(ds_id):
+    """Thread task: resolve the CSV url, download, parse. Returns (ds_id, keys, dates, vals)
+    or (ds_id, None, None, None) on a transport/parse failure."""
+    try:
+        url = ig.resolve_csv_url(ds_id)
+        if not url:
+            return ds_id, None, None, None
+        content = ig.get_csv_bytes(url)
+        if not content:
+            return ds_id, None, None, None
+        k, d, v = ig.parse_dataset_csv(ds_id, content)
+        return ds_id, k, d, v
+    except Exception:
+        return ds_id, None, None, None
+
+
+def update(unit, since) -> Result:
+    out_dir = config.source_dir(SOURCE)
+    os.makedirs(out_dir, exist_ok=True)
+
+    items = _catalog(raise_transient=True)
+    sidecar = _load_sidecar(out_dir)
+
+    # Which datasets actually need work: vintage moved, or we don't hold them yet.
+    todo = []
+    for it in items:
+        ds_id = it.get("id")
+        if not ds_id:
+            continue
+        path = os.path.join(out_dir, f"{ds_id}.parquet")
+        cur_v = _vintage(it)
+        if sidecar.get(ds_id) == cur_v and blob.exists(path):
+            continue
+        todo.append((ds_id, cur_v))
+
+    tally = Tally()
+    cursors: dict[str, str] = {}
+    maxd = None
+    published = 0
+    capped = len(todo) > MAX_PER_RUN
+    batch = todo[:MAX_PER_RUN]
+
+    if batch:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            futs = {ex.submit(_fetch_one, ds_id): (ds_id, v) for ds_id, v in batch}
+            for fut in as_completed(futs):
+                ds_id, cur_v = futs[fut]
+                _id, keys, dates, vals = fut.result()
+                if keys is None:
+                    tally.transient_unit()
+                    continue
+                if not keys:
+                    tally.structural_unit()      # real body, zero parseable rows
+                    continue
+                tbl = pa.table({
+                    "series_key": pa.array(keys, pa.string()),
+                    "obs_date": pa.array(dates, pa.date32()),
+                    "value": pa.array(vals, pa.float64()),
+                })
+                path = os.path.join(out_dir, f"{ds_id}.parquet")
+                before = blob.row_count(path) if blob.exists(path) else 0
+                try:
+                    n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+                except DefinitiveError:
+                    tally.transient_unit()       # isolate a guard trip to this dataset
+                    continue
+                published += n
+                tally.added_unit(max(0, n - before))
+                for k, d in zip(keys, dates):
+                    iso = d.isoformat()
+                    if k not in cursors or iso > cursors[k]:
+                        cursors[k] = iso
+                if md and (maxd is None or str(md) > str(maxd)):
+                    maxd = md
+                sidecar[ds_id] = cur_v           # advance ONLY after a clean publish
+
+    _save_sidecar(out_dir, sidecar)
+
+    if published == 0:
+        published = sum(blob.row_count(os.path.join(out_dir, f))
+                        for f in blob.list_parquets(out_dir))
+
+    res = finalize(tally, published, maxd or (since or None), source=SOURCE,
+                   series_cursors=cursors)
+    if capped:
+        # More datasets still owe work — do NOT let the strategy stamp a "fully current"
+        # unit vintage, or the remaining backlog would be skipped next tick.
+        res.new_vintage = None
+    return res
