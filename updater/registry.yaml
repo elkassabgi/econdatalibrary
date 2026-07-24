@@ -4389,6 +4389,7 @@ sources:
       31 of year), value float64. Keys: {indicator}:{ISO3} from composite CSV, or {prefix}:{iso} from annex XLSX (prefixes
       hdi/gdi/gii/ihdi/mpi).'
 - source_id: unhcr
+  live: true
   scripts:
   - jobs/ingest_unhcr.py
   strategy: extend_by_date
@@ -4664,6 +4665,7 @@ sources:
       poverty, jobs, doing_biz), schema (indicator, country, obs_date date32, value float64). Transient checkpoint parquet
       + done.json per source during the run.
 - source_id: worldbank_pink
+  live: true
   scripts:
   - jobs/ingest_worldbank_pink.py
   strategy: bulk_snapshot_if_changed
