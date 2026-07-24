@@ -132,8 +132,21 @@ def update(unit, since) -> Result:
         return finalize(tally, before, since or None, source=SOURCE)
 
     tally.added_unit(max(0, n - before))
-    res = finalize(tally, n, md, source=SOURCE)
+    # series_cursors: the CSV-coherence step maps each changed series_key -> catalog id, so a
+    # bulk source that merges rows MUST report which series changed (else "no series_cursors for
+    # N merged obs" -> partial). All ucdp series are catalogued, so this maps cleanly.
+    res = finalize(tally, n, md, source=SOURCE, series_cursors=_series_maxes(tbl))
     # single-dataset bulk gate token — let the strategy persist it (skip next unchanged tick).
     if res.status in ("ok", "no_change"):
         res.new_vintage = token
     return res
+
+
+def _series_maxes(tbl):
+    out = {}
+    for k, d in zip(tbl.column("series_key").to_pylist(), tbl.column("obs_date").to_pylist()):
+        if d is None:
+            continue
+        if k not in out or d > out[k]:
+            out[k] = d
+    return {k: v.isoformat() for k, v in out.items()}
