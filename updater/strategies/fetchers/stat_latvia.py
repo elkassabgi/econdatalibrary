@@ -378,11 +378,24 @@ def _query_table_delta(sess, table_info, boundary):
 # --------------------------------------------------------------------------- #
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
-    if not os.path.isdir(out_dir):
-        raise DefinitiveError(f"stat_latvia source dir missing: {out_dir}")
+    # No isdir guard: catalog + parquet reads are blob-routed, so the local dir legitimately
+    # does not exist on a CI runner under AQUEDUCT_BACKEND=r2 (ledger R36).
 
-    # Reuse the ingester's catalog (crawl_catalog reads _catalog.json if present).
-    tables = crawl_catalog()
+    # Load the ingester's crawled catalog BLOB-FIRST: in CI (backend=r2) read the cached
+    # _catalog.json from R2 instead of re-crawling both Latvia databases live every run; fall
+    # back to a fresh crawl only if the cache is absent everywhere (hagstofa/stat_estonia pattern).
+    import json as _json
+    tables = None
+    _craw = blob.read_bytes(os.path.join(out_dir, "_catalog.json"))
+    if _craw is not None:
+        try:
+            _t = _json.loads(_craw.decode("utf-8"))
+            if isinstance(_t, list) and _t:
+                tables = _t
+        except ValueError:
+            tables = None
+    if tables is None:
+        tables = crawl_catalog()      # cache absent -> fresh crawl (reads/writes local cache)
     if not tables:
         raise DefinitiveError("stat_latvia: catalog empty/unavailable")
 
