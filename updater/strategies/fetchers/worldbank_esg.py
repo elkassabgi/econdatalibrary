@@ -1,0 +1,173 @@
+"""S2 date-tail fetcher — World Bank ESG database (source=75). CC BY 4.0, no key.
+
+Layout: one parquet per indicator, clean_full/worldbank_esg/<IND>.parquet (71 files, 461,719 rows),
+columns (country, obs_date, value) — there is NO series_key column here, so the dedup grain is
+("country", "obs_date"), scoped to the per-indicator file.
+
+The v2 `date=YYYY:YYYY` filter is genuinely honoured server-side (verified: an indicator's
+meta.total falls 17,160 -> 520 for date=2024:2026 -> 260 for 2025:2026, while an UNKNOWN control
+param leaves it at 17,160 — proving the reduction is the filter working, not merely being
+accepted). So instead of re-pulling every indicator's full history we read each file's stored max
+year and request only [max_year - LOOKBACK .. current year + 1]; merge dedups the overlap and
+never shrinks. The lookback absorbs the annual back-revisions WB publishes.
+
+Country coding is reused from the ingester (build_code_map + the countryiso3code-else-name lookup)
+so aggregate economies (ARB, WLD, SSF ...) resolve to exactly the codes already on disk — otherwise
+the same economy would land under two identities and merge would not dedup it.
+
+Store I/O via blob (R36). Serial with a small pause: the WB API is shared and this is only ~71
+cheap windowed calls per tick.
+
+HONEST-STATUS: the country reference map is a wholesale gate -> its loss is transient (partial,
+retried, data kept). A per-indicator fetch failure -> transient_unit. A real 200 whose window holds
+no observations -> empty_unit (a quiet year is normal for annual data). Cursors emitted (R41).
+"""
+from __future__ import annotations
+import datetime as dt
+import os
+import time
+
+import pyarrow as pa
+import pyarrow.compute as pc
+
+from ... import config, blob, merge
+from ...errors import TransientError, DefinitiveError
+from ..base import Result
+from ._common import Tally, finalize, sane_since
+from jobs import ingest_worldbank_esg as ig   # reuse code map + json client + year parsing
+
+SOURCE = "worldbank_esg"
+DEDUP = ("country", "obs_date")        # no series_key column: identity is (country, obs_date)
+LOOKBACK_YEARS = 3                     # absorb WB annual back-revisions
+DEFAULT_WINDOW_YEARS = 6
+RATE = 0.15
+
+
+def _stored_max_year(path) -> int | None:
+    if not blob.exists(path):
+        return None
+    t = blob.read_table(path, columns=["obs_date"])
+    if t.num_rows == 0:
+        return None
+    md = pc.max(t.column("obs_date")).as_py()
+    md = sane_since(md) if md is not None else None      # defuse corrupt far-future stamps
+    if md is None:
+        return None
+    return md.year if isinstance(md, dt.date) else None
+
+
+def _window(path, since) -> str:
+    this_year = dt.date.today().year
+    end = this_year + 1
+    smy = _stored_max_year(path)
+    if smy is not None:
+        start = smy - LOOKBACK_YEARS
+    elif since:
+        try:
+            start = dt.date.fromisoformat(str(since)[:10]).year - LOOKBACK_YEARS
+        except Exception:
+            start = this_year - DEFAULT_WINDOW_YEARS
+    else:
+        start = this_year - DEFAULT_WINDOW_YEARS
+    start = max(1960, min(start, end))
+    return f"{start}:{end}"
+
+
+def _fetch_window(ind_id, date_param):
+    """Windowed pull for one indicator -> list[record]. Raises TransientError on failure."""
+    url = (f"{ig.API}/country/all/indicator/{ind_id}"
+           f"?source={ig.WB_SOURCE}&format=json&per_page=20000&date={date_param}")
+    j = ig.get_json(url)
+    if not j:
+        raise TransientError(f"worldbank_esg: {ind_id} window fetch failed")
+    if not isinstance(j, list) or len(j) < 2:
+        # a real 200 whose envelope is not [meta, rows] -> treat as empty window, not a break
+        return []
+    return j[1] or []
+
+
+def update(unit, since) -> Result:
+    out_dir = config.source_dir(SOURCE)
+    os.makedirs(out_dir, exist_ok=True)
+    tally = Tally()
+
+    # wholesale gate: without the code map, aggregate economies would be keyed by NAME and
+    # would not dedup against the codes already on disk.
+    try:
+        code_map = ig.build_code_map()
+    except Exception as e:
+        raise TransientError(f"worldbank_esg: country reference map unavailable: {e}")
+    if not code_map:
+        raise TransientError("worldbank_esg: country reference map came back empty")
+
+    files = blob.list_parquets(out_dir)
+    if not files:
+        raise DefinitiveError("worldbank_esg: no indicator parquets on the store")
+
+    cursors: dict[str, str] = {}
+    maxd = None
+    total = 0
+
+    for fn in files:
+        ind_id = fn[:-len(".parquet")]
+        path = os.path.join(out_dir, fn)
+        date_param = _window(path, since)
+        try:
+            rows = _fetch_window(ind_id, date_param)
+        except TransientError:
+            tally.transient_unit()
+            total += blob.row_count(path)
+            time.sleep(RATE)
+            continue
+
+        countries, dates, vals = [], [], []
+        for r in rows:
+            v = r.get("value")
+            if v is None:
+                continue
+            od = ig.year_to_date(r.get("date"))
+            if od is None:
+                continue
+            code = r.get("countryiso3code") or ""
+            if not code:
+                nm = (r.get("country") or {}).get("value", "").strip()
+                code = code_map.get(nm, "") or nm or "UNKNOWN"
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            countries.append(code); dates.append(od); vals.append(fv)
+
+        if not vals:
+            tally.empty_unit()            # quiet window is normal for annual data
+            total += blob.row_count(path)
+            time.sleep(RATE)
+            continue
+
+        tbl = pa.table({
+            "country": pa.array(countries, pa.string()),
+            "obs_date": pa.array(dates, pa.date32()),
+            "value": pa.array(vals, pa.float64()),
+        })
+        before = blob.row_count(path)
+        try:
+            n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+        except DefinitiveError:
+            tally.transient_unit()
+            total += before
+            time.sleep(RATE)
+            continue
+        total += n
+        tally.added_unit(max(0, n - before))
+        # cursor key must match the catalog grain for this source: <indicator>:<country>
+        for c, d in zip(countries, dates):
+            k = f"{ind_id}:{c}"
+            iso = d.isoformat()
+            if k not in cursors or iso > cursors[k]:
+                cursors[k] = iso
+        if md and (maxd is None or str(md) > str(maxd)):
+            maxd = md
+        time.sleep(RATE)
+
+    return finalize(tally, total, maxd or (since or None), source=SOURCE,
+                    series_cursors=cursors, empty_window_floor=len(files) + 1)
