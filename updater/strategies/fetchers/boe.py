@@ -22,6 +22,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -168,17 +169,37 @@ def _chunk(lst, k):
         yield lst[i:i + k]
 
 
+MAX_WORKERS = 5   # BoE tolerates ~6 concurrent (the ingester's proven level); stay under
+
+
+def _fetch_batch_task(batch, datefrom, dateto):
+    """Thread task: fetch+parse ONE code-batch over the window. Own session (requests.Session
+    is not safe to share across threads). Returns ('added', obs) | ('empty', []) | ('transient', [])."""
+    sess = requests.Session()
+    sess.headers.update(UA)
+    try:
+        text = _fetch_csv(sess, batch, datefrom, dateto)
+    except TransientError:
+        return "transient", []
+    try:
+        obs = _parse_csv(text)
+    except ValueError:
+        return "transient", []          # a malformed body is a transport hiccup, not real no-data
+    return ("added", obs) if obs else ("empty", [])
+
+
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     prefixes = blob.list_parquets(out_dir)
-    sess = requests.Session()
-    sess.headers.update(UA)
     tally = Tally()
     dateto = _fmt(dt.date.today())
     grand_total = 0
     grand_max: dt.date | None = None
     cursors: dict[str, str] = {}
 
+    # Build the batch task list (cheap serial reads); the 613-ish CSV fetches are the parallel part.
+    prefix_obs: dict[str, list] = {}     # prefix -> collected obs (only prefixes with codes)
+    tasks = []                            # (prefix, batch_codes, datefrom)
     for pf in prefixes:
         path = os.path.join(out_dir, pf)
         codes, smax = _codes_and_max(path)
@@ -188,45 +209,48 @@ def update(unit, since) -> Result:
             continue
         start = max(EPOCH, (smax - dt.timedelta(days=LOOKBACK_DAYS)) if smax else EPOCH)
         datefrom = _fmt(start)
-
-        keys, dates, vals = [], [], []
+        prefix_obs[pf] = []
         for batch in _chunk(codes, BATCH):
-            try:
-                text = _fetch_csv(sess, batch, datefrom, dateto)
-            except TransientError:
-                tally.transient_unit()
-                time.sleep(1.0)
-                continue
-            try:
-                obs = _parse_csv(text)
-            except ValueError:
-                tally.transient_unit()   # a malformed body is a transport hiccup, not real no-data
-                continue
-            if not obs:
-                tally.empty_unit()
-                time.sleep(0.5)
-                continue
-            for code, od, v in obs:
-                keys.append(code); dates.append(od); vals.append(v)
-            tally.added_unit(len(obs))
-            time.sleep(0.5)
+            tasks.append((pf, batch, datefrom))
 
-        if keys:
-            tbl = pa.table({
-                "series_key": pa.array(keys, pa.string()),
-                "obs_date": pa.array(dates, pa.date32()),
-                "value": pa.array(vals, pa.float64()),
-            })
-            n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-            grand_total += n
-            for k, d in zip(keys, dates):
-                iso = d.isoformat()
-                if k not in cursors or iso > cursors[k]:
-                    cursors[k] = iso
-                if isinstance(d, dt.date) and d <= dt.date.today() and (grand_max is None or d > grand_max):
-                    grand_max = d
-        else:
+    # Fetch+parse every batch concurrently; tag each result with its prefix.
+    if tasks:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            futs = {ex.submit(_fetch_batch_task, b, df, dateto): pf for (pf, b, df) in tasks}
+            for fut in as_completed(futs):
+                pf = futs[fut]
+                outcome, obs = fut.result()
+                if outcome == "transient":
+                    tally.transient_unit()
+                elif outcome == "empty":
+                    tally.empty_unit()
+                else:
+                    tally.added_unit(len(obs))
+                    prefix_obs[pf].extend(obs)
+
+    # Merge per prefix (serial — atomic, one file at a time).
+    for pf, obs in prefix_obs.items():
+        path = os.path.join(out_dir, pf)
+        if not obs:
             grand_total += blob.row_count(path)
+            continue
+        keys = [o[0] for o in obs]
+        dates = [o[1] for o in obs]
+        vals = [o[2] for o in obs]
+        tbl = pa.table({
+            "series_key": pa.array(keys, pa.string()),
+            "obs_date": pa.array(dates, pa.date32()),
+            "value": pa.array(vals, pa.float64()),
+        })
+        n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+        grand_total += n
+        today = dt.date.today()
+        for k, d in zip(keys, dates):
+            iso = d.isoformat()
+            if k not in cursors or iso > cursors[k]:
+                cursors[k] = iso
+            if isinstance(d, dt.date) and d <= today and (grand_max is None or d > grand_max):
+                grand_max = d
 
     last_obs = grand_max.isoformat() if grand_max else (since or None)
     return finalize(tally, grand_total, last_obs, source=SOURCE, series_cursors=cursors,
