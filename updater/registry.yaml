@@ -3116,6 +3116,7 @@ sources:
       into a .part and os.replace''d. Run state/logs in data/raw/oecd/: manifest.json, dataflows_all.xml, ingest_results.jsonl,
       run.log/pid.'
 - source_id: ofr
+  live: true
   scripts:
   - jobs/ingest_ofr.py
   strategy: extend_by_date
@@ -3479,6 +3480,7 @@ sources:
       other scripts). Counts on disk vary by provider (e.g. dst 705, ssb 186, statfin 135, scb 9, cso 44, bfs 1). ssb/statfin
       also write _catalog.json; several dirs carry _<provider>_log.txt/_err.txt.'
 - source_id: rba
+  live: true
   scripts:
   - jobs/ingest_rba.py
   strategy: bulk_snapshot_if_changed
