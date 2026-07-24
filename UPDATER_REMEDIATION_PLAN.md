@@ -149,3 +149,31 @@ Patch (blob.list_parquets) when each is promoted.
 **Net:** of ~20 "failing" sources, **most are stale state or by-design self-healing.** The genuine
 code defects were treasury + scb + bfs (now fixed) and the CSV-coherence grain-alignment (careful,
 next). The full agent transcripts: workflow wf_fc88e6a3 journal.
+
+---
+
+## 2026-07-24 — CSV-COHERENCE CLASS RESOLVED (the pivotal blocker)
+
+All three root causes fixed and PROVEN end-to-end on bfs:
+
+1. **Parser** (false structural "200 but 0 rows") — scb (ceiling-vs-projection), bfs (shared
+   `structural_on_zero_rows` guard). Committed 3304ea5.
+2. **Grain mismatch** (cursor key ≠ catalog series_id) — ssb (`SSB:<tid>`, 325f63b), insee_bdm
+   (idbank not flow_id, changed-set separated from frontier, 447f21e). Locally verified: aligned
+   keys map to the catalog (ssb 3/3, insee_bdm 95/95).
+3. **Stale R2 coherence catalog** (THE root) — `_aqueduct/catalog.db.zst` was months stale:
+   missing the 13 sources catalogued since, still carrying the ~20 purged. Refreshed via
+   `tools/refresh_r2_catalog.py` (02dc950), superset-verified, backup kept. [ledger R38]
+
+**PROOF (bfs, run 30068599472):** its error walked forward across three dispatches —
+"90/648 parsed 0 rows" (parser) → "coherence unmet: 582 keys unmapped" (catalog) → "9/648
+transient-failed; will retry" (benign self-healing). The coherence-unmet error is GONE.
+
+**bfs data-op:** trimmed 75 corrupt far-future rows (one table `px-x-0102020300_102`, year>2075
+to 2150); 5,337,546 legit projection rows (to 2055/2075) preserved; backup kept (58295d8 tool).
+
+**Remaining to promote each coherence source:** a clean `--source` dispatch (ok/no_change) then
+`live:true`. Order (after the 06:00 cron soak validates the 5-tier): insee_bdm, stat_latvia,
+stat_estonia, ssb (bfs holds until its transients clear + a clean run). bls stays gated (R18).
+
+## Live tier: 5 (bcb, cnb, frankfurter, scb, treasury). Gate before #6: the 06:00 UTC cron soak.
