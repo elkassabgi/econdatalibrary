@@ -63,8 +63,14 @@ order (daily/weekly first, they benefit most)**:
 Expected `no_change` for most annual/static on any given day — that is SUCCESS, not silence.
 
 ### Phase 2 — The genuinely stale (verify against provider, then fix)
-- **`imf_commodity`** — monthly, stuck at 2025-06 (14 months). Real. Diagnose the fetcher/API;
-  likely a broken delta window or endpoint change. HIGH priority (it's advertised as monthly).
+- **`imf_commodity`** — monthly, stuck at 2025-06. **ROOT CAUSE VERIFIED 2026-07-23 (live probe):**
+  NOT our bug. It mirrors IMF PCPS *via DBnomics* (`api.db.nomics.world/v22/series/IMF/PCPS`), and
+  DBnomics's IMF/PCPS mirror is itself frozen — dataset metadata reads `updated: 2025-07-15,
+  indexed_at: 2025-07-16T02:22Z`, i.e. ~a year stale. Our data equals what DBnomics still serves;
+  the upstream link died (IMF migrated PCPS to its new data portal in 2025, deprecating the old
+  mirror). FIX = repoint the fetcher to IMF's current PCPS feed (data.imf.org / new IMF SDMX API) —
+  a fetcher rewrite against a new endpoint, not a delta tweak. Until then it is honestly frozen at
+  the last vintage DBnomics published.
 - **`ppi`** — annual @2022. **Verify** IEP hasn't published 2023+; if not, it is CURRENT →
   reclassify A and silence the RED-DATA false alarm (raise its SLA or mark edition-final).
 - Spot-check `bcrp`/`ofr` (daily, ~1 month back): provider-quiet or a real freeze?
