@@ -71,6 +71,7 @@ Expected `no_change` for most annual/static on any given day — that is SUCCESS
   mirror). FIX = repoint the fetcher to IMF's current PCPS feed (data.imf.org / new IMF SDMX API) —
   a fetcher rewrite against a new endpoint, not a delta tweak. Until then it is honestly frozen at
   the last vintage DBnomics published.
+  UPDATE 2026-07-24: the repoint TARGET is confirmed LIVE — `api.imf.org/external/sdmx/3.0/data/dataflow/IMF.RES/PCPS/~/<key>` returns the PCPS dataflow (v9.0.0). BUT the new v9.0.0 has a DIFFERENT dimension structure than the old {FREQ}.{REF_AREA}.{COMMODITY}.{UNIT}; my guessed keys + `c[TIME_PERIOD]=ge:` time filter returned ZERO observations (a query-format issue, NOT proof of data absence). So current data past 2025-06 is NOT yet confirmed. The fetcher rewrite must first pull the DSD/codelists (dims INDICATOR/COMMODITY_CF/DATA_TRANSFORMATION/UNIT…), derive valid keys + the SDMX-3.0 time-filter syntax, THEN map to our series_key. Not a delta tweak; a real rewrite.
 - **`ppi`** — annual @2022. **Verify** IEP hasn't published 2023+; if not, it is CURRENT →
   reclassify A and silence the RED-DATA false alarm (raise its SLA or mark edition-final).
 - Spot-check `bcrp`/`ofr` (daily, ~1 month back): provider-quiet or a real freeze?
