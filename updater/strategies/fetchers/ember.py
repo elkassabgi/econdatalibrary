@@ -140,14 +140,24 @@ def update(unit, since) -> Result:
         try:
             raw = ig.download_bytes(sess, key)
             df = ig.read_csv_bytes(raw)
-            _family, rows = ig.route(ds_id, df)
+            family, rows = ig.route(ds_id, df)
         except Exception:
             tally.transient_unit()
             continue
 
         if not rows:
-            # a real 200 CSV that parsed to nothing: structural, and do NOT advance the vintage
-            tally.structural_unit()
+            if family == "unparsed":
+                # route() matched NO parser family: this object is not one of Ember's data CSVs
+                # (the first-pass ingest skips these too — it produced 58 parquets from 90 CSVs).
+                # That is a legitimate empty, NOT a break. Advance the vintage so we don't
+                # re-download it every tick; if Ember ever changes the file its (updated|size)
+                # moves and we re-examine it then.
+                tally.empty_unit()
+                sidecar[ds_id] = cur_v
+            else:
+                # a KNOWN parser family produced zero rows -> real schema drift. Keep the data,
+                # flag it, and do NOT advance the vintage so it re-surfaces next tick.
+                tally.structural_unit()
             continue
 
         tbl = _rows_to_table(rows)
