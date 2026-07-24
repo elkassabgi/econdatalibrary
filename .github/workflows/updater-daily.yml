@@ -105,7 +105,21 @@ jobs:
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           args=""
-          if [ -n "${INPUT_SOURCE}" ]; then args="${args} --source ${INPUT_SOURCE}"; fi
+          # INPUT_SOURCE may be a single id or a comma/space-separated LIST (batch proof of
+          # several sources in one run). Split it into repeated --source flags. Kept
+          # injection-safe: env var (never inlined), globbing disabled during the split, and
+          # every token validated to [a-z0-9_] so a crafted value cannot become a flag or path.
+          if [ -n "${INPUT_SOURCE}" ]; then
+            set -f
+            for s in $(printf '%s' "${INPUT_SOURCE}" | tr ',' ' '); do
+              case "$s" in
+                "") ;;
+                *[!a-z0-9_]*) echo "ignoring invalid source token: $s" >&2 ;;
+                *) args="${args} --source ${s}" ;;
+              esac
+            done
+            set +f
+          fi
           if [ "${INPUT_DRY_RUN}" = "true" ]; then args="${args} --dry-run"; fi
           python -m updater.run ${args}
 
