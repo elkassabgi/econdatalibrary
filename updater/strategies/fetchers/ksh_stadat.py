@@ -40,8 +40,12 @@ from jobs import ingest_ksh_stadat as ig   # reuse catalog + THE table parser / 
 SOURCE = "ksh_stadat"
 DEDUP = ("series_key", "obs_date")
 SIDECAR = "_bulk_vintages.json"       # {table_id: "updatedAt|correctedAt"}
-MAX_WORKERS = 5
-MAX_PER_RUN = 400                     # bound a run; backlog drains over ticks
+# www.ksh.hu is SLOW and refuses load: run 30136135069 spent 32 minutes on connect-timeouts
+# (60s each) against /stadat_files/*/en/*.csv at 5 workers x 400 tables and never finished.
+# Keep concurrency low and the per-run batch small — the 1,632-table backlog drains over many
+# ticks, which is fine for a source whose tables update on a monthly-ish cadence. (R40b)
+MAX_WORKERS = 2
+MAX_PER_RUN = 60
 
 
 def _vintage(entry) -> str:
