@@ -41,11 +41,14 @@ SIDECAR = "_bulk_vintages.json"     # {dataset_id: "versionid|last_updated"}
 # ONS's beta API rate-limits HARD: a first attempt at 5 workers x 60 datasets drew 41 HTTP 429s
 # in 4 minutes (run 30133384687). R40 says parallelize many-request fetchers, but never past what
 # the server tolerates — 2 workers plus a per-request pace keeps us under the limit.
-MAX_WORKERS = 2
-REQUEST_PAUSE = 1.0                 # seconds between requests inside each worker
-# A first run backfills ~295 missing datasets; cap per-run work so a single CI run stays bounded
-# and the backlog drains over consecutive runs instead of one very long job.
-MAX_PER_RUN = 25
+# MEASURED: even 2 workers @1s still draws sustained HTTP 429 (local run 2026-07-25, 6+ min and
+# still throttled). Each 429 costs up to 50s of backoff (5+10+15+20), so throttling — not
+# parsing — is the entire cost. ONS tolerates roughly one request per ~1.5s, so go SERIAL and
+# pace it; a small per-run batch keeps each tick short and drains the ~295-dataset backfill over
+# consecutive days rather than wedging one run. (R40b: the server's tolerance is the ceiling.)
+MAX_WORKERS = 1
+REQUEST_PAUSE = 1.5
+MAX_PER_RUN = 12
 
 
 def _vintage(item) -> str:
@@ -94,14 +97,32 @@ def _save_sidecar(out_dir, data) -> None:
                             json.dumps(data, indent=2, sort_keys=True).encode("utf-8"))
 
 
-def _fetch_one(ds_id):
-    """Thread task: resolve the CSV url, download, parse. Returns (ds_id, keys, dates, vals)
-    or (ds_id, None, None, None) on a transport/parse failure. Paced to respect ONS rate limits."""
+def _fetch_one(ds_id, version_href=None):
+    """Thread task: download + parse one dataset -> (ds_id, keys, dates, vals), or
+    (ds_id, None, None, None) on a transport/parse failure.
+
+    `version_href` comes straight from the catalog item we already walked
+    (links.latest_version.href). Using it skips resolve_csv_url()'s 1-3 EXTRA sequential
+    API round-trips per dataset — that redundancy, not the parsing, is what made this
+    fetcher take many minutes for only 25 datasets. We fall back to resolving only when
+    the catalog didn't carry the href.
+    """
     try:
-        url = ig.resolve_csv_url(ds_id)
+        url = None
+        if version_href:
+            meta = ig.get_json(version_href)
+            if meta:
+                for dl in (meta.get("downloads") or {}).values():
+                    href = dl.get("href", "")
+                    if href.endswith(".csv") or "csv" in href.lower():
+                        url = href
+                        break
+                if not url:
+                    url = version_href.rstrip("/") + "/csv"
+        if not url:
+            url = ig.resolve_csv_url(ds_id)
         if not url:
             return ds_id, None, None, None
-        time.sleep(REQUEST_PAUSE)
         content = ig.get_csv_bytes(url)
         if not content:
             return ds_id, None, None, None
@@ -129,7 +150,8 @@ def update(unit, since) -> Result:
         cur_v = _vintage(it)
         if sidecar.get(ds_id) == cur_v and blob.exists(path):
             continue
-        todo.append((ds_id, cur_v))
+        href = ((it.get('links') or {}).get('latest_version') or {}).get('href')
+        todo.append((ds_id, cur_v, href))
 
     tally = Tally()
     cursors: dict[str, str] = {}
@@ -140,7 +162,7 @@ def update(unit, since) -> Result:
 
     if batch:
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            futs = {ex.submit(_fetch_one, ds_id): (ds_id, v) for ds_id, v in batch}
+            futs = {ex.submit(_fetch_one, ds_id, href): (ds_id, v) for ds_id, v, href in batch}
             for fut in as_completed(futs):
                 ds_id, cur_v = futs[fut]
                 _id, keys, dates, vals = fut.result()
