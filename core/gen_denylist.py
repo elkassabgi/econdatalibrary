@@ -64,7 +64,7 @@ LEGACY_KEEP = {
     "wto_hs_a_0030", "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax",
     "whr", "social_progress", "spi", "cow",
     # ei_statreview REMOVED from the floor 2026-07-22: the Energy Institute GRANTED
-    # written permission (REDISTRIBUTION_EMAIL_TRAIL.md). Its binding exclusion --
+    # written permission (permission records (held privately)). Its binding exclusion --
     # "no S&P Global Platts / Commodity Insights price series" -- is satisfied by
     # construction: the 18,464 series we hold span 127 measures that are ALL energy
     # volumes/shares/per-capita/changes plus gdp, population and emissions; a full-
@@ -155,7 +155,7 @@ export function isNonRedistributable(seriesId: string): boolean {
  * within it embed third-party data the source's licence does not cover, so those
  * series are gated individually. Keyed by source id -> indicator codes (the part
  * of a series_id between the first and second ':'). Hand-maintained; keep in sync
- * with THIRD_PARTY_CARVEOUTS.md.
+ * with permission records (held privately).
  *
  * worldbank: GDP (NY.GDP.MKTP.CD) is World-Bank-compiled and served; CPI
  * (FP.CPI.TOTL.ZG) is IMF-sourced and unemployment (SL.UEM.TOTL.ZS) is ILO-sourced
@@ -172,7 +172,7 @@ export const SERIES_CARVEOUTS: Readonly<Record<string, readonly string[]>> = {
   worldbank_wdi: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
   // worldbank_pink aggregates third-party benchmark prices. LME (base metals)
   // and LBMA/IBA (precious metals) REFUSED redistribution in writing on
-  // 2026-07-15 (REDISTRIBUTION_EMAIL_TRAIL.md) — these series must never
+  // 2026-07-15 (permission records (held privately)) — these series must never
   // serve, even if the source is un-gated later. Cocoa (ICCO), coffee (ICO)
   // and cotton (Cotlook) origins are still awaiting permission replies.
   worldbank_pink: ["aluminum", "copper", "nickel", "zinc", "gold", "platinum", "silver"],

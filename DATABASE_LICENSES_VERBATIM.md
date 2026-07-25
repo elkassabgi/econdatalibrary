@@ -24,7 +24,7 @@
 
 ### Written permissions on file (override the public terms below)
 
-The public terms the audit read may say 'permission required' for these, but we already hold written permission (see `REDISTRIBUTION_COMPLIANCE.md` / `REDISTRIBUTION_EMAIL_TRAIL.md`):
+The public terms the audit read may say 'permission required' for these, but we already hold written permission (see permission records (held privately)):
 
 - `comtrade` — GRANTED in writing (UN Comtrade): 'you can proceed'; holdings must stay <=100,000 records; cite 'UN Comtrade' + link.
 - `kof_globalization` — GRANTED in writing (Prof. Sturm, KOF/ETH Zurich): NC academic re-host; cite 'KOF, ETH Zurich' + link back.
@@ -839,7 +839,7 @@ still appears — a stricter reader could call it a canned terms restatement. De
 tier: **human review completed — Ahmed approved the un-gate 2026-07-15** (send-reply-
 then-deploy flow; confirmation reply to the Bundesbank restates our reading and
 compliance). Un-gated + LIVE 2026-07-15, verified 451→401 with the exact credit on
-every page. Full verbatim + status in `REDISTRIBUTION_EMAIL_TRAIL.md`.
+every page. Full verbatim + status in permission records (held privately).
 
 Caveat: this review covers only the general website terms at the cited URL. Bundesbank time series are also distributed via its SDMX/statistics API, which may carry its own separate terms; if the library ingests data through that channel, those terms should be reviewed separately rather than relying on this page.
 
@@ -1591,7 +1591,7 @@ metadata); (3) permanent live link to each dataset's portal page. This written g
 supersedes the mixed per-dataset labels above for IDB-institutional data, but condition
 (2) requires a per-dataset `package_show` metadata pass (our store kept none) before
 serving — **`idb` stays gated until that pass runs.** Full verbatim in
-`REDISTRIBUTION_EMAIL_TRAIL.md`.
+permission records (held privately).
 
 STEP 3 (defensibility): "noncommercial_only" is TOO PERMISSIVE in two ways: (a) it drops the NoDerivatives restriction that is literally in the quoted license name, greenlighting derivative redistribution the terms forbid; (b) applied source-wide it implies the ~86% unlicensed datasets are redistributable under NC terms, when an absent license grants no redistribution rights at all. Redistribution of this specific dataset IS permitted, but only verbatim + non-commercial + attributed — the classification must reflect the ND restriction. Verdict: DISPUTED. The verbatim quote is accurate; the classification is not defensible as stated.
 

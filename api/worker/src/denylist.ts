@@ -100,7 +100,7 @@ export function isNonRedistributable(seriesId: string): boolean {
  * within it embed third-party data the source's licence does not cover, so those
  * series are gated individually. Keyed by source id -> indicator codes (the part
  * of a series_id between the first and second ':'). Hand-maintained; keep in sync
- * with THIRD_PARTY_CARVEOUTS.md.
+ * with permission records (held privately).
  *
  * worldbank: GDP (NY.GDP.MKTP.CD) is World-Bank-compiled and served; CPI
  * (FP.CPI.TOTL.ZG) is IMF-sourced and unemployment (SL.UEM.TOTL.ZS) is ILO-sourced
@@ -117,7 +117,7 @@ export const SERIES_CARVEOUTS: Readonly<Record<string, readonly string[]>> = {
   worldbank_wdi: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
   // worldbank_pink aggregates third-party benchmark prices. LME (base metals)
   // and LBMA/IBA (precious metals) are not licensed for redistribution as of
-  // 2026-07-15 (REDISTRIBUTION_EMAIL_TRAIL.md) — these series must never
+  // 2026-07-15 (permission records (held privately)) — these series must never
   // serve, even if the source is un-gated later. Cocoa (ICCO), coffee (ICO)
   // and cotton (Cotlook) origins are still awaiting permission replies.
   worldbank_pink: ["aluminum", "copper", "nickel", "zinc", "gold", "platinum", "silver"],

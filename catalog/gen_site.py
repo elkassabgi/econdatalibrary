@@ -2489,7 +2489,7 @@ def main():
     # are NO metadata-only listings — "if we can't host it, we don't mention
     # it." Sources awaiting a permission reply are simply ABSENT; each returns
     # as a full download page automatically the moment its license flips to
-    # granted (reservable=1). Email tracking lives in REDISTRIBUTION_EMAIL_TRAIL,
+    # granted (reservable=1). Permission tracking is held privately,
     # not on the public site. (Supersedes the 2026-07-15 "keep pending as a
     # metadata-only reference" rule; refused sources like WTO stay purged.)
     # ------------------------------------------------------------------ #

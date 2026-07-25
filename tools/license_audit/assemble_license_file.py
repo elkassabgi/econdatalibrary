@@ -17,7 +17,7 @@ def final_class(r):
     return cls
 
 # Written permissions already on file (override the PUBLIC terms the audit read).
-# Source of truth: REDISTRIBUTION_COMPLIANCE.md + REDISTRIBUTION_EMAIL_TRAIL.md.
+# Source of truth: permission records (held privately) + permission records (held privately).
 GRANTS = {
     "kof_globalization": "GRANTED in writing (Prof. Sturm, KOF/ETH Zurich): NC academic re-host; cite 'KOF, ETH Zurich' + link back.",
     "comtrade": "GRANTED in writing (UN Comtrade): 'you can proceed'; holdings must stay <=100,000 records; cite 'UN Comtrade' + link.",
@@ -77,7 +77,7 @@ A("\n**Classifications:** " + ", ".join(f"{k}={v}" for k, v in class_counts.most
 present_grants = sorted({s for _, r in rows for s in (r.get("sources") or []) if s in GRANTS})
 if present_grants:
     A("### Written permissions on file (override the public terms below)\n")
-    A("The public terms the audit read may say 'permission required' for these, but we already hold written permission (see `REDISTRIBUTION_COMPLIANCE.md` / `REDISTRIBUTION_EMAIL_TRAIL.md`):\n")
+    A("The public terms the audit read may say 'permission required' for these, but we already hold written permission (see permission records (held privately)):\n")
     for s in present_grants:
         A(f"- `{s}` — {GRANTS[s]}")
     A("")
