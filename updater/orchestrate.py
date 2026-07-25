@@ -147,13 +147,38 @@ def _catalog_ids_for(source_id: str, changed_keys):
     con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
     try:
         exact, unmapped = [], []
+        seen = set()
         for k in changed_keys:
             cand = f"{source_id}:{k}"
             row = con.execute("SELECT 1 FROM series WHERE series_id=?", (cand,)).fetchone()
             if row:
-                exact.append(cand)
-            else:
-                unmapped.append(k)
+                if cand not in seen:
+                    seen.add(cand)
+                    exact.append(cand)
+                continue
+            # FLOW-GRAIN fallback. The PxWeb family is catalogued at TABLE (flow) grain
+            # while the store is at SERIES grain: the store key appends one `dim=value`
+            # segment per dimension, so `<source>:<key>` can never equal the catalog id.
+            #   store   LV:OSP_OD:...:ARA30.px:ContentsCode=...:Apmācības formas=0
+            #   catalog stat_latvia:LV:OSP_OD:...:ARA30.px
+            # Stripping the `=`-bearing segments recovers the flow id. Measured across all
+            # nine PxWeb sources (stat_latvia, stat_estonia, ssb, bfs, dst, statfin,
+            # hagstofa, stat_slovenia, scb): exact-match 0%, flow-match 100%. Without this
+            # every one of them merged its rows and then demoted to `partial` with
+            # "N changed series_keys have no catalog mapping" — stat_latvia's unmapped
+            # count (1,952) equalled its catalog row count exactly, which is the tell that
+            # the catalog was complete and only the GRAIN differed.
+            flow = ":".join(p for p in k.split(":") if "=" not in p)
+            if flow != k:
+                fcand = f"{source_id}:{flow}"
+                if fcand in seen:
+                    continue          # many series collapse onto one flow — derive it once
+                if con.execute("SELECT 1 FROM series WHERE series_id=?",
+                               (fcand,)).fetchone():
+                    seen.add(fcand)
+                    exact.append(fcand)
+                    continue
+            unmapped.append(k)
         if not unmapped:
             return exact, []
         n_src = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?",
