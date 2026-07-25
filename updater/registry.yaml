@@ -1026,6 +1026,7 @@ sources:
       tvl_protocol_shard00-29.parquet (30 hash-sharded), yields_pool_shard00-59.parquet (60 hash-sharded) built from _yields_stage.jsonl
       (~113 files total). Overview/yields files use series_key/obs_date/value (+ tvl_usd/apy/apy_base/apy_reward for yields).'
 - source_id: dst
+  live: true
   scripts:
   - jobs/ingest_dst.py
   strategy: overwrite_if_changed
