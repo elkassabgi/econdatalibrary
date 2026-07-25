@@ -40,7 +40,7 @@ GRANTED_EXCEPTIONS = {
 # generated SERIES_CARVEOUTS block and refuses to write the file otherwise.
 REQUIRED_CARVEOUTS = {
     "worldbank": ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
-    # Same third-party indicators were served through worldbank_wdi because the
+    # Same third-party indicators were served via worldbank_wdi because the
     # carve-out was keyed on `worldbank` alone (live leak confirmed 2026-07-22:
     # worldbank_wdi:SL.UEM.TOTL.ZS served 401 while worldbank's copy was gated).
     "worldbank_wdi": ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],

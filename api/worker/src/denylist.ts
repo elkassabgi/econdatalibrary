@@ -116,7 +116,7 @@ export const SERIES_CARVEOUTS: Readonly<Record<string, readonly string[]>> = {
   // third-party data may not be redistributed regardless of which id carries it.
   worldbank_wdi: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
   // worldbank_pink aggregates third-party benchmark prices. LME (base metals)
-  // and LBMA/IBA (precious metals) REFUSED redistribution in writing on
+  // and LBMA/IBA (precious metals) are not licensed for redistribution as of
   // 2026-07-15 (REDISTRIBUTION_EMAIL_TRAIL.md) — these series must never
   // serve, even if the source is un-gated later. Cocoa (ICCO), coffee (ICO)
   // and cotton (Cotlook) origins are still awaiting permission replies.
