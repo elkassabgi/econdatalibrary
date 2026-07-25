@@ -275,6 +275,7 @@ sources:
       / year extra cols for ITA/IIP/IntlServ*/MNE). State in data/raw/bea/_done_groups.json (atomic temp+replace); manifest
       at data/raw/bea/catalog_manifest.json.'
 - source_id: bfs
+  live: true
   scripts:
   - jobs/ingest_bfs.py
   strategy: sdmx_delta
