@@ -33,9 +33,12 @@ import pyarrow.compute as pc
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, sane_since
+from ._common import Deadline, Tally, finalize, sane_since
 from jobs import ingest_worldbank_esg as ig   # reuse code map + json client + year parsing
 
+# Minutes this source may spend before deferring the rest to the next tick.
+# 20 leaves plenty of room inside the 300-minute job ceiling for other sources.
+BUDGET_MIN = 20
 SOURCE = "worldbank_esg"
 DEDUP = ("country", "obs_date")        # no series_key column: identity is (country, obs_date)
 LOOKBACK_YEARS = 3                     # absorb WB annual back-revisions
@@ -108,7 +111,30 @@ def update(unit, since) -> Result:
     maxd = None
     total = 0
 
-    for fn in files:
+    # Wall-clock budget. The reused ingester's get_json retries 6x at a 120 s timeout plus
+    # ~61 s of backoff — ~13 min per URL — and this walks ~71 indicators, so a flaky WB day
+    # is a multi-hour source. Since orchestrate.py runs sources SERIALLY, that stalls every
+    # source behind it and can run the job into its 300-minute ceiling. Measured: a local
+    # run sat here 39 minutes at 0.16 GB RSS (hung on IO, not memory) before I killed it.
+    deadline = Deadline(minutes=BUDGET_MIN)
+    capped = False
+
+    for i, fn in enumerate(files):
+        if deadline.spent():
+            # Stop starting NEW indicators; the rest drain next tick. Same contract as
+            # ons_uk's MAX_PER_RUN cap — nothing is skipped silently, the run reports
+            # partial and the unit vintage is not advanced.
+            capped = True
+            # Count the deferred indicators' EXISTING rows toward the total. `total` is
+            # reported as the source's row count, not this run's slice, so breaking early
+            # without this would look like the source had suddenly shrunk to a fraction of
+            # its size — a false alarm in exactly the reporting I spent today fixing.
+            deferred = files[i:]
+            total += sum(blob.row_count(os.path.join(out_dir, f)) for f in deferred)
+            print(f"[worldbank_esg] budget of {BUDGET_MIN} min spent after "
+                  f"{deadline.elapsed_min():.1f} min; deferring {len(deferred)} "
+                  f"of {len(files)} indicators to the next tick", flush=True)
+            break
         ind_id = fn[:-len(".parquet")]
         path = os.path.join(out_dir, fn)
         date_param = _window(path, since)
@@ -169,5 +195,10 @@ def update(unit, since) -> Result:
             maxd = md
         time.sleep(RATE)
 
-    return finalize(tally, total, maxd or (since or None), source=SOURCE,
-                    series_cursors=cursors, empty_window_floor=len(files) + 1)
+    res = finalize(tally, total, maxd or (since or None), source=SOURCE,
+                   series_cursors=cursors, empty_window_floor=len(files) + 1)
+    if capped:
+        # Indicators still owe work — do NOT stamp a "fully current" vintage or the
+        # remainder would be skipped on the next tick instead of resumed.
+        res.new_vintage = None
+    return res
