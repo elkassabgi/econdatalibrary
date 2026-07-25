@@ -15,12 +15,32 @@ of the catalog's ~337 datasets, so early runs will also BACKFILL the missing one
 Store I/O via blob (R36); the vintage sidecar lives on the store, not the runner. Downloads run
 across a small thread pool (R40) since a first run touches hundreds of datasets.
 
+QUARANTINED 2026-07-25 — do NOT promote to live until the two defects below are fixed. The
+memory/pacing work here is real and kept, but it cannot make this source healthy:
+
+  1. THE KEY GRAIN IS WRONG. parse_dataset_csv folds the TIME axis and a measurement into
+     series_key: a real key reads `CV=14.0:calendar-years=2018:administrative-geography=...`.
+     `CV` is a coefficient of variation (a value) and `calendar-years` is the observation
+     period, so every row becomes its own "series" — ashe-table-5 is 5,323,152 rows and
+     5,323,152 DISTINCT keys. A time series with one observation each is not a time series,
+     and per-series cursors over it are what make this source unrunnable: the cursor dict
+     alone drove peak RSS to 32.26 GB locally, on a 16 GB CI runner. Fixing it means
+     changing the on-disk keys, which breaks the duplication invariant, so it is a
+     re-ingest, not a fetcher patch.
+  2. ons_uk HAS NO CATALOG ROWS AT ALL (verified: 0). Coherence can therefore never map its
+     changed keys, so every run demotes to `partial` no matter what the fetcher does.
+
+Do not "fix" (1) by collapsing keys to a flow id the way the PxWeb sources do — every ons_uk
+segment is a `dim=value` pair, so stripping them yields a fragment of a label rather than a
+flow (measured: `' Manufacture of Wearing Apparel'`). That would silently corrupt cursors.
+
 HONEST-STATUS: catalog walk failure -> TransientError (partial, retried, data kept). A per-dataset
 download/parse failure -> transient_unit for that dataset only. A changed dataset that parses to
 ZERO rows -> structural_unit and its vintage is NOT advanced. Cursors emitted for every merged
 series (R41).
 """
 from __future__ import annotations
+import gc
 import hashlib
 import json
 import os
@@ -53,6 +73,12 @@ MAX_WORKERS = 1
 # honour Retry-After when we do get throttled.
 REQUEST_PAUSE = 2.0
 MAX_PER_RUN = 12
+# Datasets held in memory at once. The batch is processed in waves of this size, with the
+# executor, its futures and Arrow's pool all released between waves, so peak RSS tracks one
+# wave rather than the whole batch. 3 keeps the worst case (ashe-table-5 at 122 MB
+# compressed, which explodes in Arrow because every row repeats a 200+ char series_key)
+# comfortably inside the 16 GB runner.
+WAVE_SIZE = 3
 
 
 def _vintage(item) -> str:
@@ -164,9 +190,20 @@ def update(unit, since) -> Result:
     capped = len(todo) > MAX_PER_RUN
     batch = todo[:MAX_PER_RUN]
 
-    if batch:
+    # Process in small WAVES, each with its own executor and future map. A single
+    # executor over the whole batch holds every Future alive until the loop ends, and a
+    # Future keeps a hard reference to its result — so all 12 datasets' parsed Python
+    # lists coexisted in memory. Python str objects carry ~49 B of overhead EACH, and
+    # ons_uk keys run 200+ chars over millions of rows, so that retention is what walked
+    # the runner from 1.2 GB to 15.6 GB of 15.99 GB and got the job OOM-killed (measured
+    # 2026-07-25 via the CI memory sampler; earlier runs died invisibly because stdout was
+    # buffered — see R47). Dropping the executor and its map every wave, then returning
+    # Arrow's freed blocks to the OS, bounds peak memory at one wave instead of the batch.
+    # Every dataset still gets processed — this changes only how many are held at once.
+    for wave_start in range(0, len(batch), WAVE_SIZE):
+        wave = batch[wave_start:wave_start + WAVE_SIZE]
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            futs = {ex.submit(_fetch_one, ds_id, href): (ds_id, v) for ds_id, v, href in batch}
+            futs = {ex.submit(_fetch_one, ds_id, href): (ds_id, v) for ds_id, v, href in wave}
             for fut in as_completed(futs):
                 ds_id, cur_v = futs[fut]
                 _id, keys, dates, vals = fut.result()
@@ -194,13 +231,33 @@ def update(unit, since) -> Result:
                     continue
                 published += n
                 tally.added_unit(max(0, n - before))
-                for k, d in zip(keys, dates):
+                # Per-series cursors via Arrow rather than a Python zip over every row: the
+                # old loop called d.isoformat() once PER OBSERVATION, minting millions of
+                # throwaway str objects per dataset to compute what is only a max-per-key.
+                # NOTE this dict is still the memory ceiling for this source, and it cannot
+                # be fixed here — see the QUARANTINE note in the module docstring.
+                agg = tbl.group_by("series_key").aggregate([("obs_date", "max")])
+                for k, d in zip(agg.column("series_key").to_pylist(),
+                                agg.column("obs_date_max").to_pylist()):
                     iso = d.isoformat()
                     if k not in cursors or iso > cursors[k]:
                         cursors[k] = iso
+                del agg
                 if md and (maxd is None or str(md) > str(maxd)):
                     maxd = md
                 sidecar[ds_id] = cur_v           # advance ONLY after a clean publish
+                # Drop this dataset's payload before starting the next one. Without the
+                # explicit del, keys/dates/vals stay bound to the loop variables for the
+                # whole wave while the next dataset is already being parsed.
+                del tbl, keys, dates, vals
+        # Executor and its future map are gone here; hand Arrow's freed blocks back to the
+        # OS. Arrow caches released buffers in its pool by default, so RSS stays at the
+        # high-water mark across waves and the runner sees no memory being returned.
+        gc.collect()
+        pa.default_memory_pool().release_unused()
+        print(f"[ons_uk] wave {wave_start // WAVE_SIZE + 1} done "
+              f"({min(wave_start + WAVE_SIZE, len(batch))}/{len(batch)} datasets), "
+              f"arrow pool {pa.total_allocated_bytes() / 1e6:.0f} MB", flush=True)
 
     _save_sidecar(out_dir, sidecar)
 
