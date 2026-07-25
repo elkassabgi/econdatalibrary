@@ -63,7 +63,21 @@ def get_json(url: str, tries: int = 6):
             req = urllib.request.Request(url, headers={"User-Agent": UA})
             with urllib.request.urlopen(req, timeout=120) as r:
                 return json.loads(r.read().decode("utf-8"))
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ConnectionError) as e:
+        except urllib.error.HTTPError as e:
+            # Only 429 and 5xx are worth retrying. A 4xx like 400/404 is the server
+            # telling us the REQUEST is wrong — repeating it verbatim cannot help, and
+            # the cost is brutal here: 6 tries x 120 s timeout plus ~61 s of backoff is
+            # ~13 min PER URL across ~71 indicators. Observed for real: a local run sat
+            # on worldbank_esg for 39 minutes emitting
+            # "retry 1/6 after 1s (HTTP Error 400: Bad Request)" before being killed,
+            # and orchestrate.py runs sources serially so that stalls the whole job.
+            if e.code != 429 and 400 <= e.code < 500:
+                raise RuntimeError(f"GET {url} failed permanently: HTTP {e.code} {e.reason}")
+            last = e
+            wait = min(2 ** attempt, 30)
+            print(f"    retry {attempt + 1}/{tries} after {wait}s ({e})", flush=True)
+            time.sleep(wait)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             last = e
             wait = min(2 ** attempt, 30)
             print(f"    retry {attempt + 1}/{tries} after {wait}s ({e})", flush=True)
