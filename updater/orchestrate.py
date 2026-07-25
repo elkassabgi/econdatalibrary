@@ -138,6 +138,27 @@ def _derive_changed_csvs(unit, res, blob):
 _DERIVE_ALL_CAP = 5000
 
 
+def _flow_of(key: str) -> str:
+    """FLOW-grain id for a series-grain PxWeb store key.
+
+    The store key is `<flow>:<dim>=<value>:<dim>=<value>…`, so the obvious rule is "drop the
+    `=`-bearing segments". That rule is WRONG whenever a dimension VALUE contains a colon:
+    hagstofa stores NACE codes like `Atvinnugrein=K: 65`, which splits into `Atvinnugrein=K`
+    (dropped, has `=`) and ` 65` (KEPT, has none), yielding the corrupt flow
+    `…THJ11002.px: 65`. That silently left 658 hagstofa keys unmapped, and an unmapped key
+    trips the _DERIVE_ALL_CAP fallback into re-deriving the source's entire catalog.
+
+    Truncating at the table-id segment instead is immune to colons in values: measured on
+    every one of those 658 keys, it maps 658/658. Sources whose table ids are not `*.px`
+    (e.g. ssb's `SSB:A1Skog`) keep the `=` rule, verified unchanged.
+    """
+    parts = key.split(":")
+    for i, p in enumerate(parts):
+        if p.endswith(".px"):
+            return ":".join(parts[:i + 1])
+    return ":".join(p for p in parts if "=" not in p)
+
+
 def _catalog_ids_for(source_id: str, changed_keys):
     """Map changed store series_keys to catalog series_ids (see hook comment).
     Returns (ids_to_derive, unmapped_keys). Reads the catalog read-only from
@@ -168,7 +189,7 @@ def _catalog_ids_for(source_id: str, changed_keys):
             # "N changed series_keys have no catalog mapping" — stat_latvia's unmapped
             # count (1,952) equalled its catalog row count exactly, which is the tell that
             # the catalog was complete and only the GRAIN differed.
-            flow = ":".join(p for p in k.split(":") if "=" not in p)
+            flow = _flow_of(k)
             if flow != k:
                 fcand = f"{source_id}:{flow}"
                 if fcand in seen:
