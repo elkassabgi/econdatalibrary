@@ -25,7 +25,7 @@ licenses:
   defillama-open:       {reservable: true,  commercial_ok: true,  attribution: required}
   dbnomics-passthrough: {reservable: per_series, note: "inherit each provider's license at ingest"}
   # NonCommercial + granted licenses (attribution is a binding condition — the .csv
-  # citation header + metadata surface these flags; see REDISTRIBUTION_COMPLIANCE.md).
+  # citation header + metadata surface these flags; see permission records (held privately)).
   cc-by-nc-sa-4.0:      {reservable: true,  commercial_ok: false, attribution: required, no_modify: false, url: "https://creativecommons.org/licenses/by-nc-sa/4.0/"}   # IEP gpi/gti/ppi/etr
   cc-by-nc-sa-3.0-igo:  {reservable: true,  commercial_ok: false, attribution: required, no_modify: true,  url: "https://creativecommons.org/licenses/by-nc-sa/3.0/igo/"}  # WHO GHO — NonCommercial (flag was backwards)
   cc-by-sa-4.0:         {reservable: true,  commercial_ok: true,  attribution: required, no_modify: false, url: "https://creativecommons.org/licenses/by-sa/4.0/"}   # ShareAlike allows commercial (both flags were backwards)
@@ -812,7 +812,7 @@ sources:
     attribution: "Source: Social Progress Imperative (embed permission 2026)"
   bundesbank:
     name: "Deutsche Bundesbank time series"
-    # GRANTED 2026-07-15 (inquiry 2026/005812, verbatim in REDISTRIBUTION_EMAIL_TRAIL.md);
+    # GRANTED 2026-07-15 (inquiry 2026/005812, verbatim in permission records (held privately));
     # un-gate approved by Ahmed 2026-07-15 (send-reply-then-deploy flow).
     license: bundesbank-granted
     attribution: "Copyright: Deutsche Bundesbank, Frankfurt am Main, Germany"
@@ -842,7 +842,7 @@ sources:
     attribution: "Source: Freedom House Freedom in the World (not redistributed; obtain from provider)"
   idb:
     name: "Inter-American Development Bank Open Data"
-    # GRANTED 2026-07-15 (opendata@iadb.org; verbatim in REDISTRIBUTION_EMAIL_TRAIL.md).
+    # GRANTED 2026-07-15 (opendata@iadb.org; verbatim in permission records (held privately)).
     # Their condition 2 (exclude third-party-sourced series) discharged 2026-07-15:
     # all 21 ingested datasets are institutional ("IDB Datasets" org, no third-party
     # markers) — evidence in data/_idb_carveout_audit.json. Owner directed the un-gate.

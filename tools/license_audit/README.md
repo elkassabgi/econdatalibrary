@@ -15,4 +15,4 @@ Decision rule (asymmetric caution): a database is only "cleared to re-host" when
 the terms EXPLICITLY permit third-party redistribution AND the adversarial
 verifier CONFIRMED it. Restricted / ambiguous / unreachable / DISPUTED => gated.
 Written permissions (kof, comtrade, whr, IEP) override public terms — see
-`REDISTRIBUTION_COMPLIANCE.md`.
+permission records (held privately).
