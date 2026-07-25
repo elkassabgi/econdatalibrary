@@ -52,12 +52,49 @@ def _dedup(table, keys):
 
 def _sort(table, keys):
     keys = [k for k in keys if k in table.column_names]
-    return table.sort_by([(k, "ascending") for k in keys]) if keys else table
+    if not keys:
+        return table
+    try:
+        return table.sort_by([(k, "ascending") for k in keys])
+    except pa.ArrowInvalid as e:
+        if "offset overflow" not in str(e):
+            raise
+        # sort_by() materialises the result via take(), which re-concatenates the string
+        # columns and so hits Arrow's 2 GiB 32-bit `string` offset ceiling — the same wall
+        # as concat, just reached later. Retry on the 64-bit type. Real case: ons_uk's
+        # 200+ char colon-joined series_keys over ~3.9M rows.
+        return _promote_large_string(table)[0].sort_by([(k, "ascending") for k in keys])
+
+
+def _promote_large_string(*tables):
+    """Cast every `string` column to `large_string` across the given tables.
+
+    Arrow's 32-bit `string` type caps a column's total bytes at 2 GiB; concatenating past
+    that raises ArrowInvalid("offset overflow while concatenating arrays"). Sources with long
+    identifiers hit this for real — ons_uk builds colon-joined `dim=value` series_keys of
+    200+ chars (it stores both code AND label, e.g. `sex=female:Sex=Female`), so ~3.9M rows
+    overflow. `large_string` is the 64-bit variant and is written back to parquet as ordinary
+    UTF-8, so this changes nothing on disk for readers.
+    """
+    out = []
+    for t in tables:
+        fields = [f.with_type(pa.large_string()) if f.type == pa.string() else f
+                  for f in t.schema]
+        out.append(t.cast(pa.schema(fields)) if fields != list(t.schema) else t)
+    return out
 
 
 def _concat(existing, new_table):
     if existing.schema.equals(new_table.schema):
-        return pa.concat_tables([existing, new_table])
+        try:
+            return pa.concat_tables([existing, new_table])
+        except pa.ArrowInvalid as e:
+            if "offset overflow" not in str(e):
+                raise
+            # 2 GiB string-offset ceiling: retry with the 64-bit string type rather than
+            # failing the source. Keeps ALL rows — the alternative would be silent loss.
+            big_existing, big_new = _promote_large_string(existing, new_table)
+            return pa.concat_tables([big_existing, big_new])
     # NEVER drop a column that exists in the published data (silent column-level loss).
     # If the new table is missing any existing column, that's a schema regression -> refuse.
     missing = [c for c in existing.column_names if c not in new_table.column_names]

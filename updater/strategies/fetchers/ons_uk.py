@@ -47,7 +47,11 @@ SIDECAR = "_bulk_vintages.json"     # {dataset_id: "versionid|last_updated"}
 # pace it; a small per-run batch keeps each tick short and drains the ~295-dataset backfill over
 # consecutive days rather than wedging one run. (R40b: the server's tolerance is the ceiling.)
 MAX_WORKERS = 1
-REQUEST_PAUSE = 1.5
+# MEASURED 2026-07-25 against download.ons.gov.uk (Cloudflare-fronted): 429 arrives on the
+# ~6th rapid request carrying `Retry-After: 10`, i.e. a sustainable rate near 0.5 req/s.
+# 1.5s (0.67 req/s) was still slightly over the line, so pace at 2.0s and let get_csv_bytes
+# honour Retry-After when we do get throttled.
+REQUEST_PAUSE = 2.0
 MAX_PER_RUN = 12
 
 
