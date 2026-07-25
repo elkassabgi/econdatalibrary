@@ -1685,6 +1685,7 @@ sources:
     - 'Single grouped parquet: data/clean_full/frankfurter/frankfurter_fx_eur.parquet, columns series_key (e.g. ''EURUSD''),
       obs_date(date32), value(float64), zstd. Entire dataset built in-memory in a dict then written once. No raw dir, no sidecar.'
 - source_id: fsi_fundforpeace
+  live: true
   scripts:
   - jobs/ingest_fsi_fundforpeace.py
   strategy: overwrite_if_changed
@@ -1960,6 +1961,7 @@ sources:
     storage_layout:
     - single parquet (data/clean_full/gleif/lei_records.parquet, ~85 MB, ~3.3M rows); raw zip cached separately under data/raw/gleif/
 - source_id: gpi
+  live: true
   scripts:
   - updater/strategies/fetchers/gpi.py
   strategy: overwrite_if_changed
@@ -1984,6 +1986,7 @@ sources:
     storage_layout:
     - 'single parquet data/clean_full/gpi/gpi.parquet; schema series_key, obs_date, value.'
 - source_id: gti
+  live: true
   scripts:
   - updater/strategies/fetchers/gti.py
   strategy: overwrite_if_changed
@@ -2032,6 +2035,7 @@ sources:
     storage_layout:
     - 'single parquet data/clean_full/ppi/ppi.parquet; schema series_key, obs_date, value.'
 - source_id: etr
+  live: true
   scripts:
   - updater/strategies/fetchers/etr.py
   strategy: overwrite_if_changed
@@ -2920,6 +2924,7 @@ sources:
       (Dec-31), value:float64, zstd). Skip-if-exists guard at lines 40-42; one XLSX download (first working URL) then one
       write (lines 133-138).
 - source_id: nasa_giss
+  live: true
   scripts:
   - jobs/ingest_nasa_giss.py
   strategy: overwrite_if_changed
@@ -4143,6 +4148,7 @@ sources:
     - single parquet (stats_nz.parquet, ~330KB), columns series_key(prefix:series_ref), obs_date(date32), value(float64).
       ~12 curated datasets (GDP, CPI, labour, BoP, PPI, retail, trade, building consents, migration, population).
 - source_id: swiid
+  live: true
   scripts:
   - jobs/ingest_swiid.py
   strategy: overwrite_if_changed
@@ -4181,6 +4187,7 @@ sources:
     - 'single parquet (~67KB), columns series_key(SWIID:{variable}:{country_name}), obs_date(Dec-31 of year), value(float64).
       Variables: gini_disp, gini_disp_se, gini_mkt, gini_mkt_se, abs_red, rel_red plus any extra numeric columns found.'
 - source_id: transparency_ti
+  live: true
   scripts:
   - jobs/ingest_transparency.py
   strategy: overwrite_if_changed
