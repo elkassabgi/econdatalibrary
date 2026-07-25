@@ -10,7 +10,7 @@ data-pull step uses to decide which providers to actually download.
 import json
 import os
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT = os.path.join(ROOT, "data", "raw", "dbnomics")
 
 # DBnomics provider_code -> our direct source id (these are DUPLICATES; we already

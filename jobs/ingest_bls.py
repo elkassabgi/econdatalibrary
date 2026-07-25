@@ -37,7 +37,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 RAW = os.path.join(ROOT, "data", "raw", "bls")
 OUT = os.path.join(ROOT, "data", "clean_full", "bls")
 BASE = "https://download.bls.gov/pub/time.series"

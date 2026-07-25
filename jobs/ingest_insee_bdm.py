@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
 
 OUT = os.path.join(ROOT, "data", "clean_full", "insee_bdm")

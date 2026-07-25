@@ -51,7 +51,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 RAW = os.path.join(ROOT, "data", "raw", "noaa")
 OUT = os.path.join(ROOT, "data", "clean_full", "noaa")
 UA = "Econ-Fin Data Library admin@hfdatalibrary.com"

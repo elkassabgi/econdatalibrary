@@ -24,7 +24,7 @@ from collections import defaultdict
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT  = os.path.join(ROOT, "data", "clean_full", "cso")
 JSONRPC_URL = "https://ws.cso.ie/public/api.jsonrpc"
 REST_BASE   = "https://ws.cso.ie/public/api.restful"

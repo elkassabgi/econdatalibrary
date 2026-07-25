@@ -19,7 +19,7 @@ import os
 import pyarrow.parquet as pq
 import pyarrow.compute as pc
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT = os.path.join(ROOT, "data", "clean_full", "bls")
 RAW = os.path.join(ROOT, "data", "raw", "bls")
 

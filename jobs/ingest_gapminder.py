@@ -17,7 +17,7 @@ import csv, datetime as dt, io, os, time
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT  = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT   = os.path.join(ROOT, "data", "clean_full", "gapminder")
 REPO  = "open-numbers/ddf--gapminder--systema_globalis"
 RAWBASE = f"https://raw.githubusercontent.com/{REPO}/master"

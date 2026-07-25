@@ -7,7 +7,7 @@ import os
 import time
 import urllib.request
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 RAW = os.path.join(ROOT, "data", "raw", "census")
 k = open(os.path.join(ROOT, ".env")).read().split("CENSUS_API_KEY=")[1].split()[0]
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}

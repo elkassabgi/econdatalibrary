@@ -29,7 +29,7 @@ import csv, datetime as dt, io, os, re, time
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT  = os.path.join(ROOT, "data", "clean_full", "rba")
 BASE = "https://www.rba.gov.au"
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",

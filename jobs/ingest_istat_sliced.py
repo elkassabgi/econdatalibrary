@@ -42,7 +42,7 @@ import xml.etree.ElementTree as ET
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
 
 # ── Reuse the house helpers from the main SDMX ingester verbatim where we can.

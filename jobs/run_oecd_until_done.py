@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OECD_RAW = os.path.join(ROOT, "data", "raw", "oecd")
 RUNLOG = os.path.join(OECD_RAW, "run.log")
 SUPLOG = os.path.join(OECD_RAW, "supervisor.log")

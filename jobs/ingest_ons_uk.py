@@ -18,7 +18,7 @@ import csv, datetime as dt, io, os, sys, time
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT  = os.path.join(ROOT, "data", "clean_full", "ons_uk")
 BASE = "https://api.beta.ons.gov.uk/v1"
 # ONS bot policy (https://developer.ons.gov.uk/bots/) MANDATES this User-Agent shape:

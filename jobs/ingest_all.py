@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 RUNNER = os.path.join(ROOT, "jobs", "run_connector.py")
 
 # 23 connectors, lightest/fastest first, heavier API crawlers (oecd, imf) last.

@@ -28,7 +28,7 @@ from collections import defaultdict
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 import sys as _sys
 # The shared value-first time-axis resolver lives in THIS module's own repo (jobs/ and
 # core/ are siblings). Derive the repo root from __file__ so `from core import pxweb`

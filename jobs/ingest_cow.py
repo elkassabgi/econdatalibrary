@@ -30,7 +30,7 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT  = os.path.join(ROOT, "data", "clean_full", "cow")
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 BASE = "https://correlatesofwar.org/wp-content/uploads"

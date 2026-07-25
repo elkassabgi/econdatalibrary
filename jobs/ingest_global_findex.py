@@ -17,7 +17,7 @@ import datetime as dt, json, os, time
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT = os.path.join(ROOT, "data", "clean_full", "global_findex")
 SRC = 28
 API = "https://api.worldbank.org/v2"

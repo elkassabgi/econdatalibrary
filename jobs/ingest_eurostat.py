@@ -22,7 +22,7 @@ import sys
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
 RAW = os.path.join(ROOT, "data", "raw", "eurostat")
 OUT = os.path.join(ROOT, "data", "clean_grouped", "eurostat")

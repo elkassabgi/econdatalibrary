@@ -20,7 +20,7 @@ import datetime as dt, os, sys, time
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT  = os.path.join(ROOT, "data", "clean_full", "comtrade")
 BASE = "https://comtradeapi.un.org/public/v1/preview"
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",

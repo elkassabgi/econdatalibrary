@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 RAW = os.path.join(ROOT, "data", "raw", "noaa")
 PY = sys.executable
 JOB = os.path.join(ROOT, "jobs", "ingest_noaa.py")
