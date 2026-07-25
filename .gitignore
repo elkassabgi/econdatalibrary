@@ -76,3 +76,23 @@ OVERSIGHT_REPORT_*.md
 R2_SETUP.md
 mcp/MCP_REGISTRATION_PLAYBOOK.md
 .session-catchup/
+
+# Stale pre-purge catalog artifacts (generated 2026-06-24, regenerable via
+# catalog/gen_catalog.py). They enumerate 29 GATED sources with observation
+# counts — incl. fred=48,048,976 and famafrench=238,797 — i.e. a public,
+# machine-readable claim to hold data we were never licensed to redistribute.
+# The LIVE site (catalog/site/*.html) is clean and unaffected.
+catalog/catalog.json
+catalog/catalog.html
+# Credential-location maps (which key lives in which file on the owner's disk)
+# plus hundreds of absolute D:/ paths.
+UPDATE_CAPABILITY_MATRIX.json
+UPDATE_CAPABILITY_MATRIX.md
+# Untracked-but-unignored: a single `git add -A` would have committed these.
+# .wrangler holds wrangler-account.json with a personal email address.
+.wrangler/
+_rollout_backups/
+_updater_proof/
+mcp/mcp-publisher.exe
+mcp/mcp-publisher.tar.gz
+dbnomics_license_manifest.json
