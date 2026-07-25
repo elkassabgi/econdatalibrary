@@ -164,6 +164,10 @@ jobs:
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           RUN_STATUS: ${{ job.status }}
+          # Recipient is a secret so no personal address sits in a public repo.
+          # NOTE: until the DIGEST_TO repo secret is created this resolves to "",
+          # and send_digest.py falls back to admin@hfdatalibrary.com.
+          DIGEST_TO: ${{ secrets.DIGEST_TO }}
         run: python updater/send_digest.py
 
       - name: Heartbeat commit (cron-death guard)
@@ -190,14 +194,21 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
+          # checkout ran with persist-credentials:false, so `origin` carries NO auth and an
+          # unauthenticated fetch against this PRIVATE repo fails outright (under `bash -e`
+          # that aborts the step on attempt 1 and the push below is never reached). Both the
+          # fetch AND the push must therefore use the explicitly-injected token, and we reset
+          # to FETCH_HEAD rather than origin/<branch> so we don't depend on refs/remotes being
+          # updated by an authenticated fetch.
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           for attempt in 1 2 3; do
-            git fetch origin "${GITHUB_REF_NAME}"
-            git reset --hard "origin/${GITHUB_REF_NAME}"
+            git fetch "$REMOTE" "${GITHUB_REF_NAME}"
+            git reset --hard FETCH_HEAD
             mkdir -p ops
             echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) run=${{ github.run_id }}" > ops/last_run.txt
             git add ops/last_run.txt
             git commit -m "heartbeat: run ${{ github.run_id }}"
-            if git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:"${GITHUB_REF_NAME}"; then
+            if git push "$REMOTE" HEAD:"${GITHUB_REF_NAME}"; then
               exit 0
             fi
             echo "heartbeat push raced another writer (attempt ${attempt}); rebuilding on fresh origin"
