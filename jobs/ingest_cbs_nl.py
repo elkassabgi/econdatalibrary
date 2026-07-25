@@ -15,7 +15,7 @@ Run: python jobs/ingest_cbs_nl.py
      python jobs/ingest_cbs_nl.py --only 83439NED,37230NED
 """
 from __future__ import annotations
-import datetime as dt, json, os, sys, time
+import datetime as dt, json, os, sys, time, urllib.parse
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
@@ -138,8 +138,39 @@ def get_table_columns(table_id: str) -> list[str] | None:
     return list(rows[0].keys())
 
 
+PARTITION_MIN_ROWS = 3_000_000     # below this, deep-offset cost is not worth partitioning
+
+
+def table_row_count(table_id: str) -> int | None:
+    """Total TypedDataSet rows, or None if the endpoint won't say."""
+    try:
+        r = requests.get(f"{BASE}/{table_id}/TypedDataSet/$count", headers=UA, timeout=120)
+        return int(r.text.strip()) if r.status_code == 200 and r.text.strip().isdigit() else None
+    except Exception:
+        return None
+
+
+def period_keys(table_id: str) -> list[str]:
+    """The table's Perioden dimension values (partition keys), oldest first."""
+    data = get_json(f"{BASE}/{table_id}/Perioden?$format=json")
+    if not data:
+        return []
+    rows = data.get("value", []) if isinstance(data, dict) else data
+    return [r.get("Key") for r in rows if r.get("Key")]
+
+
 def ingest_table(table_id: str, title: str, out_dir: str) -> int:
-    """Download all observations for one CBS table. Returns obs count."""
+    """Download all observations for one CBS table. Returns obs count.
+
+    PARTITIONING: `$skip` on this API is O(offset) — measured on 71493ned,
+    a 10,000-row page costs 2.8 s at $skip=0, 14.9 s at 40M and 46.1 s at 144M.
+    Walking a large table with one growing offset is therefore QUADRATIC: 282.7M
+    rows works out to ~14.8 days. Splitting on the Perioden dimension and filtering
+    (`$filter=Perioden eq '...'`) keeps every offset shallow — the same table becomes
+    22 partitions of ~12.8M rows, ~37 h, and each partition is independently
+    resumable. Bigger pages do not help ($top is capped at 10,000 server-side) and
+    neither does $select (payload halves, time does not).
+    """
     out_path = os.path.join(out_dir, f"{table_id}.parquet")
     if os.path.exists(out_path):
         n = pq.read_metadata(out_path).num_rows
@@ -200,25 +231,49 @@ def ingest_table(table_id: str, title: str, out_dir: str) -> int:
             for i in range(int(ck.get("parts", 0))):
                 pq.read_metadata(part_path(i))  # raises if missing or corrupt
             skip, parts, written = int(ck["skip"]), int(ck["parts"]), int(ck["written"])
+            pidx = int(ck.get("pidx", 0))
             log(f"  {table_id}: resuming at skip={skip:,} ({parts} parts, {written:,} obs already flushed)")
         except Exception:
             for i in range(1000):
                 if os.path.exists(part_path(i)):
                     os.remove(part_path(i))
             os.remove(ckpt_path)
-            skip = parts = written = 0
+            skip = parts = written = pidx = 0
+
+    # Partition plan. `partitions == [None]` reproduces the original single-stream
+    # walk exactly; a list of period keys splits the table so no offset grows deep.
+    partitions = [None]
+    if period_col:
+        total = table_row_count(table_id)
+        if total and total >= PARTITION_MIN_ROWS:
+            pk = period_keys(table_id)
+            if len(pk) > 1:
+                partitions = pk
+                log(f"  {table_id}: {total:,} rows -> partitioning by {period_col} "
+                    f"into {len(pk)} slices (avoids O(offset) deep-$skip cost)")
+
     last_ckpt_skip = skip
-    while True:
+    while pidx < len(partitions):
+        part_val = partitions[pidx]
+        flt = ""
+        if part_val is not None:
+            flt = "&$filter=" + urllib.parse.quote(f"{period_col} eq '{part_val}'", safe="")
         url = (f"{BASE}/{table_id}/TypedDataSet"
-               f"?$top={PAGE}&$skip={skip}")
+               f"?$top={PAGE}&$skip={skip}{flt}")
         data = get_json(url)
         if not data:
-            if skip > 0:
+            if skip > 0 or pidx > 0:
                 fetch_error = True   # died mid-table, not a dead table
             break
         rows = data.get("value", []) if isinstance(data, dict) else data
         if not rows:
-            break
+            # this partition is exhausted -> advance to the next, offset back to 0
+            pidx += 1
+            skip = 0
+            last_ckpt_skip = 0
+            with open(ckpt_path, "w") as f:
+                json.dump({"skip": 0, "parts": parts, "written": written, "pidx": pidx}, f)
+            continue
 
         for row in rows:
             period_raw = row.get(period_col or "Perioden", "")
@@ -269,19 +324,29 @@ def ingest_table(table_id: str, title: str, out_dir: str) -> int:
             written += len(all_vals)
             all_keys, all_dates, all_vals = [], [], []
             with open(ckpt_path, "w") as f:
-                json.dump({"skip": skip, "parts": parts, "written": written}, f)
+                json.dump({"skip": skip, "parts": parts, "written": written, "pidx": pidx}, f)
             last_ckpt_skip = skip
             log(f"    {table_id}: flushed {written:,} obs (part {parts}, skip={skip:,})")
         elif rows_since_ckpt >= FLUSH_ROWS:
             # buffer empty (sparse stretch) but many source rows scanned — persist
             # the skip offset so a reboot doesn't re-scan them (no part to write).
             with open(ckpt_path, "w") as f:
-                json.dump({"skip": skip, "parts": parts, "written": written}, f)
+                json.dump({"skip": skip, "parts": parts, "written": written, "pidx": pidx}, f)
             last_ckpt_skip = skip
         if len(rows) < PAGE:
-            break
+            # short page = end of THIS partition, not necessarily the table
+            pidx += 1
+            skip = 0
+            last_ckpt_skip = 0
+            with open(ckpt_path, "w") as f:
+                json.dump({"skip": 0, "parts": parts, "written": written, "pidx": pidx}, f)
+            if pidx >= len(partitions):
+                break
+            time.sleep(0.5)
+            continue
         if skip % 50000 == 0:
-            log(f"    {table_id}: {skip:,} rows fetched...")
+            lbl = f" [{part_val}]" if part_val is not None else ""
+            log(f"    {table_id}{lbl}: {skip:,} rows fetched...")
         time.sleep(0.5)
 
     if fetch_error:
@@ -296,7 +361,7 @@ def ingest_table(table_id: str, title: str, out_dir: str) -> int:
             parts += 1
             written += len(all_vals)
             with open(ckpt_path, "w") as f:
-                json.dump({"skip": skip, "parts": parts, "written": written}, f)
+                json.dump({"skip": skip, "parts": parts, "written": written, "pidx": pidx}, f)
         log(f"  WARNING {table_id}: fetch failed at skip={skip:,}; "
             f"{written:,} obs checkpointed for resume next run")
         return 0
