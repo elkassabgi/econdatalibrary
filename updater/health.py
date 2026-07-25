@@ -15,7 +15,7 @@ freshness is judged on DATA recency (last_obs drift), not just on last_success.
 from __future__ import annotations
 import json
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 
 from . import config, registry
 from .state import StateStore
@@ -88,13 +88,27 @@ def _business_age_days(iso, now) -> "float | None":
         obs = datetime.fromisoformat(s)
     except Exception:
         return cal
-    weekend = 0
+    weekend = 0.0
     d = obs.date()
     while d < now.date():
-        if d.weekday() >= 5:  # Sat/Sun between obs and now
-            weekend += 1
+        if d.weekday() >= 5:  # whole Sat/Sun days between obs and now
+            weekend += 1.0
         d += timedelta(days=1)
-    return max(0.0, cal - weekend)
+    # ...and the PARTIAL day we are standing in. The loop stops at now.date(), so the
+    # hours elapsed so far TODAY were previously counted as business time even when today
+    # is a Saturday or Sunday. That lone gap re-created the exact false alarm this function
+    # exists to prevent: on Sat 2026-07-25 an obs of Wed 07-22 scored 3.27 "business" days
+    # and tripped the >3.0 daily gate, while bcrp and ofr in fact held their upstreams'
+    # newest observation (both verified 2026-07-22 by direct query). Deducting today's
+    # elapsed fraction makes weekend ages land on whole days, so a source that is level
+    # with upstream stays quiet Sat/Sun and only goes RED once a business day passes it by.
+    if now.weekday() >= 5:
+        weekend += (now - datetime.combine(now.date(), dtime(0), tzinfo=now.tzinfo)).total_seconds() / 86400.0
+    # Round before returning: cal and weekend are both fractions of a day, so their
+    # difference lands on values like 3.0000000000000004 at some times of day but 3.0 at
+    # others. Compared against a whole-day threshold that made the gate flap by the HOUR —
+    # red at 13:00 Sunday, green at 02:00 and 23:00 the same day, on identical data.
+    return round(max(0.0, cal - weekend), 6)
 
 
 def assess(store=None) -> dict:
