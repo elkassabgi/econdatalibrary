@@ -70,8 +70,21 @@ Options, cheapest last:
 2. Have derive READ through the blob layer so it resolves against the complete R2 store —
    correct, but the resolver currently reads local paths via `ds.dataset()`.
 
-Still open underneath: with the flow-grain mapping in place dst STILL had some unmapped key
-(otherwise derive-all would not have fired at all). Find that key class before tuning anything.
+**The prerequisite is now closed, and it may dissolve the problem in practice.** The unmapped
+key class was a bug in the flow rule itself: dropping `=`-bearing segments breaks when a
+dimension VALUE contains a colon (hagstofa's NACE code `Atvinnugrein=K: 65` split into
+`Atvinnugrein=K` — dropped — and ` 65` — kept), corrupting the flow to `…THJ11002.px: 65`.
+658 hagstofa keys were unmapped that way. `_flow_of()` now truncates at the table-id segment
+instead: 658/658 map, and all nine sources plus frankfurter/nyfed show zero unmapped at 1,500
+keys each.
+
+Since derive-all only fires when something is unmapped, a source with a clean mapping now
+derives just the flows of its CHANGED keys — which are by construction inside the files the
+run wrote, i.e. exactly what the scratch mirror holds. The mismatch above remains a latent
+trap for any source that DOES have unmapped keys; it is no longer expected on this family.
+
+Worth noting how it was found: a 900-key sample per source scored 100% on BOTH the broken and
+the fixed rule. Only auditing store-flows-not-in-catalog across the FULL store exposed it.
 
 ## Open decisions (need Ahmed)
 
