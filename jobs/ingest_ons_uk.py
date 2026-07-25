@@ -37,6 +37,33 @@ RATE = 0.7          # <= 15 req/10s, the tightest ONS tier
 def log(m): print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
 
 
+def retry_after_seconds(resp, default: int = 10) -> int:
+    """Seconds to wait per the server's Retry-After header.
+
+    Handles BOTH forms the spec allows (RFC 9110 / MDN): <delay-seconds> and <http-date>.
+    ONS publishes (developer.ons.gov.uk/bots) that ignoring this header can earn a block of
+    "up to 1 hour" — which is exactly what kept killing CI runs. Clamped to [1, 120] so a
+    hostile or bogus value can't park a job for an hour.
+    """
+    raw = (resp.headers.get("Retry-After") or "").strip()
+    wait = None
+    if raw.isdigit():
+        wait = int(raw)
+    elif raw:
+        try:
+            from email.utils import parsedate_to_datetime
+            import datetime as _dt
+            when = parsedate_to_datetime(raw)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=_dt.timezone.utc)
+            wait = int((when - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
+        except Exception:
+            wait = None
+    if wait is None:
+        wait = default
+    return min(max(wait, 1), 120) + 1
+
+
 def get_json(url: str, retries: int = 4) -> dict | list | None:
     for attempt in range(retries):
         try:
@@ -46,7 +73,12 @@ def get_json(url: str, retries: int = 4) -> dict | list | None:
             if r.status_code in (400, 404):
                 return None
             if r.status_code == 429:
-                time.sleep(60); continue
+                # Was a blind 60s sleep that ignored the header — 4 retries meant up to 4
+                # MINUTES of silence per call and kept us inside ONS's cooldown, renewing
+                # the block. The API host throttles too, not just the CSV host.
+                w = retry_after_seconds(r)
+                log(f"  API 429 — honouring Retry-After: sleeping {w}s (attempt {attempt+1})")
+                time.sleep(w); continue
             log(f"  HTTP {r.status_code} attempt {attempt+1}: {url[-80:]}")
         except Exception as e:
             log(f"  ERR attempt {attempt+1}: {e}")
@@ -73,26 +105,7 @@ def get_csv_bytes(url: str, retries: int = 4) -> bytes | None:
             if r.status_code in (400, 404):
                 return None
             if r.status_code == 429:
-                # Retry-After is EITHER <delay-seconds> OR an <http-date> (RFC 9110 / MDN).
-                # ONS currently sends seconds, but parse both so a switch to the date form
-                # doesn't silently degrade us back to a guessed wait.
-                raw = (r.headers.get("Retry-After") or "").strip()
-                wait = None
-                if raw.isdigit():
-                    wait = int(raw)
-                elif raw:
-                    try:
-                        from email.utils import parsedate_to_datetime
-                        import datetime as _dt
-                        when = parsedate_to_datetime(raw)
-                        if when.tzinfo is None:
-                            when = when.replace(tzinfo=_dt.timezone.utc)
-                        wait = int((when - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
-                    except Exception:
-                        wait = None
-                if wait is None:
-                    wait = 10
-                wait = min(max(wait, 1), 120) + 1
+                wait = retry_after_seconds(r, default=10)
                 log(f"  CSV 429 — honouring Retry-After: sleeping {wait}s (attempt {attempt+1})")
                 time.sleep(wait)
                 continue
