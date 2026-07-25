@@ -22,7 +22,9 @@ import sys
 import urllib.request
 
 FROM = "Econ Data Library <noreply@hfdatalibrary.com>"
-TO = "admin@hfdatalibrary.com"
+# Recipient comes from the environment (DIGEST_TO secret in CI) — never hardcode a
+# personal address in a public repo. Falls back to the project contact address.
+TO = os.environ.get("DIGEST_TO", "admin@hfdatalibrary.com")
 STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "data", "_aqueduct", "state.db")
 
