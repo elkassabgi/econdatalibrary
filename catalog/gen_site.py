@@ -1006,7 +1006,7 @@ def jsonld_script(obj):
 # ---------------------------------------------------------------------------- #
 SOURCE_EMBEDS = {
     # Social Progress Imperative — written permission from REDACTED
-    # (REDACTED, 2026-07-14, "Access for Econ Data Library"):
+    # (written permission on file from Social Progress Imperative, 2026-07-14):
     # embed of the PUBLIC Tableau of the 2026 Global Social Progress Index,
     # student/academic use only, no charge. The DATASET itself is explicitly NOT
     # licensed for free redistribution -> this source stays metadata-only.

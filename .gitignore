@@ -46,3 +46,33 @@ scratch/
 
 # MCP registry DNS-auth private seed (Ed25519) — never commit
 mcp/dns_key.hex
+
+# ---------------------------------------------------------------------------
+# PRIVATE — never commit. Owner-only working material. This repo is PUBLIC.
+# Third-party correspondence (verbatim private replies from named people at
+# other organisations, incl. refusals, internal markings and quoted fees),
+# internal audit/session notes, credential-location maps, and live-security
+# writeups. Publishing any of these breaches counterparties' confidence or
+# hands out an attack map.
+# ---------------------------------------------------------------------------
+REDISTRIBUTION_EMAIL_TRAIL.md
+REDISTRIBUTION_COMPLIANCE.md
+PERMISSION_EMAIL_DRAFTS.md
+THIRD_PARTY_CARVEOUTS.md
+emails/
+AUTH_SSO_PLAN.md
+AUTH_SSO_BUILD_LOG.md
+AUTH_SSO_FRONTEND_ROLLOUT.md
+AUTH_SSO_HANDOFF.md
+DEPLOY_LOCK_SSO.md
+PHASE3_BUILD_BRIEF_3.2_3.3.md
+RESUME_DB_DOC_TASK.md
+docs/DATABASE_REFERENCE.md
+CUTOVER_AND_BACKFILL_PLAN.md
+STRATEGY.md
+STATUS.md
+SESSION_LOG_*.md
+OVERSIGHT_REPORT_*.md
+R2_SETUP.md
+mcp/MCP_REGISTRATION_PLAYBOOK.md
+.session-catchup/
