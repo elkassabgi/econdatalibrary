@@ -42,6 +42,37 @@ bottleneck; **proving** is, and CI is serialized to one run at a time by the
 Returning `partial` locally (worth reading before promoting): `sec_edgar` (3.12 GB), `pip`,
 `ember`, `gleif`, `cso`, `idb`, `defillama`.
 
+## The derive-all fallback is incompatible with the CI scratch mirror
+
+Established by measurement, not inference — record this before re-diagnosing it:
+
+* Both stores are **complete**. Local: 22,793 / 22,793 catalog flows present across the nine
+  PxWeb sources. R2: dst 706 / 706 parquets, 1,963 / 1,963 flows. Nothing is missing anywhere.
+* In CI (`AQUEDUCT_BACKEND=r2`) `blob.write_table_atomic` PUTs to R2 **and keeps the local
+  file as a "scratch-store mirror"** (`blob.py:43-46`) so the same-run CSV derive has the
+  bytes without re-downloading.
+* `ECONDL_DATA` is never set in the workflow, so `default_data_root()` resolves to
+  `<repo>/data/clean_full` — on a runner that contains **only the files this run wrote**.
+* `_DERIVE_ALL_CAP = 5000` (`orchestrate.py:138`): if ANY changed key fails to map, a source
+  with ≤ 5000 catalog ids re-derives **every** id.
+
+Those last two cannot both hold. dst has 1,963 ids ≤ 5000, so it asked to derive all 1,963
+while only **12 files** were on the runner → `csv_derive failed 1923/1963`, every failure
+"zero rows matched in 12 files". `bfs` passed only because it is a **single-file** source, so
+its one written file held everything.
+
+So the design assumes *the changed series always live inside the files this run just wrote* —
+true for one-file-per-unit sources, false for any multi-file source that hits derive-all.
+
+Options, cheapest last:
+1. Skip derive-all when the backend is r2 and derive only the mapped ids (honest, cheap; still
+   reports the unmapped keys as a coherence gap rather than 1,923 failing derives).
+2. Have derive READ through the blob layer so it resolves against the complete R2 store —
+   correct, but the resolver currently reads local paths via `ds.dataset()`.
+
+Still open underneath: with the flow-grain mapping in place dst STILL had some unmapped key
+(otherwise derive-all would not have fired at all). Find that key class before tuning anything.
+
 ## Open decisions (need Ahmed)
 
 **1. `ksh` → `ksh_stadat` migration is half-done, in the worst direction.**
