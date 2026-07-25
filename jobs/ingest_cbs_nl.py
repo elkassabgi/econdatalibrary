@@ -218,6 +218,10 @@ def ingest_table(table_id: str, title: str, out_dir: str) -> int:
     skip = 0
     parts = 0
     written = 0
+    pidx = 0          # index into `partitions`; MUST be initialised here, not only in
+                      # the checkpoint-resume branch — a table with no checkpoint (the
+                      # normal case, and every table after a checkpoint reset) would
+                      # otherwise hit UnboundLocalError on the first loop test.
 
     # Resume mid-table from checkpoint (reboot/crash during a huge download).
     # Flushes only happen at page boundaries, so resuming at the saved $skip
