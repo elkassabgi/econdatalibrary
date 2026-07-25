@@ -33,6 +33,11 @@ on:
         required: false
         type: boolean
         default: false
+      force:
+        description: 'Ignore cadence + change-detection. REQUIRED to prove a fetcher: without it a not-due source reports "0 unit(s) processed" and the run goes GREEN having exercised nothing.'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: aqueduct-updater
@@ -121,6 +126,7 @@ jobs:
         env:
           INPUT_SOURCE: ${{ inputs.source }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_FORCE: ${{ inputs.force }}
         run: |
           args=""
           # INPUT_SOURCE may be a single id or a comma/space-separated LIST (batch proof of
@@ -139,6 +145,11 @@ jobs:
             set +f
           fi
           if [ "${INPUT_DRY_RUN}" = "true" ]; then args="${args} --dry-run"; fi
+          # --force is what makes a dispatch an actual PROOF. A plain --source run still
+          # honours the cadence gate, so proving a source that isn't due prints
+          # "0 unit(s) processed" and the run goes green having exercised no fetcher code
+          # at all — a green light that means nothing (R35: configured is not running).
+          if [ "${INPUT_FORCE}" = "true" ]; then args="${args} --force"; fi
 
           # Sample memory alongside the run so an OOM kill is PROVEN, not inferred. A step
           # that vanishes with no output and no exit code is indistinguishable from a
