@@ -124,7 +124,10 @@ def update(unit, since) -> Result:
             tally.transient_unit()
             continue
         if not keys:
-            tally.structural_unit()        # real body, zero rows: don't advance the validator
+            # Real body, zero rows. Empty (not structural): finalize() raises on any structural
+            # unit, which would abort the source and stop the OTHER file from publishing too.
+            # The validator is deliberately NOT advanced, so this file retries next tick.
+            tally.empty_unit()
             continue
 
         tbl = pa.table({

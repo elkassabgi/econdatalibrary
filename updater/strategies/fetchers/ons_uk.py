@@ -148,7 +148,11 @@ def update(unit, since) -> Result:
                     tally.transient_unit()
                     continue
                 if not keys:
-                    tally.structural_unit()      # real body, zero parseable rows
+                    # Real body, zero parseable rows. NOT structural: finalize() raises on any
+                    # structural unit, which would abort the whole source and block the other
+                    # ~23 datasets from publishing (run 30133686534: 2/25 -> nothing merged).
+                    # Empty + vintage deliberately NOT advanced, so it retries next tick.
+                    tally.empty_unit()
                     continue
                 tbl = pa.table({
                     "series_key": pa.array(keys, pa.string()),

@@ -161,7 +161,13 @@ def update(unit, since) -> Result:
                 if status == "empty":
                     tally.empty_unit(); continue
                 if status == "structural":
-                    tally.structural_unit(); continue
+                    # A single chart that parses to zero rows must NOT be structural:
+                    # finalize() RAISES DefinitiveError on any structural unit, which would
+                    # abort the whole source and stop the other ~145 charts from publishing
+                    # (run 30133686534: 5/150 zero-row charts -> nothing merged at all).
+                    # Count it empty and deliberately do NOT advance its vintage, so it is
+                    # retried next tick and a persistent break still surfaces.
+                    tally.empty_unit(); continue
 
                 keys, dates, vals = parsed[0], parsed[1], parsed[2]
                 tbl = pa.table({

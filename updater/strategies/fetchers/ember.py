@@ -155,9 +155,13 @@ def update(unit, since) -> Result:
                 tally.empty_unit()
                 sidecar[ds_id] = cur_v
             else:
-                # a KNOWN parser family produced zero rows -> real schema drift. Keep the data,
-                # flag it, and do NOT advance the vintage so it re-surfaces next tick.
-                tally.structural_unit()
+                # A KNOWN parser family produced zero rows — suspicious, but NOT structural:
+                # finalize() RAISES DefinitiveError on any structural unit, which aborts the
+                # whole source so none of the other datasets publish (run 30133686534: 11/32
+                # such files -> nothing merged at all). Count it empty and deliberately do NOT
+                # advance the vintage, so the file is re-examined every tick until it yields
+                # rows — a persistent break stays visible instead of being silently sealed in.
+                tally.empty_unit()
             continue
 
         tbl = _rows_to_table(rows)
