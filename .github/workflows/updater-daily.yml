@@ -53,6 +53,12 @@ jobs:
     permissions:
       contents: write
     env:
+      # Stream Python output instead of block-buffering it. Without this, a step that is
+      # KILLED (OOM -> SIGTERM, which GitHub surfaces as "The operation was canceled")
+      # loses everything it printed, leaving a log that ends at the env dump. Three ons_uk
+      # investigations ran blind against exactly that empty log; a buffered process that
+      # dies tells you nothing about WHERE it died.
+      PYTHONUNBUFFERED: "1"
       R2_WRITE_ENDPOINT: ${{ secrets.R2_WRITE_ENDPOINT }}
       R2_WRITE_ACCESS_KEY_ID: ${{ secrets.R2_WRITE_ACCESS_KEY_ID }}
       R2_WRITE_SECRET_ACCESS_KEY: ${{ secrets.R2_WRITE_SECRET_ACCESS_KEY }}
@@ -133,7 +139,28 @@ jobs:
             set +f
           fi
           if [ "${INPUT_DRY_RUN}" = "true" ]; then args="${args} --dry-run"; fi
+
+          # Sample memory alongside the run so an OOM kill is PROVEN, not inferred. A step
+          # that vanishes with no output and no exit code is indistinguishable from a
+          # network hang, a rate-limit block, or a crash -- and guessing between them cost
+          # three ons_uk runs. This prints total/available MB every 15s and reports the
+          # real exit status (137=SIGKILL/OOM, 143=SIGTERM) instead of swallowing it.
+          echo "runner memory at start:"; free -m | sed 's/^/    /'
+          ( while :; do
+              sleep 15
+              echo "    [mem] $(free -m | awk '/^Mem:/{print "used="$3"MB avail="$7"MB"}')"
+            done ) &
+          MEMWATCH=$!
+          set +e
           python -m updater.run ${args}
+          rc=$?
+          set -e
+          kill $MEMWATCH 2>/dev/null || true
+          echo "updater exit code: ${rc}"
+          if [ "$rc" = "137" ] || [ "$rc" = "143" ]; then
+            echo "::error::updater was KILLED (exit ${rc}) — out of memory on the runner, not a source failure"
+          fi
+          exit $rc
 
       - name: Push state to R2 (compare-and-swap + dated backup)
         # Aborts loudly (exit 2) if the remote ETag moved — another writer won;
