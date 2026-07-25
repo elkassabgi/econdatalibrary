@@ -21,9 +21,17 @@ import requests
 ROOT = r"D:/research/econfindatalibrary"
 OUT  = os.path.join(ROOT, "data", "clean_full", "ons_uk")
 BASE = "https://api.beta.ons.gov.uk/v1"
-UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
+# ONS bot policy (https://developer.ons.gov.uk/bots/) MANDATES this User-Agent shape:
+#   botName/Version (organisation-name +http://organisation-site/)
+# and explicitly forbids personal identifying information or personal emails in it — our
+# previous UA embedded an email address and did not match the format at all.
+# Their published limits: 120 req/10s (site+API), 200 req/min, and 15 req/10s for
+# "high demand site assets" (the CSV downloads). Exceeding them returns 429 + Retry-After,
+# and — the part that actually bit us — "If this is not respected our algorithms may impose
+# a block to our services for up to 1 hour." That block is what made CI runs hang and die.
+UA   = {"User-Agent": "EconDataLibrary/1.0 (Elkassabgi Data Library +https://econdatalibrary.com)",
         "Accept": "application/json"}
-RATE = 0.5
+RATE = 0.7          # <= 15 req/10s, the tightest ONS tier
 
 
 def log(m): print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
@@ -47,6 +55,15 @@ def get_json(url: str, retries: int = 4) -> dict | list | None:
 
 
 def get_csv_bytes(url: str, retries: int = 4) -> bytes | None:
+    """Download one dataset CSV, HONOURING the server's Retry-After on 429.
+
+    download.ons.gov.uk sits behind Cloudflare and rate-limits at roughly 5 requests per
+    burst, returning `429` WITH `Retry-After: 10` (verified 2026-07-25). The previous fixed
+    5/10/15/20s backoff ignored that header, so we kept retrying inside the cooldown window
+    and keeping ourselves throttled — and Cloudflare escalates repeat offenders, much harder
+    for datacentre IPs (i.e. CI runners) than for a home connection. Same class of bug as
+    pypa/pip#11006: a client that does not respect Retry-After on 429.
+    """
     hdrs = {**UA, "Accept": "text/csv,application/csv,text/plain"}
     for attempt in range(retries):
         try:
@@ -55,6 +72,30 @@ def get_csv_bytes(url: str, retries: int = 4) -> bytes | None:
                 return r.content
             if r.status_code in (400, 404):
                 return None
+            if r.status_code == 429:
+                # Retry-After is EITHER <delay-seconds> OR an <http-date> (RFC 9110 / MDN).
+                # ONS currently sends seconds, but parse both so a switch to the date form
+                # doesn't silently degrade us back to a guessed wait.
+                raw = (r.headers.get("Retry-After") or "").strip()
+                wait = None
+                if raw.isdigit():
+                    wait = int(raw)
+                elif raw:
+                    try:
+                        from email.utils import parsedate_to_datetime
+                        import datetime as _dt
+                        when = parsedate_to_datetime(raw)
+                        if when.tzinfo is None:
+                            when = when.replace(tzinfo=_dt.timezone.utc)
+                        wait = int((when - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
+                    except Exception:
+                        wait = None
+                if wait is None:
+                    wait = 10
+                wait = min(max(wait, 1), 120) + 1
+                log(f"  CSV 429 — honouring Retry-After: sleeping {wait}s (attempt {attempt+1})")
+                time.sleep(wait)
+                continue
             log(f"  CSV HTTP {r.status_code} attempt {attempt+1}")
         except Exception as e:
             log(f"  CSV ERR attempt {attempt+1}: {e}")
