@@ -3906,6 +3906,7 @@ sources:
       rahvaloendus, sotsiaalelu, keskkond, eri-valdkondade-statistika, Lepetatud_tabelid) plus cached _catalog.json. Each
       subject written once.'
 - source_id: stat_latvia
+  live: true
   scripts:
   - jobs/ingest_stat_latvia.py
   strategy: sdmx_delta
