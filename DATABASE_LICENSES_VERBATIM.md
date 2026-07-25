@@ -28,7 +28,7 @@ The public terms the audit read may say 'permission required' for these, but we 
 
 - `comtrade` — GRANTED in writing (UN Comtrade): 'you can proceed'; holdings must stay <=100,000 records; cite 'UN Comtrade' + link.
 - `kof_globalization` — GRANTED in writing (Prof. Sturm, KOF/ETH Zurich): NC academic re-host; cite 'KOF, ETH Zurich' + link back.
-- `whr` — GRANTED in writing (Gallup/WHR, REDACTED) but SCOPED to the Figure 2.1 summary ONLY; currently re-gated pending trim to that scope.
+- `whr` — GRANTED in writing (Gallup/WHR) but SCOPED to the Figure 2.1 summary ONLY; currently re-gated pending trim to that scope.
 
 ### ⚠️ Needs attention (restricted or unresolved) — review before serving
 
@@ -3069,4 +3069,4 @@ denylist.ts (13 removed, worker version 6e8e9410) + D1 econ-catalog (reservable=
 | stat_estonia | CC BY-SA 4.0 | CLEARED (share-alike) | "Statistics Estonia's open data can be shared under Creative Common (CC) licence BY-SA 4.0" | https://andmed.stat.ee/en/stat |
 | norgesbank | NLOD 2.0 | CLEARED (attrib) | data API registered "Norwegian Licence for Open Government Data" (NLOD_2_0), "can freely be used" | https://data.norge.no/nlod/en/2.0 |
 | unsdg | UNdata Terms of Use | CLEARED (attrib) | "may be copied freely, duplicated and further distributed provided that UNdata is cited as the reference" (governs UNSD data incl. SDG DB; the restrictive un.org WEBSITE terms do NOT apply to the data service) | https://data.un.org/Host.aspx?Content=UNdataUse |
-| whr | whr-granted (written) | CLEARED (NC + attrib) | Gallup/WHR 2026-07-09: "you may proceed with the attribution as you've outlined" (publicly available, copyright, subject to attribution) | REDISTRIBUTION_EMAIL_TRAIL.md |
+| whr | whr-granted (written) | CLEARED (NC + attrib) | Gallup/WHR granted in writing 2026-07-09 (publicly available, copyright, subject to attribution) | permission on file |

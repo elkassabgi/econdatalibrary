@@ -21,7 +21,7 @@ def final_class(r):
 GRANTS = {
     "kof_globalization": "GRANTED in writing (Prof. Sturm, KOF/ETH Zurich): NC academic re-host; cite 'KOF, ETH Zurich' + link back.",
     "comtrade": "GRANTED in writing (UN Comtrade): 'you can proceed'; holdings must stay <=100,000 records; cite 'UN Comtrade' + link.",
-    "whr": "GRANTED in writing (Gallup/WHR, REDACTED) but SCOPED to the Figure 2.1 summary ONLY; currently re-gated pending trim to that scope.",
+    "whr": "GRANTED in writing (Gallup/WHR) but SCOPED to the Figure 2.1 summary ONLY; currently re-gated pending trim to that scope.",
     "gpi": "GRANTED in writing (IEP): CC BY-NC-SA 4.0 (non-commercial + ShareAlike).",
     "gti": "GRANTED in writing (IEP): CC BY-NC-SA 4.0 (non-commercial + ShareAlike).",
     "ppi": "GRANTED in writing (IEP): CC BY-NC-SA 4.0 (non-commercial + ShareAlike).",
