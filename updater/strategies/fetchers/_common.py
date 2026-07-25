@@ -41,6 +41,36 @@ def sane_since(stored_max, *, max_future_days=400):
     return stored_max
 
 
+def retry_after_seconds(resp, default: int = 10) -> int:
+    """Seconds to wait per the server's Retry-After header, or `default` if absent.
+
+    Handles BOTH forms RFC 9110 allows: <delay-seconds> and <http-date>. A backoff that
+    ignores this header keeps retrying INSIDE the server's cooldown, which is how you earn
+    an escalating block rather than recover from a throttle — ONS publishes that it will
+    block for "up to 1 hour" (developer.ons.gov.uk/bots), and statfin's crawl died on a
+    429 after exhausting retries that all slept on a guess instead of the stated wait.
+
+    Clamped to [1, 120] so a bogus or hostile value cannot park a run for hours; +1 so we
+    resume just after the window rather than exactly on its edge.
+    """
+    raw = (resp.headers.get("Retry-After") or "").strip() if getattr(resp, "headers", None) else ""
+    wait = None
+    if raw.isdigit():
+        wait = int(raw)
+    elif raw:
+        try:
+            from email.utils import parsedate_to_datetime
+            when = parsedate_to_datetime(raw)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=_dt.timezone.utc)
+            wait = int((when - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
+        except Exception:
+            wait = None
+    if wait is None:
+        wait = default
+    return min(max(wait, 1), 120) + 1
+
+
 class Deadline:
     """A wall-clock budget for ONE source, checked between sub-units.
 
