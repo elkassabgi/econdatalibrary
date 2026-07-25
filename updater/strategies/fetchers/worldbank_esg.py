@@ -80,7 +80,15 @@ def _fetch_window(ind_id, date_param):
     """Windowed pull for one indicator -> list[record]. Raises TransientError on failure."""
     url = (f"{ig.API}/country/all/indicator/{ind_id}"
            f"?source={ig.WB_SOURCE}&format=json&per_page=20000&date={date_param}")
-    j = ig.get_json(url)
+    try:
+        j = ig.get_json(url)
+    except Exception as e:
+        # get_json raises RuntimeError when retries are exhausted AND (now) immediately on
+        # a permanent 4xx. Neither was caught here before, so a single bad indicator took
+        # the WHOLE source down instead of being isolated. Per the honest-status contract
+        # this is one transient sub-unit: the other ~70 indicators still publish, the run
+        # reports partial, and this one is retried next tick.
+        raise TransientError(f"worldbank_esg: {ind_id} window fetch failed: {e}")
     if not j:
         raise TransientError(f"worldbank_esg: {ind_id} window fetch failed")
     if not isinstance(j, list) or len(j) < 2:
