@@ -70,19 +70,42 @@ def get_catalog() -> list[dict]:
 
 def parse_cbs_period(s: str) -> dt.date | None:
     """Parse CBS period codes.
-    Annual: '2022JJ00' or '2022'
-    Monthly: '2022MM01'
-    Quarterly: '2022KW01'
-    Half-year: '2022HJ01'
+    Annual:      '2022JJ00' or '2022'
+    Monthly:     '2022MM01'
+    Quarterly:   '2022KW01'
+    Half-year:   '2022HJ01'
+    School year: '2000SJ00'   -> CBS titles this "2000/'01"
+    Two school years: '2003X001' -> CBS titles this "2003/'04 - 2004/'05"
+    Exact date:  '19990924'   -> CBS titles this "1999, vrijdag 24 september"
+
+    Returning None here DISCARDS THE WHOLE ROW in ingest_table, values and all. The
+    three formats below were missing, and because every period of an affected table
+    is the same format, that silently discarded 100% of 23 tables — 71493ned alone
+    fetched 144,000,000 rows over 60 hours and wrote zero observations, with the
+    measure column populated the entire time. Anything added here must be verified
+    against the table's own Perioden titles, not guessed from the code letters.
     """
     s = (s or "").strip()
     try:
         if len(s) == 4 and s.isdigit():
             return dt.date(int(s), 12, 31)
+        # Exact date, YYYYMMDD. MUST precede the generic <year><code> branch, which
+        # would read '19990924' as year 1999 + code '09' and fall through to None.
+        if len(s) == 8 and s.isdigit():
+            return dt.date(int(s[:4]), int(s[4:6]), int(s[6:8]))
         if len(s) >= 6 and s[:4].isdigit():
             yr = int(s[:4]); rest = s[4:].upper()
             if rest[:2] == "JJ":          # annual
                 return dt.date(yr, 12, 31)
+            # Dutch academic year yr/yr+1, dated to its END — consistent with JJ
+            # dating an annual period to its last day, and correct for these tables,
+            # whose measures (graduates, enrolments) are realised when the year ends.
+            if rest[:2] == "SJ":          # schooljaar
+                return dt.date(yr + 1, 7, 31)
+            # Span of TWO academic years starting at yr, so it ends with the year
+            # beginning yr+1 -> July of yr+2.
+            if rest[:2] == "X0":          # two-school-year span
+                return dt.date(yr + 2, 7, 31)
             if rest[:2] == "KW":          # quarter
                 q = int(rest[2:4]) if rest[2:4].isdigit() else 0
                 return dt.date(yr, (q-1)*3+1, 1) if 1 <= q <= 4 else None
