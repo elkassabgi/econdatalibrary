@@ -41,6 +41,22 @@ def main() -> None:
         "FROM unit_state ORDER BY source_id").fetchall()
     con.close()
 
+    # unit_state accumulates a row for every source that has EVER run, including ones
+    # since removed from the registry. Those leftovers kept their last status forever, so
+    # the digest reported de-registered sources as failing every single day — norgesbank
+    # and unsdg were both counted as `partial` while being entirely unmanaged (no registry
+    # entry, hence never re-run and never able to recover). Scope the pass/fail verdict to
+    # what we actually manage, but list the orphans explicitly rather than dropping them:
+    # a silent filter would be the same mistake in the other direction.
+    try:
+        from . import registry
+        managed = {e["source_id"] for e in registry.load().get("sources", [])}
+    except Exception:
+        managed = None          # registry unreadable -> report everything, don't hide rows
+    orphans = [r for r in rows if managed is not None and r[0] not in managed]
+    if managed is not None:
+        rows = [r for r in rows if r[0] in managed]
+
     ok = [r for r in rows if r[1] in ("ok", "no_change")]
     warn = [r for r in rows if r[1] in ("partial", "transient_fail")]
     bad = [r for r in rows if r[1] not in ("ok", "no_change", "partial", "transient_fail")]
@@ -60,6 +76,11 @@ def main() -> None:
     for r in sorted(warn + bad, key=lambda x: x[0]):
         lines.append(f"  !! {r[0]:20} {r[1]:15} last_obs={r[2] or '—'}  err={str(r[4] or '')[:90]}")
     if warn or bad:
+        lines.append("")
+    if orphans:
+        lines.append(f"  ({len(orphans)} unmanaged leftover state row(s), excluded from the "
+                     f"counts above — no registry entry, so they never re-run: "
+                     f"{', '.join(sorted(r[0] for r in orphans))})")
         lines.append("")
     for r in ok:
         # A "data through" frontier far in the future is a legitimate projection
