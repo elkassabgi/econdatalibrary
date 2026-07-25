@@ -997,6 +997,21 @@ _STAMP_ID = {"worldbank_esg", "worldbank", "hf_equities"}
 
 _GENERIC_SKIP = ("__series.parquet",)
 
+# FLOW-GRAIN sources: the catalog id names a TABLE (a PxWeb flow), while the store keys
+# it one row per SERIES — the flow id followed by one `dim=value` segment per dimension:
+#   catalog  stat_latvia:LV:OSP_OD:apsekojumi:arodizgl:1999_2005:ARA30.px
+#   store    LV:OSP_OD:apsekojumi:arodizgl:1999_2005:ARA30.px:ContentsCode=…:…=0
+# An exact key match therefore finds nothing at all: every one of stat_latvia's 1,952
+# catalog ids failed to derive with "zero rows matched in 16 files" (CI run 30148200117),
+# and the same holds for the other eight. These sources resolve by PREFIX instead, so a
+# flow yields every series in its table — which is the point of cataloguing them at flow
+# grain (~40k tables) rather than per series (millions).
+# The trailing ":" in the prefix is load-bearing: without it `…ARA3.px` would also match
+# `…ARA30.px`. Kept as an explicit set rather than making the generic resolver
+# prefix-match everywhere, which would silently change behaviour for ~200 other sources.
+_FLOW_GRAIN = {"stat_latvia", "stat_estonia", "ssb", "bfs", "dst",
+               "statfin", "hagstofa", "stat_slovenia", "scb"}
+
 
 def _resolve_generic_long(series_id: str, root: str) -> Resolution:
     """Generic resolver for any UNIFORM-LONG source: catalog id is exactly
@@ -1023,7 +1038,12 @@ def _resolve_generic_long(series_id: str, root: str) -> Resolution:
             f"{series_id}: source {src!r} is not uniform-long (schema {sorted(cols)}); "
             "it needs an explicit resolver, not the generic one.")
     path = files if len(files) > 1 else files[0]
-    return Resolution(series_id, src, path, key_col, pc.equal(ds.field(key_col), native))
+    if src in _FLOW_GRAIN:
+        # One flow == every series whose key begins "<flow>:" (see _FLOW_GRAIN).
+        pred = pc.starts_with(ds.field(key_col), native + ":")
+    else:
+        pred = pc.equal(ds.field(key_col), native)
+    return Resolution(series_id, src, path, key_col, pred)
 
 
 def supported_sources() -> list[str]:
