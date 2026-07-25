@@ -55,7 +55,7 @@ import pyarrow.parquet as pq
 import requests
 from lxml import etree
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 RAW = os.path.join(ROOT, "data", "raw", "fed_board")
 OUT = os.path.join(ROOT, "data", "clean_full", "fed_board")
 OUTPUT_URL = "https://www.federalreserve.gov/datadownload/Output.aspx"

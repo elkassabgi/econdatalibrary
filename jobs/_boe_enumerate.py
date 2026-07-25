@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 RAW = os.path.join(ROOT, "data", "raw", "boe")
 CATCACHE = os.path.join(RAW, "_cat_cache")
 CATS_JSON = os.path.join(RAW, "_categories.json")

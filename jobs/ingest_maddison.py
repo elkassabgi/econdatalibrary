@@ -15,7 +15,7 @@ import datetime as dt, io, os, time
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT  = os.path.join(ROOT, "data", "clean_full", "maddison")
 # mpd2023 not yet on main site; use 2020 (most complete) + Dataverse 2023 as fallback
 URLS = [

@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 RUNNER = os.path.join(ROOT, "jobs", "run_connector.py")
 STATE_FILE = os.path.join(ROOT, "data", "_last_run.json")
 

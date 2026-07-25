@@ -19,7 +19,7 @@ import datetime as dt, json, os, sys, time, urllib.parse
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT  = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT   = os.path.join(ROOT, "data", "clean_full", "cbs_nl")
 CAT   = "https://opendata.cbs.nl/ODataCatalog/Tables"
 BASE  = "https://opendata.cbs.nl/ODataFeed/odata"   # ODataApi doesn't support $skip; ODataFeed does

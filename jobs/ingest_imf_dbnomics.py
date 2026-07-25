@@ -33,7 +33,7 @@ import datetime as dt, os, sys, time
 import requests
 import pyarrow as pa, pyarrow.parquet as pq
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 
 DBNOMICS  = "https://api.db.nomics.world/v22"

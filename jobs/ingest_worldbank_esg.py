@@ -39,7 +39,7 @@ import urllib.request
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
 
 SOURCE_ID = "worldbank_esg"

@@ -20,7 +20,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pyreadr
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT  = os.path.join(ROOT, "data", "clean_full", "vdem")
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 REPO = "https://raw.githubusercontent.com/vdeminstitute/vdemdata/master/data"

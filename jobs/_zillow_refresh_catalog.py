@@ -4,7 +4,7 @@ rewrite data/_zillow_files.json from the LIVE page so we crawl the current catal
 import json
 import os
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 LIVE = os.path.join(ROOT, "data", "_zillow_page_live.html")
 OUTJSON = os.path.join(ROOT, "data", "_zillow_files.json")
 

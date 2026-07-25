@@ -22,7 +22,7 @@ import csv, datetime as dt, io, os, time
 import requests
 import pyarrow as pa, pyarrow.parquet as pq
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT  = os.path.join(ROOT, "data", "clean_full", "barro_lee")
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 

@@ -36,7 +36,7 @@ from email.utils import parsedate_to_datetime
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT  = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT   = os.path.join(ROOT, "data", "clean_full", "gus_dbw")
 CACHE = os.path.join(OUT, "_cache")
 PARTS = os.path.join(OUT, "parts")

@@ -24,7 +24,7 @@ import requests
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT  = os.path.join(ROOT, "data", "clean_full", "harvard_atlas")
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 DV   = "https://dataverse.harvard.edu/api/access/datafile"  # /access/datafile/{id}

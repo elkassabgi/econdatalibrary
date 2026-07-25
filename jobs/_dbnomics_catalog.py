@@ -22,7 +22,7 @@ import requests
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT = os.path.join(ROOT, "data", "raw", "dbnomics")
 CKPT = os.path.join(OUT, "_ckpt_datasets")
 API = "https://api.db.nomics.world/v22"

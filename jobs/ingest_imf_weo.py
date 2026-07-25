@@ -22,7 +22,7 @@ import datetime as dt, os, time
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT  = os.path.join(ROOT, "data", "clean_full", "imf_weo")
 BASE = "https://www.imf.org/external/datamapper/api/v1"
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",

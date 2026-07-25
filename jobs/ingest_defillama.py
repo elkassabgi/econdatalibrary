@@ -34,7 +34,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT = os.path.join(ROOT, "data", "clean_full", "defillama")
 UA = "Econ-Fin Data Library admin@hfdatalibrary.com"
 LICENSE = "defillama-open"

@@ -51,7 +51,7 @@ import pyarrow.parquet as pq
 
 warnings.filterwarnings("ignore")
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 RAW = os.path.join(ROOT, "data", "raw", "fhfa")
 OUT = os.path.join(ROOT, "data", "clean_full", "fhfa")
 UA = "Econ-Fin Data Library admin@hfdatalibrary.com"

@@ -14,7 +14,7 @@ import csv, gzip, io, os, sys, time, zipfile
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT = os.path.join(ROOT, "data", "clean_full", "gleif")
 TMP = os.path.join(ROOT, "data", "raw", "gleif")
 UA = "Econ-Fin Data Library admin@hfdatalibrary.com"

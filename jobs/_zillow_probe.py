@@ -6,7 +6,7 @@ import os
 import time
 import urllib.request
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 FILES = os.path.join(ROOT, "data", "_zillow_files.json")
 OUT = os.path.join(ROOT, "data", "_zillow_probe.json")
 UA = "Econ-Fin Data Library admin@hfdatalibrary.com"

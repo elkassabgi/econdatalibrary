@@ -29,7 +29,7 @@ import pyarrow.parquet as pq
 import openpyxl
 import xlrd
 
-ROOT = r"D:/research/econfindatalibrary"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 SIPRI_OUT  = os.path.join(ROOT, "data", "clean_full", "sipri")
 POLITY_OUT = os.path.join(ROOT, "data", "clean_full", "polity")
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
