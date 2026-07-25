@@ -65,7 +65,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, sane_since
+from ._common import Tally, finalize, retry_after_seconds, sane_since
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -83,6 +83,20 @@ SOURCE = "statfin"
 BASE = "https://pxdata.stat.fi/PxWeb/api/v1/en/StatFin"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 DEDUP = ("series_key", "obs_date")
+
+def _backoff(resp, attempt: int) -> float:
+    """Seconds to wait after a throttled/5xx response.
+
+    On 429 the SERVER states how long to wait; obeying it is what turns a throttle into a
+    recovery instead of an escalating block. Every other status keeps the plain
+    exponential backoff. statfin's crawl failed with "statfin crawl ymtu: HTTP 429" after
+    exhausting retries that each slept on a guess rather than the stated window
+    (CI run 30150817644).
+    """
+    if getattr(resp, "status_code", None) == 429:
+        return retry_after_seconds(resp, default=min(2 ** attempt, 30))
+    return min(2 ** attempt, 30)
+
 RATE = 0.3                 # polite delay between table requests
 MAX_CELLS = 100_000        # MUST match jobs/ingest_statfin.py so dim selection is identical
 TIMEOUT = 90
@@ -310,7 +324,7 @@ def _get_meta(sess, path):
             last = f"HTTP {r.status_code}"
             if a == MAX_ATTEMPTS - 1:
                 raise TransientError(f"statfin GET meta {path}: {last}")
-            time.sleep(min(2 ** a, 30)); continue
+            time.sleep(_backoff(r, a)); continue
         raise DefinitiveError(f"statfin GET meta {path}: HTTP {r.status_code}")
     raise TransientError(f"statfin GET meta {path}: {last}")
 
@@ -350,7 +364,7 @@ def _post_data(sess, path, body):
             last = f"HTTP {r.status_code}"
             if a == MAX_ATTEMPTS - 1:
                 raise TransientError(f"statfin POST {path}: {last}")
-            time.sleep(min(2 ** a, 30)); continue
+            time.sleep(_backoff(r, a)); continue
         raise DefinitiveError(f"statfin POST {path}: HTTP {r.status_code}")
     raise TransientError(f"statfin POST {path}: {last}")
 
@@ -400,7 +414,7 @@ def _crawl_catalog(sess) -> list[dict]:
             if r.status_code in (429, 500, 502, 503, 504):
                 if a == MAX_ATTEMPTS - 1:
                     raise TransientError(f"statfin crawl {path}: HTTP {r.status_code}")
-                time.sleep(min(2 ** a, 30)); continue
+                time.sleep(_backoff(r, a)); continue
             raise DefinitiveError(f"statfin crawl {path}: HTTP {r.status_code}")
         time.sleep(RATE)
         if not isinstance(data, list):
