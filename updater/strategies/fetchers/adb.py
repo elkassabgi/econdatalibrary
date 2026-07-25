@@ -68,8 +68,10 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Deadline, Tally, finalize
 
+# Minutes adb may spend before deferring the remaining flows to the next tick.
+BUDGET_MIN = 25
 SOURCE = "adb"
 BASE = "https://kidb.adb.org/api"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
@@ -319,7 +321,25 @@ def update(unit, since) -> Result:
     maxd: dt.date | None = None
     cursors: dict[str, str] = {}     # flow -> max obs_date written (per-flow freshness)
 
-    for fn in pfiles:
+    # Wall-clock budget. adb is not broken -- its fetch() correctly refuses to retry
+    # 400/404/422 -- it is simply SLOW: a 240 s timeout x 3 attempts across many
+    # dataflow x indicator requests. Measured locally at 24 minutes and still going,
+    # at 0.16 GB RSS (IO-bound, not memory). orchestrate.py runs sources serially, so
+    # that stalls everything behind it inside a 300-minute job ceiling. Same contract
+    # as worldbank_esg: stop starting NEW flows, keep the unfinished ones' existing
+    # rows in the total, report partial, do not advance the vintage.
+    deadline = Deadline(minutes=BUDGET_MIN)
+    capped = False
+
+    for i, fn in enumerate(pfiles):
+        if deadline.spent():
+            capped = True
+            deferred = pfiles[i:]
+            total += sum(blob.row_count(os.path.join(out_dir, f)) for f in deferred)
+            print(f"[adb] budget of {BUDGET_MIN} min spent after "
+                  f"{deadline.elapsed_min():.1f} min; deferring {len(deferred)} "
+                  f"of {len(pfiles)} flows to the next tick", flush=True)
+            break
         flow = fn[:-len(".parquet")]
         path = os.path.join(out_dir, fn)
         before = blob.row_count(path)
@@ -437,5 +457,8 @@ def update(unit, since) -> Result:
         max(cursors.values()) if cursors else (since or None))
 
     # One sub-unit per flow attempted; floor = (#sub-units) - 1 per the contract.
-    return finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
-                    empty_window_floor=max(0, len(pfiles) - 1))
+    res = finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
+                   empty_window_floor=max(0, len(pfiles) - 1))
+    if capped:
+        res.new_vintage = None      # flows still owe work; resume next tick
+    return res
