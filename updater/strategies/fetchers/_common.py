@@ -15,6 +15,7 @@ only publishes good data), so this is about correct STATUS, never data loss.
 """
 from __future__ import annotations
 import datetime as _dt
+import time
 
 from ..base import Result
 from ...errors import DefinitiveError
@@ -38,6 +39,40 @@ def sane_since(stored_max, *, max_future_days=400):
     if (d - _dt.date.today()).days > max_future_days:
         return None
     return stored_max
+
+
+class Deadline:
+    """A wall-clock budget for ONE source, checked between sub-units.
+
+    orchestrate.py runs sources strictly serially, so a single slow upstream stalls every
+    source queued behind it and can run the daily job into its 300-minute ceiling. Retry
+    budgets make that far worse than it looks: worldbank_esg reuses an ingester whose
+    get_json does 6 tries x 120 s timeout plus 1+2+4+8+16+30 s of backoff — about 13
+    minutes PER URL, and it walks ~71 indicators, so a flaky day is a ~15 hour source.
+    Observed for real: a local run sat on worldbank_esg for 39 minutes at 0.16 GB RSS
+    (hung on IO, not memory) and had to be killed.
+
+    This does NOT interrupt an in-flight request — you cannot portably do that mid-call.
+    It lets a fetcher stop starting NEW work once the budget is spent and report `partial`,
+    exactly like ons_uk's MAX_PER_RUN cap: the remainder drains on the next tick and the
+    unit vintage is not advanced, so nothing is silently skipped.
+
+        dl = Deadline(minutes=20)
+        for ind in indicators:
+            if dl.spent():
+                capped = True
+                break
+    """
+
+    def __init__(self, minutes: float):
+        self.budget = minutes * 60.0
+        self.t0 = time.monotonic()
+
+    def spent(self) -> bool:
+        return (time.monotonic() - self.t0) >= self.budget
+
+    def elapsed_min(self) -> float:
+        return (time.monotonic() - self.t0) / 60.0
 
 
 REVISION_LOOKBACK_DAYS = 30
