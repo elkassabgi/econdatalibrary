@@ -123,7 +123,22 @@ def _get_rows(version, pline, retries=4):
                 return [], "structural"   # 200 with non-JSON body -> schema/structural break
             if isinstance(j, list):
                 return j, "ok"            # 200 JSON list (possibly empty = discontinued line)
-            return [], "structural"       # 200 JSON object (e.g. {"error":...}) -> structural
+            # 200 JSON OBJECT = PIP's error envelope, {"ok":[false],"error":[...]}.
+            # NOT automatically structural. PIP answers its own server-side timeout this
+            # way: povline 21.7 (the widest line, so the heaviest query) returns
+            #   {"ok":[false],"error":["Request exceeded timeout of 180 seconds"],...}
+            # while the other nine lines each return 2,475 rows (measured 2026-07-25).
+            # Calling that a permanent schema break turned a CAPACITY problem into a
+            # discontinued-series verdict, demoted the source to partial, and skipped
+            # the retry that would actually have fixed it.
+            err = " ".join(str(x) for x in (j.get("error") or [])) if isinstance(j, dict) else ""
+            if any(w in err.lower() for w in ("timeout", "timed out", "too large",
+                                              "try again", "unavailable", "busy")):
+                if attempt >= retries - 1:
+                    return [], "transient"
+                time.sleep(10 * (attempt + 1))   # heavier backoff: the server is loaded
+                continue
+            return [], "structural"       # any other error envelope = real schema break
         if r.status_code in (429, 500, 502, 503, 504):
             if attempt >= retries - 1:
                 return [], "transient"
