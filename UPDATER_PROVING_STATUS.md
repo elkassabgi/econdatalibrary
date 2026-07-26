@@ -109,3 +109,27 @@ sum. Parallelising means concurrent writers to the SQLite state DB and R2.
 `unctad` 38 (one `UNCTAD_*` provider family — a single parameterized fetcher could cover all
 38, but they are `catalogued: false`, so they would hit the same coherence wall), `unesco` 5,
 `who` 3. Plus 27 registry sources with no fetcher yet.
+
+## Open: PxWeb cursors over-report beyond the files actually written (2026-07-26)
+
+Measured, run 30186430903 (`AQUEDUCT_BACKEND: r2`, guard commit 812f845 confirmed present):
+
+* `statfin`  — `+2,659,673 rows`, and with the derive-all guard it now reports honestly:
+  `csv coherence partial: 36 changed keys unmapped`. **Working as intended.**
+* `stat_estonia` — `+231,757 rows`, but `csv_derive failed 1415/3437`, every failure
+  reading **"zero rows matched in 2 files"**.
+
+The numbers explain each other. stat_estonia is **7 parquet files holding 3,437 flows**, so
+3,437 derive targets is legitimate — derive-all did NOT fire, the guard worked. But the CI
+runner only had the **2 files that run wrote** (the scratch mirror). 2,022 flows live in
+those two and derived fine; the remaining 1,415 live in the five untouched files and cannot
+possibly resolve.
+
+So the residual defect is upstream of derive: **the fetcher emits `series_cursors` for series
+that are not in the files it wrote this run.** Derive is then correctly asked for flows whose
+bytes were never on the machine.
+
+Next step (not yet done): make the PxWeb fetchers emit cursors only for series in files they
+actually published this run, or have derive skip ids whose backing file is absent rather than
+recording a failure. Do NOT "fix" this by widening the scratch mirror — copying the whole
+store to a runner is the thing the mirror exists to avoid.
