@@ -58,11 +58,19 @@ from jobs.ingest_sdmx_nso import (  # noqa: E402
 #    and flow ids, so a flow can be fetched from whichever one is up.
 AGENCY  = "IT1"
 HOSTS   = [
-    # (label, base) -- order = preference. sdmx.istat.it answers in ~3s when
-    # healthy; esploradati is the only host carrying the granular DF_* flows
-    # but is chronically slow/flaky.
-    ("sdmx",    "https://sdmx.istat.it/SDMXWS/rest/"),
+    # (label, base) -- order = preference.
+    # REORDERED 2026-07-25: sdmx.istat.it no longer serves SDMX. It answers every
+    # request with `HTTP 302 -> http://avvisi.istat.it` (ISTAT's notices host), and
+    # avvisi.istat.it fails the TLS handshake outright
+    # (SSLV3_ALERT_HANDSHAKE_FAILURE), so the redirect surfaces as an SSLError on a
+    # host whose own certificate is in fact valid (*.istat.it, verified by a raw
+    # handshake). Preferring it meant every request burned 5 retries with 8/16/24/32 s
+    # backoff before falling through, and the job produced NOTHING for hours while the
+    # guard kept it alive. esploradati answers 200 with 13.6 MB in ~51 s — slow, but
+    # it is the host that works, and it is the only one carrying the granular DF_*
+    # flows anyway. Put sdmx back first if/when it stops redirecting.
     ("esplora", "https://esploradati.istat.it/SDMXWS/rest/"),
+    ("sdmx",    "https://sdmx.istat.it/SDMXWS/rest/"),
 ]
 RATE        = 1.5      # seconds between requests (polite)
 TIMEOUT     = 300      # generous: esploradati can take minutes
@@ -135,6 +143,15 @@ def http_get(url: str, accept: str, timeout: int = TIMEOUT,
             el = time.time() - t
             log(f"  TIMEOUT attempt {attempt+1} ({el:.0f}s): ...{url[-72:]}")
             last = HttpResult(None, None, "timeout", el)
+        except requests.exceptions.SSLError as e:
+            # A TLS handshake failure will not heal in 8 seconds — it means this host
+            # (or whatever it redirects to) is misconfigured or decommissioned. Give up
+            # on it IMMEDIATELY so the caller falls through to the next host, instead of
+            # spending 8+16+24+32 s per URL discovering the same thing five times.
+            # Observed: sdmx.istat.it 302s to avvisi.istat.it, which fails the handshake.
+            el = time.time() - t
+            log(f"  SSL FAIL, abandoning host ({type(e).__name__}): ...{url[-72:]}")
+            return HttpResult(None, None, "conn", el)
         except Exception as e:
             el = time.time() - t
             log(f"  ERR attempt {attempt+1} ({type(e).__name__}): ...{url[-72:]}")
