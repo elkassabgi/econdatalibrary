@@ -202,6 +202,21 @@ def _catalog_ids_for(source_id: str, changed_keys):
             unmapped.append(k)
         if not unmapped:
             return exact, []
+        # DERIVE-ALL is only meaningful when the whole store is readable. Under the r2
+        # backend it is not: blob.write_table_atomic keeps a local copy purely as a
+        # scratch mirror for the same-run derive (blob.py), so $ECONDL_DATA on a runner
+        # holds ONLY the files this run wrote. Asking for every id of the source then
+        # fails for every flow whose file was not touched — measured on stat_estonia,
+        # "csv_derive failed 949/3437", and on dst "1923/1963", each failure reading
+        # "zero rows matched in N files". Those are not coverage gaps; they are requests
+        # for data that was never on the machine.
+        #
+        # So under r2 we derive exactly the ids we could MAP (their files are, by
+        # construction, the ones this run wrote) and surface the rest as an honest
+        # unmapped list. Locally, where the full store is present, derive-all still runs
+        # and still guarantees coherence for small sources.
+        if config.BACKEND == "r2":
+            return exact, unmapped
         n_src = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?",
                             (source_id,)).fetchone()[0]
         if 0 < n_src <= _DERIVE_ALL_CAP:
