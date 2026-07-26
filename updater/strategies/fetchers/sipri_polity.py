@@ -188,6 +188,38 @@ def _parse_sipri(data):
     return keys, dates, vals
 
 
+def _diagnose(label, data, exc=None):
+    """Say WHY a sub-unit produced nothing, instead of swallowing it.
+
+    Each parse below sat behind a bare `except Exception: k, d, v = [], [], []`, so any
+    failure became an indistinguishable "0 rows" with the reason discarded. That is
+    exactly why `2/3 sub-unit(s) returned 200 but parsed 0 rows` could not be diagnosed
+    from the CI log while all three parsed fine locally (SIPRI 36,320 / Polity5 237,507 /
+    MEPV 139,360 obs, verified 2026-07-25). Identifies the body by magic bytes, because
+    the likeliest CI-only cause is a datacentre IP being served an HTML challenge or
+    error page with HTTP 200 instead of the workbook — the same class as ONS's bot
+    blocking. Never raises: diagnosis must not break the publish path.
+    """
+    try:
+        head = bytes(data[:8]) if data else b""
+        if head[:4] == b"\xd0\xcf\x11\xe0":
+            kind = "OLE2/xls"
+        elif head[:2] == b"PK":
+            kind = "zip/xlsx"
+        elif head[:1] in (b"<", b"{"):
+            kind = "HTML/JSON - NOT a workbook (challenge or error page?)"
+        else:
+            kind = "unknown magic %r" % (head[:4],)
+        print("[sipri_polity] %s: 0 rows - %s bytes, %s%s"
+              % (label, format(len(data or b""), ","), kind,
+                 (", parse raised %s: %s" % (type(exc).__name__, str(exc)[:120])) if exc else ""),
+              flush=True)
+        if head[:1] in (b"<", b"{"):
+            print("[sipri_polity] %s first 200 bytes: %r" % (label, bytes(data[:200])), flush=True)
+    except Exception:
+        pass
+
+
 def _parse_csp(data, skip, prefix):
     """Parse a Center-for-Systemic-Peace XLS (Polity5 / MEPV) into long form."""
     import xlrd
@@ -270,8 +302,11 @@ def update(unit, since):
     if data is not None:
         try:
             k, d, v = _parse_sipri(data)
-        except Exception:
+        except Exception as e:
             k, d, v = [], [], []
+            _diagnose("SIPRI milex", data, e)
+        if not v:
+            _diagnose("SIPRI milex", data)
         n, md = _publish(SIPRI_OUT, k, d, v, tally, before, cursors)
         total_rows += n
         if md and (last_obs is None or md > last_obs):
@@ -285,8 +320,11 @@ def update(unit, since):
     if data is not None:
         try:
             k, d, v = _parse_csp(data, POLITY_SKIP, "POLITY")
-        except Exception:
+        except Exception as e:
             k, d, v = [], [], []
+            _diagnose("Polity5", data, e)
+        if not v:
+            _diagnose("Polity5", data)
         n, md = _publish(POLITY_OUT, k, d, v, tally, before, cursors)
         total_rows += n
         if md and (last_obs is None or md > last_obs):
@@ -300,8 +338,11 @@ def update(unit, since):
     if data is not None:
         try:
             k, d, v = _parse_csp(data, MEPV_SKIP, "MEPV")
-        except Exception:
+        except Exception as e:
             k, d, v = [], [], []
+            _diagnose("MEPV", data, e)
+        if not v:
+            _diagnose("MEPV", data)
         n, md = _publish(MEPV_OUT, k, d, v, tally, before, cursors)
         total_rows += n
         if md and (last_obs is None or md > last_obs):
