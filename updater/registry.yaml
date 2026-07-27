@@ -98,6 +98,7 @@ sources:
       (series_key=ADB:{FLOW}:{IND}:{ECON}, obs_date, value). Sidecars: _dataflows.json (catalog cache), _economies.json (accumulated
       economy codes, atomically replaced), _empty/<FLOW>.txt flags.'
 - source_id: barro_lee
+  live: true
   scripts:
   - jobs/ingest_barro_lee.py
   strategy: overwrite_if_changed
@@ -1831,6 +1832,7 @@ sources:
       (all zstd). Common schema: series_key, obs_date(date32, Dec-31), value(float64). Each written by save() with a single
       pq.write_table (non-atomic).'
 - source_id: ggdc
+  live: true
   scripts:
   - jobs/ingest_ggdc.py
   strategy: overwrite_if_changed
@@ -2756,6 +2758,7 @@ sources:
       skipped+marked done (lines 697-700). --only mode INTENTIONALLY ignores skip-existing and the done checkpoint and OVERWRITES
       the target flow (lines 654-665, 697).'
 - source_id: kof_globalization
+  live: true
   scripts:
   - jobs/ingest_kof_globalization.py
   strategy: overwrite_if_changed
@@ -3313,6 +3316,7 @@ sources:
     - single file data/clean_full/oxcgrt/oxcgrt.parquet, columns series_key/obs_date/value, series_key='OXCGRT:<indicator>:<iso3>'.
       Written via streaming pq.ParquetWriter flushing every BATCH=1,000,000 obs. Plus two log/err text files in the dir.
 - source_id: penn_world_table
+  live: true
   scripts:
   - jobs/ingest_penn_world_table.py
   strategy: overwrite_if_changed
@@ -4371,6 +4375,7 @@ sources:
       Schema: series_key (string), obs_date date32 (set to July 1 of year), value float64. Keys: WPP:{Indicator}:{Variant}:{ISO3}.
       (Stray _wpp_log.txt/_wpp_err.txt sidecars present from a prior run.)'
 - source_id: undp_hdr
+  live: true
   scripts:
   - jobs/ingest_undp_hdr.py
   strategy: overwrite_if_changed
@@ -4514,6 +4519,7 @@ sources:
       totals: 57,629,841 rows / 15,534,339 series). Wide schema: series_key + ~31 self-describing NASS dimension columns +
       obs_date(date32) + value(float64) + value_flag(string). series_key = ''usda:'' + pipe-joined KEY_COLS.'
 - source_id: wgi
+  live: true
   scripts:
   - jobs/ingest_wgi.py
   strategy: overwrite_if_changed
