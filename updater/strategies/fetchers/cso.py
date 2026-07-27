@@ -35,8 +35,13 @@ import requests
 
 from ... import config, blob, merge
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Deadline, Tally, finalize
 from ._vintage import content_hash, UA
+
+# MAX_TABLES bounds how MANY changed matrices a run pulls; this bounds how LONG. CSO's
+# ReadDataset endpoint is rate-throttled by the ingester, so a batch of large tables can
+# outlast the whole run on its own while every serial source behind it waits.
+BUDGET_MIN = 20
 
 SOURCE = "cso"
 DEDUP = ("series_key", "obs_date")
@@ -230,7 +235,16 @@ def update(unit, since) -> Result:
     pulled_ok = []                      # matrices we successfully pulled (advance cursor for these)
     series_cursors: dict[str, str] = {}
 
+    dl = Deadline(minutes=BUDGET_MIN)
     for mtr in batch:
+        if dl.spent():
+            # MAX_TABLES bounds the COUNT per run; this bounds the TIME. A matrix not
+            # reached is simply left out of pulled_ok, which drives the cursor write, so
+            # it stays "changed" and is picked up first on the next tick.
+            print(f"[cso] budget {BUDGET_MIN} min spent — {mtr} not pulled this run; "
+                  f"retries next tick", flush=True)
+            tally.transient_unit(mtr)
+            continue
         sbj = m2s.get(mtr)
         if not sbj:
             # no subject mapping in cached catalog -> can't route; treat as transient (re-try when

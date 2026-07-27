@@ -60,7 +60,12 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Deadline, Tally, finalize
+
+# Wall-clock cap for one insee_melodi run: it walks every published flow, and INSEE's
+# Melodi endpoint is slow enough per flow that this source can outlast the whole daily
+# job on its own. Flows not reached keep their rows and are re-tried on the next tick.
+BUDGET_MIN = 25
 
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
       "Accept": "application/json"}
@@ -282,12 +287,24 @@ def update(unit, since) -> Result:
     maxd = None
     cursors: dict[str, str] = {}   # flow_code -> max obs_date (per-flow freshness)
 
+    dl = Deadline(minutes=BUDGET_MIN)
     for flow in flows:
         code = flow.get("code", "")
         if not code:
             continue
         path = os.path.join(out_dir, f"{code}.parquet")
         before = blob.row_count(path)
+
+        if dl.spent():
+            # Stop starting flows. Count what this one already holds so the reported obs
+            # still describes the whole source, and tally transient so the run reports
+            # `partial` — an `ok` here would claim a completeness it did not achieve.
+            print(f"[insee_melodi] budget {BUDGET_MIN} min spent — {code} not pulled "
+                  f"this run (keeping {before:,} existing rows); retries next tick",
+                  flush=True)
+            tally.transient_unit(code)
+            total += before
+            continue
 
         on_disk_max = _flow_max_obs(path)
         # startPeriod = YEAR of the stored max (re-fetch boundary year for revisions);

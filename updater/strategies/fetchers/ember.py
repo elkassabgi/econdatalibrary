@@ -30,8 +30,13 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Deadline, Tally, finalize
 from jobs import ingest_ember as ig   # reuse the production enumerate/parse/route
+
+# Wall-clock cap for one ember run: it walks every CSV in the published dataset list,
+# and sources run strictly serially, so a slow upstream here delays the whole fleet.
+# Datasets not reached keep their existing rows and are re-tried on the next tick.
+BUDGET_MIN = 20
 
 SOURCE = "ember"
 DEDUP = ("series_key", "obs_date")
@@ -125,6 +130,7 @@ def update(unit, since) -> Result:
     cursors: dict[str, str] = {}
     maxd = None
     published = 0
+    dl = Deadline(minutes=BUDGET_MIN)
 
     for obj in csvs:
         key = obj.get("name")
@@ -135,6 +141,14 @@ def update(unit, since) -> Result:
         cur_v = _vintage(obj)
         # unchanged AND already held -> skip entirely (not counted; it is up to date)
         if sidecar.get(ds_id) == cur_v and blob.exists(path):
+            continue
+
+        # Budget checked AFTER the unchanged-skip: an already-current dataset costs no
+        # upstream call, so it must not consume the budget or count as deferred work.
+        if dl.spent():
+            print(f"[ember] budget {BUDGET_MIN} min spent — {ds_id} not pulled this run; "
+                  f"retries next tick", flush=True)
+            tally.transient_unit(ds_id)
             continue
 
         try:
