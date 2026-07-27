@@ -159,6 +159,44 @@ def period_keys(table_id: str) -> list[str]:
     return [r.get("Key") for r in rows if r.get("Key")]
 
 
+_PERIOD_EXACT = ("perioden", "periods", "jaar", "period", "datum", "t_period")
+
+
+def _find_period_col(table_id: str, cols: list[str]) -> str | None:
+    """The column carrying the observation period, or None if the table has none.
+
+    Exact-name matching alone is not enough. CBS names the time dimension after what it
+    measures: 84809NED's is `JaarVanImmigratie` ("year of immigration"), which is not
+    equal to "jaar" and so went undetected — the table then fetched 38,500,000 of its
+    57,139,992 rows and wrote ZERO observations, because an undated row is dropped.
+
+    So: exact match first, then any column whose NAME suggests a year/period AND whose
+    VALUES actually parse as CBS periods. The value check is what keeps `Leeftijd` (age)
+    and `MinderDan10VanDeTijd_9` (a measure) out — both merely contain "tijd", neither
+    parses as a period.
+    """
+    exact = next((c for c in cols if c.lower() in _PERIOD_EXACT), None)
+    if exact:
+        return exact
+    named = [c for c in cols
+             if any(w in c.lower() for w in ("jaar", "year", "period", "datum"))]
+    if not named:
+        return None
+    probe = get_json(f"{BASE}/{table_id}/TypedDataSet?$top=25")
+    rows = (probe.get("value", []) if isinstance(probe, dict) else probe) or []
+    if not rows:
+        return None
+    for c in named:
+        vals = [r.get(c) for r in rows if r.get(c) not in (None, "")]
+        if not vals:
+            continue
+        ok = sum(1 for v in vals if parse_cbs_period(str(v).strip()) is not None)
+        if ok >= max(1, int(0.8 * len(vals))):     # the column really holds periods
+            log(f"  {table_id}: period column detected by value = {c!r}")
+            return c
+    return None
+
+
 def ingest_table(table_id: str, title: str, out_dir: str) -> int:
     """Download all observations for one CBS table. Returns obs count.
 
@@ -183,9 +221,20 @@ def ingest_table(table_id: str, title: str, out_dir: str) -> int:
         return 0  # table unavailable
 
     # Identify period and value columns
-    period_col = next((c for c in cols
-                       if c.lower() in ("perioden", "periods", "jaar",
-                                        "period", "datum", "t_period")), None)
+    period_col = _find_period_col(table_id, cols)
+    if period_col is None:
+        # NO TIME COLUMN -> every row would be discarded, because the row loop does
+        #   d = parse_cbs_period(row.get(period_col or "Perioden", ""))
+        #   if d is None: continue
+        # and "Perioden" is not present. Previously this crawled the whole table and
+        # threw away 100% of it in silence: 84809NED (57,139,992 rows) reached 38.5M
+        # fetched with ZERO observations written, and 84808NED (23,253,048 rows) the
+        # same, over 18 hours. REFUSE to crawl instead — a table we cannot date is not
+        # ingestible as a time series, and finding that out costs one metadata call,
+        # not 59 million rows.
+        log(f"  SKIP {table_id}: no period column in {len(cols)} columns "
+            f"(cannot date observations) — not crawled")
+        return 0
     # CBS TypedDataSet has numeric values in integer or decimal columns
     # Skip metadata/code columns (non-numeric) by checking name patterns
     skip_cols = {"ID", "StringValue", "ColorCode", "Status",
