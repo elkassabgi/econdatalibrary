@@ -785,6 +785,14 @@ def main():
             # would be a false verdict that permanently retires a flow whose only sin
             # is being slow, so leave it untouched: no done, no unrec, so the next run
             # picks it up exactly as it stands now.
+            # Clear any stale UNRECOVERABLE verdict. Before the budget existed, a slow
+            # flow that exhausted its retries was recorded as unrecoverable — a false
+            # verdict this branch now knows to be wrong. Leaving the old entry would
+            # make the log line ("NOT marked unrecoverable") true of this run and false
+            # of the file anyone actually reads.
+            if unrec.pop(fid, None) is not None:
+                _save_json(UNREC_PATH, unrec)
+                log(f"  cleared stale UNRECOVERABLE verdict on {fid} (it is slow, not broken)")
             log(f"  BUDGET ({FLOW_BUDGET_S // 60} min) exhausted on {fid} — deferred "
                 f"to the next run, NOT marked unrecoverable")
             n_deferred += 1
