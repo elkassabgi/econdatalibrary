@@ -150,9 +150,16 @@ def table_row_count(table_id: str) -> int | None:
         return None
 
 
-def period_keys(table_id: str) -> list[str]:
-    """The table's Perioden dimension values (partition keys), oldest first."""
-    data = get_json(f"{BASE}/{table_id}/Perioden?$format=json")
+def period_keys(table_id: str, period_col: str = "Perioden") -> list[str]:
+    """The table's period-dimension values (partition keys), oldest first.
+
+    Takes the ACTUAL column name. This was hardcoded to "Perioden", so for a table whose
+    time dimension is named otherwise — 84808NED/84809NED use `JaarVanImmigratie` — it
+    requested a dimension that does not exist, got [], and partitioning silently declined,
+    leaving a 23-57M-row table on the quadratic deep-$skip walk. Same hardcoding mistake
+    as the period-column detector it was written to support.
+    """
+    data = get_json(f"{BASE}/{table_id}/{period_col}?$format=json")
     if not data:
         return []
     rows = data.get("value", []) if isinstance(data, dict) else data
@@ -299,7 +306,7 @@ def ingest_table(table_id: str, title: str, out_dir: str) -> int:
     if period_col:
         total = table_row_count(table_id)
         if total and total >= PARTITION_MIN_ROWS:
-            pk = period_keys(table_id)
+            pk = period_keys(table_id, period_col)
             if len(pk) > 1:
                 partitions = pk
                 log(f"  {table_id}: {total:,} rows -> partitioning by {period_col} "
