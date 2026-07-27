@@ -1,0 +1,163 @@
+# updater-heavy.yml — one runner per heavy source, for the sources that cannot
+# share the nightly job.
+#
+# WHY THIS EXISTS NOW (and did not before):
+# These sources were written off as "too big for CI, needs the workstation". That
+# conclusion rested on an assumption nobody checked — that they must compete with a
+# daily fleet on one runner. The cadence mix says otherwise. Of the 45 LIVE sources
+# only **6 are daily**; 18 are annual and 11 monthly. The nightly job is mostly idle
+# capacity, and the heavy sources are among the LEAST frequent things we run:
+#
+#   un_wpp         irregular   OOM at 14.93 GB peak in a shared run
+#   bundesbank     monthly     OOM at 6.28 GB
+#   cepii_gravity  static      OOM-class (312M rows) — barely changes at all
+#   eia            daily       OOM-class; needs the whole runner to itself
+#
+# So each gets a MATRIX ENTRY = its own fresh runner = its own full memory and its
+# own 300-minute budget. That is the part a shared job can never give: R45 recorded
+# that freed memory is not reliably returned to the OS, so peaks ACCUMULATE across
+# sources in one process — isolation is the fix, not a bigger cap.
+#
+# DELIBERATELY EXCLUDED, because isolation is not their problem:
+#   ons_uk  — quarantined for a DATA defect (key grain baked into the on-disk files,
+#             0 catalog rows). A bigger runner would just fail more comfortably.
+#   faostat — carries the per-domain structural_unit() landmine (R44): one zero-row
+#             domain vetoes the whole source. That is a code fix, not a capacity fix.
+# Both belong here once their real blocker is cleared. Listing them now would mean
+# claiming a fix this workflow does not deliver.
+#
+# SINGLE-WRITER SAFETY (§1.2 / R5): the updater state is single-writer via an ETag
+# compare-and-swap, so `max-parallel: 1` is NOT a politeness setting — two heavy jobs
+# pulling and pushing state concurrently would have one of them lose its write. The
+# shared `aqueduct-updater` concurrency group keeps this off the nightly run's toes;
+# max-parallel keeps the matrix off its own.
+
+name: updater-heavy
+
+on:
+  schedule:
+    # DAILY at 03:00 UTC — well clear of the 06:00 daily run.
+    #
+    # Daily, not weekly, because the matrix is not uniform: un_wpp is irregular,
+    # cepii_gravity is static and bundesbank is monthly, but **eia is daily**. A
+    # weekly cron would quietly under-serve eia by 6 days while looking tidy. The
+    # orchestrator's own TTL due-check is what decides whether a source actually
+    # runs, so on most days the infrequent three cost one cheap no-op probe each
+    # and only eia does real work. Let the due-check do its job rather than
+    # encoding a second, coarser schedule here that disagrees with the registry.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'Run only this heavy source (empty = the whole matrix)'
+        required: false
+        type: string
+      force:
+        description: 'Ignore cadence + change-detection. REQUIRED to prove a fetcher (R50: without it a not-due source reports "0 unit(s) processed" and goes green having exercised nothing).'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: aqueduct-updater      # same group as updater-daily: never both at once
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  heavy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      max-parallel: 1          # single-writer state — see header
+      fail-fast: false         # one source's OOM must not cancel the others
+      matrix:
+        source: [un_wpp, bundesbank, cepii_gravity, eia]
+    name: ${{ matrix.source }}
+    # Skip every matrix entry except the requested one on a targeted dispatch.
+    if: ${{ github.event.inputs.source == '' || github.event.inputs.source == null || github.event.inputs.source == matrix.source }}
+    env:
+      PYTHONUNBUFFERED: "1"
+      R2_WRITE_ENDPOINT: ${{ secrets.R2_WRITE_ENDPOINT }}
+      R2_WRITE_ACCESS_KEY_ID: ${{ secrets.R2_WRITE_ACCESS_KEY_ID }}
+      R2_WRITE_SECRET_ACCESS_KEY: ${{ secrets.R2_WRITE_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+      AQUEDUCT_BACKEND: r2
+      ECONDL_CATALOG: ${{ github.workspace }}/data/catalog.db
+      # The whole point: this source owns the runner. Give the orchestrator's own
+      # budget room to finish and still leave headroom for the teardown steps —
+      # being killed at the 300-minute ceiling loses the state push, the D1 syncs
+      # and the digest for work that already SUCCEEDED (batch 30277746949 died
+      # exactly that way at 354 min).
+      AQUEDUCT_RUN_BUDGET_MIN: '240'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements-updater.txt
+
+      - name: Pull state from R2
+        run: python -m updater.run --pull-state
+
+      - name: Pull catalog.db (CSV-derive dependency)
+        run: |
+          python - <<'PY'
+          import os, zstandard, boto3
+          s3 = boto3.client("s3", endpoint_url=os.environ["R2_WRITE_ENDPOINT"],
+                            aws_access_key_id=os.environ["R2_WRITE_ACCESS_KEY_ID"],
+                            aws_secret_access_key=os.environ["R2_WRITE_SECRET_ACCESS_KEY"])
+          os.makedirs("data", exist_ok=True)
+          body = s3.get_object(Bucket="econ-data", Key="_aqueduct/catalog.db.zst")["Body"].read()
+          with open("data/catalog.db", "wb") as fh:
+              fh.write(zstandard.ZstdDecompressor().decompress(body, max_output_size=8 << 30))
+          print("catalog.db bytes:", os.path.getsize("data/catalog.db"))
+          PY
+
+      - name: Run ${{ matrix.source }} (isolated runner)
+        run: |
+          set -o pipefail
+          args="--source ${{ matrix.source }}"
+          if [ "${{ inputs.force }}" = "true" ]; then args="${args} --force"; fi
+
+          # Memory is the whole reason this source is here — sample it so an OOM is
+          # PROVEN rather than inferred from a step that vanishes with no output.
+          echo "runner memory at start:"; free -m | sed 's/^/    /'
+          ( while :; do
+              sleep 15
+              echo "    [mem] $(free -m | awk '/^Mem:/{print "used="$3"MB avail="$7"MB"}')"
+            done ) &
+          MEMWATCH=$!
+          set +e
+          python -m updater.run ${args}
+          rc=$?
+          set -e
+          kill $MEMWATCH 2>/dev/null || true
+          echo "updater exit code: ${rc}"
+          if [ "$rc" = "137" ] || [ "$rc" = "143" ]; then
+            echo "::error::${{ matrix.source }} was KILLED (exit ${rc}) — still out of memory WITH a runner to itself. Isolation was not enough; this source needs a real fix (streaming parse or chunked merge), not more capacity."
+          fi
+          exit $rc
+
+      - name: Push state to R2 (compare-and-swap + dated backup)
+        run: python -m updater.run --push-state
+
+      - name: Sync freshness to D1
+        run: |
+          npm ci --prefix api/worker --no-audit --no-fund
+          python core/sync_state_d1.py
+
+      - name: Sync new catalog series to D1
+        continue-on-error: true
+        run: python core/sync_catalog_d1.py
