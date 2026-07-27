@@ -287,6 +287,25 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     # dispatch is how a source earns its delta proof before joining the tier).
     live_only = os.environ.get("AQUEDUCT_LIVE_ONLY", "").strip() in ("1", "true", "yes")
     not_in_rollout = []
+
+    # Whole-RUN wall-clock budget. Sources run strictly serially, so a few slow
+    # upstreams push the job into GitHub's hard 300-minute ceiling — and being killed
+    # there is not merely "some sources missed": the run dies BEFORE push-state,
+    # before the D1 syncs and before the digest, so every source that DID succeed
+    # loses its state write too. One slow source costs the whole night.
+    #
+    # Stopping early is strictly better than being killed: we finish the units we
+    # started, push state, and name what we skipped. Skipped units are untouched —
+    # not due-marked, not vintage-advanced — so the next tick picks them up first.
+    # Default 240 min leaves ~60 min of headroom under the 300-minute ceiling for
+    # the post-run steps.
+    try:
+        run_budget_min = float(os.environ.get("AQUEDUCT_RUN_BUDGET_MIN", "240"))
+    except ValueError:
+        run_budget_min = 240.0
+    run_deadline = time.time() + run_budget_min * 60.0 if run_budget_min > 0 else None
+    budget_skipped = []
+
     for unit in units:
         if sources and unit.source_id not in sources:
             continue
@@ -299,6 +318,15 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             continue
         if _protected(unit):
             continue  # protected in-flight backfill (by source_id or output dir)
+        # AFTER the filters, deliberately: checked first it would count units that were
+        # never in scope — a two-source dispatch reported "100 source(s) NOT ATTEMPTED".
+        # A skip count is only meaningful over units that would otherwise have RUN.
+        if (run_deadline is not None and time.time() > run_deadline
+                and not (sources and len(sources) == 1)):
+            # Single-source dispatches are deliberate manual proofs — never cap those,
+            # or a proof run would report success having skipped the source under test.
+            budget_skipped.append(unit.source_id)
+            continue
         try:
             runnable = _has_adapter(unit)
         except Exception as e:  # noqa: BLE001 — adapter module EXISTS but is broken at
@@ -425,6 +453,19 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             results.append((unit.key, "error"))
         finally:
             store.release_lease(unit.key, owner=OWNER)
+    if budget_skipped:
+        # LOUD, and never mistakable for a clean run: a capped run that reported only
+        # its successes would read as "everything current" while sources silently
+        # aged. These were not attempted at all, so their state is untouched and the
+        # next tick takes them first.
+        print(f"[orchestrator] RUN BUDGET {run_budget_min:.0f} min SPENT — "
+              f"{len(set(budget_skipped))} source(s) NOT ATTEMPTED this run: "
+              f"{', '.join(sorted(set(budget_skipped))[:15])}"
+              f"{' …' if len(set(budget_skipped)) > 15 else ''}", flush=True)
+        print("[orchestrator] this run is INCOMPLETE by design — stopping early beats "
+              "being killed at the 300-minute ceiling, which would also lose the state "
+              "push, the D1 syncs and the digest for the sources that DID succeed.",
+              flush=True)
     if not_in_rollout:
         # Honest disclosure, not a shrug: these sources are DUE-ELIGIBLE but the
         # rollout perimeter (AQUEDUCT_LIVE_ONLY) excludes them until their tier
