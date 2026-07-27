@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 """World Inequality Database (WID) — income & wealth inequality, 200+ countries, 1820–present.
 
-License: CC BY 4.0
+License: NOT CC BY 4.0 — that line was here for months and was never verified.
+  WID publishes no data-reuse licence: wid.world/data/ and the homepage carry no CC
+  string, no creativecommons.org link and no licence text (checked RENDERED, not just
+  fetched — both are JS shells), and wid.world/terms/ 404s.
+  What we actually hold is a written grant, 2026-07-27, from info@wid.world: "Yes, you
+  can use the data for educational purpose", with a CC variant supplied only as an
+  IMAGE and therefore still unconfirmed in text. Conditions attached: keep the data
+  current with their releases and follow their methodological notes
+  (https://wid.world/methodology/#library-methodological-notes).
+  Full thread: REDISTRIBUTION_EMAIL_TRAIL.md.
+  STATUS: GATED. Not in the updater registry, 0 catalog rows, nothing served. Do not
+  record a license_id or publish anything until the CC variant is confirmed in text —
+  NC alone is fine for us, NC-SA would bind our own catalogue metadata.
 Source: https://wid.world/data/
 No API key required.
 
