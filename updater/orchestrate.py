@@ -85,6 +85,28 @@ def _resolve_blob():
     return blob_mod.from_env()
 
 
+def _record_for_catalog_sync(ids) -> None:
+    """Append derived series ids for the post-run D1 catalog sync.
+
+    Append-only and best-effort: this is a discoverability improvement, and it must
+    never be able to sink a run that already published data correctly (§5 — a CSV
+    problem never undoes a good parquet publish). The consumer
+    (core/sync_catalog_d1.py) dedupes and truncates the file.
+    """
+    if not ids:
+        return
+    try:
+        from . import config
+        os.makedirs(config.STATE_DIR, exist_ok=True)
+        with open(os.path.join(config.STATE_DIR, "pending_catalog_sync.txt"),
+                  "a", encoding="utf-8") as fh:
+            fh.write("".join(f"{s}\n" for s in ids))
+    except Exception as e:  # noqa: BLE001 — never sink a good publish over this
+        print(f"[orchestrator] WARNING: could not record {len(ids)} id(s) for the "
+              f"D1 catalog sync ({e!r}); they stay hosted but undiscoverable until "
+              f"the next `sync_catalog_d1.py --source <id>` reconcile", flush=True)
+
+
 def _derive_changed_csvs(unit, res, blob):
     """Contract step 5 — CSV/parquet coherence (§5.7): re-derive the CSV of every
     series whose parquet changed this run. Returns (failed_series_ids, error_note).
@@ -126,6 +148,13 @@ def _derive_changed_csvs(unit, res, blob):
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob()) or {}
         failed = [str(s) for s in (out.get("failed") or [])]
+        # A derived CSV is HOSTED but not yet DISCOVERABLE: nothing in the daily
+        # pipeline pushed catalog rows to D1 (sync_state_d1 syncs freshness only,
+        # by design), so a new series reached R2 and never appeared in /v1/catalog.
+        # That silently stranded 31,259 series -- boe alone showed 21 of 30,674 in
+        # the serving catalog while its fetcher had been live for weeks. Record what
+        # we derived; the post-run catalog sync step upserts exactly these rows.
+        _record_for_catalog_sync([s for s in ids if s not in set(failed)])
         # Name the failures, bounded. "failed 7/24" alone costs a bisect to act on,
         # which is why such notes sit unfixed for weeks (same reason Tally now carries
         # structural_ids). The count stays authoritative; the elision is explicit.
