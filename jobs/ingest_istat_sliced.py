@@ -124,12 +124,29 @@ class HttpResult:
 # property of the HOST, not of the slice, so record it once and skip it thereafter.
 _DEAD_HOSTS: set[str] = set()
 
+# Per-flow wall-clock budget. Without one, a single pathological flow starves every
+# other flow in the queue: RICPOPRES2011 subdivides to decades, then to years, and
+# each slice costs up to a 300 s timeout x retries, so one flow can hold the crawler
+# for hours while 3,882 others wait behind it. The budget is enforced inside
+# http_get -- the one chokepoint every subdivision path funnels through -- because
+# enforcing it in the recursion would mean finding and patching each descent.
+# Exceeding it is DEFERRAL, never a verdict about the data: the flow is left for the
+# next run, not recorded as unrecoverable.
+FLOW_BUDGET_S = 15 * 60
+_FLOW_DEADLINE: float | None = None
+_BUDGET_HIT = False
+
 
 def http_get(url: str, accept: str, timeout: int = TIMEOUT,
              retries: int = RETRIES) -> HttpResult:
     """GET with backoff. Distinguishes 200 / 4xx / 5xx / timeout / conn-error
     so the slicer can decide whether to subdivide (5xx/timeout/size) or give up
     (persistent 4xx is a real 'no data')."""
+    global _BUDGET_HIT
+    if _FLOW_DEADLINE is not None and time.time() > _FLOW_DEADLINE:
+        # Budget spent: stop issuing requests so the subdivision unwinds promptly.
+        _BUDGET_HIT = True
+        return HttpResult(None, None, "timeout", 0.0)
     host = urlsplit(url).netloc
     if host in _DEAD_HOSTS:
         # Already known dead: fail instantly so the caller moves to the next HOST
@@ -723,6 +740,7 @@ def main():
     n_written   = 0
     n_completed = 0
     n_unrec     = 0
+    n_deferred  = 0
     for idx, flow in enumerate(flows, 1):
         fid = flow["id"]
         log(f"[{idx}/{len(flows)}] {fid}  [{flow.get('name','')[:54]}]")
@@ -734,6 +752,8 @@ def main():
             done.add(fid)
             continue
 
+        globals()["_FLOW_DEADLINE"] = time.time() + FLOW_BUDGET_S
+        globals()["_BUDGET_HIT"] = False
         try:
             store, method, detail = pull_flow(flow, max_size=max_size)
         except Exception as e:
@@ -742,6 +762,16 @@ def main():
                           "ts": dt.datetime.now().isoformat(timespec="seconds")}
             _save_json(UNREC_PATH, unrec)
             n_unrec += 1
+            continue
+
+        if _BUDGET_HIT and (method == "none" or not store):
+            # Ran out of budget, not out of options. Recording this as UNRECOVERABLE
+            # would be a false verdict that permanently retires a flow whose only sin
+            # is being slow, so leave it untouched: no done, no unrec, so the next run
+            # picks it up exactly as it stands now.
+            log(f"  BUDGET ({FLOW_BUDGET_S // 60} min) exhausted on {fid} — deferred "
+                f"to the next run, NOT marked unrecoverable")
+            n_deferred += 1
             continue
 
         if method == "none":
@@ -782,7 +812,8 @@ def main():
     log("=" * 60)
     log(f"DONE. flows completed this run: {n_completed} | "
         f"newly written parquet: {n_written} | "
-        f"unrecoverable: {n_unrec} | new observations: {total_obs:,}")
+        f"unrecoverable: {n_unrec} | deferred (budget): {n_deferred} | "
+        f"new observations: {total_obs:,}")
     if unrec:
         log(f"Unrecoverable list ({len(unrec)} total) -> {UNREC_PATH}")
 
