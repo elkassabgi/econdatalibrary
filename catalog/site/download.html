@@ -143,10 +143,31 @@ const selected = new Map(); // series_id -> {title, source}
 // ---- API key ----
 const keyInput = document.getElementById('key');
 const keyStatus = document.getElementById('keystatus');
-function loadKey(){ const k = localStorage.getItem('edl_api_key')||''; keyInput.value=k; setKeyStatus(k); }
+// SSO stores the family key under 'edl_key' — assets/sso.js writes it there on the
+// sign-in return trip, and account.html and mcp.html both read that name. THIS PAGE
+// ALONE read 'edl_api_key'. So signing in on hfdatalibrary and coming here left the
+// download page reading an empty drawer: "no key set", and every Download click
+// stopped at the guard in downloadOne() without ever issuing a request. Nothing
+// visible happened, which is exactly the reported symptom.
+//
+// It was never a plumbing gap — the worker accepts this key (X-API-Key / ?api_key=)
+// and additionally accepts a family edl_at bearer token (auth.ts M2c). One login was
+// always meant to work everywhere; a key NAME broke it.
+//
+// LEGACY_KEY is read once so anyone who pasted a key here manually while it was broken
+// does not lose it; it is migrated to the canonical name and thereafter ignored.
+const SSO_KEY = 'edl_key', LEGACY_KEY = 'edl_api_key';
+function readStoredKey(){
+  const k = (localStorage.getItem(SSO_KEY)||'').trim();
+  if (k) return k;
+  const legacy = (localStorage.getItem(LEGACY_KEY)||'').trim();
+  if (legacy) localStorage.setItem(SSO_KEY, legacy);       // migrate forward, once
+  return legacy;
+}
+function loadKey(){ const k = readStoredKey(); keyInput.value=k; setKeyStatus(k); }
 function setKeyStatus(k){ if(k){keyStatus.textContent='key saved ✓';keyStatus.className='status ok';} else {keyStatus.textContent='no key set';keyStatus.className='status no';} }
-document.getElementById('savekey').onclick=()=>{ const k=keyInput.value.trim(); localStorage.setItem('edl_api_key',k); setKeyStatus(k); toast(k?'API key saved':'API key cleared'); };
-function getKey(){ return (localStorage.getItem('edl_api_key')||'').trim(); }
+document.getElementById('savekey').onclick=()=>{ const k=keyInput.value.trim(); localStorage.setItem(SSO_KEY,k); localStorage.removeItem(LEGACY_KEY); setKeyStatus(k); toast(k?'API key saved':'API key cleared'); };
+function getKey(){ return readStoredKey(); }
 
 // ---- search ----
 let searchTimer=null;
