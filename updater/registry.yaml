@@ -932,6 +932,7 @@ sources:
       — ~46 files — plus cached _catalog.json. Schema series_key(str like CSO:<MtrCode>:DIM=code...), obs_date(date32; annual
       Dec-31, monthly/quarterly/weekly first-of-period), value(float64). In-function de-dup via a ''seen'' (key,date) set.'
 - source_id: damodaran
+  live: true
   scripts:
   - jobs/ingest_damodaran.py
   strategy: overwrite_if_changed
@@ -2069,6 +2070,7 @@ sources:
     storage_layout:
     - 'single parquet data/clean_full/etr/etr.parquet; schema series_key, obs_date, value.'
 - source_id: gppd
+  live: true
   scripts:
   - jobs/ingest_gppd.py
   strategy: overwrite_if_changed
