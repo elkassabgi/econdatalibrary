@@ -66,17 +66,41 @@ permissions:
   contents: read
 
 jobs:
+  # Builds the matrix. A job-level `if:` CANNOT reference `matrix` — GitHub rejects
+  # the whole file with "Unrecognized named-value: 'matrix'", so filtering entries
+  # that way takes the entire workflow down, cron included. The supported way to run
+  # a subset is to compute the matrix itself and feed it through fromJSON.
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      sources: ${{ steps.pick.outputs.sources }}
+    steps:
+      - id: pick
+        run: |
+          ALL='["un_wpp","bundesbank","cepii_gravity","eia"]'
+          REQ='${{ inputs.source }}'
+          if [ -z "$REQ" ]; then
+            echo "sources=$ALL" >> "$GITHUB_OUTPUT"
+            echo "matrix: all heavy sources"
+          else
+            # Only dispatch a source that is actually IN the heavy set — a typo must
+            # fail loudly here, not silently run nothing and report success (R50).
+            case "$ALL" in
+              *"\"$REQ\""*) echo "sources=[\"$REQ\"]" >> "$GITHUB_OUTPUT"; echo "matrix: $REQ" ;;
+              *) echo "::error::'$REQ' is not a heavy source. Valid: $ALL"; exit 1 ;;
+            esac
+          fi
+
   heavy:
+    needs: setup
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:
       max-parallel: 1          # single-writer state — see header
       fail-fast: false         # one source's OOM must not cancel the others
       matrix:
-        source: [un_wpp, bundesbank, cepii_gravity, eia]
+        source: ${{ fromJSON(needs.setup.outputs.sources) }}
     name: ${{ matrix.source }}
-    # Skip every matrix entry except the requested one on a targeted dispatch.
-    if: ${{ github.event.inputs.source == '' || github.event.inputs.source == null || github.event.inputs.source == matrix.source }}
     env:
       PYTHONUNBUFFERED: "1"
       R2_WRITE_ENDPOINT: ${{ secrets.R2_WRITE_ENDPOINT }}
