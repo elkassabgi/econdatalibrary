@@ -445,18 +445,18 @@ def update(unit, since) -> Result:
             try:
                 meta = _get_meta(sess, url)
             except TransientError:
-                tally.transient_unit()
+                tally.transient_unit(tpath)
                 time.sleep(RATE)
                 continue
             if not meta or not isinstance(meta, dict) or not meta.get("variables"):
-                tally.empty_unit()         # 404/400 or no variables -> legitimately empty
+                tally.empty_unit(tpath)    # 404/400 or no variables -> legitimately empty
                 time.sleep(RATE)
                 continue
 
             # 2) build the date-tail query
             query, _tcode, n_new = _build_query(ing, meta["variables"], stored_max)
             if not query:
-                tally.empty_unit()         # no time dim, or nothing newer than stored max
+                tally.empty_unit(tpath)    # no time dim, or nothing newer than stored max
                 time.sleep(RATE)
                 continue
 
@@ -465,11 +465,11 @@ def update(unit, since) -> Result:
             try:
                 resp = _post_data(sess, url, body)
             except TransientError:
-                tally.transient_unit()
+                tally.transient_unit(tpath)
                 time.sleep(RATE)
                 continue
             if not resp or not isinstance(resp, dict):
-                tally.empty_unit()         # 400/403 query rejected -> empty
+                tally.empty_unit(tpath)    # 400/403 query rejected -> empty
                 time.sleep(RATE)
                 continue
 
@@ -490,9 +490,9 @@ def update(unit, since) -> Result:
                 # NB: the OLD gate was INVERTED — it fired on never-landed tables and stayed
                 # silent when a populated table went dark (the real break). Fixed here.
                 if structural_on_zero_rows(stored_max, resp):
-                    tally.structural_unit()
+                    tally.structural_unit(tpath)
                 else:
-                    tally.empty_unit()
+                    tally.empty_unit(tpath)
                 time.sleep(RATE)
                 continue
 

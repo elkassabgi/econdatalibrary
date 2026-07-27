@@ -456,14 +456,14 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
             try:
                 rows, outcome = _fetch_table(sess, db, tpath, prefix, since_date)
             except TransientError:
-                tally.transient_unit()   # -> partial; existing rows for this table kept
+                tally.transient_unit(tpath)  # -> partial; existing rows for this table kept
                 continue
 
             if outcome == "structural":
-                tally.structural_unit()  # finalize() raises DefinitiveError
+                tally.structural_unit(tpath)  # finalize() raises DefinitiveError
                 continue
             if outcome in ("empty", "quiet"):
-                tally.empty_unit()
+                tally.empty_unit(tpath)
                 continue
 
             # outcome == 'data'. Seed tbl_max from the SANE boundary only: if the on-disk
