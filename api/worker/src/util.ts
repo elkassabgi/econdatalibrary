@@ -32,6 +32,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // failed — 12,282 series advertised with nothing behind them. Derived 2026-07-27
   // (12,282/12,282, verified 100% present in R2 before this flip).
   "gpi", "gti", "ppi", "etr",
+  // harvard_atlas (CC0 1.0, verified against all three Dataverse DOIs). LIVE and
+  // updated daily but had ZERO catalog rows, so 255,217 series were fetched nightly
+  // and served to nobody. Catalogued + derived 2026-07-27 (251,217 uploaded this
+  // run, 0 failures; 255,217/255,217 verified present in R2 before this flip).
+  "harvard_atlas",
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
