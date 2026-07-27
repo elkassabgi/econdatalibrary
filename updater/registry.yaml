@@ -1499,6 +1499,7 @@ sources:
       value(float64), flag(string), zstd, flushed in 500k-row groups. Plus _ingest_summary.json sidecar. Raw zips cached under
       data/raw/faostat/<CODE>.zip (68 zips).'
 - source_id: fdic
+  live: true
   scripts:
   - jobs/ingest_fdic.py
   strategy: extend_by_date
@@ -1733,6 +1734,7 @@ sources:
     - 'single file data/clean_full/fsi_fundforpeace/fsi_fundforpeace.parquet (33 KB), zstd. Schema: series_key=''FSI_FP:{indicator}:{country}'',
       obs_date(date32, Dec-31 of year), value(float64). Whole-table write, non-atomic.'
 - source_id: gapminder
+  live: true
   scripts:
   - jobs/ingest_gapminder.py
   strategy: overwrite_if_changed
@@ -2191,6 +2193,7 @@ sources:
     - 'per-database parquet: Efnahagur.parquet, Atvinnuvegir.parquet, Ibuar.parquet, Samfelag.parquet, Umhverfi.parquet (5
       files) plus _catalog.json. Schema: series_key (ICE:{db}:{path}:dim=code...), obs_date, value.'
 - source_id: harvard_atlas
+  live: true
   scripts:
   - jobs/ingest_harvard_atlas.py
   strategy: overwrite_if_changed
@@ -2460,6 +2463,7 @@ sources:
       series_key = FSI:<indicator>:<country> from SDMX path, or FSI:<series_code> from the DBnomics fallback path (key shape
       differs depending on which source succeeded).'
 - source_id: imf_weo
+  live: true
   scripts:
   - jobs/ingest_imf_weo.py
   strategy: overwrite_if_changed
@@ -3265,6 +3269,7 @@ sources:
       series_key=''<slug>|<value_col>|<code-or-entity>''. Plus _ingest_summary.json. Raw cache: data/raw/owid/owid_slugs.txt
       + owid_sitemap.xml.'
 - source_id: oxcgrt
+  live: true
   scripts:
   - jobs/ingest_oxcgrt.py
   strategy: overwrite_if_changed
