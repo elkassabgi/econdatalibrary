@@ -39,6 +39,7 @@ Run:
 from __future__ import annotations
 import csv, datetime as dt, io, json, os, sys, time
 import xml.etree.ElementTree as ET
+from urllib.parse import urlsplit
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
@@ -114,11 +115,26 @@ class HttpResult:
     def is_500(self): return self.kind == "http" and (self.status or 0) >= 500
 
 
+# Hosts whose TLS handshake has already failed this run. "Abandoning host" was only
+# ever true for the ONE request that hit it: the caller then fell back to per-year
+# slicing and cheerfully retried the same dead host for every single year. Observed
+# 2026-07-27 — nearly 3 hours burned walking 1990, 1991, 1992 ... through
+# sdmx.istat.it (which 302s to avvisi.istat.it and fails the handshake), logging
+# "abandoning host" each time and writing no data at all. A handshake failure is a
+# property of the HOST, not of the slice, so record it once and skip it thereafter.
+_DEAD_HOSTS: set[str] = set()
+
+
 def http_get(url: str, accept: str, timeout: int = TIMEOUT,
              retries: int = RETRIES) -> HttpResult:
     """GET with backoff. Distinguishes 200 / 4xx / 5xx / timeout / conn-error
     so the slicer can decide whether to subdivide (5xx/timeout/size) or give up
     (persistent 4xx is a real 'no data')."""
+    host = urlsplit(url).netloc
+    if host in _DEAD_HOSTS:
+        # Already known dead: fail instantly so the caller moves to the next HOST
+        # rather than re-paying the handshake timeout on every slice.
+        return HttpResult(None, None, "conn", 0.0)
     hdrs = {**UA, "Accept": accept}
     last = HttpResult(kind="conn")
     for attempt in range(retries):
@@ -150,7 +166,9 @@ def http_get(url: str, accept: str, timeout: int = TIMEOUT,
             # spending 8+16+24+32 s per URL discovering the same thing five times.
             # Observed: sdmx.istat.it 302s to avvisi.istat.it, which fails the handshake.
             el = time.time() - t
-            log(f"  SSL FAIL, abandoning host ({type(e).__name__}): ...{url[-72:]}")
+            _DEAD_HOSTS.add(host)       # sticky: never pay this handshake again this run
+            log(f"  SSL FAIL, host {host} RETIRED for this run "
+                f"({type(e).__name__}): ...{url[-72:]}")
             return HttpResult(None, None, "conn", el)
         except Exception as e:
             el = time.time() - t
