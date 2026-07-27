@@ -31,8 +31,13 @@ import pyarrow as pa
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Deadline, Tally, finalize
 from jobs import ingest_idb as ig   # reuse CKAN client + THE row->long key builder
+
+# MAX_PER_RUN already bounds how MANY resources a run touches, but not how LONG they
+# take: one large CKAN datastore paged at CKAN's own speed can eat the whole run on
+# its own. Count caps and time caps are not substitutes for each other.
+BUDGET_MIN = 20
 
 SOURCE = "idb"
 DEDUP = ("series_key", "obs_date")
@@ -120,9 +125,18 @@ def update(unit, since) -> Result:
     maxd = None
     published = 0
     capped = len(todo) > MAX_PER_RUN
+    dl = Deadline(minutes=BUDGET_MIN)
 
     for slug, res, rid, lm in todo[:MAX_PER_RUN]:
         rname = (res.get("name") or res.get("description") or slug)[:40]
+        if dl.spent():
+            # Time budget gone even though the COUNT cap had room. Mark the run capped
+            # so it reports partial and the remainder drains next tick.
+            print(f"[idb] budget {BUDGET_MIN} min spent — {slug} not pulled this run; "
+                  f"retries next tick", flush=True)
+            tally.transient_unit(slug)
+            capped = True
+            continue
         j0 = ig.get_json(f"{ig.BASE}/datastore_search", params={"resource_id": rid, "limit": 0})
         if not j0:
             tally.transient_unit()

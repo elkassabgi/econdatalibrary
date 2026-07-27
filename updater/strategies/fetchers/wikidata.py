@@ -33,7 +33,14 @@ import requests
 
 from ... import config, blob, merge
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Deadline, Tally, finalize
+
+# Wall-clock cap for one wikidata run. WDQS paging is unbounded from our side — each
+# cube walks a DISTINCT entity set page by page, so a slow or throttled WDQS turns
+# that into an open-ended loop while every source queued behind it waits (sources run
+# strictly serially). A cube skipped here keeps its existing rows counted and does NOT
+# advance its vintage, so it is re-pulled next tick rather than silently dropped.
+BUDGET_MIN = 25
 
 SOURCE = "wikidata"
 DEDUP = ("series_key",)
@@ -139,9 +146,21 @@ def update(unit, since) -> Result:
     cursors: dict[str, str] = {}
     run_day = None  # set to the manifest-style UTC day once we have a healthy pull
 
+    dl = Deadline(minutes=BUDGET_MIN)
     for name, basename, count_attr, page_fn_attr, shape_fn_attr in CUBES:
         path = os.path.join(out_dir, basename)
         before = blob.row_count(path)
+
+        if dl.spent():
+            # Budget gone: stop STARTING cubes. Count what this cube already holds so
+            # the reported obs still describes the whole source, and tally it transient
+            # so the run reports `partial` and retries — never `ok`, which would claim
+            # a completeness this run did not achieve.
+            print(f"[wikidata] budget {BUDGET_MIN} min spent — {name} not pulled this "
+                  f"run (keeping {before:,} existing rows); retries next tick", flush=True)
+            tally.transient_unit(name)
+            total_rows += before
+            continue
 
         # Cheap published total for this cube (also the per-cube transient/empty signal).
         try:
