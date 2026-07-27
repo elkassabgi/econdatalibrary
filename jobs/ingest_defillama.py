@@ -234,7 +234,9 @@ OVERVIEW_JOBS = [
     ("options", "dailyPremiumVolume", "options_dailyPremiumVolume"),
     ("aggregators", "dailyVolume", "aggregators_dailyVolume"),
     ("aggregator-derivatives", "dailyVolume", "aggregator_derivatives_dailyVolume"),
-    ("bridge-aggregators", "dailyVolume", "bridge_aggregators_dailyVolume"),
+    # Renamed upstream (the old "dailyVolume" now answers 500, not 400); kept in sync with
+    # updater/strategies/fetchers/defillama.OVERVIEW_JOBS.
+    ("bridge-aggregators", "dailyBridgeVolume", "bridge_aggregators_dailyVolume"),
 ]
 
 

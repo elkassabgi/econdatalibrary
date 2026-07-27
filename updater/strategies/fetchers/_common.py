@@ -152,25 +152,49 @@ class Tally:
         self.empty = 0          # sub-units that succeeded but had no new data
         self.transient = 0      # sub-units that transient-failed (retry next run)
         self.structural = 0     # sub-units that returned 200 but were unparseable/empty-from-real-body
+        # WHICH sub-units failed, not just how many. A message that says "1/20 sub-unit(s)
+        # returned 200 but parsed 0 rows" names a defect you cannot act on: it takes a
+        # bisect to find the one endpoint at fault, so the finding sits unfixed. Callers
+        # pass a label (endpoint / file / dataset id); finalize() names the offenders.
+        self.structural_ids: list = []
+        self.transient_ids: list = []
 
-    def added_unit(self, n: int):
+    def added_unit(self, n: int, label=None):
         self.attempted += 1
         if n and n > 0:
             self.added += n
         else:
             self.empty += 1
 
-    def empty_unit(self):
+    def empty_unit(self, label=None):
         self.attempted += 1
         self.empty += 1
 
-    def transient_unit(self):
+    def transient_unit(self, label=None):
         self.attempted += 1
         self.transient += 1
+        if label:
+            self.transient_ids.append(str(label))
 
-    def structural_unit(self):
+    def structural_unit(self, label=None):
         self.attempted += 1
         self.structural += 1
+        if label:
+            self.structural_ids.append(str(label))
+
+
+def _named(ids, cap: int = 6) -> str:
+    """Render the offending sub-unit labels for an error message, bounded.
+
+    Bounded because a source with hundreds of sub-units would otherwise push a
+    multi-KB blob into unit_state.last_error and the digest email; the count in
+    the message stays authoritative, and the elision is stated rather than silent.
+    """
+    if not ids:
+        return ""
+    shown = ", ".join(ids[:cap])
+    extra = f", +{len(ids) - cap} more" if len(ids) > cap else ""
+    return f" [{shown}{extra}]"
 
 
 def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
@@ -179,7 +203,8 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
     if tally.structural:
         raise DefinitiveError(
             f"{source}: {tally.structural}/{tally.attempted} sub-unit(s) returned 200 but parsed 0 "
-            f"rows from a non-trivial body (schema/structural break); existing data kept")
+            f"rows from a non-trivial body (schema/structural break); existing data kept"
+            + _named(tally.structural_ids))
     if tally.added == 0 and tally.empty == tally.attempted and tally.attempted > empty_window_floor:
         raise DefinitiveError(
             f"{source}: all {tally.attempted} attempted sub-units returned empty/404 over a large "
@@ -187,7 +212,8 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
     if tally.transient:
         return Result(status="partial", obs=total_rows, last_obs_date=last_obs,
                       new_vintage="date-tail", series_cursors=series_cursors,
-                      error=f"{tally.transient}/{tally.attempted} sub-unit(s) transient-failed; will retry")
+                      error=f"{tally.transient}/{tally.attempted} sub-unit(s) transient-failed; will retry"
+                            + _named(tally.transient_ids))
     status = "ok" if tally.added > 0 else "no_change"
     return Result(status=status, obs=total_rows, last_obs_date=last_obs, new_vintage="date-tail",
                   series_cursors=series_cursors,

@@ -74,15 +74,37 @@ OVERVIEW_JOBS = [
     ("fees", "dailySupplySideRevenue", "fees_dailySupplySideRevenue"),
     ("fees", "dailyProtocolRevenue", "fees_dailyProtocolRevenue"),
     ("fees", "dailyUserFees", "fees_dailyUserFees"),
-    ("fees", "dailyBribesRevenue", "fees_dailyBribesRevenue"),
+    ("fees", "dailyBribesRevenue", "fees_dailyBribesRevenue"),   # RETIRED upstream, see below
     ("fees", "dailyTokenTaxes", "fees_dailyTokenTaxes"),
     ("dexs", "dailyVolume", "dexs_dailyVolume"),
     ("options", "dailyNotionalVolume", "options_dailyNotionalVolume"),
     ("options", "dailyPremiumVolume", "options_dailyPremiumVolume"),
     ("aggregators", "dailyVolume", "aggregators_dailyVolume"),
     ("aggregator-derivatives", "dailyVolume", "aggregator_derivatives_dailyVolume"),
-    ("bridge-aggregators", "dailyVolume", "bridge_aggregators_dailyVolume"),
+    # dataType RENAMED upstream: bridge-aggregators stopped accepting "dailyVolume" and now
+    # wants "dailyBridgeVolume". The old name does not 400 — DefiLlama answers 500 Internal
+    # server error, which we (correctly) classify as transient, so this sub-unit retried
+    # forever and silently never produced a file. Every other type still takes "dailyVolume",
+    # which is why the break looks arbitrary. Filename kept: it still describes the metric,
+    # and renaming it would move the series keys downstream for no gain.
+    ("bridge-aggregators", "dailyBridgeVolume", "bridge_aggregators_dailyVolume"),
 ]
+
+# Metrics DefiLlama has stopped publishing. The endpoint still answers 200 with a
+# well-formed envelope -- every expected key present, allChains populated -- but
+# `protocols: []`, an empty breakdown, and `totalAllTime: 0`. That last field is the
+# tell: a merely quiet day still reports a non-zero all-time total, so a zero there
+# means the series is gone upstream, not idle.
+#
+# We keep what we already collected (merge is never-shrink: 17,030 rows, 2021-05-19
+# to 2026-06-24, which is exactly where it stopped) and go on probing it, but a zero
+# parse here counts as EMPTY rather than STRUCTURAL. Removing the job outright would
+# have been the easy fix and the wrong one: it would also remove the probe, so if
+# DefiLlama resumes the metric we would never notice. This way recovery is automatic
+# -- the day a real body comes back, added_unit() picks it up with no code change --
+# while a permanently-retired metric stops holding the whole source at `partial`.
+#   Confirmed retired 2026-07-27; last real observation 2026-06-24.
+RETIRED_UPSTREAM = {"fees_dailyBribesRevenue.parquet"}
 
 
 # --------------------------------------------------------------------------- #
@@ -370,14 +392,15 @@ def _merge_file(path, tbl, dedup_keys, tally, cursors=None, keys=None, dates=Non
     """Publish one refreshed table under merge's never-shrink invariant and update the
     tally honestly. before>0 + 0 parsed rows -> structural; else add/empty."""
     before = blob.row_count(path)
+    label = os.path.basename(path)           # names the offender in the failure message
     if tbl is None:                          # transient sub-failure: keep old data
-        tally.transient_unit()
+        tally.transient_unit(label)
         return before, None
     if tbl.num_rows == 0:
-        if before > 0:
-            tally.structural_unit()          # 200 but parsed nothing from a real cube
+        if before > 0 and label not in RETIRED_UPSTREAM:
+            tally.structural_unit(label)     # 200 but parsed nothing from a real cube
         else:
-            tally.empty_unit()
+            tally.empty_unit(label)          # retired upstream, or genuinely nothing yet
         return before, None
     n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=dedup_keys)
     tally.added_unit(max(0, n - before))

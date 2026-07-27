@@ -126,7 +126,14 @@ def _derive_changed_csvs(unit, res, blob):
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob()) or {}
         failed = [str(s) for s in (out.get("failed") or [])]
-        note = f"csv_derive failed {len(failed)}/{len(ids)} series" if failed else None
+        # Name the failures, bounded. "failed 7/24" alone costs a bisect to act on,
+        # which is why such notes sit unfixed for weeks (same reason Tally now carries
+        # structural_ids). The count stays authoritative; the elision is explicit.
+        note = None
+        if failed:
+            shown = ", ".join(failed[:5])
+            more = f", +{len(failed) - 5} more" if len(failed) > 5 else ""
+            note = f"csv_derive failed {len(failed)}/{len(ids)} series [{shown}{more}]"
         if not note and unmapped:
             note = (f"csv coherence partial: {len(unmapped)} changed keys unmapped "
                     f"for {unit.source_id} (over derive-all cap)")
