@@ -27,6 +27,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "fao_gy", "fao_ic", "fao_oa", "fao_pp", "fao_qa", "fao_qcl",
   "fao_ql", "fao_qp", "fao_rp", "faostat", "fed_board", "fhfa",
   "frankfurter", "freedomhouse", "fsi_fundforpeace", "gcb", "ggdc", "gppd",
+  // IEP (CC BY-NC-SA 4.0, granted 2026-07-06). These four were CATALOGUED and
+  // searchable on the site with ZERO CSVs in R2, so every Download button on them
+  // failed — 12,282 series advertised with nothing behind them. Derived 2026-07-27
+  // (12,282/12,282, verified 100% present in R2 before this flip).
+  "gpi", "gti", "ppi", "etr",
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
