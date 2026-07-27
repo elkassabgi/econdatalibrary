@@ -381,6 +381,17 @@ def ingest_table(table_id: str, title: str, out_dir: str) -> int:
             last_ckpt_skip = skip
             log(f"    {table_id}: flushed {written:,} obs (part {parts}, skip={skip:,})")
         elif rows_since_ckpt >= FLUSH_ROWS:
+            # BUFFER EMPTY after a whole FLUSH_ROWS block. Say so, loudly. This is the
+            # signature of every silent-loss bug this ingester has had — unparsed period
+            # VALUES (SJ/X0/YYYYMMDD), then an undetected period COLUMN — and in each case
+            # the job looked perfectly healthy from outside: process alive, log scrolling,
+            # row counts climbing, and not one observation kept. 71493ned fetched
+            # 144,000,000 rows that way; 84809NED 38,500,000. Nothing counted the discards,
+            # so nothing could report them. Now the ratio is visible in the log the
+            # supervisor already writes, and a sustained 0 is a defect, not a quiet table.
+            log(f"    !! {table_id}: {skip:,} rows fetched, {written:,} obs written "
+                f"— {rows_since_ckpt:,} rows in this block produced NOTHING "
+                f"(period_col={period_col!r}) — check the parser before trusting this run")
             # buffer empty (sparse stretch) but many source rows scanned — persist
             # the skip offset so a reboot doesn't re-scan them (no part to write).
             with open(ckpt_path, "w") as f:
@@ -431,6 +442,14 @@ def ingest_table(table_id: str, title: str, out_dir: str) -> int:
         all_keys, all_dates, all_vals = [], [], []
 
     if parts == 0:
+        # Fetched rows but kept nothing. ALWAYS report the ratio: this exact outcome —
+        # a completed crawl that wrote zero observations — is what 23 tables did for
+        # weeks under the SJ/X0/YYYYMMDD parser gap, and what 84808/84809NED did for
+        # 18 hours under the undetected period column, without ever producing a single
+        # line anyone could grep for.
+        if skip > 0:
+            log(f"  !! {table_id}: crawled {skip:,} rows and wrote ZERO observations "
+                f"(period_col={period_col!r}) — this is a DEFECT, not an empty table")
         return 0
 
     # Concatenate part files into the final parquet (memory-bounded, one part at a time)
