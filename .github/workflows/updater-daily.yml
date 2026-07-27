@@ -189,6 +189,20 @@ jobs:
           npm ci --prefix api/worker --no-audit --no-fund
           python core/sync_state_d1.py
 
+      - name: Sync new catalog series to D1
+        # Freshness alone is not enough: sync_state_d1 pushes unit_state/source_state
+        # and explicitly never touches the catalog, so a NEWLY DERIVED series landed
+        # in R2 (hosted, downloadable by id) but never appeared in /v1/catalog. That
+        # gap stranded 31,259 series before it was measured on 2026-07-27 — boe was
+        # serving 21 of its 30,674. The orchestrator records each derived id; this
+        # upserts exactly those rows. continue-on-error because the data publish has
+        # already succeeded by this point and the ids stay queued in
+        # pending_catalog_sync.txt, so a transient D1 failure costs a day of
+        # discoverability, never a day of data.
+        if: ${{ inputs.dry_run != true }}
+        continue-on-error: true
+        run: python core/sync_catalog_d1.py
+
       - name: Health gate (fail past 2x SLA)
         # Exit 1 -> red run -> GH notification. D1 keeps serving the true stale
         # date — the public endpoint never lies to hide our failure (§5.3).
