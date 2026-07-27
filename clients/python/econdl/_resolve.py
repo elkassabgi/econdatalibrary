@@ -1125,13 +1125,48 @@ def native_to_tidy(res: Resolution, table: pa.Table) -> pd.DataFrame:
     return native_table_to_tidy(res.source, res.key_col, table)
 
 
+def _dates_without_ns_bound(col) -> list:
+    """obs_date -> datetime.date, WITHOUT going through pandas datetime64[ns].
+
+    pandas nanosecond timestamps span only ~1677-09-21 .. 2262-04-11, so
+    `pd.to_datetime` RAISES OutOfBoundsDatetime on genuinely old observations. That
+    is not a hypothetical: Gapminder's `income_per_person_long_series` reaches
+    0980-12-31 for chn and 1270-12-31 for gbr, and 98 of its 86,684 series failed to
+    derive on exactly this — the deepest historical data we host, lost to a storage
+    detail of the conversion layer.
+
+    Parquet already holds these correctly as date32 (years 1..9999); only the pandas
+    hop was lossy. Note the alternative fix, `errors="coerce"`, would have been far
+    worse: it turns a pre-1677 date into NaT and the series would derive "successfully"
+    with its oldest observations silently blanked.
+    """
+    import datetime as _dt
+    out = []
+    for v in col:
+        if v is None or (isinstance(v, float) and v != v):   # None / NaN
+            out.append(None)
+        elif isinstance(v, _dt.datetime):
+            out.append(v.date())
+        elif isinstance(v, _dt.date):
+            out.append(v)
+        else:
+            s = str(v)[:10]
+            try:
+                out.append(_dt.date(int(s[0:4]), int(s[5:7]), int(s[8:10])))
+            except (ValueError, IndexError):
+                out.append(None)
+    return out
+
+
 def native_table_to_tidy(source: str, key_col: str, table: pa.Table) -> pd.DataFrame:
     """Shared normaliser used by both bundle() (live) and pull() (from resource)."""
-    df = table.to_pandas()
+    # date_as_object=True keeps date32 columns as datetime.date instead of letting
+    # Arrow convert them to datetime64[ns], which overflows for pre-1677 dates.
+    df = table.to_pandas(date_as_object=True)
     out = pd.DataFrame({
         "series_id": df[key_col].astype(str).values,   # native key (or stamped catalog id)
         "source": source,
-        "obs_date": pd.to_datetime(df["obs_date"]).dt.date,
+        "obs_date": _dates_without_ns_bound(df["obs_date"]),
         "value": pd.to_numeric(df["value"], errors="coerce"),
     })
     return out.sort_values(["series_id", "obs_date"]).reset_index(drop=True)
