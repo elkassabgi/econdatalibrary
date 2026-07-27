@@ -190,8 +190,15 @@ def execute_remote(files: list[str]) -> None:
                "--remote", "--yes", f"--file={os.path.abspath(p)}"]
         print(f"  executing {os.path.basename(p)} ...")
         try:
+            # encoding/errors pinned explicitly: text=True decodes with the LOCALE
+            # codec, and on Windows (cp1252) wrangler's box-drawing output raises
+            # UnicodeDecodeError. That turns a SUCCESSFUL deploy into a crash — and
+            # worse, a crash midway through a chunked sync leaves D1 half-updated.
+            # The bytes we care about (row counts, error text) are ASCII; replace the
+            # rest rather than letting cosmetics abort a write.
             res = subprocess.run(cmd, cwd=WORKER_DIR, capture_output=True,
-                                 text=True, timeout=600)
+                                 text=True, encoding="utf-8", errors="replace",
+                                 timeout=600)
         except subprocess.TimeoutExpired:
             raise SystemExit(f"FATAL: wrangler timed out (600s) on {p} — aborting sync")
         if res.returncode != 0:
