@@ -137,15 +137,23 @@ _FLOW_DEADLINE: float | None = None
 _BUDGET_HIT = False
 
 
+def _over_budget() -> bool:
+    """True once the current flow's wall-clock budget is spent (and latch it)."""
+    global _BUDGET_HIT
+    if _FLOW_DEADLINE is not None and time.time() > _FLOW_DEADLINE:
+        _BUDGET_HIT = True
+        return True
+    return False
+
+
 def http_get(url: str, accept: str, timeout: int = TIMEOUT,
              retries: int = RETRIES) -> HttpResult:
     """GET with backoff. Distinguishes 200 / 4xx / 5xx / timeout / conn-error
     so the slicer can decide whether to subdivide (5xx/timeout/size) or give up
     (persistent 4xx is a real 'no data')."""
     global _BUDGET_HIT
-    if _FLOW_DEADLINE is not None and time.time() > _FLOW_DEADLINE:
+    if _over_budget():
         # Budget spent: stop issuing requests so the subdivision unwinds promptly.
-        _BUDGET_HIT = True
         return HttpResult(None, None, "timeout", 0.0)
     host = urlsplit(url).netloc
     if host in _DEAD_HOSTS:
@@ -155,6 +163,14 @@ def http_get(url: str, accept: str, timeout: int = TIMEOUT,
     hdrs = {**UA, "Accept": accept}
     last = HttpResult(kind="conn")
     for attempt in range(retries):
+        # Re-check EVERY attempt, not just on entry. Checking only at the top bounds
+        # a flow at budget + retries*timeout (15 + 5*300 s = 40 min here), because a
+        # call that starts one second inside the deadline still runs its full retry
+        # ladder — the deadline exists precisely for requests that hang, so those are
+        # the ones it must be able to interrupt. Same shape as a p.wait(timeout=)
+        # placed after the pipe is already drained: present, plausible, unreachable.
+        if attempt and _over_budget():
+            return last
         t = time.time()
         try:
             r = requests.get(url, headers=hdrs, timeout=timeout)
