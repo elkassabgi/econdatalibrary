@@ -116,7 +116,7 @@ def _resolve_defillama(series_id: str, root: str) -> Resolution:
     #   chain_tvl:<Chain>      -> chains_tvl.parquet,         key == '<Chain>'
     #   protocol_tvl:<slug>    -> tvl_protocol_shard*.parquet, key == '<slug>|__total__'
     #   stablecoins:total_usd  -> stablecoins_total.parquet,  key == '__ALL__'
-    #   tvl:total              -> NOT materialised in the store yet (errors honestly)
+    #   tvl:total              -> chains_tvl.parquet,         key == '__ALL__'
     # The dir mixes _catalog_*.parquet (different schema), so protocol_tvl opens ONLY
     # the shard files (a list dataset), never the whole directory.
     parts = series_id.split(":", 2)
@@ -134,9 +134,14 @@ def _resolve_defillama(series_id: str, root: str) -> Resolution:
     elif kind == "stablecoins":
         path, native = os.path.join(base, "stablecoins_total.parquet"), "__ALL__"
     elif kind == "tvl":
-        raise ResolveError(
-            f"{series_id}: defillama total-TVL (v2/historicalChainTvl) is not in the "
-            "at-rest store yet -- store-coverage gap, not silently skipped.")
+        # Was an honest store-coverage error; the gap has since been filled. The
+        # fetcher's _chains_tvl_aggregate() writes an '__ALL__' row into
+        # chains_tvl.parquet, which IS total TVL across chains -- checked against
+        # DefiLlama's own v2/historicalChainTvl, the endpoint this error named:
+        # 2026-07-25 and 2026-07-26 agree to the printed precision (75.426 and
+        # 75.743 B USD), today differing only by an intraday tick. The error text
+        # outlived the gap, so a series we could serve kept 404ing.
+        path, native = os.path.join(base, "chains_tvl.parquet"), "__ALL__"
     else:
         raise ResolveError(f"{series_id}: unknown defillama kind {kind!r}")
     if isinstance(path, str) and not os.path.exists(path):
