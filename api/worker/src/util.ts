@@ -37,6 +37,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // and served to nobody. Catalogued + derived 2026-07-27 (251,217 uploaded this
   // run, 0 failures; 255,217/255,217 verified present in R2 before this flip).
   "harvard_atlas",
+  // gapminder (CC BY 4.0, declared in the repo README prose — no LICENSE file and
+  // GitHub's licence API returns null, so automated probes find nothing). LIVE and
+  // updated daily with ZERO catalog rows: 86,684 series served to nobody.
+  // 86,684/86,684 verified in R2 and in D1 before this flip.
+  "gapminder",
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
