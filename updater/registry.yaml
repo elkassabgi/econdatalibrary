@@ -1171,6 +1171,7 @@ sources:
       COVERPAGE, OTHERMANAGER, OTHERMANAGER2, INFOTABLE, SIGNATURE, SUMMARYPAGE). Plus _manifest.json, _schema.json, LICENSE.txt.
       Raw zip cache at data/raw/sec_edgar/form13f/<key>_form13f.zip. INFOTABLE is the holdings table (~118M obs measured).'
 - source_id: edgar_jrc
+  live: true
   scripts:
   - jobs/ingest_edgar_jrc.py
   strategy: overwrite_if_changed
@@ -1216,6 +1217,7 @@ sources:
       (date32, Dec-31 annual), value (float64). Small annual source (comparable to ember''s ~8M tier). No raw cache, no per-gas
       files. Side logs _edgar_jrc_log.txt / _edgar_jrc_err.txt.'
 - source_id: ei_statreview
+  live: true
   scripts:
   - jobs/ingest_ei_statreview.py
   strategy: overwrite_if_changed
@@ -1355,6 +1357,7 @@ sources:
       date32, value float64, plus present descriptive dims among geography/area/state/category/subcategory/variable/unit/dimension/series).
       _summary.json run report. Full catalog listing cached at data/raw/ember/ember_manifest_full.json. ~8.1M obs measured.'
 - source_id: epu
+  live: true
   scripts:
   - jobs/ingest_epu.py
   strategy: overwrite_if_changed
@@ -1777,6 +1780,7 @@ sources:
       Dec-31), value(float64). Built fully in memory then one pq.write_table at the end (the FLUSH_EVERY=100000 constant at
       line 147 is defined but NEVER used -- there is no incremental flush). Non-atomic.'
 - source_id: gcb
+  live: true
   scripts:
   - jobs/ingest_gcb.py
   strategy: overwrite_if_changed
@@ -2011,6 +2015,7 @@ sources:
     storage_layout:
     - 'single parquet data/clean_full/gti/gti.parquet; schema series_key, obs_date, value.'
 - source_id: ppi
+  live: true
   scripts:
   - updater/strategies/fetchers/ppi.py
   strategy: overwrite_if_changed
@@ -2370,6 +2375,7 @@ sources:
       state in data/clean_full/imf/_manifest.json and full catalog snapshot in _catalog.json (manifest shows 102 base flows,
       44 ok / 57 skipped, ~101.6M obs).
 - source_id: imf_commodity
+  live: true
   scripts:
   - jobs/ingest_imf_commodity.py
   strategy: overwrite_if_changed
@@ -3393,6 +3399,7 @@ sources:
     - single file data/clean_full/pip/pip.parquet, columns series_key/obs_date/value, series_key='PIP:<indicator>:<country_code>:<povline_label>'
       (annual, Dec-31). Streaming ParquetWriter. Plus two log/err text files.
 - source_id: pwt
+  live: true
   scripts:
   - jobs/ingest_pwt.py
   strategy: overwrite_if_changed
@@ -4770,6 +4777,7 @@ sources:
       obs_date date32 year-end, value float64). Written via ParquetWriter in 1M-row batches to one file. Code has a commented
       intent to split if >100M rows but BATCH only chunks writes, never splits files.
 - source_id: yale_epi
+  live: true
   scripts:
   - jobs/ingest_yale_epi.py
   strategy: overwrite_if_changed

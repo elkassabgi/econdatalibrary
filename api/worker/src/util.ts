@@ -33,7 +33,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "imf_gfse", "imf_gfsfalcs", "imf_gfsibs", "imf_gfsmab", "imf_gfsssuc", "imf_hpdd",
   "imf_mcdreo", "imf_namain_idc_n", "imf_pctot", "imf_pgcs", "imf_pgi", "imf_psbsfad",
   "imf_unsdg_imf_inputs", "imf_weo", "imf_whdreo", "imf_world", "insee_bdm", "ipea",
-  "irena", "kof_globalization", "ksh", "maddison", "nasa_giss", "nbp",
+  "irena", "kof_globalization", "ksh", "ksh_stadat", "maddison", "nasa_giss", "nbp",
   "noaa", "nyfed", "oecd", "ofr", "owid", "oxcgrt",
   "penn_world_table", "pip", "polity", "pwt", "rba", "riksbank",
   "sec_edgar", "shiller", "sipri", "snb", "statcan", "stats_nz",
