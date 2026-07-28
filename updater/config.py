@@ -63,7 +63,15 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   Eight more sit behind the same renames (imf_psbsfad, imf_pctot, imf_bopagg,
 #   imf_gender_*, imf_pgi, imf_pgcs, imf_unsdg_imf_inputs — 36,390 series); they are
 #   deliberately NOT registered yet because each needs that same proof first.
-EXPECTED_SOURCE_COUNT = 114
+# 2026-07-28 (later): 114 -> 115. fao_qcl, the first of the FAO family to be wired.
+#   ALL 25 fao_* sources (136,754 series) are served and downloadable with no
+#   registry entry — never attempted, exactly like the IMF ten. The family hid
+#   behind the registry's separate `faostat` entry, which is a DIFFERENT source.
+#   Repair in place: the DBnomics-era ids ARE FAOSTAT's own codes, so 98.2% of
+#   20,238 published ids reproduce exactly, values agree 92.22% across 988,719
+#   shared points, and upstream carries 78,944 series to 2024 against our 20,238
+#   to 2022. The remaining 24 follow one at a time, each proved the same way.
+EXPECTED_SOURCE_COUNT = 115
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
