@@ -27,6 +27,9 @@ Self-check (local store only, zero R2 contact):
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import os
+import threading
 import time
 import urllib.parse
 
@@ -79,25 +82,69 @@ def derive_and_put(series_ids: list[str], blob) -> dict:
     publish; the orchestrator marks the run 'partial' off the failed list.
     Duplicate ids are deduped (re-PUTs would be byte-identical no-ops anyway).
     """
+    # CONCURRENCY. Each series is an independent derive plus one PUT, and the PUT is
+    # almost entirely round-trip latency to R2 — so serial execution ran at about ONE
+    # PER SECOND. Measured live on the yale_epi re-derive: 5,596 objects in ~90
+    # minutes (~62/min), which put its remaining ~15,700 at ~253 further minutes
+    # against a 300-minute job ceiling. That run would have been killed at the
+    # ceiling with its state never pushed — hours spent for nothing, the exact
+    # failure recorded in M-20260727-07. Threads suit this because the work is
+    # I/O-bound, not CPU-bound.
+    #
+    # Each worker gets its OWN blob handle. boto3 clients are documented thread-safe
+    # for most calls, but "most" is not a guarantee worth a corrupted upload, and a
+    # per-thread handle costs nothing.
+    workers = int(os.environ.get("AQUEDUCT_DERIVE_WORKERS", "8") or 8)
+    ids = list(dict.fromkeys(series_ids))        # dedupe, order preserved
+    if workers <= 1 or len(ids) < 2:
+        workers = 1
+
+    _local = threading.local()
+
+    def _blob():
+        if workers == 1:
+            return blob
+        b = getattr(_local, "b", None)
+        if b is None:
+            try:
+                from . import blob as blob_mod
+                b = blob_mod.from_env()
+            except Exception:                    # noqa: BLE001 — fall back, never fail
+                b = blob
+            _local.b = b
+        return b
+
     put = 0
     failed: list[str] = []
-    seen: set[str] = set()
-    for sid in series_ids:
-        if sid in seen:
-            continue
-        seen.add(sid)
+    lock = threading.Lock()
+
+    def _one(sid):
         try:
             body = _series_csv_bytes(sid)
         except Exception as e:  # store-coverage gap or resolver error — loud, queued
-            failed.append(sid)
-            print(f"  CSV derive FAILED {sid}: {str(e)[:100]}", flush=True)
-            continue
-        if _put_with_retry(blob, r2_key(sid), body):
-            put += 1
-            if put % 500 == 0:
-                print(f"  derived+put {put:,} CSVs (failed {len(failed):,})...", flush=True)
-        else:
-            failed.append(sid)
+            return sid, False, f"{type(e).__name__}: {str(e)[:90]}"
+        return ((sid, True, None) if _put_with_retry(_blob(), r2_key(sid), body)
+                else (sid, False, "PUT exhausted"))
+
+    def _record(sid, ok, why):
+        nonlocal put
+        with lock:
+            if ok:
+                put += 1
+                if put % 500 == 0:
+                    print(f"  derived+put {put:,} CSVs (failed {len(failed):,})...",
+                          flush=True)
+            else:
+                failed.append(sid)
+                print(f"  CSV derive FAILED {sid}: {why}", flush=True)
+
+    if workers == 1:
+        for sid in ids:
+            _record(*_one(sid))
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            for sid, ok, why in ex.map(_one, ids):
+                _record(sid, ok, why)
     return {"put": put, "failed": failed}
 
 
