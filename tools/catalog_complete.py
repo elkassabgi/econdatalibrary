@@ -46,6 +46,18 @@ def complete(con, source):
 
     keys = set()
     files = blob.list_parquets(config.source_dir(source))
+    if not files:
+        # An empty list is not "nothing to do" — it usually means this source's data
+        # is not on the BACKEND being read. wid holds 119 parquets locally and none
+        # in R2 (it was gated), so under AQUEDUCT_BACKEND=r2 the loop below never
+        # ran, key_col stayed None, and the summary line died with "unsupported
+        # format string passed to NoneType.__format__" — a crash that says nothing
+        # about the actual problem. Say the actual problem.
+        print(f"  {source}: NO parquet files under {config.source_dir(source)} "
+              f"(backend={os.environ.get('AQUEDUCT_BACKEND', 'local')}). The data is "
+              f"not on this backend — upload it first, or re-run against the backend "
+              f"that holds it.")
+        return 0
     key_col = None
     for f in files:
         path = os.path.join(config.source_dir(source), f)
