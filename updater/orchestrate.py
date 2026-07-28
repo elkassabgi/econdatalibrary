@@ -355,6 +355,17 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         if not force and not strat.is_due(unit, us):
             continue
 
+        # Announce the unit BEFORE any work. A run that is KILLED (OOM -> SIGKILL,
+        # which GitHub renders as "cancelled") prints nothing afterwards, so without
+        # this line the log cannot say WHICH source died. Batch 30312217406 burned
+        # 49 minutes, peaked at 15,654 MB of a 16 GB runner, and named no culprit:
+        # every source in the dispatch appeared exactly once, on the input line.
+        # The orchestrator only ever printed on skips and at the end, so a long
+        # single-source run was indistinguishable from a hung one.
+        print(f"[orchestrator] >>> {unit.key} (strategy={unit.strategy}, "
+              f"cadence={unit.cadence})", flush=True)
+        t_unit = time.time()
+
         try:
             vintage = strat.detect_change(unit, us)
         except TransientError as e:
@@ -453,6 +464,20 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             results.append((unit.key, "error"))
         finally:
             store.release_lease(unit.key, owner=OWNER)
+            # Per-unit cost, printed even on failure. Peak RSS is what turns "the
+            # runner OOMed" into "THIS source needs 15 GB" — the fact that decides
+            # whether a source belongs in the shared nightly job or on its own
+            # runner (updater-heavy.yml). Without it, every OOM investigation
+            # restarts from zero.
+            try:
+                import resource                              # POSIX (CI runners)
+                peak_mb = resource.getrusage(
+                    resource.RUSAGE_SELF).ru_maxrss / 1024.0
+                mem = f", peak_rss={peak_mb:,.0f}MB"
+            except Exception:                                # noqa: BLE001
+                mem = ""                                     # Windows: not available
+            print(f"[orchestrator] <<< {unit.key} took "
+                  f"{time.time() - t_unit:,.0f}s{mem}", flush=True)
     if budget_skipped:
         # LOUD, and never mistakable for a clean run: a capped run that reported only
         # its successes would read as "everything current" while sources silently
