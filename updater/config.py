@@ -52,7 +52,18 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   This guard worked exactly as intended — it refused every run the moment the
 #   count moved, which is why the number is ASSERTED here and not inferred from the
 #   file it is meant to protect.
-EXPECTED_SOURCE_COUNT = 112
+# 2026-07-28: 112 -> 114. imf_hpdd (191 series) and imf_fiscaldecentralization
+#   (8,398) were SERVED and downloadable with NO registry entry at all — never
+#   attempted, so they could not even go stale. IMF had renamed their flows
+#   (HPDD -> HPD, FISCALDECENTRALIZATION -> FD) and an exact-id lookup read the miss
+#   as "discontinued" (ledger R75). Both are repairs IN PLACE, not additions: every
+#   live id is preserved (191/191 and 8,398/8,398), proven by value agreement across
+#   shared observations rather than by matching code names, and the fetcher
+#   re-verifies that >=95% of catalog ids are reproduced before merging anything.
+#   Eight more sit behind the same renames (imf_psbsfad, imf_pctot, imf_bopagg,
+#   imf_gender_*, imf_pgi, imf_pgcs, imf_unsdg_imf_inputs — 36,390 series); they are
+#   deliberately NOT registered yet because each needs that same proof first.
+EXPECTED_SOURCE_COUNT = 114
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
