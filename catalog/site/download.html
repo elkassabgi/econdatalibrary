@@ -238,8 +238,34 @@ function saveBlob(name, text){
   const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),1500);
 }
+// No key stored, but the user may well be signed in on hfdatalibrary.com and simply
+// not have had their key delivered yet. assets/sso.js does ONE silent SSO check per
+// browser session and then sets 'edl_sso_checked' so it cannot loop. That guard
+// strands anyone who browses econ BEFORE registering: the check runs, finds no HF
+// session, and every later visit in that session short-circuits — unless they happen
+// to arrive via a link from hfdatalibrary.com, since the only other reset is a family
+// referrer. Typing the URL or using a bookmark leaves them keyless with a Download
+// button that does nothing, which is exactly how this was reported.
+//
+// So when a download is ATTEMPTED with no key, re-check once instead of blaming the
+// user for not pasting a key they should never have needed. Guarded by its own
+// one-shot marker so a genuinely signed-out visitor cannot be bounced in a loop.
+function trySsoThenRetry(){
+  try{
+    if(sessionStorage.getItem('edl_dl_recheck')){
+      toast('Sign in (free) to download — no account yet? It takes a minute.');
+      return false;
+    }
+    sessionStorage.setItem('edl_dl_recheck','1');
+    sessionStorage.removeItem('edl_sso_checked');
+    toast('Checking your ElkassabgiData sign-in…');
+    location.replace('https://api.hfdatalibrary.com/v1/auth/sso?return='
+      + encodeURIComponent(location.origin + location.pathname + location.search));
+    return true;
+  }catch(_e){ return false; }
+}
 async function downloadOne(id, title, btn){
-  if(!getKey()){ toast('Enter your free API key above first'); keyInput.focus(); return; }
+  if(!getKey()){ if(!trySsoThenRetry()) keyInput.focus(); return; }
   const old=btn?btn.textContent:''; if(btn){btn.disabled=true;btn.textContent='…';}
   try{
     const csv=await fetchCsv(id);
@@ -268,7 +294,9 @@ function loadJSZip(){
   return JSZipReady;
 }
 async function downloadSelected(){
-  if(!getKey()){ toast('Enter your free API key above first'); keyInput.focus(); return; }
+  // Same recovery as downloadOne — a keyless bulk download is the identical dead
+  // button, and fixing only the per-row path would leave this one broken.
+  if(!getKey()){ if(!trySsoThenRetry()) keyInput.focus(); return; }
   const ids=[...selected.keys()];
   if(ids.length===1){ return downloadOne(ids[0], '', document.getElementById('dlsel')); }
   const btn=document.getElementById('dlsel'); const old=btn.textContent; btn.disabled=true;
