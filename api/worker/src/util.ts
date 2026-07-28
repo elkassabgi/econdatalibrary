@@ -42,6 +42,12 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // updated daily with ZERO catalog rows: 86,684 series served to nobody.
   // 86,684/86,684 verified in R2 and in D1 before this flip.
   "gapminder",
+  // IMF DIRECT (imf-terms). Same IMF datasets we relay via DBnomics, pulled from
+  // api.imf.org instead. 21,382 series; derive verified 21,382/21,382 present in R2
+  // and in live D1 BEFORE this flip — CSVs first, flag second, because flag-first
+  // turns a 501 into a 404 and a 404 says the series does not exist.
+  "imf_afrreo_direct", "imf_apdreo_direct", "imf_cofer_direct", "imf_fas_direct",
+  "imf_fdi_direct", "imf_whdreo_direct", "imf_world_direct",
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
