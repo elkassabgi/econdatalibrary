@@ -27,13 +27,15 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
 
-from ... import blob, config
+from ... import blob, config, merge
 from ...errors import TransientError
 from ..base import Result
 from ._common import Tally, finalize
 from jobs import ingest_imf_direct as ing
 
+DEDUP = ("series_key", "obs_date")
 UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com"}
 
 
@@ -85,7 +87,8 @@ def run(flow: str, agency: str, source_id: str) -> Result:
                         series_cursors={})
 
     try:
-        n = ing.pull(flow, agency, source_id)
+        stage = os.path.join(out_dir, f"_staging_{source_id}.parquet")
+        n = ing.pull(flow, agency, source_id, out_path=stage)
     except urllib.error.HTTPError as e:
         if e.code in (400, 404):
             # Flow id or agency moved. STRUCTURAL — existing rows are kept and the
@@ -100,6 +103,14 @@ def run(flow: str, agency: str, source_id: str) -> Result:
         tally.structural_unit(flow)          # 200 but zero parsed — see the ingester
         return finalize(tally, before, _max_date(path), source=source_id)
 
+    # PUBLISH THROUGH merge/blob, never trust the ingester's local write.
+    # jobs/ingest_imf_direct.py writes a plain local parquet with pq.write_table
+    # because it is also a standalone CLI. Under AQUEDUCT_BACKEND=r2 that file never
+    # reaches R2, so a CI run would report rows merged and publish NOTHING — green,
+    # and empty. Re-read what the ingester produced and republish it via
+    # merge.merge_and_write, which is atomic, dedups, and is never-shrink.
+    fresh = pq.read_table(stage)
+    n_rows, _ = merge.merge_and_write(path, fresh, mode="merge", dedup_keys=DEDUP)
     tbl = blob.read_table(path)
     tally.added_unit(max(0, tbl.num_rows - before), flow)
 
@@ -116,6 +127,11 @@ def run(flow: str, agency: str, source_id: str) -> Result:
         with open(sidecar, "w", encoding="utf-8") as fh:
             json.dump({"version": ver, "flow": flow, "agency": agency}, fh, indent=1)
     except Exception:                                        # noqa: BLE001
+        pass
+
+    try:
+        os.remove(stage)          # staging file is scratch, never a second copy
+    except OSError:
         pass
 
     mx = pc.max(tbl.column("obs_date")).as_py()

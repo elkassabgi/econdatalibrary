@@ -40,7 +40,19 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   run would have re-uploaded to R2 exactly what the purge deleted.
 #   Also -6 same day: gated sources with no adapter -- we may not host them, so building a
 #   fetcher would be work in service of data we must delete: central_banks, fraser_efw, imf_dbnomics, social_progress, spi, wiid.
-EXPECTED_SOURCE_COUNT = 105
+# 2026-07-28: +7 -> 112. IMF DIRECT. Seven datasets we were relaying through
+#   DBnomics now come from api.imf.org itself: imf_fdi_direct, imf_fas_direct,
+#   imf_world_direct, imf_afrreo_direct, imf_apdreo_direct, imf_cofer_direct,
+#   imf_whdreo_direct. ADDITIONS, not replacements — IMF retired IFS and re-keyed
+#   these datasets, so overwriting the existing imf_<flow> ids would break thousands
+#   of live series ids to buy freshness. Verified equal-or-better coverage BEFORE
+#   registering (FAS ~2x our series, WORLD +43%, FDI exact, AFRREO ~100%). MCDREO
+#   and FM are deliberately excluded: direct serves 57% and 9% of what the relay
+#   does, and shipping a thinner source under a "direct" label is a regression.
+#   This guard worked exactly as intended — it refused every run the moment the
+#   count moved, which is why the number is ASSERTED here and not inferred from the
+#   file it is meant to protect.
+EXPECTED_SOURCE_COUNT = 112
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
