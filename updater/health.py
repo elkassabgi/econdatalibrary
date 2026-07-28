@@ -26,6 +26,10 @@ SLA_TOLERANCE = 2.0
 # Extra slack (in periods) for DATA recency, since a publication can legitimately lag a period.
 DATA_SLACK_PERIODS = 1.0
 ATTENTION_STATUSES = ("partial", "definitive_fail", "transient_fail", "running")
+# How long an `upstream_verified` claim is trusted before it must be re-probed. A
+# dataset that is finished today can resume publishing tomorrow, so the exemption it
+# buys is deliberately perishable rather than permanent.
+UPSTREAM_RECHECK_DAYS = 180.0
 # Per-series staleness uses a CONSERVATIVE absolute floor rather than the source
 # cadence: a single source mixes frequencies (a monthly series inside a "daily"
 # source is not stale at >3 days). >2 years with no new obs is genuinely dead for
@@ -162,7 +166,35 @@ def assess(store=None) -> dict:
         elif succ_age > sla_days:
             health = "RED-SLA"            # job hasn't succeeded within tolerance
         elif eff_obs_age is not None and eff_obs_age > data_days:
-            health = "RED-DATA"           # job 'succeeds' but the source's NEWEST data has gone stale
+            # "Our newest observation is old" answers a question about US. The
+            # question that matters is whether we are BEHIND THE PUBLISHER, and those
+            # differ whenever a dataset is simply finished. IMF's Historical Public
+            # Debt ends at 2015 and Fiscal Decentralization at 2020 — upstream's own
+            # latest, matched exactly by our copy. Calling those RED says we are
+            # missing data that does not exist, and a gate that cries wolf on
+            # complete sources is how a real freeze gets ignored (this is R73 from
+            # the other side: measure against the publisher, not against a clock).
+            #
+            # So a source may declare an upstream check, and it is an ASSERTION WITH
+            # AN EXPIRY, never a permanent mute: it must name the date upstream
+            # actually ends and when that was verified, and it lapses to ATTENTION
+            # once stale so somebody re-probes instead of trusting a claim made years
+            # ago. If our data ever falls BEHIND the declared upstream end, the
+            # declaration stops applying and RED-DATA stands.
+            uv = e.get("upstream_verified") or {}
+            u_latest, u_checked = uv.get("latest_obs"), uv.get("checked")
+            check_age = _age_days(u_checked, now) if u_checked else None
+            if (u_latest and newest_obs and str(newest_obs) >= str(u_latest)
+                    and check_age is not None):
+                if check_age > UPSTREAM_RECHECK_DAYS:
+                    health = "ATTENTION"  # claim has expired — re-verify upstream
+                    attention = list(attention) + [
+                        f"upstream_verified is {check_age:.0f}d old "
+                        f"(>{UPSTREAM_RECHECK_DAYS:.0f}d) — re-probe {sid}"]
+                else:
+                    health = "OK"         # complete upstream, and we match it
+            else:
+                health = "RED-DATA"       # job 'succeeds' but our NEWEST data is stale
         else:
             health = "OK"
 
@@ -175,6 +207,10 @@ def assess(store=None) -> dict:
             "last_success_age_d": round(succ_age, 1) if succ_age is not None else None,
             "newest_obs": newest_obs,
             "newest_obs_age_d": round(obs_age, 1) if obs_age is not None else None,
+            # Surfaced so an OK that depends on an upstream claim is never silent —
+            # a reader can see WHICH claim is holding the source green, and when it
+            # was last checked.
+            "upstream_verified": (e.get("upstream_verified") or None),
             "n_series_tracked": len(cursors),
             "n_discontinued": len(discontinued),
             "discontinued_series": discontinued[:10],
