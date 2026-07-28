@@ -1833,6 +1833,17 @@ sources:
       (all zstd). Common schema: series_key, obs_date(date32, Dec-31), value(float64). Each written by save() with a single
       pq.write_table (non-atomic).'
 - source_id: ggdc
+  upstream_verified:
+    latest_obs: '2023-12-31'
+    checked: '2026-07-28'
+    method: >-
+      Both pinned panels are the publishers' CURRENT releases, confirmed on their own
+      pages: Penn World Table 11.0 "Published on October 7, 2025" (rug.nl/ggdc/
+      productivity/pwt) and Maddison Project Database 2023, which "covers 169
+      countries and the period up to 2022" with no later release listed. Our newest
+      observation matches PWT 11.0's coverage. These are static whole-panel releases
+      re-estimated between versions, so age since the last observation says nothing
+      about whether we are behind — only the version does.
   live: true
   scripts:
   - jobs/ingest_ggdc.py
