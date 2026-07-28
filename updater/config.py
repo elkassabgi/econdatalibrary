@@ -87,7 +87,14 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   absence was a shape mismatch, not missing data (R75 again). The permutation
 #   search recovers them at 99.2% and 98.5%. fao_ql (84.3%) and fao_ge (11.1%) are
 #   REFUSED — a partial template forks the id space silently.
-EXPECTED_SOURCE_COUNT = 121
+# 2026-07-28: 121 -> 122. wid — the largest single unlock in the library's history:
+#   124,367,162 observations across 2,465,197 series that were held locally and
+#   served to NOBODY, because WID publishes no licence text and re-hosting on an
+#   assumption was not acceptable. Resolved by reading WID's own rel="license" link
+#   (CC BY-NC-SA 4.0) plus written permission dated 2026-07-27. The permission came
+#   with a condition — "keep the most updated data sources" — which is why a fetcher
+#   was written rather than just publishing the snapshot we already had.
+EXPECTED_SOURCE_COUNT = 122
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
