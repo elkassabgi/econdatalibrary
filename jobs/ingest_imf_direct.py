@@ -142,7 +142,15 @@ def _month_end(y: int, m: int) -> dt.date:
     return dt.date(y, m + 1, 1) - dt.timedelta(days=1)
 
 
-def pull(flow: str, agency: str, source_id: str) -> int:
+def pull(flow: str, agency: str, source_id: str, out_path: str | None = None) -> int:
+    """Fetch one dataflow and write it as parquet. Returns rows written.
+
+    out_path lets the updater stage the pull somewhere distinct from the published
+    file. Without it the fetcher would read and merge the SAME path, which happens
+    to work only because the local filesystem and the R2 blob store share path
+    strings — an accident, not a design, and one that breaks the moment either side
+    changes its layout.
+    """
     url = f"{BASE}/data/{agency},{flow}/all"
     print(f"[imf_direct] GET {url}", flush=True)
     raw = http_get(url)
@@ -214,7 +222,8 @@ def pull(flow: str, agency: str, source_id: str) -> int:
                     "value": pa.array(vals, pa.float64())})
     d = os.path.join(OUT, source_id)
     os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, f"{source_id}.parquet")
+    path = out_path or os.path.join(d, f"{source_id}.parquet")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     pq.write_table(tbl, tmp, compression="zstd")
     os.replace(tmp, path)
