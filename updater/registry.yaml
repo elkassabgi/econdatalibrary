@@ -5045,6 +5045,14 @@ sources:
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Western Hemisphere Regional Economic Outlook
 - source_id: imf_hpdd
+  upstream_verified:
+    latest_obs: '2015-01-01'
+    checked: '2026-07-28'
+    method: >-
+      Full pull of IMF.FAD,HPD via tools/prove_direct_repair.py: upstream's newest
+      observation is 2015-01-01 and ours matches it exactly across all 191 series.
+      The dataset is COMPLETE, not stale — flagging it RED would report missing data
+      that does not exist upstream.
   live: true
   scripts:
   - updater/strategies/fetchers/imf_hpdd.py
@@ -5070,6 +5078,13 @@ sources:
     key_env: none
     confidence: high
 - source_id: imf_fiscaldecentralization
+  upstream_verified:
+    latest_obs: '2020-01-01'
+    checked: '2026-07-28'
+    method: >-
+      Full pull of IMF.STA,FD via tools/prove_direct_repair.py: upstream's newest
+      observation is 2020-01-01, matched exactly by our copy across all 8,398
+      series. Complete upstream, not stale.
   live: true
   scripts:
   - updater/strategies/fetchers/imf_fiscaldecentralization.py
