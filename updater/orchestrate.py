@@ -195,6 +195,16 @@ def _flow_of(key: str) -> str:
     return ":".join(p for p in parts if "=" not in p)
 
 
+def _norm_id(s: str) -> str:
+    """Identity of a series id ignoring punctuation and case.
+
+    `frankfurter:EUR:USD` and `frankfurter:EURUSD` are the same series written two
+    ways; comparing only the alphanumerics makes them equal without teaching this
+    module anything about FX pairs.
+    """
+    return "".join(ch for ch in s if ch.isalnum()).lower()
+
+
 def _catalog_ids_for(source_id: str, changed_keys):
     """Map changed store series_keys to catalog series_ids (see hook comment).
     Returns (ids_to_derive, unmapped_keys). Reads the catalog read-only from
@@ -236,6 +246,40 @@ def _catalog_ids_for(source_id: str, changed_keys):
                     exact.append(fcand)
                     continue
             unmapped.append(k)
+
+        # PUNCTUATION-GRAIN fallback. frankfurter stores the key `EURUSD` while its
+        # catalog id is `frankfurter:EUR:USD` — the same identity, differently
+        # punctuated, so neither the exact nor the flow rule can bridge it. The cost
+        # was not an error: all 46 CSVs existed in R2 and simply stopped being
+        # REGENERATED, so `frankfurter:EUR:USD` served data to 2026-07-24 while the
+        # store held 2026-07-27, drifting further every day while the source reported
+        # only a vague `partial`.
+        #
+        # Matching on the alphanumerics alone bridges it without special-casing any
+        # source. A collision would be far worse than a miss — it would rewrite one
+        # series' CSV with another's data — so the index is built once per source and
+        # a normalised form claimed by more than one catalog id is DISCARDED rather
+        # than guessed.
+        if unmapped:
+            norm = {}
+            for (cid,) in con.execute(
+                    "SELECT series_id FROM series WHERE source_id=?", (source_id,)):
+                n = _norm_id(cid)
+                norm[n] = None if n in norm else cid      # None marks an ambiguity
+            still = []
+            for k in unmapped:
+                hit = norm.get(_norm_id(f"{source_id}:{k}"))
+                if hit and hit not in seen:
+                    seen.add(hit)
+                    exact.append(hit)
+                elif not hit:
+                    still.append(k)
+            if len(still) != len(unmapped):
+                print(f"[orchestrator] {source_id}: mapped "
+                      f"{len(unmapped) - len(still)} key(s) to catalog ids by "
+                      f"punctuation-insensitive match", flush=True)
+            unmapped = still
+
         if not unmapped:
             return exact, []
         # DERIVE-ALL is only meaningful when the whole store is readable. Under the r2
