@@ -1,100 +1,98 @@
-"""S1 fetcher — IMF Primary Commodity Prices (PCPS) via DBnomics.
+"""S1 fetcher — IMF Primary Commodity Prices (PCPS), DIRECT from api.imf.org.
 
-Public IMF PCPS data mirrored on DBnomics (api.db.nomics.world/v22), ~1,236
-series (energy, metals, food, beverages, agricultural raw materials; monthly/
-quarterly/annual, 1980-present). Single grouped parquet
-clean_full/imf_commodity/imf_commodity.parquet, schema
-(series_key, obs_date, value). series_key = "IMF_COMMODITY:<series_code>".
+WHY THIS WAS REWRITTEN (2026-07-28). This fetcher used to relay DBnomics. It ran
+green every day for a year — `status=no_change`, `err="no new rows"` — while serving
+commodity prices frozen at 2025-06. Nothing was broken: the change signal was
+DBnomics' own dataset hash, and DBnomics stopped indexing IMF/PCPS on 2025-07-16, so
+"nothing changed" was true of the relay and false of the publisher. IMF has been
+publishing straight through to 2026-M06 the entire time. A borrowed freshness signal
+certifies the intermediary, not the source (ledger R73).
 
-IMF revises history each release, so we re-fetch the whole dataset and MERGE
-(dedup series_key+obs_date, new wins on revision, never-shrink). One logical unit
-(the whole PCPS dataset, paged); a 200 that parses 0 rows from a real body is
-structural. Vintage is the DBnomics dataset metadata (dir_hash + indexed_at +
-nb_series), a cheap GET with observations=0 — it moves iff the dataset moved.
+IDS ARE PRESERVED. This is a repair, not a re-key: every one of the 1,236 live
+series_ids keeps its exact identity. That takes a translation, because IMF's current
+API uses a different vocabulary for the same concepts than the DBnomics-era ids do.
+The map below was proven by VALUE AGREEMENT on shared (indicator, frequency, period)
+points, not by reading the code names — INDEX_PCH and INDEX_PCHY are both "percent
+change" and pairing them the wrong way round would have silently swapped two real
+series under ids people already cite. Each mapping below agrees ~92-98% while every
+alternative pairing agrees <=5.6%, which is what makes it a proof rather than a
+plausible guess. The residual disagreement is rounding in IMF's computed aggregates
+(individual commodities like PGOLD/PCOPP/POILAPSP match to ratio 1.00000000 exactly;
+aggregates such as PALLFNF differ by ~0.005% median, max ~0.5%), so the two vintages
+are the same data and merge-with-new-wins simply adopts IMF's current figures.
+
+DATES ARE PERIOD-START (2025-M06 -> 2025-06-01), matching what this source already
+stores. The other imf_*_direct sources use period-END; imposing that here would have
+re-stamped all 230,092 published rows and changed every date users have downloaded.
+The convention belongs to the source, not to the transport.
+
+IMF revises history each release, so we re-fetch the whole dataset and MERGE (dedup
+series_key+obs_date, new wins on revision, never-shrink).
 """
 from __future__ import annotations
 import datetime as dt
 import os
-import time
+import xml.etree.ElementTree as ET
 
 import pyarrow as pa
-import requests
 
-from ... import config, blob, merge
+from ... import blob, config, merge
+from ...errors import TransientError
 from ..base import Result
 from ._common import Tally, finalize
-from ._vintage import UA
+from . import _imf_direct as _base
+from jobs import ingest_imf_direct as ing
 
 SOURCE = "imf_commodity"
 DEDUP = ("series_key", "obs_date")
+FLOW, AGENCY = "PCPS", "IMF.RES"
 
-DBNOMICS = "https://api.db.nomics.world/v22"
-PAGE_SIZE = 1000  # max series per request
-# Cheap vintage probe: dataset metadata only (observations=0, one series doc).
-VINTAGE_URL = f"{DBNOMICS}/series/IMF/PCPS?observations=0&limit=1"
+# Proven by value agreement — see the module docstring. Do not "tidy" these by name.
+AREA_MAP = {"G001": "W00"}                       # IMF COUNTRY -> our REF_AREA
+UNIT_MAP = {"INDEX": "IX",                       # index level
+            "INDEX_PCH": "PC_PP_PT",             # change vs previous period
+            "INDEX_PCHY": "PC_CP_A_PT",          # change vs same period, year prior
+            "USD": "USD"}                        # US dollar price
 
 
 def current_vintage(unit):
-    """Cheap probe: DBnomics dataset vintage (dir_hash + indexed_at + nb_series).
+    """Dataflow version — moves when IMF republishes, including back-revisions that
+    rewrite history without extending it. Deliberately NOT a date-tail probe and
+    emphatically not anything owned by a third party (R73)."""
+    return _base.vintage(FLOW)
 
-    dir_hash is a content hash of the dataset directory that changes iff the
-    underlying data changed; we combine it with indexed_at and nb_series so a
-    re-conversion or series-count change is also caught. Returns None on any
-    transient/undeterminable condition (strategy then fetches anyway, which is
-    safe under merge dedup + never-shrink)."""
+
+def _period_start(p: str):
+    """SDMX TIME_PERIOD -> first day of the period (this source's convention)."""
+    p = (p or "").strip()
     try:
-        r = requests.get(VINTAGE_URL, headers=UA, timeout=60)
-    except (requests.Timeout, requests.ConnectionError):
+        if len(p) == 4:                                      # 2026
+            return dt.date(int(p), 1, 1)
+        if "-M" in p:                                        # 2026-M06
+            y, m = p.split("-M")
+            return dt.date(int(y), int(m), 1)
+        if "-Q" in p:                                        # 2026-Q2
+            y, q = p.split("-Q")
+            return dt.date(int(y), (int(q) - 1) * 3 + 1, 1)
+        if "-S" in p:                                        # semester
+            y, s = p.split("-S")
+            return dt.date(int(y), (int(s) - 1) * 6 + 1, 1)
+        if len(p) == 7 and "-" in p:                         # 2026-06
+            y, m = p.split("-")
+            return dt.date(int(y), int(m), 1)
+        if len(p) == 10:                                     # 2026-06-30
+            return dt.date(int(p[:4]), int(p[5:7]), 1)
+    except (ValueError, TypeError):
         return None
-    if r.status_code != 200:
-        return None
-    try:
-        ds = r.json().get("dataset", {})
-    except ValueError:
-        return None
-    parts = [str(ds.get("dir_hash") or ""),
-             str(ds.get("indexed_at") or ds.get("updated_at") or ""),
-             str(ds.get("nb_series") or "")]
-    token = "|".join(p for p in parts if p)
-    return token or None
-
-
-def _fetch_page(offset: int):
-    """Fetch one page of PCPS series with observations. Returns (data, transient).
-    data is the parsed JSON dict on 200, else None. transient=True when the
-    failure is retryable (timeout/5xx/429/network) so the caller can mark partial
-    rather than laundering it into success."""
-    url = (f"{DBNOMICS}/series/IMF/PCPS"
-           f"?observations=1&limit={PAGE_SIZE}&offset={offset}")
-    transient = False
-    for attempt in range(3):
-        try:
-            r = requests.get(url, headers=UA, timeout=180)
-        except (requests.Timeout, requests.ConnectionError):
-            transient = True
-            time.sleep(2 ** attempt)
-            continue
-        if r.status_code == 200:
-            try:
-                return r.json(), False
-            except ValueError:
-                transient = True
-                time.sleep(2 ** attempt)
-                continue
-        if r.status_code in (429, 500, 502, 503, 504):
-            transient = True
-            time.sleep(2 ** attempt)
-            continue
-        # 400/404/other -> not retryable; treat as a structural/definitive break
-        return None, False
-    return None, transient
+    return None
 
 
 def _series_maxes(tbl):
     out = {}
     if tbl.num_rows == 0:
         return out
-    for k, d in zip(tbl.column("series_key").to_pylist(), tbl.column("obs_date").to_pylist()):
+    for k, d in zip(tbl.column("series_key").to_pylist(),
+                    tbl.column("obs_date").to_pylist()):
         if d is None:
             continue
         if k not in out or d > out[k]:
@@ -106,82 +104,100 @@ def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "imf_commodity.parquet")
-    before = blob.row_count(path)
+    before = blob.row_count(path) if blob.exists(path) else 0
     tally = Tally()
 
-    keys, dates, vals = [], [], []
-    offset = 0
-    total = None
-    transient_hit = False
-    saw_any_page = False
+    try:
+        raw = ing.http_get(f"{ing.BASE}/data/{AGENCY},{FLOW}/all")
+    except Exception as e:                                    # noqa: BLE001
+        raise TransientError(f"{FLOW}: {e!r}") from e
 
-    while True:
-        data, transient = _fetch_page(offset)
-        if data is None:
-            if transient:
-                transient_hit = True
-            else:
-                # Non-retryable HTTP error on the very first page = structural
-                # (dataset moved/removed). Mid-run we stop and merge what we have.
-                if not saw_any_page:
-                    tally.structural_unit()
-                    return finalize(tally, before, None, source=SOURCE)
-            break
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as e:
+        raise TransientError(f"{FLOW}: unparseable XML ({len(raw):,} bytes): {e}") from e
 
-        saw_any_page = True
-        series_obj = data.get("series", {})
-        docs = series_obj.get("docs", [])
-        total = series_obj.get("num_found", total or 0)
-        if not docs:
-            break
-
-        for series in docs:
-            series_code = series.get("series_code", "")
-            periods = series.get("period_start_day", [])
-            values = series.get("value", [])
-            if not series_code or not periods:
-                continue
-            skey = f"IMF_COMMODITY:{series_code}"
-            for period_str, v in zip(periods, values):
-                if v is None:
-                    continue
-                try:
-                    obs_d = dt.date.fromisoformat(period_str)
-                    fv = float(v)
-                except (ValueError, TypeError):
-                    continue
-                if fv != fv:  # NaN
-                    continue
-                keys.append(skey)
-                dates.append(obs_d)
-                vals.append(fv)
-
-        offset += len(docs)
-        if offset >= (total or 0):
-            break
-        time.sleep(1.0)  # polite rate limit
-
-    tbl = pa.table({
-        "series_key": pa.array(keys, pa.string()),
-        "obs_date": pa.array(dates, pa.date32()),
-        "value": pa.array(vals, pa.float64()),
-    })
-
-    # Nothing parsed at all.
-    if tbl.num_rows == 0:
-        if transient_hit:
-            tally.transient_unit()
-        elif saw_any_page:
-            # A real 200 body that yielded 0 rows -> structural break.
-            tally.structural_unit()
-        else:
-            tally.transient_unit()
+    series = [e for e in root.iter() if e.tag.split("}")[-1] == "Series"]
+    if not series:
+        tally.structural_unit(f"{FLOW}: 200 with zero series")
         return finalize(tally, before, None, source=SOURCE)
 
+    keys, dates, vals = [], [], []
+    n_empty = n_baddate = n_badval = 0
+    unmapped: dict[str, int] = {}
+    for s in series:
+        a = s.attrib
+        area = AREA_MAP.get(a.get("COUNTRY"))
+        unit_c = UNIT_MAP.get(a.get("DATA_TRANSFORMATION"))
+        freq = a.get("FREQUENCY")
+        ind = a.get("INDICATOR")
+        if not (area and unit_c and freq and ind):
+            # An unmapped code is a VOCABULARY CHANGE, not a row to drop quietly.
+            # Passing the raw code through would mint ids that look like ours but
+            # are not, silently doubling series; dropping it silently would lose
+            # real data. So: skip, count, and name it loudly below.
+            miss = (f"COUNTRY={a.get('COUNTRY')}" if not area else
+                    f"DATA_TRANSFORMATION={a.get('DATA_TRANSFORMATION')}"
+                    if not unit_c else "FREQUENCY/INDICATOR")
+            unmapped[miss] = unmapped.get(miss, 0) + 1
+            continue
+        skey = f"IMF_COMMODITY:{freq}.{area}.{ind}.{unit_c}"
+        for o in s:
+            if o.tag.split("}")[-1] != "Obs":
+                continue
+            v = o.attrib.get("OBS_VALUE")
+            if v in (None, "", "NaN"):
+                n_empty += 1
+                continue
+            d = _period_start(o.attrib.get("TIME_PERIOD", ""))
+            if d is None:
+                n_baddate += 1
+                continue
+            try:
+                fv = float(v)
+            except ValueError:
+                n_badval += 1
+                continue
+            if fv != fv:                                     # NaN
+                n_badval += 1
+                continue
+            keys.append(skey)
+            dates.append(d)
+            vals.append(fv)
+
+    if unmapped:
+        print(f"[imf_commodity] WARNING unmapped codes, series SKIPPED: "
+              f"{unmapped} — IMF changed a code vocabulary; extend AREA_MAP/UNIT_MAP "
+              f"after verifying the new code by VALUE, not by name", flush=True)
+    if n_baddate or n_badval:
+        print(f"[imf_commodity] WARNING {n_baddate:,} unparseable TIME_PERIOD and "
+              f"{n_badval:,} unreadable OBS_VALUE — DROPPED REAL DATA, check the "
+              f"parser", flush=True)
+
+    if not keys:
+        tally.structural_unit(f"{FLOW}: series present, no usable observations")
+        return finalize(tally, before, None, source=SOURCE)
+
+    # COMPLETENESS GATE. IMF can serve a well-formed, properly closed document that
+    # declares every series and carries ~5% of the observations (seen 2026-07-28:
+    # 1,264 series / 10,100 obs against the same URL's 1,270 / 221,749). It parses
+    # cleanly, so neither check above fires. Merge is never-shrink so such a pull
+    # cannot destroy anything — but it would be reported as a successful no-op run,
+    # which is the same class of lie this rewrite exists to end.
+    if before and len(keys) < before // 2:
+        print(f"[imf_commodity] FAIL PARTIAL RESPONSE — {len(keys):,} usable obs "
+              f"across {len(set(keys)):,} series vs {before:,} published "
+              f"({len(raw):,} bytes). Well-formed, but the DATA is missing. "
+              f"Refusing to merge.", flush=True)
+        tally.structural_unit(f"{FLOW}: partial response ({len(keys):,} obs)")
+        return finalize(tally, before, None, source=SOURCE)
+
+    tbl = pa.table({"series_key": pa.array(keys, pa.string()),
+                    "obs_date": pa.array(dates, pa.date32()),
+                    "value": pa.array(vals, pa.float64())})
+    print(f"[imf_commodity] {tbl.num_rows:,} obs / {len(set(keys)):,} series "
+          f"(empty={n_empty:,})", flush=True)
+
     n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-    tally.added_unit(max(0, n - before))
-    if transient_hit:
-        # Got partial data (some pages timed out); record the transient so the
-        # orchestrator does NOT stamp last_success and re-runs next tick.
-        tally.transient_unit()
+    tally.added_unit(max(0, n - before), FLOW)
     return finalize(tally, n, md, source=SOURCE, series_cursors=_series_maxes(tbl))

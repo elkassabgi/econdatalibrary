@@ -88,7 +88,15 @@ def run(flow: str, agency: str, source_id: str) -> Result:
 
     try:
         stage = os.path.join(out_dir, f"_staging_{source_id}.parquet")
-        n = ing.pull(flow, agency, source_id, out_path=stage)
+        # Floor the pull at half of what is already published. IMF can return a
+        # well-formed document carrying ~5% of the data (see the completeness gate
+        # in the ingester); merge is never-shrink so such a pull cannot destroy
+        # anything, but it WOULD be reported as a successful no-op run — the same
+        # class of lie as a relay-derived "no change". Half is loose enough to
+        # survive legitimate revisions and withdrawals, tight enough that a
+        # collapse becomes a loud structural failure instead of a quiet success.
+        n = ing.pull(flow, agency, source_id, out_path=stage,
+                     min_obs=before // 2)
     except urllib.error.HTTPError as e:
         if e.code in (400, 404):
             # Flow id or agency moved. STRUCTURAL — existing rows are kept and the

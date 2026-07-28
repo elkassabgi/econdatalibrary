@@ -142,14 +142,19 @@ def _month_end(y: int, m: int) -> dt.date:
     return dt.date(y, m + 1, 1) - dt.timedelta(days=1)
 
 
-def pull(flow: str, agency: str, source_id: str, out_path: str | None = None) -> int:
-    """Fetch one dataflow and write it as parquet. Returns rows written.
+def pull(flow: str, agency: str, source_id: str, out_path: str | None = None,
+         min_obs: int = 0) -> int:
+    """Fetch one dataflow and write it as parquet. Returns rows written, 0 on refusal.
 
     out_path lets the updater stage the pull somewhere distinct from the published
     file. Without it the fetcher would read and merge the SAME path, which happens
     to work only because the local filesystem and the R2 blob store share path
     strings — an accident, not a design, and one that breaks the moment either side
     changes its layout.
+
+    min_obs is the floor below which a parsed response is treated as PARTIAL and
+    refused (see the completeness gate below). Pass 0 on a first ingest, when there
+    is nothing published to compare against.
     """
     url = f"{BASE}/data/{agency},{flow}/all"
     print(f"[imf_direct] GET {url}", flush=True)
@@ -216,6 +221,30 @@ def pull(flow: str, agency: str, source_id: str, out_path: str | None = None) ->
         print(f"[imf_direct] WARNING {flow}: {n_baddate:,} obs with an unparseable "
               f"TIME_PERIOD and {n_badval:,} with an unreadable OBS_VALUE — these "
               f"are DROPPED REAL DATA, investigate the parser", flush=True)
+
+    # COMPLETENESS GATE. Observed 2026-07-28 on IMF.RES,PCPS: a 200 returning a
+    # complete, properly-closed document that declares every series and carries
+    # almost none of the data — 1,264 series / 10,100 usable obs against the same
+    # URL's full 1,270 / 221,749, i.e. 4.6%. Its trailing elements were bare
+    # `<Series .../>` with no Obs children. It parses without error, so neither guard
+    # above fires: series ARE present and the observations that exist ARE usable.
+    # Without this check the pull writes 5% of the dataset and reports success.
+    #
+    # min_obs comes from the caller because only the caller knows what is PUBLISHED
+    # (under the r2 backend that count lives in the blob store, not on this disk).
+    # The threshold is deliberately loose: this catches the collapse class, not
+    # ordinary revisions, and must never wedge the daily run when IMF legitimately
+    # withdraws history. Returning 0 routes to the caller's existing structural path.
+    if min_obs and len(keys) < min_obs:
+        print(f"[imf_direct] FAIL {flow}: PARTIAL RESPONSE — {len(keys):,} usable obs "
+              f"across {len(set(keys)):,} series, below the floor of {min_obs:,} "
+              f"({len(raw):,} bytes). The document is well-formed; the DATA is "
+              f"missing. Refusing to write — existing rows are kept.", flush=True)
+        return 0
+    print(f"[imf_direct] {len(keys):,} usable obs / {len(set(keys)):,} series = "
+          f"{len(keys) / max(len(set(keys)), 1):.1f} obs/series"
+          + (f" (floor {min_obs:,})" if min_obs else " (no floor: nothing published "
+             "yet to compare against)"), flush=True)
 
     tbl = pa.table({"series_key": pa.array(keys, pa.string()),
                     "obs_date": pa.array(dates, pa.date32()),
