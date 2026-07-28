@@ -5149,3 +5149,111 @@ sources:
       published ids; never hand-edited.
     key_env: none
     confidence: high
+- source_id: fao_fo
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_fo.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (16,703 series) with NO registry entry until 2026-07-28,
+    so it was never attempted. All 25 fao_* sources are in that state (136,754
+    series); the registry's separate `faostat` entry is a DIFFERENT source, which is
+    how the family went unnoticed. Fetched direct from FAOSTAT's bulk distribution —
+    the DBnomics-era ids ARE FAOSTAT's own codes, so the key template reproduces
+    96.0% of published ids with no translation table. Upstream carries 84,549 series.
+  cadence: annual
+  refresh_cost: large
+  out_dir: fao_fo
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset FO in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Forestry: Forestry Production and Trade'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_fo.json — template discovered by
+      tools/prove_faostat_repair.py, scored on exact id reproduction; never hand-edited.
+    key_env: none
+    confidence: high
+- source_id: fao_pp
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_pp.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (4,832 series) with NO registry entry until 2026-07-28,
+    so it was never attempted. All 25 fao_* sources are in that state (136,754
+    series); the registry's separate `faostat` entry is a DIFFERENT source, which is
+    how the family went unnoticed. Fetched direct from FAOSTAT's bulk distribution —
+    the DBnomics-era ids ARE FAOSTAT's own codes, so the key template reproduces
+    100.0% of published ids with no translation table. Upstream carries 40,016 series.
+  cadence: annual
+  refresh_cost: large
+  out_dir: fao_pp
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset PP in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Prices: Producer Prices'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_pp.json — template discovered by
+      tools/prove_faostat_repair.py, scored on exact id reproduction; never hand-edited.
+    key_env: none
+    confidence: high
+- source_id: fao_oa
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_oa.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (1,388 series) with NO registry entry until 2026-07-28,
+    so it was never attempted. All 25 fao_* sources are in that state (136,754
+    series); the registry's separate `faostat` entry is a DIFFERENT source, which is
+    how the family went unnoticed. Fetched direct from FAOSTAT's bulk distribution —
+    the DBnomics-era ids ARE FAOSTAT's own codes, so the key template reproduces
+    99.8% of published ids with no translation table. Upstream carries 1,385 series.
+  cadence: annual
+  refresh_cost: large
+  out_dir: fao_oa
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset OA in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Population and Employment: Annual population'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_oa.json — template discovered by
+      tools/prove_faostat_repair.py, scored on exact id reproduction; never hand-edited.
+    key_env: none
+    confidence: high
+- source_id: fao_et
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_et.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (561 series) with NO registry entry until 2026-07-28,
+    so it was never attempted. All 25 fao_* sources are in that state (136,754
+    series); the registry's separate `faostat` entry is a DIFFERENT source, which is
+    how the family went unnoticed. Fetched direct from FAOSTAT's bulk distribution —
+    the DBnomics-era ids ARE FAOSTAT's own codes, so the key template reproduces
+    100.0% of published ids with no translation table. Upstream carries 576 series.
+  cadence: annual
+  refresh_cost: large
+  out_dir: fao_et
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset ET in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Land, Inputs and Sustainability: Temperature change on land'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_et.json — template discovered by
+      tools/prove_faostat_repair.py, scored on exact id reproduction; never hand-edited.
+    key_env: none
+    confidence: high

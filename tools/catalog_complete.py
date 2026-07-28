@@ -27,6 +27,22 @@ def complete(con, source):
     licrow = con.execute("SELECT license_id FROM series WHERE source_id=? AND license_id IS NOT NULL "
                          "LIMIT 1", (source,)).fetchone()
     lic = licrow[0] if licrow else None
+    if lic is None:
+        # No series row to copy from — precisely the case for a source being catalogued
+        # for the FIRST time, which is a main reason to run this tool. Falling through
+        # with None would insert every row with a NULL licence, publishing hundreds of
+        # thousands of series carrying no attribution at all. The source table already
+        # holds the verified licence, so use it.
+        srow = con.execute("SELECT license_id FROM source WHERE source_id=?",
+                           (source,)).fetchone()
+        lic = srow[0] if srow and srow[0] else None
+    if lic is None:
+        # Still nothing: refuse rather than publish unattributed rows. Whoever adds a
+        # source records its licence FIRST (DATABASE_LICENSES_VERBATIM.md + the source
+        # table); that ordering is the point, not a formality.
+        print(f"  {source}: NO licence on any series row OR on the source row — refusing "
+              f"to insert unattributed catalog rows. Record the licence first.")
+        return 0
 
     keys = set()
     files = blob.list_parquets(config.source_dir(source))

@@ -1,0 +1,17 @@
+{
+ "code": "OA",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 99.78,
+  "published_ids": 1388,
+  "upstream_series": 1385,
+  "upstream_updated": "2026-03-09"
+ },
+ "key_columns": [
+  "Element Code",
+  "Area Code",
+  "Item Code"
+ ],
+ "key_prefix": "FAO_OA",
+ "source_id": "fao_oa"
+}

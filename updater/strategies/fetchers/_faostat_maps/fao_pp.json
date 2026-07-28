@@ -1,0 +1,17 @@
+{
+ "code": "PP",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 100.0,
+  "published_ids": 4832,
+  "upstream_series": 40016,
+  "upstream_updated": "2026-01-09"
+ },
+ "key_columns": [
+  "Element Code",
+  "Area Code",
+  "Item Code"
+ ],
+ "key_prefix": "FAO_PP",
+ "source_id": "fao_pp"
+}
