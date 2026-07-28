@@ -28,6 +28,8 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
+import io
+import json
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -171,6 +173,8 @@ def main():
     ap.add_argument("--source", required=True)
     ap.add_argument("--agency", required=True)
     ap.add_argument("--flow", required=True)
+    ap.add_argument("--emit", help="write the derived map as JSON for a fetcher to "
+                                   "consume, so nobody retypes it by hand")
     a = ap.parse_args()
 
     ours = load_ours(a.source)
@@ -268,6 +272,26 @@ def main():
                         if surv >= 95 else
                         f"NOT a clean repair — only {surv:.1f}% of ids survive; "
                         "a parallel _direct source is the honest option"))
+
+    if a.emit:
+        if surv < 95:
+            print(f"\nREFUSING to emit a config for a {surv:.1f}% repair — a fetcher "
+                  f"built on this would re-key most of the source.")
+            return 1
+        prefix = next(iter(matched_keys)).split(":", 1)[0]
+        cfg = {
+            "source_id": a.source, "agency": a.agency, "flow": a.flow,
+            "key_prefix": prefix, "arity": arity,
+            "date_convention": "start" if name == "period-START" else "end",
+            "slots": {dim: assign[dim][0] for dim in assign},
+            "code_maps": {dim: assign[dim][2] for dim in assign},
+            "derived_from": {"matched_series": len(matched_keys),
+                             "our_series": len(ours),
+                             "id_survival_pct": round(surv, 2)},
+        }
+        io.open(a.emit, "w", encoding="utf-8").write(json.dumps(cfg, indent=1,
+                                                                sort_keys=True))
+        print(f"\nwrote {a.emit}  ({len(cfg['slots'])} dims mapped)")
     return 0
 
 

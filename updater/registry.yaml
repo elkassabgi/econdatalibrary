@@ -2386,15 +2386,20 @@ sources:
   scripts:
   - jobs/ingest_imf_commodity.py
   strategy: overwrite_if_changed
-  strategy_reason: Small whole table (~1,236 PCPS series) that a single full re-pull rebuilds correctly; just drop the exists-guard
-    and overwrite atomically when a DBnomics vintage signal moves.
+  strategy_reason: Small whole table (~1,236 PCPS series) that a single full re-pull rebuilds correctly. Fetched DIRECT from
+    api.imf.org (IMF.RES,PCPS) since 2026-07-28; ids are preserved via a value-proven code map (G001->W00, INDEX->IX,
+    INDEX_PCH->PC_PP_PT, INDEX_PCHY->PC_CP_A_PT) and dates stay period-START, this source's existing convention.
   cadence: monthly
   refresh_cost: fast
   out_dir: imf_commodity
   review: true
   adapter:
-    vintage_signal: DBnomics dataset metadata at api.db.nomics.world/v22 for IMF/PCPS (dataset-level indexed_at/converted_at,
-      or num_found / nb_series); gate the overwrite on a change vs the value stored at last successful run.
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow PCPS
+      (agency IMF.RES). NOT DBnomics: their index for IMF/PCPS froze on
+      2025-07-16 while IMF kept publishing, so the relay's hash reported
+      'no change' for 12 months and the source served 2025-06 data while
+      running green every day (ledger R73).
     since_param: n/a
     out_paths_note: 'Single file: data/clean_full/imf_commodity/imf_commodity.parquet (companion _log/_err are run logs, not
       data).'
@@ -5039,3 +5044,50 @@ sources:
       (agency IMF.WHD); re-pull only when it moves. Agency ids are NOT uniform
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Western Hemisphere Regional Economic Outlook
+- source_id: imf_hpdd
+  live: true
+  scripts:
+  - updater/strategies/fetchers/imf_hpdd.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (191 series) with NO registry entry until 2026-07-28,
+    so it was never attempted at all. IMF did not retire the dataset, they RENAMED
+    the flow HPDD -> HPD; the exact-id miss read as "discontinued" (ledger R75).
+    Repaired in place from api.imf.org with every id preserved (191/191 proven by
+    value agreement, not by name).
+  cadence: annual
+  refresh_cost: fast
+  out_dir: imf_hpdd
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow HPD (agency
+      IMF.FAD). Agency ids are NOT uniform across IMF datasets - read them from the
+      catalogue, never assume IMF.STA.
+    name: Historical Public Debt
+    code_map: updater/strategies/fetchers/_imf_maps/imf_hpdd.json (emitted by
+      tools/prove_direct_repair.py from value agreement; never hand-edited)
+    key_env: none
+    confidence: high
+- source_id: imf_fiscaldecentralization
+  live: true
+  scripts:
+  - updater/strategies/fetchers/imf_fiscaldecentralization.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Same as imf_hpdd: 8,398 series served and downloadable with no registry entry,
+    never attempted, because the flow was renamed FISCALDECENTRALIZATION -> FD.
+    Repaired in place, 8,398/8,398 ids preserved.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: imf_fiscaldecentralization
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow FD (agency
+      IMF.STA).
+    name: Fiscal Decentralization
+    code_map: updater/strategies/fetchers/_imf_maps/imf_fiscaldecentralization.json
+      (emitted by tools/prove_direct_repair.py; never hand-edited)
+    key_env: none
+    confidence: high
