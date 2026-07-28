@@ -13,5 +13,7 @@
   "Element Code"
  ],
  "key_prefix": "FAO_QA",
+ "note": "Served by QCL, the dataset FAOSTAT merged this one into. Restricted to its own published ids so it does not republish the merged superset that fao_qcl already serves.",
+ "restrict_to_published": true,
  "source_id": "fao_qa"
 }
