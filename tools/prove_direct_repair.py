@@ -203,21 +203,46 @@ def main():
                 slots[dim][i][ourval] += 1
 
     print(f"\nDERIVED CODE MAP (our key has {arity} components)")
+    # Slots are assigned as a BIJECTION, best-purity first. Choosing each dimension's
+    # best slot independently lets two dimensions claim the same one: on imf_pctot
+    # that put WGT_TYPE in slot 0 alongside FREQUENCY (both scored 100% because
+    # WGT_TYPE's four values happen to partition by frequency) and left slot 3
+    # unexplained. A confident-looking map with a duplicated slot is worse than no
+    # map — it is the exact input a later migration would trust.
+    scored = []
     for dim in sorted(slots):
-        # the slot this dim explains is the one where the mapping is most nearly 1:1
-        bi, bscore, bmap = None, -1.0, {}
-        for i, cnt in slots[dim].items():
+        for i in slots[dim]:
             byup = collections.defaultdict(collections.Counter)
             for dims, (key, _r) in pairs.items():
                 dv = dict(dims).get(dim)
                 pp = key.split(":", 1)[1].split(".")
                 if dv is not None and len(pp) == arity:
                     byup[dv][pp[i]] += 1
-            score = sum(c.most_common(1)[0][1] for c in byup.values()) / max(
-                sum(sum(c.values()) for c in byup.values()), 1)
-            if score > bscore:
-                bi, bscore = i, score
-                bmap = {k: c.most_common(1)[0][0] for k, c in byup.items()}
+            tot = sum(sum(c.values()) for c in byup.values())
+            if not tot:
+                continue
+            purity = sum(c.most_common(1)[0][1] for c in byup.values()) / tot
+            m = {k: c.most_common(1)[0][0] for k, c in byup.items()}
+            # Purity alone rewards COLLAPSE. On imf_hpdd it ranked COUNTRY -> slot 0
+            # at "100%" because that slot holds the frequency, so all 191 countries
+            # map to 'A' — perfectly consistent and completely wrong. A real
+            # dimension correspondence is close to INJECTIVE, so weight purity by how
+            # many distinct targets the map actually reaches. 191->1 scores 0.005;
+            # 191->191 scores 1.0.
+            inj = len(set(m.values())) / max(len(m), 1)
+            scored.append((purity * inj, dim, i, m))
+    scored.sort(key=lambda x: -x[0])
+    taken_dim, taken_slot, assign = set(), set(), {}
+    for sc, dim, i, m in scored:
+        if dim in taken_dim or i in taken_slot:
+            continue
+        taken_dim.add(dim); taken_slot.add(i); assign[dim] = (i, sc, m)
+
+    for dim in sorted(slots):
+        bi, bscore, bmap = assign.get(dim, (None, 0.0, {}))
+        if bi is None:
+            print(f"  {dim:<22} -> UNASSIGNED (no free slot explains it)")
+            continue
         ident = all(k == v for k, v in bmap.items())
         print(f"  {dim:<22} -> slot {bi}  purity {100 * bscore:5.1f}%"
               f"{'  (identity)' if ident else ''}")
