@@ -1,0 +1,16 @@
+{
+ "code": "ET",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 100.0,
+  "published_ids": 561,
+  "upstream_series": 576,
+  "upstream_updated": "2026-04-01"
+ },
+ "key_columns": [
+  "Element Code",
+  "Area Code"
+ ],
+ "key_prefix": "FAO_ET",
+ "source_id": "fao_et"
+}

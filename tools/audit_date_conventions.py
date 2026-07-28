@@ -19,8 +19,12 @@ That difference is invisible until it bites, and it bites hard:
     period-END 2024 annual point and a period-START one; `< 2024-12-31` includes
     only one of them.
 
-So: measure it. For each source this samples real observations, infers each series'
-cadence from its own spacing, and classifies where in the period the stamp falls.
+So: measure it. For every source this counts the (month, day) of EVERY observation
+and names the convention that distribution implies. Two earlier designs kept
+per-series state and died of memory (40 GB, then 134 GB climbing 12 GB/min) --
+bounding per entity is useless when a source can hold hundreds of millions of
+series. A 366-bucket histogram answers the question in constant memory, which is
+what makes a COMPLETE scan possible rather than a bounded one.
 
 Usage:  python tools/audit_date_conventions.py [--full] [--json out.json]
 """
@@ -38,6 +42,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+import pyarrow.compute as pc                                   # noqa: E402
 import pyarrow.parquet as pq                                  # noqa: E402
 
 BASE = os.path.join(ROOT, "data", "clean_full")
@@ -45,106 +50,92 @@ MAX_FILES = 3          # parquet files sampled per source
 MAX_ROWS = 200_000     # rows sampled per source
 
 
-KEEP_HEAD = 5     # earliest observations retained per series
-KEEP_TAIL = 5     # latest, kept with a rolling window
+def histogram(sid, full=False):
+    """{(month, day): count} over every observation in one source.
 
+    WHY NOT PER-SERIES. Two earlier designs died here. Retaining every observation
+    hit 40 GB and climbed 1.3 GB/20s. Retaining only the first and last five
+    observations PER SERIES then hit 134 GB climbing 12 GB/min — because the bound
+    scaled with the number of series, and some sources in this library have hundreds
+    of millions of them. Bounding per entity is worthless when the entity count is
+    itself unbounded.
 
-def sample(sid, full=False):
-    """Per-series date evidence from one source: {series_key: [dates]}.
-
-    MEMORY IS THE CONSTRAINT, not I/O. The first version accumulated every
-    (key, date) pair, which on this 265 GB / 52,355-file store grew to 40 GB RSS
-    and was climbing 1.3 GB every 20 seconds — it would have exhausted the box long
-    before finishing, and "the audit crashed" is not an answer to a question about
-    every source.
-
-    Bounding it per SERIES rather than per source keeps full coverage of what is
-    being measured. Deciding a series' cadence needs consecutive gaps, and deciding
-    where in the period it is stamped needs a date — a handful at each end gives
-    both, and keeping both ends is what exposes a source that changed convention
-    partway through. Every file, every series, every source is still visited; what
-    is dropped is the redundant middle of each series, which carries no information
-    this audit uses.
+    The question never needed per-series state. "Which day inside its period does
+    this source stamp?" is answered by the distribution of (month, day) across the
+    source's dates, which is at most 366 buckets no matter how much data flows
+    through:
+        annual START  -> everything on 01-01        annual END  -> 12-31
+        monthly START -> day 1, twelve months       monthly END -> month-end days
+        quarterly     -> four months, day 1 or last
+        daily         -> every day present
+    Constant memory, and now a genuinely COMPLETE scan rather than a bounded one:
+    every row of every file of every source is counted.
     """
+    counts = collections.Counter()
     d = os.path.join(BASE, sid)
     if not os.path.isdir(d):
-        return {}
+        return counts
     files = sorted(f for f in os.listdir(d) if f.endswith(".parquet")
                    and not f.startswith("_"))
-    if not files:
-        return {}
     if not full:
         files = files[:MAX_FILES]
-    head, tail = {}, {}
     seen = 0
     for f in files:
         try:
             pf = pq.ParquetFile(os.path.join(d, f))
-            names = set(pf.schema_arrow.names)
-            kcol = ("series_key" if "series_key" in names
-                    else ("series_id" if "series_id" in names else None))
-            if kcol is None or "obs_date" not in names:
+            if "obs_date" not in set(pf.schema_arrow.names):
                 continue
             for i in range(pf.num_row_groups):
-                t = pf.read_row_group(i, columns=[kcol, "obs_date"])
-                for k, dte in zip(t[kcol].to_pylist(), t["obs_date"].to_pylist()):
-                    if dte is None:
+                col = pf.read_row_group(i, columns=["obs_date"])["obs_date"]
+                # VECTORISED. Iterating obs_date in Python meant materialising one
+                # date object per observation — hopeless across a store this size,
+                # and the reason the earlier designs were both slow AND enormous.
+                # month*100+day collapses each date to one small integer in Arrow,
+                # and value_counts aggregates in C, so the whole scan touches at
+                # most 366 distinct values per row group.
+                key = pc.add(pc.multiply(pc.month(col), 100), pc.day(col))
+                vc = pc.value_counts(key.drop_null())
+                for entry in vc:
+                    md, n = entry["values"].as_py(), entry["counts"].as_py()
+                    if md is None:
                         continue
-                    seen += 1
-                    h = head.get(k)
-                    if h is None:
-                        head[k] = [dte]
-                        tail[k] = collections.deque(maxlen=KEEP_TAIL)
-                    elif len(h) < KEEP_HEAD:
-                        h.append(dte)
-                    tail[k].append(dte)
+                    counts[(md // 100, md % 100)] += n
+                    seen += n
                 if not full and seen >= MAX_ROWS:
-                    return {k: head[k] + list(tail[k]) for k in head}
+                    return counts
         except Exception:                                     # noqa: BLE001
             continue
-    return {k: head[k] + list(tail[k]) for k in head}
+    return counts
 
 
-def classify(per):
-    """Infer each series' cadence from its own spacing, then locate the stamp."""
-    verdict = collections.Counter()
-    for k, ds in per.items():
-        ds = sorted({d for d in ds if isinstance(d, dt.date)})
-        if len(ds) < 3:
-            continue
-        # Gaps are measured only WITHIN the retained head and tail; the join between
-        # them spans the dropped middle, so that one gap is discarded rather than
-        # mistaken for a huge cadence.
-        gaps = sorted([(b - a).days for a, b in zip(ds, ds[1:])])
-        med = gaps[len(gaps) // 2]
-        s = ds[-1]                                            # a real, recent stamp
-        last = calendar.monthrange(s.year, s.month)[1]
-        if 350 <= med <= 380:                                 # annual
-            if (s.month, s.day) == (1, 1):
-                verdict["annual START"] += 1
-            elif (s.month, s.day) == (12, 31):
-                verdict["annual END"] += 1
-            else:
-                verdict[f"annual other ({s.month:02d}-{s.day:02d})"] += 1
-        elif 85 <= med <= 95:                                 # quarterly
-            if s.day == 1 and s.month in (1, 4, 7, 10):
-                verdict["quarterly START"] += 1
-            elif s.day == last and s.month in (3, 6, 9, 12):
-                verdict["quarterly END"] += 1
-            else:
-                verdict["quarterly other"] += 1
-        elif 28 <= med <= 31:                                 # monthly
-            if s.day == 1:
-                verdict["monthly START"] += 1
-            elif s.day == last:
-                verdict["monthly END"] += 1
-            else:
-                verdict["monthly other"] += 1
-        elif med <= 7:
-            verdict["daily/weekly (exact date)"] += 1
-        else:
-            verdict["irregular"] += 1
-    return verdict
+def classify_hist(counts):
+    """Name the convention a (month, day) histogram implies."""
+    if not counts:
+        return None, 0
+    total = sum(counts.values())
+    months = {m for (m, _d) in counts}
+    days = {dd for (_m, dd) in counts}
+    first_of_month = sum(n for (m, dd), n in counts.items() if dd == 1)
+    last_of_month = sum(n for (m, dd), n in counts.items()
+                        if dd == calendar.monthrange(2001 if m != 2 else 2000, m)[1])
+    jan1 = counts.get((1, 1), 0)
+    dec31 = counts.get((12, 31), 0)
+
+    if jan1 / total > 0.95:
+        return "annual START (01-01)", total
+    if dec31 / total > 0.95:
+        return "annual END (12-31)", total
+    if len(months) <= 4 and first_of_month / total > 0.95:
+        return "quarterly START", total
+    if len(months) <= 4 and last_of_month / total > 0.95:
+        return "quarterly END", total
+    if first_of_month / total > 0.95:
+        return "monthly START (day 1)", total
+    if last_of_month / total > 0.95:
+        return "monthly END (month-end)", total
+    if len(days) > 20:
+        return "daily/exact dates", total
+    return "MIXED (no single convention)", total
 
 
 def main():
@@ -159,46 +150,38 @@ def main():
     print("sampling up to %s rows / %s files each\n"
           % (format(MAX_ROWS, ","), "all" if a.full else MAX_FILES))
 
-    out, totals = {}, collections.Counter()
-    conflicted = []
+    out, by_conv = {}, collections.defaultdict(list)
+    obs_by_conv = collections.Counter()
     for sid in sids:
-        v = classify(sample(sid, a.full))
-        if not v:
+        counts = histogram(sid, a.full)
+        verdict, total = classify_hist(counts)
+        if not verdict:
             continue
-        out[sid] = dict(v)
-        for k, n in v.items():
-            totals[k] += n
-        # A source that stamps the SAME cadence two different ways is the worst case:
-        # it is not merely inconsistent with its neighbours, it is inconsistent with
-        # itself, and no single conversion rule can fix it.
-        for cad in ("annual", "quarterly", "monthly"):
-            ks = [k for k in v if k.startswith(cad)]
-            if len(ks) > 1:
-                conflicted.append((sid, {k: v[k] for k in ks}))
-                break
+        out[sid] = {"convention": verdict, "observations": total,
+                    "top_daymonth": [f"{m:02d}-{d:02d}:{n}" for (m, d), n
+                                     in collections.Counter(counts).most_common(4)]}
+        by_conv[verdict].append(sid)
+        obs_by_conv[verdict] += total
+        print("  %-26s %-30s %14s obs" % (sid, verdict, format(total, ",")),
+              flush=True)
 
-    print("CONVENTION TOTALS (series counted, all sources)")
-    for k, n in totals.most_common():
-        print("  %-34s %10s" % (k, format(n, ",")))
+    print()
+    print("CONVENTION SUMMARY")
+    print("  %-32s %7s %16s" % ("convention", "sources", "observations"))
+    print("  " + "-" * 58)
+    for k, sl in sorted(by_conv.items(), key=lambda kv: -len(kv[1])):
+        print("  %-32s %7d %16s" % (k, len(sl), format(obs_by_conv[k], ",")))
 
-    print("\nBY CADENCE — how many SOURCES use each convention")
-    for cad in ("annual", "quarterly", "monthly"):
-        st = sorted(s for s, v in out.items()
-                    if max((k for k in v if k.startswith(cad)),
-                           key=lambda k: v[k], default="") .endswith("START"))
-        en = sorted(s for s, v in out.items()
-                    if max((k for k in v if k.startswith(cad)),
-                           key=lambda k: v[k], default="").endswith("END"))
-        print(f"  {cad:<11} START {len(st):>3} source(s)   END {len(en):>3} source(s)")
-        if en and st:
-            print(f"      START e.g. {', '.join(st[:6])}")
-            print(f"      END   e.g. {', '.join(en[:6])}")
+    mixed = by_conv.get("MIXED (no single convention)", [])
+    if mixed:
+        print(f"\nSOURCES WITH NO SINGLE CONVENTION ({len(mixed)}) — these cannot be "
+              f"converted by one rule and must be looked at individually:")
+        for sid in mixed[:25]:
+            print("  %-26s %s" % (sid, ", ".join(out[sid]["top_daymonth"])))
 
-    if conflicted:
-        print(f"\nSOURCES INCONSISTENT WITH THEMSELVES ({len(conflicted)}) — same "
-              f"cadence stamped two ways inside one source:")
-        for sid, v in conflicted[:20]:
-            print("  %-26s %s" % (sid, v))
+    starts = sum(len(v) for k, v in by_conv.items() if "START" in k)
+    ends = sum(len(v) for k, v in by_conv.items() if "END" in k)
+    print(f"\nPERIOD-START sources: {starts}    PERIOD-END sources: {ends}")
 
     if a.json:
         io.open(a.json, "w", encoding="utf-8").write(json.dumps(out, indent=1))

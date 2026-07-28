@@ -71,7 +71,16 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   20,238 published ids reproduce exactly, values agree 92.22% across 988,719
 #   shared points, and upstream carries 78,944 series to 2024 against our 20,238
 #   to 2022. The remaining 24 follow one at a time, each proved the same way.
-EXPECTED_SOURCE_COUNT = 115
+# 2026-07-28 (later still): 115 -> 119. fao_fo, fao_pp, fao_oa, fao_et join fao_qcl.
+#   Of the 12 fao_* sources whose code still matches a live FAOSTAT dataset, exactly
+#   five reproduce their published ids cleanly (96-100%) and are repaired in place;
+#   the other seven are REFUSED by the prover rather than shipped (gt 27.2%, rp
+#   84.0%, gn 83.5%, gf 30.7%, ic 44.7%, ae 0%, af 0%) because a template that
+#   reproduces only part of the id space mints a parallel one beside the live series
+#   and reports success. The remaining 13 fao_* sources are old FAOSTAT domains that
+#   were consolidated upstream (QL+QP+QA merged into QCL; the old emissions domains
+#   into the Agrifood-systems family) and need their own mapping work.
+EXPECTED_SOURCE_COUNT = 119
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
