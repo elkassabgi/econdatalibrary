@@ -172,7 +172,39 @@ def run(source_id: str) -> Result:
 
     known = _catalog_ids(source_id)
     built = set(keys)
+
+    # RESTRICT a source that was MERGED INTO the dataset it is now served by.
+    # FAOSTAT folded QL, QP and QA into QCL, so reading QCL for fao_qa returns the
+    # whole merged dataset — 78,968 series where fao_qa published 3,182. Publishing
+    # that verbatim mints 75,786 series that duplicate fao_qcl's content under a
+    # second prefix: the same observations served twice under different ids, which
+    # inflates every count and gives users two answers to one question. The repair
+    # these sources need is to keep their OWN series updating, not to absorb the
+    # superset they were merged into — the superset already has a source of its own.
+    if cfg.get("restrict_to_published") and known:
+        keep = [i for i, k in enumerate(keys) if k in known]
+        if keep:
+            dropped = len(built) - len(set(keys[i] for i in keep))
+            keys = [keys[i] for i in keep]
+            dates = [dates[i] for i in keep]
+            vals = [vals[i] for i in keep]
+            built = set(keys)
+            print(f"[faostat] {source_id}: restricted to its published id set — "
+                  f"{dropped:,} series belonging to the merged superset were NOT "
+                  f"republished under this prefix", flush=True)
+
     if known:
+        # EXPANSION CEILING. The id check below confirms we still cover what we
+        # publish; it says nothing about how much we ADD. fao_qa passed that check at
+        # 99.2% while quietly minting 75,786 duplicate series. Growth is normal — QCL
+        # legitimately went 20,238 -> 79,315 — but growth of this shape on a source
+        # served by ANOTHER source's dataset is the signature of absorbing a superset.
+        if len(built) > 5 * len(known):
+            print(f"[faostat] WARNING {source_id}: {len(built):,} series built from "
+                  f"{len(known):,} published — a {len(built)/len(known):.0f}x "
+                  f"expansion. If this source was merged into {code}, it should set "
+                  f"restrict_to_published; otherwise confirm the growth is real.",
+                  flush=True)
         hit = len(built & known) / len(known)
         if hit < ID_FLOOR:
             print(f"[faostat] FAIL {source_id}: rebuilt keys match only "
