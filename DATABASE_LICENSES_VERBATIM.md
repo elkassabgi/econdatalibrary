@@ -235,6 +235,7 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `unhcr` | UNHCR Refugee Data | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `usda` | usda | redistributable_open | CONFIRMED | CLEARED - re-host OK |
 | `wgi` | World Bank Worldwide Governance In | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
+| `wid` | World Inequality Database (WID.world) | noncommercial_sharealike (CC BY-NC-SA 4.0) | CONFIRMED | CLEARED - re-host OK (non-commercial, attribution, SHARE-ALIKE) |
 | `who_hwf` | World Health Organization (WHO) Gl | noncommercial_only | CONFIRMED | CLEARED - non-commercial only |
 | `who_rs` | World Health Organization (WHO) Gl | noncommercial_only | CONFIRMED | CLEARED - non-commercial only |
 | `who_sdg` | World Health Organization (WHO) Gl | noncommercial_only | CONFIRMED | CLEARED - non-commercial only |
@@ -3073,3 +3074,41 @@ denylist.ts (13 removed, worker version 6e8e9410) + D1 econ-catalog (reservable=
 | ksh_stadat | CC BY 4.0 (HCSO/KSH) | CLEARED (attrib) | "HCSO uses standardised international licence Creative Commons Attribution 4.0". The CC BY-NC carve-out on the same page is SCOPED and does not reach STADAT — verbatim: "Considering data files queried from the internal databases of HCSO **on specific request**, the User is not entitled to use these files for commercial purposes, Creative Commons Attribution-NonCommercial 4.0". STADAT is the PUBLISHED summary-table product, not a bespoke internal-database extract, so plain CC BY 4.0 governs what we host. Verified 2026-07-27 against the official copyright page. | https://www.ksh.hu/copyright_hungarian_central_statistical_office |
 | harvard_atlas | CC0 1.0 (public domain dedication) | CLEARED (unrestricted) | All three Harvard Dataverse deposits we ingest return `http://creativecommons.org/publicdomain/zero/1.0` from the authoritative schema.org API export — doi:10.7910/DVN/XTAQMC (ECI / growth projections), doi:10.7910/DVN/NDDMSN (services trade), doi:10.7910/DVN/YAVJDF. Same verification method the SWIID entry uses. CC0 permits unrestricted redistribution. Verified 2026-07-27. NOTE: the 7 pre-existing "Harvard" mentions in this file are all SWIID (Solt's deposit) and do NOT cover the Atlas — that gap is what this row closes. | https://dataverse.harvard.edu/api/datasets/export?exporter=schema.org&persistentId=doi:10.7910/DVN/XTAQMC |
 | gapminder | CC BY 4.0 | CLEARED (attrib) | Our source is the open-numbers DDF repo, whose README states verbatim: "Gapminder created this dataset and provides it under [Creative Common Attribution 4.0 International]", link target `https://creativecommons.org/licenses/by/4.0/`. Worth recording HOW it is declared: the repo has NO LICENSE file (raw LICENSE / LICENSE.md / license.md all 404) and GitHub's licence API returns spdx_id null, so an automated licence probe finds NOTHING and the ingester's "CC BY 4.0" header looked unbacked. The declaration lives only in the README prose. Verified 2026-07-27. | https://github.com/open-numbers/ddf--gapminder--systema_globalis |
+
+
+## WID.world — CC BY-NC-SA 4.0 (resolved 2026-07-28)
+
+WID publishes no licence text on any page reachable by search: `/data/`, `/methodology/`,
+`/website-credits/`, the privacy policy and the bulk-download `README.md` were all checked
+(JS-rendered, not merely curl'd) and none states a licence. That is why the original permission
+request said they "do not publish an explicit data-reuse license".
+
+The declaration exists, but only as an ICON on the chart interface at https://wid.world/world/.
+Alice (info@wid.world, 2026-07-27) wrote "The CC is displayed here:" above a screenshot with that
+icon circled. The icon's markup, read from the live page, is the formal machine-readable relation:
+
+> ```html
+> <a rel="license" href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.en" target="_blank">
+>   <img alt="Creative Commons License" style="border-width:0"
+>        src="https://wid.world/www-site/themes/default/img/cc.png" width="20px">
+>   <!--<div class="license-tootlip">This work is licensed under a
+>   Creative Commons Attribution 4.0 International License</div>-->
+> </a>
+> ```
+
+Two things to note, both load-bearing:
+
+1. **The active declaration is CC BY-NC-SA 4.0** — `rel="license"` is the standard HTML licence
+   relation, and it points at by-nc-sa/4.0.
+2. **The CC BY 4.0 text in that snippet is COMMENTED OUT** and therefore not in force. It is
+   presumably an earlier or draft claim. Anyone reading the page source casually could mistake it
+   for the licence; it is not. Do not cite it.
+
+Combined with Alice's written grant — "Yes, you can use the data for educational purpose" — this
+CLEARS WID for re-hosting, subject to the terms actually granted:
+
+- **NC**: the library is free, non-commercial and educational, so this is satisfied.
+- **SA**: share-alike propagates. Re-hosted WID series must carry their own CC BY-NC-SA 4.0 licence
+  row rather than inherit a site-wide CC BY, exactly as the IEP datasets already do.
+- **Currency condition**: Alice asked that we "keep the most updated data sources"; the re-hosted
+  series must therefore be wired to refresh, not snapshotted once.
