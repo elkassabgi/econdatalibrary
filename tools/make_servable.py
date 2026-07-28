@@ -106,7 +106,15 @@ def main(sources):
         con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"))
         ids = [x[0] for x in con.execute(
             "SELECT series_id FROM series WHERE source_id=?", (src,))]
-        todo = [i for i in ids if i not in r2_csvs(client, src)]
+        # List R2 ONCE. Written as `[i for i in ids if i not in r2_csvs(client, src)]`
+        # this re-listed the entire prefix per id — 40,016 full listings for fao_pp,
+        # which burned 14 minutes without writing a single object while looking
+        # perfectly busy (20% CPU, memory flat). fao_et survived it only by being
+        # 574 ids long. A function call inside a comprehension's condition is
+        # evaluated every iteration; when that call is an S3 listing, the loop is
+        # quadratic in network round-trips.
+        have = r2_csvs(client, src)
+        todo = [i for i in ids if i not in have]
         print(f"  catalog {len(ids):,} | to derive {len(todo):,}", flush=True)
         if todo:
             t0 = time.time()
@@ -118,8 +126,9 @@ def main(sources):
             for f in res["failed"][:5]:
                 print(f"     FAIL {f}", flush=True)
 
-        # Verify by LISTING R2, never by trusting the counter above.
-        missing = [i for i in ids if i not in r2_csvs(client, src)]
+        # Verify by LISTING R2, never by trusting the counter above — once.
+        after = r2_csvs(client, src)
+        missing = [i for i in ids if i not in after]
         print(f"  VERIFY: catalog {len(ids):,}  csv_in_r2 {len(ids) - len(missing):,}"
               f"  MISSING {len(missing):,}"
               + ("  <-- still not downloadable" if missing else "  OK"), flush=True)
