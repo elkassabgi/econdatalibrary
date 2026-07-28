@@ -5315,3 +5315,33 @@ sources:
       merged into.
     key_env: none
     confidence: high
+- source_id: wid
+  live: true
+  scripts:
+  - updater/strategies/fetchers/wid.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    WID.world was GATED until 2026-07-28 — 124,367,162 observations across 2,465,197
+    series held locally and served to nobody — because the site publishes no licence
+    text and re-hosting on assumption was not acceptable. Resolved: WID declares
+    CC BY-NC-SA 4.0 via a rel="license" link on its chart, and granted written
+    permission on 2026-07-27 for educational re-hosting. That grant came with a
+    condition — "keep the most updated data sources" — so this fetcher is part of the
+    permission, not an optimisation. One CSV per country/region (424 files, ~7 GB
+    total), each fetched, parsed and merged independently so memory is bounded by the
+    largest country and one failure cannot cost the rest.
+  cadence: irregular
+  refresh_cost: large
+  out_dir: wid
+  review: true
+  adapter:
+    vintage_signal: >-
+      SHA-256 over the whole bulk_download directory listing (every filename,
+      timestamp and size). Watching the LISTING rather than a fixed file means a
+      newly ADDED country is itself a change signal — the failure a pinned URL
+      caused on yale_epi, where an entire new edition went unnoticed (ledger R78).
+    name: World Inequality Database (WID.world)
+    license: CC BY-NC-SA 4.0 (rel="license" on wid.world/world/) + written permission
+      2026-07-27; non-commercial, attribution required, share-alike propagates.
+    key_env: none
+    confidence: high
