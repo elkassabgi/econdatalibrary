@@ -80,7 +80,14 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   and reports success. The remaining 13 fao_* sources are old FAOSTAT domains that
 #   were consolidated upstream (QL+QP+QA merged into QCL; the old emissions domains
 #   into the Agrifood-systems family) and need their own mapping work.
-EXPECTED_SOURCE_COUNT = 119
+# 2026-07-28 (final): 119 -> 121. fao_qa and fao_qp, recovered from a dataset they
+#   were CONSOLIDATED INTO. FAOSTAT merged QL, QP and QA into QCL, and a literal key
+#   comparison against QCL matched 0% — because our ids are item.area.element where
+#   QCL's own are element.area.item. Same three codes read backwards; the apparent
+#   absence was a shape mismatch, not missing data (R75 again). The permutation
+#   search recovers them at 99.2% and 98.5%. fao_ql (84.3%) and fao_ge (11.1%) are
+#   REFUSED — a partial template forks the id space silently.
+EXPECTED_SOURCE_COUNT = 121
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

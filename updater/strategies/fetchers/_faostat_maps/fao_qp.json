@@ -1,0 +1,17 @@
+{
+ "code": "QCL",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 98.55,
+  "published_ids": 2271,
+  "upstream_series": 78974,
+  "upstream_updated": "2025-12-31"
+ },
+ "key_columns": [
+  "Item Code",
+  "Area Code",
+  "Element Code"
+ ],
+ "key_prefix": "FAO_QP",
+ "source_id": "fao_qp"
+}
