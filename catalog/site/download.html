@@ -264,6 +264,22 @@ function trySsoThenRetry(){
     return true;
   }catch(_e){ return false; }
 }
+// The SSO round-trip above returns here whether or not it found a session, and when
+// it did NOT the page comes back looking exactly as it left: no key, no message, no
+// sign of the trip. Verified live on 2026-07-28 with an empty browser — first click
+// redirected, bounced, and landed back on /download in silence, so the button still
+// read as broken and only a SECOND click produced the explanation. That is the same
+// "nothing happened" the whole fix was meant to end. Say it on the way back instead
+// of making them click again to earn the sentence.
+(function explainSilentSsoReturn(){
+  try{
+    if(sessionStorage.getItem('edl_dl_recheck') && !readStoredKey()){
+      setTimeout(function(){
+        toast('Sign in (free) to download — no account yet? It takes a minute.');
+      }, 600);   // after sso.js has had its chance to deliver a key
+    }
+  }catch(_e){}
+})();
 async function downloadOne(id, title, btn){
   if(!getKey()){ if(!trySsoThenRetry()) keyInput.focus(); return; }
   const old=btn?btn.textContent:''; if(btn){btn.disabled=true;btn.textContent='…';}
