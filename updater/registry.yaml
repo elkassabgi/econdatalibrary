@@ -5117,3 +5117,35 @@ sources:
       (emitted by tools/prove_direct_repair.py; never hand-edited)
     key_env: none
     confidence: high
+- source_id: fao_qcl
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_qcl.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (20,238 series) with NO registry entry until 2026-07-28,
+    so it was never attempted. All 25 fao_* sources are in that state (136,754
+    series); the registry's separate `faostat` entry is a DIFFERENT source, which is
+    how the whole family went unnoticed. Fetched direct from FAOSTAT's bulk
+    distribution: the DBnomics-era ids turn out to BE FAOSTAT's own codes
+    (5111.1.1016 = element 5111 Stocks, area 1 Armenia, item 1016 Goats), so 98.2%
+    of published ids reproduce exactly with no translation table. Upstream carries
+    78,944 series to 2024 against our 20,238 to 2022.
+  cadence: annual
+  refresh_cost: large
+  out_dir: fao_qcl
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset QCL in
+      https://bulks-faostat.fao.org/production/datasets_E.json - FAO's OWN release
+      field. Deliberately not a relay hash: these sources sat four years stale
+      because the previous signal certified DBnomics' index rather than FAO's
+      release (ledger R73).
+    name: 'Production: Crops and livestock products'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_qcl.json - key template
+      discovered by tools/prove_faostat_repair.py, scored on exact reproduction of
+      published ids; never hand-edited.
+    key_env: none
+    confidence: high
