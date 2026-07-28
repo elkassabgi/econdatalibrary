@@ -5257,3 +5257,61 @@ sources:
       tools/prove_faostat_repair.py, scored on exact id reproduction; never hand-edited.
     key_env: none
     confidence: high
+- source_id: fao_qa
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_qa.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (3,182 series) with NO registry entry, never attempted.
+    Its FAOSTAT domain no longer exists — FAOSTAT merged QL, QP and QA into QCL — and
+    a literal key comparison against QCL matched 0%, because our ids are
+    item.area.element where QCL's own are element.area.item. Same three codes read
+    backwards; the absence was a shape mismatch, not missing data (ledger R75). The
+    permutation search recovers it: 99.2% of published ids reproduced.
+  cadence: annual
+  refresh_cost: large
+  out_dir: fao_qa
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset QCL in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Production: Live Animals (served by QCL after upstream consolidation)'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_qa.json — template discovered and
+      scored on exact id reproduction; key_prefix read from our published ids, NOT
+      from the dataset code, because this source is served by a dataset it was
+      merged into.
+    key_env: none
+    confidence: high
+- source_id: fao_qp
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_qp.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (2,271 series) with NO registry entry, never attempted.
+    Its FAOSTAT domain no longer exists — FAOSTAT merged QL, QP and QA into QCL — and
+    a literal key comparison against QCL matched 0%, because our ids are
+    item.area.element where QCL's own are element.area.item. Same three codes read
+    backwards; the absence was a shape mismatch, not missing data (ledger R75). The
+    permutation search recovers it: 98.5% of published ids reproduced.
+  cadence: annual
+  refresh_cost: large
+  out_dir: fao_qp
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset QCL in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Production: Crops Primary (served by QCL after upstream consolidation)'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_qp.json — template discovered and
+      scored on exact id reproduction; key_prefix read from our published ids, NOT
+      from the dataset code, because this source is served by a dataset it was
+      merged into.
+    key_env: none
+    confidence: high

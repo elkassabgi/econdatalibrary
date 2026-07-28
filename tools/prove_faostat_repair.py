@@ -125,7 +125,24 @@ def main():
             print(f"\nREFUSING to emit a config for a {hit * 100:.1f}% template — a "
                   f"fetcher built on it would mint a parallel id space.")
             return 1
-        prefix = f"FAO_{a.code.upper()}"
+        # The prefix belongs to OUR published ids, not to the FAOSTAT dataset. Those
+        # coincide only while a source's code matches its own suffix (FAO_QCL for
+        # fao_qcl), and stop coinciding the moment a source is repaired from a
+        # dataset it was CONSOLIDATED into: fao_qa publishes `FAO_QA:1016.1.5111`
+        # but is served by FAOSTAT's QCL. Deriving it from the code would have
+        # written FAO_QCL into fao_qa's config, and the fetcher's self-check would
+        # have scored 0% and refused a template measured at 99.2%. Read it off the
+        # ids themselves, which is the only authority on what we publish.
+        mids = {i.split(":", 1)[0] for i in
+                (r[0].split(":", 1)[1] for r in sqlite3.connect(
+                    os.path.join(ROOT, "data", "catalog.db")).execute(
+                    "SELECT series_id FROM series WHERE source_id=?", (a.source,))
+                 if ":" in r[0])}
+        if len(mids) != 1:
+            print(f"\nREFUSING to emit: {a.source} publishes {len(mids)} distinct id "
+                  f"prefixes {sorted(mids)[:4]} — cannot pick one safely.")
+            return 1
+        prefix = mids.pop()
         cfg = {"source_id": a.source, "code": a.code.upper(), "key_prefix": prefix,
                "key_columns": list(perm), "date_convention": "start",
                "derived_from": {"id_reproduction_pct": round(hit * 100, 2),
