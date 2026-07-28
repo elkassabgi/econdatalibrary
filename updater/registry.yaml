@@ -4879,3 +4879,163 @@ sources:
     - '~206 grouped ''cubes'' under data/clean_full/zillow/: per dataset <name>.parquet (dataset, series_key, obs_date date32,
       value), <name>__series.parquet sidecar (RegionID + all metadata cols), <name>.meta.json (verify stats); plus top-level
       zillow.meta.json. Catalog of URLs in data/_zillow_files.json; raw CSVs cached in data/raw/zillow/. ~107M obs total.'
+
+# ---------------------------------------------------------------------------
+# IMF DIRECT (api.imf.org SDMX 2.1) — first-hand, replacing nothing.
+  #
+# 37.4% of this library (635,750 series) reaches us via DBnomics, an aggregator,
+# which makes our freshness a function of theirs. These seven pull the same IMF
+# datasets straight from the publisher. Verified 2026-07-28 to return at least as
+# much as the relay does (FAS ~2x our series, WORLD +43%, FDI exact, AFRREO ~100%).
+  #
+# They are NEW ids, not replacements. IMF retired IFS and re-keyed these datasets,
+# so the crosswalk from our DBnomics-era ids is uneven (FDI 95.3% via codelist
+# names, APDREO 100% by code, WHDREO 56%, FAS/WORLD/COFER ~0% — COFER moved
+# currency out of the indicator string into its own dimension). Overwriting
+# imf_<flow> would re-key thousands of live series to buy freshness; this adds the
+# direct feed alongside and leaves that retirement a deliberate decision.
+  #
+# MCDREO (direct has 57% of our series) and FM (9%) are deliberately NOT here
+# until that shortfall is explained — shipping a source thinner than the one next
+# to it would be a regression wearing a "direct" label.
+# ---------------------------------------------------------------------------
+- source_id: imf_fdi_direct
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships dated vintages
+    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
+    published version, not a date-tail probe — a back-revision rewrites history
+    without extending it and a date probe would miss it entirely.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: imf_fdi_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow FDI
+      (agency IMF.MCM); re-pull only when it moves. Agency ids are NOT uniform
+      across IMF datasets — read them from the catalogue, never assume IMF.STA.
+    name: Financial Development Index (FDI)
+- source_id: imf_fas_direct
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships dated vintages
+    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
+    published version, not a date-tail probe — a back-revision rewrites history
+    without extending it and a date probe would miss it entirely.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: imf_fas_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow FAS
+      (agency IMF.STA); re-pull only when it moves. Agency ids are NOT uniform
+      across IMF datasets — read them from the catalogue, never assume IMF.STA.
+    name: Financial Access Survey (FAS)
+- source_id: imf_world_direct
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships dated vintages
+    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
+    published version, not a date-tail probe — a back-revision rewrites history
+    without extending it and a date probe would miss it entirely.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: imf_world_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow WORLD
+      (agency IMF.FAD); re-pull only when it moves. Agency ids are NOT uniform
+      across IMF datasets — read them from the catalogue, never assume IMF.STA.
+    name: World Revenue Longitudinal Database (WoRLD)
+- source_id: imf_afrreo_direct
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships dated vintages
+    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
+    published version, not a date-tail probe — a back-revision rewrites history
+    without extending it and a date probe would miss it entirely.
+  cadence: irregular
+  refresh_cost: fast
+  out_dir: imf_afrreo_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow AFRREO
+      (agency IMF.AFR); re-pull only when it moves. Agency ids are NOT uniform
+      across IMF datasets — read them from the catalogue, never assume IMF.STA.
+    name: Sub-Saharan Africa Regional Economic Outlook
+- source_id: imf_apdreo_direct
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships dated vintages
+    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
+    published version, not a date-tail probe — a back-revision rewrites history
+    without extending it and a date probe would miss it entirely.
+  cadence: irregular
+  refresh_cost: fast
+  out_dir: imf_apdreo_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow APDREO
+      (agency IMF.APD); re-pull only when it moves. Agency ids are NOT uniform
+      across IMF datasets — read them from the catalogue, never assume IMF.STA.
+    name: Asia and Pacific Regional Economic Outlook
+- source_id: imf_cofer_direct
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships dated vintages
+    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
+    published version, not a date-tail probe — a back-revision rewrites history
+    without extending it and a date probe would miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_cofer_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow COFER
+      (agency IMF.STA); re-pull only when it moves. Agency ids are NOT uniform
+      across IMF datasets — read them from the catalogue, never assume IMF.STA.
+    name: Currency Composition of Official Foreign Exchange Reserves (COFER)
+- source_id: imf_whdreo_direct
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships dated vintages
+    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
+    published version, not a date-tail probe — a back-revision rewrites history
+    without extending it and a date probe would miss it entirely.
+  cadence: irregular
+  refresh_cost: fast
+  out_dir: imf_whdreo_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow WHDREO
+      (agency IMF.WHD); re-pull only when it moves. Agency ids are NOT uniform
+      across IMF datasets — read them from the catalogue, never assume IMF.STA.
+    name: Western Hemisphere Regional Economic Outlook
