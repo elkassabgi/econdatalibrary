@@ -3142,3 +3142,69 @@ licensor never granted, and propagates into everything that reads the flag.
 Separately, `updater/strategies/fetchers/yale_epi.py` described the source as "CC BY
 4.0" in its own docstring — a second, independent statement of the wrong licence.
 Both are corrected.
+
+---
+
+## Institute for Economics & Peace (IEP) — added 2026-07-29
+
+- **Databases (4):** `gpi`, `gti`, `ppi`, `etr` — 12,282 catalogued series
+- **Licence row in use:** `cc-by-nc-sa-4.0-iep` (reservable=1, commercial_ok=0, attribution_required=1)
+- **Why this section exists:** a sweep of every SERVED source against this file found IEP
+  present nowhere in it — not by source id, not by publisher name, not by domain. The
+  licence row had been assigned without a verbatim audit recorded. These four sources
+  were the only genuinely unaudited served sources in the library (the other apparent
+  gaps, seven `imf_*_direct` ids, share `imf-terms` with their audited originals and
+  with `data.imf.org`, which this file does cover).
+
+**Fetched 2026-07-29.**
+
+**Source 1 — https://www.economicsandpeace.org/consulting/data-licensing/** (links
+`creativecommons.org/licenses/by-nc-sa/4.0`):
+
+> Non-Commercial Access Data from the Institute for Economics & Peace is available free
+> of charge for non-commercial use under the Creative Commons
+> Attribution-NonCommercial-ShareAlike 4.0 International License (CC BY-NC-SA 4.0) .
+> This includes use by non-profit organisations and research institutions. To request
+> non-commercial access, please complete the form below.
+
+> Commercial organisations using IEP data must purchase a Commercial Licence before
+> downloading any datasets.
+
+**Source 2 — https://www.economicsandpeace.org/terms-conditions/ and
+https://www.visionofhumanity.org/terms/** (identical wording on both):
+
+> You may not, without the prior written permission of Institute for Economics and Peace
+> and the permission of any other relevant rights owners: broadcast, republish, up-load
+> to a third party, transmit, post, distribute, show or play in public, adapt or change
+> in any way the Services or third party Services for any purpose
+
+### Assessment: NEEDS HUMAN REVIEW — do not treat as cleared
+
+The licence NAME on our row is correct: IEP does grant CC BY-NC-SA 4.0 for
+non-commercial use, and `commercial_ok=0` matches their requirement that commercial
+users buy a licence. That part is confirmed.
+
+What is NOT resolved is whether OPEN RE-HOSTING is covered, and there are two clauses
+pulling in opposite directions:
+
+1. CC BY-NC-SA 4.0 itself expressly permits redistribution ("Share — copy and
+   redistribute the material in any medium or format") non-commercially, with
+   attribution and share-alike. Under that grant alone, re-hosting is permitted.
+2. But access is framed as something you REQUEST ("To request non-commercial access,
+   please complete the form below"), and the site terms separately forbid republishing
+   or distributing without prior written permission. That is the same shape as
+   `freedomhouse` in this file, which was classified NOT freely redistributable
+   precisely because the data sits behind a request even though the use terms sound
+   permissive.
+
+Our data was not obtained through the form — `ppi` reads a public release file
+(`PPI-Public-Release-Data-2023.xlsx`) served directly from their site. Whether a
+publicly-posted release file is offered under the CC grant, or is subject to the
+site-terms republication bar, is a judgement about intent that should not be made by
+inference.
+
+**Recommended action:** treat as the `kof_globalization` case — ask IEP in writing to
+confirm that non-commercial academic re-hosting of their public release files is
+covered by the CC BY-NC-SA 4.0 grant. Until answered, the sources stay served under the
+existing NC licence row (unchanged, attribution required, commercial use excluded)
+rather than being silently re-gated, and this section records the open question.
