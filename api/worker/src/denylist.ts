@@ -39,6 +39,7 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "social_progress",
   "spi",
   "stat_austria",
+  "wid",
   "wiid",
   "wto_bat_bv_m",
   "wto_bat_bv_x",
@@ -66,15 +67,12 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "shiller",
   "sipri",
   "tcmb",
-  "unesco_natmon",
   "unesco_sci",
-  "unesco_sdg",
   "unicef",
   "unsdg",
   "vdem",
   "who_gho",
   "whr",
-  "wid",
   "wto_hs_a_0010",
   "wto_hs_a_0015",
   "wto_hs_a_0020",
@@ -116,7 +114,7 @@ export const SERIES_CARVEOUTS: Readonly<Record<string, readonly string[]>> = {
   // third-party data may not be redistributed regardless of which id carries it.
   worldbank_wdi: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
   // worldbank_pink aggregates third-party benchmark prices. LME (base metals)
-  // and LBMA/IBA (precious metals) are not licensed for redistribution as of
+  // and LBMA/IBA (precious metals) REFUSED redistribution in writing on
   // 2026-07-15 (permission records (held privately)) — these series must never
   // serve, even if the source is un-gated later. Cocoa (ICCO), coffee (ICO)
   // and cotton (Cotlook) origins are still awaiting permission replies.

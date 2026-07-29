@@ -98,8 +98,26 @@ LEGACY_KEEP = {
     #                        no reply to the permission request / never assessed.
     # NOTE the UIS siblings unesco_clte/cltt/dem/film/inno are CLEARED (re-host OK,
     # attribution) and are deliberately NOT here -- their 64,615 objects stay live.
+    # unesco_natmon and unesco_sdg REMOVED from the floor 2026-07-29, on Ahmed's
+    # explicit decision, for exactly the reason barro_lee was removed below: this floor
+    # exists so an UNCONFIRMED source cannot silently un-gate, and they are no longer
+    # unconfirmed. They were pinned as "no reply to the permission request / never
+    # assessed" — but a permission request is only needed where the LICENCE itself does
+    # not grant redistribution, and UIS's does. The terms at
+    # https://databrowser.uis.unesco.org/terms-and-conditions are publisher-wide ("The
+    # work of the UIS is licensed under the Creative Commons Attribution-ShareAlike 4.0
+    # International"), which is precisely why the note above records their five UIS
+    # siblings as CLEARED and deliberately NOT pinned. Same publisher, same Data
+    # Browser terms, same grant — the split was an artefact of which databases the
+    # audit happened to enumerate, not a difference in terms.
+    # Re-verified against the live page 2026-07-29 and re-ingested direct from UIS:
+    # 98,664 + 100,997 series, MISSING 0 / ORPHANED 0, values checked against parquet.
+    #
+    # unesco_sci STAYS PINNED. Only 12 of its 1,230 indicator codes exist in the
+    # current UIS API, so it cannot be kept current from that endpoint; hosting it
+    # would publish a 2019 snapshot that can never update.
     "fred", "fred_releases", "gus", "ibge", "ine_spain", "norgesbank",
-    "unesco_natmon", "unesco_sci", "unesco_sdg", "unicef", "unsdg", "vdem", "who_gho",
+    "unesco_sci", "unicef", "unsdg", "vdem", "who_gho",
     # barro_lee REMOVED from the floor 2026-07-22. It was originally gated as
     # "unclear -- gate until confirmed"; DATABASE_LICENSES_VERBATIM.md has since
     # CONFIRMED it `redistributable_attribution` / "CLEARED - re-host OK (attribution)",

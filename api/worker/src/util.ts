@@ -66,7 +66,14 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "unctad_rfia", "unctad_rgdptapcgra", "unctad_sbeaiotsvsaga", "unctad_sbtisvsaga", "unctad_soigapotta", "unctad_sotwmfvbcoboa",
   "unctad_srbca", "unctad_tabbapotta", "unctad_tabmcioeaiopa", "unctad_tabmscioeaiopa", "unctad_tabpcioeaia", "unctad_taupa",
   "unctad_wstbtocabgoea", "undp_hdr", "unesco_clte", "unesco_cltt", "unesco_dem", "unesco_film",
-  "unesco_inno", "unhcr", "usda", "wgi", "who_hwf", "who_rs",
+  // unesco_natmon + unesco_sdg added 2026-07-29: 199,661 series / 2,610,984 obs that
+  // were on disk and hosted NOWHERE — no catalog rows, no R2 objects, no registry unit.
+  // Re-ingested direct from UIS, MISSING 0 / ORPHANED 0, values checked against parquet,
+  // and un-pinned from the denylist floor on Ahmed's decision (the UIS terms are
+  // publisher-wide, so their five cleared siblings above already covered them).
+  // unesco_sci stays OUT: only 12 of its 1,230 indicator codes exist in the current UIS
+  // API, so it cannot be kept current and would be a frozen 2019 snapshot.
+  "unesco_inno", "unesco_natmon", "unesco_sdg", "unhcr", "usda", "wgi", "who_hwf", "who_rs",
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
   "worldbank_wdi", "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025", "wto_hs_a_0030",
   "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax", "yale_epi", "zillow",

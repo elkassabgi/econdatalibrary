@@ -3178,7 +3178,27 @@ https://www.visionofhumanity.org/terms/** (identical wording on both):
 > to a third party, transmit, post, distribute, show or play in public, adapt or change
 > in any way the Services or third party Services for any purpose
 
-### Assessment: NEEDS HUMAN REVIEW — do not treat as cleared
+### Assessment: CLEARED — permission already obtained 2026-07-06
+
+**CORRECTED 2026-07-29.** An earlier version of this section (written the same day, a
+few hours before) concluded NEEDS HUMAN REVIEW and recommended writing to IEP. That was
+wrong, and it was wrong against a record already in this repository:
+`REDISTRIBUTION_EMAIL_TRAIL.md` line 17 —
+
+> | IEP (GPI/GTI/PPI/ETR) | data-licensing web form | 2026-07-06 | GRANTED | CC BY-NC-SA 4.0 auto-confirmation |
+
+Ahmed submitted IEP's own data-licensing request form on 2026-07-06 and received the
+CC BY-NC-SA 4.0 confirmation. The "open question" below — whether a publicly-posted
+release file is offered under the CC grant or caught by the site-terms republication
+bar — was already answered by going through the front door. `gpi`, `gti`, `ppi` and
+`etr` (12,282 series) are CLEARED under CC BY-NC-SA 4.0: non-commercial, attribution
+required, share-alike. Our licence row `cc-by-nc-sa-4.0-iep` matches exactly.
+
+The analysis that follows is retained because the two clauses it identifies are real
+and the reasoning about their tension is sound; only the VERDICT was wrong, and it was
+wrong because I did not read the permission record before forming it.
+
+### Superseded assessment (kept for the reasoning, not the conclusion)
 
 The licence NAME on our row is correct: IEP does grant CC BY-NC-SA 4.0 for
 non-commercial use, and `commercial_ok=0` matches their requirement that commercial
