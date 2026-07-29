@@ -260,9 +260,31 @@ titles.
 retiring it would drop coverage unless those ~21,700 keys are duplicates under a different
 spelling rather than distinct tables. That has to be established, not assumed.
 
+### Investigated 2026-07-29 — the key-level overlap was the WRONG grain
+
+My first check compared raw series keys and found only 3,363 of 25,057 shared (13%), which
+suggested `ksh` was mostly unique and risky to retire. That number was an artefact of grain:
+the two sources key COLUMNS differently — `ksh` by numeric index (`:1`), `ksh_stadat` by label
+(`:Consumer price index`) — so identical data yields different key strings and can never
+match. Compared at TABLE level, which is what the two actually share:
+
+| | tables | series |
+|---|---:|---:|
+| in BOTH | 394 | ksh 24,154 / stadat **24,574** |
+| ONLY in `ksh` | **21** | **903** |
+| ONLY in `ksh_stadat` | 862 | 72,946 |
+
+**96.4% of `ksh`'s series (24,154 of 25,057) live in tables `ksh_stadat` already covers**, and
+stadat carries MORE series for those same 394 tables (24,574 vs 24,154), so its coverage of the
+shared set is a superset rather than a sample. Only 21 tables / 903 series are unique to `ksh`
+— and those are the entire risk of retiring it, not the ~21,700 the key-level figure implied.
+
+Same lesson as R127/R111: one comparison at the wrong grain gave the opposite conclusion to the
+right one, and both were "real" numbers.
+
 **RESERVED FOR AHMED** -- retiring a source and its ids is his call, not mine. The options are:
-(a) establish whether the ~21,700 non-overlapping keys are genuinely absent from `ksh_stadat`
-and, if they are duplicates, retire `ksh`; (b) write the missing parser and keep both;
+(a) recover the 21 ksh-only tables (903 series) into `ksh_stadat`, whose fetcher WORKS, then retire
+`ksh` — this is now the cheap option, not the risky one; (b) write the missing parser and keep both;
 (c) leave `ksh` served-but-frozen, which is the status quo and the least honest of the three.
 Doing nothing is safe today only because `AQUEDUCT_LIVE_ONLY=1` never reaches a non-live
 source -- promoting it without fixing the import would crash the run.
