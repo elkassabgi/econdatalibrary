@@ -79,6 +79,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // served to NOBODY. Added only after the derive COMPLETED and was verified
   // (catalog 2,465,197 == R2 CSVs 2,465,197, missing 0); listing it earlier would have
   // served 404s. CC BY-NC-SA 4.0 + written grant (Alice, info@wid.world, 2026-07-27).
+  "wid",
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
   "worldbank_wdi", "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025", "wto_hs_a_0030",
   "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax", "yale_epi", "zillow",
