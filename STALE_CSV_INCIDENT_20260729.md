@@ -54,7 +54,18 @@ Before republishing stat_estonia's CSVs I checked which store is authoritative. 
 this step — the flow-grain derive reads the LOCAL parquets, so deriving from a stale local copy
 would republish stale CSVs and report success.
 
-**Finding 1 — the new rows may never have reached R2.** The newest `clean_full/stat_estonia/`
+**RETRACTED — Finding 1 below is WRONG.** There is NO `[orchestrator] >>> stat_estonia` line in
+run 30434871628: the source was never processed by that run. The daily digest reports each
+source's LAST RECORDED STATE from the state db, not the current run's activity — so
+"+231,757 new rows; csv_derive failed 1415/3437" describes stat_estonia's last ACTUAL run,
+around 2026-07-26, which is precisely why R2's parquets carry `LastModified 2026-07-26`. The
+rows DID reach R2. Nothing is inconsistent, and the original framing at the top of this file is
+the correct one: **1,415 CSVs are stale behind the 2026-07-26 parquets.** R2 is the published
+truth for serving; the local divergence is local-only noise and is not served. Left in place
+rather than deleted, per the same rule as R145/R146 — a retraction is evidence, a silent edit is
+not.
+
+**Finding 1 (WRONG, retained for the record) — the new rows may never have reached R2.** The newest `clean_full/stat_estonia/`
 parquet on R2 has `LastModified = 2026-07-26 04:40:34Z`. The run that reported **+231,757 new
 rows** ran on **2026-07-29**. A PUT updates LastModified, so on this evidence the merge did not
 land in R2 at all. If that holds, the framing "CSVs are stale behind fresh parquets" is wrong:
@@ -72,7 +83,8 @@ A local file LARGER than the published one is exactly the condition `make_servab
 never-shrink guard refuses to overwrite, and it is refusing for the right reason: something
 wrote to one store and not the other.
 
-**Therefore: DO NOT run the flow-grain derive for stat_estonia yet.** Either store could be the
+**SUPERSEDED (see retraction above): the derive IS the right fix, sourced from R2.**
+~~Therefore: DO NOT run the flow-grain derive for stat_estonia yet.~~ Either store could be the
 stale one, and republishing from the wrong one would overwrite good data with old data while
 every presence check passes — the same silent-corruption shape this document is about.
 
