@@ -85,6 +85,14 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // verified before listing (MISSING 0, ORPHANED 0). adb's terms are KIDB's own, not
   // the ADB Data Library's, and its attribution carries KIDB's prescribed citation.
   "imf_fsi", "adb",
+  // cso (Ireland) — flow-grain per-table publish, 7,896 tables / 49,057,386 rows
+  // (2026-07-29). Table grain is what makes it hostable: per SERIES it is 9,993,368 keys
+  // at 4.90 obs/series because CSO publishes many short cross-sectional tables, and at
+  // table grain a thin table costs exactly one row and one CSV, same as a dense one.
+  // 92 of its tables span two subject parquets; those are assembled before upload and all
+  // 92 were verified row-for-row against the store (see ledger R133), because presence
+  // checks pass on a truncated file.
+  "cso",
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
   "worldbank_wdi", "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025", "wto_hs_a_0030",
   "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax", "yale_epi", "zillow",
