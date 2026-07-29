@@ -34,16 +34,18 @@ from .errors import TransientError, DefinitiveError
 # DBnomics-ISTAT re-pull which writes clean_full/dbnomics/). We match on BOTH
 # source_id and the unit's output directory so a registry source that maps onto
 # one of these dirs can never slip through (the source_id alone was brittle).
-FIRSTPASS_DIRS = {"cbs_nl", "gus_dbw", "dbnomics",
-                  # wid — 2026-07-29, REMOVE WHEN THE DERIVE FINISHES. A local
-                  # derive is streaming ~2.47M per-series CSVs into r2://series/wid
-                  # from the LOCAL parquet. If a CI run re-fetched and republished
-                  # wid.parquet underneath it, every CSV still to be written would be
-                  # derived from the superseded local copy — the fao_oa failure mode
-                  # exactly: files present, dates identical, values stale, and no
-                  # date-based check able to see it. Its 180-min fetch budget would
-                  # also eat most of the 240-min nightly window on its own.
-                  "wid"}
+# wid was pinned here on 2026-07-29 while its 2.47M-CSV derive ran — a CI re-fetch
+# would have republished wid.parquet underneath it and left every remaining CSV derived
+# from a superseded copy (the fao_oa failure: files present, dates identical, values
+# stale). REMOVED the same day, once the derive completed and was verified
+# (catalog 2,465,197 == R2 CSVs 2,465,197, missing 0).
+#
+# Leaving it pinned would have been its own bug, and a quiet one: wid is now the
+# library's largest SERVED source, and a protected source is never attempted, so it
+# would sit live and frozen forever while the health gate reported RED-UNRUN and
+# nothing looked broken. A protection that outlives the operation it protects becomes
+# the outage.
+FIRSTPASS_DIRS = {"cbs_nl", "gus_dbw", "dbnomics"}
 
 
 def _protected(unit) -> bool:
