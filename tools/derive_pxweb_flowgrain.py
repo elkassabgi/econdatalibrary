@@ -52,6 +52,32 @@ def group_subject(path: str) -> dict:
     return out
 
 
+def prefixes_split_across_files(files: list) -> set:
+    """Prefixes whose rows live in MORE THAN ONE parquet — the ones a per-file PUT corrupts.
+
+    The upload loop below reads one file at a time and PUTs `series/<source>:<prefix>.csv`
+    per file. That is correct only while a table lives entirely inside one parquet. When it
+    does not, the second file's PUT REPLACES the first's object, so the served CSV silently
+    holds only the last file's slice of the table — no error, no short read, just a table
+    missing rows nobody counted. cso surfaced it: 7,988 (file, prefix) pairs against 7,896
+    distinct prefixes, so 92 tables were set up to be truncated on upload.
+
+    One cheap pass over series_key only (no values, no dates) tells us which they are, so the
+    common case stays streaming and only the genuinely split tables are buffered.
+    """
+    where: dict[str, set] = {}
+    for f in files:
+        fn = os.path.basename(f)
+        pf = pq.ParquetFile(f)
+        for batch in pf.iter_batches(columns=["series_key"], batch_size=500_000):
+            keys = batch.column("series_key")
+            p = pc.extract_regex(keys, pattern=PREFIX_RE).field("p")
+            usable = pc.and_(pc.invert(pc.is_null(p)), pc.not_equal(p, ""))
+            for x in pc.if_else(usable, p, keys).to_pylist():
+                where.setdefault(x, set()).add(fn)
+    return {k for k, v in where.items() if len(v) > 1}
+
+
 def csv_bytes(rows: list) -> bytes:
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
@@ -117,10 +143,22 @@ def main():
         sample_left = a.sample or 0
         if a.sample is not None:
             os.makedirs(os.path.join(SAMPLE_DIR, src), exist_ok=True)
+        # Tables that straddle two parquets must be assembled BEFORE any PUT, or the second
+        # file's object replaces the first and the table is served truncated (see
+        # prefixes_split_across_files). Everything else still streams file-by-file.
+        split = prefixes_split_across_files(files)
+        if split:
+            print(f"{src:16} {len(split):,} table(s) span >1 parquet — buffering those to "
+                  f"PUT once, whole", flush=True)
+        pending: dict[str, list] = {}
+
         for f in files:
             groups = group_subject(f)
             jobs = []
             for pref, rows in groups.items():
+                if pref in split:            # accumulate; PUT after every file is read
+                    pending.setdefault(pref, []).extend(rows)
+                    continue
                 sid = f"{src}:{pref}"
                 body = csv_bytes(rows)
                 n_tables += 1
@@ -135,6 +173,34 @@ def main():
                 if a.dry_run:
                     continue
                 if r2_key(sid) in existing:
+                    continue
+                jobs.append((sid, body))
+            if jobs:
+                with ThreadPoolExecutor(max_workers=a.threads) as ex:
+                    futs = [ex.submit(put, sid, body) for sid, body in jobs]
+                    for fu in as_completed(futs):
+                        fu.result()
+                        n_put += 1
+
+        # Now every file has been read, so each split table is complete. One PUT each, with
+        # ALL its rows — counted here so `tables=` is the distinct table count, not the
+        # (file, prefix) pair count that first exposed the bug.
+        if pending:
+            jobs = []
+            for pref, rows in pending.items():
+                sid = f"{src}:{pref}"
+                rows.sort(key=lambda r: (r[0], r[1]))     # contract order: (series_id, date)
+                body = csv_bytes(rows)
+                n_tables += 1
+                n_rows += len(rows)
+                if a.sample is not None:
+                    if sample_left > 0:
+                        safe = urllib.parse.quote(sid, safe="") + ".csv"
+                        with open(os.path.join(SAMPLE_DIR, src, safe), "wb") as fh:
+                            fh.write(body)
+                        sample_left -= 1
+                    continue
+                if a.dry_run or r2_key(sid) in existing:
                     continue
                 jobs.append((sid, body))
             if jobs:
