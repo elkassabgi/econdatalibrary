@@ -164,6 +164,9 @@ def main():
     ap.add_argument("--apply", action="store_true",
                     help="write parquet + CSV + upload to R2 (default is a dry run)")
     ap.add_argument("--limit", type=int, default=0, help="cap companies (testing only)")
+    ap.add_argument("--force", action="store_true",
+                    help="rewrite even when the local fact count already matches "
+                         "upstream (repairs an R2 copy that drifted from local)")
     a = ap.parse_args()
 
     os.makedirs(GROUPED, exist_ok=True)
@@ -207,7 +210,11 @@ def main():
         safe = ident.replace("/", "_").replace(":", "_")
         path = os.path.join(GROUPED, safe + ".parquet")
         before = pq.read_metadata(path).num_rows if os.path.exists(path) else 0
-        if len(metric) == before:
+        # --force exists because the skip is keyed on the LOCAL parquet. After a run
+        # that updated local+CSV but not the R2 parquet, local already matches
+        # upstream, so a plain re-run would skip exactly the companies whose R2 copy
+        # needs repairing. A local-state check cannot detect remote drift.
+        if len(metric) == before and not a.force:
             continue                       # identical fact count -> nothing new filed
         changed.append((ident, before, len(metric), max(odate)))
         if a.apply:
@@ -218,6 +225,18 @@ def main():
                 "vintage_date": pa.array(vint, type=pa.date32()),
             })
             pq.write_table(tbl, path)
+            # BOTH artefacts, always. The first version of this wrote the parquet
+            # LOCALLY and the CSV to R2, which left r2://clean_grouped/sec_edgar/
+            # holding a copy older than the CSV derived from it. That is not a
+            # cosmetic drift: the grouped parquet is the canonical store, so any
+            # later rebuild-from-R2 would silently roll the served CSVs BACK to the
+            # stale facts. A refresh has to move the store and the served object
+            # together or not at all.
+            buf = io.BytesIO()
+            pq.write_table(tbl, buf)
+            client.put_object(Bucket=BUCKET,
+                              Key=f"clean_grouped/sec_edgar/{safe}.parquet",
+                              Body=buf.getvalue())
             key = "series/" + urllib.parse.quote(f"sec_edgar:{ident}", safe="") + ".csv"
             client.put_object(Bucket=BUCKET, Key=key,
                               Body=csv_bytes(metric, odate, vals),
