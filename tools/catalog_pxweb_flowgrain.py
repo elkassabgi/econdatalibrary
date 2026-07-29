@@ -22,8 +22,15 @@ import argparse, glob, json, os, sqlite3, time
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-DATA = r"D:/research/econfindatalibrary/data/clean_full"
-CATALOG = r"D:/research/econfindatalibrary/data/catalog.db"
+# DERIVED, NEVER HARDCODED. These were absolute D: paths from the workstation cutover; the
+# store now lives on E:, so a re-run would have globbed a directory that does not exist and
+# reported "0 tables" for every source — a silent zero, not an error. Deriving from __file__
+# is the convention the ingest jobs already state for exactly this reason.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA = os.path.join(ROOT, "data", "clean_full")
+CATALOG = os.environ.get("ECONDL_CATALOG") or os.path.join(ROOT, "data", "catalog.db")
+if not os.path.isdir(DATA):                    # fail loudly rather than catalogue nothing
+    raise SystemExit(f"parquet store not found at {DATA} — refusing to report empty scans")
 SOURCES = ["ssb", "stat_slovenia", "stat_latvia", "dst", "scb", "statfin", "hagstofa", "stat_estonia", "bfs"]
 PREFIX_RE = r"^(?P<p>.*?):[^:=]*="   # capture full prefix up to the first ":dimname="
 
