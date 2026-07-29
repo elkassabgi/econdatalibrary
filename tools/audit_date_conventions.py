@@ -72,6 +72,7 @@ def histogram(sid, full=False):
     every row of every file of every source is counted.
     """
     counts = collections.Counter()
+    skipped: list = []
     d = os.path.join(BASE, sid)
     if not os.path.isdir(d):
         return counts
@@ -103,8 +104,15 @@ def histogram(sid, full=False):
                     seen += n
                 if not full and seen >= MAX_ROWS:
                     return counts
-        except Exception:                                     # noqa: BLE001
+        except Exception as e:                                # noqa: BLE001
+            # NOT a silent continue. This swallowed 58 bls files whose obs_date is
+            # stored as STRING rather than date32 — pc.month() raises on them — and
+            # so reported bls as 57,359,640 observations when it holds 328,077,765.
+            # A scan that drops files without saying so is not the "complete scan"
+            # its own output claims to be; the caller must be told what it lost.
+            skipped.append((f, type(e).__name__))
             continue
+    histogram.last_skipped = skipped
     return counts
 
 
@@ -154,6 +162,10 @@ def main():
     obs_by_conv = collections.Counter()
     for sid in sids:
         counts = histogram(sid, a.full)
+        if getattr(histogram, "last_skipped", None):
+            for fn, err in histogram.last_skipped:
+                print(f"  !! {sid}/{fn}: UNREADABLE ({err}) — its rows are NOT in "
+                      f"the totals below", flush=True)
         verdict, total = classify_hist(counts)
         if not verdict:
             continue
