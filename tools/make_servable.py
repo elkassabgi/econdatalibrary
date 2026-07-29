@@ -64,9 +64,21 @@ def r2_stamps(client, source):
     only the write TIME distinguishes them. Treating a CSV older than the parquet as
     absent is what makes the gap self-healing.
     """
+    # ANCHOR ON THE COLON. `series/{source}` is a PREFIX match, so it also returns
+    # every longer source id that starts with this one: listing `imf_fsi` swept in all
+    # 18,620 `imf_fsire` objects and the VERIFY reported them as ORPHANED — a
+    # fabricated finding about a healthy sibling source. There are 50 such pairs in the
+    # catalog (imf_fsi/imf_fsire, imf/imf_*, fao_q*/...), so this is not a one-off.
+    #
+    # It fails in the dangerous direction too: MISSING is computed against this set, so
+    # a source could appear to already have CSVs that in fact belong to its
+    # longer-named sibling, and the derive would SKIP files that were never written.
+    # Keys are `series/<urlencoded source:id>.csv`, so anchoring on the encoded colon
+    # (%3A) makes the prefix exact.
+    prefix = "series/" + urllib.parse.quote(f"{source}:", safe="")
     out, tok = {}, None
     while True:
-        kw = {"Bucket": BUCKET, "Prefix": f"series/{source}", "MaxKeys": 1000}
+        kw = {"Bucket": BUCKET, "Prefix": prefix, "MaxKeys": 1000}
         if tok:
             kw["ContinuationToken"] = tok
         r = client.list_objects_v2(**kw)
