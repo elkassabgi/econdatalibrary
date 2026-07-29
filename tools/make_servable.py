@@ -166,14 +166,28 @@ def main(sources):
         # freshness filter applies here too: a verify that counts stale files as
         # present is the check that declared fao_oa OK while it served 26-day-old
         # values.
-        after = {k for k, m in r2_stamps(client, src).items()
-                 if pmt is None or m >= pmt}
+        stamps_after = r2_stamps(client, src)
+        after = {k for k, m in stamps_after.items() if pmt is None or m >= pmt}
         missing = [i for i in ids if i not in after]
+        # BOTH DIRECTIONS. `missing` answers "is every catalogued series downloadable"
+        # and stops there — it is structurally blind to the opposite failure: a CSV
+        # still sitting in R2 under an id the catalog no longer lists. That is not
+        # hypothetical here. fao_qa's catalog went from ~79,000 series to 3,182 when
+        # the QCL superset it had absorbed was restricted away; had the CSVs not been
+        # purged with it, ~76,000 objects would have gone on being served under a
+        # prefix that no longer claims them, and this verify would have printed OK.
+        # The set difference is free — R2 is already listed above — so the only reason
+        # it was ever one-directional is that nobody asked the other question.
+        orphans = sorted(set(stamps_after) - set(ids))
         print(f"  VERIFY: catalog {len(ids):,}  csv_in_r2 {len(ids) - len(missing):,}"
-              f"  MISSING {len(missing):,}"
-              + ("  <-- still not downloadable" if missing else "  OK"), flush=True)
+              f"  MISSING {len(missing):,}  ORPHANED {len(orphans):,}"
+              + ("  <-- still not downloadable" if missing else
+                 "  <-- serving ids the catalog does not list" if orphans else "  OK"),
+              flush=True)
         if missing:
-            print("     e.g. " + ", ".join(missing[:3]), flush=True)
+            print("     missing e.g. " + ", ".join(missing[:3]), flush=True)
+        if orphans:
+            print("     orphaned e.g. " + ", ".join(orphans[:3]), flush=True)
         print(f"  NEXT: python core/sync_catalog_d1.py --source {src}", flush=True)
 
 
