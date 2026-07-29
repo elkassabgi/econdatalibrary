@@ -112,6 +112,16 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // OGL v3.0; the "some content is exempt" carve-out resolves to photographs and video,
   // which cannot reach a statistical series.
   "ons_uk",
+  // un_wpp — UN World Population Prospects 2024, 334,236 series (2026-07-29). Derive
+  // verified both directions (catalog 334,236 == R2 334,236, MISSING 0, ORPHANED 0) and the
+  // download body confirmed. Titles are the native key, the honest broaden_catalog fallback:
+  // WPP publishes no per-series title and inventing one is the fabrication trap. Date ranges
+  // ARE real (computed per series from the two published parquets, 334,236/334,236 dated).
+  // CC BY 3.0 IGO — and note the licence nearly went the other way: un.org's site-wide notice
+  // reads "All rights reserved", but the Population Division publishes its own CC BY 3.0 IGO
+  // grant on the WPP download page, which governs this product. D1 held a pre-audit
+  // NEEDS-REVIEW default for this source; that divergence was corrected before serving.
+  "un_wpp",
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
   "worldbank_wdi", "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025", "wto_hs_a_0030",
   "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax", "yale_epi", "zillow",
