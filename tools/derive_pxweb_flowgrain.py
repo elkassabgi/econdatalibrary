@@ -19,8 +19,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-MAIN = r"D:/research/econfindatalibrary"
+# DERIVED, NEVER HARDCODED — same dead-drive hazard the flow-grain cataloguer carried. The
+# store moved off D:; globbing a directory that does not exist returns [], so this would have
+# uploaded NOTHING while printing "0 tables" and exiting 0. A derive that silently publishes
+# nothing is indistinguishable from one with nothing to do.
+MAIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(MAIN, "data", "clean_full")
+if not os.path.isdir(DATA):                    # fail loudly rather than "derive" nothing
+    raise SystemExit(f"parquet store not found at {DATA} — refusing to report empty scans")
 SOURCES = ["ssb", "stat_slovenia", "stat_latvia", "dst", "scb", "statfin", "hagstofa", "stat_estonia", "bfs"]
 PREFIX_RE = r"^(?P<p>.*?):[^:=]*="
 SAMPLE_DIR = r"D:/temp/claude/D--research-hfdatalibrary/5bda36f5-59a1-4804-b441-06c56c3755da/scratchpad/derive_sample"
