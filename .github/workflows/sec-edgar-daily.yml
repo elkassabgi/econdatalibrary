@@ -1,0 +1,127 @@
+# sec-edgar-daily.yml — keep SEC company fundamentals current.
+#
+# WHY A SEPARATE WORKFLOW. sec_edgar serves 17,274 companies of XBRL financial
+# statements and had NO updater state at all: never executed, live:null, everything
+# served produced by a one-off backfill. It does not fit the main orchestrator
+# cleanly — its layout is one grouped parquet per COMPANY
+# (clean_grouped/sec_edgar/<ID>.parquet, metric/obs_date/value/vintage_date), not the
+# long series_key/obs_date/value shape the Result contract and the generic CSV derive
+# assume. Rather than distort that contract, this runs the refresh directly. Folding
+# it into the orchestrator (and reconciling the duplicate sec_edgar_xbrl registry
+# entry) remains the proper end state.
+#
+# WHY A DELTA. EDGAR's daily-index names exactly who filed — measured at 28-108 CIKs
+# per day filing 10-K/10-Q/20-F/40-F — and data.sec.gov returns one company's COMPLETE
+# facts in ~0.3s. So a day costs ~200 requests and about a minute. The alternative,
+# gating companyfacts.zip on its HEAD vintage, works (verified: real Last-Modified and
+# ETag) but moves 1.39 GB and rebuilds 17,274 files to capture a single day.
+#
+# --days 4, not 1, ON PURPOSE. SEC publishes no index on weekends or holidays, and a
+# missed or failed run must not leave a permanent hole. Because each companyfacts
+# payload is FULL history, re-refreshing a company is idempotent — overlap costs a few
+# hundred cheap requests and buys immunity to a skipped day.
+name: sec-edgar-daily
+
+on:
+  schedule:
+    # 08:00 UTC — after the 06:00 aqueduct updater, so the two never contend for the
+    # runner or for R2 writes, and late enough that the prior day's index is posted.
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'How many days of EDGAR daily-index to scan (default 4)'
+        required: false
+        default: '4'
+      dry_run:
+        description: 'Print what would change; write nothing to R2'
+        type: boolean
+        required: false
+        default: false
+
+# Never let two refreshes overlap: both write the same R2 objects, and a slow run
+# being lapped by the next one is how two writers race a single key.
+concurrency:
+  group: sec-edgar-daily
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Unbuffered, for the same reason the updater sets it: a killed step otherwise
+      # loses everything it printed and the log ends at the env dump.
+      PYTHONUNBUFFERED: "1"
+      R2_WRITE_ENDPOINT: ${{ secrets.R2_WRITE_ENDPOINT }}
+      R2_WRITE_ACCESS_KEY_ID: ${{ secrets.R2_WRITE_ACCESS_KEY_ID }}
+      R2_WRITE_SECRET_ACCESS_KEY: ${{ secrets.R2_WRITE_SECRET_ACCESS_KEY }}
+      AQUEDUCT_BACKEND: r2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements-updater.txt
+
+      - name: Refresh SEC fundamentals for recent filers
+        env:
+          INPUT_DAYS: ${{ inputs.days }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          # Validate the input rather than interpolating it into the command line:
+          # a crafted `days` value must not become a flag or shell syntax.
+          days="${INPUT_DAYS:-4}"
+          case "$days" in
+            ''|*[!0-9]*) echo "invalid days input '${days}', using 4"; days=4 ;;
+          esac
+          args="--days ${days}"
+          if [ "${INPUT_DRY_RUN}" = "true" ]; then
+            echo "DRY RUN — nothing will be written"
+          else
+            args="${args} --apply"
+          fi
+          python tools/refresh_sec_edgar.py ${args}
+
+      - name: Prove the refresh reached the SERVED object
+        # A green tool run is not a served file. This re-reads one refreshed company
+        # straight out of R2 and asserts its CSV and its grouped parquet agree — the
+        # exact drift that shipped once already, where the CSV was updated on R2 and
+        # the parquet it is derived from was not, so a later rebuild would have
+        # silently reverted the refresh.
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          python - <<'PY'
+          import io, os, sys
+          import pyarrow.parquet as pq
+          from core import r2_util
+          c = r2_util.client()
+          probe = "AAPL"
+          try:
+              pb = c.get_object(Bucket="econ-data",
+                                Key=f"clean_grouped/sec_edgar/{probe}.parquet")["Body"].read()
+              cb = c.get_object(Bucket="econ-data",
+                                Key=f"series/sec_edgar%3A{probe}.csv")["Body"].read()
+          except Exception as e:
+              print(f"::error::could not read back {probe} from R2: {e!r}")
+              sys.exit(1)
+          prows = pq.read_metadata(io.BytesIO(pb)).num_rows
+          # Count DATA rows only. The raw R2 object carries a bare `series_id,...`
+          # header; the worker prepends a citation block of `#` comment lines when it
+          # serves the file, so skipping both makes this check valid against either.
+          crows = sum(1 for l in cb.decode("utf-8", "replace").splitlines()
+                      if l and not l.startswith("#") and not l.startswith("series_id,"))
+          print(f"{probe}: parquet rows={prows:,}  csv data rows={crows:,}")
+          if prows != crows:
+              print(f"::error::{probe} parquet and served CSV disagree "
+                    f"({prows:,} vs {crows:,}) — store and served object are out of step")
+              sys.exit(1)
+          print("store and served object agree")
+          PY
