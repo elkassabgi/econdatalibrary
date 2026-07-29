@@ -102,6 +102,16 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // date-in-the-key defect ons_uk has. Licence audited 2026-07-29 (etalab-2.0, same
   // publisher and API host as the already-confirmed insee_bdm).
   "insee_melodi",
+  // ons_uk — dataset-grain publish, 42 datasets / 25,408,157 rows / 3,897,884 series
+  // (2026-07-29), after the approved re-key. The stored ids used to embed the observation
+  // date AND `CV` (a coefficient of variation — a property of one measurement), so every
+  // row was its own series: 25,408,157 rows, 25,408,157 keys, and a cursor dict that hit
+  // 32.26 GB RSS on a 16 GB runner. Re-keyed to 3,897,884 real series with 0 (key,date)
+  // collisions. Dataset grain because ONS publishes no per-series title — 3.9M rows could
+  // only be titled with their own opaque key. All 42 carry ONS's own dataset title.
+  // OGL v3.0; the "some content is exempt" carve-out resolves to photographs and video,
+  // which cannot reach a statistical series.
+  "ons_uk",
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
   "worldbank_wdi", "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025", "wto_hs_a_0030",
   "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax", "yale_epi", "zillow",
