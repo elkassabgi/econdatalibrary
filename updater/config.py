@@ -94,7 +94,17 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   (CC BY-NC-SA 4.0) plus written permission dated 2026-07-27. The permission came
 #   with a condition — "keep the most updated data sources" — which is why a fetcher
 #   was written rather than just publishing the snapshot we already had.
-EXPECTED_SOURCE_COUNT = 122
+# 2026-07-29: 122 -> 123. unesco_dem — it HAD no registry entry at all, which is why
+#   it never updated: the orchestrator only ever iterates registered units, so an
+#   unregistered source is not "failing", it is invisible. Its 7,080 series came in
+#   through the DBnomics bulk ingest and froze when DBnomics stopped re-indexing
+#   UNESCO on 2022-04-04. Now fetched direct from UIS (99.48% of published ids
+#   reproduced before wiring). Registered live=false — it earns the tier by proving a
+#   delta on a --force dispatch. NOTE: unesco_clte/cltt/film/inno remain unregistered
+#   and therefore still frozen; the current UIS API exposes too few of their indicator
+#   codes (5.1%, 0%, 1.3%, 0%) to rebuild them from this endpoint, so they need a
+#   different route (bulk downloads / SDG database), not a registry line.
+EXPECTED_SOURCE_COUNT = 123
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

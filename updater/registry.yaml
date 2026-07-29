@@ -4436,6 +4436,41 @@ sources:
     - 'single parquet: data/clean_full/undp_hdr/undp_hdr.parquet (~1.5 MB). Schema: series_key (string), obs_date date32 (Dec
       31 of year), value float64. Keys: {indicator}:{ISO3} from composite CSV, or {prefix}:{iso} from annex XLSX (prefixes
       hdi/gdi/gii/ihdi/mpi).'
+- source_id: unesco_dem
+  live: false
+  scripts:
+  - updater/strategies/fetchers/unesco_dem.py
+  strategy: overwrite_if_changed
+  strategy_reason: UIS republishes whole indicator series per data release (Feb/Sep) rather than appending a date tail —
+    a new release restates history, so the correct move is re-pull-and-overwrite gated on the release version. Registered
+    live=false until a `--source unesco_dem --force` dispatch proves the delta; joining the tier without that proof is how
+    a source comes to be counted as covered while running nothing.
+  cadence: irregular
+  refresh_cost: fast
+  out_dir: unesco_dem
+  review: true
+  adapter:
+    vintage_signal: GET https://api.uis.unesco.org/api/public/versions — UIS's own release `version` plus each theme's
+      `lastUpdate`. Deliberately the PUBLISHER's field. This source sat 4 years stale (DBnomics last indexed UNESCO
+      2022-04-04) precisely because the previous signal certified the RELAY's hash, which stays constant while the
+      publisher moves on (ledger R73).
+    since_param: none — one GET per indicator returns that indicator's full history for every country.
+    out_paths_note: Single parquet data/clean_full/unesco_dem/unesco_dem.parquet. series_key 'UNESCO_DEM:{indicatorId}.{geoUnit}.A',
+      which is UIS's own vocabulary with no translation applied. obs_date is period-START (Jan 1) — this source's existing
+      convention across all 278,720 stored observations, left unchanged.
+    rate_note: 35 requests total (one per published indicator), no key, polite UA, 300s timeout. A failed indicator is
+      recorded and skipped; more than half failing raises TransientError rather than merging a partial library.
+    key_env: none
+    confidence: high
+    proof: Measured before wiring — all 35 published indicators resolve upstream, 0 fetch failures, and the rebuilt ids
+      reproduce 7,043 of 7,080 published series (99.48%, against a 95% floor enforced in the fetcher). Upstream carries
+      329,921 obs running to 2025 against our 278,720 frozen at 2022. The 37 published ids with no upstream match are
+      retired there (e.g. VAT, ZZA) and survive via the never-shrink merge.
+  keys_or_blockers:
+  - NONE. No API key. Public UIS REST API at api.uis.unesco.org/api/public.
+  storage_layout:
+  - 'single parquet: data/clean_full/unesco_dem/unesco_dem.parquet. Schema: series_key (string), obs_date date32
+    (period-START), value float64.'
 - source_id: unhcr
   live: true
   scripts:
