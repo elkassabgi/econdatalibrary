@@ -1529,7 +1529,7 @@ SCOPE CAVEATS (do not flip the verdict, but bound it): The grant covers only dat
 
 ### INSEE (Institut national de la statistique et des études économiques, France)
 
-- **Databases (1):** `insee_bdm`
+- **Databases (2):** `insee_bdm`, `insee_melodi`
 - **Official terms URL:** https://www.insee.fr/en/information/2409130
 - **License:** Licence Ouverte / Open Licence 2.0 (Etalab)
 - **Classification:** redistributable_attribution
@@ -1547,6 +1547,10 @@ SCOPE CAVEATS (do not flip the verdict, but bound it): The grant covers only dat
 Adversarial search for a stricter clause: the ONLY restriction on the page is a web-scraping clause — automated extraction "is only permitted to the extent that it does not impair the proper functioning of the site." This is a technical rate/access protection on INSEE's live servers, NOT a restriction on redistributing data already obtained. No redistribution ban, no non-commercial clause, no prior-written-permission requirement, and no no-derivatives clause exists on the page.
 
 The classification is independently corroborated by the Etalab Open Licence 2.0 text itself, which explicitly grants the right to reuse by "disseminating, redistributing, publishing and transmitting it; and by exploiting it for commercial purposes," conditioned only on attribution (source name) and mention of the last-update date — a CC-BY-equivalent open license. Re-hosting the data for public download with "Source: Insee" attribution and the update date is squarely permitted. classification redistributable_attribution is defensible and not more permissive than the terms support. VERDICT: CONFIRMED.
+
+*`insee_melodi` scope note (added 2026-07-29):* this source carried an `etalab-2.0` row in the local catalog but had **never been audited** — the flag was an assertion, not evidence (the failure mode of R113/R117), so it is recorded here explicitly rather than left to inherit its sibling's clearance. It does not rest on analogy: `insee_melodi` fetches `https://api.insee.fr/melodi` and the already-CONFIRMED `insee_bdm` fetches `https://api.insee.fr/series/BDM/V1` — the **same publisher on the same API host**, governed by the same terms page above, which covers "the public information disseminated on this site (data, databases, publications, downloadable files)" *unless otherwise stated*. Adversarial check for an "otherwise": the Melodi `dataflow/all` payload was fetched and searched — it carries only `code` and `label` for its 144 flows and declares no licence, and the INSEE API portal returns a script-only shell with no terms text. **No carve-out for Melodi exists**, so the site-wide grant governs. VERDICT: CLEARED - re-host OK (attribution), commercial OK.
+
+One OPERATIONAL condition applies to both and is not a redistribution limit: INSEE requires automated clients to "limit the requests frequency as to not disrupt the normal functioning of the site" and reserves the right to block systems generating excessive load. Our Melodi fetcher is documented keyless at 30 req/min, which honours it — keep that pacing.
 
 *Researcher reasoning:* INSEE's official legal-notice page on its own domain (insee.fr/en/information/2409130, English mirror of the French "Conditions d'utilisation de nos données" at insee.fr/fr/information/2381863) states that its public information — explicitly including "data, databases, publications, downloadable files" — is made available under the Etalab Licence Ouverte / Open Licence version 2.0. The French provider page (2381863) returned HTTP 404 to the fetcher (likely bot-blocking), but the English legal-notice page on the same official insee.fr domain fetched successfully and was corroborated by multiple search snippets, so the licence designation is confirmed from the provider's own domain.
 
