@@ -3684,6 +3684,24 @@ sources:
       cache) and _scb_log.txt. MAX_CELLS=100000 caps each table query; oversized tables fall back to selecting only the first/aggregate
       value of non-time dims (partial coverage).'
 - source_id: sec_edgar
+  id_collision_warning: >-
+    2026-07-29 — THIS ENTRY IS NOT THE COMPANY FUNDAMENTALS. `sec_edgar` means two
+    different things depending on which store you read:
+
+      REGISTRY (here)  -> the relational Form 13F + insider products under
+                          clean_full/edgar_13f and clean_full/edgar_insider
+                          (122,053,194 and 37,169,724 rows of wide tables; no
+                          series_key/obs_date/value, nothing catalogued, nothing served
+                          as downloadable series).
+      CATALOG / D1     -> 17,276 companies of XBRL FINANCIAL STATEMENTS served as
+                          sec_edgar:<TICKER|CIK>, stored at
+                          clean_grouped/sec_edgar/<ID>.parquet. That product is
+                          registered as `sec_edgar_xbrl` and is refreshed daily by
+                          .github/workflows/sec-edgar-daily.yml — NOT by this entry.
+
+    So this entry showing RED-UNRUN says nothing about whether company financial
+    statements are current: they are, and they update nightly. Running this entry would
+    fetch 13F/insider zips and touch none of the fundamentals.
   scripts:
   - updater/strategies/fetchers/sec_edgar.py
   - jobs/ingest_edgar_13f.py
@@ -3753,7 +3771,32 @@ sources:
       join on ACCESSION_NUMBER). edgar_insider: clean_full/edgar_insider/<table>/year=<YYYY>/<table>_<key>.parquet (8 tables,
       join on ACCESSION_NUMBER). No series_key/obs_date columns (relational, not long-format).'
 - source_id: sec_edgar_xbrl
+  refreshed_elsewhere: >-
+    2026-07-29 — THIS SOURCE IS ALREADY UPDATING, just not by the orchestrator. It is
+    refreshed daily by .github/workflows/sec-edgar-daily.yml, which runs
+    tools/refresh_sec_edgar.py. The health gate therefore shows it PENDING ("adapter not
+    built yet"), which is now MISLEADING: nobody should build the fetcher this entry
+    describes, because the work is done.
+
+    Why it lives outside the orchestrator: the served payload is one grouped parquet per
+    COMPANY (clean_grouped/sec_edgar/<ID>.parquet — metric/obs_date/value/vintage_date),
+    not the long series_key/obs_date/value shape the Result contract and the generic CSV
+    derive assume. Nothing in updater/ or core/ can even derive its CSVs.
+
+    Why a delta rather than the bulk zip this entry proposes: the HEAD vintage signal is
+    real (verified 2026-07-29 — Last-Modified Tue 28 Jul 2026 04:22:35 GMT, strong ETag,
+    1,390,705,602 bytes), but it moves 1.39 GB and rebuilds 17,276 files to capture one
+    day of filings. EDGAR's daily-index names the filers (28-108/day) and data.sec.gov
+    returns a company's COMPLETE facts in ~0.3s, so a day costs ~200 requests.
+
+    NAME COLLISION, read carefully: the CATALOG's source_id `sec_edgar` is THIS product
+    (17,276 companies of XBRL fundamentals). The REGISTRY's `sec_edgar` entry is a
+    different thing entirely — the relational Form 13F + insider data under
+    clean_full/edgar_13f. Same id, two meanings, depending on which store you are
+    looking at.
   scripts:
+  - .github/workflows/sec-edgar-daily.yml
+  - tools/refresh_sec_edgar.py
   - jobs/fetch_sec_edgar_bulk.py
   - jobs/ingest_sec_edgar.py
   strategy: bulk_snapshot_if_changed
