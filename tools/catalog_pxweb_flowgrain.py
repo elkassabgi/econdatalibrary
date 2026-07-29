@@ -47,6 +47,13 @@ def _last_seg(prefix: str) -> str:
     return _norm(prefix.split(":")[-1])
 
 
+# (title field, id fields) per catalogue shape. PxWeb ships {"text","id"/"path"}; CSO PxStat
+# ships {"MtrTitle","MtrCode"}. Both are the PUBLISHER'S OWN table title — the point of
+# reading these at all is that a table's name is never invented here (the fallback is the
+# real table id, which is honest if terse).
+_TITLE_SHAPES = [("text", ("id", "path")), ("MtrTitle", ("MtrCode",))]
+
+
 def build_title_map(src: str) -> dict:
     """{normalized_table_id -> title} from the source's _catalog.json (empty if absent)."""
     catp = os.path.join(DATA, src, "_catalog.json")
@@ -57,16 +64,19 @@ def build_title_map(src: str) -> dict:
         return {}
     m = {}
     for e in cat:
-        text = (e.get("text") or "").strip()
-        if not text:
+        if not isinstance(e, dict):
             continue
-        for keyfield in ("id", "path"):
-            v = e.get(keyfield)
-            if not v:
+        for tfield, keyfields in _TITLE_SHAPES:
+            text = (e.get(tfield) or "").strip()
+            if not text:
                 continue
-            k = _norm(str(v).split("/")[-1])
-            m.setdefault(k, text)
-            m.setdefault(k.lower(), text)
+            for keyfield in keyfields:
+                v = e.get(keyfield)
+                if not v:
+                    continue
+                k = _norm(str(v).split("/")[-1])
+                m.setdefault(k, text)
+                m.setdefault(k.lower(), text)
     return m
 
 
