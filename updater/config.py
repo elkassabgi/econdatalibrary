@@ -104,7 +104,18 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   and therefore still frozen; the current UIS API exposes too few of their indicator
 #   codes (5.1%, 0%, 1.3%, 0%) to rebuild them from this endpoint, so they need a
 #   different route (bulk downloads / SDG database), not a registry line.
-EXPECTED_SOURCE_COUNT = 123
+# 2026-07-29: 123 -> 125. unesco_natmon + unesco_sdg — 2,610,984 observations across
+#   199,661 series that were in the local store and hosted NOWHERE: no catalog rows,
+#   no objects on R2, a denylist entry, and no registry unit, so nothing could even
+#   report them as missing. Both rebuild exactly from the live UIS API (natmon: 420 of
+#   421 live indicators agree; sdg: 68,067 exact id matches). Registered live=false —
+#   they are not promoted until the data is actually SERVED, because refreshing a
+#   source nobody can download is motion without delivery.
+#   unesco_sci (759,045 obs) is deliberately NOT registered: only 12 of its 1,230
+#   indicator codes exist in the current UIS API, so it cannot be kept current from
+#   this endpoint and hosting it would mean publishing a 2019 snapshot that can never
+#   update. Needs a different route or an explicit frozen-archive decision.
+EXPECTED_SOURCE_COUNT = 125
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
