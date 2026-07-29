@@ -147,18 +147,74 @@ def update(unit, since) -> Result:
     known = _catalog_ids(SOURCE)
     built = set(keys)
     if known:
-        hit = len(built & known) / len(known)
-        if hit < ID_FLOOR:
+        # PER-INDICATOR FORM AGREEMENT, not recall against our own stock.
+        #
+        # This gate used to be `|built & known| / |known| >= 0.95` — the fraction of
+        # our published ids that upstream reproduces. That number moves when THE
+        # PUBLISHER's coverage moves, so it cannot tell a broken reconstruction from
+        # a publisher that has trimmed its release. The distinction is not academic:
+        # the same rule applied to unesco_natmon scored 71.7% and printed "do not
+        # wire" while being exactly correct — 420 of its 421 live indicators rebuilt
+        # to ids matching ours, and the shortfall was UIS publishing ~28% fewer
+        # country x indicator cells than our 2022 snapshot (ledger R105). Had UIS
+        # trimmed unesco_dem the same way, the old gate would have refused to merge
+        # and frozen a healthy source while reporting a structural failure.
+        #
+        # What actually distinguishes the two: if the KEY GRAMMAR is wrong, almost no
+        # indicator produces a matching id. If upstream merely shrank, nearly every
+        # indicator still matches on the countries it does publish. So score
+        # indicators, not ids — and only over indicators we have published ids for,
+        # since a brand-new indicator has nothing to agree with.
+        # Both sides derive the group key the SAME way. `known` and `built` are both
+        # full "UNESCO_DEM:{indicator}.{geo}.{freq}" strings, so both must strip the
+        # prefix before splitting on dots. Deriving them differently — one keeping the
+        # "UNESCO_DEM:" prefix, one not — makes the two dicts share no keys at all,
+        # which leaves `checkable` empty and silently DISABLES the gate rather than
+        # failing it. That is not hypothetical: the identical colon mismatch scored a
+        # correct 98.2% FAOSTAT template at 0.0% earlier in this rollout.
+        def _grp(full_id):
+            return full_id.split(":", 1)[1].split(".")[0]
+        known_by = {}
+        for k in known:
+            known_by.setdefault(_grp(k), set()).add(k)
+        built_by = {}
+        for k in built:
+            built_by.setdefault(_grp(k), set()).add(k)
+        checkable = [i for i in built_by if i in known_by]
+        agree = [i for i in checkable if built_by[i] & known_by[i]]
+        ratio = len(agree) / len(checkable) if checkable else 0.0
+        if not checkable:
+            # AN EMPTY CHECK IS NOT A PASS. If not one rebuilt group key lines up
+            # with a published one, the grammar has not merely drifted — it produced
+            # ids from a different namespace entirely, and there is nothing left to
+            # measure agreement against. Written as `if checkable and ratio < FLOOR`
+            # this case sails straight through, because a badly-broken reconstruction
+            # is exactly the one that leaves nothing checkable. Caught by testing the
+            # gate against a deliberately corrupted key set rather than only a good
+            # one.
+            print(f"[unesco_dem] FAIL: none of the {len(built_by):,} rebuilt indicator "
+                  f"groups match any of the {len(known_by):,} published ones — the "
+                  f"reconstruction is in the wrong namespace. Refusing to merge.",
+                  flush=True)
+            tally.structural_unit("no rebuilt indicator group matches a published one")
+            return finalize(tally, before, None, source=SOURCE)
+        if ratio < ID_FLOOR:
             # A wrong reconstruction does not raise — it mints ids beside the live
             # ones and leaves every published series frozen while reporting success.
-            print(f"[unesco_dem] FAIL: rebuilt keys match only {100 * hit:.1f}% of "
-                  f"the {len(known):,} published ids (floor "
-                  f"{100 * ID_FLOOR:.0f}%). Refusing to merge.", flush=True)
-            tally.structural_unit(f"id match {100 * hit:.1f}%")
+            print(f"[unesco_dem] FAIL: only {len(agree)}/{len(checkable)} indicators "
+                  f"({100 * ratio:.1f}%) rebuild to ids we already publish (floor "
+                  f"{100 * ID_FLOOR:.0f}%) — the key grammar is wrong, not merely "
+                  f"upstream coverage. Refusing to merge.", flush=True)
+            tally.structural_unit(f"indicator form agreement {100 * ratio:.1f}%")
             return finalize(tally, before, None, source=SOURCE)
-        print(f"[unesco_dem] {len(keys):,} obs / {len(built):,} series, "
-              f"{100 * hit:.1f}% of published ids reproduced"
-              + (f", {n_bad:,} unreadable values" if n_bad else ""), flush=True)
+        # Recall is still REPORTED — it is the right number for "how much of our
+        # stock does upstream still carry" — it just no longer gates the merge.
+        recall = len(built & known) / len(known)
+        print(f"[unesco_dem] {len(keys):,} obs / {len(built):,} series | "
+              f"grammar {len(agree)}/{len(checkable)} indicators agree "
+              f"({100 * ratio:.1f}%) | upstream still carries {100 * recall:.1f}% of "
+              f"our {len(known):,} published ids"
+              + (f" | {n_bad:,} unreadable values" if n_bad else ""), flush=True)
 
     tbl = pa.table({"series_key": pa.array(keys, pa.string()),
                     "obs_date": pa.array(dates, pa.date32()),
