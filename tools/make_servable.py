@@ -30,6 +30,7 @@ Usage:  python tools/make_servable.py fao_fo fao_pp fao_et
 """
 from __future__ import annotations
 
+import glob
 import io
 import os
 import shutil
@@ -97,11 +98,38 @@ def parquet_mtime(client, source):
 
 
 def sync_parquet(client, source):
-    """Bring the local store into line with what is PUBLISHED, or refuse."""
+    """Bring the local store into line with what is PUBLISHED, or refuse.
+
+    NOT EVERY SOURCE IS ONE FILE. This assumed `clean_full/<src>/<src>.parquet` and
+    died with a bare botocore NoSuchKey on the first multi-file source it met — adb
+    publishes 54 per-flow parquets (EGELC.parquet, EGELC_EG.parquet, ...) and un_wpp
+    two (indicators_medium/other). The traceback named the missing key but not the
+    source, and it killed the whole batch before any of the four was derived.
+
+    For those layouts there is no single object to pull, so the never-shrink comparison
+    this function exists to perform cannot be made. Skip the sync and SAY SO — the
+    local store is then taken as authoritative, which is correct only because no
+    fetcher has republished these sources (they are not in the live tier). Deriving
+    from a stale local copy against a newer published one is the fao_oa failure, so
+    this must stay loud rather than becoming a silent fallback.
+    """
     key = f"clean_full/{source}/{source}.parquet"
     dst = os.path.join(ROOT, "data", "clean_full", source, f"{source}.parquet")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    raw = client.get_object(Bucket=BUCKET, Key=key)["Body"].read()
+    try:
+        raw = client.get_object(Bucket=BUCKET, Key=key)["Body"].read()
+    except client.exceptions.NoSuchKey:
+        n = len(glob.glob(os.path.join(ROOT, "data", "clean_full", source,
+                                       "**", "*.parquet"), recursive=True))
+        if n == 0:
+            print(f"  NO published {key} and NO local parquet — nothing to serve.",
+                  flush=True)
+            return None
+        print(f"  multi-file layout: no single {source}.parquet on R2; SKIPPING the "
+              f"never-shrink sync and deriving from the {n} local file(s). Valid only "
+              f"because no fetcher republishes this source — verify if that changes.",
+              flush=True)
+        return "multi-file"
     pub = pq.read_table(io.BytesIO(raw))
     if os.path.exists(dst):
         loc = pq.read_table(dst)
