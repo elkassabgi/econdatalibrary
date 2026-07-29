@@ -192,6 +192,7 @@ def main():
         client = r2_util.client()
 
     ok = failed = 0
+    n_with_baseline = 0
     changed, errors = [], []
     for i, cik in enumerate(todo, 1):
         time.sleep(SEC_MIN_INTERVAL)
@@ -210,6 +211,8 @@ def main():
         safe = ident.replace("/", "_").replace(":", "_")
         path = os.path.join(GROUPED, safe + ".parquet")
         before = pq.read_metadata(path).num_rows if os.path.exists(path) else 0
+        if before:
+            n_with_baseline += 1
         # --force exists because the skip is keyed on the LOCAL parquet. After a run
         # that updated local+CSV but not the R2 parquet, local already matches
         # upstream, so a plain re-run would skip exactly the companies whose R2 copy
@@ -247,8 +250,18 @@ def main():
 
     print()
     print(f"companies probed : {len(todo):,}")
-    print(f"companies CHANGED: {len(changed):,}"
+    # HONEST LABEL. The comparison baseline is the LOCAL parquet, which does not exist
+    # on a CI runner — so `before` is 0 for every company and everything registers as
+    # "changed". Calling that CHANGED would overstate it every single night: the true
+    # statement is "written", and only a run with a local store can claim a diff.
+    have_baseline = n_with_baseline > 0
+    label = "CHANGED" if have_baseline else "WRITTEN (no local baseline to diff)"
+    print(f"companies {label}: {len(changed):,}"
           + ("  (dry run — nothing written)" if not a.apply else "  (parquet + CSV written)"))
+    if not have_baseline:
+        print("   NOTE: no local clean_grouped/sec_edgar store on this machine, so every "
+              "filer is refreshed rather than diffed. Correct but not a change count — "
+              "each companyfacts payload is full history, so rewriting is idempotent.")
     print(f"fetch failures   : {failed:,}{('  e.g. ' + str(errors[:4])) if errors else ''}")
     for ident, b, aft, latest in changed[:12]:
         print(f"   {ident:<12} {b:>8,} -> {aft:>8,} facts   newest obs {latest}")
