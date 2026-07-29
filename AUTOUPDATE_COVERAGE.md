@@ -235,3 +235,34 @@ source. It is a landmine for whoever promotes it.
 | `census` | 22 | monthly |
 | `fed_board` | 21 | daily |
 | `noaa` | 10 | monthly |
+
+## The one BROKEN fetcher, examined: `ksh` may be superseded, not repairable
+
+`ksh` (25,057 series) is the only frozen source whose fetcher RAISES: `updater/strategies/
+fetchers/ksh.py` imports `parse_ksh_csv` from `jobs/ingest_ksh_hungary.py`, and that file does
+not exist -- only `jobs/ingest_ksh_stadat.py` does, which does NOT define that function. So it
+is not a rename: the parsing helper exists nowhere in the tree.
+
+Before writing a replacement parser, the more useful question is whether the source should
+exist at all. Both `ksh` and `ksh_stadat` pull the same publisher's STADAT tables from
+ksh.hu/stadat_files, and `ksh` looks like an earlier, worse keying of them:
+
+| | series | key shape | title |
+|---|---:|---|---|
+| `ksh` | 25,057 | `KSH:ara0003:1` -- numeric COLUMN INDEX | "Harmonized index of consumer prices is a class" (truncated mid-sentence) |
+| `ksh_stadat` | 97,520 | `KSH:ara0001:Consumer price index` -- real column LABEL | "Consumer price index (ara0001)" |
+
+A key ending in `:1` cannot tell a user which column it is, which is the same class of defect
+the ons_uk re-key just fixed. `ksh_stadat` covers ~4x more series with legible keys and real
+titles.
+
+**But `ksh` is NOT simply a subset: only 3,363 of its 25,057 keys appear in `ksh_stadat`.** So
+retiring it would drop coverage unless those ~21,700 keys are duplicates under a different
+spelling rather than distinct tables. That has to be established, not assumed.
+
+**RESERVED FOR AHMED** -- retiring a source and its ids is his call, not mine. The options are:
+(a) establish whether the ~21,700 non-overlapping keys are genuinely absent from `ksh_stadat`
+and, if they are duplicates, retire `ksh`; (b) write the missing parser and keep both;
+(c) leave `ksh` served-but-frozen, which is the status quo and the least honest of the three.
+Doing nothing is safe today only because `AQUEDUCT_LIVE_ONLY=1` never reaches a non-live
+source -- promoting it without fixing the import would crash the run.
