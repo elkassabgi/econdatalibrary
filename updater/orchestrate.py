@@ -176,8 +176,34 @@ def _derive_changed_csvs(unit, res, blob):
             more = f", +{len(failed) - 5} more" if len(failed) > 5 else ""
             note = f"csv_derive failed {len(failed)}/{len(ids)} series [{shown}{more}]"
         if not note and unmapped:
+            # STATE ONLY WHAT WAS CHECKED. This used to append "(over derive-all cap)"
+            # unconditionally — a hardcoded cause, never tested. riksbank emitted
+            # "28 changed keys unmapped for riksbank (over derive-all cap)" while holding
+            # 117 catalogue rows against a 5,000 cap, so the reason was impossible; the
+            # note sent every reader (and the digest email) after the wrong explanation,
+            # me included. A diagnostic that names its own cause without verifying it is
+            # a plausible lie with a long half-life (ledger R152).
+            n_ids = None
+            try:
+                import sqlite3 as _sq
+                _cat = (os.environ.get("ECONDL_CATALOG")
+                        or os.path.join(config.ROOT, "data", "catalog.db"))
+                with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
+                    n_ids = _c.execute(
+                        "SELECT COUNT(*) FROM series WHERE source_id=?",
+                        (unit.source_id,)).fetchone()[0]
+            except Exception:                       # noqa: BLE001 — a note must never raise
+                n_ids = None
+            if n_ids is None:
+                why = "catalog id count unavailable"
+            elif n_ids > _DERIVE_ALL_CAP:
+                why = (f"source has {n_ids:,} catalog ids, over the "
+                       f"{_DERIVE_ALL_CAP:,} derive-all cap")
+            else:
+                why = (f"source has {n_ids:,} catalog ids, UNDER the "
+                       f"{_DERIVE_ALL_CAP:,} cap — cause is NOT the cap")
             note = (f"csv coherence partial: {len(unmapped)} changed keys unmapped "
-                    f"for {unit.source_id} (over derive-all cap)")
+                    f"for {unit.source_id} ({why})")
         return failed, note
     except Exception as e:  # noqa: BLE001 — CSV failure must NEVER sink the data publish
         return changed, (f"csv_derive crashed ({len(changed)} series queued): " + repr(e))[:300]
