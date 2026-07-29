@@ -45,10 +45,50 @@ DB = os.path.join(ROOT, "data", "catalog.db")
 DENY = os.path.join(ROOT, "api", "worker", "src", "denylist.ts")
 
 
+AUDIT_FILE = os.path.join(ROOT, "DATABASE_LICENSES_VERBATIM.md")
+
+
+def audit_index():
+    """Lowercased text of the canonical verbatim licence audit (or None)."""
+    if not os.path.exists(AUDIT_FILE):
+        return None
+    return io.open(AUDIT_FILE, encoding="utf-8").read().lower()
+
+
+def audited(low, sid, name, homepage):
+    """Has this source's licence actually been READ, per the canonical audit?
+
+    `license.reservable = 1` is a COLUMN SOMEBODY SET. It is not evidence that anyone
+    ever fetched the publisher's terms. I proposed hosting 8 sources on the strength of
+    that flag; five of them — istat, cepii_gravity, un_wpp, ons_uk, adb, 495M
+    observations — had no entry in the audit file at all. Approval would have published
+    half a billion observations on unverified assertions (R113).
+
+    Matching is word-BOUNDARY on the id, because a plain substring test found `ppi`
+    inside "shipping" and `scb`/`ssb`/`dst` inside ordinary words, reporting coverage
+    that did not exist (R112). Corroborated with the registered name and the homepage
+    domain, since the audit refers to some sources by publisher rather than by id.
+    """
+    if low is None:
+        return None
+    if re.search(r"(?<![a-z0-9_])" + re.escape(sid) + r"(?![a-z0-9_])", low):
+        return "id"
+    nm = (name or "").strip().lower()
+    if len(nm) >= 8 and nm in low:
+        return "name"
+    m = re.search(r"https?://([^/]+)", homepage or "")
+    if m:
+        host = m.group(1).lower().replace("www.", "")
+        if len(host) >= 8 and host in low:
+            return "homepage"
+    return None
+
+
 def load_context():
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     catalogued = {r[0] for r in con.execute("SELECT DISTINCT source_id FROM series")}
-    srcrow = {r[0]: r[1] for r in con.execute("SELECT source_id, license_id FROM source")}
+    srcrow = {r[0]: (r[1], r[2], r[3]) for r in con.execute(
+        "SELECT source_id, license_id, name, homepage FROM source")}
     lic = {r[0]: (r[1], r[2]) for r in con.execute(
         "SELECT license_id, reservable, name FROM license")}
     deny = set()
@@ -59,6 +99,7 @@ def load_context():
 
 def scan(idle_hours):
     catalogued, srcrow, lic, deny = load_context()
+    low = audit_index()
     now = dt.datetime.now()
     buckets = collections.defaultdict(list)
     for base in ("data/clean_full", "data/clean_grouped"):
@@ -86,10 +127,11 @@ def scan(idle_hours):
             if name in deny:
                 buckets["GATED (worker denylist)"].append(rec)
                 continue
-            lid = srcrow.get(name)
-            if lid is None:
+            row = srcrow.get(name)
+            if row is None:
                 buckets["NO SOURCE ROW (licence never assessed)"].append(rec)
                 continue
+            lid, sname, home = row
             reservable = (lic.get(lid) or (None, None))[0]
             if reservable == 0:
                 buckets["licence reservable=0 (NEEDS-REVIEW / restricted)"].append(rec)
@@ -100,8 +142,14 @@ def scan(idle_hours):
             cols = pq.read_schema(files[0]).names
             shaped = (("series_key" in cols or "series_id" in cols)
                       and "obs_date" in cols and "value" in cols)
-            buckets["SERVABLE NOW (series-shaped, cleared, idle)" if shaped
-                    else "RELATIONAL (needs a transform, not just cataloguing)"].append(rec)
+            if not shaped:
+                buckets["RELATIONAL (needs a transform, not just cataloguing)"].append(rec)
+                continue
+            # The flag says redistributable. Has anyone actually READ the terms?
+            # Splitting these two is the whole point — see audited() and R113.
+            buckets["SERVABLE NOW (cleared AND licence audited)" if
+                    audited(low, name, sname, home)
+                    else "FLAG SAYS OK BUT LICENCE NEVER AUDITED — do not host"].append(rec)
     return buckets
 
 
@@ -112,7 +160,8 @@ def main():
     a = ap.parse_args()
 
     buckets = scan(a.idle_hours)
-    order = ["SERVABLE NOW (series-shaped, cleared, idle)",
+    order = ["SERVABLE NOW (cleared AND licence audited)",
+             "FLAG SAYS OK BUT LICENCE NEVER AUDITED — do not host",
              "RELATIONAL (needs a transform, not just cataloguing)",
              "IN-FLIGHT (still being written)",
              "NO SOURCE ROW (licence never assessed)",
@@ -135,12 +184,20 @@ def main():
         if len(v) > 10:
             print(f"    ... +{len(v) - 10} more")
         print()
-    key = buckets.get("SERVABLE NOW (series-shaped, cleared, idle)") or []
+    key = buckets.get("SERVABLE NOW (cleared AND licence audited)") or []
+    unaud = buckets.get("FLAG SAYS OK BUT LICENCE NEVER AUDITED — do not host") or []
     print("=" * 72)
     print(f"ACTIONABLE: {len(key)} source(s), {sum(o for _, o, _ in key):,} observations "
           f"are series-shaped, licence-cleared, idle, and reach nobody.")
-    print("Each still needs its own check before hosting — a licence row saying "
-          "reservable=1 is a claim, and an idle crawl may simply be unfinished.")
+    print("Each still needs its own check before hosting — an idle crawl may simply "
+          "be unfinished.")
+    if unaud:
+        print()
+        print(f"WITHHELD: {len(unaud)} source(s), {sum(o for _, o, _ in unaud):,} "
+              f"observations look servable but their licence has NEVER been audited "
+              f"(no entry in DATABASE_LICENSES_VERBATIM.md). reservable=1 is a column "
+              f"somebody set, not evidence anyone read the publisher's terms. Audit "
+              f"first (R113).")
     return 0
 
 
