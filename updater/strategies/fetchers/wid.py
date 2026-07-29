@@ -22,8 +22,16 @@ period-END (12-31), this source's existing convention.
 
 BUDGET. A full refresh is ~7 GB, which does not fit a CI run. The vintage below moves
 only when WID republishes, so the expensive path is rare; and within a run a wall-clock
-budget stops cleanly and reports PARTIAL rather than being killed at the job ceiling,
-so each run makes real progress and the next resumes with the countries still stale.
+budget stops cleanly and reports PARTIAL rather than being killed at the job ceiling.
+
+RESUME. The budget is only useful if the next run continues where this one stopped,
+and that does not happen for free: the loop walks sorted(rows) from the top every
+time, so with nothing to skip it re-fetches the same early countries forever and the
+end of the alphabet is unreachable at ANY budget. Proven, not assumed — with the
+marker disabled, three runs fetched AA / AA,BB,CC / AA,BB,CC and stalled at 3 of 8
+countries; with it, 1 then 4 then 7 of 8. `_country_vintage.json` records the
+listing's own (last-modified|size) per country once its merge has landed, so a run
+skips what is already at the published vintage and spends its budget on what is not.
 """
 from __future__ import annotations
 
@@ -31,6 +39,7 @@ import csv
 import datetime as dt
 import hashlib
 import io
+import json
 import os
 import re
 import time
@@ -107,6 +116,29 @@ def _parse(text: str, country: str):
     return keys, dates, vals, n_bad
 
 
+DONE_FILE = "_country_vintage.json"
+
+
+def _load_done(out_dir):
+    """{country: "last_modified|size"} for countries already merged at that vintage."""
+    try:
+        raw = blob.read_bytes(os.path.join(out_dir, DONE_FILE))
+        return json.loads(raw) if raw else {}
+    except Exception:                                         # noqa: BLE001
+        return {}                                             # a lost marker re-fetches
+
+
+def _save_done(out_dir, done):
+    try:
+        blob.write_bytes_atomic(os.path.join(out_dir, DONE_FILE),
+                                json.dumps(done, sort_keys=True).encode())
+    except Exception as e:                                    # noqa: BLE001
+        # Never fail the run over the resume marker — losing it costs a re-fetch,
+        # not correctness. But say so, or a silently unwritten marker looks exactly
+        # like a working resume that mysteriously never advances.
+        print(f"[wid] WARNING: could not persist resume marker: {e!r}", flush=True)
+
+
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
@@ -124,14 +156,30 @@ def update(unit, since) -> Result:
     total_rows = 0
     newest = None
     deferred = 0
+    skipped = 0
+    done = _load_done(out_dir)
+    dirty = False
     for fn, country, _mod, _size in sorted(rows):
+        path = os.path.join(out_dir, f"{country}.parquet")
+
+        # RESUME. Without this the loop restarts at sorted(rows)[0] every run and
+        # re-fetches the same early countries forever: a run that exhausts its budget
+        # would never advance past whatever it reached the first time, so the tail of
+        # the alphabet could never be fetched at all. The deferral below promises the
+        # next run "picks it up" — this is the only thing that makes that true.
+        # The stamp is WID's own listing metadata for that file, so it moves exactly
+        # when the country is republished. Checked against the parquet actually being
+        # present, because a stamp alone would suppress the fetch after a store reset.
+        if done.get(country) == f"{_mod}|{_size}" and blob.exists(path):
+            skipped += 1
+            continue
+
         if time.time() - t0 > BUDGET_S:
             # Deferral, not a verdict: the country is left untouched so the next run
             # picks it up. Counting it as a failure would be a false alarm, and
             # skipping it silently would be worse.
             deferred += 1
             continue
-        path = os.path.join(out_dir, f"{country}.parquet")
         try:
             r = requests.get(INDEX + fn, headers=UA, timeout=600)
         except (requests.Timeout, requests.ConnectionError):
@@ -159,6 +207,18 @@ def update(unit, since) -> Result:
         if md and (newest is None or md > newest):
             newest = md
 
+        # Only AFTER the merge landed. Stamping on fetch would mark a country done
+        # that failed to parse, and the retry would never come.
+        done[country] = f"{_mod}|{_size}"
+        dirty = True
+        if len(done) % 25 == 0:                               # bound loss if killed
+            _save_done(out_dir, done)
+
+    if dirty:
+        _save_done(out_dir, done)
+    if skipped:
+        print(f"[wid] {skipped} country file(s) already at the published vintage — "
+              f"not re-fetched", flush=True)
     if deferred:
         print(f"[wid] {deferred} country file(s) DEFERRED to the next run "
               f"(budget {BUDGET_S / 60:.0f} min reached) — untouched, not failed",

@@ -77,6 +77,15 @@ jobs:
       # an explicit `source` input still runs a non-live source for its
       # pre-go-live delta proof.
       AQUEDUCT_LIVE_ONLY: '1'
+      # WID ships one ~17 MB CSV per country, 424 of them (~7 GB). At its 180-min
+      # default a first pass would eat three quarters of the 240-min run and starve
+      # every other due source. 60 min spreads it over ~3 nights instead.
+      # SAFE ONLY BECAUSE THE FETCHER RESUMES (ledger R130): it records each
+      # country's published vintage once merged and skips it next time. Before that
+      # fix the loop restarted at country 1 every run, so a SMALLER budget reached
+      # fewer countries and then stalled there permanently. If that marker is ever
+      # removed, remove this cap with it.
+      AQUEDUCT_WID_BUDGET_MIN: '60'
       # CSV derive (contract step 5) resolves catalog ids against this db —
       # pulled from R2 each run (plan §1.1 step 5 / O-9).
       ECONDL_CATALOG: ${{ github.workspace }}/data/catalog.db
