@@ -52,8 +52,18 @@ from updater import derive, blob as bm                        # noqa: E402
 BUCKET = "econ-data"
 
 
-def r2_csvs(client, source):
-    have, tok = set(), None
+def r2_stamps(client, source):
+    """{series_id: LastModified} for every CSV of a source — one full pagination.
+
+    PRESENCE IS NOT CURRENCY, and the difference is not academic. fao_oa had all
+    1,388 CSVs present, so this returned them all, "to derive" was 0, and the verify
+    printed OK — while 69.6% of its served observations differed from the published
+    parquet by up to 460%, because the CSVs predated a republish by 26 days. A stale
+    VINTAGE carries the same dates as a fresh one, so nothing date-based can see it;
+    only the write TIME distinguishes them. Treating a CSV older than the parquet as
+    absent is what makes the gap self-healing.
+    """
+    out, tok = {}, None
     while True:
         kw = {"Bucket": BUCKET, "Prefix": f"series/{source}", "MaxKeys": 1000}
         if tok:
@@ -61,11 +71,29 @@ def r2_csvs(client, source):
         r = client.list_objects_v2(**kw)
         for o in r.get("Contents", []):
             if o["Key"].endswith(".csv"):
-                have.add(urllib.parse.unquote(o["Key"][len("series/"):-4]))
+                out[urllib.parse.unquote(o["Key"][len("series/"):-4])] = o["LastModified"]
         if not r.get("IsTruncated"):
             break
         tok = r["NextContinuationToken"]
-    return have
+    return out
+
+
+def parquet_mtime(client, source):
+    """Newest publish time among a source's parquets, or None."""
+    newest, tok = None, None
+    while True:
+        kw = {"Bucket": BUCKET, "Prefix": f"clean_full/{source}/", "MaxKeys": 1000}
+        if tok:
+            kw["ContinuationToken"] = tok
+        r = client.list_objects_v2(**kw)
+        for o in r.get("Contents", []):
+            if o["Key"].endswith(".parquet") and (newest is None
+                                                  or o["LastModified"] > newest):
+                newest = o["LastModified"]
+        if not r.get("IsTruncated"):
+            break
+        tok = r["NextContinuationToken"]
+    return newest
 
 
 def sync_parquet(client, source):
@@ -113,9 +141,17 @@ def main(sources):
         # 574 ids long. A function call inside a comprehension's condition is
         # evaluated every iteration; when that call is an S3 listing, the loop is
         # quadratic in network round-trips.
-        have = r2_csvs(client, src)
+        pmt = parquet_mtime(client, src)
+        # ONE listing, both facts. Computing the stale count with a second
+        # r2_csvs() call doubled the pagination for no information gain — the same
+        # class of waste as the quadratic listing this file already warns about.
+        stamps = r2_stamps(client, src)
+        have = {k for k, m in stamps.items() if pmt is None or m >= pmt}
         todo = [i for i in ids if i not in have]
-        print(f"  catalog {len(ids):,} | to derive {len(todo):,}", flush=True)
+        n_stale = sum(1 for i in ids if i in stamps and i not in have)
+        print(f"  catalog {len(ids):,} | to derive {len(todo):,}"
+              + (f" ({n_stale:,} of them present but OLDER than the parquet)"
+                 if n_stale > 0 else ""), flush=True)
         if todo:
             t0 = time.time()
             res = derive.derive_and_put(todo, blob)
@@ -126,8 +162,12 @@ def main(sources):
             for f in res["failed"][:5]:
                 print(f"     FAIL {f}", flush=True)
 
-        # Verify by LISTING R2, never by trusting the counter above — once.
-        after = r2_csvs(client, src)
+        # Verify by LISTING R2, never by trusting the counter above — once. The
+        # freshness filter applies here too: a verify that counts stale files as
+        # present is the check that declared fao_oa OK while it served 26-day-old
+        # values.
+        after = {k for k, m in r2_stamps(client, src).items()
+                 if pmt is None or m >= pmt}
         missing = [i for i in ids if i not in after]
         print(f"  VERIFY: catalog {len(ids):,}  csv_in_r2 {len(ids) - len(missing):,}"
               f"  MISSING {len(missing):,}"
