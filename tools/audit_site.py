@@ -199,6 +199,54 @@ def check_auth_health() -> list[str]:
     return out
 
 
+def check_source_pages() -> list[str]:
+    """Every SERVED source should have a page. Nothing checked this until 2026-07-29.
+
+    This audit already walks pages for reachability, links, endpoints and auth — each a
+    property of one component. The gap it left is the same shape as the three bugs that
+    caused it to be written: a RELATIONSHIP between components that every part reports
+    success on individually. 18 sources were served — catalogued, in the worker resolver,
+    and returning real CSV bodies — with no page in catalog/site/, and `wid` was one of
+    them: 2,465,197 series, the largest source in the library.
+
+    NOT a data-access failure, and the wording below says so: catalog.html searches the
+    live API, so those series are findable and downloadable. What is missing is the
+    browsing and SEO surface. Overstating it as "invisible" would be its own kind of
+    false finding.
+    """
+    import re as _re
+    import sqlite3 as _sq
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    site = os.path.join(root, "catalog", "site")
+    cat = os.environ.get("ECONDL_CATALOG") or os.path.join(root, "data", "catalog.db")
+    util_p = os.path.join(root, "api", "worker", "src", "util.ts")
+    if not (os.path.isdir(site) and os.path.exists(cat) and os.path.exists(util_p)):
+        return ["   SKIPPED: site dir, catalog.db or util.ts not found"]
+
+    pages = {f[:-5] for f in os.listdir(site) if f.endswith(".html")}
+    with open(util_p, encoding="utf-8") as fh:
+        util = fh.read()
+    con = _sq.connect(f"file:{cat}?mode=ro", uri=True)
+    served = {}
+    for sid, n in con.execute("SELECT source_id,COUNT(*) FROM series GROUP BY source_id"):
+        if n > 0 and _re.search(r'"%s"' % _re.escape(sid), util):
+            served[sid] = n
+    con.close()
+
+    missing = sorted(((s, n) for s, n in served.items() if s not in pages),
+                     key=lambda x: -x[1])
+    out = [f"   {len(served)} served source(s), {len(pages)} page(s), "
+           f"{len(missing)} served source(s) with NO page"]
+    if missing:
+        out.append(f"   NO PAGE for {sum(n for _, n in missing):,} series "
+                   f"(findable via search, but no landing/SEO page)")
+        for s, n in missing[:8]:
+            out.append(f"      {s:22s} {n:>9,}")
+        if len(missing) > 8:
+            out.append(f"      ... and {len(missing) - 8} more")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--base", default=DEFAULT_BASE)
@@ -261,6 +309,17 @@ def main() -> int:
     for line in check_auth_health():
         print(line if line.startswith("   ") else f"   {line}")
         if "LOCKED OUT" in line:
+            failures += 1
+
+    print("\nF. every SERVED source has a page")
+    # Keyed on the "NO PAGE for" line, which check_source_pages emits ONLY when the
+    # missing list is non-empty. An earlier version tested
+    # `endswith("0 served source(s) with NO page")` — which also matches 10, 20, 30
+    # missing sources, so a real gap would have reported CLEAN. Same unanchored-substring
+    # class as R112/R129/R137; count on a marker that cannot collide with a digit.
+    for line in check_source_pages():
+        print(line)
+        if "NO PAGE for" in line:
             failures += 1
 
     print("\nNOT covered here — run the companion audit:")
