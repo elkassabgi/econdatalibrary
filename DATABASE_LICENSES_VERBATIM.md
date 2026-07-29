@@ -3208,3 +3208,85 @@ confirm that non-commercial academic re-hosting of their public release files is
 covered by the CC BY-NC-SA 4.0 grant. Until answered, the sources stay served under the
 existing NC licence row (unchanged, attribution required, commercial use excluded)
 rather than being silently re-gated, and this section records the open question.
+
+---
+
+## Five previously-unaudited served/candidate sources — added 2026-07-29
+
+**Why:** an audit-coverage sweep found these five carried `reservable=1` with no entry
+in this file. The flag is a column somebody set; it is not evidence anyone read the
+publisher's terms. They were about to be proposed for hosting on that flag alone
+(495,028,737 observations). Each publisher's terms were fetched and read today.
+
+**Outcome: all five CONFIRMED — every existing licence row was already correct.** The
+gap was documentation, not misclassification. Two carry caveats worth carrying forward.
+
+### `istat` — Istituto Nazionale di Statistica (371,190,751 obs)
+- **URL:** https://www.istat.it/en/legal-notice/ · **Row:** `cc-by-4.0` (reservable=1, commercial_ok=1)
+> Unless otherwise stated, content on this website is licensed under a Creative Commons
+> License – Attribution – 4.0 . You are free to: Share — copy and redistribute the
+> material in any medium or format for any purpose, even commercially
+
+**CONFIRMED — redistributable_attribution.** An explicit Share grant, commercial use
+included. "Unless otherwise stated" is standard CC framing, not a redistribution bar.
+
+### `cepii_gravity` — CEPII Gravity database (69,666,545 obs)
+- **URL:** https://www.cepii.fr/cepii/en/bdd_modele/bdd_modele_item.asp?id=8 · **Row:** `etalab-2.0`
+> Licence: Etalab 2.0
+
+**CONFIRMED — redistributable_attribution.** Etalab Open Licence 2.0 permits reuse,
+redistribution and adaptation, including commercially, conditioned on attribution.
+NOTE: CEPII's separate legal page prohibits reproduction of its MARKS AND LOGOS without
+permission — a trademark clause, not a data-redistribution bar; do not confuse the two.
+Their stated citation requirement (Conte, Cotterlaz & Mayer working paper) should be
+carried in the attribution string.
+
+### `un_wpp` — UN World Population Prospects 2024 (27,756,924 obs)
+- **URL:** https://population.un.org/wpp/downloads · **Row:** `cc-by-3.0-igo`
+> Copyright © 2024 by United Nations, made available under a Creative Commons license
+> CC BY 3.0 IGO: http://creativecommons.org/licenses/by/3.0/igo/
+
+**CONFIRMED — redistributable_attribution.**
+**IMPORTANT, and the reason this one nearly went the other way:** the general UN
+copyright notice at https://www.un.org/en/about-us/copyright reads "Copyright © United
+Nations. All rights reserved." and requires "permission in writing from the publisher".
+Read alone it looks like a flat prohibition. It is not the governing text for this
+data: the Population Division publishes its own CC BY 3.0 IGO grant on the WPP download
+page. The site-wide notice covers un.org materials generally; the dataset carries a
+specific grant that supersedes it for this product.
+**D1 divergence:** D1 currently records `NEEDS-REVIEW` for un_wpp while the local
+catalog records `cc-by-3.0-igo`. The local row is the CORRECT one; D1 holds the
+pre-audit conservative default. Nothing is served today (0 catalogued series), so the
+divergence is inert, but D1 should be brought into line before un_wpp is ever hosted.
+
+### `ons_uk` — UK Office for National Statistics (25,401,777 obs)
+- **URL:** https://www.ons.gov.uk/help/termsandconditions · **Row:** `ogl-uk-3.0`
+> Most content on this website is subject to Crown copyright protection and is published
+> under the Open Government Licence (OGL) . Some content is exempt from the OGL – check
+> the list of exemptions. Reproduction of information is subject to the terms of the OGL
+
+**CONFIRMED WITH CARVE-OUT — redistributable_attribution_with_exceptions.** OGL v3
+permits copying, publishing and redistribution with attribution. But note "MOST
+content" and an explicit exemptions list — the same shape as the worldbank entry in
+this file. Before hosting, the exemptions list must be checked against the series we
+actually hold rather than assuming blanket coverage.
+
+### `adb` — Asian Development Bank Data Library (1,012,740 obs)
+- **URL:** https://data.adb.org/terms-use-data · **Row:** `cc-by-3.0-igo-adb`
+> Unless otherwise indicated, the use of the ADB Data Library (the Site) and any such
+> data published on the Site is made available under a CC BY 3.0 IGO License
+
+> You are free to share (copy, distribute, and use the database), create (produce works
+> from the database) and adapt (modify, transform, and build upon the database) for both
+> commercial and non-commercial purposes at no cost as long as you acknowledge the
+> copyright of ADB is properly credited
+
+**CONFIRMED — redistributable_attribution.** Explicit share/create/adapt grant,
+commercial included. Two conditions to honour: the prescribed citation form ("Contains
+information from [database name], © ADB [year]...") and a pass-through requirement that
+sub-licensees carry the same acknowledgement. Exclusions: ADB logo/emblems, software,
+and third-party material ADB does not hold rights to.
+NOTE: these terms are written for **data.adb.org** (the ADB Data Library); our `adb`
+source records **kidb.adb.org** (Key Indicators Database) as its homepage. Same
+publisher, but confirm the KIDB downloads fall under the Data Library terms before
+hosting.
