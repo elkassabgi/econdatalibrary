@@ -320,3 +320,36 @@ TWO THINGS TO SETTLE FIRST, both real:
    2026-07-29 (COMPLIANT on all three non-flag obligations), so a new IMF source inherits a
    settled position — but the new source rows still need the attribution string in IMF's form
    ("Source: International Monetary Fund, <Database Name>") before serving.
+
+## Separate gap found 2026-07-29: 18 SERVED sources have no site page (3,260,484 series)
+
+`catalog/site/` holds 196 per-source pages, but 202 sources are served (catalogued AND in the
+worker resolver). **18 of them have no page**, and they are not the small ones:
+
+| source | series | | source | series |
+|---|---:|---|---|---:|
+| `wid` | 2,465,197 | | `imf_fsi` | 73,288 |
+| `harvard_atlas` | 255,217 | | `adb` | 53,458 |
+| `unesco_sdg` | 100,997 | | `imf_fas_direct` | 14,081 |
+| `unesco_natmon` | 98,664 | | `cso` | 7,896 |
+| `ksh_stadat` | 97,520 | | `imf_world_direct` | 3,244 |
+| `gapminder` | 86,684 | | + 7 more | |
+
+**Total behind pages-less sources: 3,260,484 series — 69% of everything served.** `wid` alone
+is 2.47M, the largest source in the library.
+
+BE PRECISE ABOUT SEVERITY. This is NOT a data-access failure: `catalog.html` searches the live
+API, so every one of these series is findable, resolvable and downloadable — verified today for
+cso, insee_melodi, adb and imf_fsi by fetching real bodies. What is missing is the dedicated
+per-source landing page: the browsing and SEO surface. Calling it "invisible" would overstate
+it; calling it nothing would understate it.
+
+WHY IT PERSISTS: `tools/audit_site.py` walks the full page set for reachability, links, JS
+endpoints and auth health — and it does NOT check the RELATIONSHIP "every served source has a
+page". That is the same blind spot the file's own docstring warns about: each component reports
+success on its own and nothing checks the relationships between them.
+
+SUGGESTED FIX (not started): add that relationship check to audit_site.py so the gap cannot
+reopen silently, then generate the 18 pages from catalog facts — real title, real licence, real
+coverage dates, real series count. Every field must come from the catalog; the per-ticker page
+generator was previously deferred precisely because invented page copy is a fabrication trap.
