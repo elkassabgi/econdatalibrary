@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Env } from "./types";
+import { handlePageview, handlePageviewReport } from "./pageview";
 import { handleCatalog } from "./catalog";
 import { handleSources } from "./sources";
 import { handleLastUpdates } from "./lastUpdates";
@@ -48,6 +49,12 @@ export default {
 
     try {
       // Fixed routes first.
+      // Hidden page-view beacon. Public and unauthenticated BY NECESSITY — it is
+      // fired by a static site with no credentials — which is why the write surface
+      // is an allowlist of known paths and the row holds no personal data at all.
+      if (path === "/v1/pv") return await handlePageview(url, env);
+      if (path === "/v1/pv/report") return await handlePageviewReport(url, env);
+
       if (path === "/v1/catalog") return await handleCatalog(url, env);
       if (path === "/v1/sources") return await handleSources(env);
       if (path === "/v1/last-updates") return await handleLastUpdates(env);

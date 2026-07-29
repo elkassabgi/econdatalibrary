@@ -89,6 +89,22 @@ async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Pr
     let s = L.name || L.id || "";
     if (L.commercial_ok === false) s += " — NON-COMMERCIAL USE ONLY (honor it)";
     if (L.attribution_required) s += "; attribution required";
+    // ShareAlike and NoDerivatives were the two obligations this header never
+    // mentioned. 2,866,900 served series carry one or the other — WID alone is
+    // 2,465,197 of them under CC BY-NC-SA 4.0 — and the downloader was told only
+    // "non-commercial; attribution required", which is an incomplete statement of
+    // what they just agreed to. Both are enforceable conditions of the very licences
+    // we rely on to host this data, so they belong beside the other two.
+    //
+    // ShareAlike is read from the licence NAME because the schema has no share_alike
+    // column; the name is where it is encoded for every CC-SA source here. Anchored
+    // so it cannot fire on an unrelated substring — a bare "sa" occurs inside plenty
+    // of identifiers, and an unanchored test is how R112 produced three wrong answers.
+    const lname = String(L.name || L.id || "").toLowerCase();
+    if (/(^|[-_])sa([-_.]|\d|$)/.test(lname) || lname.includes("sharealike")) {
+      s += "; SHARE-ALIKE — anything you build from this must carry the same licence";
+    }
+    if (L.no_modify) s += "; NO DERIVATIVES — redistribute verbatim, unmodified";
     licLine = `#  ${"License:".padEnd(11)}${s}\n`;
   }
 
