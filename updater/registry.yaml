@@ -2031,6 +2031,18 @@ sources:
     storage_layout:
     - 'single parquet data/clean_full/gti/gti.parquet; schema series_key, obs_date, value.'
 - source_id: ppi
+  upstream_verified:
+    latest_obs: '2022-12-31'
+    checked: '2026-07-29'
+    method: >-
+      Downloaded IEP's own PPI-Public-Release-Data-2023.xlsx on 2026-07-29 (1,066,392
+      bytes) and read its sheet list: Overview, 2022, 2021, ... 2010. The newest year
+      IEP publishes is 2022 and our newest observation is 2022-12-31, so we hold the
+      complete public release. The edition is named for its publication year, not its
+      data year, which is why "2023" in the filename sits above a 2022 data tail.
+      CAVEAT worth re-probing at expiry: the fetcher's URL is HARDCODED to this one
+      file, so a future IEP edition would not be discovered — this declaration is the
+      reminder to look, not a claim that looking is unnecessary.
   live: true
   scripts:
   - updater/strategies/fetchers/ppi.py
@@ -4437,7 +4449,18 @@ sources:
       31 of year), value float64. Keys: {indicator}:{ISO3} from composite CSV, or {prefix}:{iso} from annex XLSX (prefixes
       hdi/gdi/gii/ihdi/mpi).'
 - source_id: unesco_dem
-  live: false
+  upstream_verified:
+    latest_obs: '2025-01-01'
+    checked: '2026-07-29'
+    method: >-
+      Full pull of all 35 published indicators from api.uis.unesco.org on 2026-07-29
+      (0 fetch failures): upstream's newest observation year is 2025 and ours now
+      matches it exactly. The 574-day "data age" is simply how old UNESCO's most
+      recent ANNUAL release is, not a gap on our side — the same run reported an
+      upstream vintage age of 0d. Flagging this RED would report missing data that
+      does not exist upstream, and a gate that cries wolf on complete sources is how
+      a real freeze gets ignored.
+  live: true
   scripts:
   - updater/strategies/fetchers/unesco_dem.py
   strategy: overwrite_if_changed
