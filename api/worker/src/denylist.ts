@@ -39,7 +39,6 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "social_progress",
   "spi",
   "stat_austria",
-  "wid",
   "wiid",
   "wto_bat_bv_m",
   "wto_bat_bv_x",

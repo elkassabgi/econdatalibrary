@@ -30,6 +30,16 @@ OUT = os.path.join(ROOT, "api", "worker", "src", "denylist.ts")
 GRANTED_EXCEPTIONS = {
     "kof_globalization",  # Prof. Jan-Egbert Sturm (KOF director), 2026-07-06: NC academic re-hosting
     "comtrade",           # UN Comtrade, 2026-07-07: free branch, holdings must stay <= 100k records
+    # wid — WID.world, 2026-07-06 GRANTED (educational), Alice (info@wid.world) 2026-07-27:
+    # "Yes, you can use the data for educational purpose", plus the site's own
+    # rel="license" declaring CC BY-NC-SA 4.0. Audit: CONFIRMED, "CLEARED - re-host OK
+    # (non-commercial, attribution, SHARE-ALIKE)". It sat in LEGACY_KEEP below because
+    # the licence was undeclared when that pin was written; it is declared now, and a
+    # written grant is exactly what GRANTED_EXCEPTIONS is for.
+    # Moved 2026-07-29 on Ahmed's decision, only after the derive COMPLETED and was
+    # verified: catalog 2,465,197 == R2 CSVs 2,465,197, missing 0. Un-gating earlier
+    # would have served 404s for whatever had not yet been derived.
+    "wid",
 }
 
 # PERMANENT series-level carve-outs that must survive EVERY regeneration of the

@@ -74,6 +74,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // unesco_sci stays OUT: only 12 of its 1,230 indicator codes exist in the current UIS
   // API, so it cannot be kept current and would be a frozen 2019 snapshot.
   "unesco_inno", "unesco_natmon", "unesco_sdg", "unhcr", "usda", "wgi", "who_hwf", "who_rs",
+  // wid added 2026-07-29 — the largest single source in the library: 2,465,197 series /
+  // ~124M observations of World Inequality Database data that were held locally and
+  // served to NOBODY. Added only after the derive COMPLETED and was verified
+  // (catalog 2,465,197 == R2 CSVs 2,465,197, missing 0); listing it earlier would have
+  // served 404s. CC BY-NC-SA 4.0 + written grant (Alice, info@wid.world, 2026-07-27).
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
   "worldbank_wdi", "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025", "wto_hs_a_0030",
   "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax", "yale_epi", "zillow",
