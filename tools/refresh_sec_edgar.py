@@ -47,6 +47,7 @@ import datetime as dt
 import io
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -165,25 +166,69 @@ def update_catalog(spans, apply_d1):
     single diff shared across two stores that may disagree is what left an earlier
     licence fix inert (R107).
     """
-    n_local = 0
+    n_local = n_new = 0
     db = os.path.join(ROOT, "data", "catalog.db")
     if os.path.exists(db):
         import sqlite3
         con = sqlite3.connect(db)
-        con.executemany(
-            "UPDATE series SET start_date=?, end_date=? WHERE series_id=?",
-            [(str(lo), str(hi), f"sec_edgar:{i}") for i, lo, hi in spans])
+        # UPSERT, not UPDATE. An UPDATE-only path silently does nothing for a company
+        # that has no catalog row yet — and a NEW registrant filing for the first time
+        # is exactly that case. Two such files (CIK0002084272, SMJF) were written to
+        # R2 by earlier runs of this very tool and left uncatalogued: data hosted,
+        # series invisible, undownloadable. That is the "merged but not served" failure
+        # this repo keeps rediscovering, reintroduced here by me.
+        for ident, lo, hi, title, cik in spans:
+            sid = f"sec_edgar:{ident}"
+            cur = con.execute("SELECT 1 FROM series WHERE series_id=?", (sid,))
+            if cur.fetchone():
+                con.execute("UPDATE series SET start_date=?, end_date=? WHERE series_id=?",
+                            (str(lo), str(hi), sid))
+                n_local += 1
+            else:
+                con.execute(
+                    "INSERT INTO series (series_id, source_id, title, frequency, unit, "
+                    "geography, category, license_id, start_date, end_date, metadata) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (sid, "sec_edgar", title, "Q", None, "US", "fundamentals",
+                     "us-public-domain", str(lo), str(hi),
+                     json.dumps({"cik": cik, "ticker": ident if not
+                                 ident.startswith("CIK") else None})))
+                # FTS is a standalone table and does not track `series`; skipping it
+                # would leave the new company unsearchable even once catalogued.
+                try:
+                    con.execute("INSERT INTO series_fts (series_id, title, geography) "
+                                "VALUES (?,?,?)", (sid, title, "US"))
+                except Exception:                             # noqa: BLE001
+                    pass
+                n_new += 1
         con.commit()
-        n_local = con.total_changes
         con.close()
+    if n_new:
+        print(f"   catalogued {n_new:,} NEW company/companies not previously listed",
+              flush=True)
     n_d1 = 0
     if apply_d1 and spans:
         import subprocess
         wdir = os.path.join(ROOT, "api", "worker")
         tmp = os.path.join(ROOT, "data", "_sec_spans.sql")
-        stmts = [f"UPDATE series SET start_date='{lo}', end_date='{hi}' "
-                 f"WHERE series_id='sec_edgar:{str(i).replace(chr(39), chr(39) * 2)}';"
-                 for i, lo, hi in spans]
+        def esc(s):
+            return str(s).replace("'", "''")
+        stmts = []
+        for ident, lo, hi, title, cik in spans:
+            sid = f"sec_edgar:{esc(ident)}"
+            # INSERT OR IGNORE then UPDATE: covers both a company already listed and
+            # one filing for the first time, without needing to read D1 first. An
+            # UPDATE-only path leaves a brand-new registrant's data served but
+            # uncatalogued and therefore unfindable.
+            stmts.append(
+                f"INSERT OR IGNORE INTO series (series_id, source_id, title, frequency, "
+                f"geography, category, license_id, start_date, end_date) VALUES "
+                f"('{sid}','sec_edgar','{esc(title)}','Q','US','fundamentals',"
+                f"'us-public-domain','{lo}','{hi}');")
+            stmts.append(f"INSERT OR IGNORE INTO series_fts (series_id, title, geography) "
+                         f"VALUES ('{sid}','{esc(title)}','US');")
+            stmts.append(f"UPDATE series SET start_date='{lo}', end_date='{hi}' "
+                         f"WHERE series_id='{sid}';")
         for j in range(0, len(stmts), 400):
             io.open(tmp, "w", encoding="utf-8").write("\n".join(stmts[j:j + 400]))
             r = subprocess.run(
@@ -216,6 +261,10 @@ def main():
     ap.add_argument("--apply", action="store_true",
                     help="write parquet + CSV + upload to R2 (default is a dry run)")
     ap.add_argument("--limit", type=int, default=0, help="cap companies (testing only)")
+    ap.add_argument("--ciks", default="",
+                    help="refresh these CIKs explicitly (comma/space separated), "
+                         "bypassing the daily-index window — for repairing companies "
+                         "whose data fell behind without a recent filing")
     ap.add_argument("--d1", action="store_true",
                     help="also push start/end coverage to D1 (the store the worker "
                          "reads); needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID")
@@ -225,12 +274,22 @@ def main():
     a = ap.parse_args()
 
     os.makedirs(GROUPED, exist_ok=True)
-    print(f"scanning EDGAR daily-index, last {a.days} day(s) ...", flush=True)
-    ciks, scanned, missing = filers_since(a.days)
-    print(f"  statement filings per day: {', '.join(scanned) or 'none'}")
-    if missing:
-        print(f"  no index published (weekend/holiday): {', '.join(missing)}")
-    print(f"  distinct CIKs to refresh: {len(ciks):,}", flush=True)
+    if a.ciks:
+        # Targeted repair. The daily-index path answers "who filed recently"; it
+        # cannot reach a company whose data fell behind for some OTHER reason. An
+        # audit of all 17,274 companies found exactly two like that (our newest fact
+        # 2018/2019, upstream's 2026-06-23) — invisible to a date-window scan because
+        # they had not filed in the window, and unreachable without naming them.
+        ciks = {int(c) for c in re.split(r"[,\s]+", a.ciks) if c.strip().isdigit()}
+        scanned, missing = [f"explicit:{len(ciks)}"], []
+        print(f"targeted refresh of {len(ciks):,} explicitly named CIK(s)", flush=True)
+    else:
+        print(f"scanning EDGAR daily-index, last {a.days} day(s) ...", flush=True)
+        ciks, scanned, missing = filers_since(a.days)
+        print(f"  statement filings per day: {', '.join(scanned) or 'none'}")
+        if missing:
+            print(f"  no index published (weekend/holiday): {', '.join(missing)}")
+        print(f"  distinct CIKs to refresh: {len(ciks):,}", flush=True)
     if not ciks:
         print("nothing to do")
         return 0
@@ -276,7 +335,12 @@ def main():
         if len(metric) == before and not a.force:
             continue                       # identical fact count -> nothing new filed
         changed.append((ident, before, len(metric), max(odate)))
-        spans.append((ident, min(odate), max(odate)))
+        # Title carries every ticker SEC maps to this CIK, matching the convention
+        # applied across the source — searching GOOG must find Alphabet even though
+        # the series is keyed GOOGL.
+        ent = data.get("entityName") or ident
+        title = f"{ent} ({', '.join(ticks)})" if ticks else str(ent)
+        spans.append((ident, min(odate), max(odate), title, cik))
         if a.apply:
             tbl = pa.table({
                 "metric": metric,
