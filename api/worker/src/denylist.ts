@@ -33,6 +33,7 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "fred_releases",
   "fsi",
   "imf_dbnomics",
+  "owid",
   "pxweb_bfs",
   "sdmx_nso",
   "sipri_polity",

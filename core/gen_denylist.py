@@ -64,6 +64,22 @@ REQUIRED_CARVEOUTS = {
 # anything the previous curated denylist blocked.
 LEGACY_KEEP = {
     "qog", "cboe", "dbnomics",
+    # owid — GATED 2026-07-29. Its verbatim verdict is DISPUTED / NEEDS HUMAN REVIEW:
+    # "Only the minority of data that OWID produces itself ... is CC BY and redistributable
+    # with attribution. The majority ('Most of the data') is third-party (WHO, UN, World Bank,
+    # and many others) and remains subject to each upstream provider's own license, which must
+    # be assessed per-source before re-hosting." It was nonetheless serving 64 series UNGATED
+    # under a blanket cc-by-4.0 row with commercial_ok=1.
+    #
+    # Gated HERE rather than by touching the licence row: `cc-by-4.0` is shared with 36 other
+    # sources, so setting reservable=0 on it would gate all of them — the R117 shape, where a
+    # per-licence edit silently repriced a whole family. LEGACY_KEEP is the per-SOURCE gate.
+    #
+    # Un-gate only per-provider, never wholesale: the CC BY part is the minority. And note the
+    # store holds 1,048,968 series over 72,514,320 rows against 64 catalogued — that catalog
+    # gap is the other thing keeping this contained (ledger R150), so do NOT "repair" it by
+    # bulk cataloguing.
+    "owid",
     # imf_dbnomics was gated only because its licence row happens to be reservable=0.
     # It was NOT on the floor, so deleting/reclassifying its source row would silently
     # drop it from the gate on the next regeneration (the assertions below would not
