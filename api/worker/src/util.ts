@@ -109,13 +109,14 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // date AND `CV` (a coefficient of variation — a property of one measurement), so every
   // row was its own series: 25,408,157 rows, 25,408,157 keys, and a cursor dict that hit
   // 32.26 GB RSS on a 16 GB runner. Re-keyed to 3,897,884 real series with 0 (key,date)
-  // collisions. Dataset grain is right, but the reason first written here — "ONS publishes no
-  // per-series title" — was WRONG (ledger R145). ONS publishes dimension `label` fields and a
-  // per-dimension `options` endpoint, and the label columns sat beside the code columns in the
-  // very CSVs re-keyed above. Dropping labels from the KEY is correct (ONS can re-word a display
-  // string, and baking it into an id invites silent re-keying); extending that to the TITLE was
-  // not. Codes belong in ids, labels in titles. All 42 datasets carry ONS's own dataset title;
-  // the per-series dimension labels remain unused pending that fix.
+  // collisions. Dataset grain, so the CATALOG holds 42 rows and all 42 carry ONS's own dataset
+  // title (0 titled by their key — verified). Dropping the label columns from the KEY is
+  // deliberate: ONS re-words display strings, and baking one into an id invites silent
+  // re-keying. The opaque `dim=code` strings a user sees are the native series_id column INSIDE
+  // a downloaded CSV — the data payload, which is what it should be, and identical in shape to
+  // cso and insee_melodi. An earlier revision of this comment claimed ons_uk was "under-titled";
+  // that was wrong and is retracted (ledger R145/R146): it confused payload keys with catalog
+  // titles. ons_uk has no titling defect.
   // OGL v3.0; the "some content is exempt" carve-out resolves to photographs and video,
   // which cannot reach a statistical series.
   "ons_uk",
