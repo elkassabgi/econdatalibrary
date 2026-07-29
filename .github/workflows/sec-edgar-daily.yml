@@ -56,6 +56,13 @@ jobs:
       R2_WRITE_ENDPOINT: ${{ secrets.R2_WRITE_ENDPOINT }}
       R2_WRITE_ACCESS_KEY_ID: ${{ secrets.R2_WRITE_ACCESS_KEY_ID }}
       R2_WRITE_SECRET_ACCESS_KEY: ${{ secrets.R2_WRITE_SECRET_ACCESS_KEY }}
+      # Needed for --d1: the refresh also moves each company's start/end coverage in
+      # the catalog. Without it the DATA advances while the METADATA describing it does
+      # not — sec_edgar:BA served facts through 2026-07-21 while its row still
+      # advertised 2026-04-15, which is exactly what /v1/series/{id}.metadata.json
+      # reports to anyone checking coverage before downloading.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       AQUEDUCT_BACKEND: r2
     steps:
       - name: Checkout
@@ -86,7 +93,10 @@ jobs:
           if [ "${INPUT_DRY_RUN}" = "true" ]; then
             echo "DRY RUN — nothing will be written"
           else
-            args="${args} --apply"
+            # --d1 moves each refreshed company's start/end coverage in the served
+            # catalogue. Omitting it leaves the metadata describing stale coverage
+            # for data that has already moved.
+            args="${args} --apply --d1"
           fi
           python tools/refresh_sec_edgar.py ${args}
 

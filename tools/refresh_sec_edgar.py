@@ -149,6 +149,58 @@ def parse_companyfacts(data):
     return metric, odate, vals, vint
 
 
+def update_catalog(spans, apply_d1):
+    """Move series.start_date/end_date with the data.
+
+    Refreshing the parquet and the CSV but not the catalog leaves the METADATA lying
+    about the data underneath it: after the first run, sec_edgar:BA served facts
+    through 2026-07-21 while its catalog row still advertised 2026-04-15. The
+    /v1/series/{id}.metadata.json endpoint reports exactly that field, so a user
+    checking coverage before downloading is told the wrong answer — and anything
+    keyed on end_date for freshness inherits the same error.
+
+    Local catalog.db is updated when present (it is the curated source of truth and
+    absent on a CI runner); D1 is updated whenever wrangler can authenticate, since
+    D1 is what the worker actually reads. Neither is inferred from the other — a
+    single diff shared across two stores that may disagree is what left an earlier
+    licence fix inert (R107).
+    """
+    n_local = 0
+    db = os.path.join(ROOT, "data", "catalog.db")
+    if os.path.exists(db):
+        import sqlite3
+        con = sqlite3.connect(db)
+        con.executemany(
+            "UPDATE series SET start_date=?, end_date=? WHERE series_id=?",
+            [(str(lo), str(hi), f"sec_edgar:{i}") for i, lo, hi in spans])
+        con.commit()
+        n_local = con.total_changes
+        con.close()
+    n_d1 = 0
+    if apply_d1 and spans:
+        import subprocess
+        wdir = os.path.join(ROOT, "api", "worker")
+        tmp = os.path.join(ROOT, "data", "_sec_spans.sql")
+        stmts = [f"UPDATE series SET start_date='{lo}', end_date='{hi}' "
+                 f"WHERE series_id='sec_edgar:{str(i).replace(chr(39), chr(39) * 2)}';"
+                 for i, lo, hi in spans]
+        for j in range(0, len(stmts), 400):
+            io.open(tmp, "w", encoding="utf-8").write("\n".join(stmts[j:j + 400]))
+            r = subprocess.run(
+                ["npx", "wrangler", "d1", "execute", "econ-catalog", "--remote",
+                 "--file", tmp, "-y"],
+                cwd=wdir, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", shell=(os.name == "nt"))
+            if r.returncode != 0:
+                msg = (r.stderr or "") + (r.stdout or "") or "(no output)"
+                print(f"  D1 span update FAILED at {j}: {msg[-300:]}", flush=True)
+                break
+            n_d1 += len(stmts[j:j + 400])
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return n_local, n_d1
+
+
 def csv_bytes(metric, odate, vals):
     """The served shape: series_id,obs_date,value — series_id IS the XBRL metric."""
     buf = io.StringIO()
@@ -164,6 +216,9 @@ def main():
     ap.add_argument("--apply", action="store_true",
                     help="write parquet + CSV + upload to R2 (default is a dry run)")
     ap.add_argument("--limit", type=int, default=0, help="cap companies (testing only)")
+    ap.add_argument("--d1", action="store_true",
+                    help="also push start/end coverage to D1 (the store the worker "
+                         "reads); needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID")
     ap.add_argument("--force", action="store_true",
                     help="rewrite even when the local fact count already matches "
                          "upstream (repairs an R2 copy that drifted from local)")
@@ -193,6 +248,7 @@ def main():
 
     ok = failed = 0
     n_with_baseline = 0
+    spans = []
     changed, errors = [], []
     for i, cik in enumerate(todo, 1):
         time.sleep(SEC_MIN_INTERVAL)
@@ -220,6 +276,7 @@ def main():
         if len(metric) == before and not a.force:
             continue                       # identical fact count -> nothing new filed
         changed.append((ident, before, len(metric), max(odate)))
+        spans.append((ident, min(odate), max(odate)))
         if a.apply:
             tbl = pa.table({
                 "metric": metric,
@@ -265,6 +322,11 @@ def main():
     print(f"fetch failures   : {failed:,}{('  e.g. ' + str(errors[:4])) if errors else ''}")
     for ident, b, aft, latest in changed[:12]:
         print(f"   {ident:<12} {b:>8,} -> {aft:>8,} facts   newest obs {latest}")
+    if a.apply and spans:
+        nl, nd = update_catalog(spans, a.d1)
+        print(f"catalog coverage updated: local rows={nl:,}  D1 statements={nd:,}"
+              + ("" if a.d1 else "   (D1 SKIPPED — pass --d1; the worker reads D1, "
+                                 "so served metadata stays stale without it)"))
     if not a.apply and changed:
         print("\nre-run with --apply to write parquet + CSV and upload to R2")
     return 0
