@@ -187,6 +187,21 @@ sources:
       curated SGS series (deduped by sid). Plus _bcb_log.txt external log.'
 - source_id: bcrp
   live: true
+  upstream_verified:
+    latest_obs: '2026-07-22'
+    checked: '2026-07-29'
+    method: >-
+      NOT a data freeze — we are exactly level with the publisher. The gate reported
+      RED-DATA (newest obs 2026-07-22, 7d old on a DAILY cadence), so BCRP's own API was
+      queried directly for all three series we carry:
+      PD04638PD (USDPEN_mid), PD04639PD (USDPEN_buy), PD04640PD (USDPEN_sell) over
+      2026-07-01..2026-07-31. Each returns its last value-bearing observation on
+      22.Jul.26 (3.40114285714286 / 3.398 / 3.404) and 'n.d.' for every later day —
+      16 observations with data in July. BCRP has simply published nothing since the
+      22nd. Declaring it here rather than muting the gate, because this is an assertion
+      with an expiry: if our data falls BEHIND 2026-07-22 the declaration stops applying
+      and RED-DATA stands, and the claim itself lapses to ATTENTION after
+      UPSTREAM_RECHECK_DAYS so somebody re-probes instead of trusting a stale check.
   scripts:
   - jobs/ingest_bcrp.py
   strategy: extend_by_date
