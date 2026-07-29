@@ -65,6 +65,42 @@ def checkpoint_datasets() -> dict:
     return out
 
 
+def has_direct_fetcher(sid: str) -> bool:
+    """Does this source now pull from the PUBLISHER instead of DBnomics?
+
+    An adversarial review found 17 of this audit's 88 "stale relayed" sources were
+    not relayed at all — 11 had dedicated direct fetchers, including imf_commodity,
+    the very source whose 12-month freeze motivated writing this tool. It was
+    migrated to api.imf.org that same morning and left hard-coded in OVERRIDES as
+    relayed, so the audit went on reporting its own fixed example as broken.
+
+    A source is judged by what its fetcher actually does TODAY, not by a list.
+    """
+    f = os.path.join(ROOT, "updater", "strategies", "fetchers", f"{sid}.py")
+    if not os.path.exists(f):
+        return os.path.exists(os.path.join(ROOT, "updater", "strategies",
+                                           "fetchers", f"{sid}_direct.py"))
+    src = io.open(f, encoding="utf-8", errors="replace").read()
+    if "db.nomics.world" in src or "DBNOMICS" in src:
+        return False                       # still a relay
+    return any(m in src for m in ("_imf_direct", "_imf_mapped", "_faostat",
+                                  "api.imf.org", "bulks-faostat", "DIRECT"))
+
+
+def store_sources() -> set:
+    """Every source that exists on disk — NOT just those with catalog rows.
+
+    Selecting from catalog.db missed 20 genuinely relayed sources (fao_tp, imf_cdis,
+    imf_cpis, several unctad_* and unesco_*), 13 of them over a year stale, because
+    a source can hold data without yet being catalogued. The store is the population;
+    the catalog is a projection of part of it.
+    """
+    base = os.path.join(ROOT, "data", "clean_full")
+    if not os.path.isdir(base):
+        return set()
+    return {d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))}
+
+
 def probe(item):
     """Live indexed_at from DBnomics. (sid, prov, ds, indexed_at, error)."""
     sid, prov, ds = item
@@ -101,8 +137,14 @@ def main() -> int:
     counts = {r[0]: r[1] for r in con.execute(
         "SELECT source_id, COUNT(*) FROM series GROUP BY source_id")}
 
-    todo, unmapped = [], []
-    for sid in sorted(counts):
+    todo, unmapped, migrated = [], [], []
+    # Population = what is ON DISK, union what is catalogued. Either alone is a
+    # projection: the catalog omits uncatalogued sources, the store omits nothing.
+    universe = sorted(store_sources() | set(counts))
+    for sid in universe:
+        if has_direct_fetcher(sid):
+            migrated.append(sid)           # no longer a relay — not this audit's business
+            continue
         if sid in OVERRIDES:
             todo.append((sid,) + OVERRIDES[sid])
             continue
@@ -114,6 +156,10 @@ def main() -> int:
 
     print(f"our sources relayed via DBnomics: {len(todo)}   "
           f"(not DBnomics-relayed / unmapped: {len(unmapped)})")
+    if migrated:
+        print(f"EXCLUDED — now fetch direct from the publisher, no longer relayed: "
+              f"{len(migrated)}  ({', '.join(migrated[:8])}"
+              f"{', ...' if len(migrated) > 8 else ''})")
     print(f"series behind the relay: "
           f"{sum(counts.get(s, 0) for s, _, _ in todo):,}")
     print("re-probing DBnomics for current indexed_at ...")
