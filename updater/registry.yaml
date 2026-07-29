@@ -5345,6 +5345,18 @@ sources:
     key_env: none
     confidence: high
 - source_id: fao_qp
+  upstream_verified:
+    latest_obs: '2023-01-01'
+    checked: '2026-07-29'
+    method: >-
+      Full pull of FAOSTAT QCL on 2026-07-29 restricted to this prefix's published id
+      set: 98.5% of ids reproduced, +15,311 new rows merged, and MAX(last_obs_date)
+      across all 2,238 series is 2023-01-01. The run is actively ingesting, not stuck.
+      Cross-check that this is a real upstream end and not a parsing artefact: fao_qcl
+      reads the SAME QCL file through the SAME parser and reaches 2024-01-01, so 2024
+      dates are readable — the QP slice's own series simply stop at 2023.
+      Re-probe at expiry: if QCL ever extends these series to 2024+ and our tail stays
+      at 2023, this declaration lapses and RED-DATA correctly returns.
   live: true
   scripts:
   - updater/strategies/fetchers/fao_qp.py
