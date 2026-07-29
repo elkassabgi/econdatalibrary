@@ -169,3 +169,69 @@ exists at all, which is the more likely defect.
 | `unctad_fmcpia21` | 14 | None | False |
 | `unctad_ciocgeaia` | 8 | None | False |
 | `unctad_wstbtocabgoea` | 8 | None | False |
+
+## A1. WHY each ongoing-cadence source is frozen (fetcher readiness)
+
+`implemented()` is the orchestrator's OWN resolution, not a filename guess -- which
+would have been wrong twice: `imf_fsi` has no per-source module but many `imf_*_direct`
+siblings, and `ksh` has a module that cannot be imported at all.
+
+**25 ready to promote** (fetcher resolves; only `live: true` + a forced proof run stand between them and the nightly), **1 broken**, **14 with no fetcher**.
+
+### Ready to promote -- 204,509 series
+
+| source | series | cadence |
+|---|---:|---|
+| `insee_bdm` | 101,848 | monthly |
+| `adb` | 53,458 | annual |
+| `imf_fas_direct` | 14,081 | annual |
+| `eurostat` | 7,637 | monthly |
+| `ssb` | 5,568 | monthly |
+| `worldbank_esg` | 4,447 | weekly |
+| `stat_slovenia` | 4,134 | monthly |
+| `stat_estonia` | 3,437 | monthly |
+| `imf_world_direct` | 3,244 | annual |
+| `imf_fdi_direct` | 1,728 | annual |
+| `statfin` | 1,539 | monthly |
+| `worldbank_wdi` | 1,486 | quarterly |
+| `hagstofa` | 1,068 | monthly |
+| `wikidata` | 250 | monthly |
+| `imf_cofer_direct` | 140 | quarterly |
+| `insee_melodi` | 139 | monthly |
+| `owid` | 64 | monthly |
+| `ember` | 60 | monthly |
+| `faostat` | 47 | monthly |
+| `ecb` | 35 | daily |
+| `oecd` | 28 | monthly |
+| `defillama` | 24 | daily |
+| `statcan` | 20 | weekly |
+| `abs` | 18 | monthly |
+| `bls` | 9 | weekly |
+
+### BROKEN -- the fetcher raises on import
+
+Currently harmless only because `AQUEDUCT_LIVE_ONLY=1` never reaches a non-live
+source. It is a landmine for whoever promotes it.
+
+| source | series | error |
+|---|---:|---|
+| `ksh` | 25,057 | `FileNotFoundError: [Errno 2] No such file or directory: 'E:\\research\\econfindatalibrary\\jobs\\ingest_ksh_h` |
+
+### No fetcher at all -- 77,253 series served with no updater path
+
+| source | series | cadence |
+|---|---:|---|
+| `imf_fsi` | 73,288 | monthly |
+| `stats_nz` | 1,320 | quarterly |
+| `ipea` | 1,241 | monthly |
+| `comtrade` | 713 | annual |
+| `bea` | 240 | monthly |
+| `imf` | 131 | monthly |
+| `ilostat` | 80 | monthly |
+| `fhfa` | 61 | monthly |
+| `zillow` | 52 | monthly |
+| `bis` | 49 | monthly |
+| `usda` | 25 | monthly |
+| `census` | 22 | monthly |
+| `fed_board` | 21 | daily |
+| `noaa` | 10 | monthly |
