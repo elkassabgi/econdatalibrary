@@ -44,6 +44,38 @@ def complete(con, source):
               f"to insert unattributed catalog rows. Record the licence first.")
         return 0
 
+    # ANNOUNCE THE TERMS BEING APPLIED, and flag the permissive direction.
+    #
+    # This tool COPIES a licence onto new rows. That makes an unrelated repair able to
+    # relicense a source as a side effect, and it happened: cataloguing seven FAO
+    # sources to make them downloadable stamped 211,924 series with cc-by-4.0
+    # (commercial_ok=1) because the local rows said so, while
+    # DATABASE_LICENSES_VERBATIM.md classifies FAO as
+    # "redistributable_attribution_noncommercial ... a non-commercial/anti-endorsement
+    # restriction that CC BY 4.0 does not impose". The rows it copied were already
+    # wrong; the tool propagated them faithfully and silently, and a later sync carried
+    # them to the store users read.
+    #
+    # A licence id alone tells a reader nothing about what it GRANTS, so print the
+    # flags, and say plainly when rows are about to be published as commercially
+    # usable — that is the direction where being wrong hands out rights the publisher
+    # withheld. Cheap to read, and it is the line that would have stopped this (R117).
+    flags = con.execute("SELECT commercial_ok, no_modify, attribution_required, name "
+                        "FROM license WHERE license_id=?", (lic,)).fetchone()
+    if flags:
+        comm, nomod, attrib, lname = flags
+        print(f"  {source}: applying licence {lic!r} ({lname}) — "
+              f"commercial_ok={comm} no_modify={nomod} attribution={attrib}")
+        if comm == 1:
+            print(f"     NOTE: these rows will be published as COMMERCIALLY USABLE. "
+                  f"If DATABASE_LICENSES_VERBATIM.md says otherwise for {source}, stop "
+                  f"and fix the licence BEFORE cataloguing — this tool copies terms, it "
+                  f"does not verify them.")
+    else:
+        print(f"  {source}: licence {lic!r} has NO row in the license table — its terms "
+              f"are unknown to the catalog. Record it before cataloguing.")
+        return 0
+
     keys = set()
     files = blob.list_parquets(config.source_dir(source))
     if not files:
