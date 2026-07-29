@@ -80,6 +80,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // (catalog 2,465,197 == R2 CSVs 2,465,197, missing 0); listing it earlier would have
   // served 404s. CC BY-NC-SA 4.0 + written grant (Alice, info@wid.world, 2026-07-27).
   "wid",
+  // imf_fsi (73,288) + adb (53,458) added 2026-07-29 — two of the four series-shaped,
+  // licence-verified sources that were idle and catalogued nowhere. Both derived and
+  // verified before listing (MISSING 0, ORPHANED 0). adb's terms are KIDB's own, not
+  // the ADB Data Library's, and its attribution carries KIDB's prescribed citation.
+  "imf_fsi", "adb",
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
   "worldbank_wdi", "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025", "wto_hs_a_0030",
   "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax", "yale_epi", "zillow",
