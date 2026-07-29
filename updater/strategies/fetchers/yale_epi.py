@@ -1,6 +1,11 @@
 """S1 fetcher — Yale Environmental Performance Index (EPI), biennial country index.
 
-CC BY 4.0 (Yale Center for Environmental Law & Policy). Single grouped parquet
+CC BY-NC-SA 4.0 (Yale Center for Environmental Law & Policy) — NOT CC BY 4.0, which
+this docstring claimed until 2026-07-28. Yale states verbatim on epi.yale.edu/about-epi:
+"This work is under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+International License", and the downloads page links creativecommons.org/licenses/
+by-nc-sa/4.0/. So re-use is NON-COMMERCIAL, attribution is REQUIRED, and derivatives
+must be shared alike. Single grouped parquet
 clean_full/yale_epi/yale_epi.parquet, schema (series_key, obs_date, value),
 series_key 'EPI:{variable}:{iso}'. The EPI results CSV is re-estimated/re-published
 each release (currently epi2024results.csv, a wide format: code/iso/country columns

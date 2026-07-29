@@ -3112,3 +3112,33 @@ CLEARS WID for re-hosting, subject to the terms actually granted:
   row rather than inherit a site-wide CC BY, exactly as the IEP datasets already do.
 - **Currency condition**: Alice asked that we "keep the most updated data sources"; the re-hosted
   series must therefore be wired to refresh, not snapshotted once.
+
+
+## yale_epi — CC BY-NC-SA 4.0, and a licence row that said otherwise (corrected 2026-07-28)
+
+Yale states it plainly at https://epi.yale.edu/about-epi:
+
+> "This work is under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+> International License."
+
+and the downloads page carries `<a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">`
+with the text "Attribution-NonCommercial-ShareAlike 4.0 International License".
+
+The catalogue's licence ID (`cc-by-nc-sa-4.0-yale_epi`) was therefore correct. Its
+FLAGS were not, and every one of them erred toward granting MORE than Yale gives:
+
+| flag | was | should be |
+|---|---|---|
+| commercial_ok | 1 | **0** — NC forbids commercial use |
+| attribution_required | 0 | **1** — BY requires attribution |
+| no_modify | 1 | **0** — SA permits derivatives, under the same terms |
+| url | fragilestatesindex.org/... | **creativecommons.org/licenses/by-nc-sa/4.0/** |
+
+The URL pointing at the Fragile States Index is the tell: this row was copied from
+another source's entry and never re-derived. A missing licence blocks publication and
+gets noticed; a wrong-but-plausible one silently hands downstream users rights the
+licensor never granted, and propagates into everything that reads the flag.
+
+Separately, `updater/strategies/fetchers/yale_epi.py` described the source as "CC BY
+4.0" in its own docstring — a second, independent statement of the wrong licence.
+Both are corrected.
