@@ -93,6 +93,15 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // 92 were verified row-for-row against the store (see ledger R133), because presence
   // checks pass on a truncated file.
   "cso",
+  // insee_melodi — flow-grain per-dataflow publish, 139 flows / 36,436,053 rows
+  // (2026-07-29). Flow grain because Melodi gives no codelist (/codelist/all 404s; a flow's
+  // catalog entry only names a DSD), so per-series ids could only be titled with the key
+  // itself — 21.3M rows of opaque codes. The flow is the unit INSEE actually titles, and
+  // 134/139 carry its own label. It also hosts the source WHOLE: 84 flows are single-period
+  // censuses (DS_BPE*, DS_FLORES_*) that are honest cross-sectional micro-data, not the
+  // date-in-the-key defect ons_uk has. Licence audited 2026-07-29 (etalab-2.0, same
+  // publisher and API host as the already-confirmed insee_bdm).
+  "insee_melodi",
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
   "worldbank_wdi", "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025", "wto_hs_a_0030",
   "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax", "yale_epi", "zillow",
