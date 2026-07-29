@@ -34,10 +34,20 @@ from .errors import TransientError, DefinitiveError
 # DBnomics-ISTAT re-pull which writes clean_full/dbnomics/). We match on BOTH
 # source_id and the unit's output directory so a registry source that maps onto
 # one of these dirs can never slip through (the source_id alone was brittle).
-FIRSTPASS_DIRS = {"cbs_nl", "gus_dbw", "dbnomics"}
+FIRSTPASS_DIRS = {"cbs_nl", "gus_dbw", "dbnomics",
+                  # wid — 2026-07-29, REMOVE WHEN THE DERIVE FINISHES. A local
+                  # derive is streaming ~2.47M per-series CSVs into r2://series/wid
+                  # from the LOCAL parquet. If a CI run re-fetched and republished
+                  # wid.parquet underneath it, every CSV still to be written would be
+                  # derived from the superseded local copy — the fao_oa failure mode
+                  # exactly: files present, dates identical, values stale, and no
+                  # date-based check able to see it. Its 180-min fetch budget would
+                  # also eat most of the 240-min nightly window on its own.
+                  "wid"}
 
 
 def _protected(unit) -> bool:
+    """Protected in-flight backfill. Announced, never silent — see below."""
     if unit.source_id in FIRSTPASS_DIRS:
         return True
     for p in (unit.out_paths or []):
@@ -349,6 +359,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         run_budget_min = 240.0
     run_deadline = time.time() + run_budget_min * 60.0 if run_budget_min > 0 else None
     budget_skipped = []
+    protected_skipped = []
 
     for unit in units:
         if sources and unit.source_id not in sources:
@@ -361,7 +372,17 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             not_in_rollout.append(unit.source_id)
             continue
         if _protected(unit):
-            continue  # protected in-flight backfill (by source_id or output dir)
+            # ANNOUNCED, not silent. This was the only `continue` in this loop that
+            # printed nothing and recorded nothing, so a protected source produced no
+            # state and surfaced downstream as RED-UNRUN ("built but never ran") with
+            # nothing anywhere in the log to say why. Chasing exactly that on `wid`
+            # cost an hour of auditing leases, adapter checks and due-checks before
+            # the real cause turned up somewhere else entirely (R101). A deliberate
+            # skip that leaves no trace is indistinguishable from a bug.
+            protected_skipped.append(unit.source_id)
+            print(f"[orchestrator] PROTECTED {unit.key} — in-flight backfill, not "
+                  f"attempted this run (FIRSTPASS_DIRS)", flush=True)
+            continue
         # AFTER the filters, deliberately: checked first it would count units that were
         # never in scope — a two-source dispatch reported "100 source(s) NOT ATTEMPTED".
         # A skip count is only meaningful over units that would otherwise have RUN.
@@ -522,6 +543,15 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 mem = ""                                     # Windows: not available
             print(f"[orchestrator] <<< {unit.key} took "
                   f"{time.time() - t_unit:,.0f}s{mem}", flush=True)
+    if protected_skipped:
+        # Restated in the summary as well as inline, because the inline line scrolls
+        # past in a long run and the health gate WILL show these as RED-UNRUN. A
+        # reader looking at that red needs the reason in the same place they look for
+        # the run's outcome, not buried thousands of lines up.
+        print(f"[orchestrator] PROTECTED, not attempted this run: "
+              f"{', '.join(sorted(set(protected_skipped)))} — in-flight backfill "
+              f"(FIRSTPASS_DIRS). Expect RED-UNRUN/stale for these until it clears.",
+              flush=True)
     if budget_skipped:
         # LOUD, and never mistakable for a clean run: a capped run that reported only
         # its successes would read as "everything current" while sources silently
