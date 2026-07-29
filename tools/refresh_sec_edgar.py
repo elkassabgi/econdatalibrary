@@ -246,6 +246,55 @@ def update_catalog(spans, apply_d1):
     return n_local, n_d1
 
 
+def audit(client):
+    """Population audit, BOTH directions — the check that found what the run reports could not.
+
+    A refresh reports what IT did. It cannot report what is wrong with the source as a
+    whole, and the failure that matters here is invisible to any per-run counter: a
+    company whose data is on R2 with no catalog row is hosted, paid for and
+    undownloadable, and the run that created it printed nothing but success. Two such
+    companies (CIK0002084272, SMJF) accumulated exactly that way before an audit of the
+    population found them.
+
+    So: enumerate the served objects, enumerate the catalog, and diff BOTH ways.
+    `missing` (catalogued but no object) is the one people check; `orphaned` (object
+    with no catalog row) is the one that actually happened.
+    """
+    import sqlite3
+    db = os.path.join(ROOT, "data", "catalog.db")
+    if not os.path.exists(db):
+        print("no local catalog.db — audit needs it; skipping")
+        return 0
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    cat = {r[0].split(":", 1)[1] for r in con.execute(
+        "SELECT series_id FROM series WHERE source_id='sec_edgar'")}
+    served, tok = set(), None
+    while True:
+        kw = {"Bucket": BUCKET, "Prefix": "clean_grouped/sec_edgar/", "MaxKeys": 1000}
+        if tok:
+            kw["ContinuationToken"] = tok
+        r = client.list_objects_v2(**kw)
+        for o in r.get("Contents", []):
+            k = o["Key"]
+            if k.endswith(".parquet"):
+                served.add(k[len("clean_grouped/sec_edgar/"):-len(".parquet")])
+        if not r.get("IsTruncated"):
+            break
+        tok = r["NextContinuationToken"]
+    missing = sorted(cat - served)
+    orphan = sorted(served - cat)
+    print(f"AUDIT  catalog={len(cat):,}  stored={len(served):,}  "
+          f"catalogued-but-not-stored={len(missing):,}  "
+          f"STORED-BUT-NOT-CATALOGUED={len(orphan):,}")
+    for x in missing[:6]:
+        print(f"   missing object : sec_edgar:{x}")
+    for x in orphan[:6]:
+        print(f"   uncatalogued   : {x}   <-- hosted and undownloadable")
+    if orphan:
+        print("   repair with:  --ciks <their CIKs> --apply --force --d1")
+    return 1 if (missing or orphan) else 0
+
+
 def csv_bytes(metric, odate, vals):
     """The served shape: series_id,obs_date,value — series_id IS the XBRL metric."""
     buf = io.StringIO()
@@ -261,6 +310,9 @@ def main():
     ap.add_argument("--apply", action="store_true",
                     help="write parquet + CSV + upload to R2 (default is a dry run)")
     ap.add_argument("--limit", type=int, default=0, help="cap companies (testing only)")
+    ap.add_argument("--audit", action="store_true",
+                    help="diff the served objects against the catalog BOTH ways and "
+                         "exit; finds companies hosted with no catalog row")
     ap.add_argument("--ciks", default="",
                     help="refresh these CIKs explicitly (comma/space separated), "
                          "bypassing the daily-index window — for repairing companies "
@@ -274,6 +326,9 @@ def main():
     a = ap.parse_args()
 
     os.makedirs(GROUPED, exist_ok=True)
+    if a.audit:
+        from core import r2_util
+        return audit(r2_util.client())
     if a.ciks:
         # Targeted repair. The daily-index path answers "who filed recently"; it
         # cannot reach a company whose data fell behind for some OTHER reason. An
