@@ -3310,3 +3310,50 @@ NOTE: these terms are written for **data.adb.org** (the ADB Data Library); our `
 source records **kidb.adb.org** (Key Indicators Database) as its homepage. Same
 publisher, but confirm the KIDB downloads fall under the Data Library terms before
 hosting.
+
+---
+
+## Caveat resolutions for `ons_uk` and `adb` — 2026-07-29
+
+Both were recorded earlier today as CONFIRMED-with-caveat. Both caveats are now closed
+by reading the specific pages, before either source is hosted.
+
+### `ons_uk` — the OGL exemptions do NOT reach our data
+The terms say OGL covers "MOST content ... Some content is exempt from the OGL — check
+the list of exemptions", which left open whether our series were inside the carve-out.
+The exemptions section (https://www.ons.gov.uk/help/termsandconditions#copyright-exemptions):
+
+> Most content on this website is available under the Open Government Licence (OGL).
+> However, some photographs, illustrations and videos used on this website are subject
+> to third-party copyright license agreements. This includes material licensed from
+> Royalty free stock sites or other image libraries. These items are not covered by the
+> OGL and cannot be used without permission from the rights holder.
+
+The carve-out is **images and video**. We host statistical time series, which are
+squarely OGL. CLEARED — no series-level exclusion needed.
+
+### `adb` — KIDB has its OWN grant, and it is broader than the Data Library's
+Our data comes from `kidb.adb.org/api` (Key Indicators Database), not `data.adb.org`
+(ADB Data Library) whose CC BY 3.0 IGO terms were quoted earlier. KIDB publishes its
+own terms at https://kidb.adb.org/terms:
+
+> Unless otherwise indicated, all data and metadata provided in ADB's Key Indicators
+> Database System (KIDB) Online may be copied, downloaded, distributed, adapted,
+> duplicated, linked, displayed or included in other products for commercial and
+> noncommercial purposes at no cost.
+
+Attribution is required in a PRESCRIBED FORM, which we must carry verbatim:
+
+> Asian Development Bank: Key Indicators Database Online (https://kidb.adb.org).
+> Accessed on [insert date of access].
+
+Plus a pass-through requirement ("include the same acknowledgement requirement in any
+sub-licenses"), no endorsement claim, and no use of ADB's logo without written
+permission.
+
+CLEARED — redistributable_attribution, commercial permitted.
+**Carry forward:** KIDB warns that "sections of the KIDB may link to or contain content
+which may originate from third parties and use of this content may be subject to
+different copyright and terms of use" — the same third-party carve-out shape as the
+worldbank entry in this file. Not a bar to hosting, but if a specific KIDB indicator is
+ever identified as third-party sourced it must be excluded individually.
