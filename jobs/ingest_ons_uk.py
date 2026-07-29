@@ -14,7 +14,7 @@ Run: python jobs/ingest_ons_uk.py
      python jobs/ingest_ons_uk.py --only cpih01,lfst01
 """
 from __future__ import annotations
-import csv, datetime as dt, io, os, sys, time
+import csv, datetime as dt, io, os, re, sys, time
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
@@ -229,6 +229,97 @@ def parse_dataset_csv(dataset_id: str, content: bytes) -> tuple[list, list, list
         return all_keys, all_dates, all_vals
     except Exception as e:  # noqa: BLE001
         log(f"  {dataset_id}: parse error: {e}")
+        return [], [], []
+
+
+def parse_dataset_csv_v4(dataset_id: str, content: bytes) -> tuple[list, list, list]:
+    """Parse an ONS **V4** CSV into (series_keys, obs_dates, values) with a TIME-FREE key.
+
+    NOT WIRED IN. parse_dataset_csv above is still the live builder; this exists so the
+    re-key can be reviewed against measured output before any stored id changes.
+
+    WHY the live builder yields one series per row: it treats every column that is not the
+    time or value column as a dimension. In V4 that sweeps in (a) the observation-level
+    metadata columns and (b) the time CODE column, so a key reads
+    `CV=14.0:calendar-years=2018:...` — a quality statistic and the observation period baked
+    into the series identity. ashe-table-5 becomes 5,323,152 rows and 5,323,152 distinct
+    "series" of one point each.
+
+    THE GRAMMAR (read off live ONS data, not assumed):
+
+        v4_N , <N metadata cols> , <dim1_code, dim1_label> , <dim2_code, dim2_label> , ...
+
+    Column 0 is literally `v4_N`, where N is the COUNT of observation-metadata columns that
+    follow it (`Data Marking`, `CV`) — the header declares its own layout. Everything after
+    those is dimension pairs, code first then label. The time dimension is the pair whose
+    LABEL is `Time`; its CODE column varies (`calendar-years`, `yyyy-mm`, ...), which is
+    precisely why keying off the label is the robust move.
+
+    Verified on every V4 header reachable without tripping ONS's rate limiter: 20 of 20
+    conform (col0 matches `v4_N` case-insensitively — one dataset ships `V4_1`, so the match
+    must be case-insensitive; exactly one `Time` label; an even number of trailing columns
+    with `Time` in a label position). The store's 42 parquets are all this family. ONS's
+    Census-style tables (`TS…`, `ST…`) carry no time column at all, are a different product,
+    and are correctly absent from the store — the live parser drops them for want of a time
+    column rather than corrupting them.
+
+    Keys keep CODES and drop labels: a label is a display string ONS can re-word without the
+    series changing, so putting it in the identity invites silent re-keying later. Returns
+    empty lists when the grammar does not hold, so a surprise is visible rather than
+    silently producing a differently-shaped key.
+    """
+    try:
+        text = content.decode("utf-8-sig", errors="replace")
+        reader = csv.reader(io.StringIO(text))
+        try:
+            header = next(reader)
+        except StopIteration:
+            return [], [], []
+        if not header:
+            return [], [], []
+
+        m = re.match(r"^v4_(\d+)$", header[0].strip(), re.I)
+        if not m:
+            log(f"  {dataset_id}: not V4 (col0={header[0][:24]!r}) — skipped by v4 parser")
+            return [], [], []
+        n_meta = int(m.group(1))
+        dims = header[1 + n_meta:]
+        if len(dims) % 2:
+            log(f"  {dataset_id}: V4 dimensions not in code/label pairs ({len(dims)} cols)")
+            return [], [], []
+
+        pairs = [(dims[i], dims[i + 1]) for i in range(0, len(dims), 2)]
+        t_idx = [i for i, (_c, lab) in enumerate(pairs) if lab.strip().lower() == "time"]
+        if len(t_idx) != 1:
+            log(f"  {dataset_id}: expected exactly one 'Time' label, found {len(t_idx)}")
+            return [], [], []
+        t_i = t_idx[0]
+
+        base = 1 + n_meta                                  # first dimension column
+        time_col_i = base + 2 * t_i                        # the time CODE column
+        key_cols = [(dims[2 * i], base + 2 * i)
+                    for i in range(len(pairs)) if i != t_i]
+
+        keys, dates, vals = [], [], []
+        for row in reader:
+            if len(row) <= time_col_i:
+                continue
+            raw_v = row[0].strip()
+            if raw_v in ("", "nan", "*", "...", "z", "c", "n/a"):
+                continue
+            try:
+                v = float(raw_v.replace(",", ""))
+            except ValueError:
+                continue
+            d = parse_ons_period(row[time_col_i])
+            if d is None:
+                continue
+            keys.append(":".join(f"{n}={row[i]}" for n, i in key_cols if row[i]) or dataset_id)
+            dates.append(d)
+            vals.append(v)
+        return keys, dates, vals
+    except Exception as e:  # noqa: BLE001
+        log(f"  {dataset_id}: v4 parse error: {e}")
         return [], [], []
 
 
