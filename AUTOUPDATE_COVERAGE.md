@@ -288,3 +288,35 @@ right one, and both were "real" numbers.
 (c) leave `ksh` served-but-frozen, which is the status quo and the least honest of the three.
 Doing nothing is safe today only because `AQUEDUCT_LIVE_ONLY=1` never reaches a non-live
 source -- promoting it without fixing the import would crash the run.
+
+## `imf_fsi` (73,288 series, monthly, no fetcher) — the build path, scoped 2026-07-29
+
+The largest frozen source with NO fetcher at all. `implemented("imf_fsi")` returns False and
+there is no `fetchers/imf_fsi.py`; the module never existed, so nothing is broken — it was
+simply never built.
+
+WHY it was never built, and what changed: our stored ids are `FSI:A.5Y.FSANL_PT` — flow `FSI`.
+IMF no longer publishes a single `FSI` dataflow. On api.imf.org (agency IMF.STA) it is now
+**three data flows plus two metadata tables**:
+
+| flow | content |
+|---|---|
+| `FSIC` | Financial Soundness Indicators — Core and Additional Indicators |
+| `FSIBSIS` | FSI — Balance Sheet, Income Statement |
+| `FSICDM` | FSI — Concentration and Distribution Measures |
+| `FSI_METADATA_TABLE_2`, `FSI_COUNTRY_METADATA_TABLE_2` | metadata, not series |
+
+THE BUILD IS SMALL. The `imf_*_direct` family are 17-line wrappers — `FLOW`, `AGENCY`,
+`SOURCE`, and two functions delegating to `_imf_direct.py`. Three such modules (`imf_fsic_direct`,
+`imf_fsibsis_direct`, `imf_fsicdm_direct`) cover the family.
+
+TWO THINGS TO SETTLE FIRST, both real:
+1. **New sources, not a repair.** `_imf_direct.py` states these are NEW source ids rather than
+   replacements for the DBnomics-era ones (hence `imf_cofer` AND `imf_cofer_direct` both exist).
+   So this does NOT un-freeze the existing `imf_fsi`; it adds live siblings beside it, and the
+   73,288 old series stay frozen unless separately retired. That duplication is precedented here
+   but it is a product call, not a mechanical one.
+2. **Licence.** `imf-terms` covers 447,990 series across 38 sources and was re-checked on
+   2026-07-29 (COMPLIANT on all three non-flag obligations), so a new IMF source inherits a
+   settled position — but the new source rows still need the attribution string in IMF's form
+   ("Source: International Monetary Fund, <Database Name>") before serving.
