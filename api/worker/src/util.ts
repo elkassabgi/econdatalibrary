@@ -94,8 +94,10 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // checks pass on a truncated file.
   "cso",
   // insee_melodi — flow-grain per-dataflow publish, 139 flows / 36,436,053 rows
-  // (2026-07-29). Flow grain because Melodi gives no codelist (/codelist/all 404s; a flow's
-  // catalog entry only names a DSD), so per-series ids could only be titled with the key
+  // (2026-07-29). Flow grain because no codelist RETRIEVAL PATH was found — /codelist/all and
+  // /dsd/{id} both 404 and a flow's catalog entry only names a DSD. That is "not found", NOT
+  // "does not exist" (ledger R145); if a path turns up, per-series titles become possible.
+  // On what is known today, per-series ids could only be titled with the key
   // itself — 21.3M rows of opaque codes. The flow is the unit INSEE actually titles, and
   // 134/139 carry its own label. It also hosts the source WHOLE: 84 flows are single-period
   // censuses (DS_BPE*, DS_FLORES_*) that are honest cross-sectional micro-data, not the
@@ -107,15 +109,24 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // date AND `CV` (a coefficient of variation — a property of one measurement), so every
   // row was its own series: 25,408,157 rows, 25,408,157 keys, and a cursor dict that hit
   // 32.26 GB RSS on a 16 GB runner. Re-keyed to 3,897,884 real series with 0 (key,date)
-  // collisions. Dataset grain because ONS publishes no per-series title — 3.9M rows could
-  // only be titled with their own opaque key. All 42 carry ONS's own dataset title.
+  // collisions. Dataset grain is right, but the reason first written here — "ONS publishes no
+  // per-series title" — was WRONG (ledger R145). ONS publishes dimension `label` fields and a
+  // per-dimension `options` endpoint, and the label columns sat beside the code columns in the
+  // very CSVs re-keyed above. Dropping labels from the KEY is correct (ONS can re-word a display
+  // string, and baking it into an id invites silent re-keying); extending that to the TITLE was
+  // not. Codes belong in ids, labels in titles. All 42 datasets carry ONS's own dataset title;
+  // the per-series dimension labels remain unused pending that fix.
   // OGL v3.0; the "some content is exempt" carve-out resolves to photographs and video,
   // which cannot reach a statistical series.
   "ons_uk",
   // un_wpp — UN World Population Prospects 2024, 334,236 series (2026-07-29). Derive
   // verified both directions (catalog 334,236 == R2 334,236, MISSING 0, ORPHANED 0) and the
-  // download body confirmed. Titles are the native key, the honest broaden_catalog fallback:
-  // WPP publishes no per-series title and inventing one is the fabrication trap. Date ranges
+  // download body confirmed. Titles are CURRENTLY the native key — and the comment here used
+  // to justify that with "WPP publishes no per-series title", which is WRONG and is corrected
+  // rather than quietly deleted (ledger R145). The INDICATOR long name is genuinely absent from
+  // WPP's CSVs, but the COUNTRY name is present: ingest_un_wpp.py reads it at line 100 and
+  // discards it at line 128 because ISO3 is set. So readable titles ARE derivable from the
+  // publisher's own file and this source is under-titled pending that fix. Date ranges
   // ARE real (computed per series from the two published parquets, 334,236/334,236 dated).
   // CC BY 3.0 IGO — and note the licence nearly went the other way: un.org's site-wide notice
   // reads "All rights reserved", but the Population Division publishes its own CC BY 3.0 IGO
