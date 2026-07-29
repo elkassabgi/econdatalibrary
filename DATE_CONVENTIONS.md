@@ -1,5 +1,39 @@
 # Date conventions, measured
 
+> ## CORRECTION — 2026-07-29, after adversarial review
+>
+> **The headline ratio below is wrong. It is 70.5x, not 270x, and the per-convention
+> observation totals understate reality by 8-33x.** An independent recomputation over
+> every source found the cause, and it is the METHOD, not arithmetic:
+>
+> - The classifier assigns **one convention per SOURCE**, then whole sources are summed
+>   into that convention's bucket. `statcan` is **74.6% of this entire library** and
+>   **94.94% of its stamps are 12-31**, but it carries a single "daily/exact dates"
+>   label — so **53,969,462,901 period-END observations never entered the annual-END
+>   total at all**. A per-group label cannot be summed as though it described every
+>   member.
+> - Measured directly at observation level: period-END **68,904,800,937** (not
+>   8,036,676,385) and period-START **977,477,558** (not 29,812,857).
+> - The scan also silently dropped data. A bare `except: continue` swallowed **58 bls
+>   files** whose `obs_date` is stored as a STRING, so bls appears here as 57,359,640
+>   observations when it holds **328,077,765**. The claim below that this covers "the
+>   COMPLETE store... Not a sample" is therefore FALSE as published. The tool now names
+>   files it cannot read; this document was generated before that fix.
+> - Several per-source labels are simply wrong: `un_wpp` is annual mid-year (every
+>   observation on 07-01) but labelled quarterly-START; `bis` is quarterly, not monthly;
+>   `ilostat` is annual-dominant; `abs` is annual-END; `fred`, `cbs_nl` and `eurostat`
+>   are not "daily" in any meaningful sense.
+>
+> **The DIRECTION of the finding survives** — period-END genuinely dominates by
+> observation count, and standardising on END is still the cheaper target. Every
+> absolute number below should be treated as unreliable until the classifier is rebuilt
+> at FILE grain rather than source grain.
+>
+> No re-stamp has been applied. `tools/restamp_period_end.py` now refuses any source
+> whose actual stamps are not calendar period-starts, which is what stopped `un_wpp`
+> (27,756,617 rows) and `stats_nz` from being converted.
+
+
 Every source here writes an ISO date in one `obs_date` column, so this is
 NOT a formatting difference. What differs is **which day inside the period**
 carries the observation: an annual 2024 point can be stamped `2024-01-01`
