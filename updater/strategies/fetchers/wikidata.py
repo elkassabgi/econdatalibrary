@@ -33,7 +33,8 @@ import requests
 
 from ... import config, blob, merge
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+                      save_rotation)
 
 # Wall-clock cap for one wikidata run. WDQS paging is unbounded from our side — each
 # cube walks a DISTINCT entity set page by page, so a slow or throttled WDQS turns
@@ -147,7 +148,14 @@ def update(unit, since) -> Result:
     run_day = None  # set to the manifest-style UTC day once we have a healthy pull
 
     dl = Deadline(minutes=BUDGET_MIN)
-    for name, basename, count_attr, page_fn_attr, shape_fn_attr in CUBES:
+    # ROTATE (2026-07-30, R190). CUBES is a module-level literal, so a budget over a fixed
+    # order always starts at "companies"; if the first cubes exhaust the 25 minutes the
+    # last one is never pulled and the log's "retries next tick" is false — it retries the
+    # same two cubes forever. With only three cubes that is a third of the source silently
+    # frozen. Resume after whichever cube we reached last.
+    cubes = rotate_after(list(CUBES), load_rotation(out_dir), key=lambda c: c[0])
+    last_started = None
+    for name, basename, count_attr, page_fn_attr, shape_fn_attr in cubes:
         path = os.path.join(out_dir, basename)
         before = blob.row_count(path)
 
@@ -157,10 +165,12 @@ def update(unit, since) -> Result:
             # so the run reports `partial` and retries — never `ok`, which would claim
             # a completeness this run did not achieve.
             print(f"[wikidata] budget {BUDGET_MIN} min spent — {name} not pulled this "
-                  f"run (keeping {before:,} existing rows); retries next tick", flush=True)
+                  f"run (keeping {before:,} existing rows); the next run RESUMES AFTER "
+                  f"{last_started} so it is reached", flush=True)
             tally.transient_unit(name)
             total_rows += before
             continue
+        last_started = name
 
         # Cheap published total for this cube (also the per-cube transient/empty signal).
         try:
@@ -209,6 +219,11 @@ def update(unit, since) -> Result:
         import time
         run_day = time.strftime("%Y-%m-%d", time.gmtime())
         cursors[name] = run_day
+
+    # Saved even after a COMPLETE pass: the bookmark is then the last cube in order and
+    # the next run wraps to the first, through the same code path.
+    if last_started:
+        save_rotation(out_dir, last_started)
 
     return finalize(tally, total_rows, run_day, source=SOURCE,
                     series_cursors=cursors or None)
