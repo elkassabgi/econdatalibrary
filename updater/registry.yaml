@@ -5095,12 +5095,18 @@ sources:
     - 'single zstd parquet data/clean_full/yale_epi/yale_epi.parquet (small, ~thousands of obs: 180 countries x ~40 indicators
       x 1 year), schema (series_key ''EPI:{var}:{iso3}'', obs_date date32 year-end, value float64).'
 - source_id: zillow
+  live: true
   scripts:
   - jobs/ingest_zillow.py
   strategy: bulk_snapshot_if_changed
-  strategy_reason: Each of ~206 Zillow cubes is a whole-history wide CSV with NO per-period date param; gate per CSV on an
-    HTTP conditional GET / Last-Modified and rebuild only changed cubes (must also fix the stale-raw-cache bug that defeats
-    freshness).
+  strategy_reason: Each of ~208 Zillow cubes is a whole-history wide CSV with NO per-period date param; gate per CSV on its
+    HTTP validator and rebuild only changed cubes. The stale-raw-cache bug this entry warned about is handled - the fetcher
+    passes cache_raw=False, because fetch_csv_text returns the cached raw copy when one exists and would otherwise re-parse
+    the same bytes forever while reporting success.
+  upstream_verified: 2026-07-30 - 208 CSVs discovered LIVE from the research page (not the cached list); validators measured
+    STABLE (two HEADs 25s apart returned identical ETag/Last-Modified/Content-Length on three files, e.g. Metro_zhvi ETag
+    "fcde3e8e9a6fca03f6f3d30a53c663e5"), unlike fed_board and bis where they are not; two-run test published 15,990 rows then
+    reported unchanged/no_change.
   cadence: monthly
   refresh_cost: large
   out_dir: zillow
