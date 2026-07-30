@@ -40,6 +40,27 @@ from core import r2_util  # noqa: E402
 HEADER = ["series_id", "obs_date", "value"]
 
 
+def _retry(fn, what, tries=8):
+    """Call fn() with patient backoff. R2 answers ServiceUnavailable / SlowDown under load —
+    'Reduce your concurrent request rate for the same object' killed a run in the
+    skip-existing LISTING, which had no retry at all while the PUT path did. A resume step
+    that dies on a throttle is worse than no resume: it forces a re-run that throttles harder.
+    """
+    import time as _t
+    last = None
+    for attempt in range(tries):
+        try:
+            return fn()
+        except Exception as e:                               # noqa: BLE001
+            last = e
+            if attempt == tries - 1:
+                break
+            wait = min(60, 2 ** attempt)
+            print(f"  {what} retry {attempt+1}/{tries} in {wait}s ({str(e)[:70]})", flush=True)
+            _t.sleep(wait)
+    raise last
+
+
 def _csv_bytes(short_id: str, rows) -> bytes:
     """CSV for one series. Mirrors core.derive_csv._series_csv_bytes: same header, the SOURCE
     PREFIX STRIPPED from the id column, and lineterminator='\\n' so bytes match the Worker."""
@@ -147,7 +168,7 @@ def main() -> int:
                 kw = {"Bucket": a.bucket, "Prefix": lp, "MaxKeys": 1000}
                 if tok:
                     kw["ContinuationToken"] = tok
-                r = s3.list_objects_v2(**kw)
+                r = _retry(lambda: s3.list_objects_v2(**kw), "LIST")
                 for o in r.get("Contents", []):
                     existing.add(o["Key"])
                 if not r.get("IsTruncated"):
@@ -169,16 +190,8 @@ def main() -> int:
                 return
             key, body = item
             try:
-                for attempt in range(7):
-                    try:
-                        s3.put_object(Bucket=a.bucket, Key=key, Body=body,
-                                      ContentType="text/csv")
-                        break
-                    except Exception:                        # noqa: BLE001
-                        if attempt == 6:
-                            raise
-                        import time as _t
-                        _t.sleep(2 ** attempt)
+                _retry(lambda: s3.put_object(Bucket=a.bucket, Key=key, Body=body,
+                                             ContentType="text/csv"), "PUT")
                 with lock:
                     counts["put"] += 1
                     if counts["put"] % 25_000 == 0:
