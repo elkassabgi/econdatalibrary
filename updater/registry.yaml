@@ -2856,7 +2856,15 @@ sources:
     - single parquet data/clean_full/kof_globalization/kof_globalization.parquet (~1.4MB; schema series_key:string KOF:{index}:{ISO},
       obs_date:date32 (Dec-31), value:float64, zstd). Skip-if-exists guard at lines 152-154; one full XLSX download then one
       write (lines 165-170).
+# ksh — RETIRED 2026-07-29. Consolidated into ksh_stadat: 394 of its 415 tables were
+# already there (with MORE series each), and its 21 unique tables — 903 series — were
+# migrated and verified serving BEFORE removal. Its resolver entry, catalog rows, D1 rows
+# and 25,057 R2 CSVs are gone; the parquets under clean_full/ksh/ are kept, so it is
+# reversible. DO NOT set live: true — fetchers/ksh.py cannot even import (it loads
+# jobs/ingest_ksh_hungary.py, which does not exist), and the source now has no catalog or
+# CSVs behind it. Entry retained rather than deleted so this history is not lost.
 - source_id: ksh
+  live: false
   scripts:
   - jobs/ingest_ksh_hungary.py
   strategy: overwrite_if_changed
@@ -5252,6 +5260,66 @@ sources:
       (agency IMF.STA); re-pull only when it moves. Agency ids are NOT uniform
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Currency Composition of Official Foreign Exchange Reserves (COFER)
+- source_id: imf_fsic_direct
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_fsic_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow FSIC
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      FSIC -> FSIC:13.0.1.
+    name: Financial Soundness Indicators — Core and Additional Indicators
+- source_id: imf_fsibsis_direct
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_fsibsis_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow FSIBSIS
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      FSIBSIS -> FSIBSIS:18.0.0.
+    name: Financial Soundness Indicators — Balance Sheet, Income Statement
+- source_id: imf_fsicdm_direct
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_fsicdm_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow FSICDM
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      FSICDM -> FSICDM:7.0.0.
+    name: Financial Soundness Indicators — Concentration and Distribution Measures
 - source_id: imf_whdreo_direct
   live: false
   scripts:
