@@ -40,7 +40,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Deadline, Tally, cursors_from_parquet, finalize
+from ._common import CURSOR_CAP, Deadline, Tally, finalize, merge_cursors
 from ._vintage import http_vintage
 from jobs import ingest_bis_cbs_lbs as ig      # BULK urls + the EXTRACTED pure parser
 
@@ -215,12 +215,16 @@ def update(unit, since) -> Result:
             continue
 
         published += n_rows
-        cursors.update(cursors_from_parquet(path))
+        merge_cursors(cursors, path)
         tally.added_unit(max(0, n_rows - before), name)
         if cur_v:
             sidecar[name] = cur_v                            # advance ONLY after a clean publish
             sidecar[f"{name}__pulled"] = dt.date.today().isoformat()
 
+    if len(cursors) >= CURSOR_CAP:
+        print(f"[bis] cursor set hit the {CURSOR_CAP:,} cap — further changed series are not "
+              f"individually reported; the orchestrator's derive-all path covers small "
+              f"catalogs", flush=True)
     _save(out_dir, sidecar)
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))

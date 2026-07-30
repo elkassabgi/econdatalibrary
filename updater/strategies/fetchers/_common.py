@@ -279,6 +279,28 @@ def cursors_from_parquet(path, key_col="series_key", date_col="obs_date",
         return {}
 
 
+def merge_cursors(dst: dict, path, **kw) -> dict:
+    """Accumulate one file's cursors into `dst`, respecting CURSOR_CAP ACROSS FILES.
+
+    cursors_from_parquet caps a SINGLE file. That is not enough for a multi-file source: zillow
+    republishes up to 206 cubes (~543,000 series in union), bis 375 files (LBS alone has 608,570),
+    fhfa 9 cubes (~89,700), fed_board 18 releases. Capping each file and then unioning them
+    reaches the same unbounded total the cap exists to prevent — the per-file bound is necessary
+    and not sufficient.
+
+    Stops adding once dst reaches the cap and returns dst unchanged thereafter. The CALLER logs
+    the fact; see the CURSOR_CAP docstring for why silence would be the real bug.
+    """
+    if len(dst) >= CURSOR_CAP:
+        return dst
+    got = cursors_from_parquet(path, **kw)
+    for k, v in got.items():
+        if len(dst) >= CURSOR_CAP:
+            break
+        dst[k] = v
+    return dst
+
+
 def structural_on_zero_rows(stored_max, resp) -> bool:
     """Uniform PxWeb-family rule for a 200 body that parsed to 0 observations: is it a
     STRUCTURAL break (True) or a benign empty/quiet (False)?  Shared by the PxWeb S3

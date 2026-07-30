@@ -59,7 +59,7 @@ import tempfile
 from ... import config, blob
 from ...errors import TransientError
 from ..base import Result
-from ._common import Deadline, Tally, cursors_from_parquet, finalize
+from ._common import CURSOR_CAP, Deadline, Tally, finalize, merge_cursors
 from jobs import ingest_fed_board as ig     # reuse discovery + downloader + production parser
 
 SOURCE = "fed_board"
@@ -223,10 +223,14 @@ def update(unit, since) -> Result:
             continue
 
         published += _publish(out_dir, rel)
-        cursors.update(cursors_from_parquet(os.path.join(out_dir, f"{rel}.parquet")))
+        merge_cursors(cursors, os.path.join(out_dir, f"{rel}.parquet"))
         tally.added_unit(n_obs, rel)
         sidecar[rel] = digest                                # record ONLY after publishing
 
+    if len(cursors) >= CURSOR_CAP:
+        print(f"[fed_board] cursor set hit the {CURSOR_CAP:,} cap — further changed series are not "
+              f"individually reported; the orchestrator's derive-all path covers small "
+              f"catalogs", flush=True)
     if unchanged:
         print(f"[fed_board] {unchanged}/{len(rels)} release(s) byte-identical — skipped",
               flush=True)

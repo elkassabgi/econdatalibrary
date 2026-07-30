@@ -57,6 +57,41 @@ def log(m):
         print(f"[{time.strftime('%H:%M:%S')}] {str(m).encode('ascii', 'replace').decode()}", flush=True)
 
 
+# Bilateral phase scope. LIFTED out of main() 2026-07-30 so the updater can reuse the
+# exact same reporter/partner sets — a second copy in the fetcher would drift the
+# moment either side was edited (the duplication invariant, R33).
+MAJOR = [
+    # G20 + EU major economies
+    124,  # Canada
+    156,  # China
+    276,  # Germany
+    356,  # India
+    392,  # Japan
+    410,  # South Korea
+    484,  # Mexico
+    643,  # Russia
+    682,  # Saudi Arabia
+    710,  # South Africa
+    792,  # Turkey
+    826,  # UK
+    840,  # USA
+    76,   # Brazil
+    36,   # Australia
+    250,  # France
+    380,  # Italy
+    528,  # Netherlands
+    724,  # Spain
+    756,  # Switzerland
+    804,  # Ukraine
+    702,  # Singapore
+    344,  # Hong Kong
+    764,  # Thailand
+    458,  # Malaysia
+]
+# Major trading partners (world = 0, plus key partners)
+MAJOR_PARTNERS = [0, 124, 156, 276, 356, 392, 410, 484, 643, 826, 840, 76, 250, 380, 528]
+
+
 def fetch_totals(reporters: list[int], flow: str, retries: int = 4) -> list[dict]:
     """Fetch total merchandise trade for a batch of reporters and one flow."""
     codes = ",".join(str(r) for r in reporters)
@@ -160,36 +195,7 @@ def main():
 
     # ── Phase 2: Bilateral trade (major reporters × major partners) ─────────
     log("Phase 2: Bilateral total trade for major economies...")
-    MAJOR = [
-        # G20 + EU major economies
-        124,  # Canada
-        156,  # China
-        276,  # Germany
-        356,  # India
-        392,  # Japan
-        410,  # South Korea
-        484,  # Mexico
-        643,  # Russia
-        682,  # Saudi Arabia
-        710,  # South Africa
-        792,  # Turkey
-        826,  # UK
-        840,  # USA
-        76,   # Brazil
-        36,   # Australia
-        250,  # France
-        380,  # Italy
-        528,  # Netherlands
-        724,  # Spain
-        756,  # Switzerland
-        804,  # Ukraine
-        702,  # Singapore
-        344,  # Hong Kong
-        764,  # Thailand
-        458,  # Malaysia
-    ]
-    # Major trading partners (world = 0, plus key partners)
-    MAJOR_PARTNERS = [0, 124, 156, 276, 356, 392, 410, 484, 643, 826, 840, 76, 250, 380, 528]
+    # MAJOR / MAJOR_PARTNERS are module-level constants (see top of file).
 
     for flow, flow_label in {"M": "import_bilateral", "X": "export_bilateral"}.items():
         for reporter in MAJOR:
