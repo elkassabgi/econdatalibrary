@@ -31,6 +31,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
 
 from core import r2_util  # noqa: E402
+from tools.derive_csv_bulk import csv_key_prefix  # noqa: E402  THE writer's own layout
 
 
 def catalog_ids(db: str, source: str) -> set:
@@ -49,7 +50,7 @@ def catalog_ids(db: str, source: str) -> set:
 def r2_keys(bucket: str, source: str, prefix: str) -> set:
     """Every derived CSV id under this source's prefix — the FULL listing, paginated."""
     cl = r2_util.client()
-    lp = f"{prefix}/{urllib.parse.quote(source + ':', safe='')}"
+    lp = csv_key_prefix(prefix, source)
     out = set()
     token = None
     pages = 0

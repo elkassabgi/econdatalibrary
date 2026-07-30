@@ -40,6 +40,22 @@ from core import r2_util  # noqa: E402
 HEADER = ["series_id", "obs_date", "value"]
 
 
+def csv_key(prefix: str, source: str, series_key: str) -> str:
+    """The R2 key for one series' derived CSV. THE single definition of this layout.
+
+    tools/verify_derive_parity.py imports it rather than re-deriving it: if the writer and
+    the checker each spelled the encoding out, a drift in one could still show clean parity
+    by being wrong the same way in both, which is precisely the failure a parity check is
+    supposed to catch.
+    """
+    return f"{prefix}/{urllib.parse.quote(f'{source}:{series_key}', safe='')}.csv"
+
+
+def csv_key_prefix(prefix: str, source: str) -> str:
+    """The listing prefix covering every series of one source."""
+    return f"{prefix}/{urllib.parse.quote(source + ':', safe='')}"
+
+
 def _retry(fn, what, tries=8):
     """Call fn() with patient backoff. R2 answers ServiceUnavailable / SlowDown under load —
     'Reduce your concurrent request rate for the same object' killed a run in the
@@ -162,7 +178,7 @@ def main() -> int:
             ap.error("--bucket is required unless --dry-run")
         s3 = r2_util.client(write=True)
         if a.skip_existing:
-            lp = f"{a.prefix}/{urllib.parse.quote(a.source + ':', safe='')}"
+            lp = csv_key_prefix(a.prefix, a.source)
             tok = None
             while True:
                 kw = {"Bucket": a.bucket, "Prefix": lp, "MaxKeys": 1000}
@@ -214,7 +230,7 @@ def main() -> int:
     seen = 0
     for k, rows in _stream(con, path):
         seen += 1
-        key = f"{a.prefix}/{urllib.parse.quote(f'{a.source}:{k}', safe='')}.csv"
+        key = csv_key(a.prefix, a.source, k)
         if key in existing:
             counts["skip"] += 1
             continue
