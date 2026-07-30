@@ -69,30 +69,49 @@ def published_ids(source_id):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--source", required=True)
-    ap.add_argument("--code", required=True, help="FAOSTAT DatasetCode, e.g. QCL")
+    ap.add_argument("--code", help="FAOSTAT DatasetCode, e.g. QCL")
+    ap.add_argument("--codes", help="COMMA-SEPARATED codes to score as a UNION, e.g. "
+                    "GT,GCE,GLE,GN,GF,GI,GV,GPP. FAOSTAT split several old domains across "
+                    "many datasets (our fao_gt ids reproduce only 27.2%% from GT alone), so a "
+                    "single-dataset score can under-read a source that IS repairable — just "
+                    "not from one file. Rows from every code are pooled and scored together.")
     ap.add_argument("--emit", help="write the winning template as JSON")
     a = ap.parse_args()
 
     ours = published_ids(a.source)
     print(f"{a.source}: {len(ours):,} published ids")
-    e = entry(a.code)
-    if not e:
-        print(f"FAOSTAT has no dataset {a.code}")
+    codes = [c.strip().upper() for c in (a.codes or a.code or "").split(",") if c.strip()]
+    if not codes:
+        print("give --code or --codes")
+        return 2
+
+    rows, cols = [], []
+    for code in codes:
+        e = entry(code)
+        if not e:
+            print(f"FAOSTAT has no dataset {code}")
+            continue
+        raw = _get(e["FileLocation"])
+        z = zipfile.ZipFile(io.BytesIO(raw))
+        member = next((n for n in z.namelist()
+                       if n.lower().endswith("(normalized).csv")), None)
+        if member is None:
+            print(f"  {code}: no normalized CSV in the zip")
+            continue
+        text = z.read(member).decode("utf-8-sig", errors="replace")
+        rd = csv.DictReader(io.StringIO(text))
+        got = list(rd)
+        for c in (rd.fieldnames or []):
+            if c.endswith("Code") and c not in SKIP_CODE_COLS and c not in cols:
+                cols.append(c)
+        rows.extend(got)
+        print(f"  {code}: {len(raw):,} B, {len(got):,} rows — {e.get('DatasetName','')[:52]}",
+              flush=True)
+    if not rows:
+        print("no rows from any dataset")
         return 1
-    print(f"FAOSTAT {a.code} — {e.get('DatasetName')}  updated {str(e.get('DateUpdate'))[:10]}")
-
-    raw = _get(e["FileLocation"])
-    print(f"downloaded {len(raw):,} bytes", flush=True)
-    z = zipfile.ZipFile(io.BytesIO(raw))
-    member = next(n for n in z.namelist() if n.lower().endswith("(normalized).csv"))
-    text = z.read(member).decode("utf-8-sig", errors="replace")
-
-    rd = csv.DictReader(io.StringIO(text))
-    cols = [c for c in (rd.fieldnames or [])
-            if c.endswith("Code") and c not in SKIP_CODE_COLS]
-    print(f"candidate code columns: {cols}")
-    rows = list(rd)
-    print(f"rows: {len(rows):,}")
+    print(f"candidate code columns (union): {cols}")
+    print(f"rows (union of {len(codes)} dataset(s)): {len(rows):,}")
 
     # Score every ordering by exact reproduction of PUBLISHED ids. Nothing else is
     # evidence: a template can look plausible and still address a different series.
@@ -143,7 +162,7 @@ def main():
                   f"prefixes {sorted(mids)[:4]} — cannot pick one safely.")
             return 1
         prefix = mids.pop()
-        cfg = {"source_id": a.source, "code": a.code.upper(), "key_prefix": prefix,
+        cfg = {"source_id": a.source, "code": codes[0], "codes": codes, "key_prefix": prefix,
                "key_columns": list(perm), "date_convention": "start",
                "derived_from": {"id_reproduction_pct": round(hit * 100, 2),
                                 "published_ids": len(ours),
