@@ -25,6 +25,7 @@ import io
 import os
 
 import pyarrow as pa
+import hashlib
 import requests
 
 from ... import config, blob, merge
@@ -58,7 +59,23 @@ URLS = [
 def current_vintage(unit):
     # ETag/Last-Modified on the one live WHR table — changes iff the panel is
     # re-published. None if undeterminable (strategy then fetches anyway; safe).
-    return http_vintage(VINTAGE_URL)
+    # NOT http_vintage — MEASURED 2026-07-30, and it cannot work on this url.
+    # ourworldindata.org serves the grapher CSV from a CDN with NO ETag and NO Content-Length,
+    # and its Last-Modified is the CACHE-FILL time, not the content date: probed at 03:26 it
+    # returned "Thu, 30 Jul 2026 03:26:17 GMT" and at 07:33 "Thu, 30 Jul 2026 07:33:58 GMT",
+    # each within seconds of the request, with Age: 59 / Age: 79 confirming a fresh cache fill.
+    # Stable inside one TTL window, different on every daily run — so the gate could never
+    # match and this source re-downloaded and re-merged forever while looking cached. That is
+    # the fed_board defect (R164); it hid from the stability sweep because the mover's period
+    # is the CDN TTL, not seconds.
+    # The BODY is the honest signal: this CSV is small, so hash it.
+    try:
+        r = requests.get(VINTAGE_URL, headers=UA, timeout=120, allow_redirects=True)
+        if r.status_code != 200 or not r.content:
+            return None
+    except (requests.Timeout, requests.ConnectionError):
+        return None                                          # unknown -> cadence decides
+    return "whr:" + hashlib.sha256(r.content).hexdigest()[:16]
 
 
 def _parse_whr_csv(data: bytes):
