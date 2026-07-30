@@ -5325,6 +5325,126 @@ sources:
       (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
       FSICDM -> FSICDM:7.0.0.
     name: Financial Soundness Indicators — Concentration and Distribution Measures
+- source_id: imf_gfssoo_direct
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: large
+  out_dir: imf_gfssoo_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow GFS_SOO
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      GFS_SOO -> GFS_SOO:12.0.0. LARGEST of the family: 475,049 series over 220 indicators; a serieskeysonly listing alone is ~57 MB. Covers BOTH legacy imf_gfse (its G26* codes) and imf_gfsmab (its G11*/G12* codes).
+    name: Government Finance Statistics — Statement of Operations
+- source_id: imf_gfscofog_direct
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_gfscofog_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow GFS_COFOG
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      GFS_COFOG -> GFS_COFOG:11.0.0. Corresponds to legacy imf_gfscofog.
+    name: Government Finance Statistics — Expenditures by Function (COFOG)
+- source_id: imf_gfsssuc_direct
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_gfsssuc_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow GFS_SSUC
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      GFS_SSUC -> GFS_SSUC:10.0.0. Corresponds to legacy imf_gfsssuc.
+    name: Government Finance Statistics — Statement of Sources and Uses of Cash
+- source_id: imf_gfsbs_direct
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_gfsbs_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow GFS_BS
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      GFS_BS -> GFS_BS:12.0.0. Corresponds to legacy imf_gfsibs.
+    name: Government Finance Statistics — Balance Sheet
+- source_id: imf_gfssfcp_direct
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_gfssfcp_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow GFS_SFCP
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      GFS_SFCP -> GFS_SFCP:10.0.0. Corresponds to legacy imf_gfsfalcs.
+    name: Government Finance Statistics — Stocks and Flows by Counterparty
+- source_id: imf_gfssoef_direct
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_gfssoef_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow GFS_SOEF
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      GFS_SOEF -> GFS_SOEF:11.0.0. NEW COVERAGE: no legacy source corresponds to this flow (12,720 series).
+    name: Government Finance Statistics — Statement of Other Economic Flows
 - source_id: imf_whdreo_direct
   live: true
   scripts:
