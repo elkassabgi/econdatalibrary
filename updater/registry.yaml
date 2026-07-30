@@ -343,7 +343,15 @@ sources:
     - 'single parquet: data/clean_full/bfs/bfs.parquet (zstd, ~14MB), columns (series_key=''BFS:{dbid}:{dim}={code}:...'',
       obs_date, value). Written incrementally to the SAME path as a checkpoint every 50 tables and once at the end.'
 - source_id: bis
-  live: true
+  # MOVED TO THE HEAVY MATRIX 2026-07-30 (was live: true). bis peaked at 15,806 MB
+  # of a 16 GB runner and destroyed the shared daily run at the 4th source, so
+  # abs/adb/bcrp completed and the other ~100 sources never ran. Same class as the
+  # four already there (un_wpp OOM at 14.93 GB, bundesbank 6.28 GB, eia, cepii_gravity)
+  # and the same remedy that file states: its own runner, its own full memory --
+  # "isolation is the fix, not a bigger cap". It still refreshes, just not sharing a
+  # process. Revert to live: true only once merge_and_write stops materialising a
+  # 36.4M-row file in Arrow (LBS.parquet) -- see MISTAKES R195.
+  live: false
   scripts:
   - jobs/ingest_bis_cbs_lbs.py
   - jobs/ingest_bis_full.py
