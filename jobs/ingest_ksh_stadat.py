@@ -379,6 +379,25 @@ def parse_table(tid: str, txt: str) -> tuple[list[tuple[str, dt.date, float]], s
     if col0_time and col0_time[0] <= 10:
         return emit_time_in_rows(tid, rows, col0_time[0], W), None
 
+    # ---- orientation 2b: a SINGLE time-bearing header column ----
+    # Orientation 2 requires n_t >= 2 and skips any header row with fewer than two
+    # non-empty cells, so a one-column snapshot table is rejected before it is even
+    # tested. That is not an edge case: mez0121 ("Number of rabies vaccinated dogs")
+    # has the header `Denomination;2024` — one data column headed by a bare year, an
+    # unambiguous time dimension. Five tables reached us ONLY through the retired `ksh`
+    # source for this reason (fol0003, gsz0087, mez0121, mez0122, sza0071 — 184 series),
+    # and nothing reported them: they were counted as skips, not failures.
+    #
+    # Kept deliberately strict so it cannot widen orientation 2's judgement: fire only
+    # when the header row has EXACTLY ONE non-empty cell and that cell is time-like.
+    # With no sibling columns there is nothing to be ambiguous against.
+    for i in range(min(8, len(rows))):
+        cells = [c for c in rows[i][1:] if c]
+        if len(cells) == 1 and looks_timelike(cells[0]):
+            res = emit_time_in_cols(tid, rows, i, W)
+            if res:
+                return res, None
+
     # ---- orientation 3: year only in the table title, months/quarters as
     # divider rows (KSH 'current year' snapshot tables) ----
     yrs = re.findall(r"\b((?:18|19|20)\d{2})\b", title)
