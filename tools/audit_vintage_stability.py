@@ -36,6 +36,7 @@ import importlib
 import os
 import pkgutil
 import sys
+import re
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -45,6 +46,8 @@ os.environ.setdefault("AQUEDUCT_BACKEND", "local")
 
 # Sources whose token legitimately moves because the DATA legitimately moves. Each needs a
 # recorded body-hash comparison, not an assumption.
+HTTP_DATE_RE = "[A-Z][a-z][a-z], [0-9][0-9] (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9][0-9][0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] GMT"
+
 EXPECTED_MOVERS = {
     "defillama": (
         "api.llama.fi/protocols is live DeFi TVL — the body genuinely changes every few "
@@ -53,6 +56,38 @@ EXPECTED_MOVERS = {
         "were byte-identical with an identical ETag. The gate is working, not flapping."
     ),
 }
+
+
+def _fetch_time_token(tok):
+    """Minutes-old timestamp embedded in a vintage token, or None.
+
+    THE CHECK THE TIME-GAP COMPARISON CANNOT DO. A CDN that reports its cache-FILL time as
+    Last-Modified is perfectly stable inside one TTL window and different on every daily run,
+    so a two-probe comparison seconds apart calls it STABLE while the gate never matches in
+    production. whr did exactly that: "Thu, 30 Jul 2026 03:26:17 GMT" at 03:26 and
+    "Thu, 30 Jul 2026 07:33:58 GMT" at 07:33, each within seconds of the request, Age: 59
+    confirming a fresh fill. It passed this audit twice while re-downloading forever (R184).
+
+    A content date is essentially never within an hour of now. So one probe is enough: if the
+    token carries a near-now timestamp, it is fetch time, not content time.
+    """
+    import datetime as _dt
+    import email.utils as _eu
+    if not tok:
+        return None
+    now = _dt.datetime.now(_dt.timezone.utc)
+    text = str(tok)
+    for pat in re.findall(HTTP_DATE_RE, text):
+        try:
+            when = _eu.parsedate_to_datetime(pat)
+        except (TypeError, ValueError):
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=_dt.timezone.utc)
+        age_min = (now - when).total_seconds() / 60.0
+        if -5.0 <= age_min <= 60.0:
+            return age_min
+    return None
 
 
 def discover() -> list:
@@ -102,8 +137,17 @@ def main() -> int:
     for n in mods:
         k2, v2, el2 = probe(n)
         k1, v1, el1 = r1[n]
+        stamp = _fetch_time_token(v2 if k2 == "OK" else v1)
         if k1 == "ERR" or k2 == "ERR":
             verdict, detail = "ERROR", str(v1 if k1 == "ERR" else v2)
+        elif stamp is not None and n not in EXPECTED_MOVERS:
+            # Caught on ONE probe, because the gap cannot catch this: a CDN whose
+            # Last-Modified is the cache-FILL time is stable inside its TTL window and
+            # different on every daily run. whr passed a 200s comparison twice and was
+            # re-downloading forever (R184).
+            verdict = "FETCH-TIME"
+            detail = (f"token embeds a timestamp {stamp:.1f} min old — that is fetch/"
+                      f"cache-fill time, not a content date; gate on a content hash")
         elif v1 is None and v2 is None:
             verdict, detail = "NONE", "no cheap vintage; cadence-gated"
         elif v1 == v2:
@@ -116,10 +160,12 @@ def main() -> int:
         print(f"  {verdict:8s} {n:22s} {detail}", flush=True)
 
     print("\n===== SUMMARY =====")
-    for v in ("MOVING", "ERROR", "MOVES-OK", "NONE", "STABLE"):
+    for v in ("MOVING", "FETCH-TIME", "ERROR", "MOVES-OK", "NONE", "STABLE"):
         hit = [r for r in rows if r[0] == v]
-        print(f"{v:8s} {len(hit):3d}   {' '.join(r[1] for r in hit)}")
-    bad = [r for r in rows if r[0] in ("MOVING", "ERROR")]
+        print(f"{v:10s} {len(hit):3d}   {' '.join(r[1] for r in hit)}")
+    # FETCH-TIME must FAIL, not merely print. A verdict that never affects the exit code is a
+    # gate that does not gate (R142) — and this is the one class the time-gap cannot catch.
+    bad = [r for r in rows if r[0] in ("MOVING", "FETCH-TIME", "ERROR")]
     print(f"\nDEFECTS (must be 0): {len(bad)}")
     for _, n, d in bad:
         print(f"    {n}: {d}")
