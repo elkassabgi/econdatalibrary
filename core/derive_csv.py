@@ -142,9 +142,16 @@ def main() -> None:
 
     existing: set = set()
     if a.skip_existing:
+        # Scope the listing to the source when exactly one is named. The unscoped
+        # `series/` prefix spans every source (millions of objects), so a resume of one
+        # source would spend its first many minutes paging through other sources' keys.
+        listing_prefix = f"{a.prefix}/"
+        if a.source and len(a.source) == 1:
+            listing_prefix = f"{a.prefix}/{urllib.parse.quote(a.source[0] + ':', safe='')}"
+            print(f"skip-existing scoped to {listing_prefix}", flush=True)
         tok = None
         while True:
-            kw = {"Bucket": a.bucket, "Prefix": f"{a.prefix}/", "MaxKeys": 1000}
+            kw = {"Bucket": a.bucket, "Prefix": listing_prefix, "MaxKeys": 1000}
             if tok:
                 kw["ContinuationToken"] = tok
             resp = s3.list_objects_v2(**kw)
