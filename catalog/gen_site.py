@@ -506,6 +506,36 @@ def load_wiring():
 
 WIRING = load_wiring()
 
+def load_resolvable():
+    """Source ids the WORKER can actually serve — SUPPORTED_SOURCES in api/worker/src/util.ts.
+
+    A page is a promise. cepii_gravity had a full dataset page with a "Download" call to action
+    while `/v1/series/cepii_gravity:...csv` returned **404**, because the source is catalogued
+    locally but absent from the worker's resolver — the same shape as the IEP sources, which
+    went live searchable with zero objects behind them and a Download button that failed on
+    every click. Verified 2026-07-30 against the live API with a real key: boc 200, cepii_gravity
+    404.
+
+    Comments are stripped before scanning, or prose words get harvested as ids (the R137 shape).
+    Empty set => unknown, and callers must then NOT downgrade anything: silence beats a wrong
+    "unavailable" badge on a database that works.
+    """
+    path = os.path.join(os.path.dirname(HERE), "api", "worker", "src", "util.ts")
+    if not os.path.exists(path):
+        return set()
+    src = open(path, encoding="utf-8").read()
+    m = re.search(r"SUPPORTED_SOURCES\s*:\s*readonly\s+string\[\]\s*=\s*\[(.*?)\]\s*;",
+                  src, re.S)
+    if not m:
+        return set()
+    body = re.sub(r"//.*", "", m.group(1))              # line comments (no DOTALL -> per line)
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)   # then block comments
+    return set(re.findall(r'"([^"]+)"', body))
+
+
+RESOLVABLE = load_resolvable()
+
+
 # ---------------------------------------------------------------------------- #
 #  Build the per-dataset metadata model (the registry-grounded record)
 # ---------------------------------------------------------------------------- #
@@ -1185,7 +1215,13 @@ def render_dataset_page(rec):
     # (the API 451s it anyway; the page must say the same thing).
     if rec["reservable"]:
         acc_rows = [
-            ("Download", f'<a href="download.html?source={esc(rec["id"])}">Select &amp; download {esc(rec["id"])} series as CSV &rarr;</a>'),
+            ("Download",
+             (f'<a href="download.html?source={esc(rec["id"])}">Select &amp; download '
+              f'{esc(rec["id"])} series as CSV &rarr;</a>')
+             if (not RESOLVABLE or rec["id"] in RESOLVABLE) else
+             ('<em>not downloadable yet</em> &mdash; this database is catalogued and its '
+              'per-series files are still being published. The API returns 404 for it until '
+              'that completes, so we are not offering a button that would fail.')),
             ("API", f'<a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span>'),
             ("Canonical landing", f'<a href="{esc(rec["page_url"])}">{esc(rec["page_url"])}</a>'),
         ]
