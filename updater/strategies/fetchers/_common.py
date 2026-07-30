@@ -15,6 +15,7 @@ only publishes good data), so this is about correct STATUS, never data loss.
 """
 from __future__ import annotations
 import datetime as _dt
+import json
 import os
 import time
 
@@ -85,8 +86,18 @@ class Deadline:
 
     This does NOT interrupt an in-flight request — you cannot portably do that mid-call.
     It lets a fetcher stop starting NEW work once the budget is spent and report `partial`,
-    exactly like ons_uk's MAX_PER_RUN cap: the remainder drains on the next tick and the
-    unit vintage is not advanced, so nothing is silently skipped.
+    exactly like ons_uk's MAX_PER_RUN cap: the unit vintage is not advanced, so nothing is
+    silently skipped.
+
+    THE REMAINDER DOES NOT DRAIN BY ITSELF — this docstring used to claim it did, and that
+    sentence propagated the bug into abs (R190). Sub-unit lists here are overwhelmingly
+    STABLE in order, so a budget over a fixed order re-walks the same PREFIX every run and
+    the tail is never fetched at all: a silent outage wearing a reassuring `partial`. A
+    budgeted fetcher MUST also either
+      (a) skip already-fresh sub-units cheaply via a per-sub-unit sidecar (eia, zillow,
+          bis, fed_board — their vintage gate makes every run start somewhere new), or
+      (b) rotate its starting point with load_rotation / save_rotation / rotate_after.
+    A bound without one of those is a truncation, not a budget.
 
         dl = Deadline(minutes=20)
         for ind in indicators:
@@ -326,6 +337,65 @@ def merge_cursor_map(dst: dict, src, cap: int = CURSOR_CAP) -> bool:
         elif v > prev:
             dst[k] = v
     return capped
+
+
+ROTATION_FILE = "_rotation.json"
+
+
+def load_rotation(out_dir, fname: str = ROTATION_FILE) -> str:
+    """The sub-unit key the LAST run stopped after, or ''.
+
+    WHY EVERY BUDGETED FETCHER NEEDS THIS (R190). A Deadline or MAX_PER_RUN stops work
+    partway; the log then says the remainder "drains next tick". That is only true if the
+    next run starts somewhere NEW. Sub-unit lists here are overwhelmingly stable in order —
+    blob.list_parquets sorts, module-level CUBES tuples are literals, catalog pulls come
+    back in the publisher's order — so a bound over a fixed order re-walks the same PREFIX
+    forever and the tail is never fetched at all. That is a silent, self-certifying outage:
+    the source reports `partial` with a reassuring reason, indefinitely.
+
+    A per-sub-unit freshness sidecar (eia, zillow, bis, fed_board) solves it a different
+    way — done units are skipped cheaply, so every run makes progress. Fetchers WITHOUT
+    such a sidecar need this bookmark instead.
+    """
+    from ... import blob as _blob                             # local: avoid a cycle at import
+    raw = _blob.read_bytes(os.path.join(out_dir, fname))
+    if not raw:
+        return ""
+    try:
+        return str((json.loads(raw.decode("utf-8")) or {}).get("after") or "")
+    except (ValueError, UnicodeDecodeError, AttributeError):
+        return ""
+
+
+def save_rotation(out_dir, key: str, fname: str = ROTATION_FILE) -> None:
+    """Record where to resume. Callers save even after a COMPLETE pass, so the bookmark is
+    then the last sub-unit in order and the next run wraps to the top through the same code
+    path — no branch that could silently stop rotating.
+
+    Swallows failures: a bookmark is an optimisation, and losing it costs one run of
+    re-walking a prefix, never data. It must never sink a good publish.
+    """
+    from ... import blob as _blob
+    try:
+        _blob.write_bytes_atomic(os.path.join(out_dir, fname),
+                                 json.dumps({"after": key}, indent=1).encode("utf-8"))
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
+def rotate_after(items: list, bookmark: str, key=None) -> list:
+    """`items` re-ordered to start just after `bookmark`, wrapping around.
+
+    Unknown or empty bookmark -> unchanged, so a first run, a renamed sub-unit or a
+    corrupt bookmark all degrade to "start at the top" rather than skipping anything.
+    """
+    if not bookmark or not items:
+        return items
+    kf = key or (lambda x: x)
+    for i, it in enumerate(items):
+        if kf(it) == bookmark:
+            return items[i + 1:] + items[:i + 1]
+    return items
 
 
 def structural_on_zero_rows(stored_max, resp) -> bool:

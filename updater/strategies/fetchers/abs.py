@@ -46,7 +46,6 @@ existing data is always preserved by merge (never shrinks).
 """
 from __future__ import annotations
 import datetime as dt
-import json
 import os
 
 import pyarrow as pa
@@ -55,7 +54,8 @@ import pyarrow.compute as pc
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import CURSOR_CAP, Deadline, Tally, finalize
+from ._common import (CURSOR_CAP, Deadline, Tally, finalize, load_rotation,
+                      rotate_after, save_rotation)
 
 # Reuse the ingester verbatim: enumeration, streaming+retry, parse helpers.
 import jobs.ingest_abs_full as ing
@@ -125,30 +125,6 @@ def _build_table(keys, dates, vals):
     })
 
 
-ROTATION = "_rotation.json"
-
-
-def _load_rotation(out_dir) -> str:
-    """Flow filename the LAST run stopped after, or '' — see the rotation note in update()."""
-    raw = blob.read_bytes(os.path.join(out_dir, ROTATION))
-    if not raw:
-        return ""
-    try:
-        return str((json.loads(raw.decode("utf-8")) or {}).get("after") or "")
-    except (ValueError, UnicodeDecodeError, AttributeError):
-        return ""
-
-
-def _save_rotation(out_dir, fn: str) -> None:
-    try:
-        blob.write_bytes_atomic(os.path.join(out_dir, ROTATION),
-                                json.dumps({"after": fn}, indent=1).encode("utf-8"))
-    except Exception:                                        # noqa: BLE001
-        # A rotation bookmark is an optimisation, never a reason to fail a good publish.
-        # Losing it costs one run of re-walking the same prefix, not data.
-        pass
-
-
 # _series_maxes() was REMOVED here on 2026-07-30. It built a per-flow
 # {series_key: max obs_date} dict in full before returning it, which on this source means
 # millions of entries for a single census cross-tab — allocated before any cap could
@@ -183,10 +159,9 @@ def update(unit, since) -> Result:
     # the same prefix every run and flows past the cut-off are never reached — a quieter
     # outage than the OOM, and one that would sit behind a log line claiming they "drain
     # next tick". Resume after the last flow attempted, wrapping around.
-    resume = _load_rotation(out_dir)
-    if resume and resume in pfiles:
-        i = pfiles.index(resume) + 1
-        pfiles = pfiles[i:] + pfiles[:i]
+    resume = load_rotation(out_dir)
+    if resume:
+        pfiles = rotate_after(pfiles, resume)
         print(f"[abs] resuming after {resume} ({len(pfiles)} flows, rotated)", flush=True)
     last_attempted = None
 
@@ -302,7 +277,7 @@ def update(unit, since) -> Result:
     # the end of the sorted order, so the next run wraps to the top — the same code path
     # either way, and no branch that could silently stop rotating.
     if last_attempted:
-        _save_rotation(out_dir, last_attempted)
+        save_rotation(out_dir, last_attempted)
 
     if deferred:
         where = (f"the next run RESUMES AFTER {last_attempted} so they actually drain"

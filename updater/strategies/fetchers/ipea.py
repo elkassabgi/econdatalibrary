@@ -58,7 +58,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+                      save_rotation)
 from jobs import ingest_ipea as ig          # reuse BASE + the production date parser
 
 SOURCE = "ipea"
@@ -130,12 +131,23 @@ def update(unit, since) -> Result:
     unchanged = 0
     dl = Deadline(minutes=BUDGET_MIN)
 
+    # ROTATE (2026-07-30, R190). IPEA ignores $filter (see the module docstring), so every
+    # run re-fetches every series in full: 1,241 of them at RATE=0.15s is ~3.1 min of pure
+    # rate-limit against a 15-min budget, i.e. only a few-fold margin before the budget
+    # binds. /Metadados returns a stable order, so once it DOES bind the tail would never be
+    # fetched again while the log claimed it retries next tick. Resume after the last one.
+    active = rotate_after(list(active), load_rotation(out_dir),
+                          key=lambda m: m.get("SERCODIGO"))
+    last_started = None
+
     for meta in active:
         code = meta["SERCODIGO"]
         if dl.spent():
-            # Deferral, not a verdict: untouched, retried next tick.
+            # Deferral, not a verdict: untouched, and the NEXT run starts after
+            # last_started so this one is actually reached.
             tally.transient_unit(code)
             continue
+        last_started = code
 
         url = f"{ig.BASE}/ValoresSerie(SERCODIGO='{code}')"
         # NO $filter: IPEA ignores it (see module docstring). maxes is still read and kept
@@ -201,6 +213,11 @@ def update(unit, since) -> Result:
             raise
         print(f"[ipea] merged {total - before:,} new row(s) across "
               f"{len(set(keys)):,} series", flush=True)
+
+    # Saved even after a COMPLETE pass: the bookmark is then the last series in order and
+    # the next run wraps to the first, through the same code path.
+    if last_started:
+        save_rotation(out_dir, last_started)
 
     return finalize(tally, total, maxd or (since or None), source=SOURCE,
                     series_cursors=cursors)
