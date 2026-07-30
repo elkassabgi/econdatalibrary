@@ -135,7 +135,13 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   for those a DBnomics-backed fetcher would run nightly, succeed, and transfer nothing.
 #   Id reproduction was checked as a FULL set comparison on WHO/HWF: 4,421 upstream codes vs
 #   4,421 published ids, 4,421 exact, 0 missing either direction.
-EXPECTED_SOURCE_COUNT = 137
+# 2026-07-30: 137 -> 138. boc (Bank of Canada Valet, 12,862 series / 2.73M obs). It had no
+#   ingest script AND no registry entry, so it had never had an updater path at all. Registered
+#   against Valet directly, not DBnomics: Valet's own series names ARE our series_keys, verified
+#   as a full set comparison (12,862 of 12,862 exact, 0 missing upstream). DBnomics' BOC provider
+#   was last indexed 2025-02-15 and, more to the point, a matching provider NAME is not
+#   provenance (see the bea trap in tools/audit_upstream_liveness.py).
+EXPECTED_SOURCE_COUNT = 138
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
