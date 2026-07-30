@@ -102,6 +102,15 @@ if (-not $SkipCiCheck) {
 
 $env:AQUEDUCT_BACKEND = 'r2'
 
+# This machine is not a 16 GB shared runner. Every per-source BUDGET_MIN in the fetcher
+# package was sized so one source could not eat the 240-minute CI job; here we are processing
+# ONLY the routed sources on 382 GB, so those caps just defer work - abs deferred 805 of its
+# 1,222 flows in CI purely because of its 35-minute budget. Raise both, loudly.
+if (-not $env:AQUEDUCT_BUDGET_MIN_OVERRIDE) { $env:AQUEDUCT_BUDGET_MIN_OVERRIDE = '360' }
+if (-not $env:AQUEDUCT_RUN_BUDGET_MIN)      { $env:AQUEDUCT_RUN_BUDGET_MIN      = '2880' }
+Say ("per-source budget override: " + $env:AQUEDUCT_BUDGET_MIN_OVERRIDE +
+     " min; whole-run budget: " + $env:AQUEDUCT_RUN_BUDGET_MIN + " min")
+
 Say "pull-state ..."
 & python -m updater.run --pull-state
 if ($LASTEXITCODE -ne 0) {
