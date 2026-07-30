@@ -51,7 +51,21 @@ BUDGET_MIN = 25
 # Backstop for the size-only gate: re-pull a zip whose Content-Length has not moved in this
 # many days, so a same-byte-count revision cannot hide forever.
 MAX_AGE_DAYS = 30
-BATCH = 500_000
+# RAISED from 500,000 on 2026-07-30, after bis aborted the whole daily run.
+#
+# Every merge_and_write re-reads and rewrites the ENTIRE existing parquet, so this constant
+# sets how many times that happens. LBS.parquet holds 36,379,671 rows, so 500,000 meant 73
+# merge cycles over a table growing toward 36M — the quadratic shape the ledger calls R169,
+# and the exact trap cepii_gravity's docstring already spells out (it uses 20M for this
+# reason; bis never got the same treatment). Memory went 1,516MB -> 15,700MB in under seven
+# minutes and Arrow aborted the process: std::length_error: vector::_M_default_append,
+# exit 134 (SIGABRT), taking the run down after only 3 sources had completed.
+#
+# 4M keeps the Python row buffer near 1 GB (these are 4-tuples, not cepii's 3-tuples) while
+# cutting LBS from 73 merges to 10. Note this buys TOTAL WORK and pool churn, not a lower
+# ceiling: the per-merge peak is set by the size of the existing file, not by the batch.
+# The ceiling is what merge_and_write's new pool release addresses.
+BATCH = 4_000_000
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 
 

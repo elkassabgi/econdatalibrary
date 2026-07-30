@@ -172,4 +172,26 @@ def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
         fsblob.write_table_atomic(out_path, final)
     else:
         blob.put_atomic(out_path, _table_to_bytes(final))
-    return n, _max_obs_date(final)
+    last = _max_obs_date(final)
+
+    # RETURN THE WORKING SET TO THE OS BEFORE THE NEXT CALL (2026-07-30).
+    # This function is the hot loop of every batched fetcher: read the whole existing
+    # parquet, concat, dedup (which allocates an index column, a group-by hash table and
+    # an is_in value set), sort, serialise. Dropping the references is not enough — Arrow
+    # keeps freed blocks in its pool, so across many calls RSS only climbs.
+    #
+    # THIS KILLED A RUN. bis streams LBS.parquet (36,379,671 rows) in BATCH=500,000
+    # chunks, i.e. 73 merges over a growing table, and memory went 1,516MB -> 15,700MB in
+    # under seven minutes (~2,100 MB/min, seven times abs's rate) before Arrow aborted the
+    # process: `std::length_error: vector::_M_default_append`, exit 134 (SIGABRT). That is
+    # a THIRD way this class evades the workflow's rc=137/143 OOM branch, after a destroyed
+    # runner reporting "cancelled" and a plain unbounded fold.
+    #
+    # Placed here rather than in bis so all ~26 bulk_snapshot_if_changed sources and every
+    # other batched merger get the bound, instead of one fetcher at a time.
+    del final, existing, new_table
+    try:
+        pa.default_memory_pool().release_unused()
+    except Exception:                                        # noqa: BLE001
+        pass                                                 # never fail a good publish
+    return n, last
