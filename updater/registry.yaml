@@ -5797,3 +5797,46 @@ sources:
       2026-07-27; non-commercial, attribution required, share-alike propagates.
     key_env: none
     confidence: high
+- source_id: who_hwf
+  live: true
+  scripts:
+  - jobs/_dbnomics_pull.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Ids ARE DBnomics series codes (series_key WHO_HWF:<code>), so no crosswalk is needed and the dataset can
+    simply be re-pulled whole when DBnomics re-indexes it. Gating is on the dataset's own indexed_at rather than any HTTP
+    validator.
+  cadence: monthly
+  refresh_cost: fast
+  out_dir: who_hwf
+  review: true
+  upstream_verified: 2026-07-30 - DBnomics WHO/HWF indexed_at 2026-07-24 (six days old, so this mirror is genuinely live,
+    unlike UNCTAD 2023-06-30 / FAO 2024-05-09 / UNESCO 2022-04-04). FULL id comparison, not a sample - 4,421 upstream codes
+    vs 4,421 published ids, 4,421 reproduced exactly, 0 missing either way. A pull reproduced the store exactly (54,320 rows,
+    4,421 series); 25,315 upstream slots are the literal string NA and are dropped deliberately.
+- source_id: who_rs
+  live: true
+  scripts:
+  - jobs/_dbnomics_pull.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Ids ARE DBnomics series codes (series_key WHO_RS:<code>); re-pull the whole dataset when DBnomics
+    re-indexes it, gating on the dataset's indexed_at.
+  cadence: monthly
+  refresh_cost: fast
+  out_dir: who_rs
+  review: true
+  upstream_verified: 2026-07-30 - DBnomics WHO/RS indexed_at 2026-07-24. A pull returned 7,388 series and reproduced our
+    store exactly (2,211 rows / 2,207 series). The 5,181 upstream series we do NOT hold are genuinely EMPTY - every one of
+    their 5,198 observation slots is the literal string NA - so they are not data we are missing.
+- source_id: who_sdg
+  live: true
+  scripts:
+  - jobs/_dbnomics_pull.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Ids ARE DBnomics series codes (series_key WHO_SDG:<code>); re-pull the whole dataset when DBnomics
+    re-indexes it, gating on the dataset's indexed_at.
+  cadence: monthly
+  refresh_cost: medium
+  out_dir: who_sdg
+  review: true
+  upstream_verified: 2026-07-30 - DBnomics WHO/SDG indexed_at 2026-07-24; 29,245 series upstream against 28,160 published,
+    so this one should GAIN coverage on its first run. Vintage token proven stable across two calls.

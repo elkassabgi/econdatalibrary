@@ -126,7 +126,16 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   with the 06:00 cron still pending, so no scheduled run actually hit it.
 #   The tripwire is worth keeping — it is what stops sources being added silently — but it has
 #   to fail at PUSH time rather than at 06:00 UTC. tests/test_registry_count.py now does that.
-EXPECTED_SOURCE_COUNT = 134
+# 2026-07-30: 134 -> 137. who_hwf + who_rs + who_sdg (34,788 series). These were SERVED and
+#   downloadable with no registry entry, so they had never once been attempted. They are
+#   registered against DBnomics rather than WHO's own API for a specific, measured reason: our
+#   ids ARE DBnomics series codes (WHO_HWF:HWF_0001.AFG.A), and DBnomics' WHO index was re-run
+#   2026-07-24 — six days before this entry. That is the exception, not the rule: the same
+#   audit found UNCTAD frozen at 2023-06-30, FAO at 2024-05-09 and UNESCO at 2022-04-04, and
+#   for those a DBnomics-backed fetcher would run nightly, succeed, and transfer nothing.
+#   Id reproduction was checked as a FULL set comparison on WHO/HWF: 4,421 upstream codes vs
+#   4,421 published ids, 4,421 exact, 0 missing either direction.
+EXPECTED_SOURCE_COUNT = 137
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
