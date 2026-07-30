@@ -2714,9 +2714,15 @@ sources:
   scripts:
   - jobs/ingest_ipea.py
   strategy: extend_by_date
-  strategy_reason: IPEA OData4 ValoresSerie accepts a server-side date filter ($filter=VALDATA gt {date}); fetch only obs
-    newer than per-series max(obs_date) and append, instead of the current skip-if-series-key-present rule that never extends
-    existing series.
+  strategy_reason: >-
+    CORRECTED 2026-07-29: IPEA OData4 does NOT honour a server-side date filter. Probed with
+    raw $filter, URL-encoded %24filter, and cutoffs 2020-01-01 and 2026-01-01 — every variant
+    returns HTTP 200 and the FULL series (68/68 obs on ABATE_ABPEAV). The API accepts the query
+    string and ignores it: a silent no-op. The fetcher therefore pulls each due series whole and
+    relies on merge dedup on (series_key, obs_date). The defect it fixes is real and unchanged —
+    the ingest SKIPS any series already on disk, so existing series never extend and only
+    brand-new codes are ever picked up.
+  live: true
   cadence: monthly
   refresh_cost: medium
   out_dir: ipea
