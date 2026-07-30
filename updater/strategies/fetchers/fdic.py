@@ -32,7 +32,7 @@ import pyarrow.compute as pc
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, sane_since
+from ._common import CURSOR_CAP, Tally, finalize, merge_cursor_map, sane_since
 from jobs import ingest_fdic as ig
 
 SOURCE = "fdic"
@@ -112,9 +112,11 @@ def update(unit, since) -> Result:
                         source=SOURCE)
 
     tally.added_unit(max(0, n - before))
+    # BOUNDED (2026-07-30) — found by tools/audit_cursor_blowup.py. 20,541,159 store
+    # rows folded one cursor per series with no cap.
     cursors = {}
-    for k, d in zip(keys, dates):
-        iso = d.isoformat()
-        if k not in cursors or iso > cursors[k]:
-            cursors[k] = iso
+    if merge_cursor_map(cursors, ((k, d.isoformat()) for k, d in zip(keys, dates)
+                                  if d is not None)):
+        print(f"[fdic] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
+              f"not individually reported", flush=True)
     return finalize(tally, n, md, source=SOURCE, series_cursors=cursors)

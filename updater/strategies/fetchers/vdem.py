@@ -23,7 +23,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import CURSOR_CAP, Tally, finalize, merge_cursor_map
 from ._vintage import github_sha, UA
 
 SOURCE = "vdem"
@@ -181,6 +181,7 @@ def update(unit, since):
     total_rows = 0
     last_obs = None
     cursors: dict = {}
+    cursors_capped = False
 
     for remote_name, label, (country_col, year_col), party_col in DATASETS:
         path = os.path.join(out_dir, f"{label}.parquet")
@@ -249,7 +250,16 @@ def update(unit, since):
         total_rows += n
         if md is not None and (last_obs is None or md > last_obs):
             last_obs = md
-        cursors.update(_series_maxes(tbl))
+        # BOUNDED (2026-07-30). This store holds 1,465,759 distinct series against a
+        # 50,000 cap, and `cursors.update(...)` took every one: each cursor is a state.db
+        # row and a _catalog_ids_for query, both linear in the count. Not the runner-killer
+        # abs was (376M series / ~94 GB), but the same unbounded shape.
+        if merge_cursor_map(cursors, _series_maxes(tbl)):
+            cursors_capped = True
+
+    if cursors_capped:
+        print(f"[vdem] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
+              f"not individually reported", flush=True)
 
     # finalize() raises DefinitiveError on ANY structural sub-unit. When at least one file
     # merged cleanly (vdem core) but another is structurally incompatible (vparty's series_key

@@ -301,6 +301,33 @@ def merge_cursors(dst: dict, path, **kw) -> dict:
     return dst
 
 
+def merge_cursor_map(dst: dict, src, cap: int = CURSOR_CAP) -> bool:
+    """Fold an IN-MEMORY {series_key: iso_date} map into `dst`, respecting the cap.
+
+    merge_cursors bounds a set read back from a PARQUET. Fetchers that already hold the
+    keys in memory — because they parsed the rows this run — had no bounded path, so each
+    grew its own unbounded dict: vdem 1,465,759 series and owid 1,048,968 (measured
+    2026-07-30), against a 50,000 cap. Neither is an OOM on its own, but every cursor
+    becomes a state.db row and a _catalog_ids_for query, both linear in the count.
+
+    Returns True if the cap was reached so the caller can DISCLOSE it — a silent bound is
+    the defect the CURSOR_CAP docstring warns about. Keys already present keep advancing
+    after the cap is hit, so the reported set stays coherent instead of freezing mid-file.
+    """
+    capped = False
+    items = src.items() if isinstance(src, dict) else src
+    for k, v in items:
+        prev = dst.get(k)
+        if prev is None:
+            if len(dst) >= cap:
+                capped = True
+                continue
+            dst[k] = v
+        elif v > prev:
+            dst[k] = v
+    return capped
+
+
 def structural_on_zero_rows(stored_max, resp) -> bool:
     """Uniform PxWeb-family rule for a 200 body that parsed to 0 observations: is it a
     STRUCTURAL break (True) or a benign empty/quiet (False)?  Shared by the PxWeb S3
