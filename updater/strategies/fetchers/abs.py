@@ -46,6 +46,7 @@ existing data is always preserved by merge (never shrinks).
 """
 from __future__ import annotations
 import datetime as dt
+import json
 import os
 
 import pyarrow as pa
@@ -124,6 +125,30 @@ def _build_table(keys, dates, vals):
     })
 
 
+ROTATION = "_rotation.json"
+
+
+def _load_rotation(out_dir) -> str:
+    """Flow filename the LAST run stopped after, or '' — see the rotation note in update()."""
+    raw = blob.read_bytes(os.path.join(out_dir, ROTATION))
+    if not raw:
+        return ""
+    try:
+        return str((json.loads(raw.decode("utf-8")) or {}).get("after") or "")
+    except (ValueError, UnicodeDecodeError, AttributeError):
+        return ""
+
+
+def _save_rotation(out_dir, fn: str) -> None:
+    try:
+        blob.write_bytes_atomic(os.path.join(out_dir, ROTATION),
+                                json.dumps({"after": fn}, indent=1).encode("utf-8"))
+    except Exception:                                        # noqa: BLE001
+        # A rotation bookmark is an optimisation, never a reason to fail a good publish.
+        # Losing it costs one run of re-walking the same prefix, not data.
+        pass
+
+
 # _series_maxes() was REMOVED here on 2026-07-30. It built a per-flow
 # {series_key: max obs_date} dict in full before returning it, which on this source means
 # millions of entries for a single census cross-tab — allocated before any cap could
@@ -153,6 +178,18 @@ def update(unit, since) -> Result:
     dl = Deadline(minutes=BUDGET_MIN)
     deferred = 0
 
+    # ROTATE THE STARTING POINT, OR THE BUDGET STARVES THE TAIL FOREVER.
+    # blob.list_parquets returns SORTED names, so a fixed budget over a fixed order works
+    # the same prefix every run and flows past the cut-off are never reached — a quieter
+    # outage than the OOM, and one that would sit behind a log line claiming they "drain
+    # next tick". Resume after the last flow attempted, wrapping around.
+    resume = _load_rotation(out_dir)
+    if resume and resume in pfiles:
+        i = pfiles.index(resume) + 1
+        pfiles = pfiles[i:] + pfiles[:i]
+        print(f"[abs] resuming after {resume} ({len(pfiles)} flows, rotated)", flush=True)
+    last_attempted = None
+
     for fn in pfiles:
         path = os.path.join(out_dir, fn)
         flow = fn[:-len(".parquet")]
@@ -167,6 +204,7 @@ def update(unit, since) -> Result:
             tally.transient_unit(f"{flow} deferred (budget {BUDGET_MIN:.0f} min)")
             total += before
             continue
+        last_attempted = fn
 
         max_obs = _flow_max_obs(path)
         start = _flow_start_param(max_obs)
@@ -260,10 +298,20 @@ def update(unit, since) -> Result:
     # Both bounds are DISCLOSED. A cap that trims the reported changed-set, or a budget
     # that leaves flows unattempted, must say so in the log — otherwise the next reader
     # sees a clean run and assumes full coverage.
+    # Record where to resume. Saved even on a COMPLETE pass: the last flow then sits at
+    # the end of the sorted order, so the next run wraps to the top — the same code path
+    # either way, and no branch that could silently stop rotating.
+    if last_attempted:
+        _save_rotation(out_dir, last_attempted)
+
     if deferred:
+        where = (f"the next run RESUMES AFTER {last_attempted} so they actually drain"
+                 if last_attempted else
+                 "NO flow was attempted at all — the bookmark is unchanged, so the next "
+                 "run retries this same point (check the budget, not the rotation)")
         print(f"[abs] BUDGET {BUDGET_MIN:.0f} min spent after {dl.elapsed_min():.1f} min — "
-              f"{deferred}/{len(pfiles)} flow(s) NOT attempted this run; they drain next "
-              f"tick (run reports partial, vintage not advanced)", flush=True)
+              f"{deferred}/{len(pfiles)} flow(s) NOT attempted this run; {where} "
+              f"(run reports partial, vintage not advanced)", flush=True)
     if cursors_capped:
         print(f"[abs] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
               f"not individually reported", flush=True)
