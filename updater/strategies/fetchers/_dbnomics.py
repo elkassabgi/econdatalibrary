@@ -92,11 +92,16 @@ def vintage(provider: str, dataset: str):
     return f"dbnomics:{provider}/{dataset}:{stamp}"
 
 
-def _iter_series(provider: str, dataset: str, dl: Deadline):
-    """Yield (series_code, [(iso_date, value), ...]) for every series in the dataset."""
+def _iter_series(provider: str, dataset: str, dl: Deadline, truncated: list):
+    """Yield (series_code, [(iso_date, value), ...]) for every series in the dataset.
+
+    `truncated` is an out-param the caller inspects: when the deadline stops us mid-dataset the
+    pull is INCOMPLETE, and the caller must not let the run report success — see run().
+    """
     off = 0
     while True:
         if dl.spent():
+            truncated.append(off)
             return
         d = _get(f"{API}/series/{provider}/{dataset}"
                  f"?limit={PAGE}&offset={off}&observations=1")
@@ -150,8 +155,9 @@ def run(source: str, provider: str, dataset: str, budget_min: int = 25) -> Resul
     keys, dates, vals = [], [], []
     n_series = 0
     n_na = 0
+    truncated: list = []
 
-    for code, obs in _iter_series(provider, dataset, dl):
+    for code, obs in _iter_series(provider, dataset, dl, truncated):
         if not code:
             continue
         n_series += 1
@@ -178,6 +184,14 @@ def run(source: str, provider: str, dataset: str, budget_min: int = 25) -> Resul
         if got:
             tally.added_unit(got, code)
 
+    if truncated and not keys:
+        # The budget stopped us before any data arrived. Same safe outcome as below (partial,
+        # existing data kept, vintage not advanced) but it must not SAY the dataset came back
+        # empty — that sends the next reader hunting an upstream break that did not happen.
+        raise TransientError(
+            f"{source}: budget of {budget_min} min elapsed before any data was pulled from "
+            f"{provider}/{dataset} — deferred to the next run, nothing changed")
+
     if not keys:
         # Distinguish "everything upstream is NA" from "we parsed nothing": both give zero
         # rows, but only the second is our bug.
@@ -194,6 +208,17 @@ def run(source: str, provider: str, dataset: str, budget_min: int = 25) -> Resul
     })
     before = blob.row_count(path) if blob.exists(path) else 0
     total, maxd = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+
+    if truncated:
+        # A budget-truncated pull is a PARTIAL snapshot. Merging it is fine (never-shrink means
+        # nothing is lost), but reporting success is not: the strategy would record the new
+        # vintage and, because DBnomics' indexed_at has not moved, never fetch the remainder.
+        # An incomplete dataset would sit frozen behind a green run. Flagging a transient unit
+        # makes finalize return "partial", which leaves the vintage un-advanced.
+        tally.transient_unit(f"{dataset}: budget stopped the pull after {truncated[0]:,} "
+                             f"series — remainder deferred")
+        print(f"[{source}] TRUNCATED at {truncated[0]:,} series — reporting partial so the "
+              f"vintage is not advanced", flush=True)
     print(f"[{source}] {n_series:,} series, {len(keys):,} obs pulled "
           f"({n_na:,} upstream slots were NA/missing); store {before:,} -> {total:,} "
           f"(indexed_at {stamp})", flush=True)
