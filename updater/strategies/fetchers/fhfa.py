@@ -39,7 +39,7 @@ import requests
 from ... import blob, config
 from ...errors import TransientError
 from ..base import Result
-from ._common import Tally, cursors_from_parquet, finalize
+from ._common import CURSOR_CAP, Tally, finalize, merge_cursors
 from ._vintage import http_vintage
 from jobs import ingest_fhfa as ig     # RAW_FILES + the production downloader and builder
 
@@ -136,7 +136,11 @@ def update(unit, since) -> Result:
         blob.publish_file(local)
         if not f.endswith("__series.parquet"):
             published += pq.ParquetFile(local).metadata.num_rows
-            cursors.update(cursors_from_parquet(local))
+            merge_cursors(cursors, local)
+    if len(cursors) >= CURSOR_CAP:
+        print(f"[fhfa] cursor set hit the {CURSOR_CAP:,} cap — further changed series are not "
+              f"individually reported; the orchestrator's derive-all path covers small "
+              f"catalogs", flush=True)
     tally.added_unit(published, "fhfa")
     print(f"[fhfa] rebuilt {len(names)} parquet(s), {published:,} obs rows published",
           flush=True)

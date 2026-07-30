@@ -42,7 +42,7 @@ import requests
 from ... import config, blob
 from ...errors import TransientError
 from ..base import Result
-from ._common import Deadline, Tally, cursors_from_parquet, finalize
+from ._common import CURSOR_CAP, Deadline, Tally, finalize, merge_cursors
 from ._vintage import http_vintage
 from jobs import ingest_zillow as ig     # live discovery + the production parser/writer
 
@@ -177,11 +177,15 @@ def update(unit, since) -> Result:
             continue
 
         published += _publish(out_dir, dataset)
-        cursors.update(cursors_from_parquet(os.path.join(out_dir, f"{dataset}.parquet")))
+        merge_cursors(cursors, os.path.join(out_dir, f"{dataset}.parquet"))
         tally.added_unit(len(obs_rows), dataset)
         if cur_v:
             sidecar[dataset] = cur_v                         # record ONLY after publishing
 
+    if len(cursors) >= CURSOR_CAP:
+        print(f"[zillow] cursor set hit the {CURSOR_CAP:,} cap — further changed series are not "
+              f"individually reported; the orchestrator's derive-all path covers small "
+              f"catalogs", flush=True)
     if unchanged:
         print(f"[zillow] {unchanged}/{len(recs)} file(s) unchanged — skipped", flush=True)
     _save(out_dir, sidecar)

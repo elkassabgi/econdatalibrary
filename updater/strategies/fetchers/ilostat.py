@@ -43,7 +43,7 @@ import os
 from ... import config, blob
 from ...errors import TransientError
 from ..base import Result
-from ._common import CURSOR_CAP, Deadline, Tally, cursors_from_parquet, finalize
+from ._common import CURSOR_CAP, Deadline, Tally, finalize, merge_cursors
 from jobs import ingest_ilostat as ig     # TOC + the production downloader/parser
 
 SOURCE = "ilostat"
@@ -153,8 +153,7 @@ def update(unit, since) -> Result:
         # every cursor costs one SQLite lookup plus one state.db row. Its 80 catalog ids sit
         # under the derive-all cap, so a partial cursor set triggers exactly the same
         # re-derive as a complete one.
-        if len(cursors) < CURSOR_CAP:
-            cursors.update(cursors_from_parquet(stored))
+        merge_cursors(cursors, stored)
         published += n_rows
         tally.added_unit(n_rows, iid)
         if stamp:
