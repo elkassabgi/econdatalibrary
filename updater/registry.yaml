@@ -5855,3 +5855,22 @@ sources:
   review: true
   upstream_verified: 2026-07-30 - DBnomics WHO/SDG indexed_at 2026-07-24; 29,245 series upstream against 28,160 published,
     so this one should GAIN coverage on its first run. Vintage token proven stable across two calls.
+- source_id: boc
+  live: true
+  scripts: []
+  strategy: extend_by_date
+  strategy_reason: Bank of Canada Valet accepts many series per call and a start_date, so the honest refresh is a per-batch
+    date tail from each series' stored max(obs_date). There was NO ingest script and NO registry entry for this source at
+    all, so it had never had an updater path - an unregistered source is not failing, the orchestrator simply never iterates
+    it.
+  cadence: daily
+  refresh_cost: medium
+  out_dir: boc
+  review: true
+  upstream_verified: 2026-07-30 - ids need NO crosswalk, verified as a FULL set comparison rather than a sample. Valet's own
+    series names ARE our series_keys (A.BCPI, A.BCNE, A.ENER); Valet lists 15,906 against our 12,862 published ids, with
+    12,862 reproduced EXACTLY and 0 of ours missing upstream. The 3,044 extra Valet series are new coverage and are
+    deliberately NOT fetched - widening the published id space is a cataloguing decision, not an update. Live run - ok in
+    227s, +8,843 rows (2,732,162 -> 2,741,005), 12,860 cursors. NOTE 1,040 rows (0.04%) are dated after 2027, max 2095-01-01;
+    these are BoC publication CHART series (SPEECH_*, FSR_*, WM_*) carrying long-horizon projections, not a parse bug -
+    health._age_days already clamps future dates so they will not read as stale.
