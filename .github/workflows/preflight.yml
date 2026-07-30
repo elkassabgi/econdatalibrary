@@ -41,3 +41,9 @@ jobs:
       - run: pip install --quiet pyyaml
       - name: Registry preflight
         run: python tools/preflight_registry.py
+      - name: Updater dependency preflight
+        # A fetcher whose import fails makes fetcher_implemented() return False, so the
+        # orchestrator files the source as "no adapter built" and skips it FOREVER with no
+        # error naming the missing package. That has already cost edgar_jrc (openpyxl),
+        # damodaran + sipri_polity (xlrd) and fed_board (lxml). Static scan, no installs.
+        run: python tools/audit_updater_deps.py
