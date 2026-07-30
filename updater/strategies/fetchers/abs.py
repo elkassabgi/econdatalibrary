@@ -54,13 +54,41 @@ import pyarrow.compute as pc
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import CURSOR_CAP, Deadline, Tally, finalize
 
 # Reuse the ingester verbatim: enumeration, streaming+retry, parse helpers.
 import jobs.ingest_abs_full as ing
 
 SOURCE = "abs"
 DEDUP = ("series_key", "obs_date")
+
+# WHY THIS SOURCE HAS A BUDGET AND A CURSOR CAP (2026-07-30).
+#
+# abs KILLED THE ENTIRE DAILY UPDATER, TWICE. It sorts first alphabetically, so it runs
+# first; run 30523814247 climbed 1,211MB -> 15,700MB monotonically at ~299 MB/min for 48.5
+# minutes and the 16 GB runner was destroyed with 288 MB free. The full log carried ONE
+# orchestrator banner (abs/_all) and ZERO completions: no other source ever executed, and
+# because the state push is skipped on a non-zero exit, every minute of that work was
+# discarded. Batch 30312217406 did the identical thing earlier — 49 min, 15,654 MB peak —
+# and the response then was to add the ">>>" banner so a future OOM could NAME its culprit
+# (see orchestrate.py). That observability is what identified abs today; the memory fix is
+# this block.
+#
+# GitHub renders a destroyed runner as "cancelled", not "failure", so the workflow's
+# rc=137/143 OOM branch never fires: bash never lives to report an exit code. Nothing
+# downstream can catch this. It has to be bounded HERE.
+#
+# Three unbounded terms, all now closed:
+#   1. `cursors` accumulated one entry per SERIES across all ~1,222 flows with no cap —
+#      precisely the risk CURSOR_CAP was introduced for (R175, ilostat's 30.8M series).
+#      _common's cap docstring enumerates the sources checked against it; abs was never
+#      one of them. abs holds 18 catalog ids, so _catalog_ids_for maps almost nothing and
+#      reporting millions of cursors buys nothing while costing millions of state rows.
+#   2. Per-flow Arrow buffers and collect()'s three parallel row-lists were dropped but
+#      never returned to the OS; over 1,222 iterations the pool only grows.
+#   3. No self-limit. AQUEDUCT_RUN_BUDGET_MIN is checked BETWEEN sources, so a source that
+#      never RETURNS is unbounded by construction — the run budget cannot see it.
+BUDGET_MIN = float(os.environ.get("AQUEDUCT_ABS_BUDGET_MIN", "35"))
 
 
 def _flow_max_obs(path: str):
@@ -96,16 +124,11 @@ def _build_table(keys, dates, vals):
     })
 
 
-def _series_maxes(keys, dates):
-    """Per-series max obs_date {series_key: 'YYYY-MM-DD'} for the rows fetched this run."""
-    out: dict[str, dt.date] = {}
-    for k, d in zip(keys, dates):
-        if d is None:
-            continue
-        prev = out.get(k)
-        if prev is None or d > prev:
-            out[k] = d
-    return {k: v.isoformat() for k, v in out.items()}
+# _series_maxes() was REMOVED here on 2026-07-30. It built a per-flow
+# {series_key: max obs_date} dict in full before returning it, which on this source means
+# millions of entries for a single census cross-tab — allocated before any cap could
+# apply. The fold in update() now streams the same computation into the capped run-global
+# `cursors`. Sibling fetchers keep their own copies; theirs are small sources.
 
 
 def update(unit, since) -> Result:
@@ -126,11 +149,25 @@ def update(unit, since) -> Result:
     total = 0
     last_obs = None
     cursors: dict[str, str] = {}   # series_key -> max obs_date written this run
+    cursors_capped = False
+    dl = Deadline(minutes=BUDGET_MIN)
+    deferred = 0
 
     for fn in pfiles:
         path = os.path.join(out_dir, fn)
         flow = fn[:-len(".parquet")]
         before = blob.row_count(path)
+
+        # Stop STARTING new flows once the budget is spent. Deferred flows are recorded
+        # transient, so the run is `partial`, the unit vintage is NOT advanced and the
+        # remainder drains on the next tick — nothing is silently skipped. Without this a
+        # single source can consume the whole 300-minute job and every runner byte.
+        if dl.spent():
+            deferred += 1
+            tally.transient_unit(f"{flow} deferred (budget {BUDGET_MIN:.0f} min)")
+            total += before
+            continue
+
         max_obs = _flow_max_obs(path)
         start = _flow_start_param(max_obs)
         params = {"startPeriod": start} if start else None
@@ -192,11 +229,44 @@ def update(unit, since) -> Result:
         tally.added_unit(len(keys))
         if md and (last_obs is None or md > last_obs):
             last_obs = md
-        # per-series cursors for the rows we just fetched (the moved series)
-        for k, v in _series_maxes(keys, dates).items():
+        # per-series cursors for the rows we just fetched (the moved series), BOUNDED.
+        # Once the cap is reached we stop ADDING new keys but keep advancing ones already
+        # held, so the reported set stays coherent rather than truncating mid-flow. The
+        # cap being hit is printed below — a silent bound is the defect, not the bound.
+        # Folded straight from the row stream rather than via a per-flow
+        # {series_key: max} dict. ABS holds 376,332,763 distinct series (measured
+        # 2026-07-30 over the 976,632,535-row store), and the census cross-tabs are
+        # ~1 observation per series, so an intermediate dict for one big flow is itself
+        # millions of entries — allocated in full BEFORE any cap could apply.
+        for k, d in zip(keys, dates):
+            if d is None:
+                continue
+            v = d.isoformat()
             prev = cursors.get(k)
-            if prev is None or v > prev:
+            if prev is None:
+                if len(cursors) >= CURSOR_CAP:
+                    cursors_capped = True
+                    continue
                 cursors[k] = v
+            elif v > prev:
+                cursors[k] = v
+
+        # Return this flow's buffers to the OS before opening the next one. Dropping the
+        # references is not enough: Arrow keeps freed blocks in its pool, so across 1,222
+        # flows RSS only ever climbs.
+        del tbl, keys, dates, vals
+        pa.default_memory_pool().release_unused()
+
+    # Both bounds are DISCLOSED. A cap that trims the reported changed-set, or a budget
+    # that leaves flows unattempted, must say so in the log — otherwise the next reader
+    # sees a clean run and assumes full coverage.
+    if deferred:
+        print(f"[abs] BUDGET {BUDGET_MIN:.0f} min spent after {dl.elapsed_min():.1f} min — "
+              f"{deferred}/{len(pfiles)} flow(s) NOT attempted this run; they drain next "
+              f"tick (run reports partial, vintage not advanced)", flush=True)
+    if cursors_capped:
+        print(f"[abs] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
+              f"not individually reported", flush=True)
 
     # empty_window_floor = (#subunits) - 1 per the S3 contract: a genuine wholesale
     # outage (every one of ~1222 flows empty) raises DefinitiveError, while a single
