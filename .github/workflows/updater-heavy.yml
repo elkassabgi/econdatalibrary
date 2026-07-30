@@ -77,7 +77,7 @@ jobs:
     steps:
       - id: pick
         run: |
-          ALL='["un_wpp","bundesbank"]'
+          ALL='["un_wpp","bundesbank","insee_sirene","bls","cepii_gravity"]'
           REQ='${{ inputs.source }}'
           if [ -z "$REQ" ]; then
             echo "sources=$ALL" >> "$GITHUB_OUTPUT"
