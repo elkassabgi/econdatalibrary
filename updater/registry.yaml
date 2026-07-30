@@ -5874,3 +5874,24 @@ sources:
     227s, +8,843 rows (2,732,162 -> 2,741,005), 12,860 cursors. NOTE 1,040 rows (0.04%) are dated after 2027, max 2095-01-01;
     these are BoC publication CHART series (SPEECH_*, FSR_*, WM_*) carrying long-horizon projections, not a parse bug -
     health._age_days already clamps future dates so they will not read as stale.
+- source_id: snb
+  live: true
+  scripts: []
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Each of the 12 SNB cubes is a whole-history CSV with no date parameter, and each CSV carries its own
+    PublishingDate in a metadata preamble - so the change signal is SNB's own statement of when it last published that cube,
+    per cube, with no HTTP header to infer and nothing that can flap. There was no ingest script and no registry entry for
+    this source, so it had never had an updater path at all.
+  cadence: weekly
+  refresh_cost: fast
+  out_dir: snb
+  review: true
+  upstream_verified: 2026-07-30 - keys come from the CSV's OWN dimension columns (SNB:<cube>:<D0>:<D1>[:<D2>], codes like
+    M0/EUR1), NOT from /dimensions/en, whose item ids (D0_0, D0_1) are a different id space - reconstructing from those
+    reproduced only 191 of 762 (25%), an artifact of comparing incomparable spaces. Parsing the CSV reproduces 762 of 762
+    keys (100.00%) AND all 303,358 stored (series_key, obs_date) rows (100.00%), verified per cube. Column ORDER is read from
+    the header, not assumed - devwkilandga lists its dimensions D1 then D0. Date convention is per-frequency and was derived
+    from the store, not guessed - annual YYYY -> Dec 31, monthly YYYY-MM -> day 1, quarterly YYYY-Qn -> quarter's first month
+    day 1, daily as-is; using period-end for monthly would have minted a parallel date space. PublishingDates genuinely
+    differ per cube (2025-09-01 rendoblid to 2026-07-27 snbgwdzid). Two-run test - ok +1,091 rows (303,358 -> 304,449),
+    764 cursors, then 12/12 unchanged/no_change.

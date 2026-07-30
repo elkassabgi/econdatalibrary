@@ -141,7 +141,12 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   as a full set comparison (12,862 of 12,862 exact, 0 missing upstream). DBnomics' BOC provider
 #   was last indexed 2025-02-15 and, more to the point, a matching provider NAME is not
 #   provenance (see the bea trap in tools/audit_upstream_liveness.py).
-EXPECTED_SOURCE_COUNT = 138
+# 2026-07-30: 138 -> 139. snb (Swiss National Bank, 12 cubes / 762 series / 303,358 obs). No
+#   ingest script and no registry entry, so it had never had an updater path. Each cube CSV
+#   carries its own PublishingDate, which is a publisher-supplied per-cube vintage - better than
+#   any HTTP validator. Keys and dates both verified at 100% against the existing store before
+#   wiring (762/762 keys, 303,358/303,358 rows).
+EXPECTED_SOURCE_COUNT = 139
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
