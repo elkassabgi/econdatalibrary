@@ -107,6 +107,21 @@ class Deadline:
     """
 
     def __init__(self, minutes: float):
+        # GLOBAL OVERRIDE for the workstation (2026-07-30). Every BUDGET_MIN in this package
+        # was sized for the SHARED 16 GB CI job, where one source must not consume the whole
+        # 240-minute run. The 16 databases routed to run_location: local are the opposite
+        # case: a dedicated 382 GB machine processing only them, where a 25-minute cap just
+        # defers work for no reason — abs deferred 805 of its 1,222 flows in CI purely
+        # because of its budget. One env var rather than editing 17 fetchers.
+        #
+        # OPT-IN AND LOUD: unset (CI, and any normal run) behaves exactly as before.
+        # tools/run_local_heavy.ps1 sets it.
+        override = os.environ.get("AQUEDUCT_BUDGET_MIN_OVERRIDE")
+        if override:
+            try:
+                minutes = float(override)
+            except (TypeError, ValueError):
+                pass                                         # a bad value must not un-bound a run
         self.budget = minutes * 60.0
         self.t0 = time.monotonic()
 
