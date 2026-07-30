@@ -39,15 +39,73 @@ def _max_obs_date(table) -> str | None:
     return str(m) if m is not None else None
 
 
+# Promote a string column PRE-EMPTIVELY once it gets near Arrow's 2 GiB int32-offset
+# ceiling. 1 GiB leaves room for the concat that follows to double it without crossing.
+_LARGE_STRING_TRIGGER = 1 << 30
+
+
+def _needs_large_string(table) -> bool:
+    """True if any 32-bit `string` column is close enough to 2 GiB to be worth promoting."""
+    for name in table.column_names:
+        col = table.column(name)
+        if col.type == pa.string() and col.nbytes >= _LARGE_STRING_TRIGGER:
+            return True
+    return False
+
+
 def _dedup(table, keys):
     keys = [k for k in keys if k in table.column_names]
     if not keys or table.num_rows == 0:
         return table
+
+    # PROMOTE BEFORE GROUPING, NOT AFTER FAILING. _concat and _sort both recover from the
+    # 2 GiB ceiling by catching pa.ArrowInvalid("offset overflow") and retrying on
+    # large_string. group_by DOES NOT RAISE — it dereferences past the overflowed offsets
+    # and takes the process down: measured on bis/LBS.parquet (36,379,671 rows whose
+    # series_key column holds 13,203,140,215 bytes, 6.6x the ceiling) it exits
+    # 0xC0000005 ACCESS_VIOLATION on Windows and SIGABRT/134 on Linux via
+    # `std::length_error: vector::_M_default_append`. Neither is catchable from Python, so a
+    # reactive guard here is not possible — the promotion has to happen first.
+    #
+    # This is what actually killed the daily updater, and it is NOT a memory problem: the
+    # same crash occurred on a 382 GB workstation with 337 GB free. Verified in isolation —
+    # group_by on the raw table dies, while sort_by on the SAME table cast to large_string
+    # completes all 36,379,671 rows.
+    if _needs_large_string(table):
+        table = _promote_large_string(table)[0]
+
+    # SORT-BASED, NOT HASH-BASED. This used to be
+    #     grouped = t.group_by(keys).aggregate([("__i", "max")])
+    #     mask    = pc.is_in(t.column("__i"), value_set=grouped.column("__i_max"))
+    # and group_by is what crashed. Measured on bis/LBS.parquet: it dies on a `string`
+    # column (0xC0000005 ACCESS_VIOLATION) AND on the same data cast to `large_string`
+    # (0xC0000409), so promoting the type is necessary but NOT sufficient — the hash
+    # aggregation itself cannot handle this size. sort_by on the identical table completes
+    # all 36,379,671 rows, so the dedup is expressed with sort + vector comparisons only.
+    #
+    # Same semantics as before: sorting by (keys..., __i) puts each key-combo's rows in
+    # ORIGINAL order, so the last row of each run is the one group_by's max(__i) chose.
+    # New data is appended after existing, so last still means "new wins".
     t = table.append_column("__i", pa.array(range(table.num_rows), type=pa.int64()))
-    grouped = t.group_by(keys).aggregate([("__i", "max")])  # keep last row per key-combo
-    keep = grouped.column("__i_max")
-    mask = pc.is_in(t.column("__i"), value_set=keep)
-    return t.filter(mask).drop_columns(["__i"])
+    t = _sort(t, tuple(keys) + ("__i",))
+    n = t.num_rows
+    if n == 1:
+        return t.drop_columns(["__i"])
+
+    same_as_next = None
+    for k in keys:
+        col = t.column(k).combine_chunks()
+        eq = pc.equal(col.slice(0, n - 1), col.slice(1, n - 1))
+        same_as_next = eq if same_as_next is None else pc.and_(same_as_next, eq)
+
+    # keep a row when the NEXT row begins a different key-combo; the final row always ends
+    # its own run
+    keep = pa.concat_arrays([
+        pc.invert(same_as_next).cast(pa.bool_()).combine_chunks()
+        if hasattr(same_as_next, "combine_chunks") else pc.invert(same_as_next).cast(pa.bool_()),
+        pa.array([True], pa.bool_()),
+    ])
+    return t.filter(keep).drop_columns(["__i"])
 
 
 def _sort(table, keys):
