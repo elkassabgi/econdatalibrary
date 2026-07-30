@@ -19,6 +19,12 @@ import type { Env, LicenseRow, LicenseBlock } from "./types";
 export const SUPPORTED_SOURCES: readonly string[] = [
   "abs", "barro_lee", "bcb", "bcrp", "bea", "bis",
   "bls", "boc", "boe", "bundesbank", "cboe", "census",
+  // cepii_gravity added 2026-07-30: 1,143,250 series were catalogued and SEARCHABLE but
+  // absent from this list, so every one of them answered 501 not_migrated. The derive is
+  // complete and verified both directions (MISSING 0, ORPHANED 0 against a full listing
+  // of all 1,143,250 objects), and the licence is CONFIRMED redistributable_attribution
+  // (Etalab Open Licence 2.0, 100% dated from CEPII's own Last-Modified, 2024-04-15).
+  "cepii_gravity",
   "cnb", "comtrade", "cow", "damodaran", "dbnomics", "defillama",
   "ecb", "edgar_jrc", "ei_statreview", "eia", "ember", "epu",
   "eurostat", "famafrench", "fao_ae", "fao_af", "fao_ec", "fao_ep",

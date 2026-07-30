@@ -55,8 +55,27 @@ import {
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// The objects are WRITTEN by Python (tools/derive_csv_bulk.csv_key, core/derive_csv),
+// which uses urllib.parse.quote(id, safe="") — i.e. RFC 3986 percent-encoding of
+// everything outside A-Za-z0-9-_.~. JavaScript's encodeURIComponent leaves FIVE of those
+// characters literal: ! ' ( ) * . So for any id containing one, the reader asked for a key
+// the writer never created.
+//
+// MEASURED 2026-07-30, and it was live: 60,993 catalogued series across 12 sources contain
+// one of those characters — 54,745 of them in un_wpp alone. Probing R2 directly, 46 of 46
+// sampled objects existed under the Python spelling and 0 of 46 under this one. On the live
+// API, a within-source control made it unambiguous: gcb / oxcgrt / un_wpp all returned
+// HTTP 200 with real CSV for a plain id and HTTP 502 "the at-rest object for this series is
+// not published yet" for an id differing only by a parenthesis. The object WAS published.
+// We were telling users that data does not exist while holding it.
+//
+// Aligned to the writer rather than re-deriving 60,993 objects: a bounded scan of 60,000
+// keys under series/ found NO literal ! ' ( ) * in any key, so the store is uniformly
+// Python-spelled and there is no second convention this would break.
 function objectKey(seriesId: string): string {
-  return `series/${encodeURIComponent(seriesId)}.csv`;
+  const rfc3986 = encodeURIComponent(seriesId).replace(
+    /[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+  return `series/${rfc3986}.csv`;
 }
 
 // Prominent citation header prepended to every .csv (unless ?raw=1). Lines start
