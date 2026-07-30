@@ -240,8 +240,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=eia">Select &amp; download eia series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/eia.html">https://econdatalibrary.com/eia.html</a></dd>
-<dt>Update cadence</dt><dd>daily <em>(target &mdash; not yet automated)</em></dd>
-<dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd>
+<dt>Update cadence</dt><dd>daily</dd>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
 <dt>Storage layout</dt><dd>Grouped: ONE data Parquet per bulk dataset at data/clean_full/eia/&lt;DATASET&gt;.parquet (columns series_id, obs_date date32, value float64, period str, freq str) written via streaming ParquetWriter in 1M-row row-groups; ONE meta sidecar per dataset at data/clean_full/eia/_meta/&lt;DATASET&gt;.parquet (series_id,name,units,freq,geography,iso3166,start,end,copyright,source,n_obs); run summary _summary.json. Raw zips cached at data/raw/eia/&lt;DATASET&gt;.zip. ~316M obs measured; the giant EBA dataset streams and never sits in RAM whole.</dd></dl>
 <h2>Full description</h2>
