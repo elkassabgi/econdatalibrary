@@ -100,6 +100,51 @@ def parse_period(s):
     return None, None
 
 
+def iter_rows(name, zip_path):
+    """Yield (series_key, obs_date, value, freq) from a BIS bulk zip. PURE.
+
+    Extracted from ingest_zip so the updater can reuse the EXACT parse rather than copying it
+    (the duplication invariant). Deliberately contains no skip-if-exists rule, no ParquetWriter
+    and no logging policy: ingest_zip keeps those, the fetcher supplies its own. Returning a
+    generator also keeps peak memory bounded — the CBS/LBS flat CSVs are tens of millions of
+    rows.
+    """
+    z = zipfile.ZipFile(zip_path)
+    csvs = [m for m in z.namelist() if m.endswith(".csv") and
+            not any(x in m.lower() for x in ["readme", "notes", "description", "label"])]
+    if not csvs:
+        return
+    with z.open(csvs[0]) as raw:
+        reader = csv.reader(io.TextIOWrapper(raw, encoding="utf-8-sig", newline=""))
+        hdr = next(reader, None)
+        if not hdr:
+            return
+        try:
+            ti = hdr.index("TIME_PERIOD")
+            vi = hdr.index("OBS_VALUE")
+        except ValueError:
+            ti = next((i for i, h in enumerate(hdr) if "TIME" in h.upper()), None)
+            vi = next((i for i, h in enumerate(hdr)
+                       if "OBS_VALUE" in h.upper() or h.upper() == "VALUE"), None)
+            if ti is None or vi is None:
+                return
+        freq_i = next((i for i, h in enumerate(hdr) if h.upper() in ("FREQ", "FREQUENCY")), None)
+        dim_idx = [i for i in range(1, ti) if i != vi]
+        for row in reader:
+            if len(row) <= max(ti, vi):
+                continue
+            try:
+                val = float(row[vi])
+            except (ValueError, TypeError):
+                continue
+            d, finf = parse_period(row[ti])
+            if d is None:
+                continue
+            key = ".".join(row[i] if i < len(row) else "" for i in dim_idx)
+            fr = (row[freq_i] if freq_i is not None and freq_i < len(row) else "") or finf or ""
+            yield key, d, val, fr
+
+
 def ingest_zip(name, zip_path):
     out_path = os.path.join(OUT, f"{name}.parquet")
     if os.path.exists(out_path):
@@ -107,79 +152,35 @@ def ingest_zip(name, zip_path):
         log(f"{name}: already ingested ({n:,} rows), skipping")
         return n
 
-    log(f"{name}: parsing CSV from zip...")
-    z = zipfile.ZipFile(zip_path)
-    # find the flat CSV (not the metadata/readme)
-    csvs = [m for m in z.namelist() if m.endswith(".csv") and
-            not any(x in m.lower() for x in ["readme", "notes", "description", "label"])]
-    log(f"  {name}: CSV members in zip: {csvs}")
-    if not csvs:
-        log(f"  {name}: no CSV found in zip!"); return 0
-
-    csv_name = csvs[0]
-    log(f"  {name}: parsing {csv_name}")
-
+    log(f"{name}: parsing CSV from zip (via iter_rows)...")
     writer = pq.ParquetWriter(out_path, SCHEMA, compression="zstd")
     BATCH = 300_000
     keys, dates, vals, freqs = [], [], [], []
-    n_total = n_bad = 0
+    n_total = 0
 
     def flush():
         nonlocal keys, dates, vals, freqs
-        if not keys: return
+        if not keys:
+            return
         n = min(len(keys), len(dates), len(vals), len(freqs))
-        batch = pa.record_batch([
+        writer.write_batch(pa.record_batch([
             pa.array(keys[:n], pa.string()),
             pa.array(dates[:n], pa.date32()),
             pa.array(vals[:n], pa.float64()),
             pa.array(freqs[:n], pa.string()),
-        ], schema=SCHEMA)
-        writer.write_batch(batch)
+        ], schema=SCHEMA))
         keys, dates, vals, freqs = [], [], [], []
 
-    with z.open(csv_name) as raw:
-        reader = csv.reader(io.TextIOWrapper(raw, encoding="utf-8-sig", newline=""))
-        hdr = next(reader, None)
-        if not hdr:
-            log(f"  {name}: empty CSV"); writer.close(); return 0
-
-        log(f"  {name}: columns: {hdr[:8]}...")
-        # BIS flat CSV: one row = one observation
-        # Columns: DATAFLOW, FREQ, [dims...], TIME_PERIOD, OBS_VALUE, [attrs...]
-        try:
-            ti = hdr.index("TIME_PERIOD")
-            vi = hdr.index("OBS_VALUE")
-        except ValueError:
-            # try alternate names
-            ti = next((i for i, h in enumerate(hdr) if "TIME" in h.upper()), None)
-            vi = next((i for i, h in enumerate(hdr) if "OBS_VALUE" in h.upper() or h.upper() == "VALUE"), None)
-            if ti is None or vi is None:
-                log(f"  {name}: cannot find TIME_PERIOD/OBS_VALUE in {hdr[:10]}"); writer.close(); return 0
-
-        freq_i = next((i for i, h in enumerate(hdr) if h.upper() in ("FREQ","FREQUENCY")), None)
-        # dim columns: between DATAFLOW (col 0) and TIME_PERIOD
-        dim_idx = [i for i in range(1, ti) if i != vi]
-
-        for row in reader:
-            if len(row) <= max(ti, vi): continue
-            try:
-                val = float(row[vi])
-            except (ValueError, TypeError):
-                n_bad += 1; continue
-            d, finf = parse_period(row[ti])
-            if d is None:
-                n_bad += 1; continue
-            key = ".".join(row[i] if i < len(row) else "" for i in dim_idx)
-            fr = (row[freq_i] if freq_i is not None and freq_i < len(row) else "") or finf or ""
-            keys.append(key); dates.append(d); vals.append(val); freqs.append(fr)
-            n_total += 1
-            if len(keys) >= BATCH:
-                flush()
+    for key, d, val, fr in iter_rows(name, zip_path):
+        keys.append(key); dates.append(d); vals.append(val); freqs.append(fr)
+        n_total += 1
+        if len(keys) >= BATCH:
+            flush()
 
     flush()
     writer.close()
     actual = pq.read_metadata(out_path).num_rows
-    log(f"{name}: DONE {n_total:,} obs written ({n_bad:,} bad), verified {actual:,} rows in Parquet")
+    log(f"{name}: DONE {n_total:,} obs written, verified {actual:,} rows in Parquet")
     return actual
 
 
