@@ -1634,11 +1634,18 @@ sources:
       obs_status) + <REL>__series.parquet (one row per series metadata) + <REL>.meta.json (resume/verify sidecar) + _summary.json.
       18 releases. zstd, 1M-row flush via lxml.iterparse with el.clear(). Raw zips cached at data/raw/fed_board/<REL>.zip.'
 - source_id: fhfa
+  live: true
   scripts:
   - jobs/ingest_fhfa.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: 9 full-history snapshot files (CSV/XLSX) at fixed fhfa.gov URLs with no date param; build fully overwrites
-    every cube, so gate each file on Last-Modified/hash and rebuild only changed cubes.
+    every cube, so gate on the union of the 9 files. NOTE rebuild is deliberately all-or-nothing - build() regenerates all 9
+    cubes from RAW in one call and has no per-cube entry point, so splitting the gate would mean reimplementing the parser.
+  upstream_verified: 2026-07-30 - validators measured STABLE (two HEADs 20s apart, identical on three files - hpi_master.csv
+    Content-Length 17,046,224; hpi_at_3zip.xlsx 3,166,176; annual_hpi_at_national.xlsx Last-Modified Mon 30 Mar 2026 17:44:29).
+    No ETag is served, so the weakest files are SIZE-only and cannot see a same-length revision - MAX_AGE_DAYS=30 forces a
+    rebuild in that case. The ingest is already safe to re-run (download() never skips, build() reparses), so both are reused
+    verbatim. Two-run test - ok, 18 parquets, 3,227,580 obs published, then no_change in 3s.
   cadence: monthly
   refresh_cost: fast
   out_dir: fhfa

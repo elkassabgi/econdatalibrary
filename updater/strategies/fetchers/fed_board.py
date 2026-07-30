@@ -59,7 +59,7 @@ import tempfile
 from ... import config, blob
 from ...errors import TransientError
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import Deadline, Tally, cursors_from_parquet, finalize
 from jobs import ingest_fed_board as ig     # reuse discovery + downloader + production parser
 
 SOURCE = "fed_board"
@@ -182,6 +182,7 @@ def update(unit, since) -> Result:
     tally = Tally()
     published = 0
     unchanged = 0
+    cursors: dict = {}          # §5.7 changed-series set, per republished release
     dl = Deadline(minutes=BUDGET_MIN)
 
     for rel in rels:
@@ -222,6 +223,7 @@ def update(unit, since) -> Result:
             continue
 
         published += _publish(out_dir, rel)
+        cursors.update(cursors_from_parquet(os.path.join(out_dir, f"{rel}.parquet")))
         tally.added_unit(n_obs, rel)
         sidecar[rel] = digest                                # record ONLY after publishing
 
@@ -232,4 +234,5 @@ def update(unit, since) -> Result:
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
-    return finalize(tally, published, since or None, source=SOURCE)
+    return finalize(tally, published, since or None, source=SOURCE,
+                    series_cursors=cursors or None)

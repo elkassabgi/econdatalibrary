@@ -42,7 +42,7 @@ import requests
 from ... import config, blob
 from ...errors import TransientError
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import Deadline, Tally, cursors_from_parquet, finalize
 from ._vintage import http_vintage
 from jobs import ingest_zillow as ig     # live discovery + the production parser/writer
 
@@ -136,6 +136,7 @@ def update(unit, since) -> Result:
     tally = Tally()
     published = 0
     unchanged = 0
+    cursors: dict = {}          # §5.7 changed-series set, per rebuilt cube
     dl = Deadline(minutes=BUDGET_MIN)
 
     for rec in sorted(recs, key=lambda r: r["url"]):
@@ -176,6 +177,7 @@ def update(unit, since) -> Result:
             continue
 
         published += _publish(out_dir, dataset)
+        cursors.update(cursors_from_parquet(os.path.join(out_dir, f"{dataset}.parquet")))
         tally.added_unit(len(obs_rows), dataset)
         if cur_v:
             sidecar[dataset] = cur_v                         # record ONLY after publishing
@@ -186,4 +188,5 @@ def update(unit, since) -> Result:
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
-    return finalize(tally, published, since or None, source=SOURCE)
+    return finalize(tally, published, since or None, source=SOURCE,
+                    series_cursors=cursors or None)
