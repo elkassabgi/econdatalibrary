@@ -2345,11 +2345,18 @@ sources:
       obs_date(date32), value(float64). series_key = IDB:<slug>:<indicator>:<country> (or IDB:<slug>:<numeric_col>:<country>
       for wide resources).'
 - source_id: ilostat
+  live: true
   scripts:
   - jobs/ingest_ilostat.py
   strategy: bulk_snapshot_if_changed
-  strategy_reason: The rplumber bulk endpoint returns the WHOLE indicator table with no since/start param, but the TOC publishes
-    per-indicator n.records; re-pull+overwrite only indicators whose record count grew, gating on a manifest comparison.
+  strategy_reason: The rplumber bulk endpoint returns the WHOLE indicator table with no since/start param, so the change
+    signal has to come from the TOC. CORRECTED 2026-07-30 - this entry proposed gating on n.records GROWTH, which is
+    strictly weaker than what ILO already publishes. A revision that rewrites values without changing the row count is
+    invisible to a count gate, and so is a correction that SHRINKS it. The TOC's own last.update stamp is populated for
+    1,956 of 1,956 indicators, so the fetcher gates on that instead.
+  upstream_verified: 2026-07-30 - TOC re-downloaded live; last.update present on 1,956/1,956 indicators; vintage token stable
+    across two calls; two-run test published 446 rows then reported 2/2 unchanged/no_change. Note the FRESH TOC listed 1,956
+    indicators where the on-disk cached copy had 1,947 - reading the cache would have hidden 9 indicators.
   cadence: monthly
   refresh_cost: large
   out_dir: ilostat
