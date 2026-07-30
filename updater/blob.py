@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import shutil
 import uuid
 
 import pyarrow.parquet as pq
@@ -189,6 +190,27 @@ def write_bytes_atomic(path: str, data: bytes) -> None:
         r2.put_atomic(_path_to_key(path), data)
 
 
+def publish_file(path: str) -> int:
+    """Publish an ALREADY-WRITTEN local store file to R2 by STREAMING it from disk.
+
+    For the one case write_table_atomic cannot serve: a reused production ingest that
+    writes its own parquet with a raw pq.ParquetWriter. Those bytes are already correct
+    on disk at the store path — they simply never reached R2, because blob is the only
+    writer that knows about R2 (ledger R36). Reading such a file back with pq.read_table
+    just to hand the table to write_table_atomic would materialise it whole in RAM;
+    fed_board's Z.1 release alone is a ~590MB zip, which is how a CI runner OOMs.
+
+    Returns bytes published, 0 if the file is absent. Under the local backend the file
+    is already AT its store path, so this is a no-op that just reports the size.
+    """
+    if not os.path.exists(path):
+        return 0
+    r2 = _r2_routed()
+    if r2 is not None:
+        r2.put_file(_path_to_key(path), path)
+    return os.path.getsize(path)
+
+
 def row_count(path: str) -> int:
     r2 = _r2_routed()
     if r2 is not None:
@@ -253,6 +275,16 @@ class LocalBlob:
                     os.remove(tmp)
                 except OSError:
                     pass
+
+    def put_file(self, key: str, src_path: str) -> None:
+        """Stream a file into the store. A no-op when src is already the store path."""
+        p = self._path(key)
+        if os.path.abspath(p) == os.path.abspath(src_path):
+            return
+        d = os.path.dirname(p)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        shutil.copyfile(src_path, p)
 
     def etag(self, key: str) -> str | None:
         data = self.get(key)
@@ -323,6 +355,17 @@ class R2Blob:
         if ct:
             kw["ContentType"] = ct
         self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **kw)
+
+    def put_file(self, key: str, src_path: str) -> None:
+        # upload_file streams and switches to multipart above the threshold, so a
+        # multi-GB parquet never has to exist in memory. Same ContentType rule as
+        # put_atomic — a CSV must not silently downgrade to octet-stream.
+        kw = {}
+        ct = _CONTENT_TYPES.get(os.path.splitext(key)[1].lower())
+        if ct:
+            kw["ContentType"] = ct
+        self.client.upload_file(src_path, self.bucket, key,
+                                ExtraArgs=kw or None)
 
     def etag(self, key: str) -> str | None:
         from botocore.exceptions import ClientError

@@ -1575,19 +1575,28 @@ sources:
       all selected fields as typed columns). financials flushes every >5M rows via _append_parquet (read-existing+concat+rewrite).
       No raw dir.'
 - source_id: fed_board
+  live: true
   scripts:
   - jobs/ingest_fed_board.py
   strategy: bulk_snapshot_if_changed
-  strategy_reason: Each release is served as a whole ZIP via Output.aspx?rel=<REL>&filetype=zip with no date filter; store
-    an HTTP ETag/Last-Modified per release and re-download+reparse only changed releases.
+  strategy_reason: Each release is served as a whole ZIP via Output.aspx?rel=<REL>&filetype=zip with no date filter. CORRECTED
+    2026-07-29 - the original plan here ("store an HTTP ETag/Last-Modified per release") CANNOT WORK; it was measured, not
+    assumed (see adapter.vintage_signal). The fetcher gates on a CONTENT HASH of each release zip instead.
+  upstream_verified: 2026-07-29 - 18 releases discovered live; all 18 zips = 79.9 MB / 9.4 s total; two-run test parses+publishes
+    then reports byte-identical no_change.
   cadence: daily
   refresh_cost: medium
   out_dir: fed_board
   review: true
   adapter:
-    vintage_signal: Per-release HTTP ETag / Last-Modified on datadownload/Output.aspx?rel=<REL>&filetype=zip (skip download+parse
-      when unchanged); plus re-scrape the DDP home (discover_releases) to catch newly-added releases. Today there is no etag/last-modified
-      check — the full release is always re-downloaded.
+    vintage_signal: 'Per-release CONTENT HASH (sha256 of the downloaded zip), NOT an HTTP validator. MEASURED 2026-07-29:
+      Output.aspx is generated per request - Last-Modified advances on EVERY call (03:17:40 / 03:18:01 / 03:18:21 on three
+      HEADs 20s apart), there is NO ETag, NO Content-Length on HEAD, and Range is unsupported (bytes=-65536 returns 200
+      plus the whole body, so the zip central directory''s per-entry CRC32s cannot be sampled cheaply). An ETag/Last-Modified
+      gate would fire on every run and re-download+reparse+reupload all 18 releases daily while LOOKING like a working cache.
+      The body IS byte-stable (two GETs of CHGDEL: identical sha256 0f741306efb4ccd7, 279,024 B both times) and all 18 zips
+      total only 79.9 MB / 9.4 s, so hashing every run is cheap and gates the expensive work (lxml iterparse + parquet write
+      + R2 PUT). Plus re-scrape the DDP home (discover_releases) to catch newly-added releases.'
     since_param: n/a
     out_paths_note: 'Per-release grouped parquet data/clean_full/fed_board/<REL>.parquet + <REL>__series.parquet + <REL>.meta.json
       + _summary.json (18 releases); raw zips at data/raw/fed_board/<REL>.zip. CRITICAL: default (no --force) run is a no-op

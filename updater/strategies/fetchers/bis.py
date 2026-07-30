@@ -28,6 +28,7 @@ structural_unit and its vintage is NOT advanced, so a parser break resurfaces ne
 of being sealed in.
 """
 from __future__ import annotations
+import datetime as dt
 import hashlib
 import json
 import os
@@ -47,21 +48,51 @@ SOURCE = "bis"
 DEDUP = ("series_key", "obs_date")
 SIDECAR = "_bulk_vintages.json"
 BUDGET_MIN = 25
+# Backstop for the size-only gate: re-pull a zip whose Content-Length has not moved in this
+# many days, so a same-byte-count revision cannot hide forever.
+MAX_AGE_DAYS = 30
 BATCH = 500_000
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 
 
+def _validator(url, sess) -> "str | None":
+    """Content-Length-first validator for the BIS bulk zips. NOT http_vintage — MEASURED.
+
+    data.bis.org is served by several origin replicas whose copies of the same file carry
+    DIFFERENT mtimes, so the ETag and Last-Modified FLAP between requests while the bytes are
+    unchanged. Two HEADs 15s apart on WS_LBS_D_PUB_csv_flat.zip:
+
+        ETag W/"153f3e65-19f89d4b74e"  LM Wed, 22 Jul 2026 12:37:26 GMT  CL 356466277
+        ETag W/"153f3e65-19f88bb24fb"  LM Wed, 22 Jul 2026 07:29:53 GMT  CL 356466277
+
+    Last-Modified went BACKWARDS by five hours, which no real republish can do, and
+    Content-Length was identical. These are Apache-style ETags, `"<size-hex>-<mtime-hex>"`:
+    0x153f3e65 = 356,466,277 = exactly Content-Length, so only the mtime half moves. Since
+    http_vintage prefers ETag > Last-Modified > Content-Length, it picks the one field that
+    flaps, and the gate would report "changed" on nearly every run — re-downloading and
+    re-parsing 440 MB daily while looking like a working cache (the fed_board defect, R164).
+
+    So the size is the honest signal. It is WEAKER than a hash — a revision that preserves the
+    byte count would be invisible — which is why update() also force-refreshes on MAX_AGE_DAYS.
+    """
+    try:
+        r = sess.head(url, headers=UA, timeout=60, allow_redirects=True)
+    except Exception:                                        # noqa: BLE001
+        return None
+    cl = r.headers.get("Content-Length")
+    if cl:
+        return f"len={cl}"
+    return http_vintage(url, session=sess)                   # no CL -> best available
+
+
 def current_vintage(unit) -> "str | None":
-    """Hash of both bulk objects' HTTP validators. Moves iff BIS republishes either zip."""
+    """Hash of both bulk objects' size validators. Moves iff BIS republishes either zip."""
     sess = requests.Session()
     parts = []
     for name, url in sorted(ig.BULK.items()):
-        try:
-            v = http_vintage(url, session=sess)
-        except Exception:                                    # noqa: BLE001
-            return None                                      # unknown -> let cadence decide
+        v = _validator(url, sess)
         if not v:
-            return None
+            return None                                      # unknown -> let cadence decide
         parts.append(f"{name}={v}")
     h = hashlib.sha256(";".join(parts).encode()).hexdigest()[:16]
     return f"bis:{h}"
@@ -92,6 +123,16 @@ def _download(sess, url, dest) -> None:
                     fh.write(chunk)
 
 
+def _older_than(iso, days) -> bool:
+    """True when `iso` is absent or older than `days` — the size gate's staleness backstop."""
+    if not iso:
+        return True
+    try:
+        return (dt.date.today() - dt.date.fromisoformat(iso)).days >= days
+    except ValueError:
+        return True
+
+
 def _table(rows):
     return pa.table({
         "series_key": pa.array([r[0] for r in rows], pa.string()),
@@ -113,12 +154,15 @@ def update(unit, since) -> Result:
 
     for name, url in sorted(ig.BULK.items()):
         path = os.path.join(out_dir, f"{name}.parquet")
-        try:
-            cur_v = http_vintage(url, session=sess) or ""
-        except Exception:                                    # noqa: BLE001
-            cur_v = ""                                       # unknown -> treat as changed
-        if cur_v and sidecar.get(name) == cur_v and blob.exists(path):
+        cur_v = _validator(url, sess) or ""
+        stale = _older_than(sidecar.get(f"{name}__pulled"), MAX_AGE_DAYS)
+        if cur_v and sidecar.get(name) == cur_v and blob.exists(path) and not stale:
             continue                                         # already current, costs nothing
+        if stale and cur_v and sidecar.get(name) == cur_v:
+            # Size unchanged for MAX_AGE_DAYS. Because the size gate cannot see a same-byte-count
+            # revision, re-pull anyway rather than trust it indefinitely. merge dedups, so the
+            # only cost is bandwidth.
+            print(f"[bis] {name}: size unchanged {MAX_AGE_DAYS}d — forced re-pull", flush=True)
 
         if dl.spent():
             print(f"[bis] budget {BUDGET_MIN} min spent — {name} deferred to next run",
@@ -173,6 +217,7 @@ def update(unit, since) -> Result:
         tally.added_unit(max(0, n_rows - before), name)
         if cur_v:
             sidecar[name] = cur_v                            # advance ONLY after a clean publish
+            sidecar[f"{name}__pulled"] = dt.date.today().isoformat()
 
     _save(out_dir, sidecar)
     if published == 0:
