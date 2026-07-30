@@ -18,6 +18,21 @@ counts behind it. Deliberately NOT a pass/fail: "live" and "frozen" are a judgem
 stale is too stale, and that judgement belongs to whoever reads it, so the DATE is the output.
 One probe per provider, not per source.
 
+A MATCHING PROVIDER NAME IS NOT PROOF THE SOURCE CAME FROM DBnomics. This tool infers the
+provider from `_provider.json`, falling back to the source-id prefix, and DBnomics happens to
+host providers with the same names as publishers we ingest directly. `bea` is exactly that
+trap: DBnomics has a BEA provider indexed 2026-07-26, so this table shows BEA as live — but our
+ids are BEA's own NIPA codes (`bea:A191RC:Q`), not DBnomics codes (`BEA/GDPbyIndustry-1:...`),
+because `bea` is ingested straight from BEA via jobs/ingest_bea_full.py. Building a
+DBnomics-backed fetcher off this row would have minted a parallel id space beside the live
+series and reported success.
+
+So before using this table to justify a DBnomics fetcher, CHECK THE ID SHAPE: our stored
+series_key must already BE the DBnomics code (as with `WHO_HWF:HWF_0001.AFG.A`), verified by a
+full set comparison against /v22/series/<PROVIDER>/<DATASET>. The "live/frozen" column tells you
+whether the mirror still moves; it says nothing about whether the mirror is where our ids came
+from.
+
 Usage:  python tools/audit_upstream_liveness.py [--json out.json]
 """
 from __future__ import annotations
