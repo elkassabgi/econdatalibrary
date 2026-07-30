@@ -4242,6 +4242,7 @@ sources:
       plus _catalog.json cache. Tables exceeding MAX_CELLS=100,000 are downsampled to a single aggregate member per non-time
       dimension (SSS/TOTAL/first), so large tables are partially covered by design.
 - source_id: stats_nz
+  live: true
   scripts:
   - jobs/ingest_statsnz.py
   strategy: bulk_snapshot_if_changed
