@@ -220,6 +220,36 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
                   error=(f"+{tally.added} new rows" if tally.added else "no new rows"))
 
 
+def cursors_from_parquet(path, key_col="series_key", date_col="obs_date") -> dict:
+    """{series_key: max obs_date ISO} for one published parquet.
+
+    WHY EVERY BULK FETCHER NEEDS THIS. orchestrate._derive_changed_csvs takes the changed-series
+    set from `Result.series_cursors` and nothing else. A fetcher that merges rows and reports no
+    cursors is handled deliberately (§5.7): the run is demoted to `partial` and the vintage is
+    NOT bumped, so it re-fetches every run forever while its CSVs stay stale. Nothing crashes and
+    the parquet is published, which is exactly what makes it easy to miss.
+
+    Bulk snapshot sources have no natural per-series cursor — they replace whole files — so the
+    honest changed-set is "every series in the file we just republished", read back from that
+    file. One grouped scan of two columns, not a full read.
+
+    Returns {} on any failure: a cursor problem must never sink a good publish. The caller then
+    lands in the documented no-cursors path rather than raising.
+    """
+    try:
+        import pyarrow.parquet as pq
+        import pyarrow.compute as pc
+        tbl = pq.read_table(path, columns=[key_col, date_col])
+        if tbl.num_rows == 0:
+            return {}
+        agg = tbl.group_by(key_col).aggregate([(date_col, "max")])
+        keys = agg.column(key_col).to_pylist()
+        maxes = agg.column(f"{date_col}_max").to_pylist()
+        return {k: d.isoformat() for k, d in zip(keys, maxes) if k and d is not None}
+    except Exception:                                        # noqa: BLE001
+        return {}
+
+
 def structural_on_zero_rows(stored_max, resp) -> bool:
     """Uniform PxWeb-family rule for a 200 body that parsed to 0 observations: is it a
     STRUCTURAL break (True) or a benign empty/quiet (False)?  Shared by the PxWeb S3

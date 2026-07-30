@@ -40,7 +40,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import Deadline, Tally, cursors_from_parquet, finalize
 from ._vintage import http_vintage
 from jobs import ingest_bis_cbs_lbs as ig      # BULK urls + the EXTRACTED pure parser
 
@@ -150,6 +150,7 @@ def update(unit, since) -> Result:
     tally = Tally()
     published = 0
     maxd = None
+    cursors: dict = {}          # §5.7 changed-series set, per republished bulk zip
     dl = Deadline(minutes=BUDGET_MIN)
 
     for name, url in sorted(ig.BULK.items()):
@@ -214,6 +215,7 @@ def update(unit, since) -> Result:
             continue
 
         published += n_rows
+        cursors.update(cursors_from_parquet(path))
         tally.added_unit(max(0, n_rows - before), name)
         if cur_v:
             sidecar[name] = cur_v                            # advance ONLY after a clean publish
@@ -223,4 +225,5 @@ def update(unit, since) -> Result:
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
-    return finalize(tally, published, maxd or (since or None), source=SOURCE)
+    return finalize(tally, published, maxd or (since or None), source=SOURCE,
+                    series_cursors=cursors or None)

@@ -155,6 +155,7 @@ def run(source: str, provider: str, dataset: str, budget_min: int = 25) -> Resul
     keys, dates, vals = [], [], []
     n_series = 0
     n_na = 0
+    cursors: dict = {}          # §5.7 changed-series set, built from the rows we merge
     truncated: list = []
 
     for code, obs in _iter_series(provider, dataset, dl, truncated):
@@ -177,10 +178,13 @@ def run(source: str, provider: str, dataset: str, budget_min: int = 25) -> Resul
             if fv != fv:                                     # NaN
                 n_na += 1
                 continue
-            keys.append(f"{provider}_{dataset}:{code}")
+            sk = f"{provider}_{dataset}:{code}"
+            keys.append(sk)
             dates.append(dt.date.fromisoformat(d))
             vals.append(fv)
             got += 1
+            if cursors.get(sk, "") < d:
+                cursors[sk] = d
         if got:
             tally.added_unit(got, code)
 
@@ -222,4 +226,6 @@ def run(source: str, provider: str, dataset: str, budget_min: int = 25) -> Resul
     print(f"[{source}] {n_series:,} series, {len(keys):,} obs pulled "
           f"({n_na:,} upstream slots were NA/missing); store {before:,} -> {total:,} "
           f"(indexed_at {stamp})", flush=True)
-    return finalize(tally, total, maxd, source=source)
+    # §5.7: a fetcher that merges rows and reports NO cursors is demoted to partial with the
+    # vintage withheld, so it would republish every run forever while its CSVs stayed stale.
+    return finalize(tally, total, maxd, source=source, series_cursors=cursors or None)

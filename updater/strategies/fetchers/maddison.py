@@ -46,7 +46,7 @@ import requests
 from ... import blob, config, merge
 from ...errors import TransientError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Tally, cursors_from_parquet, finalize
 from ._vintage import http_vintage
 from jobs import ingest_maddison as ig     # URLS + the EXTRACTED pure parser
 
@@ -126,4 +126,7 @@ def update(unit, since) -> Result:
         blob.write_bytes_atomic(
             os.path.join(out_dir, SIDECAR),
             json.dumps({"primary": cur_v, "url": PRIMARY}, indent=1).encode("utf-8"))
-    return finalize(tally, total, maxd or (since or None), source=SOURCE)
+    # §5.7: without cursors the orchestrator cannot re-derive the changed CSVs, demotes the
+    # run to partial and withholds the vintage bump — so it would republish forever.
+    return finalize(tally, total, maxd or (since or None), source=SOURCE,
+                    series_cursors=cursors_from_parquet(path))
