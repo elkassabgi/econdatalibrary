@@ -4893,6 +4893,22 @@ sources:
       crops (25 parts), demographics, economics, environmental. Plus _manifest.json (source_id, license, per-cube rows/series,
       totals: 57,629,841 rows / 15,534,339 series). Wide schema: series_key + ~31 self-describing NASS dimension columns +
       obs_date(date32) + value(float64) + value_flag(string). series_key = ''usda:'' + pipe-joined KEY_COLS.'
+- source_id: vdem
+  # ADDED 2026-07-30. vdem had a working fetcher and 79,590,111 rows on disk but NO registry
+  # entry, so nothing ever scheduled it - it was being updated nowhere at all.
+  #
+  # NO live FLAG, so the shared daily run skips it and it runs in the heavy matrix instead.
+  # Measured with tools/measure_merge_peak.py: 12.8 GB peak on its largest file
+  # (77,371,121 rows) against 14.5 GB available on a 16 GB runner. It fits, but 1.7 GB of
+  # headroom is too thin to share a runner with other sources.
+  strategy: overwrite_if_changed
+  strategy_reason: 'The fetcher gates on github_sha(REPO) - V-Dem publishes as a versioned
+    GitHub repo, so the commit SHA is the publisher''s own change signal and needs no
+    date filtering. Two datasets (vdem core + vparty) are rewritten together.'
+  cadence: annual
+  refresh_cost: large
+  out_dir: vdem
+  review: true
 - source_id: wgi
   live: true
   scripts:
