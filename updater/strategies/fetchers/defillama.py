@@ -51,7 +51,7 @@ from urllib3.util.retry import Retry
 
 from ... import config, blob, merge
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import CURSOR_CAP, Tally, finalize, merge_cursor_map
 from ._vintage import UA as UA_HDR
 
 SOURCE = "defillama"
@@ -203,6 +203,10 @@ def _table_from_cols(cols):
         else:
             arrays[k] = pa.array(["" if x is None else str(x) for x in v], type=pa.string())
     return pa.table(arrays)
+
+
+# set by _merge_file when the cursor cap bites; cleared at the top of update()
+_CURSORS_CAPPED: list = []
 
 
 def _ts_maxes(keys, dates):
@@ -405,10 +409,12 @@ def _merge_file(path, tbl, dedup_keys, tally, cursors=None, keys=None, dates=Non
     n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=dedup_keys)
     tally.added_unit(max(0, n - before))
     if cursors is not None and keys is not None and dates is not None:
-        for sk, d in _ts_maxes(keys, dates).items():
-            prev = cursors.get(sk)
-            if prev is None or d > prev:
-                cursors[sk] = d
+        # BOUNDED (2026-07-30) — found by tools/audit_cursor_blowup.py. 38,466,591 store
+        # rows folded one cursor per series with no cap. abs's version of this exact shape
+        # (376M series, ~94 GB) destroyed the CI runner and took the whole daily updater
+        # down with it; every cursor is also a state.db row and a _catalog_ids_for query.
+        if merge_cursor_map(cursors, _ts_maxes(keys, dates)):
+            _CURSORS_CAPPED.append(1)
     return n, md
 
 
@@ -417,6 +423,7 @@ def update(unit, since) -> Result:
     os.makedirs(out_dir, exist_ok=True)
     sess = _session()
     tally = Tally()
+    _CURSORS_CAPPED.clear()
     cursors: dict[str, str] = {}
     total = 0
     maxd = None
@@ -472,5 +479,8 @@ def update(unit, since) -> Result:
     # The big "all-empty window => structural" floor would false-positive on a quiet
     # day (every overview can legitimately have no new breakdown row), so raise it above
     # the attempted-unit count; real breaks are caught per-file via structural_unit().
+    if _CURSORS_CAPPED:
+        print(f"[defillama] cursor set hit the {CURSOR_CAP:,} cap — further changed series "
+              f"are not individually reported", flush=True)
     return finalize(tally, total, maxd, source=SOURCE, series_cursors=cursors,
                     empty_window_floor=tally.attempted + 1)

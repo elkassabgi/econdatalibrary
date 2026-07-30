@@ -35,7 +35,7 @@ import requests
 
 from ... import config, blob, merge
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import CURSOR_CAP, Deadline, Tally, finalize, merge_cursor_map
 from ._vintage import content_hash, UA
 
 # MAX_TABLES bounds how MANY changed matrices a run pulls; this bounds how LONG. CSO's
@@ -234,6 +234,7 @@ def update(unit, since) -> Result:
     by_subject: dict[str, dict] = {}   # subject_key -> {"keys":[],"dates":[],"vals":[],"matrices":[]}
     pulled_ok = []                      # matrices we successfully pulled (advance cursor for these)
     series_cursors: dict[str, str] = {}
+    cursors_capped = False
 
     dl = Deadline(minutes=BUDGET_MIN)
     for mtr in batch:
@@ -273,8 +274,11 @@ def update(unit, since) -> Result:
             buf["keys"].append(key)
             buf["dates"].append(d)
             buf["vals"].append(v)
-            if d is not None and (key not in series_cursors or d.isoformat() > series_cursors[key]):
-                series_cursors[key] = d.isoformat()
+            # BOUNDED (2026-07-30) — found by tools/audit_cursor_blowup.py.
+            # 49,057,386 store rows folded one cursor per series with no cap.
+            if d is not None and merge_cursor_map(series_cursors,
+                                                  ((key, d.isoformat()),)):
+                cursors_capped = True
         pulled_ok.append(mtr)
 
     # 4) Merge each affected subject parquet (atomic, dedup, never-shrink). One Tally unit
@@ -303,6 +307,9 @@ def update(unit, since) -> Result:
         new_cursor[mtr] = cur_upd[mtr]
     _write_cursor(cur_path, new_cursor)
 
+    if cursors_capped:
+        print(f"[cso] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
+              f"not individually reported", flush=True)
     return finalize(tally, _total_rows(out_dir), last_obs, source=SOURCE,
                     series_cursors=series_cursors)
 

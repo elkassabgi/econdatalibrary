@@ -33,7 +33,7 @@ import pyarrow as pa
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import CURSOR_CAP, Tally, finalize, merge_cursor_map
 from jobs import ingest_owid as ig   # reuse http_get + THE chart parser
 
 SOURCE = "owid"
@@ -145,6 +145,7 @@ def update(unit, since) -> Result:
 
     tally = Tally()
     cursors: dict[str, str] = {}
+    cursors_capped = False
     maxd = None
     published = 0
     capped = len(todo) > MAX_PER_RUN
@@ -183,15 +184,21 @@ def update(unit, since) -> Result:
                     tally.transient_unit(); continue
                 published += n
                 tally.added_unit(max(0, n - before))
-                for k, d in zip(keys, dates):
-                    iso = d.isoformat()
-                    if k not in cursors or iso > cursors[k]:
-                        cursors[k] = iso
+                # BOUNDED (2026-07-30). 1,048,968 distinct series in this store against a
+                # 50,000 cap; each cursor is a state.db row and a _catalog_ids_for query,
+                # both linear in the count. Same unbounded shape that made abs (376M
+                # series) destroy the runner, at a far smaller scale.
+                if merge_cursor_map(cursors, ((k, d.isoformat()) for k, d in zip(keys, dates))):
+                    cursors_capped = True
                 if md and (maxd is None or str(md) > str(maxd)):
                     maxd = md
                 sidecar[slug] = lastmod      # advance ONLY after a clean publish
 
     _save_sidecar(out_dir, sidecar)
+
+    if cursors_capped:
+        print(f"[owid] cursor set hit the {CURSOR_CAP:,} cap — further changed series "
+              f"are not individually reported", flush=True)
 
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))

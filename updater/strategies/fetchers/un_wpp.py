@@ -31,7 +31,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import CURSOR_CAP, Tally, finalize, merge_cursor_map
 from jobs import ingest_un_wpp as ig   # reuse FILES + THE csv parser / key builder
 
 SOURCE = "un_wpp"
@@ -102,6 +102,7 @@ def update(unit, since) -> Result:
 
     tally = Tally()
     cursors: dict[str, str] = {}
+    cursors_capped = False
     maxd = None
     published = 0
 
@@ -144,10 +145,11 @@ def update(unit, since) -> Result:
             continue
         published += n
         tally.added_unit(max(0, n - before))
-        for k, d in zip(keys, dates):
-            iso = d.isoformat()
-            if k not in cursors or iso > cursors[k]:
-                cursors[k] = iso
+        # BOUNDED (2026-07-30) — found by tools/audit_cursor_blowup.py. 27,756,924
+        # store rows folded one cursor per series with no cap.
+        if merge_cursor_map(cursors, ((k, d.isoformat()) for k, d in zip(keys, dates)
+                                      if d is not None)):
+            cursors_capped = True
         if md and (maxd is None or str(md) > str(maxd)):
             maxd = md
         sidecar[label] = {"lm": lm or stored.get("lm"), "etag": etag or stored.get("etag")}
@@ -161,5 +163,8 @@ def update(unit, since) -> Result:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
 
+    if cursors_capped:
+        print(f"[un_wpp] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
+              f"not individually reported", flush=True)
     return finalize(tally, published, maxd or (since or None), source=SOURCE,
                     series_cursors=cursors)
