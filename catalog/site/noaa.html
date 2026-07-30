@@ -202,7 +202,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-23');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-30');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -236,7 +236,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=noaa">Select &amp; download noaa series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/noaa.html">https://econdatalibrary.com/noaa.html</a></dd>
-<dt>Update cadence</dt><dd>monthly</dd>
+<dt>Update cadence</dt><dd>monthly <em>(target &mdash; not yet automated)</em></dd>
+<dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
 <dt>Storage layout</dt><dd>overwrite-multi-file, grouped by 2-char GHCN country/network prefix: data/clean_full/noaa/&lt;ds&gt;__&lt;PREFIX&gt;.parquet (obs) + &lt;ds&gt;__&lt;PREFIX&gt;__series.parquet (series meta sidecar), ds in {gsom,gsoy}. ~834 parquet files total currently; ~552M obs (COVERAGE LARGE). Obs schema: dataset, station, series_key (&#x27;&lt;station&gt;:&lt;element&gt;&#x27;), obs_date (date32), element, value (float64), attributes. Raw cache: data/raw/noaa/{gsom,gsoy}/*.csv (~214K station CSVs), plus _manifest.json, _&lt;ds&gt;_failures.json, station_ids.txt, doc/ghcnd-stations.txt.</dd></dl>
 <h2>Full description</h2>
@@ -361,7 +362,7 @@ Usage:
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-23 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-30 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

@@ -3,7 +3,7 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
 <title>Economic Data Library: Free Economic and Financial Data</title>
-<meta name="description" content="Free, research-grade economic & financial data: 184 sources in one namespace, with licenses, provenance, and producer-first citations on every series.">
+<meta name="description" content="Free, research-grade economic & financial data: 203 sources in one namespace, with licenses, provenance, and producer-first citations on every series.">
 <link rel="canonical" href="https://econdatalibrary.com/index.html">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -197,7 +197,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
       "@id": "https://econdatalibrary.com/#catalog",
       "name": "Econ Data Library",
       "url": "https://econdatalibrary.com/catalog.html",
-      "description": "Searchable catalog of 184 economic and financial data sources with license, provenance, and machine-readable Dataset + Croissant metadata.",
+      "description": "Searchable catalog of 203 economic and financial data sources with license, provenance, and machine-readable Dataset + Croissant metadata.",
       "publisher": {
         "@type": "Organization",
         "name": "Econ Data Library",
@@ -252,7 +252,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
           "name": "What does the library cover?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "184 economic and financial data sources — national statistics, central banks, international organizations, trade, development, energy, and research datasets — indexed in one namespace with billions of individual series (live counts are measured on the data store and shown on this page)."
+            "text": "203 economic and financial data sources — national statistics, central banks, international organizations, trade, development, energy, and research datasets — indexed in one namespace with billions of individual series (live counts are measured on the data store and shown on this page)."
           }
         },
         {
@@ -311,7 +311,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-23');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-30');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -341,7 +341,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
         <span class="stat-label">Years of History</span>
       </div>
       <div class="stat-item">
-        <span class="stat-number">184</span>
+        <span class="stat-number">203</span>
         <span class="stat-label">Sources</span>
       </div>
     </div>
@@ -361,7 +361,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     <div class="feature-row">
       <div class="feature-text">
         <h2>What is this?</h2>
-        <p>A single, citable library over 184 economic and financial data sources — national statistical offices, central banks, international organizations, trade, development, energy, and research datasets.</p>
+        <p>A single, citable library over 203 economic and financial data sources — national statistical offices, central banks, international organizations, trade, development, energy, and research datasets.</p>
         <p>Every series lives in one namespace (<code>source:series:geography</code>), resolves over a free REST API, and ships with its license, attribution requirements, and a producer-first citation. Bundles are snapshot-pinned so your results reproduce exactly.</p>
         <p>Everything in the library is real, downloadable data — if we can’t host a source, we don’t list it.</p>
         <p>No subscription. No paywall. One free key for the whole ElkassabgiData family, including <a href="https://hfdatalibrary.com/">HF Data Library</a>.</p>
@@ -390,7 +390,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
     <div style="max-width:680px;margin:0 auto">
       <div class="acard" style="border-left:4px solid var(--green)">
         <span class="badge open" style="margin-bottom:.5rem;display:inline-block">Redistributed</span>
-        <h3>184 sources — all real, all downloadable</h3>
+        <h3>203 sources — all real, all downloadable</h3>
         <p>Every dataset here is served from our store as citation-headed CSV, over the free REST API, and in snapshot-pinned bundles — with license and attribution attached to every series. Licensed for re-hosting, with Python and R clients ready to go.</p>
         <p style="margin-top:.5rem"><strong>Best for:</strong> direct downloads, reproducible research bundles, API pipelines.</p>
       </div>
@@ -403,7 +403,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
 <section class="section">
   <div class="container">
     <h2 class="section-title" style="margin-bottom:.5rem">What the library covers</h2>
-    <p style="text-align:center;color:var(--g500);margin-bottom:2.5rem">184 sources across the pillars of empirical economics and finance — click a pillar to browse its sources.</p>
+    <p style="text-align:center;color:var(--g500);margin-bottom:2.5rem">203 sources across the pillars of empirical economics and finance — click a pillar to browse its sources.</p>
     <div class="grid-3">
       <a class="acard tile-link" href="catalog.html?pillar=macro"><div class="card-icon">&#128200;</div><h3>Macro &amp; National Accounts</h3><p>GDP, employment, production — national statistical offices (ABS, INSEE, ISTAT, StatCan, Eurostat) and the IMF/World Bank.</p><span class="tile-go">Browse sources &rarr;</span></a>
       <a class="acard tile-link" href="catalog.html?pillar=money"><div class="card-icon">&#128176;</div><h3>Prices, Money &amp; Central Banks</h3><p>Inflation, interest rates, FX — ECB, Fed Board, BIS, Bundesbank, and dozens of national central banks.</p><span class="tile-go">Browse sources &rarr;</span></a>
@@ -447,7 +447,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
 <section class="section" id="catalog" style="padding:3.5rem 0">
   <div class="container-narrow" style="text-align:center">
     <h2 class="section-title" style="margin-bottom:.5rem">Browse the catalog</h2>
-    <p style="color:var(--g500);margin-bottom:1.5rem">All 184 sources — searchable and filterable by pillar, region, topic, and access tier; series search in 6 languages.</p>
+    <p style="color:var(--g500);margin-bottom:1.5rem">All 203 sources — searchable and filterable by pillar, region, topic, and access tier; series search in 6 languages.</p>
     <a href="catalog.html" class="btn btn-primary" style="font-size:1.05rem;padding:.85rem 2.2rem">Open the Data Catalog &rarr;</a>
   </div>
 </section>
@@ -543,7 +543,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
   <div class="container-narrow">
     <h2 class="section-title">Frequently asked questions</h2>
     <div class="faq-item"><h3>Is the data really free?</h3><p>Yes. Browsing, metadata, and the catalog need no account. Data downloads use a free API key — no subscription, no paywall. One free ElkassabgiData account works across the whole family, including hfdatalibrary.com.</p></div>
-<div class="faq-item"><h3>What does the library cover?</h3><p>184 economic and financial data sources — national statistics, central banks, international organizations, trade, development, energy, and research datasets — indexed in one namespace with billions of individual series (live counts are measured on the data store and shown on this page).</p></div>
+<div class="faq-item"><h3>What does the library cover?</h3><p>203 economic and financial data sources — national statistics, central banks, international organizations, trade, development, energy, and research datasets — indexed in one namespace with billions of individual series (live counts are measured on the data store and shown on this page).</p></div>
 <div class="faq-item"><h3>How are licenses handled?</h3><p>Every series carries its source&#x27;s license and attribution requirements. We only list sources whose license permits re-hosting; anything we can&#x27;t redistribute isn&#x27;t catalogued at all — never silently served.</p></div>
 <div class="faq-item"><h3>How do I cite a series?</h3><p>Every series and every bundle ships a producer-first citation (the original statistical agency first, the library second). Download bundles are snapshot-pinned so a citation reproduces the exact data.</p></div>
 <div class="faq-item"><h3>Is there an API?</h3><p>Yes — a free REST API for search, metadata, series CSV, and reproducible bundles, plus an MCP server that lets AI assistants query the library directly with licenses and citations attached.</p></div>

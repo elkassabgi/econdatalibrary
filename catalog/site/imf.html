@@ -204,7 +204,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-23');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-30');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -237,7 +237,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=imf">Select &amp; download imf series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/imf.html">https://econdatalibrary.com/imf.html</a></dd>
-<dt>Update cadence</dt><dd>monthly</dd>
+<dt>Update cadence</dt><dd>monthly <em>(target &mdash; not yet automated)</em></dd>
+<dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
 <dt>Storage layout</dt><dd>per-dataflow parquet at data/clean_full/imf/&lt;DID&gt;.parquet for simple flows; giants are split into per-frequency parts &lt;DID&gt;__&lt;FREQ&gt;.parquet, and MEGA cubes into per-frequency x low-cardinality-dim parts &lt;DID&gt;__&lt;FREQ&gt;__&lt;VAL&gt;.parquet (observed 767 files). Schema series_key(str, &#x27;.&#x27;-joined SDMX dimension values), obs_date(date32), value(float64), freq(str). Run state in data/clean_full/imf/_manifest.json and full catalog snapshot in _catalog.json (manifest shows 102 base flows, 44 ok / 57 skipped, ~101.6M obs).</dd></dl>
 <h2>Full description</h2>
@@ -375,7 +376,7 @@ Usage:
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-23 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-30 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

@@ -112,7 +112,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "name": "UNCTAD Data Hub (UNCTADstat) — Foreign direct investment dataset (code: FMCPA)",
     "url": "https://unctadstat.unctad.org/EN/"
   },
-  "license": "https://data.adb.org/terms-use-data",
+  "license": "https://creativecommons.org/licenses/by/3.0/igo/",
   "keywords": [
     "International Trade",
     "unctad_fmcpa"
@@ -129,7 +129,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
       "@type": "DataDownload",
       "encodingFormat": "text/csv",
       "contentUrl": "https://econdatalibrary.com/download.html?source=unctad_fmcpa",
-      "license": "https://data.adb.org/terms-use-data"
+      "license": "https://creativecommons.org/licenses/by/3.0/igo/"
     }
   ]
 }
@@ -166,7 +166,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "https://data.adb.org/terms-use-data",
+  "license": "https://creativecommons.org/licenses/by/3.0/igo/",
   "keywords": [
     "International Trade"
   ],
@@ -203,7 +203,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-23');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-30');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -225,7 +225,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">50</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1995-01-01 – 2019-01-01</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">International Trade</div></div></div>
 <h2>Licensing &amp; provenance</h2>
 <dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 3.0 IGO (CC BY 3.0 IGO)</dd>
-<dt>License URL</dt><dd><a href="https://data.adb.org/terms-use-data">https://data.adb.org/terms-use-data</a></dd>
+<dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/3.0/igo/">https://creativecommons.org/licenses/by/3.0/igo/</a></dd>
 <dt>Required attribution</dt><dd>Source: UN Trade and Development (UNCTAD) Data Hub, UNCTADstat</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Yes</dd>
@@ -238,7 +238,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>Access &amp; mirrors</h2>
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=unctad_fmcpa">Select &amp; download unctad_fmcpa series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
-<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/unctad_fmcpa.html">https://econdatalibrary.com/unctad_fmcpa.html</a></dd></dl>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/unctad_fmcpa.html">https://econdatalibrary.com/unctad_fmcpa.html</a></dd>
+<dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
@@ -258,7 +259,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     &quot;name&quot;: &quot;UNCTAD Data Hub (UNCTADstat) — Foreign direct investment dataset (code: FMCPA)&quot;,
     &quot;url&quot;: &quot;https://unctadstat.unctad.org/EN/&quot;
   },
-  &quot;license&quot;: &quot;https://data.adb.org/terms-use-data&quot;,
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;,
   &quot;keywords&quot;: [
     &quot;International Trade&quot;,
     &quot;unctad_fmcpa&quot;
@@ -275,7 +276,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
       &quot;@type&quot;: &quot;DataDownload&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
       &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=unctad_fmcpa&quot;,
-      &quot;license&quot;: &quot;https://data.adb.org/terms-use-data&quot;
+      &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;
     }
   ]
 }</pre></details>
@@ -310,7 +311,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;https://data.adb.org/terms-use-data&quot;,
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;,
   &quot;keywords&quot;: [
     &quot;International Trade&quot;
   ],
@@ -327,7 +328,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-23 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-30 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

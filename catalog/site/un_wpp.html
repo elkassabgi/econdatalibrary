@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
+<title>United Nations, Department of Economic and Social Affairs, Population Division (World Population Prospects) — Econ Data Library</title>
+<meta name="description" content="Source: United Nations, DESA, Population Division, World Population Prospects 2024, licensed under CC BY 3.0 IGO">
+<link rel="canonical" href="https://econdatalibrary.com/un_wpp.html">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{--navy:#1a2332;--navy-light:#243044;--blue:#2563eb;--blue-pale:#eff6ff;
+--gold:#d4a843;--gold-deep:#8a6d27;--g50:#f9fafb;--g100:#f3f4f6;--g200:#e5e7eb;
+--g300:#d1d5db;--g500:#6b7280;--g600:#4b5563;--g700:#374151;--g800:#1f2937;
+--green:#047857;--red:#b91c1c;--amber:#92600a;--serif:Georgia,serif;
+--sans:"Inter",system-ui,sans-serif;--mono:"JetBrains Mono",monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);color:var(--g800);background:#fff;line-height:1.6}
+.nav{background:var(--navy);color:#fff;position:sticky;top:0;z-index:50;
+box-shadow:0 2px 8px rgba(0,0,0,.15)}
+.nav-in{max-width:1200px;margin:0 auto;padding:0 1.5rem;height:64px;display:flex;
+align-items:center;justify-content:space-between}
+.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}
+.brand .d{color:var(--gold)}.brand a{color:#fff;text-decoration:none}
+/* nav links mirror hfdatalibrary.com exactly: padded pills, hover + active
+   highlight (rgba white .1 background), same rhythm and bar height (64px). */
+.nav-links{display:flex;gap:.1rem;align-items:center;white-space:nowrap}
+.nav-links a{color:rgba(255,255,255,.8);text-decoration:none;padding:.5rem .75rem;
+border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-space:nowrap}
+.nav-links a:hover,.nav-links a.active{color:#fff;background:rgba(255,255,255,.1)}
+.wrap{max-width:920px;margin:0 auto;padding:2rem 1.5rem}
+.crumb{font-size:.82rem;color:var(--g500);margin-bottom:1rem}
+.crumb a{color:var(--blue);text-decoration:none}
+h1{font-family:var(--serif);color:var(--navy);font-size:2rem;line-height:1.2}
+.pid{font-family:var(--mono);color:var(--gold-deep);font-size:.85rem;margin-bottom:.3rem}
+.badges{margin:.9rem 0 1.2rem;display:flex;gap:.5rem;flex-wrap:wrap}
+.badge{display:inline-block;font-size:.74rem;font-weight:600;padding:.2rem .6rem;
+border-radius:999px}
+.badge.open{background:#ecfdf5;color:var(--green)}
+.badge.meta{background:#fffbeb;color:var(--amber)}
+.badge.lic{background:var(--blue-pale);color:var(--blue)}
+.badge.cat{background:var(--g100);color:var(--g600)}
+.lead{font-size:1.02rem;color:var(--g700);margin:.5rem 0 1.5rem;white-space:pre-wrap}
+.callout{font-size:.9rem;border-radius:8px;padding:.8rem 1rem;margin:1rem 0}
+.callout.meta{background:#fffbeb;border:1px solid #fde68a;color:#7c5e10}
+.callout.open{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46}
+ul.notes{margin:.4rem 0 1rem;padding-left:1.1rem;color:var(--g700)}
+ul.notes li{margin:.35rem 0;font-size:.92rem;line-height:1.5}
+ul.notes li:first-child{font-weight:600;color:var(--navy)}
+blockquote.cite{margin:.4rem 0;padding:.7rem 1rem;border-left:3px solid var(--gold);
+background:var(--g50,#f9fafb);font-family:var(--mono);font-size:.85rem;color:var(--g700);white-space:pre-wrap}
+p.proc{font-size:.85rem;color:var(--g600);margin:.4rem 0 1rem}
+h2{font-family:var(--serif);color:var(--navy);font-size:1.2rem;margin:1.8rem 0 .5rem;
+border-bottom:1px solid var(--g200);padding-bottom:.3rem}
+.kv{display:grid;grid-template-columns:190px 1fr;gap:.45rem 1rem;font-size:.92rem}
+.kv dt{color:var(--g500);font-weight:600}
+.kv dd{color:var(--g800);word-break:break-word}
+.kv dd a{color:var(--blue)}
+.mono{font-family:var(--mono);font-size:.85rem}
+details{margin-top:1rem;border:1px solid var(--g200);border-radius:8px;background:var(--g50)}
+summary{cursor:pointer;padding:.7rem 1rem;font-weight:600;color:var(--g700);font-size:.9rem}
+details pre{margin:0;padding:1rem;overflow:auto;font-family:var(--mono);font-size:.78rem;
+line-height:1.5;border-top:1px solid var(--g200);background:#fff;color:var(--g800)}
+.foot{color:var(--g500);font-size:.8rem;text-align:center;padding:2.5rem 1rem;
+border-top:1px solid var(--g200);margin-top:2.5rem}
+.foot a{color:var(--blue)}
+.dhero{background:var(--navy);margin:-2rem -1.5rem 1.6rem;padding:2.1rem 1.5rem 1.7rem;
+border-bottom:3px solid var(--gold)}
+.dhero .crumb{color:rgba(255,255,255,.55);margin-bottom:.7rem}
+.dhero .crumb a{color:var(--gold);text-decoration:none}
+.dhero .pid{color:var(--gold);margin-bottom:.35rem}
+.dhero h1{color:#fff;font-size:1.9rem}
+.dhero .badges{margin:.9rem 0 0}
+.dhero .lead{color:rgba(255,255,255,.78);margin:.8rem 0 0;font-size:1rem}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:.7rem;margin:.5rem 0 1rem}
+.metric{background:var(--g50);border:1px solid var(--g200);border-radius:10px;padding:.75rem .9rem}
+.metric .mlabel{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g500)}
+.metric .mval{font-family:var(--serif);font-size:1.15rem;color:var(--navy);margin-top:.25rem;word-break:break-word}
+
+/* status bar + nav (hfdatalibrary.com parity) */
+.status-bar{background:var(--g50);border-bottom:1px solid var(--g200);font-size:.8rem;
+color:var(--g500);min-height:32px;line-height:32px;padding:0 1.5rem}
+.status-bar .sb-in{max-width:1200px;margin:0 auto;display:flex;justify-content:space-between;
+align-items:center;flex-wrap:wrap;gap:.25rem}
+.nav .signin{background:var(--gold);color:var(--navy)!important;padding:.4rem .875rem;
+border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:.65rem}
+.nav .signin:hover{background:#e0b955}
+.nav .brand{display:inline-flex;align-items:center;gap:.55rem}
+.nav .fam-tag{font-size:.62rem;color:var(--gold)!important;border:1px solid rgba(212,168,67,.5);
+border-radius:999px;padding:.12rem .5rem;white-space:nowrap;font-family:var(--sans);font-weight:600;
+letter-spacing:.01em;text-decoration:none;line-height:1.4}
+.nav .fam-tag:hover{background:rgba(212,168,67,.15)}
+@media (max-width:680px){.nav .fam-tag{display:none}}
+</style>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org/",
+  "@type": "Dataset",
+  "name": "United Nations, Department of Economic and Social Affairs, Population Division (World Population Prospects)",
+  "description": "Source: United Nations, DESA, Population Division, World Population Prospects 2024, licensed under CC BY 3.0 IGO",
+  "url": "https://econdatalibrary.com/un_wpp.html",
+  "identifier": "un_wpp",
+  "isAccessibleForFree": true,
+  "publisher": {
+    "@type": "Organization",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com"
+  },
+  "creator": {
+    "@type": "Organization",
+    "name": "United Nations, Department of Economic and Social Affairs, Population Division (World Population Prospects)",
+    "url": "https://population.un.org/wpp/"
+  },
+  "license": "https://creativecommons.org/licenses/by/3.0/igo/",
+  "keywords": [
+    "Population & Demographics",
+    "un_wpp"
+  ],
+  "temporalCoverage": "1950-07-01/..",
+  "creditText": "Source: United Nations, DESA, Population Division, World Population Prospects 2024, licensed under CC BY 3.0 IGO",
+  "sameAs": [
+    "https://huggingface.co/datasets/econdatalibrary-un_wpp",
+    "https://zenodo.org/communities/econdatalibrary"
+  ],
+  "distribution": [
+    {
+      "@type": "DataDownload",
+      "encodingFormat": "text/csv",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=un_wpp",
+      "license": "https://creativecommons.org/licenses/by/3.0/igo/"
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": {
+    "@language": "en",
+    "@vocab": "https://schema.org/",
+    "cr": "http://mlcommons.org/croissant/",
+    "data": {
+      "@id": "cr:data",
+      "@type": "@json"
+    },
+    "dataType": {
+      "@id": "cr:dataType",
+      "@type": "@vocab"
+    },
+    "sc": "https://schema.org/",
+    "conformsTo": "dct:conformsTo",
+    "dct": "http://purl.org/dc/terms/"
+  },
+  "@type": "sc:Dataset",
+  "conformsTo": "http://mlcommons.org/croissant/1.0",
+  "name": "un_wpp",
+  "description": "Source: United Nations, DESA, Population Division, World Population Prospects 2024, licensed under CC BY 3.0 IGO",
+  "url": "https://econdatalibrary.com/un_wpp.html",
+  "creator": {
+    "@type": "sc:Organization",
+    "name": "United Nations, Department of Economic and Social Affairs, Population Division (World Population Prospects)"
+  },
+  "publisher": {
+    "@type": "sc:Organization",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com"
+  },
+  "license": "https://creativecommons.org/licenses/by/3.0/igo/",
+  "keywords": [
+    "Population & Demographics"
+  ],
+  "distribution": [
+    {
+      "@type": "cr:FileObject",
+      "@id": "un_wpp-csv",
+      "name": "un_wpp-csv",
+      "description": "Per-series CSV, downloadable with a free API key.",
+      "contentUrl": "https://econdatalibrary.com/download.html?source=un_wpp",
+      "encodingFormat": "text/csv"
+    }
+  ]
+}
+</script>
+<script src="assets/sso.js?v=20260715c"></script>
+</head><body>
+<div class="status-bar" id="status-bar"><div class="sb-in">
+<span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
+<span style="display:flex;gap:1.5rem;white-space:nowrap"><span id="sb-site"></span><span id="sb-data"></span></span>
+</div></div>
+<div class="nav"><div class="nav-in"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" class="fam-tag" title="Part of the ElkassabgiData family — one account, every library">part of ElkassabgiData</a></div>
+<div class="nav-links"><a href="catalog.html">Catalog</a><a href="docs.html">Documentation</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">AI Tools</a><a href="cite.html">Cite</a><a href="stats.html">Stats</a><a href="status.html">Status</a><a href="contact.html">Contact</a><a href="account.html" class="signin">Sign in</a></div></div></div>
+<script>
+(function(){
+  var API="https://econdl-api.elkassabgi.workers.dev";
+  function fdate(s){try{
+    var m=/^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+    var d=m?new Date(+m[1],+m[2]-1,+m[3]):new Date(s); /* date-only: local, no UTC shift */
+    if(isNaN(d))return s;
+    return d.toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});}catch(e){return s;}}
+  fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
+    document.getElementById('sb-dot').style.color='#059669';
+    document.getElementById('sb-text').textContent='All systems operational';
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-30');
+    if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
+  }).catch(function(){
+    document.getElementById('sb-dot').style.color='#d97706';
+    document.getElementById('sb-text').textContent='Status check unavailable';
+  });
+})();
+</script>
+
+<div class="wrap">
+<div class="dhero">
+<div class="crumb"><a href="index.html">Catalog</a> / United Nations, Department of Economic and Social Affairs, Population Division (World Population Prospects)</div>
+<div class="pid">un_wpp</div>
+<h1>United Nations, Department of Economic and Social Affairs, Population Division (World Population Prospects)</h1>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 3.0 IGO (CC BY 3.0 IGO)</span><span class="badge cat">Population &amp; Demographics</span></div>
+<p class="lead">Source: United Nations, DESA, Population Division, World Population Prospects 2024, licensed under CC BY 3.0 IGO</p>
+</div>
+<div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
+<h2>Coverage</h2>
+<div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">334,236</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1950-07-01 – present</div></div><div class="metric"><div class="mlabel">Distinct geographies</div><div class="mval">553</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Population & Demographics</div></div></div>
+<h2>Licensing &amp; provenance</h2>
+<dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 3.0 IGO (CC BY 3.0 IGO)</dd>
+<dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/3.0/igo/">https://creativecommons.org/licenses/by/3.0/igo/</a></dd>
+<dt>Required attribution</dt><dd>Source: United Nations, DESA, Population Division, World Population Prospects 2024, licensed under CC BY 3.0 IGO</dd>
+<dt>Redistribution</dt><dd>Permitted (served here)</dd>
+<dt>Commercial use</dt><dd>Yes</dd>
+<dt>Modification</dt><dd>Permitted</dd>
+<dt>Provider homepage</dt><dd><a href="https://population.un.org/wpp/">https://population.un.org/wpp/</a></dd>
+<dt>Provider terms</dt><dd><a href="https://population.un.org/wpp/">https://population.un.org/wpp/</a></dd></dl>
+<h2>Access &amp; mirrors</h2>
+<dl class="kv"><dt>Download</dt><dd><a href="download.html?source=un_wpp">Select &amp; download un_wpp series as CSV &rarr;</a></dd>
+<dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/un_wpp.html">https://econdatalibrary.com/un_wpp.html</a></dd>
+<dt>Update cadence</dt><dd>irregular</dd>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
+<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
+<dt>Storage layout</dt><dd>two parquet files: data/clean_full/un_wpp/indicators_medium.parquet (~25.9 MB) and indicators_other.parquet (~114 MB). Schema: series_key (string), obs_date date32 (set to July 1 of year), value float64. Keys: WPP:{Indicator}:{Variant}:{ISO3}. (Stray _wpp_log.txt/_wpp_err.txt sidecars present from a prior run.)</dd></dl>
+<h2>Structured metadata</h2>
+<details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
+  &quot;@context&quot;: &quot;https://schema.org/&quot;,
+  &quot;@type&quot;: &quot;Dataset&quot;,
+  &quot;name&quot;: &quot;United Nations, Department of Economic and Social Affairs, Population Division (World Population Prospects)&quot;,
+  &quot;description&quot;: &quot;Source: United Nations, DESA, Population Division, World Population Prospects 2024, licensed under CC BY 3.0 IGO&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/un_wpp.html&quot;,
+  &quot;identifier&quot;: &quot;un_wpp&quot;,
+  &quot;isAccessibleForFree&quot;: true,
+  &quot;publisher&quot;: {
+    &quot;@type&quot;: &quot;Organization&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;creator&quot;: {
+    &quot;@type&quot;: &quot;Organization&quot;,
+    &quot;name&quot;: &quot;United Nations, Department of Economic and Social Affairs, Population Division (World Population Prospects)&quot;,
+    &quot;url&quot;: &quot;https://population.un.org/wpp/&quot;
+  },
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;,
+  &quot;keywords&quot;: [
+    &quot;Population &amp; Demographics&quot;,
+    &quot;un_wpp&quot;
+  ],
+  &quot;temporalCoverage&quot;: &quot;1950-07-01/..&quot;,
+  &quot;creditText&quot;: &quot;Source: United Nations, DESA, Population Division, World Population Prospects 2024, licensed under CC BY 3.0 IGO&quot;,
+  &quot;sameAs&quot;: [
+    &quot;https://huggingface.co/datasets/econdatalibrary-un_wpp&quot;,
+    &quot;https://zenodo.org/communities/econdatalibrary&quot;
+  ],
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=un_wpp&quot;,
+      &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;
+    }
+  ]
+}</pre></details>
+<details><summary>Croissant (ML-ready, schema.org JSON-LD)</summary><pre>{
+  &quot;@context&quot;: {
+    &quot;@language&quot;: &quot;en&quot;,
+    &quot;@vocab&quot;: &quot;https://schema.org/&quot;,
+    &quot;cr&quot;: &quot;http://mlcommons.org/croissant/&quot;,
+    &quot;data&quot;: {
+      &quot;@id&quot;: &quot;cr:data&quot;,
+      &quot;@type&quot;: &quot;@json&quot;
+    },
+    &quot;dataType&quot;: {
+      &quot;@id&quot;: &quot;cr:dataType&quot;,
+      &quot;@type&quot;: &quot;@vocab&quot;
+    },
+    &quot;sc&quot;: &quot;https://schema.org/&quot;,
+    &quot;conformsTo&quot;: &quot;dct:conformsTo&quot;,
+    &quot;dct&quot;: &quot;http://purl.org/dc/terms/&quot;
+  },
+  &quot;@type&quot;: &quot;sc:Dataset&quot;,
+  &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
+  &quot;name&quot;: &quot;un_wpp&quot;,
+  &quot;description&quot;: &quot;Source: United Nations, DESA, Population Division, World Population Prospects 2024, licensed under CC BY 3.0 IGO&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/un_wpp.html&quot;,
+  &quot;creator&quot;: {
+    &quot;@type&quot;: &quot;sc:Organization&quot;,
+    &quot;name&quot;: &quot;United Nations, Department of Economic and Social Affairs, Population Division (World Population Prospects)&quot;
+  },
+  &quot;publisher&quot;: {
+    &quot;@type&quot;: &quot;sc:Organization&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;,
+  &quot;keywords&quot;: [
+    &quot;Population &amp; Demographics&quot;
+  ],
+  &quot;distribution&quot;: [
+    {
+      &quot;@type&quot;: &quot;cr:FileObject&quot;,
+      &quot;@id&quot;: &quot;un_wpp-csv&quot;,
+      &quot;name&quot;: &quot;un_wpp-csv&quot;,
+      &quot;description&quot;: &quot;Per-series CSV, downloadable with a free API key.&quot;,
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=un_wpp&quot;,
+      &quot;encodingFormat&quot;: &quot;text/csv&quot;
+    }
+  ]
+}</pre></details>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-30 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+</div>
+<div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
+  <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
+    <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="300" height="80" style="max-width:78%;height:auto">
+  </a>
+  <p style="color:rgba(255,255,255,.82);font-family:Georgia,serif;font-size:1.05rem;margin:1.1rem 0 .35rem">One account. Every library.</p>
+  <p style="color:rgba(255,255,255,.5);font-size:.85rem;margin:0">
+    <a href="https://hfdatalibrary.com/" style="color:#d4a843;text-decoration:none">HF Data Library</a>
+    &nbsp;&middot;&nbsp;
+    <a href="https://econdatalibrary.com/" style="color:#d4a843;text-decoration:none">Econ Data Library</a>
+    &nbsp;&middot;&nbsp;<span style="color:rgba(255,255,255,.4)">more to come</span>
+  </p>
+</div>
+</body></html>

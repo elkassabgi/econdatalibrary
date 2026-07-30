@@ -118,7 +118,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "transparency_ti"
   ],
   "temporalCoverage": "2012-12-31/2024-12-31",
-  "creditText": "Corruption Perceptions Index ({year}) by Transparency International is licensed under CC BY 4.0",
+  "creditText": "Corruption Perceptions Index (2024) by Transparency International is licensed under CC BY 4.0",
   "citation": "Transparency International (Corruption Perceptions Index). Retrieved from https://www.transparency.org/en/cpi. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-transparency_ti",
@@ -203,7 +203,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-23');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-30');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -226,7 +226,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>Licensing &amp; provenance</h2>
 <dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 4.0 (CC BY 4.0)</dd>
 <dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/4.0/">https://creativecommons.org/licenses/by/4.0/</a></dd>
-<dt>Required attribution</dt><dd>Corruption Perceptions Index ({year}) by Transparency International is licensed under CC BY 4.0</dd>
+<dt>Required attribution</dt><dd>Corruption Perceptions Index (2024) by Transparency International is licensed under CC BY 4.0</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Yes</dd>
 <dt>Modification</dt><dd>Permitted</dd>
@@ -240,6 +240,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/transparency_ti.html">https://econdatalibrary.com/transparency_ti.html</a></dd>
 <dt>Update cadence</dt><dd>annual</dd>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
 <dt>Update strategy</dt><dd>overwrite if changed</dd>
 <dt>Storage layout</dt><dd>single parquet (~4KB), columns series_key(TI_CPI:cpi_score:{iso3}), obs_date(Dec-31 of year), value(float64 CPI score). ~180 countries x ~13 years.</dd></dl>
 <h2>Full description</h2>
@@ -282,7 +283,7 @@ Run: python jobs/ingest_transparency.py</p>
     &quot;transparency_ti&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;2012-12-31/2024-12-31&quot;,
-  &quot;creditText&quot;: &quot;Corruption Perceptions Index ({year}) by Transparency International is licensed under CC BY 4.0&quot;,
+  &quot;creditText&quot;: &quot;Corruption Perceptions Index (2024) by Transparency International is licensed under CC BY 4.0&quot;,
   &quot;citation&quot;: &quot;Transparency International (Corruption Perceptions Index). Retrieved from https://www.transparency.org/en/cpi. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-transparency_ti&quot;,
@@ -345,7 +346,7 @@ Run: python jobs/ingest_transparency.py</p>
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-23 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-30 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

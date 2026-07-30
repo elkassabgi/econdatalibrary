@@ -112,7 +112,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "name": "Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development",
     "url": "https://data.iadb.org"
   },
-  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "license": "https://data.iadb.org",
   "keywords": [
     "Development Indicators",
     "idb"
@@ -129,7 +129,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
       "@type": "DataDownload",
       "encodingFormat": "text/csv",
       "contentUrl": "https://econdatalibrary.com/download.html?source=idb",
-      "license": "https://creativecommons.org/licenses/by/4.0/"
+      "license": "https://data.iadb.org"
     }
   ]
 }
@@ -166,7 +166,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "license": "https://data.iadb.org",
   "keywords": [
     "Development Indicators"
   ],
@@ -203,7 +203,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-23');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-30');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -217,19 +217,19 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <div class="crumb"><a href="index.html">Catalog</a> / Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development</div>
 <div class="pid">idb</div>
 <h1>Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development</h1>
-<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Development Indicators</span></div>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">audit-restricted-idb</span><span class="badge cat">Development Indicators</span></div>
 <p class="lead">IDB (Inter-American Development Bank) CKAN open-data ingest. Source: https://data.iadb.org (CKAN portal, no API key required) License: CC BY (IDB open data) Fetches all 217+ datasets from the IDB CKAN portal via the datastore API. Converts each resource to long-format parquet: {series_key,…</p>
 </div>
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">18,838</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1932-12-31 – 2026-12-31</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Development Indicators</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 4.0 (CC BY 4.0)</dd>
-<dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/4.0/">https://creativecommons.org/licenses/by/4.0/</a></dd>
+<dl class="kv"><dt>License</dt><dd>audit-restricted-idb</dd>
+<dt>License URL</dt><dd><a href="https://data.iadb.org">https://data.iadb.org</a></dd>
 <dt>Required attribution</dt><dd>Source: Inter-American Development Bank, IDB Open Data. Licensed under CC BY 4.0.</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
-<dt>Commercial use</dt><dd>Yes</dd>
-<dt>Modification</dt><dd>Permitted</dd>
+<dt>Commercial use</dt><dd>Restricted / no</dd>
+<dt>Modification</dt><dd>Restricted</dd>
 <dt>Provider homepage</dt><dd><a href="https://data.iadb.org">https://data.iadb.org</a></dd>
 <dt>Provider terms</dt><dd><a href="https://data.iadb.org/dataset/idb-data-portals">https://data.iadb.org/dataset/idb-data-portals</a></dd></dl>
 <h2>How to cite</h2>
@@ -240,6 +240,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/idb.html">https://econdatalibrary.com/idb.html</a></dd>
 <dt>Update cadence</dt><dd>irregular</dd>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
 <dt>Storage layout</dt><dd>per-resource files: data/clean_full/idb/&lt;pkg_slug&gt;__&lt;resource_id[:8]&gt;.parquet (observed ~555 files). Schema series_key(str), obs_date(date32), value(float64). series_key = IDB:&lt;slug&gt;:&lt;indicator&gt;:&lt;country&gt; (or IDB:&lt;slug&gt;:&lt;numeric_col&gt;:&lt;country&gt; for wide resources).</dd></dl>
 <h2>Full description</h2>
@@ -275,7 +276,7 @@ Run: python jobs/ingest_idb.py
     &quot;name&quot;: &quot;Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development&quot;,
     &quot;url&quot;: &quot;https://data.iadb.org&quot;
   },
-  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
+  &quot;license&quot;: &quot;https://data.iadb.org&quot;,
   &quot;keywords&quot;: [
     &quot;Development Indicators&quot;,
     &quot;idb&quot;
@@ -292,7 +293,7 @@ Run: python jobs/ingest_idb.py
       &quot;@type&quot;: &quot;DataDownload&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
       &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=idb&quot;,
-      &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;
+      &quot;license&quot;: &quot;https://data.iadb.org&quot;
     }
   ]
 }</pre></details>
@@ -327,7 +328,7 @@ Run: python jobs/ingest_idb.py
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;,
+  &quot;license&quot;: &quot;https://data.iadb.org&quot;,
   &quot;keywords&quot;: [
     &quot;Development Indicators&quot;
   ],
@@ -344,7 +345,7 @@ Run: python jobs/ingest_idb.py
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-23 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-30 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

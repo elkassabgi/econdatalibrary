@@ -442,6 +442,70 @@ def load_sidecar():
     return by_id, cat.get("generated")
 
 
+
+# ---------------------------------------------------------------------------- #
+#  Is this database actually on the automated refresh yet?
+# ---------------------------------------------------------------------------- #
+_FETCHER_BACKED = {"extend_by_date", "overwrite_if_changed", "sdmx_delta",
+                   "manual_vintage", "bulk_snapshot_if_changed"}
+
+
+def load_wiring():
+    """{source_id: True/False} — is this database ACTUALLY refreshed automatically today?
+
+    Read straight from the files that decide it, NOT from catalog.json's sidecar: the sidecar is
+    generated on its own cadence and can lag, and this is a claim a visitor will hold us to. A
+    page that says "Update cadence: monthly" for a database still on its initial load is a
+    promise we are not keeping.
+
+    WIRED = the source would actually run. Three mechanisms refresh things, and using only the
+    first got this WRONG on the first attempt — bundesbank, un_wpp and sec_edgar were labelled
+    "not yet wired" on the public site when they are refreshed every day:
+      1. registry.yaml `live: true`         (the daily updater's live tier)
+      2. the updater-heavy.yml matrix       (bundesbank, un_wpp, cepii_gravity, eia)
+      3. sec-edgar-daily.yml                (sec_edgar)
+    AND, for the fetcher-backed strategies, the fetcher module must exist — cepii_gravity and
+    eia are in the matrix with no fetcher, so the orchestrator prints "PENDING — no adapter
+    built" and skips them forever. Mirrors tools/audit_schedule_coverage.scheduled_sources() and
+    orchestrate._has_adapter, so the site, the runner and the audit cannot disagree.
+    """
+    root = os.path.dirname(HERE)
+    reg_path = os.path.join(root, "updater", "registry.yaml")
+    if not os.path.exists(reg_path):
+        return {}
+    try:
+        import yaml
+        reg = yaml.safe_load(open(reg_path, encoding="utf-8"))
+    except Exception:                                        # noqa: BLE001
+        return {}
+    fdir = os.path.join(root, "updater", "strategies", "fetchers")
+    by_id = {e.get("source_id"): e for e in (reg.get("sources") or []) if e.get("source_id")}
+
+    scheduled = {sid for sid, e in by_id.items() if e.get("live")}
+    heavy_path = os.path.join(root, ".github", "workflows", "updater-heavy.yml")
+    if os.path.exists(heavy_path):
+        m = re.search(r"ALL='(\[[^']*\])'", open(heavy_path, encoding="utf-8").read())
+        if m:
+            try:
+                scheduled |= set(json.loads(m.group(1)))
+            except Exception:                                # noqa: BLE001
+                pass
+    sec_path = os.path.join(root, ".github", "workflows", "sec-edgar-daily.yml")
+    if os.path.exists(sec_path):
+        scheduled |= set(re.findall(r"sec_edgar(?:_xbrl)?",
+                                    open(sec_path, encoding="utf-8").read()))
+
+    out = {}
+    for sid, e in by_id.items():
+        wired = sid in scheduled
+        if wired and e.get("strategy") in _FETCHER_BACKED:
+            wired = os.path.exists(os.path.join(fdir, f"{sid}.py"))
+        out[sid] = wired
+    return out
+
+
+WIRING = load_wiring()
+
 # ---------------------------------------------------------------------------- #
 #  Build the per-dataset metadata model (the registry-grounded record)
 # ---------------------------------------------------------------------------- #
@@ -1132,8 +1196,28 @@ def render_dataset_page(rec):
              + (f' Obtain the data from the <a href="{esc(provider_link)}">original provider</a>.' if provider_link else " Obtain the data from the original provider.")),
             ("Canonical landing", f'<a href="{esc(rec["page_url"])}">{esc(rec["page_url"])}</a>'),
         ]
+    # Default FALSE, not None: a source with no registry entry at all is not merely unknown,
+    # it is definitively not refreshed — the orchestrator only ever iterates registered units,
+    # so an unregistered source is invisible to it. 88 of the 203 served databases are in that
+    # state (unctad_*, fao_*, unesco_*, most imf_*), and they are exactly the ones a visitor
+    # most needs told. Treating None as "say nothing" left them silently implying currency.
+    _wired = bool(WIRING.get(rec["id"], False)) if WIRING else None
     if rec["cadence"]:
-        acc_rows.append(("Update cadence", esc(rec["cadence"])))
+        # Say plainly whether that cadence is running or still a target. A bare
+        # "Update cadence: monthly" on a database that has no updater yet reads as a promise.
+        if _wired is False:
+            acc_rows.append(("Update cadence",
+                             esc(rec["cadence"]) + " <em>(target &mdash; not yet automated)</em>"))
+        else:
+            acc_rows.append(("Update cadence", esc(rec["cadence"])))
+    if _wired is True:
+        acc_rows.append(("Automated refresh",
+                         "<strong>live</strong> &mdash; this database is on the daily "
+                         "update run"))
+    elif _wired is False:
+        acc_rows.append(("Automated refresh",
+                         "not yet wired &mdash; the data here is the verified initial load. "
+                         "See the <a href=\"status.html\">Source Status board</a>."))
     if rec["strategy"]:
         acc_rows.append(("Update strategy", esc(rec["strategy"]).replace("_", " ")))
     if rec["storage_layout"]:

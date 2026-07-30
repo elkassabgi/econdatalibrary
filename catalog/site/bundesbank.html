@@ -202,7 +202,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-23');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-30');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -238,6 +238,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/bundesbank.html">https://econdatalibrary.com/bundesbank.html</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
 <dt>Update strategy</dt><dd>overwrite if changed</dd>
 <dt>Storage layout</dt><dd>one parquet per flow -&gt; data/clean_full/bundesbank/&lt;flow&gt;.parquet for 7 hardcoded flows (BBEX3, BBNZ1, BBDP1, BBSIS, BBFI1, BBFI3, BBBP1). Schema: series_key (format &#x27;BBK:&lt;flow&gt;:&lt;id=val:...&gt;&#x27;), obs_date(date32), value(float64). Whole flow built in a Python list then pq.write_table (no streaming writer). _bundesbank_log.txt sidecar.</dd></dl>
 <h2>Full description</h2>
@@ -347,7 +348,7 @@ Run: python jobs/ingest_bundesbank.py</p>
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-23 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-30 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
