@@ -54,7 +54,14 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "imf_gfse", "imf_gfsfalcs", "imf_gfsibs", "imf_gfsmab", "imf_gfsssuc", "imf_hpdd",
   "imf_mcdreo", "imf_namain_idc_n", "imf_pctot", "imf_pgcs", "imf_pgi", "imf_psbsfad",
   "imf_unsdg_imf_inputs", "imf_weo", "imf_whdreo", "imf_world", "insee_bdm", "ipea",
-  "irena", "kof_globalization", "ksh", "ksh_stadat", "maddison", "nasa_giss", "nbp",
+  // "ksh" RETIRED 2026-07-29 (Ahmed-approved). 394 of its 415 tables were already in
+  // ksh_stadat, which carries MORE series for them; its fetcher could not even import
+  // (jobs/ingest_ksh_hungary.py does not exist). Its 21 unique tables — 903 series — were
+  // MIGRATED into ksh_stadat first and verified live, so nothing was lost: 719 that KSH has
+  // retired (not re-crawlable) and 184 that KSH still publishes but ksh_stadat's parser
+  // skips with "no parseable time dimension". Verified before removal: 0 ksh tables absent
+  // from ksh_stadat. The parquets under clean_full/ksh/ are KEPT, so this is reversible.
+  "irena", "kof_globalization", "ksh_stadat", "maddison", "nasa_giss", "nbp",
   "noaa", "nyfed", "oecd", "ofr", "owid", "oxcgrt",
   "penn_world_table", "pip", "polity", "pwt", "rba", "riksbank",
   "sec_edgar", "shiller", "sipri", "snb", "statcan", "stats_nz",
