@@ -343,6 +343,7 @@ sources:
     - 'single parquet: data/clean_full/bfs/bfs.parquet (zstd, ~14MB), columns (series_key=''BFS:{dbid}:{dim}={code}:...'',
       obs_date, value). Written incrementally to the SAME path as a checkpoint every 50 tables and once at the end.'
 - source_id: bis
+  live: true
   scripts:
   - jobs/ingest_bis_cbs_lbs.py
   - jobs/ingest_bis_full.py
