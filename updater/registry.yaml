@@ -2,13 +2,13 @@ version: 1
 generated_from: matrix + classifications
 sources:
 - source_id: abs
-  # CLOUD-INFEASIBLE - measured 30,339,240 rows in a single file (BA_SA2_2016-21.parquet),
-  # about 2.1 GB once decoded into Arrow. merge_and_write materialises the whole
-  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
-  # Routed to the workstation per the owner's standing rule: a database the cloud
-  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
-  run_location: local
-  live: false
+  # BACK IN THE CLOUD 2026-07-30. Routed to the workstation earlier the same day on
+  # an ESTIMATE that assumed the crashes were memory exhaustion. They were not - it
+  # was an Arrow offset overflow in _dedup's group_by (fixed, commit fcfb6ee). With
+  # that fixed the real peak was MEASURED at 4.6 GB against 14.5 GB available on a
+  # 16 GB runner (tools/measure_merge_peak.py). Cloud is the primary mechanism; the
+  # workstation is only for what genuinely cannot run there.
+  live: true
   scripts:
   - jobs/ingest_abs_full.py
   strategy: sdmx_delta
@@ -432,13 +432,12 @@ sources:
       series_key, obs_date(date32), value(float64), freq. Note this writes WS_*.parquet into the SAME data/clean_full/bis
       dir that ingest_bis_cbs_lbs.py writes CBS.parquet/LBS.parquet to.'
 - source_id: bls
-  # CLOUD-INFEASIBLE - measured 66,161,839 rows in a single file (ch.parquet),
-  # about 4.6 GB once decoded into Arrow. merge_and_write materialises the whole
-  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
-  # Routed to the workstation per the owner's standing rule: a database the cloud
-  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
-  run_location: local
-  live: false
+  # BACK IN THE CLOUD 2026-07-30. Routed to the workstation earlier the same day on
+  # an ESTIMATE that assumed the crashes were memory exhaustion. They were not - it
+  # was an Arrow offset overflow in _dedup's group_by (fixed, commit fcfb6ee). With
+  # that fixed the real peak was MEASURED at 11.1 GB against 14.5 GB available on a
+  # 16 GB runner (tools/measure_merge_peak.py). Cloud is the primary mechanism; the
+  # workstation is only for what genuinely cannot run there.
   scripts:
   - jobs/ingest_bls.py
   - jobs/ingest_bls_full.py
@@ -769,12 +768,12 @@ sources:
     - single-file-per-vintage — baci_hs17.parquet and baci_hs96.parquet under data/clean_full/cepii_baci/; raw zips cached
       under data/raw/cepii_baci/{HS17,HS96}.zip. Streamed in 500k-row batches via one ParquetWriter per vintage (no part files).
 - source_id: cepii_gravity
-  # CLOUD-INFEASIBLE - measured 69,666,545 rows in a single file (cepii_gravity.parquet),
-  # about 4.9 GB once decoded into Arrow. merge_and_write materialises the whole
-  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
-  # Routed to the workstation per the owner's standing rule: a database the cloud
-  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
-  run_location: local
+  # BACK IN THE CLOUD 2026-07-30. Routed to the workstation earlier the same day on
+  # an ESTIMATE that assumed the crashes were memory exhaustion. They were not - it
+  # was an Arrow offset overflow in _dedup's group_by (fixed, commit fcfb6ee). With
+  # that fixed the real peak was MEASURED at 11.3 GB against 14.5 GB available on a
+  # 16 GB runner (tools/measure_merge_peak.py). Cloud is the primary mechanism; the
+  # workstation is only for what genuinely cannot run there.
   scripts:
   - jobs/ingest_cepii_gravity.py
   strategy: bulk_snapshot_if_changed
@@ -2735,12 +2734,12 @@ sources:
       schema flow, series_key, obs_date, value). series_key is the sorted non-TIME dimension tuple. Some flows large (DS_BPE*
       ~25 MB each).
 - source_id: insee_sirene
-  # CLOUD-INFEASIBLE - measured 94,456,079 rows in a single file (StockEtablissementHistorique.parquet),
-  # about 6.6 GB once decoded into Arrow. merge_and_write materialises the whole
-  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
-  # Routed to the workstation per the owner's standing rule: a database the cloud
-  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
-  run_location: local
+  # BACK IN THE CLOUD 2026-07-30. Routed to the workstation earlier the same day on
+  # an ESTIMATE that assumed the crashes were memory exhaustion. They were not - it
+  # was an Arrow offset overflow in _dedup's group_by (fixed, commit fcfb6ee). With
+  # that fixed the real peak was MEASURED at 11.0 GB against 14.5 GB available on a
+  # 16 GB runner (tools/measure_merge_peak.py). Cloud is the primary mechanism; the
+  # workstation is only for what genuinely cannot run there.
   scripts:
   - jobs/ingest_insee_sirene.py
   - jobs/ingest_insee_sirene_bulk.py
