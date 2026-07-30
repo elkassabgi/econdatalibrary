@@ -2,6 +2,7 @@ version: 1
 generated_from: matrix + classifications
 sources:
 - source_id: abs
+  live: true
   scripts:
   - jobs/ingest_abs_full.py
   strategy: sdmx_delta
@@ -50,6 +51,7 @@ sources:
       columns (series_key, obs_date, value); oversized flows (>8M obs) written as a single multi-rowgroup parquet split by
       FREQ via ParquetWriter. Sidecar catalog at data/clean_full/abs_catalog.parquet.'
 - source_id: adb
+  live: true
   scripts:
   - jobs/ingest_adb_kidb.py
   strategy: sdmx_delta
@@ -409,6 +411,7 @@ sources:
       series_key, obs_date(date32), value(float64), freq. Note this writes WS_*.parquet into the SAME data/clean_full/bis
       dir that ingest_bis_cbs_lbs.py writes CBS.parquet/LBS.parquet to.'
 - source_id: bls
+  live: true
   scripts:
   - jobs/ingest_bls.py
   - jobs/ingest_bls_full.py
@@ -991,6 +994,7 @@ sources:
     - single parquet (damodaran.parquet, ~332KB) — plus _damodaran_log.txt, _damodaran_err.txt. Schema series_key(str DAMODARAN:<dataset>:<col>:<entity>),
       obs_date(date32; year Dec-31 for time-series sheets else Jan-1 snapshot), value(float64).
 - source_id: defillama
+  live: true
   scripts:
   - jobs/ingest_defillama.py
   strategy: overwrite_if_changed
@@ -1090,6 +1094,7 @@ sources:
       FOLK*.parquet). Schema series_key(str DST:<table>:DIM=code...), obs_date(date32; annual Dec-31, monthly/quarterly/weekly
       first-of-period), value(float64). In-build (key,date) de-dup via ''seen'' set.'
 - source_id: ecb
+  live: true
   scripts:
   - jobs/ingest_ecb.py
   strategy: sdmx_delta
@@ -1329,6 +1334,7 @@ sources:
       run summary _summary.json. Raw zips cached at data/raw/eia/<DATASET>.zip. ~316M obs measured; the giant EBA dataset
       streams and never sits in RAM whole.'
 - source_id: ember
+  live: true
   scripts:
   - jobs/ingest_ember.py
   strategy: bulk_snapshot_if_changed
@@ -1420,6 +1426,7 @@ sources:
       EPU:epu:{country}), obs_date (date32, 1st-of-month), value (float64). No raw cache, no per-country files. Side logs
       _epu_log.txt / _epu_err.txt. Tiny annual/monthly index source.'
 - source_id: eurostat
+  live: true
   scripts:
   - jobs/fetch_eurostat_bulk.py
   strategy: giant_changed_units
@@ -1469,6 +1476,7 @@ sources:
       Clean: ~7,753 grouped parquet files data/clean_full/eurostat/<CODE>.parquet (series_key, obs_date date32, value) written
       by the separate jobs/ingest_eurostat.py. ~6.1B obs total.'
 - source_id: faostat
+  live: true
   scripts:
   - jobs/ingest_faostat.py
   strategy: bulk_snapshot_if_changed
@@ -2191,6 +2199,7 @@ sources:
       plus _cache/ (metadata JSON), _checkpoint.json, and logs/gus_dbw.DONE sentinel. area_15.parquet alone is ~109 MB. Schema:
       series_key (GUSDBW:var:sec:positions[:measure]), obs_date, value.'
 - source_id: hagstofa
+  live: true
   scripts:
   - jobs/ingest_hagstofa.py
   strategy: sdmx_delta
@@ -2555,6 +2564,7 @@ sources:
     - single parquet — data/clean_full/imf_weo/imf_weo.parquet (verified, 588,836 rows; schema series_key, obs_date, value).
       Series key is '{indicator}:{country}', annual obs dated Dec 31.
 - source_id: insee_bdm
+  live: true
   scripts:
   - jobs/ingest_insee_bdm.py
   strategy: sdmx_delta
@@ -2595,6 +2605,7 @@ sources:
     - overwrite-multi-file — one parquet per dataflow, data/clean_full/insee_bdm/{FLOW_ID}.parquet (verified 201 files; schema
       idbank, obs_date, value, dataflow). Whole BDM corpus is ~150k series across the flows.
 - source_id: insee_melodi
+  live: true
   scripts:
   - jobs/ingest_insee_melodi.py
   strategy: sdmx_delta
@@ -3125,6 +3136,7 @@ sources:
       (~8 files, tens of KB each). Schema per file: series_key (str, ''nyfed:{name}''), obs_date (date32), value (float64).
       Each file is written once with pq.write_table (full overwrite when the file is absent).'
 - source_id: oecd
+  live: true
   scripts:
   - jobs/ingest_oecd.py
   strategy: giant_changed_units
@@ -3272,6 +3284,7 @@ sources:
     - 'one parquet per dataset: data/clean_full/ons_uk/<dataset_id>.parquet (42 files on disk), columns series_key/obs_date/value;
       series_key built from non-time/value dimension columns.'
 - source_id: owid
+  live: true
   scripts:
   - jobs/ingest_owid.py
   strategy: bulk_snapshot_if_changed
@@ -3920,6 +3933,7 @@ sources:
       written once via pq.write_table. (Note: a stray sipri/sipri.parquet from a different/older script also exists in the
       dir but is not written by this script.)'
 - source_id: ssb
+  live: true
   scripts:
   - jobs/ingest_ssb.py
   strategy: sdmx_delta
@@ -3968,6 +3982,7 @@ sources:
     - per-group parquet files ssb/grp_<subject>.parquet (~186 files, keyed by first 2 chars of table id) plus a cached ssb/_catalog.json.
       Each group written once via a single pq.write_table.
 - source_id: stat_estonia
+  live: true
   scripts:
   - jobs/ingest_stat_estonia.py
   strategy: sdmx_delta
@@ -4061,6 +4076,7 @@ sources:
     - per-group parquet files stat_latvia/<db>_<subject>.parquet (16 files; group = database (OSP_PUB / OSP_OD) + first path
       segment, e.g. OSP_PUB_POP, OSP_PUB_EMP, OSP_OD_arhivs) plus cached _catalog.json. Each group written once.
 - source_id: stat_slovenia
+  live: true
   scripts:
   - jobs/ingest_stat_slovenia.py
   strategy: sdmx_delta
@@ -4106,6 +4122,7 @@ sources:
     - per-group parquet files stat_slovenia/<grp>.parquet (~143 files; group = first 3 chars of the .px table id, e.g. 021,
       05G, 071) plus cached _catalog.json. Each group written once.
 - source_id: statcan
+  live: true
   scripts:
   - jobs/ingest_statcan.py
   strategy: extend_by_date
@@ -4165,6 +4182,7 @@ sources:
       obs_date(date32), value, geo, uom, coordinate, status; plus _manifest.jsonl, _errors.log, _sizecache.json, _tmp/ zip
       staging.'
 - source_id: statfin
+  live: true
   scripts:
   - jobs/ingest_statfin.py
   strategy: sdmx_delta
@@ -4771,6 +4789,7 @@ sources:
     - 'single parquet: data/clean_full/wgi/wgi.parquet (~1.3 MB; schema series_key/obs_date/value). Side-cars _wgi_log.txt,
       _wgi_err.txt.'
 - source_id: wikidata
+  live: true
   scripts:
   - jobs/ingest_wikidata.py
   strategy: overwrite_if_changed
@@ -4815,6 +4834,7 @@ sources:
     - 'grouped multi-file: data/clean_full/wikidata/{companies,stock_exchanges,currencies}.parquet (one row per entity, all-string
       columns, series_key=QID) + _manifest.json (per-cube row counts and SPARQL target totals).'
 - source_id: worldbank_esg
+  live: true
   scripts:
   - jobs/ingest_worldbank_esg.py
   strategy: extend_by_date
@@ -4953,6 +4973,7 @@ sources:
       a_price_real, a_index_real (schema series_key, obs_date date32, value). Plus _manifest.json with per-series catalog
       + vintage. Raw xlsx cached in data/raw/worldbank_pink/.'
 - source_id: worldbank_wdi
+  live: true
   scripts:
   - jobs/ingest_worldbank_wdi.py
   strategy: extend_by_date
@@ -5112,7 +5133,7 @@ sources:
 # to it would be a regression wearing a "direct" label.
 # ---------------------------------------------------------------------------
 - source_id: imf_fdi_direct
-  live: false
+  live: true
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -5132,7 +5153,7 @@ sources:
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Financial Development Index (FDI)
 - source_id: imf_fas_direct
-  live: false
+  live: true
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -5152,7 +5173,7 @@ sources:
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Financial Access Survey (FAS)
 - source_id: imf_world_direct
-  live: false
+  live: true
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -5212,7 +5233,7 @@ sources:
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Asia and Pacific Regional Economic Outlook
 - source_id: imf_cofer_direct
-  live: false
+  live: true
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
