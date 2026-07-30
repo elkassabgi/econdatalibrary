@@ -60,12 +60,44 @@ def supported_sources() -> set:
     return set(re.findall(r'"([^"]+)"', body))
 
 
+# Strategies the orchestrator resolves through a per-source fetcher module. A source with one
+# of these and NO module is filed as "PENDING — no adapter built" and skipped forever, however
+# it is scheduled. Must match orchestrate._has_adapter.
+FETCHER_BACKED = {"extend_by_date", "overwrite_if_changed", "sdmx_delta",
+                  "manual_vintage", "bulk_snapshot_if_changed"}
+
+
+def _adapter_missing(entry) -> bool:
+    """True when this entry can never run: fetcher-backed strategy with no fetcher module.
+
+    MEASURED 2026-07-30, which is why this check exists. updater-heavy ran green with all four
+    matrix jobs reporting "0 unit(s) processed" — and two of them printed
+    "PENDING <src> — no adapter built": cepii_gravity and eia are in the matrix, in the
+    registry, and have NO fetcher. Counting matrix membership as "scheduled" therefore
+    OVERSTATED coverage: a source can be scheduled on paper and structurally incapable of
+    running. Scheduled has to mean "will actually run".
+    """
+    if entry.get("strategy") not in FETCHER_BACKED:
+        return False
+    sid = entry.get("source_id")
+    return not os.path.exists(os.path.join(ROOT, "updater", "strategies", "fetchers",
+                                           f"{sid}.py"))
+
+
 def scheduled_sources() -> tuple:
-    """(set, {source: reason}) — the union of every mechanism that actually runs something."""
+    """(set, {source: reason}) — every mechanism that actually runs something.
+
+    Excludes entries with no adapter; they are returned separately by no_adapter().
+    """
     why = {}
     reg = yaml.safe_load(open(REGISTRY, encoding="utf-8"))
+    by_id = {e["source_id"]: e for e in reg["sources"]}
+    stranded = {}
     for s in reg["sources"]:
         if s.get("live"):
+            if _adapter_missing(s):
+                stranded[s["source_id"]] = f"registry live ({s.get('cadence','?')})"
+                continue
             why[s["source_id"]] = f"registry live ({s.get('cadence', '?')})"
 
     heavy = open(HEAVY, encoding="utf-8").read()
@@ -73,7 +105,12 @@ def scheduled_sources() -> tuple:
     if not m:
         raise SystemExit("could not locate the ALL=[...] matrix literal in updater-heavy.yml")
     for s in json.loads(m.group(1)):
+        e = by_id.get(s)
+        if e is not None and _adapter_missing(e):
+            stranded.setdefault(s, "updater-heavy matrix")
+            continue
         why.setdefault(s, "updater-heavy matrix")
+    scheduled_sources.stranded = stranded
 
     sec = open(SEC, encoding="utf-8").read()
     for sid in sorted(set(re.findall(r"\bsec_edgar(?:_xbrl)?\b", sec))):
@@ -99,6 +136,7 @@ def main() -> int:
     counts = catalog_counts()
     supported = supported_sources()
     sched, why = scheduled_sources()
+    stranded = getattr(scheduled_sources, "stranded", {})
 
     served = {s for s in counts if s in supported}
     served_series = sum(counts[s] for s in served)
@@ -133,6 +171,14 @@ def main() -> int:
               f"  ({len(gap)} sources / {gap_series:,} series):")
         for s, n in sorted(((s, counts[s]) for s in gap), key=lambda kv: -kv[1]):
             print(f"    {n:>12,}  {s}")
+
+    if stranded:
+        tot = sum(counts.get(s, 0) for s in stranded)
+        print(f"\nSCHEDULED ON PAPER, CANNOT RUN ({len(stranded)} sources / {tot:,} series) — a "
+              f"fetcher-backed strategy with NO fetcher module. The orchestrator files these as "
+              f"'PENDING — no adapter built' and skips them forever, however they are scheduled:")
+        for s, r in sorted(stranded.items(), key=lambda kv: -counts.get(kv[0], 0)):
+            print(f"    {counts.get(s, 0):>12,}  {s:<22s} {r}")
 
     orphan = sched - served
     if orphan:
