@@ -2,7 +2,13 @@ version: 1
 generated_from: matrix + classifications
 sources:
 - source_id: abs
-  live: true
+  # CLOUD-INFEASIBLE - measured 30,339,240 rows in a single file (BA_SA2_2016-21.parquet),
+  # about 2.1 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
+  live: false
   scripts:
   - jobs/ingest_abs_full.py
   strategy: sdmx_delta
@@ -351,6 +357,12 @@ sources:
   # "isolation is the fix, not a bigger cap". It still refreshes, just not sharing a
   # process. Revert to live: true only once merge_and_write stops materialising a
   # 36.4M-row file in Arrow (LBS.parquet) -- see MISTAKES R195.
+  # CLOUD-INFEASIBLE - measured 36,379,671 rows in a single file (LBS.parquet),
+  # about 2.5 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
   live: false
   scripts:
   - jobs/ingest_bis_cbs_lbs.py
@@ -420,7 +432,13 @@ sources:
       series_key, obs_date(date32), value(float64), freq. Note this writes WS_*.parquet into the SAME data/clean_full/bis
       dir that ingest_bis_cbs_lbs.py writes CBS.parquet/LBS.parquet to.'
 - source_id: bls
-  live: true
+  # CLOUD-INFEASIBLE - measured 66,161,839 rows in a single file (ch.parquet),
+  # about 4.6 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
+  live: false
   scripts:
   - jobs/ingest_bls.py
   - jobs/ingest_bls_full.py
@@ -587,6 +605,12 @@ sources:
       BBFI1, BBFI3, BBBP1). Schema: series_key (format ''BBK:<flow>:<id=val:...>''), obs_date(date32), value(float64). Whole
       flow built in a Python list then pq.write_table (no streaming writer). _bundesbank_log.txt sidecar.'
 - source_id: cbs_nl
+  # CLOUD-INFEASIBLE - measured 133,914,690 rows in a single file (37713.parquet),
+  # about 9.4 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
   scripts:
   - jobs/ingest_cbs_nl.py
   strategy: overwrite_if_changed
@@ -692,6 +716,12 @@ sources:
       '/'->'__' (e.g. qwi__sa.parquet), under data/clean_full/census/ (~83 files). Plus _manifest.json (append-only run log;
       same path can appear multiple times) and logs.
 - source_id: cepii_baci
+  # CLOUD-INFEASIBLE - measured 242,914,764 rows in a single file (baci_hs96.parquet),
+  # about 17.0 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
   scripts:
   - jobs/ingest_cepii_baci.py
   strategy: bulk_snapshot_if_changed
@@ -739,6 +769,12 @@ sources:
     - single-file-per-vintage — baci_hs17.parquet and baci_hs96.parquet under data/clean_full/cepii_baci/; raw zips cached
       under data/raw/cepii_baci/{HS17,HS96}.zip. Streamed in 500k-row batches via one ParquetWriter per vintage (no part files).
 - source_id: cepii_gravity
+  # CLOUD-INFEASIBLE - measured 69,666,545 rows in a single file (cepii_gravity.parquet),
+  # about 4.9 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
   scripts:
   - jobs/ingest_cepii_gravity.py
   strategy: bulk_snapshot_if_changed
@@ -1293,6 +1329,12 @@ sources:
       obs_date (date32, Dec-31 annual), value (float64). No raw cache, no per-variable files. Side logs _ei_statreview_log.txt
       / _ei_statreview_err.txt.'
 - source_id: eia
+  # CLOUD-INFEASIBLE - measured 147,555,304 rows in a single file (EBA.parquet),
+  # about 10.3 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
   scripts:
   - jobs/ingest_eia.py
   strategy: bulk_snapshot_if_changed
@@ -1486,7 +1528,13 @@ sources:
       Clean: ~7,753 grouped parquet files data/clean_full/eurostat/<CODE>.parquet (series_key, obs_date date32, value) written
       by the separate jobs/ingest_eurostat.py. ~6.1B obs total.'
 - source_id: faostat
-  live: true
+  # CLOUD-INFEASIBLE - measured 52,410,630 rows in a single file (TM.parquet),
+  # about 3.7 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
+  live: false
   scripts:
   - jobs/ingest_faostat.py
   strategy: bulk_snapshot_if_changed
@@ -2179,6 +2227,12 @@ sources:
     storage_layout:
     - 'single parquet (data/clean_full/gppd/gppd.parquet, ~714 KB). Schema: series_key, obs_date, value.'
 - source_id: gus_dbw
+  # CLOUD-INFEASIBLE - measured 358,524,120 rows in a single file (area_16.parquet),
+  # about 25.1 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
   scripts:
   - jobs/ingest_gus_dbw.py
   strategy: extend_by_date
@@ -2681,6 +2735,12 @@ sources:
       schema flow, series_key, obs_date, value). series_key is the sorted non-TIME dimension tuple. Some flows large (DS_BPE*
       ~25 MB each).
 - source_id: insee_sirene
+  # CLOUD-INFEASIBLE - measured 94,456,079 rows in a single file (StockEtablissementHistorique.parquet),
+  # about 6.6 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
   scripts:
   - jobs/ingest_insee_sirene.py
   - jobs/ingest_insee_sirene_bulk.py
@@ -2795,6 +2855,12 @@ sources:
       a _ipea_log.txt. series_key = 'SERCODIGO' or 'SERCODIGO:TERCODIGO' for regional series. The whole file is rewritten
       on each checkpoint and at the end.
 - source_id: istat
+  # CLOUD-INFEASIBLE - measured 52,957,388 rows in a single file (183_277.parquet),
+  # about 3.7 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
   scripts:
   - jobs/ingest_istat_sliced.py
   strategy: sdmx_delta
@@ -3092,6 +3158,12 @@ sources:
     - 'single parquet: data/clean_full/nasa_giss/giss_temp.parquet (~28 KB). Schema: series_key (str, ''GISS:{table}:{period}''),
       obs_date (date32), value (float64).'
 - source_id: noaa
+  # CLOUD-INFEASIBLE - measured 262,514,152 rows in a single file (gsom__US.parquet),
+  # about 18.4 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
   scripts:
   - jobs/ingest_noaa.py
   strategy: bulk_snapshot_if_changed
@@ -3193,7 +3265,13 @@ sources:
       (~8 files, tens of KB each). Schema per file: series_key (str, ''nyfed:{name}''), obs_date (date32), value (float64).
       Each file is written once with pq.write_table (full overwrite when the file is absent).'
 - source_id: oecd
-  live: true
+  # CLOUD-INFEASIBLE - measured 1,792,000,000 rows in a single file (OECD.STI.PIE__DSD_TIVA_FDVA@DF_FDVA.parquet),
+  # about 125.4 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
+  live: false
   scripts:
   - jobs/ingest_oecd.py
   strategy: giant_changed_units
@@ -4181,7 +4259,13 @@ sources:
     - per-group parquet files stat_slovenia/<grp>.parquet (~143 files; group = first 3 chars of the .px table id, e.g. 021,
       05G, 071) plus cached _catalog.json. Each group written once.
 - source_id: statcan
-  live: true
+  # CLOUD-INFEASIBLE - measured 962,150,400 rows in a single file (98100435.parquet),
+  # about 67.4 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
+  live: false
   scripts:
   - jobs/ingest_statcan.py
   strategy: extend_by_date
@@ -5791,7 +5875,13 @@ sources:
     key_env: none
     confidence: high
 - source_id: wid
-  live: true
+  # CLOUD-INFEASIBLE - measured 95,888,122 rows in a single file (wid.parquet),
+  # about 6.7 GB once decoded into Arrow. merge_and_write materialises the whole
+  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
+  # Routed to the workstation per the owner's standing rule: a database the cloud
+  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  run_location: local
+  live: false
   scripts:
   - updater/strategies/fetchers/wid.py
   strategy: overwrite_if_changed
