@@ -112,7 +112,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "name": "United Nations Development Programme, Human Development Report Office (HDRO)",
     "url": "https://hdr.undp.org"
   },
-  "license": "https://data.adb.org/terms-use-data",
+  "license": "https://creativecommons.org/licenses/by/3.0/igo/",
   "keywords": [
     "Development Indicators",
     "Society & Well-Being",
@@ -130,7 +130,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
       "@type": "DataDownload",
       "encodingFormat": "text/csv",
       "contentUrl": "https://econdatalibrary.com/download.html?source=undp_hdr",
-      "license": "https://data.adb.org/terms-use-data"
+      "license": "https://creativecommons.org/licenses/by/3.0/igo/"
     }
   ]
 }
@@ -167,7 +167,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "https://data.adb.org/terms-use-data",
+  "license": "https://creativecommons.org/licenses/by/3.0/igo/",
   "keywords": [
     "Development Indicators",
     "Society & Well-Being"
@@ -205,7 +205,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-23');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-30');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -227,7 +227,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">8,199</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1990-12-31 – 2023-12-31</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Development Indicators, Society & Well-Being</div></div></div>
 <h2>Licensing &amp; provenance</h2>
 <dl class="kv"><dt>License</dt><dd>Creative Commons Attribution 3.0 IGO (CC BY 3.0 IGO)</dd>
-<dt>License URL</dt><dd><a href="https://data.adb.org/terms-use-data">https://data.adb.org/terms-use-data</a></dd>
+<dt>License URL</dt><dd><a href="https://creativecommons.org/licenses/by/3.0/igo/">https://creativecommons.org/licenses/by/3.0/igo/</a></dd>
 <dt>Required attribution</dt><dd>United Nations Development Programme, Human Development Report Office</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Yes</dd>
@@ -242,6 +242,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/undp_hdr.html">https://econdatalibrary.com/undp_hdr.html</a></dd>
 <dt>Update cadence</dt><dd>annual</dd>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
 <dt>Update strategy</dt><dd>overwrite if changed</dd>
 <dt>Storage layout</dt><dd>single parquet: data/clean_full/undp_hdr/undp_hdr.parquet (~1.5 MB). Schema: series_key (string), obs_date date32 (Dec 31 of year), value float64. Keys: {indicator}:{ISO3} from composite CSV, or {prefix}:{iso} from annex XLSX (prefixes hdi/gdi/gii/ihdi/mpi).</dd></dl>
 <h2>Full description</h2>
@@ -282,7 +283,7 @@ Run: python jobs/ingest_undp_hdr.py</p>
     &quot;name&quot;: &quot;United Nations Development Programme, Human Development Report Office (HDRO)&quot;,
     &quot;url&quot;: &quot;https://hdr.undp.org&quot;
   },
-  &quot;license&quot;: &quot;https://data.adb.org/terms-use-data&quot;,
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;,
   &quot;keywords&quot;: [
     &quot;Development Indicators&quot;,
     &quot;Society &amp; Well-Being&quot;,
@@ -300,7 +301,7 @@ Run: python jobs/ingest_undp_hdr.py</p>
       &quot;@type&quot;: &quot;DataDownload&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
       &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=undp_hdr&quot;,
-      &quot;license&quot;: &quot;https://data.adb.org/terms-use-data&quot;
+      &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;
     }
   ]
 }</pre></details>
@@ -335,7 +336,7 @@ Run: python jobs/ingest_undp_hdr.py</p>
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;https://data.adb.org/terms-use-data&quot;,
+  &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;,
   &quot;keywords&quot;: [
     &quot;Development Indicators&quot;,
     &quot;Society &amp; Well-Being&quot;
@@ -353,7 +354,7 @@ Run: python jobs/ingest_undp_hdr.py</p>
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-23 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-30 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
