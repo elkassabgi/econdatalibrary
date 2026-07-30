@@ -15,6 +15,7 @@ only publishes good data), so this is about correct STATUS, never data loss.
 """
 from __future__ import annotations
 import datetime as _dt
+import os
 import time
 
 from ..base import Result
@@ -220,7 +221,29 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
                   error=(f"+{tally.added} new rows" if tally.added else "no new rows"))
 
 
-def cursors_from_parquet(path, key_col="series_key", date_col="obs_date") -> dict:
+CURSOR_CAP = 50_000
+"""Most cursors one fetcher should report in a run — a DISCLOSED bound, never silent.
+
+Why a bound exists at all. orchestrate._catalog_ids_for runs ONE SQLite query per changed key,
+and StateStore.put_series_cursors writes one row per cursor into state.db (already ~306 MB,
+compressed and pushed to R2 every run). Both are linear in the cursor count, so an unbounded
+set is a real outage risk, not an inefficiency.
+
+Why 50k is not arbitrary. Measured on ilostat: 1,947 indicators hold ~30.8 MILLION distinct
+store series (388M rows, ~15,800 series per indicator), and its store keys already carry the
+`ilostat:` prefix — so `_catalog_ids_for` builds `ilostat:ilostat:…`, nothing maps, and with 80
+catalog ids (under _DERIVE_ALL_CAP=5000) the orchestrator re-derives all 80 anyway. Reporting
+millions of cursors there would buy exactly nothing and cost millions of queries and rows.
+Every other bulk source here is far below the cap: fed_board's largest release has 39,882
+series, fhfa ~5k, maddison 338, who_hwf 4,421.
+
+When the cap bites, the caller LOGS the count it dropped. A truncation nobody is told about
+reads as "we covered everything".
+"""
+
+
+def cursors_from_parquet(path, key_col="series_key", date_col="obs_date",
+                         cap: int = CURSOR_CAP) -> dict:
     """{series_key: max obs_date ISO} for one published parquet.
 
     WHY EVERY BULK FETCHER NEEDS THIS. orchestrate._derive_changed_csvs takes the changed-series
@@ -245,7 +268,13 @@ def cursors_from_parquet(path, key_col="series_key", date_col="obs_date") -> dic
         agg = tbl.group_by(key_col).aggregate([(date_col, "max")])
         keys = agg.column(key_col).to_pylist()
         maxes = agg.column(f"{date_col}_max").to_pylist()
-        return {k: d.isoformat() for k, d in zip(keys, maxes) if k and d is not None}
+        out = {k: d.isoformat() for k, d in zip(keys, maxes) if k and d is not None}
+        if cap and len(out) > cap:
+            print(f"[cursors] {os.path.basename(path)}: {len(out):,} changed series exceeds the "
+                  f"{cap:,} cursor cap — reporting the first {cap:,} (sorted); the orchestrator's "
+                  f"derive-all path covers the rest for small catalogs", flush=True)
+            out = {k: out[k] for k in sorted(out)[:cap]}
+        return out
     except Exception:                                        # noqa: BLE001
         return {}
 

@@ -43,7 +43,7 @@ import os
 from ... import config, blob
 from ...errors import TransientError
 from ..base import Result
-from ._common import Deadline, Tally, cursors_from_parquet, finalize
+from ._common import CURSOR_CAP, Deadline, Tally, cursors_from_parquet, finalize
 from jobs import ingest_ilostat as ig     # TOC + the production downloader/parser
 
 SOURCE = "ilostat"
@@ -149,7 +149,12 @@ def update(unit, since) -> Result:
             continue
 
         blob.publish_file(stored)
-        cursors.update(cursors_from_parquet(stored))
+        # Bounded accumulation: ILOSTAT holds ~30.8M store series across 1,947 indicators, and
+        # every cursor costs one SQLite lookup plus one state.db row. Its 80 catalog ids sit
+        # under the derive-all cap, so a partial cursor set triggers exactly the same
+        # re-derive as a complete one.
+        if len(cursors) < CURSOR_CAP:
+            cursors.update(cursors_from_parquet(stored))
         published += n_rows
         tally.added_unit(n_rows, iid)
         if stamp:
@@ -157,6 +162,10 @@ def update(unit, since) -> Result:
 
     if unchanged:
         print(f"[ilostat] {unchanged}/{len(rows)} indicator(s) unchanged — skipped", flush=True)
+    if len(cursors) >= CURSOR_CAP:
+        print(f"[ilostat] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
+              f"not individually reported (catalog grain is 80 ids, so the derive-all path "
+              f"covers them)", flush=True)
     if deferred:
         print(f"[ilostat] budget {BUDGET_MIN} min spent — {deferred} indicator(s) deferred "
               f"to the next run", flush=True)
