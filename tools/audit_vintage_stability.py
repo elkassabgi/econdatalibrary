@@ -70,6 +70,16 @@ def _fetch_time_token(tok):
 
     A content date is essentially never within an hour of now. So one probe is enough: if the
     token carries a near-now timestamp, it is fetch time, not content time.
+
+    KNOWN LIMIT, stated so nobody trusts this further than it goes: the window is +-60 minutes,
+    so a CDN with a LONG TTL — one returning a fill time hours old — would evade both this check
+    AND the time-gap comparison, while still moving daily. Widening the window is not the answer:
+    it would false-positive on sources whose real content date IS today. Swept 2026-07-30 and
+    the class is currently empty — of the three tokens carrying an HTTP-date, kof_globalization
+    (Fri, 19 Dec 2025) and ucdp (Mon, 08 Jun 2026) are months and weeks old respectively, i.e.
+    genuine content dates, and whr was the only near-now one. If a new source ever gates on a
+    BARE HTTP-date with no ETag or Content-Length beside it, treat that as suspect on principle
+    and check the response for an Age header.
     """
     import datetime as _dt
     import email.utils as _eu
