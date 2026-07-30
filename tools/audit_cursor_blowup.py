@@ -31,6 +31,7 @@ Exit 1 if any source over the threshold folds cursors PER SERIES without a bound
 """
 from __future__ import annotations
 import argparse
+import ast
 import os
 import re
 import sys
@@ -63,24 +64,67 @@ PER_SERIES = (
 EXEMPT: dict[str, str] = {}
 
 
-def store_rows(d: str) -> tuple[int, int]:
-    """(rows, files) for a source dir, from parquet footers only."""
+def store_rows(d: str) -> tuple[int, int, int]:
+    """(total rows, files, LARGEST single file's rows) for a source dir, from footers only.
+
+    The largest FILE matters independently of the total: an unprojected blob.read_table()
+    decodes one file at a time, so a store of many small parquets is safe however big the
+    sum, while one 962-million-row cube is fatal on its own.
+    """
     try:
         import pyarrow.parquet as pq
     except Exception:                                        # noqa: BLE001
-        return (-1, 0)
+        return (-1, 0, 0)
     rows = 0
     files = 0
+    biggest = 0
     for dirpath, _dirs, names in os.walk(d):
         for n in names:
             if not n.endswith(".parquet"):
                 continue
             files += 1
             try:
-                rows += pq.read_metadata(os.path.join(dirpath, n)).num_rows
+                r = pq.read_metadata(os.path.join(dirpath, n)).num_rows
             except Exception:                                # noqa: BLE001
-                pass
-    return (rows, files)
+                continue
+            rows += r
+            biggest = max(biggest, r)
+    return (rows, files, biggest)
+
+
+# Roughly what one row of (series_key str, obs_date date32, value float64) costs once
+# DECODED into Arrow. Measured against statcan's cubes; deliberately conservative.
+BYTES_PER_ROW = 70
+
+
+def unprojected_reads(text: str) -> int:
+    """Count read_table(...) CALLS that pass no columns= projection.
+
+    THE SECOND OOM CLASS. abs died on an unbounded cursor fold; statcan was one changed
+    census cube away from dying on a full-table read — `blob.read_table(path)` on a
+    962,150,400-row parquet is ~67 GB of Arrow. A read without a projection costs the
+    WHOLE row width, so it scales with the biggest file in the store, not with the work.
+
+    PARSED, NOT GREPPED. The first cut regex-matched the source with `#` comments stripped
+    and immediately produced a false positive: statcan's own docstring EXPLAINS the bug by
+    quoting `blob.read_table(path)`, and prose inside a docstring is not a comment. An
+    audit that flags its own fix's documentation trains you to ignore it. ast sees calls.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return 0
+    n = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = getattr(fn, "attr", None) or getattr(fn, "id", None)
+        if name != "read_table":
+            continue
+        if not any(kw.arg == "columns" for kw in node.keywords):
+            n += 1
+    return n
 
 
 def main() -> int:
@@ -88,6 +132,9 @@ def main() -> int:
     ap.add_argument("--threshold-rows", type=int, default=20_000_000,
                     help="a store at least this big must bound its cursor set")
     ap.add_argument("--store", default=None, help="override the clean_full root")
+    ap.add_argument("--read-gb", type=float, default=8.0,
+                    help="flag an unprojected read_table() whose largest file would decode "
+                         "to at least this many GB (runner has 16 GB)")
     args = ap.parse_args()
 
     try:
@@ -99,7 +146,7 @@ def main() -> int:
         print(f"store root not found: {root} — nothing to audit")
         return 0
 
-    reports, bounded, per_series = {}, {}, {}
+    reports, bounded, per_series, unproj = {}, {}, {}, {}
     for fn in sorted(os.listdir(FETCHERS)):
         if not fn.endswith(".py") or fn.startswith("__"):
             continue
@@ -114,6 +161,7 @@ def main() -> int:
         reports[src] = "series_cursors" in code
         bounded[src] = any(b in code for b in BOUNDED)
         per_series[src] = any(m in code for m in PER_SERIES)
+        unproj[src] = unprojected_reads(text)
 
     print(f"store root: {root}")
     print(f"{len(reports)} fetcher module(s); "
@@ -131,17 +179,27 @@ def main() -> int:
         return (rows >= args.threshold_rows and reports.get(src) and per_series.get(src)
                 and not bounded.get(src) and src not in EXEMPT)
 
+    def _read_risk_gb(src):
+        """GB a single unprojected read_table() would decode for this store's LARGEST file."""
+        if not unproj.get(src):
+            return 0.0
+        biggest = rows_by_src.get(src, (0, 0, 0))[2]
+        return biggest * BYTES_PER_ROW / 1e9
+
     # EVALUATED OVER EVERY SOURCE, DISPLAYED FOR THE TOP 25. The first cut appended
     # offenders inside the display slice, so only the 25 biggest stores were ever judged —
     # while the threshold is 20M rows and the 25th store holds 72.5M. A source ranked 26th
     # with 60M rows and an unbounded per-series fold would have passed silently. A gate
     # that inspects part of its surface and prints "0" is worse than no gate.
     ranked = sorted(rows_by_src.items(), key=lambda kv: -kv[1][0])
-    offenders = [(s, r) for s, (r, _f) in ranked if _is_offender(s, r)]
+    offenders = [(s, r) for s, (r, _f, _b) in ranked if _is_offender(s, r)]
+    # SECOND CLASS: an unprojected read_table() whose worst single file would not fit.
+    read_risks = [(s, _read_risk_gb(s)) for s, _v in ranked
+                  if _read_risk_gb(s) >= args.read_gb]
 
     shown = set()
     print(f"{'source':26s} {'store rows':>16s} {'files':>7s}   fold      bound")
-    for src, (rows, files) in ranked[:25]:
+    for src, (rows, files, _b) in ranked[:25]:
         shown.add(src)
         psr = per_series.get(src)
         mark = "   <<< UNBOUNDED per-series fold over threshold" if _is_offender(src, rows) else ""
@@ -160,11 +218,17 @@ def main() -> int:
     print(f"\nthreshold: {args.threshold_rows:,} store rows, and the fold must be PER-SERIES")
     print("(a per-file fold — statcan by PID, istat by flow, ecb by stem — is bounded by the")
     print(" file count no matter how many rows the store holds, so it is not flagged)")
-    print(f"\nOFFENDERS (must be 0): {len(offenders)}")
+    print(f"\nCLASS 1 — unbounded per-series cursor folds (must be 0): {len(offenders)}")
     for s, r in offenders:
         print(f"    {s}: {r:,} store rows, folds one cursor PER SERIES with no "
               f"CURSOR_CAP / merge_cursors / merge_cursor_map / cursors_from_parquet")
-    return 1 if offenders else 0
+
+    print(f"\nCLASS 2 — unprojected read_table() vs the LARGEST single file "
+          f"(must be 0): {len(read_risks)}")
+    for s, gb in sorted(read_risks, key=lambda kv: -kv[1]):
+        print(f"    {s}: {unproj[s]} read_table() call(s) with no columns=; largest file "
+              f"{rows_by_src[s][2]:,} rows -> ~{gb:.0f} GB decoded (runner has 16 GB)")
+    return 1 if (offenders or read_risks) else 0
 
 
 if __name__ == "__main__":

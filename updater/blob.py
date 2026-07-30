@@ -93,6 +93,34 @@ def read_table(path: str, columns=None):
     return pq.read_table(path, columns=columns)
 
 
+def iter_batches(path: str, columns=None, batch_size: int = 1_000_000):
+    """Yield a stored parquet as Arrow RecordBatches, R2-routed like read_table.
+
+    WHY THIS EXISTS (2026-07-30). read_table materialises the WHOLE table, and `columns=`
+    only narrows the row WIDTH — it does not bound the peak. statcan's largest cube,
+    98100435.parquet, is 962,150,400 rows: reading every column decodes to roughly 67 GB
+    on a 16 GB runner, and projecting to the four string columns one caller needs still
+    lands near 56 GB. Narrowing a fatal read to a slightly smaller fatal read is not a fix.
+
+    Iterating row groups keeps DECODED memory to one batch. Under the R2 backend the
+    object still has to come over the wire in full (~2 GB compressed for that cube), but
+    the compressed bytes are the floor, not the ~56 GB decode.
+
+    Use this for any scan whose result is an AGGREGATE (a max, a map, a count) rather than
+    the table itself. See tools/audit_cursor_blowup.py, CLASS 2.
+    """
+    r2 = _r2_routed()
+    if r2 is not None:
+        data = r2.get(_path_to_key(path))
+        if data is None:
+            raise FileNotFoundError(f"R2 object absent for {path!r}")
+        pf = pq.ParquetFile(io.BytesIO(data))
+    else:
+        pf = pq.ParquetFile(path)
+    for batch in pf.iter_batches(batch_size=batch_size, columns=columns):
+        yield batch
+
+
 def read_schema(path: str):
     """The Arrow schema of a stored parquet, R2-routed like read_table.
     Replaces a raw pq.ParquetFile(path).schema_arrow, which reads a local path

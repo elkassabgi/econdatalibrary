@@ -227,16 +227,21 @@ def _disk_vector_map(path):
     have destroyed the runner exactly the way abs did — and statcan is the first giant
     reached now that abs is bounded, so the outage would simply have moved here.
 
-    Now: only the FOUR columns needed, folded batch by batch, so peak memory is one record
-    batch plus the resulting map rather than the whole cube. Identical output.
+    Now: STREAMED via blob.iter_batches over only the four columns needed, so peak decoded
+    memory is one record batch plus the resulting map, not the whole cube.
+
+    `columns=` ALONE WAS NOT ENOUGH, and the first version of this fix stopped there:
+    read_table still materialises the entire projected table, which for that cube is four
+    string columns over 962M rows — still roughly 56 GB. Narrowing a fatal read into a
+    slightly smaller fatal read is not a fix. The iteration is what bounds it.
 
     NOT YET BOUNDED: the map itself is one entry per distinct vector in the cube, which is
     unmeasured for the census giants. It is far smaller than the row count, but if a cube
     turns out to hold tens of millions of vectors this needs a cap too — see the work queue.
     """
-    t = blob.read_table(path, columns=["series_key", "geo", "uom", "coordinate"])
     out = {}
-    for batch in t.to_batches():
+    for batch in blob.iter_batches(
+            path, columns=["series_key", "geo", "uom", "coordinate"]):
         _fold_vectors(batch.to_pydict(), out)
     return out
 
