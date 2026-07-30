@@ -217,10 +217,32 @@ def _changed_pids(feed_since: dt.date):
 def _disk_vector_map(path):
     """Read an on-disk cube parquet -> {vectorId(int): (geo, uom, coordinate)}.
     Each vector maps to exactly one (geo,uom,coordinate) on disk (verified), so this
-    backfill is lossless and keeps merged rows consistent with existing columns."""
-    t = blob.read_table(path)
-    d = t.to_pydict()
+    backfill is lossless and keeps merged rows consistent with existing columns.
+
+    MEMORY (2026-07-30). This runs for EVERY changed pid, before any other work on it. It
+    used to `blob.read_table(path)` whole and then `.to_pydict()` — every column, every
+    value, as Python objects. statcan's largest cube is 98100435.parquet at 962,150,400
+    rows: the Arrow decode alone is ~67 GB at ~70 B/row on a 16 GB runner, and to_pydict()
+    is far worse again. The moment StatCan's change feed listed a census cube this would
+    have destroyed the runner exactly the way abs did — and statcan is the first giant
+    reached now that abs is bounded, so the outage would simply have moved here.
+
+    Now: only the FOUR columns needed, folded batch by batch, so peak memory is one record
+    batch plus the resulting map rather than the whole cube. Identical output.
+
+    NOT YET BOUNDED: the map itself is one entry per distinct vector in the cube, which is
+    unmeasured for the census giants. It is far smaller than the row count, but if a cube
+    turns out to hold tens of millions of vectors this needs a cap too — see the work queue.
+    """
+    t = blob.read_table(path, columns=["series_key", "geo", "uom", "coordinate"])
     out = {}
+    for batch in t.to_batches():
+        _fold_vectors(batch.to_pydict(), out)
+    return out
+
+
+def _fold_vectors(d, out):
+    """Fold one batch of the four vector columns into `out` (see _disk_vector_map)."""
     keys = d.get("series_key", [])
     geos = d.get("geo", [])
     uoms = d.get("uom", [])
@@ -366,7 +388,10 @@ def update(unit, since) -> Result:
             # No datapoints released in the window for this cube — a legitimate quiet
             # cube (flagged changed for a metadata-only touch, or already captured).
             tally.empty_unit()
-            md = merge._max_obs_date(blob.read_table(path))
+            # PROJECTED (2026-07-30): _max_obs_date reads only obs_date, but this read the
+            # whole cube — ~67 GB of Arrow for the 962,150,400-row census giant. date32 at
+            # 4 B/row is ~3.8 GB for that same worst case, and a few MB for a normal cube.
+            md = merge._max_obs_date(blob.read_table(path, columns=["obs_date"]))
             if md:
                 series_cursors[str(pid)] = md
             continue
