@@ -109,6 +109,10 @@ jobs:
       - name: Pull state from R2
         # Downloads _aqueduct/state.db.zst, decompresses to data/_aqueduct/state.db,
         # records the object ETag for the compare-and-swap at push time (§1.2).
+        # id: the push step below runs on always() and needs to know THIS step
+        # succeeded — without a recorded ETag the CAS would refuse and exit 2, turning
+        # a pull failure into a second, misleading failure.
+        id: pull_state
         run: python -m updater.run --pull-state
 
       - name: Pull catalog.db (CSV-derive dependency, plan O-9)
@@ -183,17 +187,38 @@ jobs:
           exit $rc
 
       - name: Push state to R2 (compare-and-swap + dated backup)
+        id: push_state
         # Aborts loudly (exit 2) if the remote ETag moved — another writer won;
         # never blind last-writer-wins (§1.2). Also PUTs the dated backup under
         # _aqueduct/backups/.
-        if: ${{ inputs.dry_run != true }}
+        #
+        # always() ADDED 2026-07-30. A bare `if:` still ANDs GitHub's implicit success(),
+        # so ANY non-zero exit from "Run updater" skipped this push and threw away the
+        # whole run's state — every source that HAD been checked lost its advanced
+        # checked_at/last_success and rotted toward RED-SLA despite having been probed.
+        # The updater is designed to exit non-zero on a live-tier failure while still
+        # having done honest work on the other ~130 sources; discarding that is the
+        # opposite of the honest-status contract.
+        #
+        # Gated on the PULL succeeding, not on the updater succeeding: push_state()'s
+        # compare-and-swap keys on the ETag recorded by --pull-state, so without a
+        # successful pull it would refuse and exit 2 — turning one failure into two.
+        # That CAS (plus its "state.db does not exist" guard) is what makes always()
+        # safe here: it is structurally incapable of overwriting a newer remote state.
+        if: ${{ always() && steps.pull_state.outcome == 'success' && inputs.dry_run != true }}
         run: python -m updater.run --push-state
 
       - name: Sync freshness to D1
         # npm ci first so `npx wrangler` resolves the version PINNED in
         # api/worker/package.json (^3.78.0) instead of floating to latest —
         # required by plan §1.3.
-        if: ${{ inputs.dry_run != true }}
+        #
+        # always() ADDED 2026-07-30, gated on the state push having landed. The updater
+        # exits non-zero on a live-tier failure while still having honestly refreshed the
+        # other sources; skipping this left D1 — and therefore the public freshness the
+        # site shows — describing a run that did happen as though it had not. Gated on
+        # push_state so we never publish freshness the state store has not committed.
+        if: ${{ always() && steps.push_state.outcome == 'success' && inputs.dry_run != true }}
         run: |
           npm ci --prefix api/worker --no-audit --no-fund
           python core/sync_state_d1.py
@@ -208,7 +233,12 @@ jobs:
         # already succeeded by this point and the ids stay queued in
         # pending_catalog_sync.txt, so a transient D1 failure costs a day of
         # discoverability, never a day of data.
-        if: ${{ inputs.dry_run != true }}
+        #
+        # always() ADDED 2026-07-30, same reasoning as the freshness sync above: a
+        # non-zero updater exit does not un-derive the series that WERE derived, and
+        # skipping this strands them exactly the way the 31,259 were. Already
+        # continue-on-error, so running it on a failed run cannot add a second failure.
+        if: ${{ always() && steps.push_state.outcome == 'success' && inputs.dry_run != true }}
         continue-on-error: true
         run: python core/sync_catalog_d1.py
 
@@ -245,7 +275,15 @@ jobs:
         # instead: rebuild it on a FRESH origin tip immediately before each push
         # attempt (reset --hard is safe here — the updater persists to R2/D1,
         # never the repo tree), retry x3, and only then go RED.
-        if: ${{ inputs.dry_run != true }}
+        #
+        # always() ADDED 2026-07-30. This step IS the cron-death guard: GitHub disables
+        # a schedule after 60 days without repo activity, and the heartbeat is what
+        # supplies that activity. A bare `if:` still ANDs the implicit success(), so a
+        # run of failures — exactly the state that most needs the schedule to keep
+        # firing — silenced the very guard protecting it. abs killed three runs in a row
+        # this morning; sixty of those and the cron switches itself off. A guard that
+        # only runs when nothing is wrong is not a guard.
+        if: ${{ always() && inputs.dry_run != true }}
         # The repo token is injected ONLY into this step (checkout ran with
         # persist-credentials:false), so the earlier pip-install / third-party-fetch
         # steps never have a usable write token sitting beside the R2 + Cloudflare
