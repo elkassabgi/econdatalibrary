@@ -104,9 +104,19 @@ def fetch_stream(url: str) -> tuple[bytes | None, str]:
     return None, ""
 
 
-def parse_gravity_csv(raw_text: str, keep_vars: set) -> tuple[list, list, list]:
-    """Parse gravity CSV to long format. Returns keys, dates, vals."""
-    reader = csv.DictReader(io.StringIO(raw_text))
+def iter_gravity_rows(fh, keep_vars):
+    """STREAM (series_key, obs_date, value) from an open gravity CSV. THE parser.
+
+    EXTRACTED 2026-07-30. The whole-file version below cannot run in CI: it takes the
+    decompressed CSV as one Python str and returns three lists of ~69.6 MILLION elements,
+    comfortably 10 GB+ resident, which is almost certainly why cepii_gravity never got a
+    fetcher despite being registered and in the updater-heavy matrix. Streaming keeps memory
+    flat so the caller can merge in batches (the pattern ingest_bis_cbs_lbs.iter_rows uses).
+
+    Takes a FILE OBJECT, not text, so the caller can hand it the zip member directly and
+    never materialise the CSV at all.
+    """
+    reader = csv.DictReader(fh)
     headers = [h.strip() for h in (reader.fieldnames or [])]
     log(f"  Columns ({len(headers)}): {headers[:12]}")
 
@@ -124,7 +134,7 @@ def parse_gravity_csv(raw_text: str, keep_vars: set) -> tuple[list, list, list]:
 
     if not iso_o or not iso_d:
         log(f"  Cannot find origin/destination ISO cols in: {headers[:10]}")
-        return [], [], []
+        return
 
     has_year = year_c is not None
     log(f"  iso_o={iso_o}, iso_d={iso_d}, year={year_c}")
@@ -137,10 +147,10 @@ def parse_gravity_csv(raw_text: str, keep_vars: set) -> tuple[list, list, list]:
 
     if not val_cols:
         log("  No matching value columns found")
-        return [], [], []
+        return
 
-    keys, dates, vals = [], [], []
     n_rows = 0
+    n_obs = 0
     seen = set()  # for static vars: only keep one obs per pair
 
     for rec in reader:
@@ -174,16 +184,25 @@ def parse_gravity_csv(raw_text: str, keep_vars: set) -> tuple[list, list, list]:
                 if col in STATIC_VARS and token in seen:
                     continue
                 seen.add(token)
-                keys.append(skey)
-                dates.append(obs_d)
-                vals.append(v)
+                n_obs += 1
+                yield skey, obs_d, v
             except (TypeError, ValueError):
                 pass
 
         if n_rows % 500_000 == 0:
-            log(f"  {n_rows:,} rows, {len(keys):,} obs so far")
+            log(f"  {n_rows:,} rows, {n_obs:,} obs so far")
 
-    log(f"  Parsed {n_rows:,} rows -> {len(keys):,} obs")
+    log(f"  Parsed {n_rows:,} rows -> {n_obs:,} obs")
+
+
+def parse_gravity_csv(raw_text: str, keep_vars: set) -> tuple[list, list, list]:
+    """Whole-file form, kept for the original ingest. Delegates to iter_gravity_rows so
+    there is exactly ONE parser — a copy would drift the moment either side was edited."""
+    keys, dates, vals = [], [], []
+    for k, d, v in iter_gravity_rows(io.StringIO(raw_text), keep_vars):
+        keys.append(k)
+        dates.append(d)
+        vals.append(v)
     return keys, dates, vals
 
 
