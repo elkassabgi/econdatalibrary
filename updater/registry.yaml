@@ -902,6 +902,7 @@ sources:
     - single parquet (comtrade.parquet); 24,086 rows / 713 series; schema series_key(str), obs_date(date32, Dec-31 annual),
       value(float64); data spans 2014-12-31..2025-12-31
 - source_id: cso
+  live: true
   scripts:
   - jobs/ingest_cso_ireland.py
   strategy: overwrite_if_changed
@@ -2289,6 +2290,7 @@ sources:
     - 'multiple per-dataset parquets (one per CSV): eci_rankings.parquet, services_country_year.parquet, services_cp_{1,2,4,6}.parquet,
       hs12_country_year.parquet, hs12_cp_{hs1,hs2}.parquet (9 files). Schema: series_key (ATLAS:...), obs_date, value.'
 - source_id: idb
+  live: true
   scripts:
   - jobs/ingest_idb.py
   strategy: bulk_snapshot_if_changed
@@ -2914,6 +2916,7 @@ sources:
       table numbers 1..499 (lines 169-185); dedup on (key,date) in memory (seen set); one write per theme at theme end (lines
       192-199). A theme is all-or-nothing (no per-table skip).
 - source_id: ksh_stadat
+  live: true
   scripts:
   - jobs/ingest_ksh_stadat.py
   strategy: bulk_snapshot_if_changed
@@ -3249,6 +3252,7 @@ sources:
       total, COVERAGE small). Schema (explicit SCHEMA, lines 31-36): series_id (str), obs_date (date32), value (float64),
       dataset (str). Each written once via pq.write_table (full overwrite when file absent).'
 - source_id: ons_uk
+  live: true
   scripts:
   - jobs/ingest_ons_uk.py
   strategy: bulk_snapshot_if_changed
@@ -3430,6 +3434,7 @@ sources:
       series_key=''<variable>|<ISO3>''; annual values dated Dec-31. Raw workbook cached at data/raw/penn_world_table/pwt110.xlsx.
       Plus _ingest_summary.json.'
 - source_id: pip
+  live: true
   scripts:
   - jobs/ingest_pip.py
   strategy: overwrite_if_changed
@@ -4579,7 +4584,7 @@ sources:
   - 'single parquet: data/clean_full/unesco_dem/unesco_dem.parquet. Schema: series_key (string), obs_date date32
     (period-START), value float64.'
 - source_id: unesco_natmon
-  live: false
+  live: true
   scripts:
   - updater/strategies/fetchers/unesco_natmon.py
   strategy: overwrite_if_changed
@@ -4625,7 +4630,7 @@ sources:
   - 'single parquet: data/clean_full/unesco_natmon/unesco_natmon.parquet. Schema: series_key (string), obs_date
     date32 (period-START), value float64.'
 - source_id: unesco_sdg
-  live: false
+  live: true
   scripts:
   - updater/strategies/fetchers/unesco_sdg.py
   strategy: overwrite_if_changed
@@ -5201,7 +5206,7 @@ sources:
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: World Revenue Longitudinal Database (WoRLD)
 - source_id: imf_afrreo_direct
-  live: false
+  live: true
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -5221,7 +5226,7 @@ sources:
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Sub-Saharan Africa Regional Economic Outlook
 - source_id: imf_apdreo_direct
-  live: false
+  live: true
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -5321,7 +5326,7 @@ sources:
       FSICDM -> FSICDM:7.0.0.
     name: Financial Soundness Indicators — Concentration and Distribution Measures
 - source_id: imf_whdreo_direct
-  live: false
+  live: true
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
