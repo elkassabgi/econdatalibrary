@@ -115,7 +115,18 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   indicator codes exist in the current UIS API, so it cannot be kept current from
 #   this endpoint and hosting it would mean publishing a 2019 snapshot that can never
 #   update. Needs a different route or an explicit frozen-archive decision.
-EXPECTED_SOURCE_COUNT = 125
+# 2026-07-30: 125 -> 134, plus a warning about THIS TRIPWIRE'S OWN FAILURE MODE. Nine IMF
+#   direct-from-api.imf.org sources were added across two commits — 7c82c08 (imf_fsic_direct,
+#   imf_fsibsis_direct, imf_fsicdm_direct: the FSI family) and b25e9c5 (imf_gfsbs_direct,
+#   imf_gfscofog_direct, imf_gfssfcp_direct, imf_gfssoef_direct, imf_gfssoo_direct,
+#   imf_gfsssuc_direct: the GFS family) — WITHOUT bumping this constant.
+#   A stale count here does not warn and does not degrade: registry.validate() reports it and
+#   orchestrate.py raises SystemExit, so from 7c82c08 (01:37 UTC) EVERY run would abort before
+#   touching a single source. A counter takes the whole refresh offline. Caught at 03:37 UTC
+#   with the 06:00 cron still pending, so no scheduled run actually hit it.
+#   The tripwire is worth keeping — it is what stops sources being added silently — but it has
+#   to fail at PUSH time rather than at 06:00 UTC. tests/test_registry_count.py now does that.
+EXPECTED_SOURCE_COUNT = 134
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

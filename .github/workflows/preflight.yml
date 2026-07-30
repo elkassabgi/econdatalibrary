@@ -1,0 +1,43 @@
+# preflight.yml — catch registry breakage at PUSH time, not at 06:00 UTC.
+#
+# WHY THIS EXISTS. updater/config.py:EXPECTED_SOURCE_COUNT is a tripwire that forces anyone
+# adding a source to declare it. Its failure mode, though, is total: orchestrate.py raises
+# SystemExit on a mismatch, so a stale counter aborts the nightly refresh before it touches a
+# single source. On 2026-07-30 nine IMF sources landed across two commits without a bump, and
+# from 01:37 UTC every run would have exited immediately — the only signal would have been a
+# red cron hours later, looking like a data problem rather than a one-line counter.
+#
+# So the alarm moves to the push. This job needs one dependency and runs in about a second;
+# there is no reason for it to be part of the nightly job's critical path.
+name: preflight
+
+on:
+  push:
+    paths:
+      - 'updater/registry.yaml'
+      - 'updater/config.py'
+      - 'updater/strategies/fetchers/**'
+      - 'tools/preflight_registry.py'
+      - '.github/workflows/preflight.yml'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preflight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  registry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet pyyaml
+      - name: Registry preflight
+        run: python tools/preflight_registry.py

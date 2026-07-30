@@ -65,6 +65,23 @@ def _catalog_ids(limit: int | None, source: list | None):
         conn.close()
 
 
+def _put_with_backoff(s3, bucket, key, body) -> None:
+    """PUT one object. R2 throws transient ServiceUnavailable/SlowDown throttles that outlast
+    botocore's 5 built-in retries (that killed the 2026-07-02 run at 103k objects). Patient
+    app-level backoff: 7 tries, ~2 min total, then re-raise loudly rather than lose the object."""
+    import time as _time
+    for attempt in range(7):
+        try:
+            s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="text/csv")
+            return
+        except Exception as e:                               # noqa: BLE001
+            if attempt == 6:
+                raise
+            wait = 2 ** attempt                              # 1..64s
+            print(f"  PUT retry {attempt+1}/7 in {wait}s ({str(e)[:70]})", flush=True)
+            _time.sleep(wait)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Derive per-series CSV objects to R2")
     ap.add_argument("--bucket")
@@ -77,6 +94,11 @@ def main() -> None:
                     help="list existing <prefix>/ keys once and skip them (resumable multi-day run)")
     ap.add_argument("--smallest-first", action="store_true",
                     help="process sources in ascending entry count so whole sources go live early")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="parallel derive+PUT workers (default 1 = the original serial path). "
+                         "Measured 2026-07-29: cepii_gravity derives at 63 ms/series, so its "
+                         "991,707 remaining objects are 17.4 h serial. Both halves of the work "
+                         "release the GIL (pyarrow read, then the HTTPS PUT), so threads help.")
     a = ap.parse_args()
 
     rows = _catalog_ids(a.limit, a.source)
@@ -133,42 +155,67 @@ def main() -> None:
             tok = resp.get("NextContinuationToken")
         print(f"skip-existing: {len(existing):,} objects already in R2", flush=True)
 
-    up = miss = skip = 0
-    cur_src = None
+    todo = []
+    skip = 0
     for sid, src in rows:
-        if src != cur_src:
-            if cur_src is not None:
-                print(f"  [source done] {cur_src} (running: put {up:,}, skip {skip:,})", flush=True)
-            cur_src = src
         key = f"{a.prefix}/{urllib.parse.quote(sid, safe='')}.csv"
         if key in existing:
             skip += 1
             continue
-        try:
-            body = _series_csv_bytes(sid)
-        except Exception as e:
-            miss += 1
-            print(f"  unresolvable {sid}: {str(e)[:80]}")
-            continue
-        # R2 can throw transient ServiceUnavailable/SlowDown throttles that outlast
-        # botocore's 5 built-in retries (killed the 2026-07-02 run at 103k objects).
-        # Patient app-level backoff: 7 tries, ~4 min total, then re-raise loudly.
-        import time as _time
-        for attempt in range(7):
+        todo.append((sid, src, key))
+    print(f"to derive: {len(todo):,}  (already present: {skip:,})", flush=True)
+
+    up, miss = 0, 0
+    if a.workers > 1:
+        import threading
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        lock = threading.Lock()
+
+        def work(item):
+            sid, src, key = item
             try:
-                s3.put_object(Bucket=a.bucket, Key=key, Body=body,
-                              ContentType="text/csv")
-                break
-            except Exception as e:
-                if attempt == 6:
-                    raise
-                wait = 2 ** attempt  # 1..64s
-                print(f"  PUT retry {attempt+1}/7 in {wait}s ({str(e)[:70]})",
-                      flush=True)
-                _time.sleep(wait)
-        up += 1
-        if up % 500 == 0:
-            print(f"  derived+put {up:,} (skip {skip:,}, miss {miss:,})...", flush=True)
+                body = _series_csv_bytes(sid)
+            except Exception as e:                           # noqa: BLE001
+                return ("miss", sid, str(e)[:80])
+            _put_with_backoff(s3, a.bucket, key, body)
+            return ("put", sid, None)
+
+        # Chunked submission: 1M futures materialised at once would exhaust memory long
+        # before the first one completed.
+        CH = 20_000
+        for start in range(0, len(todo), CH):
+            chunk = todo[start:start + CH]
+            with ThreadPoolExecutor(max_workers=a.workers) as ex:
+                for fut in as_completed([ex.submit(work, it) for it in chunk]):
+                    kind, sid, err = fut.result()
+                    with lock:
+                        if kind == "put":
+                            up += 1
+                        else:
+                            miss += 1
+                            print(f"  unresolvable {sid}: {err}", flush=True)
+                        if (up + miss) % 5000 == 0:
+                            print(f"  derived+put {up:,} (skip {skip:,}, miss {miss:,})...",
+                                  flush=True)
+    else:
+        cur_src = None
+        for sid, src, key in todo:
+            if src != cur_src:
+                if cur_src is not None:
+                    print(f"  [source done] {cur_src} (running: put {up:,}, skip {skip:,})",
+                          flush=True)
+                cur_src = src
+            try:
+                body = _series_csv_bytes(sid)
+            except Exception as e:                           # noqa: BLE001
+                miss += 1
+                print(f"  unresolvable {sid}: {str(e)[:80]}")
+                continue
+            _put_with_backoff(s3, a.bucket, key, body)
+            up += 1
+            if up % 500 == 0:
+                print(f"  derived+put {up:,} (skip {skip:,}, miss {miss:,})...", flush=True)
+
     print(f"done: put {up:,} series CSVs, skipped {skip:,} existing, "
           f"{miss:,} unresolvable (store-coverage gaps)")
 
