@@ -146,7 +146,7 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   carries its own PublishingDate, which is a publisher-supplied per-cube vintage - better than
 #   any HTTP validator. Keys and dates both verified at 100% against the existing store before
 #   wiring (762/762 keys, 303,358/303,358 rows).
-EXPECTED_SOURCE_COUNT = 139
+EXPECTED_SOURCE_COUNT = 140
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
