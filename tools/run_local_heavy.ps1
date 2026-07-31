@@ -34,7 +34,12 @@
 param(
     [string[]] $Only,
     [switch]   $WhatIf,
-    [switch]   $SkipCiCheck
+    [switch]   $SkipCiCheck,
+    # -IfDue makes this safe to call on a tight loop (the 5-minute reboot guard calls it that
+    # way). It exits 0 QUIETLY unless a run is actually due, so the guard needs no cadence
+    # logic of its own and there is exactly one place that decides when this runs.
+    [switch]   $IfDue,
+    [int]      $MinHours = 20
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +55,61 @@ function Say($msg) {
     $line = '[' + (Get-Date).ToUniversalTime().ToString('HH:mm:ss') + '] ' + $msg
     Write-Output $line
     Add-Content -Path $log -Value $line -Encoding utf8
+}
+
+# --- CADENCE + MUTEX (only consulted for -IfDue) --------------------------------------
+# WHY THIS EXISTS AT ALL. run_location: local is now ENFORCED (updater/orchestrate.py), so
+# these sources are excluded from the cloud run. That fixed the runner-killing, and created a
+# worse failure in its place: excluded from the cloud and invoked by nothing here, they would
+# simply never update, silently. Scheduled Tasks are blocked by policy on this machine, so the
+# only durable, reboot-surviving mechanism is the Startup guard loop - which is built to keep
+# long-running jobs ALIVE, not to run a job on a cadence. -IfDue bridges that.
+$stampFile = Join-Path $logDir 'local_heavy.last_success'
+
+$lockFile = Join-Path $logDir 'local_heavy.lock'
+
+if ($IfDue) {
+    # Already running? The guard fires every 5 minutes and a real pass takes hours.
+    #
+    # A PID LOCKFILE, NOT A COMMAND-LINE SCAN. The first version of this searched for another
+    # powershell.exe whose command line contained 'run_local_heavy', excluding $PID. That
+    # matches the LAUNCHER as well as the job: invoke it from any shell whose own command
+    # line names this script and the child sees a phantom sibling, so it stands down every
+    # single time. Measured: the gate exited 0 in all three test cases, including the two that
+    # were genuinely due. Ledger R49 is the same rule - a process query matches your own shell.
+    # A lock keyed on a PID we WROTE cannot be confused by how the job was invoked.
+    if (Test-Path $lockFile) {
+        $stale = $true
+        try {
+            $lockParts = (Get-Content $lockFile -First 1) -split ','
+            $lockPid   = [int]$lockParts[0]
+            $proc = Get-Process -Id $lockPid -ErrorAction SilentlyContinue
+            # PID ALONE IS NOT AN IDENTITY. Windows reuses process ids, so a lock left behind by
+            # a run that aborted could later name a live, unrelated powershell.exe - and this
+            # job would then stand down for ever, silently, which is exactly the failure this
+            # whole cadence exists to prevent. Match the recorded start time as well.
+            if ($proc -and $proc.ProcessName -eq 'powershell' -and $lockParts.Count -ge 2 -and
+                $proc.StartTime.ToUniversalTime().Ticks.ToString() -eq $lockParts[1]) {
+                $stale = $false
+            }
+        } catch { }
+        if (-not $stale) { exit 0 }
+        # A crashed or rebooted run leaves the lock behind; a stale lock must never wedge this
+        # permanently, so fall through and take it over.
+    }
+
+    # Ran recently enough? Stamp is written ONLY after a pass that actually executed, so an
+    # abort on a busy CI does not push the next attempt 20 hours out.
+    if (Test-Path $stampFile) {
+        try {
+            $last = [DateTime]::Parse((Get-Content $stampFile -First 1),
+                                      [Globalization.CultureInfo]::InvariantCulture,
+                                      [Globalization.DateTimeStyles]::RoundtripKind)
+            if (((Get-Date).ToUniversalTime() - $last.ToUniversalTime()).TotalHours -lt $MinHours) {
+                exit 0
+            }
+        } catch { }   # unreadable stamp: treat as due rather than never running again
+    }
 }
 
 Say "local heavy updater starting; log -> $log"
@@ -101,6 +161,9 @@ if (-not $SkipCiCheck) {
 }
 
 $env:AQUEDUCT_BACKEND = 'r2'
+# CI sets this; without it a multi-hour local run shows almost nothing until a buffer fills,
+# and "silent" is indistinguishable from "hung" on a job that legitimately takes hours.
+$env:PYTHONUNBUFFERED = '1'
 
 # This machine is not a 16 GB shared runner. Every per-source BUDGET_MIN in the fetcher
 # package was sized so one source could not eat the 240-minute CI job; here we are processing
@@ -111,10 +174,19 @@ if (-not $env:AQUEDUCT_RUN_BUDGET_MIN)      { $env:AQUEDUCT_RUN_BUDGET_MIN      
 Say ("per-source budget override: " + $env:AQUEDUCT_BUDGET_MIN_OVERRIDE +
      " min; whole-run budget: " + $env:AQUEDUCT_RUN_BUDGET_MIN + " min")
 
+# Take the lock only now. Everything above can exit early (not due, no routed sources, CI in
+# flight) and those paths must leave no lock behind - the first version held one from the very
+# start, so every CI-collision abort dropped a stale lock for the next tick to clean up.
+if (-not $lockFile) { $lockFile = Join-Path $logDir 'local_heavy.lock' }
+Set-Content -Path $lockFile -Value (
+    $PID.ToString() + ',' + (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks.ToString()
+) -Encoding ascii
+
 Say "pull-state ..."
 & python -m updater.run --pull-state
 if ($LASTEXITCODE -ne 0) {
     Say ("pull-state FAILED (" + $LASTEXITCODE + ") - aborting before any write")
+    Remove-Item $lockFile -ErrorAction SilentlyContinue
     exit 1
 }
 
@@ -135,6 +207,15 @@ Say "push-state ..."
 if ($LASTEXITCODE -ne 0) {
     Say ("push-state FAILED (" + $LASTEXITCODE + ") - state NOT committed")
 }
+
+# Stamp the cadence clock only now - after a pass that genuinely ran. Every earlier exit
+# (CI in flight, no routed sources, pull-state failure) leaves the stamp alone so the guard
+# retries on its next 5-minute tick instead of standing down for $MinHours.
+# Round-trip format ('o') so it is parsed back as UTC regardless of this machine's locale;
+# a bare local-time string re-parsed as UTC is a 5-hour error and hid a healthy run once
+# already (ledger R198).
+Set-Content -Path $stampFile -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ascii
+Remove-Item $lockFile -ErrorAction SilentlyContinue
 
 Say ("done (updater rc=" + $rc + "). Full log: " + $log)
 exit $rc
