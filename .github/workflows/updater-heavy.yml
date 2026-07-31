@@ -170,11 +170,31 @@ jobs:
             done ) &
           MEMWATCH=$!
           set +e
-          python -m updater.run ${args}
-          rc=$?
+          python -m updater.run ${args} 2>&1 | tee /tmp/updater_out.txt
+          rc=${PIPESTATUS[0]}
           set -e
           kill $MEMWATCH 2>/dev/null || true
           echo "updater exit code: ${rc}"
+
+          # A RUN THAT PROCESSED NOTHING IS NOT A SUCCESS. This job dedicates a whole runner
+          # to one source; if the orchestrator files it as "PENDING - no adapter built" and
+          # exits 0, the job goes GREEN having done literally nothing. That was live: on
+          # 2026-07-31 insee_sirene and cepii_baci - 2 of the 5 heavy sources - both printed
+          # "=== 0 unit(s) processed ===", exited 0 and reported success, because the matrix
+          # lists them but no fetcher module exists. A green heavy run was being read as "the
+          # heavy sources updated" when 40% of it was a no-op.
+          #
+          # Cadence is NOT an exemption here: --force is available and these sources are on
+          # the matrix precisely because someone wants them attempted. Zero units means the
+          # dispatch was pointless and the operator needs to know.
+          if [ "$rc" = "0" ] && grep -qE '^=== 0 unit\(s\) processed ===' /tmp/updater_out.txt; then
+            if grep -q 'no adapter built' /tmp/updater_out.txt; then
+              echo "::error::${{ matrix.source }} processed 0 units - NO FETCHER MODULE EXISTS (updater/strategies/fetchers/${{ matrix.source }}.py). It is scheduled on paper only; this job has been burning a runner to do nothing. Build the fetcher or take it off the matrix."
+            else
+              echo "::error::${{ matrix.source }} processed 0 units and still exited 0. A dedicated heavy run that updates nothing must not report success - check the due-check, the lease and the live tier."
+            fi
+            rc=1
+          fi
           if [ "$rc" = "137" ] || [ "$rc" = "143" ]; then
             echo "::error::${{ matrix.source }} was KILLED (exit ${rc}) — still out of memory WITH a runner to itself. Isolation was not enough; this source needs a real fix (streaming parse or chunked merge), not more capacity."
           fi
