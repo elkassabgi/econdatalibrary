@@ -54,7 +54,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Tally, finalize, TransientStreak
 
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
       "Accept": "application/xml"}
@@ -222,8 +222,22 @@ def update(unit, since) -> Result:
     # cursor never maps and the CSV-coherence gate demotes every run to partial (101,768 series >
     # the 5,000 derive-all cap, so derive-all can't rescue it). (verified: csv_coherence diag)
 
+    # Stop early if INSEE is refusing everything. On 2026-07-31 all 201 flows
+    # transient-failed and this loop ground through every one with its own retry budget:
+    # 104.5 min to conclude the upstream was throttling, versus 11.1 min for a healthy run.
+    # Probed afterwards the API answered 200 in 0.6s, so it was temporary — the case where
+    # spending an hour proving it is worst, and where continuing to hammer a rate limit is
+    # actively harmful.
+    streak = TransientStreak()
+
     for fn in pfiles:
         flow_id = fn[:-len(".parquet")]
+        if streak.tripped:
+            # Not attempted, not "failed on its own merits" — recorded transient so the run
+            # is partial, the vintage does not advance, and it retries.
+            tally.transient_unit(f"{flow_id} not attempted (upstream refusing)")
+            total += blob.row_count(os.path.join(out_dir, fn))
+            continue
         path = os.path.join(out_dir, fn)
         before = blob.row_count(path)
 
@@ -265,8 +279,12 @@ def update(unit, since) -> Result:
             # flow can't strand the other 200. -> run becomes 'partial'.
             tally.transient_unit()
             total += before
+            if streak.fail():
+                print(f"[insee_bdm] {streak.limit} flows transient-failed in a row — the "
+                      f"upstream is refusing; not attempting the rest this run", flush=True)
             time.sleep(RATE)
             continue
+        streak.ok()
 
         if isinstance(root, tuple) and root[0] == "STRUCTURAL":
             # 200 parsed as XML but the SDMX data envelope is gone (root=<root[1]>).
