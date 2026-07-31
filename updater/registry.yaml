@@ -432,12 +432,14 @@ sources:
       series_key, obs_date(date32), value(float64), freq. Note this writes WS_*.parquet into the SAME data/clean_full/bis
       dir that ingest_bis_cbs_lbs.py writes CBS.parquet/LBS.parquet to.'
 - source_id: bls
-  # BACK IN THE CLOUD 2026-07-30. Routed to the workstation earlier the same day on
-  # an ESTIMATE that assumed the crashes were memory exhaustion. They were not - it
-  # was an Arrow offset overflow in _dedup's group_by (fixed, commit fcfb6ee). With
-  # that fixed the real peak was MEASURED at 11.1 GB against 14.5 GB available on a
-  # 16 GB runner (tools/measure_merge_peak.py). Cloud is the primary mechanism; the
-  # workstation is only for what genuinely cannot run there.
+  # BACK TO THE WORKSTATION 2026-07-31. I moved this to the cloud on a MEASUREMENT
+  # THAT MEASURED THE WRONG THING: tools/measure_merge_peak.py ran _dedup+_sort on the
+  # EXISTING file only, giving 11 GB, but a real run also downloads and parses the NEW
+  # data and merges existing+new, so the true peak is on the combined table. The heavy
+  # matrix run then died at 15.8 GB of a 16 GB runner - 'the runner has received a
+  # shutdown signal'. Measured in production, not projected.
+  run_location: local
+
   scripts:
   - jobs/ingest_bls.py
   - jobs/ingest_bls_full.py
@@ -767,12 +769,14 @@ sources:
     - single-file-per-vintage — baci_hs17.parquet and baci_hs96.parquet under data/clean_full/cepii_baci/; raw zips cached
       under data/raw/cepii_baci/{HS17,HS96}.zip. Streamed in 500k-row batches via one ParquetWriter per vintage (no part files).
 - source_id: cepii_gravity
-  # BACK IN THE CLOUD 2026-07-30. Routed to the workstation earlier the same day on
-  # an ESTIMATE that assumed the crashes were memory exhaustion. They were not - it
-  # was an Arrow offset overflow in _dedup's group_by (fixed, commit fcfb6ee). With
-  # that fixed the real peak was MEASURED at 11.3 GB against 14.5 GB available on a
-  # 16 GB runner (tools/measure_merge_peak.py). Cloud is the primary mechanism; the
-  # workstation is only for what genuinely cannot run there.
+  # BACK TO THE WORKSTATION 2026-07-31. I moved this to the cloud on a MEASUREMENT
+  # THAT MEASURED THE WRONG THING: tools/measure_merge_peak.py ran _dedup+_sort on the
+  # EXISTING file only, giving 11 GB, but a real run also downloads and parses the NEW
+  # data and merges existing+new, so the true peak is on the combined table. The heavy
+  # matrix run then died at 15.5 GB of a 16 GB runner - 'the runner has received a
+  # shutdown signal'. Measured in production, not projected.
+  run_location: local
+
   scripts:
   - jobs/ingest_cepii_gravity.py
   strategy: bulk_snapshot_if_changed
