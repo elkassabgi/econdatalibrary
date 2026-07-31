@@ -3,7 +3,9 @@
 
 License: CC BY 3.0 IGO
 Source: https://comtradeapi.un.org/
-No API key required (public preview endpoint, free tier).
+Requires COMTRADE_API_KEY (.env) - sent as the Ocp-Apim-Subscription-Key header. The old
+public/v1/preview endpoint needed no key but capped a response at 500 records, so it could
+not carry the 2014-2025 history.
 
 Coverage:
   * Annual total merchandise trade (imports CIF, exports FOB)
@@ -11,7 +13,9 @@ Coverage:
   * cmdCode=TOTAL (all goods aggregate)
   * Additional: total services trade, bilateral totals for major partners
 
-Rate limits: ~100 requests/hour on free tier; handled with 2s rate limiting.
+Rate limits: the subscription tier throttles aggressively and returns 429 well inside the
+documented allowance, so every request goes through _get() with exponential backoff and
+requests are spaced by RATE seconds.
 
 Run: python jobs/ingest_comtrade.py
 """
@@ -22,11 +26,83 @@ import requests
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 OUT  = os.path.join(ROOT, "data", "clean_full", "comtrade")
-BASE = "https://comtradeapi.un.org/public/v1/preview"
+# SUBSCRIPTION endpoint, not public/v1/preview. The preview tier caps a response at 500
+# records and in practice returned only the latest period, so it cannot reproduce the
+# 2014-2025 history at all. The key is in .env as COMTRADE_API_KEY.
+BASE = "https://comtradeapi.un.org/data/v1/get"
+
+
+def _api_key() -> str:
+    """COMTRADE_API_KEY from the environment or .env. Empty string if absent."""
+    k = os.environ.get("COMTRADE_API_KEY", "").strip()
+    if k:
+        return k
+    try:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, ".env"), encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("COMTRADE_API_KEY="):
+                    return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
         "Accept": "application/json"}
-RATE = 2.0   # respect free tier limits
+RATE = 6.0   # measured: 2.0s draws 429s from the subscription tier within ~15 requests
 BATCH = 20   # reporters per request
+
+# Ask the SERVER for the aggregate instead of downloading every breakdown and discarding it.
+# Measured 2026-07-31 on reporter 792 / partner 156: 16,712 rows unfiltered vs 12 with these
+# three params, byte-identical values for all 12 years. That 1,393x reduction is not just a
+# speed-up - it is what makes RESPONSE_CAP unreachable (see _get).
+AGG_PARAMS = {"motCode": "0", "customsCode": "C00", "partner2Code": "0"}
+
+# The API truncates a response at exactly 100,000 records and says nothing: the envelope
+# reports count=100000 and the data simply stops. It truncates the TAIL, so the years lost are
+# the most recent ones - precisely what an updater exists to collect. Measured on a
+# 15-partner batch: 38 aggregate year-rows silently missing, all of them 2022-2025.
+# Never treat a capped response as complete.
+RESPONSE_CAP = 100_000
+
+
+def _get(params: dict, retries: int = 5) -> list[dict] | None:
+    """One GET with the aggregate params, 429 backoff, and cap detection.
+
+    Returns None (not []) on failure, so a caller can never mistake a throttled or truncated
+    response for 'this series has no data'.
+    """
+    key = _api_key()
+    if not key:
+        log("  FATAL: COMTRADE_API_KEY missing - refusing to fall back to the 500-record "
+            "preview endpoint")
+        return None
+    headers = dict(UA, **{"Ocp-Apim-Subscription-Key": key})
+    q = dict(params, **AGG_PARAMS)
+    for attempt in range(retries):
+        try:
+            r = requests.get(f"{BASE}/C/A/HS", params=q, headers=headers, timeout=180)
+        except Exception as e:                                    # noqa: BLE001
+            log(f"  ERR attempt {attempt+1}: {type(e).__name__}: {str(e)[:80]}")
+            time.sleep(10 * (attempt + 1))
+            continue
+        if r.status_code == 200:
+            j = r.json() or {}
+            rows = j.get("data") or []
+            if len(rows) >= RESPONSE_CAP or (j.get("count") or 0) >= RESPONSE_CAP:
+                log(f"  CAP HIT ({len(rows):,} rows) - response truncated, refusing it: "
+                    f"{ {k: v for k, v in params.items() if k != 'cmdCode'} }")
+                return None
+            return rows
+        if r.status_code == 429:
+            wait = 30 * (attempt + 1)
+            log(f"  429 rate limit, sleeping {wait}s")
+            time.sleep(wait)
+            continue
+        if r.status_code in (400, 404):
+            return []
+        log(f"  HTTP {r.status_code} attempt {attempt+1}: {r.text[:100]}")
+        time.sleep(10 * (attempt + 1))
+    return None
 
 # UN M49 numeric codes for all reporting countries
 REPORTERS = [
@@ -92,51 +168,49 @@ MAJOR = [
 MAJOR_PARTNERS = [0, 124, 156, 276, 356, 392, 410, 484, 643, 826, 840, 76, 250, 380, 528]
 
 
-def fetch_totals(reporters: list[int], flow: str, retries: int = 4) -> list[dict]:
-    """Fetch total merchandise trade for a batch of reporters and one flow."""
-    codes = ",".join(str(r) for r in reporters)
-    url = (f"{BASE}/C/A/HS"
-           f"?reporterCode={codes}"
-           f"&flowCode={flow}"
-           f"&partnerCode=0"
-           f"&cmdCode=TOTAL")
-    for attempt in range(retries):
-        try:
-            r = requests.get(url, headers=UA, timeout=120)
-            if r.status_code == 200:
-                d = r.json()
-                return d.get("data", [])
-            if r.status_code == 429:
-                wait = 60 * (attempt + 1)
-                log(f"  429 rate limit, sleeping {wait}s")
-                time.sleep(wait); continue
-            if r.status_code in (400, 404):
-                return []
-            log(f"  HTTP {r.status_code} attempt {attempt+1}: flow={flow}")
-        except Exception as e:
-            log(f"  ERR attempt {attempt+1}: {e}")
-        time.sleep(10 * (attempt + 1))
-    return []
+def fetch_totals(reporters: list[int], flow: str) -> list[dict] | None:
+    """Total merchandise trade for a batch of reporters and one flow, all years."""
+    return _get({"reporterCode": ",".join(str(r) for r in reporters),
+                 "flowCode": flow, "partnerCode": "0", "cmdCode": "TOTAL"})
 
 
-def fetch_bilateral_totals(reporter: int, partners: list[int], flow: str) -> list[dict]:
-    """Fetch bilateral total trade between one reporter and multiple partners."""
-    pcodes = ",".join(str(p) for p in partners)
-    url = (f"{BASE}/C/A/HS"
-           f"?reporterCode={reporter}"
-           f"&flowCode={flow}"
-           f"&partnerCode={pcodes}"
-           f"&cmdCode=TOTAL")
-    try:
-        r = requests.get(url, headers=UA, timeout=120)
-        if r.status_code == 200:
-            return r.json().get("data", [])
-    except Exception:
-        pass
-    return []
+def fetch_bilateral_totals(reporter: int, partners: list[int],
+                           flow: str) -> list[dict] | None:
+    """Bilateral total trade between one reporter and several partners, all years."""
+    return _get({"reporterCode": str(reporter), "flowCode": flow,
+                 "partnerCode": ",".join(str(p) for p in partners), "cmdCode": "TOTAL"})
+
+
+# THE UNDER-KEYING FIX (2026-07-31). The published id `import_total:<reporter>` means the
+# TOTAL, but the API returns that total ALONGSIDE its breakdowns, and the ingest kept them
+# all under the one id. Result: 24,086 rows collapsing to 4,154 distinct (series_key,
+# obs_date) pairs, 1,486 of them carrying conflicting values - e.g. import_total:72 at
+# 2014-12-31 held 1,603,998,886.636 / 2,729,735,494.827 / 4,816,420,248.446 / 9,150,154,629.909,
+# where the last is simply the sum of the first three.
+#
+# THREE dimensions were being dropped, established by probing the subscription endpoint:
+#     motCode       mode of transport      0    = all modes
+#     customsCode   customs procedure      C00  = all procedures
+#     partner2Code  secondary partner      0    = all (origin vs consignment)
+# Verified across 8 series covering both flows, totals AND bilateral, including the worst
+# case (import_bilateral:792:156, 6,587 records for 5 years): filtering to all three
+# aggregates yields EXACTLY ONE record per series per year, every time.
+#
+# So this is a FILTER, not a re-key: all 713 published series ids stay exactly as they are
+# and no download URL breaks.
+def _is_aggregate(rec: dict) -> bool:
+    """True only for the all-modes / all-customs / all-secondary-partner row."""
+    mot = rec.get("motCode")
+    cus = rec.get("customsCode")
+    p2 = rec.get("partner2Code")
+    return (mot in (0, "0", None)
+            and (cus is None or str(cus) in ("C00", "0"))
+            and p2 in (0, "0", None))
 
 
 def parse_record(rec: dict, key_prefix: str) -> tuple[str, dt.date, float] | None:
+    if not _is_aggregate(rec):
+        return None
     period = str(rec.get("period", ""))[:4]
     val = rec.get("primaryValue") or rec.get("cifvalue") or rec.get("fobvalue")
     if not period or val is None:
@@ -154,81 +228,109 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     out_path = os.path.join(OUT, "comtrade.parquet")
 
-    # Check what's already done
-    done_combos: set[str] = set()
-    all_keys, all_dates, all_vals = [], [], []
+    # Accumulate into a dict keyed by (series_key, obs_date). The previous version kept three
+    # parallel lists, seeded them with every row already on disk, and appended whatever it
+    # re-fetched - so a second run duplicated every series it touched. That was a SECOND
+    # duplication mechanism, independent of the dropped-dimension one, and it is why the
+    # 4,154 real observations were spread over 24,086 rows. A dict makes both impossible.
+    obs: dict[tuple[str, dt.date], float] = {}
     if os.path.exists(out_path):
         tbl = pq.read_table(out_path)
-        # Keys like "import_total:842" or "export_total:842"
-        for sk in set(tbl.column("series_key").to_pylist()):
-            parts = sk.split(":")
-            if len(parts) >= 2:
-                done_combos.add(sk)
-        all_keys  = tbl.column("series_key").to_pylist()
-        all_dates = tbl.column("obs_date").to_pylist()
-        all_vals  = tbl.column("value").to_pylist()
-        log(f"Resuming: {len(done_combos)} series done, {len(all_vals):,} obs")
+        ks = tbl.column("series_key").to_pylist()
+        ds = tbl.column("obs_date").to_pylist()
+        vs = tbl.column("value").to_pylist()
+        # Only seed from a store that is already correct. Seeding from the CORRUPT store
+        # would be worse than not seeding: where a (key, date) pair holds several conflicting
+        # values, the dict keeps whichever happens to sit last in the file, which is as
+        # likely to be a mode-of-transport component as the total. A store carrying conflicts
+        # is not a resume point, it is the thing being repaired - so drop it and rebuild.
+        conflicts = 0
+        seen: dict[tuple[str, dt.date], float] = {}
+        for k, d, v in zip(ks, ds, vs):
+            if (k, d) in seen and seen[(k, d)] != v:
+                conflicts += 1
+            seen[(k, d)] = v
+        if conflicts:
+            log(f"Existing store has {conflicts:,} conflicting (series_key, obs_date) rows "
+                f"across {tbl.num_rows:,} rows - REBUILDING from the API, not resuming")
+        else:
+            obs = seen
+            log(f"Existing store: {tbl.num_rows:,} rows -> {len(obs):,} distinct (key, date), "
+                f"0 conflicts - resuming from it")
+    before = len(obs)
 
-    # ── Phase 1: Aggregate imports/exports for all countries ─────────────────
+    failures: list[str] = []
+
+    def absorb(recs, key_of) -> int:
+        n = 0
+        for rec in recs:
+            r = parse_record(rec, key_of(rec))
+            if r:
+                obs[(r[0], r[1])] = r[2]      # last write wins; values are identical anyway
+                n += 1
+        return n
+
+    # -- Phase 1: aggregate imports/exports for all reporters ------------------
     log("Phase 1: Total merchandise trade for all reporters...")
-    flow_map = {"M": "import_total", "X": "export_total"}
-
-    for flow, flow_label in flow_map.items():
-        # Batch reporters
-        todo_reporters = [r for r in REPORTERS
-                          if f"{flow_label}:{r}" not in done_combos]
-        log(f"  Flow {flow} ({flow_label}): {len(todo_reporters)} reporters to fetch")
-
-        batches = [todo_reporters[i:i+BATCH] for i in range(0, len(todo_reporters), BATCH)]
+    for flow, flow_label in {"M": "import_total", "X": "export_total"}.items():
+        batches = [REPORTERS[i:i + BATCH] for i in range(0, len(REPORTERS), BATCH)]
         for bi, batch in enumerate(batches, 1):
             recs = fetch_totals(batch, flow)
-            for rec in recs:
-                reporter = rec.get("reporterCode")
-                key = f"{flow_label}:{reporter}"
-                r = parse_record(rec, key)
-                if r:
-                    all_keys.append(r[0])
-                    all_dates.append(r[1])
-                    all_vals.append(r[2])
-            log(f"  [{bi}/{len(batches)}] flow={flow} batch: {len(recs)} records")
+            if recs is None:
+                failures.append(f"{flow_label} batch {bi}")
+                log(f"  [{bi}/{len(batches)}] flow={flow} FAILED")
+                time.sleep(RATE)
+                continue
+            n = absorb(recs, lambda rec: f"{flow_label}:{rec.get('reporterCode')}")
+            log(f"  [{bi}/{len(batches)}] flow={flow}: {len(recs)} records -> {n} obs")
             time.sleep(RATE)
 
-    # ── Phase 2: Bilateral trade (major reporters × major partners) ─────────
+    # -- Phase 2: bilateral trade, major reporters x major partners -----------
     log("Phase 2: Bilateral total trade for major economies...")
-    # MAJOR / MAJOR_PARTNERS are module-level constants (see top of file).
-
     for flow, flow_label in {"M": "import_bilateral", "X": "export_bilateral"}.items():
         for reporter in MAJOR:
-            if all(f"{flow_label}:{reporter}:{p}" in done_combos for p in MAJOR_PARTNERS):
+            recs = fetch_bilateral_totals(reporter, MAJOR_PARTNERS, flow)
+            if recs is None:
+                failures.append(f"{flow_label}:{reporter}")
+                log(f"  bilateral {flow} reporter={reporter} FAILED")
+                time.sleep(RATE)
                 continue
-            todo_partners = [p for p in MAJOR_PARTNERS
-                             if f"{flow_label}:{reporter}:{p}" not in done_combos]
-            recs = fetch_bilateral_totals(reporter, todo_partners, flow)
-            for rec in recs:
-                partner = rec.get("partnerCode", 0)
-                key = f"{flow_label}:{reporter}:{partner}"
-                r = parse_record(rec, key)
-                if r:
-                    all_keys.append(r[0])
-                    all_dates.append(r[1])
-                    all_vals.append(r[2])
+            n = absorb(recs, lambda rec: f"{flow_label}:{reporter}:{rec.get('partnerCode', 0)}")
             if recs:
-                log(f"  bilateral {flow} reporter={reporter}: {len(recs)} records")
+                log(f"  bilateral {flow} reporter={reporter}: {len(recs)} records -> {n} obs")
             time.sleep(RATE)
 
-    # ── Save ─────────────────────────────────────────────────────────────────
-    if not all_vals:
-        log("0 observations collected"); return
+    # -- Save, with the invariants the old version had none of ----------------
+    if not obs:
+        log("0 observations collected - refusing to write"); return 1
+    if failures:
+        log(f"WARNING: {len(failures)} request(s) failed: {failures[:8]}"
+            f"{' ...' if len(failures) > 8 else ''}")
+    if len(obs) < before:
+        log(f"REFUSING TO WRITE: {len(obs):,} obs is fewer than the {before:,} already "
+            f"stored - a shrinking store means data loss, not an update")
+        return 1
 
+    items = sorted(obs.items())
     tbl = pa.table({
-        "series_key": pa.array(all_keys,  pa.string()),
-        "obs_date":   pa.array(all_dates, pa.date32()),
-        "value":      pa.array(all_vals,  pa.float64()),
+        "series_key": pa.array([k for (k, _d), _v in items], pa.string()),
+        "obs_date":   pa.array([d for (_k, d), _v in items], pa.date32()),
+        "value":      pa.array([v for _kd, v in items], pa.float64()),
     })
+    # The whole point of this repair: one row per (series, date). Assert it rather than
+    # trusting it - the store shipped 1,486 conflicting pairs precisely because nobody looked.
+    pairs = {(k, d) for (k, d), _v in items}
+    if len(pairs) != tbl.num_rows:
+        log(f"REFUSING TO WRITE: {tbl.num_rows:,} rows but only {len(pairs):,} distinct "
+            f"(series_key, obs_date) - the under-keying is NOT fixed")
+        return 1
+
     pq.write_table(tbl, out_path, compression="zstd")
-    n = pq.read_metadata(out_path).num_rows
-    log(f"DONE: {n:,} Comtrade observations")
+    series = len({k for (k, _d), _v in items})
+    log(f"DONE: {tbl.num_rows:,} observations across {series:,} series "
+        f"(was {before:,} distinct obs), 0 conflicting pairs")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

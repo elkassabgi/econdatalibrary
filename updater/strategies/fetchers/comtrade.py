@@ -1,25 +1,20 @@
-"""S2 fetcher — UN Comtrade annual merchandise totals (comtradeapi.un.org, no key).
+"""S2 fetcher - UN Comtrade annual merchandise totals (comtradeapi.un.org, subscription key).
 
-!! NOT PROMOTED TO live — BLOCKED ON A DATA REPAIR (found 2026-07-30). Do not set live:true
-   until the key is fixed; this module is committed so the analysis is not lost.
+REPAIRED 2026-07-31, previously blocked. The store was under-keyed: 24,086 rows collapsing to
+4,154 distinct (series_key, obs_date) pairs, 19,184 of those rows in conflict - e.g.
+`import_total:72` at 2014-12-31 held four different values, the largest being the sum of the
+other three. Two independent causes, both now fixed in `jobs/ingest_comtrade.py`:
 
-   THE PUBLISHED STORE IS UNDER-KEYED. comtrade.parquet holds 24,086 rows but only 4,154
-   distinct (series_key, obs_date) pairs, and 1,240 of those pairs carry CONFLICTING values —
-   e.g. `import_total:72` at 2014-12-31 appears as 1,603,998,886.636 AND 2,729,735,494.827 AND
-   4,816,420,248.446. The ingest keys on `{flow}:{reporter}` only, so whatever dimension
-   actually separates those records (mode of transport / customs / mos code) is dropped, and
-   several genuinely different observations collapse onto one id. That is the vdem-vparty and
-   unsdg defect again.
-   Consequence: ANY merge is wrong. Deduping on (series_key, obs_date) discards real values
-   (24,086 -> 4,154, proven by merging a single row), and not deduping leaves the ambiguity in
-   place. merge_and_write's never-shrink guard correctly REFUSED, which is how this surfaced.
-   Fix the key first (carry the missing dimension, as bls does with its 3-column identity),
-   re-ingest, then promote.
-
-   ALSO MEASURED: the `public/v1/preview` tier caps a response at 500 records and returned only
-   period 2025, so a full re-fetch cannot reproduce the stored 2014-2025 history anyway. The
-   docstring below originally claimed this endpoint "returns whole annual histories" — that was
-   my assumption, and the probe evidence (5 reporters -> 1 record) contradicted it.
+  1. THREE DIMENSIONS WERE DROPPED. The API returns the total alongside its breakdowns by
+     motCode (mode of transport), customsCode (customs procedure) and partner2Code (secondary
+     partner), and the ingest filed them all under one id. The published id means the TOTAL, so
+     the repair is a FILTER on the aggregate triple (0 / C00 / 0), not a re-key - all 713
+     published series ids are unchanged and no download URL broke. Verified on 8 series across
+     both flows, totals and bilateral: the triple yields exactly one record per series per year.
+  2. THE RESUME PATH DUPLICATED. main() seeded three parallel lists from the parquet and
+     appended re-fetched rows with no dedup, so every re-run multiplied the rows it touched.
+     It now accumulates into a dict keyed by (series_key, obs_date) and refuses to write if any
+     duplicate survives.
 
 Two phases, matching the published id space exactly (713 catalogued series):
     import_total:<reporter>              115
@@ -27,9 +22,17 @@ Two phases, matching the published id space exactly (713 catalogued series):
     import_bilateral:<reporter>:<partner> 235
     export_bilateral:<reporter>:<partner> 229
 
-NO KEY IS NEEDED — this is the `public/v1/preview` endpoint, which serves annual HS totals
-without a subscription. The rate limit is real though, so `ig.RATE` (2s) is honoured between
-calls and 429s back off 60s x attempt inside `ig.fetch_totals`.
+A SUBSCRIPTION KEY IS REQUIRED (COMTRADE_API_KEY in .env, sent as Ocp-Apim-Subscription-Key).
+The old `public/v1/preview` endpoint needed none but caps a response at 500 records and returned
+only the latest period, so it could not carry the 2014-2025 history at all.
+
+The three dimensions are passed as SERVER-SIDE query params, which is what makes this safe to
+schedule: one bilateral pair drops from 16,712 rows to 12, byte-identical values. That matters
+because the API silently truncates any response at 100,000 records - and it truncates the TAIL,
+so the years lost are the most recent ones. Measured: a 15-partner batch lost 38 aggregate
+year-rows, every one of them 2022-2025. `ig._get` refuses any response at or above that cap and
+returns None rather than [], so a truncated or throttled call can never be read as "no data".
+RATE is 6s; the subscription tier returns 429 well inside its documented allowance.
 
 WHY main() COULD NOT BE WRAPPED. `jobs/ingest_comtrade.py:main()` builds `done_combos` from the
 series_keys already in the parquet and skips every combo it finds:
@@ -112,6 +115,12 @@ def update(unit, since) -> Result:
             except Exception:                                # noqa: BLE001
                 tally.transient_unit(f"{label}:batch")
                 continue
+            if recs is None:
+                # None means throttled, errored, or CAP-TRUNCATED - never "no data".
+                # Treating it as [] would silently publish a short run as a success.
+                tally.transient_unit(f"{label}:batch (no usable response)")
+                time.sleep(ig.RATE)
+                continue
             for rec in recs:
                 _take(f"{label}:{rec.get('reporterCode')}", rec)
             if recs:
@@ -128,6 +137,10 @@ def update(unit, since) -> Result:
                 recs = ig.fetch_bilateral_totals(reporter, list(ig.MAJOR_PARTNERS), flow)
             except Exception:                                # noqa: BLE001
                 tally.transient_unit(f"{label}:{reporter}")
+                continue
+            if recs is None:
+                tally.transient_unit(f"{label}:{reporter} (no usable response)")
+                time.sleep(ig.RATE)
                 continue
             for rec in recs:
                 _take(f"{label}:{reporter}:{rec.get('partnerCode')}", rec)
