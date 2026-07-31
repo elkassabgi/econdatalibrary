@@ -19,6 +19,13 @@ CADENCE_DAYS = {
     "annual": 365, "irregular": 7, "static": 10 ** 6,
 }
 
+# How long a unit that ended PARTIAL waits before the whole pass is attempted again.
+# See Strategy.is_due for why a partial has to count for scheduling at all. Capped rather
+# than using the unit's own cadence so a source whose sub-units failed TRANSIENTLY is not
+# stranded for up to a month, while a source whose failures are permanent still stops
+# re-running its full cost every single day.
+PARTIAL_RETRY_DAYS = 7
+
 
 @dataclass
 class Unit:
@@ -59,12 +66,71 @@ def cadence_due(cadence: str, last_success_utc: str | None, now: datetime | None
     return (now - last).total_seconds() >= days * 86400 * 0.9
 
 
+def _due_after(days: float, stamp: str | None, now: datetime | None = None) -> bool:
+    """Has `days` elapsed since `stamp`? Same 0.9 slack as cadence_due.
+
+    Split out so the partial-retry path can use an explicit number of days rather than a
+    cadence name; an unparseable or missing stamp means due, never silently never-due.
+    """
+    if not stamp:
+        return True
+    now = now or datetime.now(timezone.utc)
+    try:
+        last = datetime.fromisoformat(stamp)
+    except Exception:                                        # noqa: BLE001
+        return True
+    return (now - last).total_seconds() >= days * 86400 * 0.9
+
+
 class Strategy(ABC):
     name: str = "base"
 
     def is_due(self, unit: Unit, unit_state: dict | None, now: datetime | None = None) -> bool:
-        ls = (unit_state or {}).get("last_success_utc")
-        return cadence_due(unit.cadence, ls, now)
+        """Has enough time elapsed to bother checking this unit again?
+
+        A PARTIAL PASS STILL COUNTS AS A PASS, FOR SCHEDULING ONLY (2026-07-31).
+
+        This used to key solely on last_success_utc, and a `partial` deliberately never sets
+        that — correctly, because a partial is not a success and the SLA/health gate must
+        keep saying so. But scheduling drew the wrong conclusion from it: a source whose
+        partial is PERMANENT (upstream retired some tables, a subset can never parse) has
+        last_success NULL forever, so cadence_due returns True forever, so it re-runs its
+        ENTIRE cost on every single run no matter what cadence it declares.
+
+        Measured on production state 2026-07-31: 32 of 103 units had never recorded a
+        success, and their typical durations summed to 1,303 minutes against a 240-minute
+        budget — unsdg 351 min, ssb 231, statfin 138, insee_bdm 105, stat_estonia 103,
+        hagstofa 64. The run therefore spent its whole budget on whoever sorted first and
+        never reached the rest, every day. hagstofa declares cadence `monthly` and was being
+        re-crawled — 1,906 tables, ~55 min — on every run it was offered.
+
+        So: when a unit has never succeeded but its last attempt was a PARTIAL, the cadence
+        is measured from that attempt. A partial means the pass RAN and some sub-units
+        failed; repeating it tomorrow cannot help if those failures are permanent.
+
+        `transient_fail` is deliberately NOT included: that means the pass could not run at
+        all (timeout, 5xx, network), so it must stay immediately retryable.
+
+        Nothing here changes what is REPORTED. last_success stays unset, the source still
+        reads as stale to the health gate and to /v1/last-updates, and `--force` still
+        overrides. This is only about how often we pay the cost of trying again.
+        """
+        st = unit_state or {}
+        ls = st.get("last_success_utc")
+        if ls:
+            return cadence_due(unit.cadence, ls, now)
+        if st.get("status") == "partial" and st.get("last_attempt_utc"):
+            # CAPPED AT PARTIAL_RETRY_DAYS, not the full cadence. A partial can be caused by
+            # PERMANENT sub-unit failures (upstream retired a table -> re-running sooner
+            # cannot help) or by TRANSIENT ones (insee_bdm's last pass had 201/201 sub-units
+            # transient-fail -> re-running sooner is exactly what should happen). The state
+            # does not distinguish them structurally, so waiting a source's full cadence
+            # would strand a recoverable source for up to a month, while waiting a day is
+            # what caused the pathology. The cap splits the difference: far cheaper than
+            # daily, far more responsive than monthly.
+            return _due_after(min(CADENCE_DAYS.get(unit.cadence, 7), PARTIAL_RETRY_DAYS),
+                              st.get("last_attempt_utc"), now)
+        return True
 
     @abstractmethod
     def detect_change(self, unit: Unit, unit_state: dict | None) -> str | None:
