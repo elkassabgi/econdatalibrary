@@ -257,6 +257,47 @@ def _derive_subtitles(con):
 # audit 2026-07-15; the derived fallback remains for sources whose own series
 # titles already read well (BLS, EIA, Maddison, most FAO domains, ...).
 SOURCE_SUBTITLES = {
+    # --- Added 2026-07-31 ------------------------------------------------------------
+    # These 16 sources carry NO human series titles at all: their `title` column holds the
+    # raw key, so the derived fallback could only emit code dumps like
+    # "ADB:EGELC:AOMPC_BBL:AUS; ADB:EGELC:AOMPC_BBL:AZE" — published on the catalog cards and,
+    # once the Status board grew descriptions, about to be published there too.
+    # Every phrase below is read off something observable: the catalogued source name, the
+    # homepage, or the dimension codes in the source's own keys (cited after each entry).
+    # Nothing here asserts coverage or a date range that was not measured.
+    "adb": "Key Indicators for Asia and the Pacific — macroeconomic, national accounts, energy and SDG indicators for ADB member economies",
+    # keys: ADB:SDG:*, ADB:EO_NA_CONST:NSDGDP_R_XDC (national accounts), ADB:EGELC (energy)
+    "cepii_gravity": "Gravity-model variables for every country pair — colonial ties, common language, contiguity, distance and trade-agreement membership",
+    # keys: GRAVITY:col_dep:*, col_dep_ever, wto_d, over ordered country pairs (ABW:AFG ...)
+    "fao_et": "Temperature change on land — surface temperature anomalies and their standard deviations by country and month",
+    # titles: "Standard Deviation - Armenia"; measured coverage 1961-01-01 .. 2023-12-01
+    "gapminder": "Long-run harmonised development indicators by country — health, demography, employment and economy",
+    # keys: adults_with_hiv_percent_age_15_49, pneumonia_deaths_in_children_1_59_months, self_employed_percent_of_employment
+    "harvard_atlas": "Atlas of Economic Complexity — economic complexity indices plus product-level trade values and global market shares",
+    # keys: ATLAS:ECI:eci_hs12, ATLAS:HS12:import_value, ATLAS:HS12:global_market_share
+    "imf_afrreo_direct": "Regional Economic Outlook, Sub-Saharan Africa — current account, fiscal balances and public debt as ratios to GDP",
+    # keys: BCA_GDP_BP6, GGXWDG_GDP, DG_GDP, BXGS_GDP_BP6
+    "imf_apdreo_direct": "Regional Economic Outlook, Asia and Pacific — real growth, inflation, unemployment and fiscal balances by economy",
+    # keys: NGDP_RPCH, PCPIE_PCH, LUR.ILO, GGXCNL_GDP
+    "imf_cofer_direct": "Currency composition of official foreign exchange reserves — holdings per reserve currency, in US dollars and as shares of allocated reserves",
+    # keys: CI_USD/CI_AUD/CI_CAD/CI_CHF with NV_USD (value) and SHRO_PT (share)
+    "imf_fas_direct": "Financial Access Survey — supply-side financial-inclusion indicators: branches, ATMs and accounts per adult and per unit area",
+    # keys: COMBANK, PHTADLT_NUM (per 100k adults), PTKM2_NUM (per 1,000 km2), PTADLT_NUM
+    "imf_fdi_direct": "Financial Development Index — composite indices for financial institutions and markets across depth, access and efficiency",
+    # keys: FD_IX, FDA_IX, FDD_IX, FDE_IX, FI_IX, FMA_IX
+    "imf_fsi": "Financial Soundness Indicators — banking-sector capital adequacy, asset quality, earnings and liquidity, at annual, quarterly and monthly frequency",
+    # keys: FSANL_PT, FSCR_PT, FSCET_PT; A/Q/M frequencies all present in the store
+    "imf_whdreo_direct": "Regional Economic Outlook, Western Hemisphere — growth, inflation, fiscal balances and public debt by economy",
+    # keys: NGDP_RPCH, PCPIE_PCH, GGXGGEI_GDP, GGXWDG_GDP, BCA_GDP_BP6
+    "imf_world_direct": "World Revenue Longitudinal Database — government revenue by category as a share of GDP",
+    # keys: G1111/G1112/G113/G13 revenue codes with POGDP_PT (percent of GDP)
+    "unesco_natmon": "UIS national monitoring — education indicators reported by national authorities, by country and year",
+    # opaque numeric indicator codes (UNESCO_NATMON:10.NA.ABW.A); kept general deliberately
+    "unesco_sdg": "UIS SDG 4 education indicators — completion, attendance and learning assessment, with equity breakdowns by country",
+    # keys: CR.1 (completion rate), GAR.5T8 (gross attendance ratio), ADMI.ENDOFLOWERSEC.MAT
+    "wid": "World Inequality Database — distributional national accounts: income and wealth shares, averages and thresholds by percentile group",
+    # keys: acainc* (average), sdiinc* (share), tdiinc* (threshold) over p0p100, p60p70, p0p71
+    # --- end 2026-07-31 additions ---------------------------------------------------
     # WHO / health
     "who_hwf": "Health workforce — medical doctors, nurses, midwives and other health workers per 10,000 population",
     "who_rs": "Road safety — traffic mortality, registered vehicles, and related population denominators",
@@ -265,7 +306,7 @@ SOURCE_SUBTITLES = {
     "eurostat": "European official statistics — economy, prices, population, industry, transport, environment",
     "bundesbank": "Exchange rates, interest rates, money and banking, and macroeconomic time series for Germany and the euro area",
     "worldbank_wdi": "World Development Indicators — economy, people, environment and infrastructure for all countries",
-    "comtrade": "Merchandise trade — total imports and exports by reporter country (HS, all commodities)",
+    "comtrade": "Merchandise trade — total imports and exports by reporter country, plus bilateral totals for major partner pairs (HS, all commodities)",
     "damodaran": "Valuation datasets — equity risk premiums, betas, margins, costs of capital by industry",
     "social_progress": "Social Progress Index — official interactive embed (dataset not redistributed, by written permission)",
     "bea": "U.S. national accounts (NIPA) — GDP components, trade in goods and services, quarterly and annual",
@@ -2645,6 +2686,27 @@ def main():
     for rec in records:
         _write(os.path.join(OUT_DIR, f"{rec['id']}.html"), render_dataset_page(rec))
         n_pages += 1
+
+    # sources_meta.json -- the Status board's title + description lookup.
+    #
+    # WHY A SIDECAR AND NOT THE API. status.html reads /v1/last-updates, whose rows carry
+    # source_id and nothing human: the board showed "abs", "imf_fsi", "cepii_gravity" and
+    # left the reader to guess. The API's own /v1/sources does carry `name`, but the one-line
+    # DESCRIPTION is the curated `subtitle` computed right here (SOURCE_SUBTITLES, falling
+    # back to one derived from the source's own series titles) and it exists nowhere in D1.
+    # Emitting it as a static file keeps the fix to the catalog build: no D1 migration, no
+    # schema change to a pinned response shape, no worker deploy in the serving path.
+    #
+    # Scope is deliberately `records` -- the sources we actually HOST -- so this never becomes
+    # a metadata-only listing of data we do not serve (display policy above). A ledger row
+    # with no entry here simply keeps showing its id, exactly as it does today.
+    meta_path = os.path.join(OUT_DIR, "sources_meta.json")
+    meta = {r["id"]: {"name": r["name"], "desc": r["subtitle"] or ""} for r in records}
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    _no_desc = [k for k, v in meta.items() if not v["desc"]]
+    print(f"  sources_meta.json: {len(meta)} source(s); "
+          f"{len(_no_desc)} without a description" + (f" {_no_desc[:8]}" if _no_desc else ""))
 
     # index.html
     _write(os.path.join(OUT_DIR, "index.html"), render_index(records, generated))
