@@ -3378,6 +3378,16 @@ sources:
       total, COVERAGE small). Schema (explicit SCHEMA, lines 31-36): series_id (str), obs_date (date32), value (float64),
       dataset (str). Each written once via pq.write_table (full overwrite when file absent).'
 - source_id: ons_uk
+  # WORKSTATION 2026-07-31. Killed the cron runner at 15,838 MB (run 30616548254):
+  # waves 1-3 completed cleanly reporting 'arrow pool 0 MB', then wave 4 went
+  # 1,817 -> 15,838 MB and the runner was destroyed.
+  # CAUSE IS KEY LENGTH, NOT ROW COUNT: 25,401,777 rows but series_key averages 349
+  # characters (max 525) for 8.9 GB of key text - 4.5x Arrow's 2 GiB per-array limit -
+  # because each key stores the code AND the label (sex=female:Sex=Female). Sorting and
+  # deduplicating keys that long is the cost; the largest file is only 7,325,444 rows.
+  # See the work queue: shortening the key to codes only would cut the dominant term
+  # ~3.5x, but it changes PUBLISHED series ids, so it is not a unilateral change.
+  run_location: local
   live: true
   scripts:
   - jobs/ingest_ons_uk.py
