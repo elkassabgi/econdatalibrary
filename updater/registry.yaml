@@ -908,46 +908,57 @@ sources:
   scripts:
   - jobs/ingest_comtrade.py
   strategy: extend_by_date
-  strategy_reason: Annual trade totals; UN Comtrade fetch_totals supports a server-side &period=YYYY[,YYYY] filter, so a real
-    since=last_obs delta is computing missing years per reporter and appending (matrix's incremental_path).
+  strategy_reason: Annual merchandise totals. Every call returns the FULL 2014-present history, so the update is
+    a re-fetch plus a dedup merge on (series_key, obs_date) rather than a period delta - simpler and cheaper than
+    a since= cursor once the aggregate filter keeps the payload at one row per series per year.
   cadence: annual
   refresh_cost: fast
   out_dir: comtrade
-  review: true
+  review: false
   adapter:
-    vintage_signal: 'Server-side period filter: for each reporter request &period=<years from max(obs_date)+1 .. current>
-      and append only returned new annual periods (Dec-31). No separate manifest.'
-    since_param: '&period=YYYY[,YYYY,...] on comtradeapi.un.org/public/v1/preview (current resume key is series_key/reporter
-      only, which wrongly skips existing reporters — must change skip key to (reporter, period)).'
-    out_paths_note: 'single file: data/clean_full/comtrade/comtrade.parquet (~24k rows, 713 series, annual Dec-31). CRITICAL
-      FIX: resume keyed on series presence silently never extends existing reporters to new years.'
-    rate_note: no key (public preview endpoint); ~100 req/hr free tier; script self-throttles RATE=2.0s, BATCH=20, 429 backoff
-      60s*attempt.
-    key_env: none (optional COMTRADE_KEY for the authenticated higher-rate endpoint)
+    vintage_signal: None. The API exposes no catalogue timestamp and no useful HTTP validator, so current_vintage()
+      returns None and the annual cadence gates the fetch. A fabricated token would either never match (re-pull
+      forever) or always match (freeze the source).
+    since_param: Not used. Passing no period returns 2014-present in one response, and the aggregate filter keeps
+      that small, so there is nothing to page.
+    out_paths_note: 'single file: data/clean_full/comtrade/comtrade.parquet - 8,793 rows / 791 series, annual Dec-31,
+      2014-2025, one row per (series_key, obs_date).'
+    rate_note: 'SUBSCRIPTION tier. Throttles well inside its documented allowance: RATE=6.0s between calls, 429
+      backoff 30s*attempt. ~68 requests per full pass, about 11 minutes.'
+    key_env: COMTRADE_API_KEY (.env) - sent as the Ocp-Apim-Subscription-Key header. REQUIRED.
     confidence: high
-    open_question: Change the resume/skip key from reporter to (reporter, period) and add &period — confirm. Should we move
-      to the authenticated Comtrade API key for higher rate limits given the per-reporter year backfill?
+    repaired_2026_07_31: 'Was blocked on an under-keyed store: 24,086 rows collapsing to 4,154 distinct (series_key,
+      obs_date) pairs, 19,932 rows in conflict. Two independent causes, both fixed. (1) The API returns the total
+      ALONGSIDE its breakdowns by motCode, customsCode and partner2Code, and the ingest filed them all under one
+      id; the published id means the TOTAL, so the repair is a filter on the aggregate triple (0/C00/0) - all 713
+      published ids unchanged, none 404. (2) The resume path seeded three parallel lists from the parquet and re-appended
+      without dedup, multiplying rows on every re-run, while keying ''done'' on the reporter so an existing reporter
+      never gained a new year. Now a dict keyed on (series_key, obs_date) with a write refused on any surviving
+      duplicate. Distinct observations 4,154 -> 8,793; series 713 -> 791.'
+    response_cap: 'The API truncates any response at exactly 100,000 records, reports count=100000, and says nothing
+      else - and it truncates the TAIL, so the years lost are the most recent. Measured: a 15-partner batch silently
+      lost 38 aggregate year-rows, all 2022-2025. The three dimensions are passed as SERVER-SIDE query params (16,712
+      rows -> 12 on one pair, byte-identical), which makes the cap unreachable rather than merely unlikely; _get()
+      additionally refuses any response at or above it and returns None, never [], so a truncated or throttled call
+      cannot be read as ''this series has no data''.'
   matrix:
     refresh_mechanism:
     - overwrite-single-file
     force_refresh_procedure:
-    - 'Delete the output then run a clean pull: rm D:/research/econfindatalibrary/data/clean_full/comtrade/comtrade.parquet
-      ; python.exe D:/research/econfindatalibrary/jobs/ingest_comtrade.py  (no flags). If comtrade.parquet is left in place,
-      the run resumes and SKIPS every reporter whose series_key already exists, so it will NOT add newly published years to
-      existing reporters.'
+    - 'python jobs/ingest_comtrade.py . Safe to re-run: it accumulates into a dict keyed on (series_key, obs_date),
+      seeds from the existing parquet ONLY when that file has zero conflicts, and refuses to write a store smaller
+      than the one already present.'
     incremental_path:
-    - 'Not feasible as written without redesign. The resume set done_combos keys on series_key only (e.g. "import_total:842"),
-      so an existing reporter is skipped wholesale and never gets new annual periods. The fetch URL (fetch_totals) has no
-      period filter. To get a true since=last_obs delta: (1) add &period=YYYY[,YYYY] (UN Comtrade supports a period list)
-      computed from max(obs_date) per reporter; (2) change the skip key from reporter to (reporter, period) so already-present
-      reporters are still queried for missing years; (3) append+dedup new rows into the existing table instead of treating
-      series presence as ''done''.'
+    - Not needed. One request returns the whole 2014-present history for a 20-reporter batch, so a full pass is
+      ~68 requests / ~11 min and merge_and_write dedups. The old note here described a period-delta redesign to
+      work around a resume bug that no longer exists.
     keys_or_blockers:
-    - No API key (public preview endpoint comtradeapi.un.org/public/v1/preview). Rate-limited ~100 req/hr free tier; script
-      self-throttles RATE=2.0s and BATCH=20 reporters, with 429 backoff (60s*attempt). No env vars.
+    - COMTRADE_API_KEY required (Ocp-Apim-Subscription-Key). The old public/v1/preview endpoint needed no key but
+      caps at 500 records and cannot carry the history.
     storage_layout:
-    - single parquet (comtrade.parquet); 24,086 rows / 713 series; schema series_key(str), obs_date(date32, Dec-31 annual),
-      value(float64); data spans 2014-12-31..2025-12-31
+    - single parquet (comtrade.parquet); 8,793 rows / 791 series; schema series_key(str), obs_date(date32, annual
+      Dec-31), value(float64); 2014-12-31..2025-12-31; 0 conflicting (series_key, obs_date) pairs.
+  live: true
 - source_id: cso
   live: true
   scripts:
@@ -4907,6 +4918,11 @@ sources:
       totals: 57,629,841 rows / 15,534,339 series). Wide schema: series_key + ~31 self-describing NASS dimension columns +
       obs_date(date32) + value(float64) + value_flag(string). series_key = ''usda:'' + pipe-joined KEY_COLS.'
 - source_id: vdem
+  # ROUTED TO THE WORKSTATION 2026-07-31. pyreadr loads the wide country-year RData
+  # whole and melting it to ~77M long rows exceeds a 16 GB runner before any merge
+  # begins; it destroyed a dedicated runner twice, ~90 seconds in. Needs a streaming
+  # parse (see the chunked-merge work) before it can return to the cloud.
+  run_location: local
   # ADDED 2026-07-30. vdem had a working fetcher and 79,590,111 rows on disk but NO registry
   # entry, so nothing ever scheduled it - it was being updated nowhere at all.
   #
