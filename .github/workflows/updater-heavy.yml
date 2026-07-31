@@ -83,7 +83,15 @@ jobs:
           # be enough — as this workflow's own kill message says, that needs a streaming parse,
           # not more capacity. Until then it carries run_location: local and updates from the
           # workstation, where the memory exists. Leaving it here only bought a red run a day.
-          ALL='["un_wpp","bundesbank","insee_sirene","cepii_baci"]'
+          # insee_sirene and cepii_baci REMOVED 2026-07-31: neither has a fetcher module at
+          # updater/strategies/fetchers/<id>.py, so each burned a dedicated runner to print
+          # "=== 0 unit(s) processed ===" and exit 0 — 2 of 5 heavy jobs were no-ops reporting
+          # success. The zero-unit guard below now catches that, but leaving them here would
+          # simply make this workflow red every night forever, and a permanently red workflow
+          # is one nobody reads. They are NOT forgotten: tools/audit_schedule_coverage.py
+          # reports them under "SCHEDULED ON PAPER, CANNOT RUN". Put them back the moment a
+          # fetcher exists.
+          ALL='["un_wpp","bundesbank"]'
           REQ='${{ inputs.source }}'
           if [ -z "$REQ" ]; then
             echo "sources=$ALL" >> "$GITHUB_OUTPUT"
