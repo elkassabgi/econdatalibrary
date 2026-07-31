@@ -413,6 +413,61 @@ def rotate_after(items: list, bookmark: str, key=None) -> list:
     return items
 
 
+CONSECUTIVE_TRANSIENT_LIMIT = 25
+
+
+class TransientStreak:
+    """Stop walking sub-units once the upstream is plainly refusing all of them.
+
+    THE COST THIS AVOIDS, measured. insee_bdm walks 201 flows. On 2026-07-31 every one of
+    them transient-failed and the fetcher ground through all 201 anyway, each with its own
+    retry-and-backoff budget: 104.5 MINUTES to establish that the upstream was throttling,
+    against 11.1 minutes for the same source's healthy run two weeks earlier. It then
+    consumed 44% of the whole 240-minute daily budget to produce nothing. Probed afterwards
+    the API answered 200 in 0.6s, so the block was temporary — which is exactly the case
+    where spending an hour proving it is worst.
+
+    A handful of scattered transient failures is normal and must NOT trip this: one flaky
+    endpoint should never stop the other 200. But N IN A ROW is not flakiness, it is the
+    upstream saying no — rate limit, outage, or revoked access — and every further request
+    is both futile and, if it is a rate limit, actively counter-productive.
+
+    Honest status is unchanged: the caller records the remaining sub-units transient, so the
+    run is `partial`, the vintage is not advanced, and it retries. The only thing that
+    changes is how long we take to reach that conclusion.
+
+        streak = TransientStreak()
+        for unit in units:
+            if streak.tripped:
+                tally.transient_unit(f"{unit} not attempted (upstream refusing)")
+                continue
+            try:
+                ...
+                streak.ok()
+            except TransientError:
+                tally.transient_unit(unit)
+                streak.fail()
+    """
+
+    def __init__(self, limit: int = CONSECUTIVE_TRANSIENT_LIMIT):
+        self.limit = max(1, int(limit))
+        self.streak = 0
+        self.tripped = False
+        self.tripped_after = 0
+
+    def ok(self) -> None:
+        """A sub-unit succeeded — the upstream is answering, so reset."""
+        self.streak = 0
+
+    def fail(self) -> bool:
+        """A sub-unit transient-failed. Returns True once the breaker has tripped."""
+        self.streak += 1
+        if not self.tripped and self.streak >= self.limit:
+            self.tripped = True
+            self.tripped_after = self.streak
+        return self.tripped
+
+
 def structural_on_zero_rows(stored_max, resp) -> bool:
     """Uniform PxWeb-family rule for a 200 body that parsed to 0 observations: is it a
     STRUCTURAL break (True) or a benign empty/quiet (False)?  Shared by the PxWeb S3
