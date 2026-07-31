@@ -10,6 +10,17 @@ fixed code actually costs.
 Each file is processed in its own child so a death kills only that child, and RSS is sampled
 by the parent - a process that aborts cannot report its own peak.
 
+KNOWN UNDERSTATEMENT, MEASURED 2026-07-31 - READ THIS BEFORE TRUSTING A VERDICT.
+This runs _dedup + _sort on the EXISTING file only. A real update also downloads and parses
+the NEW data and merges existing+new, so the true peak is on the COMBINED table and is
+materially higher. Acting on this tool's numbers alone, bls (11.1 GB here) and cepii_gravity
+(11.3 GB here) were routed to a 16 GB runner and BOTH had their runners destroyed in
+production, at 15.8 and 15.5 GB. insee_sirene (11.0 GB here) survived, so the gap is not a
+constant that can be corrected with a multiplier.
+
+Treat a result here as a LOWER BOUND. A source measuring within ~4 GB of the runner budget
+must be proven by an actual isolated run before being called cloud-capable.
+
 Usage:
     python tools/measure_merge_peak.py                 # every run_location: local source
     python tools/measure_merge_peak.py --source bis
