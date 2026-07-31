@@ -715,12 +715,11 @@ sources:
       '/'->'__' (e.g. qwi__sa.parquet), under data/clean_full/census/ (~83 files). Plus _manifest.json (append-only run log;
       same path can appear multiple times) and logs.
 - source_id: cepii_baci
-  # CLOUD-INFEASIBLE - measured 242,914,764 rows in a single file (baci_hs96.parquet),
-  # about 17.0 GB once decoded into Arrow. merge_and_write materialises the whole
-  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
-  # Routed to the workstation per the owner's standing rule: a database the cloud
-  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
-  run_location: local
+  # BACK IN THE CLOUD 2026-07-30. Routed local earlier the same day on a ROW-COUNT
+  # estimate that called it beyond even a 382 GB workstation. Measured with
+  # tools/measure_merge_peak.py: 13.0 GB peak, which fits a 16 GB runner. 242,914,764
+  # rows but only 2.8 GB decoded - its columns are NUMERIC, and rows predict nothing.
+  # 1.5 GB of headroom is too thin to share, so it runs in the heavy matrix.
   scripts:
   - jobs/ingest_cepii_baci.py
   strategy: bulk_snapshot_if_changed
