@@ -76,7 +76,16 @@ def to_units(entry: dict) -> list[Unit]:
                 "out_dir": entry.get("out_dir", sid),
                 # live tier flag rides in unit config so the orchestrator can apply
                 # the no-silent-skip rule without re-reading the registry entry
-                "live": bool(entry.get("live", False))}
+                "live": bool(entry.get("live", False)),
+                # WHERE this source may execute. Rides in unit config for the same reason
+                # `live` does: the orchestrator must be able to enforce it without re-reading
+                # the registry. It was previously a registry key that NOTHING read - only two
+                # local tools - so the routing was inert. 13 sources carry it; 12 were
+                # incidentally kept out of CI by live:false, and the one that was live,
+                # `ons_uk`, destroyed the runner. A routing label no code consults is a
+                # comment, not a routing decision - and it only looks like it works for as
+                # long as something else happens to be blocking the traffic.
+                "run_location": entry.get("run_location") or "any"}
     units_spec = entry.get("units")
     if units_spec:
         out = []
