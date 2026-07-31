@@ -90,6 +90,35 @@ def _is_live(unit) -> bool:
     return bool((unit.config or {}).get("live"))
 
 
+def _here() -> str:
+    """Where this process is running: "cloud" on a GitHub runner, else "local".
+
+    Overridable with AQUEDUCT_RUN_LOCATION for a workstation run that should behave as if it
+    were CI (or the reverse) without editing the registry.
+    """
+    override = os.environ.get("AQUEDUCT_RUN_LOCATION", "").strip().lower()
+    if override in ("cloud", "local"):
+        return override
+    return "cloud" if os.environ.get("GITHUB_ACTIONS", "").strip() else "local"
+
+
+def _wrong_location(unit) -> bool:
+    """True when this source is not permitted to execute HERE.
+
+    Sources whose merge peak exceeds a 16 GB runner carry `run_location: local`. Until this
+    check existed the label was inert: nothing in the updater or the workflow read it. Of the
+    13 that carry it, 12 were kept out of CI only incidentally, by `live: false`; the one that
+    was live went straight through. That is what killed the 2026-07-31 08:30 UTC run - `ons_uk`
+    climbed from 2.3 GB to 15.8 GB with 151 MB left and the runner was destroyed at 104
+    minutes, taking with it the state, freshness and D1 syncs of every source that had already
+    succeeded. `always()` cannot rescue those steps: there is no machine left to run them on.
+
+    "any" (the default) runs anywhere. A source is skipped only where it is known not to fit.
+    """
+    want = (unit.config or {}).get("run_location") or "any"
+    return want != "any" and want != _here()
+
+
 def _resolve_blob():
     """Blob handle for CSV PUTs when the caller didn't inject one — updater.blob
     owns backend selection (AQUEDUCT_BACKEND=local|r2, from_env())."""
@@ -388,6 +417,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     run_deadline = time.time() + run_budget_min * 60.0 if run_budget_min > 0 else None
     budget_skipped = []
     protected_skipped = []
+    wrong_location = []
 
     for unit in units:
         if sources and unit.source_id not in sources:
@@ -398,6 +428,14 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             continue
         if live_only and not _is_live(unit) and not sources:
             not_in_rollout.append(unit.source_id)
+            continue
+        if _wrong_location(unit) and not sources:
+            # Announced and recorded, never silent (R101). An explicit --source still runs it,
+            # so the workstation job and a manual proof are both unaffected.
+            wrong_location.append(unit.source_id)
+            print(f"[orchestrator] WRONG LOCATION {unit.key} — needs "
+                  f"run_location={(unit.config or {}).get('run_location')}, running on "
+                  f"{_here()}; not attempted this run", flush=True)
             continue
         if _protected(unit):
             # ANNOUNCED, not silent. This was the only `continue` in this loop that
@@ -571,6 +609,15 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 mem = ""                                     # Windows: not available
             print(f"[orchestrator] <<< {unit.key} took "
                   f"{time.time() - t_unit:,.0f}s{mem}", flush=True)
+    if wrong_location:
+        # Same reasoning as PROTECTED below: these WILL show as RED-UNRUN in the health gate,
+        # and the reader needs the reason where they read the outcome. Deliberate routing, not
+        # a failure - but not invisible either, or "we run everything nightly" quietly stops
+        # being true for 13 sources.
+        print(f"[orchestrator] WRONG LOCATION, not attempted on {_here()}: "
+              f"{', '.join(sorted(set(wrong_location)))} — these carry run_location: local "
+              f"because their merge peak exceeds a 16 GB runner. They update from the "
+              f"workstation job; expect RED-UNRUN here until that lands.", flush=True)
     if protected_skipped:
         # Restated in the summary as well as inline, because the inline line scrolls
         # past in a long run and the health gate WILL show these as RED-UNRUN. A
