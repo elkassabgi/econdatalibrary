@@ -121,7 +121,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-30');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-31');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -158,7 +158,7 @@ r = requests.get("https://econdl-api.elkassabgi.workers.dev/v1/series/worldbank:
 df = pd.read_csv(io.StringIO(r.text), comment="#")</pre>
 <p>Get a free key on the <a href="download.html">Download page</a> — one key for the whole ElkassabgiData family.</p>
 
-<div class="foot">Generated 2026-07-30 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div>
+<div class="foot">Generated 2026-07-31 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
     <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="300" height="80" style="max-width:78%;height:auto">
