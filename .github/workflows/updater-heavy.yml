@@ -77,7 +77,13 @@ jobs:
     steps:
       - id: pick
         run: |
-          ALL='["un_wpp","bundesbank","insee_sirene","vdem","cepii_baci"]'
+          # vdem REMOVED 2026-07-31. It destroyed its runner ~90 seconds in, twice, WITH a
+          # runner to itself: pyreadr loads the wide country-year RData whole and the melt to
+          # ~77M long rows exceeds 16 GB before any merge starts. Isolation was never going to
+          # be enough — as this workflow's own kill message says, that needs a streaming parse,
+          # not more capacity. Until then it carries run_location: local and updates from the
+          # workstation, where the memory exists. Leaving it here only bought a red run a day.
+          ALL='["un_wpp","bundesbank","insee_sirene","cepii_baci"]'
           REQ='${{ inputs.source }}'
           if [ -z "$REQ" ]; then
             echo "sources=$ALL" >> "$GITHUB_OUTPUT"
