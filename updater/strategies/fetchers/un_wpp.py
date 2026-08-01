@@ -95,6 +95,45 @@ def _cond_get(url, stored, tries=4):
     raise TransientError("un_wpp: retry budget exhausted")
 
 
+def current_vintage(unit):
+    """Hash over BOTH WPP files' HTTP validators — the strategy-level gate this fetcher lacked.
+
+    Without it detect_change returned the "force" sentinel, meaning undeterminable, so the
+    orchestrator invoked update() on every tick. That was not wasteful in practice — update()
+    already does per-file conditional GETs with stored If-Modified-Since / If-None-Match and
+    does almost nothing on a 304 — but it kept the source out of the live tier, because a
+    source whose gate cannot say "nothing moved" is not one you schedule.
+
+    MEASURED before being relied on (R164): both files answer HEAD 200 with a strong ETag and a
+    Last-Modified, and both are IDENTICAL across two probes —
+        indicators_medium  ETag "0x8DD1BA9EBFD1565"  Last-Modified Fri, 13 Dec 2024 19:11:17 GMT
+        indicators_other   ETag "0x8DD1BA9F6387B38"  Last-Modified Fri, 13 Dec 2024 19:11:35 GMT
+    A validator that flapped per request would make the token move constantly and re-download
+    forever; one that never moves would freeze the source. These do neither.
+
+    Returns None if either file cannot be probed — undeterminable is reported honestly, and the
+    strategy then fetches under cadence rather than assuming nothing changed.
+    """
+    import hashlib
+    sess = requests.Session()
+    parts = []
+    for label, url, _out in _targets():
+        try:
+            r = sess.head(url, headers=UA, timeout=180, allow_redirects=True)
+        except Exception:                                      # noqa: BLE001
+            return None
+        if r.status_code != 200:
+            return None
+        v = (r.headers.get("ETag") or r.headers.get("Last-Modified")
+             or r.headers.get("Content-Length"))
+        if not v:
+            return None
+        parts.append(f"{label}={v}")
+    if not parts:
+        return None
+    return f"{SOURCE}:" + hashlib.sha256("|".join(sorted(parts)).encode()).hexdigest()[:16]
+
+
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
