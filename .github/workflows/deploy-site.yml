@@ -14,13 +14,29 @@ name: Deploy Econ Data Library site
 # workflow_dispatch stays available for the case where the site must be republished without
 # a content change — a rollback, or a Pages-side problem.
 
+# MANUAL-TRIGGER ONLY FOR NOW — the push trigger is written below but commented out.
+#
+# The first run of this workflow failed: the repo's CLOUDFLARE_API_TOKEN authenticates fine
+# (it can read the account) but the Pages API refuses it —
+#     A request to the Cloudflare API (/accounts/***/pages/projects/econdatalibrary) failed.
+#     Authentication error [code: 10000]
+# That token was created on 2026-07-02 for the UPDATER workflows, which deploy the econ
+# Worker and write R2. Publishing a Pages site is a different permission and nothing needed
+# it until now. The site was never touched: the failure happened before any upload.
+#
+# Left on workflow_dispatch so a token that cannot deploy does not produce a failed run, and
+# a failure e-mail, every time somebody edits a page. To switch it on, give the token
+#     Account -> Cloudflare Pages -> Edit
+# at dash.cloudflare.com/profile/api-tokens (all the family sites are one account, so the
+# same token then also unblocks elkassabgidata and ipdatalibrary), then uncomment the push
+# block. Nothing else here needs to change.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'catalog/site/**'
-      - '.github/workflows/deploy-site.yml'
   workflow_dispatch:
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'catalog/site/**'
+  #     - '.github/workflows/deploy-site.yml'
 
 # Cloudflare makes the LAST-CREATED deployment live, so two overlapping runs can leave the
 # older build serving. Queue them in push order and never cancel one in flight.
