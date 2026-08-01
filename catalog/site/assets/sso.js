@@ -42,7 +42,7 @@
 
 (function () {
   var API = 'https://api.hfdatalibrary.com';
-  var K = 'edl_key', N = 'edl_name', C = 'edl_sso_checked', F = 'edl_family';
+  var K = 'edl_key', N = 'edl_name', C = 'edl_sso_checked';
 
   // Highlight the current page's nav link (parity with hfdatalibrary.com,
   // whose .nav-links a.active gets the same pill background as :hover).
@@ -60,30 +60,7 @@
     else document.addEventListener('DOMContentLoaded', mark);
   })();
 
-  // "Signed in" used to mean ONLY "an api_key is in this browser". That was true when the
-  // api_key was the only credential there was. Family sign-in changed it: a visitor can now
-  // complete Google on accounts.elkassabgidata.com, download successfully on every page —
-  // and still be told "Sign in" in the nav, because no api_key was ever stored. The owner
-  // hit exactly that and reported it.
-  //
-  // F is written by account.html only when the account SERVER confirmed the family session
-  // (its 'login' event), and deleted on logout and on sign-out, so it cannot outlive the
-  // session. Deliberately not a read of the SDK's own storage: that is private to the SDK,
-  // and a bare token read reports true for a session the server has already refused —
-  // the mistake that produced a lockout on the account page earlier in this work.
-  // TWO DIFFERENT QUESTIONS. They were briefly one function and that broke downloads.
-  //
-  // hasKey()   — "is the api_key in this browser?" This is what the silent-SSO logic below
-  //              must ask. Step 2 returns early when it is true, skipping the one-per-session
-  //              bounce to HF's /v1/auth/sso that FETCHES the key. Widening this to include a
-  //              family session meant a signed-in visitor short-circuited that step, the key
-  //              was never fetched, and downloads stopped working — the regression the owner
-  //              reported as "back to sign-in and I can't download any more".
-  //
-  // signedIn() — "should the page present this visitor as signed in?" Used only by the nav.
-  //              A confirmed family session counts here, because it genuinely is one.
-  function hasKey()   { return !!localStorage.getItem(K); }
-  function signedIn() { return !!(localStorage.getItem(K) || localStorage.getItem(F)); }
+  function signedIn() { return !!localStorage.getItem(K); }
 
   function updateUI() {
     if (!signedIn()) return;
@@ -137,10 +114,8 @@
     return;
   }
 
-  // 2) The key is already stored locally — nothing to fetch, so skip the bounce.
-  //    hasKey(), NOT signedIn(): a family session is not a key, and treating it as one
-  //    skips step 6 and leaves the visitor without the credential this step exists to get.
-  if (hasKey()) {
+  // 2) Already signed in on econ (key stored locally).
+  if (signedIn()) {
     if (hp.has('sso_recheck')) history.replaceState({}, document.title, location.pathname + location.search);
     onReady(updateUI);
     return;

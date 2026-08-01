@@ -129,24 +129,22 @@ database — with the same login and the same API key. Register once, download e
        so we must not pretend to have it. The key is shown on the account server,
        where this same sign-in already applies — one click, new tab, and pasting it
        back here is what the rest of the Econ site reads. -->
-  <!-- REWRITTEN 2026-08-01. This panel used to say "Downloads on this site stay locked
-       until you do" and instruct the visitor to open the account server, copy their key
-       and paste it back. That was true when this page shipped and is now FALSE: the
-       download page sends the family access token (econdl-api validates it in auth.ts,
-       and the SDK supplies it), so signing in is by itself enough to download. Leaving
-       the old wording would be worse than a stale comment — it is an instruction telling
-       someone to do unnecessary work, and the owner followed it. The key is now what it
-       actually is: optional, and useful for scripts and the REST API rather than for
-       this website. -->
   <div id="key-none" hidden>
-    <div class="msg"><b>You are signed in and downloads work.</b> Nothing else is needed to
-    use this site — <a href="download.html">Download</a> and the catalog will authorise
-    themselves with your ElkassabgiData sign-in.</div>
-    <div class="msg">An API key is separate, and only worth fetching if you want to call the
-    REST API from a script, a notebook or an AI tool, where there is no browser session to
-    authorise you. One key works across every Elkassabgi data library.</div>
-    <a class="alt" id="acct-link" href="https://accounts.elkassabgidata.com/account" target="_blank" rel="noopener">Get my API key on accounts.elkassabgidata.com →</a>
-    <label for="pastekey">Optional: paste it here to store it in this browser</label>
+    <div class="msg">Your API key is issued and shown by the ElkassabgiData account server.
+    The sign-in window never hands it to a website, so it has to be copied across once.</div>
+    <!-- ADDED 2026-07-31. What was wrong: this panel said the key "has to be copied
+         across once" but never said what does not work until it is. A popup sign-in
+         leaves the page reading "Signed in as …" while every Download click on this
+         site still dies at its `if(!getKey())` guard, which is exactly the silent
+         dead button econ download.html's own comment records as the reported bug.
+         Saying it here is the difference between a task the visitor knows they have
+         and a site that looks signed in and simply does not work. -->
+    <div class="msg"><b>Downloads on this site stay locked until you do.</b>
+    <a href="download.html">Download</a>, the API examples and the AI-tools page all read
+    the key out of this browser, and it is not there yet — the ElkassabgiData sign-in you
+    just completed proves who you are, but it deliberately never carries the key itself.</div>
+    <a class="alt" id="acct-link" href="https://accounts.elkassabgidata.com/account" target="_blank" rel="noopener">Show my API key on accounts.elkassabgidata.com →</a>
+    <label for="pastekey">Paste it here to turn on one-click downloads across this site</label>
     <input id="pastekey" type="text" autocomplete="off" spellcheck="false" placeholder="hfd_…">
     <button type="button" id="savekey">Save key</button>
     <div class="msg" id="pastemsg"></div>
@@ -482,14 +480,6 @@ async function onFamilyLogin() {
   // signed-in user wait on a network call (or miss out entirely if it hangs) is
   // the failure this fix is meant to avoid in the other direction.
   familyConfirmed = true;
-  // Tell the REST of the site. Every other econ page decides "signed in" from
-  // assets/sso.js, whose test was `localStorage.edl_key` — the api_key. A family session
-  // does not put one there, so a visitor who had just signed in with Google still saw
-  // "Sign in" in the nav on every page. This marker is the site-wide signal that a family
-  // session was CONFIRMED by the account server (not merely that a token is lying around),
-  // and it is written here because this is the one place that knows the difference.
-  // Removed on sign-out and on the SDK's 'logout' below, so it cannot outlive the session.
-  safeSet('edl_family', '1');
   clearSigninPending();   // the account server honoured this session, so the attempt is
                           // over: download.html must stop saying it was never finished
                           // and start saying the thing that IS true — signed in, but the
@@ -524,9 +514,6 @@ async function onFamilyLogin() {
 // before, just arrived at later.
 function onFamilyLogout() {
   familyConfirmed = false;
-  // The site-wide marker dies with the session it describes. Leaving it would make every
-  // other page's nav claim a signed-in visitor the account server has already refused.
-  safeDel('edl_family');
   endFamilyCheck();
   // endFamilyCheck() cancels the 8-second timer, and that timer was the ONLY thing that
   // ever replaced the "Checking your ElkassabgiData session…" line. So on the most common
@@ -545,23 +532,13 @@ function onFamilyLogout() {
 // that one localStorage name and nothing else. This function therefore must be
 // called on the SAME condition sso.js uses, never on a broader one; see the call
 // site in render() for what happened when it was called on a broader one.
-// This is a SECOND implementation of the nav marking that assets/sso.js also does — this
-// page runs its own because it changes state without a reload. When the label was taught to
-// show the visitor's first name, only the sso.js copy was updated, so every other page said
-// "Ahmed" and THIS page still said "Account". Kept in step deliberately; if one is changed
-// again, the other has to move with it.
 function markNavSignedIn() {
   var a = document.querySelector('.nav a.signin')
        || document.querySelector('.nav a[href="account.html"]')
        || document.querySelector('.nav .signin');
   if (!a) return;
-  // Same rule as assets/sso.js: first name, truncated so a long one cannot push the nav
-  // links off a narrow screen, falling back to "Account" when no name is stored yet — which
-  // is the normal case for the first paint, before /v1/auth/me has answered.
-  var nm = (safeGet('edl_name') || '').trim();
-  var first = nm ? nm.split(/\s+/)[0] : '';
-  if (first.length > 14) first = first.slice(0, 13) + '…';
-  a.textContent = first || 'Account';
+  a.textContent = 'Account';
+  var nm = safeGet('edl_name');
   if (nm) a.title = 'Signed in as ' + nm;
   if (document.body) document.body.setAttribute('data-signed-in', '1');
 }
@@ -604,17 +581,14 @@ function render() {
   //     popup sets ekd_session, host-only on accounts.elkassabgidata.com.
   // So there is nothing to fetch and nothing to paste in on the user's behalf.
   //
-  // SUPERSEDED 2026-08-01. The reasoning above was sound while the rest of the site read
-  // ONLY edl_key: flipping the nav for a family session would have advertised a state the
-  // Download button then refused, so it deliberately claimed less. That trade no longer
-  // exists. download.html now sends the family access token, econdl-api validates it, and
-  // assets/sso.js treats the confirmed-family marker as signed in — so a family session is
-  // honoured everywhere, and withholding the nav is now the DISHONEST direction. The owner
-  // saw it: downloads working while every page still said "Sign in".
-  //
-  // Still gated on evidence, not on a stored token: familyConfirmed is set only by the
-  // SDK's 'login' event, which fires only after the account server returned tokens.
-  if (key || familyConfirmed) markNavSignedIn();
+  // Given that, this degrades honestly instead of claiming a state the rest of the
+  // site will not honour: the nav flips only when the key that makes it TRUE is
+  // actually in this browser. A popup user still gets the signed-in card, their
+  // name, the account-server link and the paste box (#key-none), plus a line
+  // saying downloads stay locked until the key is pasted — a visible task rather
+  // than a nav that lies. Claiming less is the recoverable direction; the reverse
+  // is a dead Download button on a page insisting the user is signed in.
+  if (key) markNavSignedIn();
 
   var name = safeGet('edl_name') || '';
   var email = safeGet('edl_email') || '';
@@ -774,7 +748,7 @@ bind('signout', 'click', async function (e) {
   clearSigninPending();      // deliberately signing OUT is not an unfinished sign-in;
                              // leaving the marker would make the reloaded page accuse
                              // the visitor of abandoning something they just ended
-  safeDel('edl_key'); safeDel('edl_name'); safeDel('edl_email'); safeDel('edl_family');
+  safeDel('edl_key'); safeDel('edl_name'); safeDel('edl_email');
   try { sessionStorage.setItem('edl_sso_checked', '1'); } catch (err) {}
   // Bounded wait. The SDK's logout() is a plain fetch with no timeout, and try/catch only
   // covers a request that FAILS — a connection that is accepted and never answered (captive
