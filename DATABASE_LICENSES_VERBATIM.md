@@ -3376,3 +3376,47 @@ which may originate from third parties and use of this content may be subject to
 different copyright and terms of use" — the same third-party carve-out shape as the
 worldbank entry in this file. Not a bar to hosting, but if a specific KIDB indicator is
 ever identified as third-party sourced it must be excluded individually.
+
+---
+
+### Istat (Istituto nazionale di statistica, Italy)
+
+- **Databases (1):** `istat`
+- **Official terms URL:** https://www.istat.it/en/legal-notice/ (Italian original: https://www.istat.it/note-legali/)
+- **License:** Creative Commons Attribution 4.0 (CC BY 4.0)
+- **Classification:** redistributable_attribution
+- **Commercial OK:** True · **Attribution required:** True · **ShareAlike:** None · **Fetch:** fetched_ok
+- **Adversarial verdict:** **RESEARCHER-ASSESSED, single pass** — quote verified verbatim on TWO
+  official surfaces (English legal notice and the Italian original). NOT yet run through an
+  independent verifier pass, unlike the entries above; treat the classification as sound and the
+  verdict field as pending that second reader.
+- **Decision tier:** CLEARED - re-host OK (attribution)
+
+**Verbatim quote:**
+> Unless otherwise stated, content on this website is licensed under a Creative Commons License – Attribution – 4.0.
+> Share — copy and redistribute the material in any medium or format for any purpose, even commercially
+> Adapt — remix, transform, and build upon the material for any purpose, even commercially
+> You must give appropriate credit, provide a link to the license, and indicate if changes were made.
+> Images, logos (including Istat logo), trademarks and other content owned by third parties belong to their respective owners and cannot be reproduced without their consent.
+
+**Italian original (same clause, istat.it/note-legali):**
+> Salvo diversa indicazione, tutti i contenuti pubblicati su questo sito sono soggetti alla licenza Creative Commons – Attribuzione – versione 4.0.
+> Condividere — riprodurre, distribuire, comunicare al pubblico... per qualsiasi fine, anche commerciale
+> Modificare — remixare, trasformare il materiale... per qualsiasi fine, anche commerciale
+
+*Researcher reasoning:* Assessed 2026-08-01 because `istat` holds 398,212,530 observations across
+1,223 dataflow parquets, is REGISTERED AND REFRESHING on a monthly cadence, and had no entry in
+this file at all — so it was being crawled and stored indefinitely while remaining unservable for
+want of a verdict. Both official surfaces state CC BY 4.0 in identical terms, and both spell out
+the share and adapt grants "for any purpose, even commercially" / "per qualsiasi fine, anche
+commerciale". Attribution is the only condition on the data.
+
+Stricter-clause search: the sole carve-out on either page is for "Images, logos (including Istat
+logo), trademarks and other content owned by third parties" — the same third-party shape as the
+worldbank and adb entries in this file, and it does not reach the statistical data. The SDMX data
+browser at esploradati.istat.it was checked as a third surface and returned a server error rather
+than any terms, so it neither adds nor contradicts anything; the legal notice governs.
+
+**Carry forward:** attribution must name Istat. If a specific ISTAT dataflow is ever identified as
+carrying third-party licensed content, exclude that flow individually rather than reclassifying
+the source.
