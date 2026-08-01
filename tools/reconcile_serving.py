@@ -121,6 +121,34 @@ def main() -> int:
     for s, _, _ in phantom:
         print(f"   {s:24s} registry={s in reg}")
 
+    # --- stored, but in NEITHER list --------------------------------------------------
+    # THE AXIS THIS TOOL WAS BLIND TO. Everything above starts from SUPPORTED_SOURCES or from
+    # the catalogue, so a source that is in neither is invisible to all three checks - and that
+    # is precisely where the largest untouched stores turned out to be: cbs_nl 7.7 GB,
+    # insee_sirene 4.7 GB, gus_dbw 3.5 GB, usda 2.8 GB, cepii_baci 2.8 GB, edgar_13f 2.2 GB, all
+    # with zero or a token handful of catalogue rows. fdic (20.5M rows) escaped the same way.
+    #
+    # A store on disk that nothing lists and nothing serves is work already paid for and not
+    # collected. Some of it is legitimately in flight - cbs_nl and gus_dbw are running backfills
+    # the orchestrator PROTECTS - so this reports rather than accuses.
+    stored = set()
+    for d in glob.glob(os.path.join(ROOT, "data", "*", "*")):
+        if os.path.isdir(d) and glob.glob(os.path.join(d, "**", "*.parquet"), recursive=True):
+            stored.add(os.path.basename(d))
+    dark = sorted(s for s in stored if s not in supported and cat.get(s, 0) == 0)
+    print(f"\nSTORED BUT NEITHER SEARCHABLE NOR DOWNLOADABLE ({len(dark)}) — data on disk that "
+          f"no list mentions")
+    rows = []
+    for s in dark:
+        n, mb = store_size(s)
+        rows.append((mb, s, n))
+    for mb, s, n in sorted(rows, reverse=True)[:15]:
+        print(f"   {s:24s} {n:>5} parquet {mb:>10,.1f} MB   registry={s in reg}"
+              f"{'  live' if s in live else ''}")
+    if len(rows) > 15:
+        print(f"   … and {len(rows)-15} more; total "
+              f"{sum(r[0] for r in rows)/1000:,.1f} GB across {len(rows)} source(s)")
+
     # --- partial cataloguing, from parquet footers only ------------------------------
     part = []
     for s in sorted(supported):
