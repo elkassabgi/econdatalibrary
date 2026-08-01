@@ -1060,6 +1060,23 @@ _DEDUP_ON = {
 # self-describing and pull() can reconstruct exactly.
 _STAMP_ID = {"worldbank_esg", "worldbank", "hf_equities"}
 
+# Identity is (STORE FILE, series_key) and the file part is not in any column, so the tidy
+# `series_id` has to be stamped - but with the catalog id MINUS its source prefix, which is
+# what these sources' CSVs already contain and what every tidy source emits.
+#
+# _STAMP_ID stamps the FULL id (`worldbank:NY.GDP.MKTP.CD:AFE`), so it is the wrong tool here:
+# fed_board's stored object carries `RIFSPFF_N.B`, not `fed_board:RIFSPFF_N.B`. Two conventions
+# already exist in this file; this picks the one these sources are on rather than migrating
+# them onto the other and rewriting objects that are correct.
+#
+# Without it the bulk deriver and the resolver disagree about one column and the byte-exactness
+# gate blocks the whole derive - which is exactly what it did, and why this exists.
+_STAMP_SHORT_ID = {"fed_board"}
+# NOT fhfa. It is served WIDE (tidy_ok False), so its CSV already carries `dataset` and
+# `series_key` as columns - together the full identity - and stamping would append a redundant
+# third id column that its 61 already-stored objects do not have. A "fix" that changes the
+# shape of correct files is not a fix.
+
 
 _GENERIC_SKIP = ("__series.parquet",)
 
@@ -1134,7 +1151,7 @@ def resolve(series_id: str, root: str | None = None) -> Resolution:
     r = fn(series_id, root)
     # Apply cross-cutting policy centrally (keeps the per-source bodies untouched).
     r.dedup_on = r.dedup_on or _DEDUP_ON.get(src)
-    if src in _STAMP_ID:
+    if src in _STAMP_ID or src in _STAMP_SHORT_ID:
         r.stamp_id = True
         r.key_col = "series_id"   # the stamped column carries identity
     if src in _NATIVE_ONLY:
@@ -1168,11 +1185,16 @@ def read_native(res: Resolution) -> pa.Table:
             "an empty series silently."
         )
     if res.stamp_id:
-        # identity is the filename; stamp the canonical catalog id onto every row.
+        # identity is the filename (or the store file); stamp it onto every row. Sources in
+        # _STAMP_SHORT_ID carry the id WITHOUT its source prefix, matching what their stored
+        # CSVs already contain and what every tidy source emits.
+        stamped = (res.series_id.split(":", 1)[1]
+                   if res.source in _STAMP_SHORT_ID and ":" in res.series_id
+                   else res.series_id)
         if "series_id" in table.column_names:
             table = table.drop(["series_id"])
         table = table.append_column(
-            "series_id", pa.array([res.series_id] * table.num_rows, pa.string()))
+            "series_id", pa.array([stamped] * table.num_rows, pa.string()))
     return table
 
 

@@ -109,7 +109,7 @@ def _stream_one(con, path):
         yield key, acc
 
 
-def _stream(con, paths):
+def _stream(con, paths, qualify=False):
     """Same, over a SHARDED source: one sorted scan PER SHARD, in sequence.
 
     Sharded stores are the norm above a certain size - noaa is 417 country-prefix shards over
@@ -117,7 +117,14 @@ def _stream(con, paths):
     produce output that is already grouped. Per-shard sorting is bounded by the largest shard
     instead of by the source.
 
-    THE PRECONDITION IS THAT SHARDS DO NOT SHARE A series_key, and it is CHECKED, not assumed:
+    WITH qualify=True the emitted id becomes `<shard>:<series_key>`, which is what a source
+    whose CATALOGUE ids carry the shard needs - fed_board:H15:RIFSPFF_N.B, fhfa:annual_cbsa:01.
+    Deriving those under a bare key would write every CSV to the wrong R2 object, so the
+    catalogue would list 142,028 series whose downloads all 404. The disjointness check below
+    is then unnecessary (the shard is IN the id, so two shards cannot collide) and is skipped.
+
+    THE PRECONDITION, when qualify is False, IS THAT SHARDS DO NOT SHARE A series_key, and it
+    is CHECKED, not assumed:
     if two shards held the same key, each would flush its own CSV and the second would silently
     overwrite the first with a partial history. The check is a running set of keys already
     emitted, which costs one string per series and turns a silent truncation into a loud stop.
@@ -126,10 +133,11 @@ def _stream(con, paths):
         paths = [paths]
     emitted: set[str] = set()
     for i, p in enumerate(paths, 1):
+        shard = os.path.splitext(os.path.basename(p))[0]
         if len(paths) > 1:
             print(f"  shard {i}/{len(paths)}: {os.path.basename(p)}", flush=True)
         for k, rows in _stream_one(con, p):
-            if len(paths) > 1:
+            if len(paths) > 1 and not qualify:
                 if k in emitted:
                     raise SystemExit(
                         f"REFUSING to continue: series_key {k!r} appears in more than one shard "
@@ -137,7 +145,7 @@ def _stream(con, paths):
                         f"write this series twice and keep only the last, partial history. "
                         f"Derive this source with a single sorted scan instead.")
                 emitted.add(k)
-            yield k, rows
+            yield (f"{shard}:{k}" if qualify else k), rows
 
 
 def main() -> int:
@@ -148,6 +156,9 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--skip-existing", action="store_true")
     ap.add_argument("--workers", type=int, default=24)
+    ap.add_argument("--qualify-with-shard", action="store_true",
+                    help="emit ids as <source>:<shard>:<series_key> — required for sources "
+                         "whose catalogue ids carry the store file (fed_board, fhfa)")
     ap.add_argument("--verify", type=int, default=300,
                     help="byte-compare this many RANDOM series against the resolver first")
     a = ap.parse_args()
@@ -173,22 +184,44 @@ def main() -> int:
     # ---- byte-exactness gate -------------------------------------------------------
     if a.verify:
         from core.derive_csv import _series_csv_bytes
-        keys = [r[0] for r in con.execute(
-            "SELECT DISTINCT series_key FROM read_parquet(?) ORDER BY series_key",
-            [path]).fetchall()]
-        print(f"{len(keys):,} distinct series in the parquet", flush=True)
-        rnd = random.Random(20260730)
-        sample = rnd.sample(keys, min(a.verify, len(keys)))
+        if a.qualify_with_shard:
+            # The id carries the shard, so a bare DISTINCT over the whole source cannot build
+            # one: the same key may exist in two shards as two different series. Sample per
+            # shard instead, which also spreads the check along the axis where a schema
+            # divergence would actually appear.
+            per = max(1, -(-a.verify // len(paths)))
+            keys, grouped = [], {}
+            for pth in paths:
+                shard = os.path.splitext(os.path.basename(pth))[0]
+                got = 0
+                for k, rows in _stream_one(con, pth):
+                    qk = f"{shard}:{k}"
+                    keys.append(qk)
+                    grouped[qk] = rows
+                    got += 1
+                    if got >= per:
+                        break
+            sample = keys
+            print(f"verify sample: {len(sample):,} series, up to {per} from each of "
+                  f"{len(paths)} shard(s)", flush=True)
+        else:
+            keys = [r[0] for r in con.execute(
+                "SELECT DISTINCT series_key FROM read_parquet(?) ORDER BY series_key",
+                [path]).fetchall()]
+            print(f"{len(keys):,} distinct series in the parquet", flush=True)
+            rnd = random.Random(20260730)
+            sample = rnd.sample(keys, min(a.verify, len(keys)))
         # ONE scan for the whole sample. A per-key query would re-scan all 69.6M rows each
         # time — 300 full passes to check 300 series, which is the very cost this tool exists
         # to remove, reintroduced inside its own test.
         want = set(sample)
-        grouped: dict = {k: [] for k in sample}
-        cur = con.execute(
+        if not a.qualify_with_shard:
+            grouped = {k: [] for k in sample}
+        cur = None if a.qualify_with_shard else con.execute(
             "SELECT series_key, obs_date, value FROM read_parquet(?) "
             "WHERE series_key IN (SELECT UNNEST(?)) ORDER BY series_key, obs_date",
             [path, sample])
-        while True:
+        while cur is not None:
             batch = cur.fetchmany(50_000)
             if not batch:
                 break
@@ -266,7 +299,7 @@ def main() -> int:
             threads.append(t)
 
     seen = 0
-    for k, rows in _stream(con, paths):
+    for k, rows in _stream(con, paths, qualify=a.qualify_with_shard):
         seen += 1
         key = csv_key(a.prefix, a.source, k)
         if key in existing:
