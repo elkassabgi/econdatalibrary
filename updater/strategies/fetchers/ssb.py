@@ -66,7 +66,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Deadline, Tally, finalize
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -81,6 +81,16 @@ if _REPO_ROOT not in sys.path:
 from core import pxweb as _pxweb
 
 SOURCE = "ssb"
+# A PER-SOURCE WALL-CLOCK BUDGET. Without one, this fetcher ran for 2h31m in daily run
+# 30667078530 - from 00:04:25 until the job hit GitHub's 300-minute ceiling at 02:35:33 -
+# and produced nothing, because the run was killed mid-update. Memory was flat at ~2 GB
+# throughout, so this is unbounded WORK (a 5,000-table PxWeb crawl), not the OOM class.
+#
+# The whole-run budget (AQUEDUCT_RUN_BUDGET_MIN, default 240) cannot catch this: orchestrate
+# checks it BETWEEN units, so a source that never returns takes the ceiling with it and the
+# graceful stop - finish what we started, push state, name what we skipped - never happens.
+# A per-source deadline is what makes the whole-run budget enforceable at all.
+BUDGET_MIN = float(os.environ.get("AQUEDUCT_SSB_BUDGET_MIN", "40"))
 BASE = "https://data.ssb.no/api/v0/en/table"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 DEDUP = ("series_key", "obs_date")
@@ -501,10 +511,16 @@ def update(unit, since) -> Result:
     sess = requests.Session()
     today = dt.date.today()
     tally = Tally()
+    dl = Deadline(minutes=BUDGET_MIN)
     total = 0
     cursors: dict[str, str] = {}   # table_id -> frontier 'YYYY-MM-DD'
 
     for fn in pfiles:
+        if dl.spent():
+            # Announced, never silent: the deferred groups are recorded transient, so the run
+            # is `partial`, the vintage is NOT advanced, and the next tick takes them first.
+            tally.transient_unit(f"{fn}: budget {BUDGET_MIN:.0f} min spent, group deferred")
+            continue
         path = os.path.join(out_dir, fn)
         subj = fn[len("grp_"):-len(".parquet")]
         before = blob.row_count(path)
@@ -530,6 +546,9 @@ def update(unit, since) -> Result:
         fetched_tables: list[str] = []   # tables that returned real rows this group
 
         for tid in attempt_ids:
+            if dl.spent():
+                tally.transient_unit(f"{tid}: budget spent, table deferred")
+                continue
             stored_max = per_max.get(tid)
             floor = _floor_for(stored_max, today)
             if floor is None and stored_max is not None:

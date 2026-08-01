@@ -62,12 +62,17 @@ import pyarrow.compute as pc
 from ... import blob, config, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Deadline, Tally, finalize
 
 # --------------------------------------------------------------------------- #
 # Endpoint / constants — reused verbatim from jobs/ingest_ecb.py
 # --------------------------------------------------------------------------- #
 SOURCE = "ecb"
+# PER-SOURCE WALL-CLOCK BUDGET. Measured 72.7 minutes in daily run 30667078530 - the second
+# largest consumer after ssb, and 24% of the whole-run budget for one source. Unbounded work
+# (a per-file dataflow walk), not a memory problem. Without a deadline the whole-run budget
+# cannot bound it, because orchestrate only checks that BETWEEN units.
+BUDGET_MIN = float(os.environ.get("AQUEDUCT_ECB_BUDGET_MIN", "35"))
 UA = "Econ-Fin Data Library admin@hfdatalibrary.com"
 BASE = "https://data-api.ecb.europa.eu/service"
 STRUCT_MIME = "application/vnd.sdmx.structure+xml;version=2.1"
@@ -478,11 +483,17 @@ def update(unit, since) -> Result:
     catalog = _load_catalog(out_dir)
 
     tally = Tally()
+    dl = Deadline(minutes=BUDGET_MIN)
     total = 0
     maxd = None
     cursors: dict[str, str] = {}
 
     for fn in pfiles:
+        if dl.spent():
+            # Announced, not silent: deferred files are recorded transient so the run is
+            # `partial`, the vintage is not advanced, and the next tick takes them first.
+            tally.transient_unit(f"{fn}: budget {BUDGET_MIN:.0f} min spent, deferred")
+            continue
         path = os.path.join(out_dir, fn)
         stem = fn[:-len(".parquet")]
         before = blob.row_count(path)
