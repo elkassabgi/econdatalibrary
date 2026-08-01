@@ -181,7 +181,7 @@ def main() -> int:
                obs_date, value
         FROM read_parquet({lst})
         WHERE value IS NOT NULL AND obs_date IS NOT NULL
-        ORDER BY SOURCE_DESC, AGG_LEVEL_DESC, SHORT_DESC, row_id, obs_date""")
+        ORDER BY SOURCE_DESC, AGG_LEVEL_DESC, SHORT_DESC, row_id, obs_date, value""")
 
     t0 = time.time()
     cur_key, rows, n_tables, dropped = None, [], 0, 0
@@ -219,8 +219,12 @@ def main() -> int:
                 cur_key, rows, last_pair = k, [], None
             pair = (rid, d)
             if pair == last_pair:
-                # Same row id AND date twice: the 2,062 residual conflicts. Deterministic —
-                # sorted order means this keeps the LAST value. Counted, never silent.
+                # Same row id AND date twice: the 2,062 residual conflicts no column in the
+                # store can separate. Keeping "the last row" is only DETERMINISTIC because
+                # `value` is the final ORDER BY term, so the survivor is the MAXIMUM value.
+                # Without that tiebreak the sort leaves equal keys in an unspecified order and
+                # a re-derive could publish a different number for the same id and date — a
+                # difference nobody would ever see, on 2,062 rows, forever.
                 dropped += 1
                 rows[-1] = (rid, d.isoformat(), v)
                 continue

@@ -68,6 +68,18 @@ class Resolution:
     tidy_ok: bool = True      # False -> native-verbatim only, excluded from the tidy frame
     dedup_on: tuple | None = None   # drop duplicate rows on these cols after read
     stamp_id: bool = False    # identity is in the FILENAME -> stamp series_id per row
+    # Row identity is a COMPOSITE the store does not hold as a column:
+    # (BASE_COLUMN, then each further name appended as `|NAME=value`). Needed by TABLE-GRAIN
+    # sources, where one catalog id is a whole table and the rows inside it are distinguished
+    # by dimensions the stored key omits. usda is the first: its series_key leaves out
+    # REFERENCE_PERIOD_DESC, so six forecast vintages of the same measure share an id and a
+    # date until it is appended.
+    #
+    # The base column is IN the tuple rather than taken from key_col, because read_native sets
+    # key_col to the synthesised "series_id" once it has built it -- native_to_tidy reads the
+    # id from key_col, so leaving it on the raw key silently produced the unqualified id and
+    # the byte-parity check failed on exactly that.
+    row_id_from: tuple = ()
 
 
 # --------------------------------------------------------------------------- #
@@ -698,31 +710,17 @@ def _resolve_worldbank_pink(series_id: str, root: str) -> Resolution:
     return Resolution(series_id, "worldbank_pink", path, "series_key", predicate)
 
 
-# --- usda ------------------------------------------------------------------
-def _resolve_usda(series_id: str, root: str) -> Resolution:
-    # catalog: usda:corn_grain_production_measured_in_bu
-    #   -> NASS Quick Stats 'crops' cube (a multi-file Parquet directory).
-    # The catalog id is a lossy slug of the NASS SHORT_DESC, but the catalog
-    # `title` column carries the *verbatim* SHORT_DESC, so we key off that
-    # (avoids guessing how to un-slug commas / hyphens / ' / ').
-    # One catalog id is a GROUPED indicator: it spans every native series_key
-    # (all states/counties/districts/years, SURVEY+CENSUS) sharing that
-    # SHORT_DESC -- the same one-id->many-rows shape as WDI/eurostat. SHORT_DESC
-    # collides across NASS sectors (e.g. it also appears in 'demographics'), so
-    # we scope strictly to the 'crops' cube where all 25 catalogued USDA series
-    # live; this keeps the projection to the agriculture series the catalog means.
-    row = _catalog.get_series(series_id)
-    if not row or not row.get("title"):
-        raise ResolveError(f"{series_id}: not found in catalog (no SHORT_DESC title)")
-    short_desc = row["title"]
-    path = os.path.join(root, "usda", "crops")
-    if not os.path.isdir(path):
-        raise ResolveError(f"{series_id}: expected USDA crops cube dir {path!r} not found")
-    return Resolution(
-        series_id, "usda", path, "series_key",
-        pc.equal(ds.field("SHORT_DESC"), short_desc),
-    )
-
+# --- usda: the slug-id resolver was REMOVED 2026-08-01 ------------------------
+# It took a catalog id like `usda:corn_grain_production_measured_in_bu`, looked its verbatim
+# SHORT_DESC out of the catalog title, and filtered the `crops` subdirectory. That worked only
+# for the 25 hand-curated rows it was written for, and it was wrong for the source: it ignored
+# animals_products, demographics, economics and environmental entirely, and it scoped to one
+# sector precisely BECAUSE SHORT_DESC collides across them - which the table-grain id fixes by
+# carrying SOURCE_DESC and AGG_LEVEL_DESC alongside it.
+#
+# It also left a DUPLICATE key in _RESOLVERS once the table-grain resolver was registered, and
+# Python silently keeps the last one. A dead resolver plus a shadowed dict entry is exactly the
+# kind of thing that reads as working code for a year. See _resolve_usda below.
 
 # --- census ----------------------------------------------------------------
 def _resolve_census(series_id: str, root: str) -> Resolution:
@@ -986,6 +984,57 @@ def _resolve_noaa(series_id: str, root: str) -> Resolution:
     )
 
 
+
+# --- usda ------------------------------------------------------------------
+def _resolve_usda(series_id: str, root: str) -> Resolution:
+    """TABLE GRAIN. catalog: usda:<SOURCE_DESC>|<AGG_LEVEL_DESC>|<SHORT_DESC>
+
+    usda averages 3.7 observations per series across 15,534,339 series, so it is served as
+    72,046 tables rather than 15.5 million near-trivial CSVs (the cso / insee_melodi
+    precedent). One catalog id therefore selects a SET of rows by three descriptive columns,
+    not one row by a key.
+
+    ALL FILES, NOT ONE. 61,644 of the 72,046 tables (86%) have rows in more than one parquet -
+    ('CENSUS', 'HOGS - SALES, MEASURED IN $', 'COUNTY') is spread over 11 - so resolving to a
+    single file would silently return a fragment of the table.
+
+    row_id_from appends REFERENCE_PERIOD_DESC, which the stored series_key omits even though it
+    is a real dimension: Maryland winter wheat area harvested for 2020 carries six values under
+    one key (MAY/JUN/JUL/AUG FORECAST, JUN ACREAGE, and the final YEAR estimate). Without it a
+    table CSV would hold six numbers on the same id and date with no way to tell a forecast from
+    the final figure.
+
+    maxsplit=2 on '|' so a SHORT_DESC containing a pipe still lands whole in the last part.
+    """
+    rest = series_id.split(":", 1)[1]
+    parts = rest.split("|", 2)
+    if len(parts) != 3:
+        raise ResolveError(
+            f"{series_id}: expected usda:<SOURCE_DESC>|<AGG_LEVEL_DESC>|<SHORT_DESC>")
+    src_desc, agg, short = parts
+    src_dir = os.path.join(root, "usda")
+    files = sorted(f for f in glob.glob(os.path.join(src_dir, "**", "*.parquet"),
+                                        recursive=True)
+                   if not f.endswith(_GENERIC_SKIP))
+    if not files:
+        raise ResolveError(f"{series_id}: no parquet under {src_dir!r}")
+    # `&` on Expressions, NOT pc.and_ — pyarrow has no compute function by that name for
+    # dataset expressions and raises ArrowKeyError("No function registered with name: and_")
+    # at read time, not at build time, so it looks fine until something actually resolves.
+    pred = ((ds.field("SOURCE_DESC") == src_desc)
+            & (ds.field("AGG_LEVEL_DESC") == agg)
+            & (ds.field("SHORT_DESC") == short)
+            # DROP NULL value/date, matching the derive's WHERE clause exactly. usda stores
+            # suppressed and not-yet-published cells as NULL, and without this the resolver
+            # emitted one extra row per such cell carrying `nan` where the served CSV has
+            # nothing — a one-row difference that fails byte-parity and would put "nan" in
+            # front of a reader as if it were an observation.
+            & ds.field("value").is_valid()
+            & ds.field("obs_date").is_valid())
+    return Resolution(series_id, "usda", files, "series_key", pred,
+                      row_id_from=("series_key", "REFERENCE_PERIOD_DESC"))
+
+
 # --- eia -------------------------------------------------------------------
 def _resolve_eia(series_id: str, root: str) -> Resolution:
     # catalog: eia:PET.RWTC.D  native file: PET.parquet  key_col: series_id  value: 'PET.RWTC.D'
@@ -1184,6 +1233,37 @@ def read_native(res: Resolution) -> pa.Table:
             "-- the series id resolves to a file but no observations. Refusing to emit "
             "an empty series silently."
         )
+    if res.row_id_from:
+        # TABLE GRAIN: the catalog id names a table, and each row needs an id of its own.
+        # Build `<key_col>|NAME=value` for each named column, matching byte-for-byte what the
+        # source's derive tool writes. If the two ever disagree the byte-exactness gate stops
+        # the derive, which is the point of building the id in ONE place conceptually even
+        # though two programs construct it.
+        import pyarrow.compute as _pc
+        base = table.column(res.row_id_from[0]).cast(pa.string())
+        for col in res.row_id_from[1:]:
+            vals = (table.column(col).cast(pa.string()) if col in table.column_names
+                    else pa.array([""] * table.num_rows, pa.string()))
+            vals = _pc.fill_null(vals, "")
+            base = _pc.binary_join_element_wise(
+                _pc.cast(base, pa.string()), f"|{col}=", _pc.cast(vals, pa.string()), "")
+        if "series_id" in table.column_names:
+            table = table.drop(["series_id"])
+        table = table.append_column("series_id", base.cast(pa.string()))
+        res.key_col = "series_id"          # native_to_tidy reads the id from key_col
+        # COLLAPSE the residual duplicates the same way the source's derive does, or the two
+        # disagree on exactly the rows nobody can disambiguate. usda has 2,062 (row_id, date)
+        # groups holding more than one value after every geography column is exhausted; the
+        # derive keeps the MAXIMUM, so this must too. Sorting by (id, date, value) and keeping
+        # the last is the same rule stated in pandas.
+        if "obs_date" in table.column_names and "value" in table.column_names:
+            _df = table.to_pandas(date_as_object=True)
+            _n = len(_df)
+            _df = (_df.sort_values(["series_id", "obs_date", "value"], kind="mergesort")
+                      .drop_duplicates(subset=["series_id", "obs_date"], keep="last"))
+            if len(_df) != _n:
+                table = pa.Table.from_pandas(_df, preserve_index=False)
+
     if res.stamp_id:
         # identity is the filename (or the store file); stamp it onto every row. Sources in
         # _STAMP_SHORT_ID carry the id WITHOUT its source prefix, matching what their stored
