@@ -128,7 +128,7 @@
       var nm = hp.get('sso_name');
       if (nm) localStorage.setItem(N, nm);
     }
-    sessionStorage.setItem(C, '1');
+    sessionStorage.setItem(C, String(Date.now()));
     // Tell page scripts (account.html) this page load IS the check's return trip,
     // so they don't immediately bounce again.
     window.__edl_ssoJustChecked = true;
@@ -154,6 +154,30 @@
     sessionStorage.removeItem(C);
   }
 
+  // 3b) A "no session" answer GOES STALE, so stop treating it as final for the whole
+  //     browser session. This is the bug the owner hit, and it looks exactly like the SSO
+  //     being broken:
+  //       open a browser → visit Econ (no session yet) → we ask HF, get "none", and set the
+  //       flag → go to hfdatalibrary and sign in → come back to Econ → the flag is still set,
+  //       so we never ask again and the visitor stays signed out for the rest of the session.
+  //     Step 3 above re-arms on a referrer from a family site, but that only helps when the
+  //     visitor arrives by LINK. Type the address, use a bookmark, or switch to a tab that
+  //     was already open, and there is no referrer — which is what actually happens.
+  //
+  //     A negative answer is only true until the visitor signs in somewhere else, so it is
+  //     worth remembering for a short while and no longer. A POSITIVE answer needs no timer:
+  //     once a key is stored, step 2 short-circuits and we never reach here at all.
+  //
+  //     The flag still does its real job — preventing a redirect loop — because it is written
+  //     BEFORE the bounce and re-checked here: the worst case is one silent round trip every
+  //     RECHECK_MS, not a loop.
+  var RECHECK_MS = 5 * 60 * 1000;
+  var stamp = parseInt(sessionStorage.getItem(C) || '0', 10);
+  // '1' is the legacy value written by older builds; treat it as "checked, time unknown" and
+  // let it expire immediately rather than stranding a visitor mid-session on a deploy.
+  if (stamp && stamp !== 1 && (Date.now() - stamp) > RECHECK_MS) sessionStorage.removeItem(C);
+  else if (stamp === 1) sessionStorage.removeItem(C);
+
   // 4) Already checked this browser session and found no HF session — don't loop.
   if (sessionStorage.getItem(C)) return;
 
@@ -161,11 +185,11 @@
   //    other return origin (e.g. *.pages.dev deployment previews), which would
   //    strand the visitor on the auth server's error page.
   if (!/^(www\.)?econdatalibrary\.com$/.test(location.hostname)) {
-    sessionStorage.setItem(C, '1');
+    sessionStorage.setItem(C, String(Date.now()));
     return;
   }
 
   // 6) Not signed in, not yet checked → one silent SSO check for this session.
-  sessionStorage.setItem(C, '1');
+  sessionStorage.setItem(C, String(Date.now()));
   bounce();
 })();
