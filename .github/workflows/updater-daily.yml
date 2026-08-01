@@ -70,6 +70,14 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      # comtrade moved to the SUBSCRIPTION endpoint (dddeebf) because the old public/v1/preview
+      # tier caps a response at 500 records and cannot carry the 2014-2025 history. The repo
+      # secret already existed; this job simply never passed it, so the first cloud run after
+      # the repair reported: "FATAL: COMTRADE_API_KEY missing - refusing to fall back to the
+      # 500-record preview endpoint" and the source transient-failed. The refusal is correct -
+      # falling back would have silently republished a truncated store - but the key has to
+      # reach the process for the source to work at all.
+      COMTRADE_API_KEY: ${{ secrets.COMTRADE_API_KEY }}
       AQUEDUCT_BACKEND: r2
       # Rollout perimeter: scheduled runs execute ONLY live: true sources.
       # (Learned from run 28682266857: without this, every due source with an
