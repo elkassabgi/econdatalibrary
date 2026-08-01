@@ -36,6 +36,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import time
 import sys
 import tempfile
 
@@ -185,28 +186,57 @@ def execute_remote(files: list[str]) -> None:
         raise SystemExit(
             f"FATAL: no local wrangler install under {WORKER_DIR} — run `npm install` "
             "there first (npx would otherwise float to an unpinned wrangler version)")
+    # RETRY, because one transient blip used to cost the whole sync. A usda run of 93 chunks
+    # died on chunk 0 with Cloudflare "Authentication error [code: 10000]" from the /d1/import
+    # endpoint -- while `d1 execute` against the same database, with the same credentials,
+    # worked seconds later, and an identical sync had succeeded an hour before. So the error
+    # text was misleading and the condition was transient. Aborting the remaining 92 chunks on
+    # it left D1 holding 25 stale rows whose R2 objects had already been replaced: the
+    # catalogue advertised series that 404.
+    #
+    # Retries are bounded and the FINAL failure still aborts loudly -- a half-written D1 is
+    # worse than a failed sync, so this makes the transient case survivable without making the
+    # real case quiet.
+    TRIES = 4
     for p in files:
         cmd = [npx, "wrangler", "d1", "execute", D1_DATABASE,
                "--remote", "--yes", f"--file={os.path.abspath(p)}"]
         print(f"  executing {os.path.basename(p)} ...")
-        try:
-            # encoding/errors pinned explicitly: text=True decodes with the LOCALE
-            # codec, and on Windows (cp1252) wrangler's box-drawing output raises
-            # UnicodeDecodeError. That turns a SUCCESSFUL deploy into a crash — and
-            # worse, a crash midway through a chunked sync leaves D1 half-updated.
-            # The bytes we care about (row counts, error text) are ASCII; replace the
-            # rest rather than letting cosmetics abort a write.
-            res = subprocess.run(cmd, cwd=WORKER_DIR, capture_output=True,
-                                 text=True, encoding="utf-8", errors="replace",
-                                 timeout=600)
-        except subprocess.TimeoutExpired:
-            raise SystemExit(f"FATAL: wrangler timed out (600s) on {p} — aborting sync")
-        if res.returncode != 0:
-            sys.stderr.write(res.stdout or "")
-            sys.stderr.write(res.stderr or "")
+        res = None
+        for attempt in range(TRIES):
+            try:
+                # encoding/errors pinned explicitly: text=True decodes with the LOCALE
+                # codec, and on Windows (cp1252) wrangler's box-drawing output raises
+                # UnicodeDecodeError. That turns a SUCCESSFUL deploy into a crash — and
+                # worse, a crash midway through a chunked sync leaves D1 half-updated.
+                # The bytes we care about (row counts, error text) are ASCII; replace the
+                # rest rather than letting cosmetics abort a write.
+                res = subprocess.run(cmd, cwd=WORKER_DIR, capture_output=True,
+                                     text=True, encoding="utf-8", errors="replace",
+                                     timeout=600)
+            except subprocess.TimeoutExpired:
+                if attempt == TRIES - 1:
+                    raise SystemExit(
+                        f"FATAL: wrangler timed out (600s) on {p} after {TRIES} attempts "
+                        f"— aborting sync")
+                print(f"    timed out, retry {attempt + 1}/{TRIES - 1} in "
+                      f"{5 * (attempt + 1)}s", flush=True)
+                time.sleep(5 * (attempt + 1))
+                continue
+            if res.returncode == 0:
+                break
+            if attempt < TRIES - 1:
+                first = ((res.stderr or res.stdout or "").strip().splitlines() or [""])[-1]
+                print(f"    exit {res.returncode}, retry {attempt + 1}/{TRIES - 1} in "
+                      f"{5 * (attempt + 1)}s — {first[:110]}", flush=True)
+                time.sleep(5 * (attempt + 1))
+        if res is None or res.returncode != 0:
+            sys.stderr.write((res.stdout if res else "") or "")
+            sys.stderr.write((res.stderr if res else "") or "")
             raise SystemExit(
-                f"FATAL: wrangler exited {res.returncode} on {p} — D1 sync aborted; "
-                f"remaining chunks NOT executed; SQL kept for inspection")
+                f"FATAL: wrangler exited {res.returncode if res else '?'} on {p} after "
+                f"{TRIES} attempts — D1 sync aborted; remaining chunks NOT executed; "
+                f"SQL kept for inspection")
         tail = (res.stdout or "").strip().splitlines()
         if tail:
             print(f"    {tail[-1]}")
