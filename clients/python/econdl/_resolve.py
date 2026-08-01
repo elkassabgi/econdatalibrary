@@ -1035,6 +1035,55 @@ def _resolve_usda(series_id: str, root: str) -> Resolution:
                       row_id_from=("series_key", "REFERENCE_PERIOD_DESC"))
 
 
+
+# --- istat -----------------------------------------------------------------
+def _resolve_istat(series_id: str, root: str) -> Resolution:
+    """FLOW GRAIN. catalog: `istat:<flow>` or `istat:<flow>#<part>` for a split flow.
+
+    istat is 398,619,720 observations across 43,564,079 series (9.2 each), so it is served as
+    ~1,226 flows rather than 43.5 million CSVs. Flows over the size bound are split on ONE named
+    dimension of their own keys, chosen at DERIVE time from that flow's data — so the choice is
+    read back from `_split_map.json` in the store. Without that sidecar `istat:101_1015#ART` is
+    an id whose meaning died with the process that wrote it.
+
+    '#' is the separator because it cannot occur in an ISTAT flow id or a dimension value, while
+    ':' and '|' both appear inside the keys.
+    """
+    rest = series_id.split(":", 1)[1]
+    flow, _, part = rest.partition("#")
+    src_dir = os.path.join(root, "istat")
+    path = os.path.join(src_dir, f"{flow}.parquet")
+    if not os.path.exists(path):
+        raise ResolveError(f"{series_id}: no istat dataflow file at {path!r}")
+
+    # value/date NULLs are dropped by the derive's WHERE clause; match it or byte-parity fails
+    # and a suppressed cell is served as `nan`.
+    pred = ds.field("value").is_valid() & ds.field("obs_date").is_valid()
+    if part:
+        smap_path = os.path.join(src_dir, "_split_map.json")
+        try:
+            with open(smap_path, encoding="utf-8") as fh:
+                smap = json.load(fh)
+        except (OSError, ValueError) as e:
+            raise ResolveError(
+                f"{series_id}: names a split part but {smap_path!r} is unreadable ({e!r}); "
+                f"the split dimension is chosen at derive time and cannot be inferred") from e
+        entry = smap.get(flow)
+        if not entry:
+            raise ResolveError(
+                f"{series_id}: flow {flow!r} is not in the split map, so it was never split — "
+                f"a '#' part cannot be resolved for it")
+        dim, trunc = entry["dim"], entry.get("trunc") or 0
+        expr = pc.extract_regex(ds.field("series_key"), pattern=f"{dim}=(?P<v>[^:]*)")
+        # extract_regex yields a struct; compare its field. utf8_slice_codeunits applies the
+        # same truncation the derive used, so a truncated part id round-trips exactly.
+        got = pc.struct_field(expr, "v")
+        if trunc:
+            got = pc.utf8_slice_codeunits(got, 0, trunc)
+        pred = pred & (got == part)
+    return Resolution(series_id, "istat", path, "series_key", pred)
+
+
 # --- eia -------------------------------------------------------------------
 def _resolve_eia(series_id: str, root: str) -> Resolution:
     # catalog: eia:PET.RWTC.D  native file: PET.parquet  key_col: series_id  value: 'PET.RWTC.D'
@@ -1080,6 +1129,7 @@ _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "ecb": _resolve_ecb,
     "oecd": _resolve_oecd,
     "worldbank_pink": _resolve_worldbank_pink,
+    "istat": _resolve_istat,
     "usda": _resolve_usda,
     "census": _resolve_census,
     "fed_board": _resolve_fed_board,

@@ -235,6 +235,10 @@ def main() -> int:
     n_units = 0
     dropped_total = 0
     refused = []
+    # THE SPLIT CHOICE MUST BE RECORDED OR THE IDS CANNOT BE RESOLVED. The dimension is picked
+    # at run time from this flow's own data, so nothing else can reconstruct it: without this
+    # sidecar `istat:101_1015#ART` is an id whose meaning died with the process that wrote it.
+    split_map: dict = {}
     for i, f in enumerate(sorted(files), 1):
         stem = os.path.splitext(os.path.basename(f))[0]
         con = duckdb.connect()
@@ -243,6 +247,9 @@ def main() -> int:
         con.execute("SET preserve_insertion_order=false")
         n_rows_flow = pq.ParquetFile(f).metadata.num_rows
         dim, trunc, n_parts = choose_split(con, f, n_rows_flow, a.max_rows)
+        if dim:
+            split_map[stem] = {"dim": dim, "trunc": trunc, "parts": n_parts,
+                               "rows": n_rows_flow}
         if dim == "":
             refused.append((stem, n_rows_flow))
             print(f"  [{i}/{len(files)}] {stem}: REFUSED — {n_rows_flow:,} rows and no "
@@ -326,6 +333,14 @@ def main() -> int:
         print(f"REFUSED (too large, no usable splitter) — {len(refused)}:")
         for st, nr in refused:
             print(f"   {st:44s} {nr:>12,} rows")
+    # Written next to the STORE, not into logs/, because it is part of the published layout:
+    # the resolver needs it to turn `istat:<flow>#<part>` back into a predicate.
+    smap = os.path.join(STORE, "_split_map.json")
+    if not a.dry_run or a.limit:
+        with open(smap, "w", encoding="utf-8") as fh:
+            json.dump(split_map, fh, indent=1, sort_keys=True)
+        print(f"split map ({len(split_map):,} flow(s)) -> {smap}")
+
     summary = os.path.join(ROOT, "logs", "istat_flows_summary.json")
     json.dump({"units": n_units, "put": counts["put"], "skipped": counts["skip"],
                "errors": counts["err"], "duplicates_collapsed": dropped_total,
