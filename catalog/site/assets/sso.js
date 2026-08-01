@@ -171,12 +171,27 @@
   //     The flag still does its real job — preventing a redirect loop — because it is written
   //     BEFORE the bounce and re-checked here: the worst case is one silent round trip every
   //     RECHECK_MS, not a loop.
-  var RECHECK_MS = 5 * 60 * 1000;
+  //     THE WINDOW MUST BE SHORTER THAN A SIGN-IN, NOT LONGER. The first version of this
+  //     used five minutes, which was useless: the visitor goes to hfdatalibrary, signs in,
+  //     and is back inside a minute, so the flag was still fresh and nothing re-checked.
+  //     The window only has to outlast a page load, because its single job is to stop an
+  //     immediate re-bounce on the return trip. Twenty seconds does that with room to spare
+  //     and is far shorter than any real sign-in.
+  //
+  //     The loop backstop is the TRY COUNTER, not the clock. Even if something pathological
+  //     made every check return "none" instantly, this can bounce at most MAX_TRIES times per
+  //     browser session and then stops for good. The clock decides how RESPONSIVE the
+  //     re-check is; the counter decides whether it can ever run away.
+  var RECHECK_MS = 20 * 1000;
+  var MAX_TRIES = 5;
+  var TRIES = 'edl_sso_tries';
+  var tries = parseInt(sessionStorage.getItem(TRIES) || '0', 10) || 0;
   var stamp = parseInt(sessionStorage.getItem(C) || '0', 10);
-  // '1' is the legacy value written by older builds; treat it as "checked, time unknown" and
-  // let it expire immediately rather than stranding a visitor mid-session on a deploy.
-  if (stamp && stamp !== 1 && (Date.now() - stamp) > RECHECK_MS) sessionStorage.removeItem(C);
-  else if (stamp === 1) sessionStorage.removeItem(C);
+  // '1' is the legacy value older builds wrote; treat it as "checked, time unknown" and let
+  // it expire at once rather than stranding a visitor across a deploy.
+  if (tries < MAX_TRIES && (stamp === 1 || (stamp && (Date.now() - stamp) > RECHECK_MS))) {
+    sessionStorage.removeItem(C);
+  }
 
   // 4) Already checked this browser session and found no HF session — don't loop.
   if (sessionStorage.getItem(C)) return;
@@ -189,7 +204,11 @@
     return;
   }
 
-  // 6) Not signed in, not yet checked → one silent SSO check for this session.
+  // 6) No key, and the last check has gone stale → ask again.
+  //    Both writes happen BEFORE the navigation, so a check that never returns still counts.
+  //    That ordering is the whole loop guarantee: at most MAX_TRIES round trips per browser
+  //    session no matter what the server does or how fast the page reloads.
+  sessionStorage.setItem(TRIES, String(tries + 1));
   sessionStorage.setItem(C, String(Date.now()));
   bounce();
 })();
