@@ -734,31 +734,61 @@ def _resolve_census(series_id: str, root: str) -> Resolution:
 
 # --- fed_board -------------------------------------------------------------
 def _resolve_fed_board(series_id: str, root: str) -> Resolution:
-    # catalog: fed_board:RIFSPFF_N.B  ->  native series_key 'RIFSPFF_N.B' (exact).
-    # fed_board is sharded into per-release flow files (H15.parquet, G17.parquet,
-    # H8.parquet, ...), each with cols [dataset, series_key, obs_date, value,
-    # obs_status]. The flow is NOT encoded in the catalog id, so we locate the one
-    # flow file holding this series_key (globally unique across flows) and point at
-    # that file. The dir also holds '__series.parquet' metadata companions (a
-    # different schema) and *.json sidecars, so resolving to the bare directory
-    # would break read_native's ds.dataset(path); we exclude them and target the
-    # single data file instead.
-    native_key = series_id.split(":", 1)[1]
+    # catalog: fed_board:<FLOW>:<series_key>   e.g. fed_board:H15:RIFSPFF_N.B
+    #      or: fed_board:<series_key>          (legacy, unqualified)
+    #
+    # fed_board is sharded into per-release flow files (H15.parquet, G17.parquet, H8.parquet,
+    # ...), each with cols [dataset, series_key, obs_date, value, obs_status].
+    #
+    # THE OLD COMMENT HERE ASSERTED series_key IS "globally unique across flows". IT IS NOT,
+    # though it is very nearly so. Measured 2026-08-01 across the OBSERVATION files: 52,293
+    # distinct keys, of which 29 appear in two flows — the CP/H15 commercial-paper overlap
+    # (`RIFSPPFAAD90_N.B`, `RIFSPPNAAD30_N.B`, ...). The loop below took the FIRST file that
+    # contained the key, so for those 29 it silently returned whichever flow sorts earliest:
+    # a real series, correctly formatted, from the wrong release.
+    #
+    # Measure against the OBSERVATION files, not the sidecars. My first pass grouped the
+    # `__series.parquet` sidecars by their `dataset` column and got 219 — wrong, because for
+    # fed_board that column is a PRESENTATION GROUPING: IP.B50001.A is listed under
+    # IP_MAJOR_INDUSTRY_GROUPS, IP_MARKET_GROUPS and IP_SPECIAL_AGGREGATES while its
+    # observations live only in G17.parquet. Same series, cross-listed 226 times in total.
+    #
+    # None of the 21 ids catalogued today are among the 29 (checked), so nothing has been
+    # mis-served. But cataloguing the other 52,272 would have walked into it, and a
+    # wrong-but-plausible series is the failure nobody reports.
+    #
+    # So: prefer a FLOW-QUALIFIED id, and when given an unqualified one, resolve it only if it
+    # is genuinely unambiguous — otherwise refuse and name the flows, rather than guess.
     src_dir = os.path.join(root, "fed_board")
     flow_files = sorted(
         f for f in glob.glob(os.path.join(src_dir, "*.parquet"))
         if not f.endswith("__series.parquet")
     )
-    for f in flow_files:
-        keys = ds.dataset(f).to_table(columns=["series_key"]).column("series_key")
-        if pc.any(pc.equal(keys, native_key)).as_py():
-            return Resolution(
-                series_id, "fed_board", f, "series_key",
-                pc.equal(ds.field("series_key"), native_key),
-            )
-    raise ResolveError(
-        f"{series_id}: series_key {native_key!r} not found in any fed_board flow file"
-    )
+    rest = series_id.split(":", 1)[1]
+    flow, native_key = (rest.split(":", 1) + [None])[:2]
+    if native_key is not None:
+        path = os.path.join(src_dir, f"{flow}.parquet")
+        if not os.path.exists(path):
+            raise ResolveError(f"{series_id}: no fed_board flow file for {flow!r} "
+                               f"(expected {path!r})")
+        return Resolution(series_id, "fed_board", path, "series_key",
+                          pc.equal(ds.field("series_key"), native_key))
+
+    native_key = rest
+    hits = [f for f in flow_files
+            if pc.any(pc.equal(ds.dataset(f).to_table(columns=["series_key"])
+                               .column("series_key"), native_key)).as_py()]
+    if not hits:
+        raise ResolveError(
+            f"{series_id}: series_key {native_key!r} not found in any fed_board flow file")
+    if len(hits) > 1:
+        names = ", ".join(os.path.splitext(os.path.basename(f))[0] for f in hits)
+        raise ResolveError(
+            f"{series_id}: series_key {native_key!r} exists in {len(hits)} fed_board flows "
+            f"({names}) — this id names more than one series. Use the flow-qualified form, "
+            f"e.g. fed_board:{os.path.splitext(os.path.basename(hits[0]))[0]}:{native_key}.")
+    return Resolution(series_id, "fed_board", hits[0], "series_key",
+                      pc.equal(ds.field("series_key"), native_key))
 
 
 # --- dbnomics --------------------------------------------------------------

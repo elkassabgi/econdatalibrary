@@ -60,10 +60,17 @@ def store_size(source_id: str) -> tuple[int, float]:
 
 
 def sidecar_series(source_id: str) -> int | None:
-    """Exact series count from `*__series.parquet` FOOTERS, or None if the source has none.
+    """DISTINCT series count from the `*__series.parquet` sidecars, or None if there are none.
 
-    A footer read is metadata only - no column is decoded and no row is scanned - so this is
-    affordable across every source on every run, which a distinct-count is not.
+    Counts distinct series_key, NOT sidecar rows. Rows overstate it wherever a source
+    cross-lists a series: fed_board publishes IP.B50001.A under three presentation groupings
+    (IP_MAJOR_INDUSTRY_GROUPS, IP_MARKET_GROUPS, IP_SPECIAL_AGGREGATES) though its observations
+    live only in G17, and a row count reports 52,519 where there are 52,293 series. fhfa is
+    worse: 89,706 rows, 87,685 series. Reporting the inflated figure would manufacture a
+    permanent phantom gap against a catalogue that was actually complete.
+
+    One string column of a metadata sidecar - kilobytes, not the observation store - so this
+    stays cheap enough to run every time even though it is no longer a pure footer read.
     """
     files = []
     for d in glob.glob(os.path.join(ROOT, "data", "*", source_id)):
@@ -71,10 +78,14 @@ def sidecar_series(source_id: str) -> int | None:
     if not files:
         return None
     import pyarrow.parquet as pq
+    keys: set = set()
     try:
-        return sum(pq.ParquetFile(f).metadata.num_rows for f in files)
+        for f in files:
+            keys.update(pq.read_table(f, columns=["series_key"])
+                        .column("series_key").to_pylist())
     except Exception:                                          # noqa: BLE001
         return None
+    return len(keys)
 
 
 def main() -> int:
