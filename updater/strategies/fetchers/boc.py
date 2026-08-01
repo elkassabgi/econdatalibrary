@@ -46,7 +46,7 @@ import pyarrow as pa
 from ... import blob, config, merge
 from ...errors import TransientError
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import Deadline, Tally, _max_by_key, finalize
 
 SOURCE = "boc"
 DEDUP = ("series_key", "obs_date")
@@ -100,9 +100,13 @@ def _stored_maxes(path) -> dict:
     if not blob.exists(path):
         return {}
     tbl = blob.read_table(path, columns=["series_key", "obs_date"])
-    agg = tbl.group_by("series_key").aggregate([("obs_date", "max")])
-    keys = agg.column("series_key").to_pylist()
-    maxes = agg.column("obs_date_max").to_pylist()
+        # _max_by_key, NOT group_by. Arrow indexes string data with int32 offsets; past 2 GiB in one
+    # column group_by dereferences past the overflowed offsets and KILLS THE PROCESS
+    # (0xC0000005 / SIGABRT) - it does not raise, so no try/except catches it. ons_uk died that
+    # way on 2026-08-01 after 8h56m. merge.py documented it; the fetchers never got the memo.
+    agg_map = _max_by_key(tbl)
+    keys = list(agg_map.keys())
+    maxes = list(agg_map.values())
     return {k: d.isoformat() for k, d in zip(keys, maxes) if k and d is not None}
 
 
