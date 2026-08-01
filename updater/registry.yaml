@@ -6015,8 +6015,24 @@ sources:
   # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
   # Routed to the workstation per the owner's standing rule: a database the cloud
   # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  #
+  # live: true 2026-08-01. This was the second-largest thing in the library sitting SERVED but
+  # never refreshed - 2,465,197 series with no state at all, meaning the updater had never once
+  # attempted it. Promoted on the standard gate, MEASURED not assumed: current_vintage() returns
+  # a real, stable token (`wid-index:424:...`, not the "force" sentinel that means
+  # undeterminable), and detect_change skips when the stored vintage matches and fetches when it
+  # is stale or absent. Adapter resolves, catalogue and CSVs are already verified.
+  #
+  # It is also a CONDITION OF THE LICENCE rather than a nicety: WID's written grant of
+  # 2026-07-27 asks that we "keep the most updated data sources", so a frozen copy is not
+  # merely stale, it is outside the terms we were given.
+  #
+  # run_location stays local. The comment above blames merge_and_write materialising the whole
+  # 95.9M-row file, and that reasoning is probably stale now the fetcher merges per country
+  # (424 files, bounded by the largest one) - but "probably" is exactly what wrongly routed
+  # `abs` here, so it stays put until someone measures it.
   run_location: local
-  live: false
+  live: true
   scripts:
   - updater/strategies/fetchers/wid.py
   strategy: overwrite_if_changed
