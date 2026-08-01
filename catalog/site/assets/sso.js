@@ -42,7 +42,7 @@
 
 (function () {
   var API = 'https://api.hfdatalibrary.com';
-  var K = 'edl_key', N = 'edl_name', C = 'edl_sso_checked';
+  var K = 'edl_key', N = 'edl_name', C = 'edl_sso_checked', F = 'edl_family';
 
   // Highlight the current page's nav link (parity with hfdatalibrary.com,
   // whose .nav-links a.active gets the same pill background as :hover).
@@ -60,7 +60,18 @@
     else document.addEventListener('DOMContentLoaded', mark);
   })();
 
-  function signedIn() { return !!localStorage.getItem(K); }
+  // "Signed in" used to mean ONLY "an api_key is in this browser". That was true when the
+  // api_key was the only credential there was. Family sign-in changed it: a visitor can now
+  // complete Google on accounts.elkassabgidata.com, download successfully on every page —
+  // and still be told "Sign in" in the nav, because no api_key was ever stored. The owner
+  // hit exactly that and reported it.
+  //
+  // F is written by account.html only when the account SERVER confirmed the family session
+  // (its 'login' event), and deleted on logout and on sign-out, so it cannot outlive the
+  // session. Deliberately not a read of the SDK's own storage: that is private to the SDK,
+  // and a bare token read reports true for a session the server has already refused —
+  // the mistake that produced a lockout on the account page earlier in this work.
+  function signedIn() { return !!(localStorage.getItem(K) || localStorage.getItem(F)); }
 
   function updateUI() {
     if (!signedIn()) return;
