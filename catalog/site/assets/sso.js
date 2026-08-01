@@ -114,11 +114,40 @@
     if (document.readyState !== 'loading') fn();
     else document.addEventListener('DOMContentLoaded', fn);
   }
+
+  // Put the note where the visitor already looks — under the API-key bar on the download
+  // page, or at the top of the account page. Silent when there is nothing to say, and it
+  // never replaces or hides an existing element: it appends one line of its own.
+  function showNote() {
+    try {
+      var raw = sessionStorage.getItem('edl_sso_note');
+      if (!raw) return;
+      var n = JSON.parse(raw);
+      if (!n || !n.state) return;
+      var host = document.querySelector('.keybar') || document.querySelector('.wrap') || document.body;
+      if (!host || document.getElementById('edl-sso-note')) return;
+      var p = document.createElement('p');
+      p.id = 'edl-sso-note';
+      p.style.cssText = 'margin:.55rem 0 0;font-size:.8rem;line-height:1.5;color:#6b7280';
+      // textContent: every value here is server- or state-derived, never markup.
+      p.textContent = 'Family sign-in check: ' + n.state + ' — ' + (n.detail || '');
+      host.appendChild(p);
+    } catch (e) { /* a diagnostic must never break the page */ }
+  }
   function bounce() {
     location.replace(API + '/v1/auth/sso?return=' + encodeURIComponent(location.origin + location.pathname));
   }
 
   var hp = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+
+  // Records what the silent check actually did, so a failure can be read off the page
+  // instead of out of the dev-tools network tab. Six rounds of this were diagnosed by
+  // inference because the only observable was "signed out", which every distinct failure
+  // produces. Written to sessionStorage so it survives the redirect and can be shown on
+  // whatever page the visitor lands on.
+  function note(state, detail) {
+    try { sessionStorage.setItem('edl_sso_note', JSON.stringify({ state: state, detail: detail, at: Date.now() })); } catch (e) {}
+  }
 
   // 1) Returning from the SSO redirect?
   if (hp.has('sso_key')) {
@@ -127,13 +156,16 @@
       localStorage.setItem(K, k);
       var nm = hp.get('sso_name');
       if (nm) localStorage.setItem(N, nm);
+      note('key-received', 'signed in from your hfdatalibrary session' + (nm ? ' as ' + nm : ' (no name returned)'));
+    } else {
+      note('no-session', 'hfdatalibrary reported no signed-in session for this browser');
     }
     sessionStorage.setItem(C, String(Date.now()));
     // Tell page scripts (account.html) this page load IS the check's return trip,
     // so they don't immediately bounce again.
     window.__edl_ssoJustChecked = true;
     history.replaceState({}, document.title, location.pathname + location.search);
-    onReady(updateUI);
+    onReady(updateUI); onReady(showNote);
     return;
   }
 
@@ -141,8 +173,9 @@
   //    hasKey(), NOT signedIn(): a family session is not a key, and treating it as one
   //    skips step 6 and leaves the visitor without the credential this step exists to get.
   if (hasKey()) {
+    note('have-key', 'a key is already stored in this browser');
     if (hp.has('sso_recheck')) history.replaceState({}, document.title, location.pathname + location.search);
-    onReady(updateUI);
+    onReady(updateUI); onReady(showNote);
     return;
   }
 
@@ -194,7 +227,15 @@
   }
 
   // 4) Already checked this browser session and found no HF session — don't loop.
-  if (sessionStorage.getItem(C)) return;
+  if (sessionStorage.getItem(C)) {
+    var age = Math.round((Date.now() - (parseInt(sessionStorage.getItem(C), 10) || Date.now())) / 1000);
+    note(tries >= MAX_TRIES ? 'capped' : 'skipped',
+         tries >= MAX_TRIES
+           ? 'stopped after ' + tries + ' checks this browser session'
+           : 'last check was ' + age + 's ago; re-checks after ' + (RECHECK_MS / 1000) + 's');
+    onReady(showNote);
+    return;
+  }
 
   // 5) Only the production origins may auto-bounce: the SSO endpoint 403s any
   //    other return origin (e.g. *.pages.dev deployment previews), which would
