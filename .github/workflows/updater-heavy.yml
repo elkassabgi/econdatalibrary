@@ -196,12 +196,21 @@ jobs:
           # the matrix precisely because someone wants them attempted. Zero units means the
           # dispatch was pointless and the operator needs to know.
           if [ "$rc" = "0" ] && grep -qE '^=== 0 unit\(s\) processed ===' /tmp/updater_out.txt; then
-            if grep -q 'no adapter built' /tmp/updater_out.txt; then
+            if grep -q 'NOT DUE' /tmp/updater_out.txt; then
+              # NOT a failure. The cron does not pass --force, so a source whose cadence has
+              # not elapsed correctly processes nothing. Until orchestrate announced that
+              # skip it printed NOTHING, making a healthy cadence skip indistinguishable in
+              # the log from "this source has no fetcher at all" - so this guard, added hours
+              # earlier the same night, would have failed the job for behaving correctly on
+              # the next quiet night. Say so and pass.
+              echo "::notice::${{ matrix.source }} processed 0 units because its cadence has not elapsed. Not a failure; dispatch with force=true to override."
+            elif grep -q 'no adapter built' /tmp/updater_out.txt; then
               echo "::error::${{ matrix.source }} processed 0 units - NO FETCHER MODULE EXISTS (updater/strategies/fetchers/${{ matrix.source }}.py). It is scheduled on paper only; this job has been burning a runner to do nothing. Build the fetcher or take it off the matrix."
             else
               echo "::error::${{ matrix.source }} processed 0 units and still exited 0. A dedicated heavy run that updates nothing must not report success - check the due-check, the lease and the live tier."
             fi
-            rc=1
+            # Only the genuinely-wrong cases fail; a cadence skip already passed above.
+            if ! grep -q 'NOT DUE' /tmp/updater_out.txt; then rc=1; fi
           fi
           if [ "$rc" = "137" ] || [ "$rc" = "143" ]; then
             echo "::error::${{ matrix.source }} was KILLED (exit ${rc}) — still out of memory WITH a runner to itself. Isolation was not enough; this source needs a real fix (streaming parse or chunked merge), not more capacity."
