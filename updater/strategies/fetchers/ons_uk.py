@@ -52,7 +52,7 @@ import pyarrow as pa
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Tally, _max_by_key, finalize
 from jobs import ingest_ons_uk as ig   # reuse catalog walk + THE key builder
 
 SOURCE = "ons_uk"
@@ -236,13 +236,15 @@ def update(unit, since) -> Result:
                 # throwaway str objects per dataset to compute what is only a max-per-key.
                 # NOTE this dict is still the memory ceiling for this source, and it cannot
                 # be fixed here — see the QUARANTINE note in the module docstring.
-                agg = tbl.group_by("series_key").aggregate([("obs_date", "max")])
-                for k, d in zip(agg.column("series_key").to_pylist(),
-                                agg.column("obs_date_max").to_pylist()):
-                    iso = d.isoformat()
+                # _max_by_key, NOT group_by. Arrow indexes string data with int32 offsets; past 2 GiB in
+                # one column group_by dereferences past the overflowed offsets and KILLS THE PROCESS
+                # (0xC0000005 / SIGABRT) - it does not raise, so no try/except can catch it. That is
+                # exactly how the 2026-08-01 workstation pass died: ons_uk crashed at wave 3 of 12
+                # after 8h56m, taking six completed sources' state with it. merge.py has documented
+                # this since the _dedup rewrite; the fetchers were simply never updated.
+                for k, iso in _max_by_key(tbl).items():
                     if k not in cursors or iso > cursors[k]:
                         cursors[k] = iso
-                del agg
                 if md and (maxd is None or str(md) > str(maxd)):
                     maxd = md
                 sidecar[ds_id] = cur_v           # advance ONLY after a clean publish

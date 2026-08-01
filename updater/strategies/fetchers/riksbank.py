@@ -26,7 +26,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, revision_since
+from ._common import Tally, _max_by_key, finalize, revision_since
 
 SOURCE = "riksbank"
 BASE = "https://api.riksbank.se/swea/v1"
@@ -91,9 +91,13 @@ def _stored_max(path) -> dict[str, dt.date]:
     t = blob.read_table(path, columns=["series_key", "obs_date"])
     if t.num_rows == 0:
         return {}
-    agg = t.group_by("series_key").aggregate([("obs_date", "max")])
-    keys = agg.column("series_key").to_pylist()
-    mx = agg.column("obs_date_max").to_pylist()
+        # _max_by_key, NOT group_by. Arrow indexes string data with int32 offsets; past 2 GiB in one
+    # column group_by dereferences past the overflowed offsets and KILLS THE PROCESS
+    # (0xC0000005 / SIGABRT) - it does not raise, so no try/except catches it. ons_uk died that
+    # way on 2026-08-01 after 8h56m. merge.py documented it; the fetchers never got the memo.
+    agg_map = _max_by_key(t)
+    keys = list(agg_map.keys())
+    mx = list(agg_map.values())
     return {k: v for k, v in zip(keys, mx) if isinstance(v, dt.date)}
 
 

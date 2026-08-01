@@ -36,7 +36,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, revision_since
+from ._common import Tally, _max_by_key, finalize, revision_since
 
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
       "Accept": "application/json"}
@@ -144,10 +144,14 @@ def _per_series_last(path) -> dict[str, dt.date]:
     t = blob.read_table(path)
     if t.num_rows == 0 or "series_key" not in t.column_names:
         return {}
-    keys = t.group_by("series_key").aggregate([("obs_date", "max")])
+        # _max_by_key, NOT group_by. Arrow indexes string data with int32 offsets; past 2 GiB in one
+    # column group_by dereferences past the overflowed offsets and KILLS THE PROCESS
+    # (0xC0000005 / SIGABRT) - it does not raise, so no try/except catches it. ons_uk died that
+    # way on 2026-08-01 after 8h56m. merge.py documented it; the fetchers never got the memo.
+    keys_map = _max_by_key(t)
     out = {}
-    for k, d in zip(keys.column("series_key").to_pylist(),
-                    keys.column("obs_date_max").to_pylist()):
+    for k, d in zip(list(keys_map.keys()),
+                    list(keys_map.values())):
         if isinstance(d, dt.datetime):
             d = d.date()
         out[k] = d
