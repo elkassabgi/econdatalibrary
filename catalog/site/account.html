@@ -35,24 +35,45 @@ code{background:#f3f4f6;padding:.1rem .4rem;border-radius:5px;font-size:.85em;wo
 .nav-links a{color:rgba(255,255,255,.8);text-decoration:none;padding:.5rem .75rem;
 border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-space:nowrap;margin-left:0}
 .nav-links a:hover,.nav-links a.active{color:#fff;background:rgba(255,255,255,.1)}
+
+/* ── Family sign-in card (2026-07-31) ────────────────────────────────────────
+   The gold (#c9a961 / #d4a843) and navy (#0b1220) already used by .alt, .brand
+   .d and the nav pill are the family's colours, so the card is built out of the
+   page's own variables — no imported palette. It only ADDS a gold-tinted frame
+   and the official logo plate so the ElkassabgiData identity is the first thing
+   read on the page, which is the whole point: this is one account for every
+   library, not another econdatalibrary.com login. */
+[hidden]{display:none!important}
+.ekd{border-color:#dcc38a;background:linear-gradient(180deg,#fffdf6,#fff);box-shadow:0 1px 3px rgba(11,18,32,.06)}
+.ekd-logo{display:block;width:min(320px,74%);height:auto;margin:.15rem 0 1.05rem;border-radius:8px}
+.ekd h2{font-size:1.18rem}
+.ekd-actions{display:flex;flex-wrap:wrap;gap:.75rem;align-items:center}
+.ekd-actions button,.ekd-actions .alt{margin-top:1rem}
+.providers{font-size:.85rem;color:var(--g600);margin-top:.95rem;line-height:1.6}
+.providers b{color:#111827}
+/* The password fallback used to be a divider INSIDE the sign-in card, so these
+   rules assumed a surrounding box. It now stands on its own outside #ekd-card
+   (see the markup comment there), so it has to supply its own box — .card does
+   that — and the border-top divider would just be a stray line. Tighter padding
+   than .card because a collapsed <details> is one line of text. */
+.fallback{margin-top:1rem;padding:.85rem 1.15rem}
+.fallback>summary{cursor:pointer;font-size:.88rem;color:var(--g600);padding:.25rem 0}
+.fallback>summary:hover{color:#111827}
+.fallback[open]{padding-bottom:1.15rem}
+.who{font-size:.95rem;color:var(--g600);line-height:1.6;margin-top:.15rem}
+.who b{color:#111827}
 </style><script src="assets/sso.js?v=20260715c"></script>
-<script>
-// Clicking "Sign in" is explicit intent: if we're not signed in locally, always
-// re-check the family session — the silent once-per-session check may be stale
-// (e.g. you signed in on hfdatalibrary.com AFTER it ran). Loop protection must
-// NOT depend on sso.js being the matching version (browser caches hold old
-// copies): a return-trip fragment, the sso.js handshake, or a bounce started in
-// the last 30s each independently stop a re-bounce.
-(function () {
-  if (!/^(www\.)?econdatalibrary\.com$/.test(location.hostname)) return;
-  if (localStorage.getItem('edl_key') || window.__edl_ssoJustChecked) return;
-  if (location.hash.indexOf('sso_key') !== -1) return;
-  var ts = +sessionStorage.getItem('edl_acct_bounce_ts') || 0;
-  if (Date.now() - ts < 30000) return;
-  sessionStorage.setItem('edl_acct_bounce_ts', String(Date.now()));
-  location.replace('https://api.hfdatalibrary.com/v1/auth/sso?return=' + encodeURIComponent(location.origin + location.pathname));
-})();
-</script></head><body>
+<!-- REMOVED 2026-07-31: the inline "clicking Sign in is explicit intent" block that
+     ran location.replace() to api.hfdatalibrary.com/v1/auth/sso on page load.
+     It was a FULL-PAGE redirect off econdatalibrary.com, which is exactly what the
+     popup below replaces — and it fired on the one page where the user is about to
+     click a sign-in button, throwing that page away before they could. Its
+     re-check job is now done far better by the button itself: EKD.login() opens a
+     480x640 window, mints tokens, and returns to this page without a navigation.
+     assets/sso.js still performs its own once-per-browser-session silent check
+     (its step 6), so a visitor who is already signed in on hfdatalibrary.com is
+     still recognised here with their key — that contract is untouched. -->
+</head><body>
 <div class="nav"><div class="nav-in"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" title="Part of the ElkassabgiData family" style="font-size:.62rem;color:#d4a843;border:1px solid rgba(212,168,67,.5);border-radius:999px;padding:.12rem .5rem;margin-left:.55rem;white-space:nowrap;font-weight:600;text-decoration:none;vertical-align:middle">part of ElkassabgiData</a></div>
 <div class="nav-links"><a href="catalog.html">Catalog</a><a href="docs.html">Documentation</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">AI Tools</a><a href="cite.html">Cite</a><a href="stats.html">Stats</a><a href="status.html">Status</a><a href="contact.html">Contact</a><a href="account.html" style="background:#d4a843;color:#1a2332;padding:.4rem .875rem;border-radius:6px;font-weight:600">Sign in</a></div></div>
 </div><div class="wrap">
@@ -62,88 +83,520 @@ data library — <a href="https://hfdatalibrary.com">hfdatalibrary.com</a> (1-mi
 <strong>econdatalibrary.com</strong> (global economic &amp; financial data), and every future
 database — with the same login and the same API key. Register once, download everywhere.</p>
 
-<div class="card">
-  <h2>New here? Create your ElkassabgiData account</h2>
-  <p class="sub" style="font-size:.92rem">Registration takes a minute (email or Google/ORCID) and is
-  hosted on the family's account server. Your key works here the moment you have it.</p>
-  <a class="alt" href="https://hfdatalibrary.com/pages/download?from=econ#register" rel="noopener">Create free account →</a>
+<!-- SIGNED-OUT state. Both buttons open the SAME ElkassabgiData popup; the only
+     difference is which tab it lands on (hint=register). -->
+<div class="card ekd" id="ekd-card">
+  <img class="ekd-logo" src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="560" height="150">
+  <h2>Sign in with your ElkassabgiData account</h2>
+  <p class="sub" style="font-size:.94rem">Accounts live on the family's account server at
+  <strong>accounts.elkassabgidata.com</strong> — one login for the Econ Data Library, the
+  <a href="https://hfdatalibrary.com">HF Data Library</a>, and every library added later.
+  <strong>You are not creating another econdatalibrary.com login.</strong>
+  A small ElkassabgiData window opens on top of this page; when it closes you are signed in
+  <em>right here</em>, still on econdatalibrary.com.</p>
+  <div class="ekd-actions">
+    <button type="button" id="ekd-signin-btn">Sign in with ElkassabgiData</button>
+    <a class="alt" id="ekd-register-btn" href="https://hfdatalibrary.com/pages/download?from=econ#register" rel="noopener">Create free ElkassabgiData account →</a>
+  </div>
+  <div class="msg" id="ekd-msg"></div>
+  <p class="providers">Sign in with <b>Google</b>, <b>ORCID</b>, or an <b>email and password</b> —
+  whichever you already used on any ElkassabgiData library. Free, no credit card.</p>
+  <!-- The email/password fallback used to sit HERE, inside this card. See the
+       block below #account-card for why it had to move out. -->
 </div>
 
-<div class="card">
-  <h2>Already registered (on either site)? Sign in to see your key</h2>
+<!-- SIGNED-IN state. Filled in place after the popup resolves (or after the
+     fallback form succeeds); the page never navigates away. -->
+<div class="card" id="account-card" hidden>
+  <h2 id="acct-h2">You're signed in</h2>
+  <p class="who" id="acct-who"></p>
+
+  <!-- We have the API key locally (fallback sign-in, or assets/sso.js). -->
+  <div id="key-have" hidden>
+    <div class="msg ok">Your ElkassabgiData API key:</div>
+    <div class="keybox" id="keybox"></div>
+    <div class="note"><b>Your personal MCP connect URL</b> (paste into Claude/Cursor — key included):
+    <div class="keybox" id="mcpbox"></div>
+    <button type="button" onclick="copyMcp(event)" style="margin-top:.4rem">Copy MCP URL</button><br><br>
+    Use the key on any library, e.g.:<br>
+    <code>curl -H "X-API-Key: YOUR_KEY" "https://econdl-api.elkassabgi.workers.dev/v1/series/worldbank_wdi%3ASP.POP.TOTL.csv"</code><br>
+    or in Python: <code>econdl.HttpClient(BASE, api_key="YOUR_KEY")</code> (also reads <code>$ECONDL_API_KEY</code> / <code>$HFDL_API_KEY</code>).</div>
+  </div>
+
+  <!-- Signed in through the popup: the family sign-in deliberately does NOT hand
+       the API key to a website (the worker's validateFamilyToken returns the user
+       with api_key stripped, and /v1/auth/me scrubs it again for family tokens),
+       so we must not pretend to have it. The key is shown on the account server,
+       where this same sign-in already applies — one click, new tab, and pasting it
+       back here is what the rest of the Econ site reads. -->
+  <div id="key-none" hidden>
+    <div class="msg">Your API key is issued and shown by the ElkassabgiData account server.
+    The sign-in window never hands it to a website, so it has to be copied across once.</div>
+    <!-- ADDED 2026-07-31. What was wrong: this panel said the key "has to be copied
+         across once" but never said what does not work until it is. A popup sign-in
+         leaves the page reading "Signed in as …" while every Download click on this
+         site still dies at its `if(!getKey())` guard, which is exactly the silent
+         dead button econ download.html's own comment records as the reported bug.
+         Saying it here is the difference between a task the visitor knows they have
+         and a site that looks signed in and simply does not work. -->
+    <div class="msg"><b>Downloads on this site stay locked until you do.</b>
+    <a href="download.html">Download</a>, the API examples and the AI-tools page all read
+    the key out of this browser, and it is not there yet — the ElkassabgiData sign-in you
+    just completed proves who you are, but it deliberately never carries the key itself.</div>
+    <a class="alt" id="acct-link" href="https://accounts.elkassabgidata.com/account" target="_blank" rel="noopener">Show my API key on accounts.elkassabgidata.com →</a>
+    <label for="pastekey">Paste it here to turn on one-click downloads across this site</label>
+    <input id="pastekey" type="text" autocomplete="off" spellcheck="false" placeholder="hfd_…">
+    <button type="button" id="savekey">Save key</button>
+    <div class="msg" id="pastemsg"></div>
+  </div>
+
+  <p class="note"><a href="#" id="signout">Sign out of this browser</a></p>
+</div>
+
+<!-- MOVED OUT OF #ekd-card, 2026-07-31. What was wrong: this <details> lived
+     inside the sign-in card, and render() does `$('ekd-card').hidden = signedIn`.
+     So ANY path that made the page believe it was signed in removed the sign-in
+     button and this form together. That mattered because the page believed it on
+     the strength of a localStorage read (EKD.isLoggedIn(), fixed below): a visitor
+     with a stale ekd_rt and no real session saw a signed-in card with no button,
+     no form, and no way in short of clearing site data.
+
+     It now sits outside BOTH state cards and NOTHING in the script ever sets its
+     hidden attribute — the only JS that touches it is openFallback(), which opens
+     it. That is the point: the flag fix below stops today's bug, but a state
+     machine that can never reach this element cannot take away the last way in
+     even if a future edit gets the flag wrong. It is a collapsed one-line
+     <details>, so it costs a signed-in visitor nothing and doubles as the way to
+     sign in as somebody else. -->
+<details class="card fallback" id="pw-fallback">
+  <summary id="pw-summary">Pop-up blocked, or prefer a plain form? Sign in with email and password</summary>
   <form id="f" onsubmit="return login(event)">
     <label for="em">Email</label><input id="em" type="email" autocomplete="email" required>
     <label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password" required>
     <button type="submit">Sign in</button>
   </form>
   <div class="msg" id="msg"></div>
-  <div class="keybox" id="keybox" hidden></div>
-  <div class="note" id="usage" hidden><b>Your personal MCP connect URL</b> (paste into Claude/Cursor — key included):
-  <div class="keybox" id="mcpbox"></div>
-  <button type="button" onclick="copyMcp(event)" style="margin-top:.4rem">Copy MCP URL</button><br><br>
-  Use the key on any library, e.g.:<br>
-  <code>curl -H "X-API-Key: YOUR_KEY" "https://econdl-api.elkassabgi.workers.dev/v1/series/worldbank_wdi%3ASP.POP.TOTL.csv"</code><br>
-  or in Python: <code>econdl.HttpClient(BASE, api_key="YOUR_KEY")</code> (also reads <code>$ECONDL_API_KEY</code> / <code>$HFDL_API_KEY</code>).</div>
-</div>
+  <p class="note">This is the same ElkassabgiData account — it just skips the pop-up window.</p>
+</details>
 
 <p class="note">Accounts are stored once, centrally, for the whole ElkassabgiData family — registering
 here or on hfdatalibrary.com creates the SAME account. Manage details, regenerate keys, or delete your
-account any time at <a href="https://hfdatalibrary.com/pages/account">your account page</a>.</p>
+account any time at <a href="https://accounts.elkassabgidata.com/account" rel="noopener">your ElkassabgiData account page</a>.</p>
 </div>
 <script>
 const API = 'https://api.hfdatalibrary.com';
+const ACCOUNTS_BASE = 'https://accounts.elkassabgidata.com';
+const MCP_PREFIX = 'https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=';
 
-// Carry the econ page the user came FROM into the create-account link, so HF's
-// "← Back to Econ Data Library" returns them to that exact page (not the
-// homepage). Same-origin referrers only; URL API keeps the #register hash.
-document.addEventListener('DOMContentLoaded', function () {
-  var a = document.querySelector('a.alt[href*="hfdatalibrary.com/pages/download"]');
-  if (!a) return;
-  var back = location.origin + '/';
+// localStorage throws outright in some privacy modes; a sign-in page must not die
+// on that, so every read/write goes through these.
+function safeGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function safeSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+function safeDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
+function $(id) { return document.getElementById(id); }
+
+// render() and the wiring below used to do `$('id').hidden = …` and
+// `$('id').addEventListener(…)` directly. A single element missing or renamed
+// threw a TypeError, and because render() is the function that puts the sign-in
+// controls back on screen, a throw part-way through left the page frozen in
+// whatever half-state it was in — and a throw in the wiring aborted the rest of
+// the script, including the first render() and the sign-out link. These three
+// helpers make every one of those calls a no-op instead of a fatal error.
+function setHidden(id, v) { var el = $(id); if (el) el.hidden = !!v; }
+function setText(id, text) { var el = $(id); if (el) el.textContent = text || ''; }
+function bind(id, ev, fn) { var el = $(id); if (el) el.addEventListener(ev, fn); }
+
+// Every message written to the page goes through textContent. `text` frequently
+// carries a SERVER string (an error body, a name, an SDK rejection code); three
+// reflected/stored XSS holes were fixed on these pages this week and none of them
+// come back through here.
+function setMsg(el, text, cls) {
+  if (!el) return;
+  el.className = 'msg' + (cls ? ' ' + cls : '');
+  el.textContent = text || '';
+}
+function setEkdMsg(text, cls) { setMsg($('ekd-msg'), text, cls); }
+
+// ── ElkassabgiData family SDK ───────────────────────────────────────────────
+// Loaded dynamically and feature-detected, exactly as hfdatalibrary.com's
+// download page does it: if accounts.elkassabgidata.com is unreachable the page
+// still renders and the email/password fallback still signs people in. The SDK
+// guards itself against double-injection (window.EKD.__ready), so this is safe
+// even if another script on the page ever loads it too.
+var SDK_STATE = 'loading';   // 'loading' | 'ready' | 'failed'
+
+// ── what counts as PROOF of a family session ────────────────────────────────
+// What was wrong: render() asked window.EKD.isLoggedIn(), and in the deployed
+// SDK that is `return !!getRt() || !!at;` — a bare localStorage read of ekd_rt.
+// It answers TRUE for a token the server has already thrown away. The SDK only
+// clears that token when /token/refresh replies 401; on any other outcome
+// (offline, blocked by an extension, 5xx) refreshOnce returns null WITHOUT
+// clearing it and WITHOUT emitting 'logout'. So the page went signed-in the
+// instant the SDK loaded, on evidence that proves nothing, and stayed there.
+// Why it mattered: signed-in hides #ekd-card, which used to contain the password
+// form too — a visitor who was NOT signed in got a card claiming they were, with
+// no button and no form. A lockout, escapable only by clearing site data.
+// familyConfirmed is written by exactly one thing: the SDK's 'login' event,
+// which the SDK emits only after the server honoured the session — a completed
+// popup token exchange, or validateSession() getting a fresh access token back.
+// Anything less than that now renders SIGNED OUT, which is the recoverable
+// direction: the worst case is a visitor clicking a Sign in button they did not
+// strictly need.
+var familyConfirmed = false;
+var familyChecking = false;      // a stored token exists and is being validated
+var familyCheckTimer = 0;
+
+(function loadSdk() {
   try {
-    var ref = new URL(document.referrer);
-    if (ref.origin === location.origin && ref.pathname !== location.pathname) back = ref.href;
-  } catch (e) { /* no/foreign referrer -> homepage */ }
-  var u = new URL(a.href);
-  u.searchParams.set('return', back);
-  a.href = u.href;
-});
+    var s = document.createElement('script');
+    s.src = ACCOUNTS_BASE + '/sdk/ekd-sso.js';
+    s.onload = function () {
+      try {
+        if (window.EKD) {
+          SDK_STATE = 'ready';
+          // Listeners are registered BEFORE init(), not after. init() starts
+          // validateSession() and emits 'login'/'logout' from its .then; the old
+          // order only worked because that .then is asynchronous today. Since
+          // 'login' is now the single piece of evidence the page trusts, missing
+          // it would mean a genuinely signed-in user never sees their account —
+          // so do not depend on the SDK's internal timing to catch it.
+          window.EKD.on('login', onFamilyLogin);
+          window.EKD.on('logout', onFamilyLogout);
+          // clientId defaults to location.origin and callbackPath to /auth/callback,
+          // which is what is registered for this site as redirect_exact — passing
+          // anything else here would make the IdP answer "Redirect URI mismatch".
+          window.EKD.init();
+          beginFamilyCheck();
+        } else {
+          SDK_STATE = 'failed';
+        }
+      } catch (e) { SDK_STATE = 'failed'; }
+      if (SDK_STATE === 'failed') sdkUnavailable();
+      render();
+    };
+    s.onerror = function () { SDK_STATE = 'failed'; sdkUnavailable(); };
+    document.head.appendChild(s);
+  } catch (e) { SDK_STATE = 'failed'; sdkUnavailable(); }
+})();
+
+// The SDK never arrived. Say so once and open the fallback form so the visitor is
+// not staring at a sign-in button that cannot work.
+function sdkUnavailable() {
+  if (safeGet('edl_key')) return;                     // already signed in — nothing to warn about
+  endFamilyCheck();                                   // no SDK means no validation is coming; don't let
+                                                      // the "checking…" timeout overwrite this message
+  setEkdMsg('The ElkassabgiData sign-in window could not load (network or blocker). ' +
+            'Sign in with your email and password below — it is the same account.', 'err');
+  openFallback();
+}
+function openFallback() { var d = $('pw-fallback'); if (d) d.open = true; }
+
+// A stored ekd_rt is a HINT that this browser might have a session — it is what
+// the old code mistook for proof. Treating it as a hint costs a real returning
+// user a moment on the signed-out card while init()'s validateSession() runs, so
+// say what is happening instead of silently contradicting them. The timeout
+// covers precisely the cases the SDK stays silent about (offline, blocked, 5xx:
+// refreshOnce returns null and emits nothing), where waiting for ever would be
+// its own kind of stuck. Nothing here hides or disables anything — the Sign in
+// button and the password form work throughout.
+function beginFamilyCheck() {
+  if (familyConfirmed || safeGet('edl_key')) return;   // already signed in — nothing to wait for
+  if (!safeGet('ekd_rt')) return;                      // no stored session to validate
+  familyChecking = true;
+  setEkdMsg('Checking your ElkassabgiData session…', '');
+  familyCheckTimer = setTimeout(function () {
+    if (!familyChecking) return;                       // confirmed, or the user moved on
+    familyChecking = false; familyCheckTimer = 0;
+    setEkdMsg('Could not confirm an earlier ElkassabgiData session. Sign in below — ' +
+              'if you are still signed in on another library it takes one click.', '');
+  }, 8000);
+}
+function endFamilyCheck() {
+  familyChecking = false;
+  if (familyCheckTimer) { clearTimeout(familyCheckTimer); familyCheckTimer = 0; }
+}
+
+// EKD.login() MUST be called synchronously inside the click handler — Chrome and
+// Safari only allow window.open() during a user gesture, so any await before it
+// turns into 'popup_blocked'.
+function onSigninClick(e) {
+  e.preventDefault();
+  if (window.EKD) { startLogin({}); return; }
+  if (SDK_STATE === 'loading') {
+    setEkdMsg('Connecting to ElkassabgiData… click Sign in again in a moment.', '');
+    return;
+  }
+  openFallback();
+  setEkdMsg('The ElkassabgiData sign-in window is unavailable. Use your email and password below.', 'err');
+}
+// The register button keeps a real href, so with no JS and no SDK the click still
+// goes somewhere useful instead of nowhere.
+function onRegisterClick(e) {
+  if (!window.EKD) return;                            // let the href navigate (fallback)
+  e.preventDefault();
+  startLogin({ tab: 'register' });
+}
+function startLogin(opts) {
+  endFamilyCheck();   // the user is signing in explicitly; the background "checking…"
+                      // timeout must not land on top of the popup's own messages
+  setEkdMsg('Opening the ElkassabgiData sign-in window…', '');
+  // If the visitor leaves the pop-up OPEN and switches back to this tab — which is what
+  // people actually do, rather than closing it — the SDK's login() promise stays pending:
+  // it settles only on a state-matched postMessage or when its poll sees the window
+  // closed. The SDK also coalesces concurrent logins, so every further click on Sign in
+  // re-attaches to that same pending promise and opens no window at all. The button is
+  // then completely inert while this page still says a window is opening, and the
+  // popup_closed counter never advances, so the repeated-failure handling below never
+  // fires either. Nothing on this page can settle that promise, so after a plausible
+  // wait, name the alternative that does work instead of leaving a dead control on screen.
+  var settled = false;
+  setTimeout(function () {
+    if (settled) return;
+    openFallback();
+    setEkdMsg('The ElkassabgiData sign-in window may still be open — finish there, or use ' +
+              'your email and password below. It is the same account either way.', '');
+  }, 10000);
+  try {
+    window.EKD.login(opts)
+      .then(function () { settled = true; setEkdMsg('', ''); })
+      .catch(function (e) { settled = true; showSigninError(e); });
+  } catch (e) { settled = true; showSigninError(e); }
+}
+
+// The SDK rejects with a short machine code; each one has a different remedy and
+// only two of them mean "the popup route is closed to this user".
+//
+// popupClosedCount exists because 'popup_closed' is ambiguous. It is what the SDK
+// reports when the user shut the window themselves — and ALSO the only thing it can
+// report when the IdP refuses this site outright (client row deactivated, or
+// redirect_exact cleared): /authorize renders an error page, the popup never
+// postMessages, and the closed-window poll is the sole signal. Both look identical
+// from here. Counted below so the second reading gets the second interpretation.
+var popupClosedCount = 0;
+function showSigninError(err) {
+  var code = (err && err.message) ? String(err.message) : '';
+  if (code === 'popup_closed') {
+    popupClosedCount++;
+    // What was wrong: this was the ONE branch that did not call openFallback(). If
+    // the popup route were ever broken at the IdP end, every attempt would land
+    // here, the message would say "click Sign in to try again", and trying again
+    // would land here again — the visitor stuck on a dead button with the working
+    // email/password form still collapsed one line below, unmentioned. A repeated
+    // failure is the signal that "you closed it" is the wrong story, so from the
+    // second one on, open the form and name it. Nothing is taken away on the first:
+    // someone who genuinely closed the window still just clicks Sign in again.
+    if (popupClosedCount >= 2) {
+      openFallback();
+      setEkdMsg('The ElkassabgiData sign-in window keeps closing without finishing. ' +
+                'Click Sign in once more if that was you — otherwise use your email and ' +
+                'password below; it is the same account and does not need the pop-up.', 'err');
+      return;
+    }
+    setEkdMsg('The sign-in window was closed before it finished. Click Sign in to try again.', 'err');
+    return;
+  }
+  if (code === 'popup_blocked') {
+    openFallback();
+    setEkdMsg('Your browser blocked the ElkassabgiData sign-in window. Allow pop-ups for ' +
+              'econdatalibrary.com and click Sign in again — or use email and password below.', 'err');
+    return;
+  }
+  if (code === 'insecure_context') {
+    openFallback();
+    setEkdMsg('Pop-up sign-in needs a secure (https) connection. Use email and password below.', 'err');
+    return;
+  }
+  openFallback();
+  setEkdMsg('Sign-in did not complete' + (code ? ' (' + code + ')' : '') +
+            '. Try again, or use email and password below.', 'err');
+}
+
+// Popup finished (or init() resumed a stored session). Ask who this is with the
+// family bearer token. /v1/auth/me answers name/email for a family token but
+// NEVER the api_key — that is deliberate in the worker, so the key panel below
+// has to get the key from somewhere else.
+async function onFamilyLogin() {
+  // THIS is the confirmation. The SDK emits 'login' only after the account server
+  // actually returned tokens, so it — not a localStorage read — is what flips the
+  // page to the signed-in card. Set the flag and render BEFORE the /v1/auth/me
+  // round-trip: the name and email below are cosmetic, and making a genuinely
+  // signed-in user wait on a network call (or miss out entirely if it hangs) is
+  // the failure this fix is meant to avoid in the other direction.
+  familyConfirmed = true;
+  popupClosedCount = 0;   // the popup route demonstrably works for this visitor, so a
+                          // window they closed earlier must not count toward the
+                          // "keeps closing" reading above — that counter is about
+                          // CONSECUTIVE failures, not a lifetime total.
+  endFamilyCheck();
+  setEkdMsg('', '');
+  render();
+  try {
+    var at = await window.EKD.getAccessToken();
+    if (at) {
+      var r = await fetch(API + '/v1/auth/me', { headers: { 'Authorization': 'Bearer ' + at } });
+      if (r.ok) {
+        var u = await r.json();
+        var name = (u && u.name) || '';
+        var email = (u && u.email) || '';
+        if (name) safeSet('edl_name', name);
+        if (email) safeSet('edl_email', email);
+      }
+    }
+  } catch (e) { /* identity is cosmetic — the session itself is already valid */ }
+  render();   // second paint, only to fill in the name/email just fetched
+}
+
+// The SDK emits 'logout' when the refresh chain is dead (401 / token reuse), when
+// EKD.logout() runs, or when another tab clears ekd_rt. The confirmation has to
+// die with it — otherwise the page would keep showing the signed-in card for a
+// session the server has already refused, which is the same lockout shape as
+// before, just arrived at later.
+function onFamilyLogout() {
+  familyConfirmed = false;
+  endFamilyCheck();
+  // endFamilyCheck() cancels the 8-second timer, and that timer was the ONLY thing that
+  // ever replaced the "Checking your ElkassabgiData session…" line. So on the most common
+  // path of all — an expired or revoked session, where /token/refresh answers 401 and the
+  // SDK emits 'logout' almost immediately — the check finished, failed, and left its
+  // "checking" message on screen permanently. The 500/offline path timed out and corrected
+  // itself; the ordinary one did not. A visitor reading "Checking…" waits for something
+  // that ended seconds ago, which is the page instructing them to do nothing.
+  setEkdMsg('Your ElkassabgiData session has ended — sign in again below.', 'muted');
+  render();
+}
+
+// assets/sso.js flips the nav "Sign in" pill to "Account" only when edl_key is
+// present, and that predicate is not an accident — edl_key IS the site-wide
+// contract. download.html (readStoredKey), mcp.html and sso.js itself all read
+// that one localStorage name and nothing else. This function therefore must be
+// called on the SAME condition sso.js uses, never on a broader one; see the call
+// site in render() for what happened when it was called on a broader one.
+function markNavSignedIn() {
+  var a = document.querySelector('.nav a.signin')
+       || document.querySelector('.nav a[href="account.html"]')
+       || document.querySelector('.nav .signin');
+  if (!a) return;
+  a.textContent = 'Account';
+  var nm = safeGet('edl_name');
+  if (nm) a.title = 'Signed in as ' + nm;
+  if (document.body) document.body.setAttribute('data-signed-in', '1');
+}
+
+// ── the one place that decides what the page looks like ─────────────────────
+function render() {
+  var key = (safeGet('edl_key') || '').trim();
+  // Was: `window.EKD.isLoggedIn()`, which is a localStorage read and returns true
+  // for a session the server has already refused — see familyConfirmed above.
+  // A real API key in edl_key still counts on its own: it is issued by the account
+  // server and is what the rest of this site actually uses, so a visitor holding
+  // one is signed in for every purpose this page serves.
+  var signedIn = !!key || familyConfirmed;
+
+  setHidden('ekd-card', signedIn);
+  setHidden('account-card', !signedIn);
+  // #pw-fallback is deliberately absent from this function. It lives outside both
+  // cards and no code path hides it, so the email/password route is available in
+  // every state this function can produce — including one it reaches by mistake.
+  if (!signedIn) return;
+
+  // Was: `markNavSignedIn();` — unconditional, i.e. on `signedIn`, which is TRUE
+  // for the family-token-only case (popup finished, no edl_key). What was wrong:
+  // the nav pill is the site's own signed-in indicator, and every OTHER page reads
+  // edl_key. So a popup user saw "Account" in the nav and "Signed in as …" here,
+  // then every Download click died at download.html's `if(!getKey())` guard with
+  // nothing visible happening — verbatim the regression download.html's comment
+  // records as the previously reported bug, reopened through a new door.
+  //
+  // The key cannot be joined up here, and that is deliberate server-side, at four
+  // independent layers — checked, not assumed, against the deployed worker:
+  //   * the SDK exposes init/login/logout/getAccessToken/isLoggedIn/on only;
+  //   * /token/exchange answers {access_token, refresh_token, token_type,
+  //     expires_in} — no key;
+  //   * /v1/auth/me returns a SCRUBBED profile for a family token (handleMe's
+  //     `if (user.isFamilyToken)` branch omits api_key, and validateFamilyToken
+  //     has already set api_key = null);
+  //   * /v1/auth/sso, the one endpoint that does hand a key to econ, authenticates
+  //     ONLY the first-party hfd_session web cookie on api.hfdatalibrary.com; the
+  //     popup sets ekd_session, host-only on accounts.elkassabgidata.com.
+  // So there is nothing to fetch and nothing to paste in on the user's behalf.
+  //
+  // Given that, this degrades honestly instead of claiming a state the rest of the
+  // site will not honour: the nav flips only when the key that makes it TRUE is
+  // actually in this browser. A popup user still gets the signed-in card, their
+  // name, the account-server link and the paste box (#key-none), plus a line
+  // saying downloads stay locked until the key is pasted — a visible task rather
+  // than a nav that lies. Claiming less is the recoverable direction; the reverse
+  // is a dead Download button on a page insisting the user is signed in.
+  if (key) markNavSignedIn();
+
+  var name = safeGet('edl_name') || '';
+  var email = safeGet('edl_email') || '';
+  setText('acct-h2', name ? ('Signed in as ' + name) : "You're signed in");
+  // Server-supplied identity — textContent, never innerHTML.
+  setText('acct-who', email
+    ? (email + ' · one ElkassabgiData account, every library')
+    : 'One ElkassabgiData account, every library.');
+
+  setHidden('key-have', !key);
+  setHidden('key-none', !!key);
+  if (key) {
+    setText('keybox', key);
+    window._mcpUrl = MCP_PREFIX + key;
+    setText('mcpbox', window._mcpUrl);
+  }
+}
+
+// ── fallback: email + password ──────────────────────────────────────────────
+// Two things were broken here and both are fixed:
+//   1. credentials:'include'. api.hfdatalibrary.com only sends
+//      Access-Control-Allow-Credentials to hf-owned origins (corsDecision:
+//      family sites are allowed WITHOUT credentials), so the browser rejected
+//      the response before any code ran and every attempt from this page ended
+//      in the catch below as "Could not reach the account server". The form was
+//      dead. Without the flag the same POST is a normal CORS request, and it
+//      already returns user.api_key in the JSON body — the follow-up /v1/auth/me
+//      round-trip it needed the cookie for is not required at all.
+//   2. 2FA. /v1/auth/login answers HTTP 200 with {totp_required:true} and no
+//      key, so r.ok was true, the code sailed on and told a 2FA user they were
+//      signed in when they were not. The popup handles the second factor, so
+//      that case is sent there instead of failing silently.
 async function login(ev) {
   ev.preventDefault();
-  const msg = document.getElementById('msg');
-  msg.className = 'msg'; msg.textContent = 'Signing in…';
+  const msg = $('msg');
+  setMsg(msg, 'Signing in…', '');
   try {
     const r = await fetch(API + '/v1/auth/login', {
-      method: 'POST', credentials: 'include',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: document.getElementById('em').value,
-                             password: document.getElementById('pw').value }),
+      body: JSON.stringify({ email: $('em').value, password: $('pw').value }),
     });
     const d = await r.json();
-    if (!r.ok) { msg.className = 'msg err'; msg.textContent = d.error || ('Sign-in failed (' + r.status + ')'); return false; }
-    const me = await fetch(API + '/v1/auth/me', { credentials: 'include' });
-    const u = await me.json();
-    const key = (u && (u.api_key || (u.user && u.user.api_key))) || null;
+    if (!r.ok) { setMsg(msg, (d && d.error) || ('Sign-in failed (' + r.status + ')'), 'err'); return false; }
+    if (d && d.totp_required) {
+      setMsg(msg, 'This account uses two-factor authentication. Use the ' +
+                  '"Sign in with ElkassabgiData" button above — the sign-in window asks for your code.', 'err');
+      return false;
+    }
+    const key = (d && d.user && d.user.api_key) || null;
+    const name = (d && d.user && d.user.name) || '';
+    const email = (d && d.user && d.user.email) || '';
+    if (name) safeSet('edl_name', name);
+    if (email) safeSet('edl_email', email);
     if (key) {
-      // Persist for the family SSO (assets/sso.js): nav flips to "Account" and
-      // every other econ page knows you're signed in without re-asking.
-      localStorage.setItem('edl_key', key);
-      var uname = (u && (u.name || (u.user && u.user.name))) || '';
-      if (uname) localStorage.setItem('edl_name', uname);
-      msg.className = 'msg ok'; msg.textContent = 'Signed in. Your ElkassabgiData API key:';
-      const kb = document.getElementById('keybox'); kb.hidden = false; kb.textContent = key;
-      window._mcpUrl = 'https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=' + key;
-      document.getElementById('mcpbox').textContent = window._mcpUrl;
-      document.getElementById('usage').hidden = false;
+      // The rest of the Econ site (download.html, mcp.html, assets/sso.js) reads
+      // this exact name; writing it is what makes one sign-in work site-wide.
+      safeSet('edl_key', key);
+      render();
     } else {
-      msg.className = 'msg ok';
-      msg.innerHTML = 'Signed in. View your key on <a href="https://hfdatalibrary.com/pages/account">your account page</a>.';
+      setMsg(msg, 'Signed in. Open accounts.elkassabgidata.com/account to see your API key.', 'ok');
+      render();
     }
   } catch (e) {
-    msg.className = 'msg err'; msg.textContent = 'Could not reach the account server.';
+    setMsg(msg, 'Could not reach the account server. Check your connection and try again.', 'err');
   }
   return false;
 }
+
 function copyMcp(ev) {
   if (!window._mcpUrl) return;
   navigator.clipboard.writeText(window._mcpUrl).then(function () {
@@ -152,36 +605,73 @@ function copyMcp(ev) {
   });
 }
 
-// On load: if the family SSO (assets/sso.js) already stored your key, show the
-// signed-in state instead of the sign-in form.
+// ── wiring ──────────────────────────────────────────────────────────────────
+// bind(), not $(id).addEventListener(id): if either button were ever missing the
+// old form threw here and everything after it — the sign-out link, the save-key
+// handler, the first render() — never ran.
+bind('ekd-signin-btn', 'click', onSigninClick);
+bind('ekd-register-btn', 'click', onRegisterClick);
+
+// Fallback-only: the create-account href is followed only when the SDK is absent.
+// Carry the econ page the user came FROM into it so HF's "← Back to Econ Data
+// Library" returns them there. Same-origin referrers only.
 (function () {
-  var key = localStorage.getItem('edl_key');
-  if (!key) return;
-  var name = localStorage.getItem('edl_name');
-  document.addEventListener('DOMContentLoaded', function () {
-    // Signed in -> the "New here? Create your account" card is noise; hide it.
-    var newHere = document.querySelectorAll('.card')[0];
-    if (newHere) newHere.style.display = 'none';
-    var card = document.querySelectorAll('.card')[1];
-    var h2 = card && card.querySelector('h2');
-    if (h2) h2.textContent = name ? ('Signed in as ' + name) : "You're signed in";
-    var form = document.getElementById('f'); if (form) form.style.display = 'none';
-    var msg = document.getElementById('msg');
-    msg.className = 'msg ok'; msg.textContent = 'Your ElkassabgiData API key:';
-    var kb = document.getElementById('keybox'); kb.hidden = false; kb.textContent = key;
-    window._mcpUrl = 'https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp?api_key=' + key;
-    document.getElementById('mcpbox').textContent = window._mcpUrl;
-    document.getElementById('usage').hidden = false;
-    var so = document.createElement('p'); so.className = 'note';
-    so.innerHTML = '<a href="#" id="signout">Sign out of this browser</a>';
-    if (card) card.appendChild(so);
-    var sob = document.getElementById('signout');
-    if (sob) sob.addEventListener('click', function (e) {
-      e.preventDefault();
-      localStorage.removeItem('edl_key'); localStorage.removeItem('edl_name');
-      sessionStorage.removeItem('edl_sso_checked'); location.reload();
-    });
-  });
+  var a = $('ekd-register-btn');
+  if (!a) return;
+  var back = location.origin + '/';
+  try {
+    var ref = new URL(document.referrer);
+    if (ref.origin === location.origin && ref.pathname !== location.pathname) back = ref.href;
+  } catch (e) { /* no/foreign referrer -> homepage */ }
+  try { var u = new URL(a.href); u.searchParams.set('return', back); a.href = u.href; } catch (e) {}
 })();
+
+bind('savekey', 'click', function () {
+  var el = $('pastekey');
+  var v = ((el && el.value) || '').trim();
+  if (!v || /\s/.test(v) || v.length < 8) {
+    setMsg($('pastemsg'), 'That does not look like a key. Copy the whole value from your ElkassabgiData account page.', 'err');
+    return;
+  }
+  safeSet('edl_key', v);
+  setMsg($('pastemsg'), '', '');
+  render();
+});
+
+// Sign out clears the local key AND ends the family session. It also SETS
+// edl_sso_checked (the old code removed it): assets/sso.js treats a missing flag
+// as "not checked this session" and silently bounces to the HF auth server, which
+// still holds its own first-party cookie and hands the key straight back — so
+// signing out reloaded straight into being signed in again. Setting the flag
+// suppresses exactly that one re-check for this browser session; a new tab
+// re-checks as before.
+bind('signout', 'click', async function (e) {
+  e.preventDefault();
+  familyConfirmed = false;   // the page must not keep claiming a confirmed session
+                             // across the reload if EKD.logout() below throws
+  safeDel('edl_key'); safeDel('edl_name'); safeDel('edl_email');
+  try { sessionStorage.setItem('edl_sso_checked', '1'); } catch (err) {}
+  // Bounded wait. The SDK's logout() is a plain fetch with no timeout, and try/catch only
+  // covers a request that FAILS — a connection that is accepted and never answered (captive
+  // portal, hung origin) leaves the await pending forever, so location.reload() never runs
+  // and the signed-in card stays on screen still displaying an API key that has already
+  // been deleted locally. The visitor watches their key sit there after pressing "Sign out
+  // of this browser" and reasonably concludes it did not work. The local keys are gone
+  // before this line either way, so refreshing after a couple of seconds costs nothing and
+  // the server-side revocation still completes if it can.
+  try {
+    if (window.EKD) {
+      await Promise.race([
+        window.EKD.logout(),
+        new Promise(function (r) { setTimeout(r, 2500); })
+      ]);
+    }
+  } catch (err) {}
+  location.reload();
+});
+
+// First paint: assets/sso.js may already have stored a key on the return trip of
+// its silent check, so the signed-in state can be correct before the SDK lands.
+render();
 </script>
 </body></html>
