@@ -82,6 +82,25 @@
     }
     if (document.body) document.body.setAttribute('data-signed-in', '1');
   }
+  // FETCH THE NAME IF WE HAVE A KEY BUT NO NAME.
+  // edl_name is written in exactly one place: step 1, from the sso_name the SSO redirect
+  // returns. So anyone who got their key any OTHER way — pasted it into the box on
+  // account.html or download.html, which is what the owner did — has a key and no name, and
+  // the nav falls back to "Account" for ever. That is the whole reason it kept saying
+  // "Account" after signing in: not a display bug, a missing value.
+  // One request, only when a key exists and a name does not, result cached in localStorage.
+  function ensureName() {
+    try {
+      var k = localStorage.getItem(K);
+      if (!k || (localStorage.getItem(N) || '').trim()) return;
+      fetch(API + '/v1/auth/me', { headers: { 'X-API-Key': k } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (u) {
+          if (u && u.name) { localStorage.setItem(N, u.name); updateUI(); }
+        })
+        .catch(function () { /* the nav keeps saying "Account"; nothing else breaks */ });
+    } catch (e) {}
+  }
   function onReady(fn) {
     if (document.readyState !== 'loading') fn();
     else document.addEventListener('DOMContentLoaded', fn);
@@ -105,14 +124,14 @@
     // so they don't immediately bounce again.
     window.__edl_ssoJustChecked = true;
     history.replaceState({}, document.title, location.pathname + location.search);
-    onReady(updateUI);
+    onReady(updateUI); onReady(ensureName);
     return;
   }
 
   // 2) Already signed in on econ (key stored locally).
   if (signedIn()) {
     if (hp.has('sso_recheck')) history.replaceState({}, document.title, location.pathname + location.search);
-    onReady(updateUI);
+    onReady(updateUI); onReady(ensureName);
     return;
   }
 
