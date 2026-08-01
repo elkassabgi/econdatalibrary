@@ -204,17 +204,31 @@ Say ("updater exit code: " + $rc)
 # newer remote state, it refuses with exit 2.
 Say "push-state ..."
 & python -m updater.run --push-state
-if ($LASTEXITCODE -ne 0) {
-    Say ("push-state FAILED (" + $LASTEXITCODE + ") - state NOT committed")
+$pushRc = $LASTEXITCODE
+if ($pushRc -ne 0) {
+    Say ("push-state FAILED (" + $pushRc + ") - state NOT committed")
 }
 
-# Stamp the cadence clock only now - after a pass that genuinely ran. Every earlier exit
-# (CI in flight, no routed sources, pull-state failure) leaves the stamp alone so the guard
-# retries on its next 5-minute tick instead of standing down for $MinHours.
-# Round-trip format ('o') so it is parsed back as UTC regardless of this machine's locale;
-# a bare local-time string re-parsed as UTC is a 5-hour error and hid a healthy run once
-# already (ledger R198).
-Set-Content -Path $stampFile -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ascii
+# Stamp the cadence clock ONLY IF THE RUN'S WORK WAS RECORDED. "Genuinely ran" is not the
+# bar - "genuinely committed" is. The 2026-08-01 pass crashed inside ons_uk with
+# 0xC0000005 after 8h56m and its push-state then lost the compare-and-swap, yet this line
+# stamped success anyway and the guard stood down for 20 hours over a run whose entire
+# record had been lost. That is stamping success on a failure, the exact dishonesty the
+# updater's own status contract forbids everywhere else.
+#
+# A non-zero updater rc alone is NOT disqualifying: the design is to fail one source while
+# honestly refreshing the others, and those runs deserve their cadence. A failed push IS
+# disqualifying, because nothing durable came of the pass - the next tick must redo it.
+# Round-trip format ('o') so it parses back as UTC regardless of locale; a bare local-time
+# string re-parsed as UTC is a 5-hour error and hid a healthy run once already (R198).
+$crashed = ($rc -lt 0) -or ($rc -eq 134) -or ($rc -eq 137) -or ($rc -eq 139)
+if ($pushRc -eq 0 -and -not $crashed) {
+    Set-Content -Path $stampFile -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ascii
+    Say "cadence stamped - state committed"
+} else {
+    $why = if ($crashed) { "updater CRASHED (rc=" + $rc + ")" } else { "push-state failed (" + $pushRc + ")" }
+    Say ("cadence NOT stamped: " + $why + " - this pass is due again on the next guard tick")
+}
 Remove-Item $lockFile -ErrorAction SilentlyContinue
 
 Say ("done (updater rc=" + $rc + "). Full log: " + $log)
