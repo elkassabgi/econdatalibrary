@@ -419,6 +419,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     budget_skipped = []
     protected_skipped = []
     wrong_location = []
+    not_due = []
 
     for unit in units:
         if sources and unit.source_id not in sources:
@@ -485,6 +486,18 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         strat = get_strategy(unit.strategy)
 
         if not force and not strat.is_due(unit, us):
+            # ANNOUNCED, like every other deliberate skip in this loop. This was the last
+            # silent `continue` here, and the codebase's own rule (R101) is that a skip
+            # leaving no trace is indistinguishable from a bug. It also became load-bearing
+            # the moment updater-heavy started failing a job that processed zero units: a
+            # not-due source printed NOTHING, so a correct, cadence-respecting skip was
+            # indistinguishable in the log from "this source has no fetcher at all", and the
+            # guard would have failed the job for doing exactly the right thing. The heavy
+            # cron does not pass --force, so that would have fired on the next quiet night.
+            not_due.append(unit.source_id)
+            print(f"[orchestrator] NOT DUE {unit.key} — cadence={unit.cadence}, "
+                  f"last_success={(us or {}).get('last_success_utc') or 'never'}; "
+                  f"skipped (use --force to override)", flush=True)
             continue
 
         # Announce the unit BEFORE any work. A run that is KILLED (OOM -> SIGKILL,
@@ -627,6 +640,12 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 mem = ""                                     # Windows: not available
             print(f"[orchestrator] <<< {unit.key} took "
                   f"{time.time() - t_unit:,.0f}s{mem}", flush=True)
+    if not_due:
+        # Restated in the summary so a reader who sees "0 unit(s) processed" can tell a
+        # healthy cadence skip from a source that cannot run at all.
+        print(f"[orchestrator] NOT DUE this tick ({len(not_due)}): "
+              f"{', '.join(sorted(set(not_due)))} — their cadence has not elapsed. This is "
+              f"normal; --force overrides it.", flush=True)
     if wrong_location:
         # Same reasoning as PROTECTED below: these WILL show as RED-UNRUN in the health gate,
         # and the reader needs the reason where they read the outcome. Deliberate routing, not
