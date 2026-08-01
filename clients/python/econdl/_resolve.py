@@ -402,14 +402,35 @@ _FHFA_FREQ = {"M": "monthly", "Q": "quarterly", "A": "annual"}
 
 
 def _resolve_fhfa(series_id: str, root: str) -> Resolution:
-    # catalog: fhfa:<flavor>:<freq>:<place_id>   e.g. fhfa:po:M:DV_ENC / fhfa:at:Q:AK
-    # Grouped cube: one file (hpi_master.parquet) holding MANY series keyed by
-    # series_key = '<hpi_type>|<hpi_flavor>|<frequency>|<place_id>'.
-    # Every catalog series is hpi_type 'traditional' (verified across all 61 ids),
-    # so the composite native key is fully determined by the catalog id alone.
+    # TWO ID SHAPES, because the store has two layouts and the original id could only
+    # address one of them:
+    #
+    #   fhfa:<dataset>:<series_key>          the general form — one branch per store file
+    #   fhfa:<flavor>:<freq>:<place_id>      legacy, hpi_master only, kept so old links live
+    #
+    # The general form exists because the legacy one cannot NAME most of the source. It
+    # hardcodes hpi_type 'traditional' (true of the 61 catalogued ids, not of the data:
+    # hpi_master carries traditional, non-metro, distress-free, manufactured and
+    # developmental), and it only ever reaches hpi_master.parquet — 1,178 of the source's
+    # 89,706 series. The other 88,528 live in nine per-dataset files (annual_cbsa,
+    # annual_tract, annual_zip5, hpi_at_3zip_quarterly, ...) that no id could address at all.
+    #
+    # Disambiguation is by EXISTENCE, not by counting colons: a series_key may contain both
+    # ':' and '|' (hpi_master's are 'traditional|purchase-only|monthly|DV_ENC'), so splitting
+    # on ':' cannot tell 'fhfa:po:M:DV_ENC' from 'fhfa:<ds>:<key with a colon>'. If the second
+    # segment names a real store file, it is the general form; otherwise the legacy form.
+    head = series_id.split(":", 2)
+    if len(head) == 3:
+        cand = os.path.join(root, "fhfa", f"{head[1]}.parquet")
+        if os.path.exists(cand):
+            return Resolution(series_id, "fhfa", cand, "series_key",
+                              pc.equal(ds.field("series_key"), head[2]))
+
     parts = series_id.split(":")
     if len(parts) != 4:
-        raise ResolveError(f"{series_id}: expected fhfa:<flavor>:<freq>:<place_id>")
+        raise ResolveError(
+            f"{series_id}: expected fhfa:<dataset>:<series_key> "
+            f"(or the legacy fhfa:<flavor>:<freq>:<place_id>)")
     _, flavor, freq, place = parts
     if flavor not in _FHFA_FLAVOR or freq not in _FHFA_FREQ:
         raise ResolveError(
