@@ -1120,9 +1120,24 @@ def _resolve_census_table(series_id: str, root: str) -> Resolution:
         if not entry:
             raise ResolveError(
                 f"{series_id}: table {table!r} is not in the split map, so it was never split")
-        dim = entry["dim"]
-        got = pc.struct_field(
-            pc.extract_regex(ds.field("series_key"), pattern=f"{dim}=(?P<v>[^|]*)"), "v")
+        # dims is a LIST — census tables can need a COMPOSITE split (trade data is naturally
+        # commodity x geography, and six tables had no single dimension that divided them below
+        # the bound). The part id joins the values with `sep`, so rebuild the same expression.
+        dims = entry.get("dims") or ([entry["dim"]] if entry.get("dim") else [])
+        if not dims:
+            raise ResolveError(f"{series_id}: split map entry for {table!r} names no dimension")
+        sep = entry.get("sep", "~")
+        got = None
+        for d in dims:
+            # "NAME" or "NAME:n" — the second form is a TRUNCATION, which is what trade data
+            # needs: intltrade__exports__hs splits on E_COMMODITY truncated to 3 characters
+            # (275 parts) because HS codes are hierarchical and the full code has 18,511 values.
+            name, _, tr = d.partition(":")
+            v = pc.struct_field(
+                pc.extract_regex(ds.field("series_key"), pattern=f"{name}=(?P<v>[^|]*)"), "v")
+            if tr:
+                v = pc.utf8_slice_codeunits(v, 0, int(tr))
+            got = v if got is None else pc.binary_join_element_wise(got, v, sep)
         pred = pred & (got == part)
     return Resolution(series_id, "census", path, "series_key", pred, tidy_ok=False)
 
