@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import time
 import shutil
 import uuid
 
@@ -141,7 +142,28 @@ def write_table_atomic(path: str, table, compression: str = "zstd") -> None:
     tmp = f"{path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
     try:
         pq.write_table(table, tmp, compression=compression)
-        os.replace(tmp, path)  # atomic publish — readers never see a half-written file
+        # RETRY THE REPLACE. os.replace onto an existing file is atomic on POSIX but can fail
+        # on Windows with PermissionError(13) whenever anything holds a transient handle on
+        # the target - an antivirus scanning the file we just wrote, an indexer, or a reader
+        # that has not yet released it. It is a RACE, not a permission problem: the same call
+        # succeeds moments later.
+        #
+        # This is not hypothetical. cepii_gravity streams a 1.25 GB CSV and re-publishes the
+        # same parquet every batch, so it performs this replace hundreds of times in one run;
+        # on 2026-08-01 it lost the race after 20,000,000 rows and the whole source
+        # transient-failed with "Access is denied" having merged nothing. A source that dies
+        # 20 million rows in because of a momentary file lock is a source that never finishes.
+        #
+        # Bounded and loud: six attempts over ~3 s, then the original error propagates. POSIX
+        # is unaffected - the first attempt succeeds and the loop costs nothing.
+        for attempt in range(6):
+            try:
+                os.replace(tmp, path)  # atomic publish — readers never see a half-written file
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.2 * (2 ** attempt))
     finally:
         if os.path.exists(tmp):
             try:
