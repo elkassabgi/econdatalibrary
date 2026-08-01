@@ -545,13 +545,23 @@ function onFamilyLogout() {
 // that one localStorage name and nothing else. This function therefore must be
 // called on the SAME condition sso.js uses, never on a broader one; see the call
 // site in render() for what happened when it was called on a broader one.
+// This is a SECOND implementation of the nav marking that assets/sso.js also does — this
+// page runs its own because it changes state without a reload. When the label was taught to
+// show the visitor's first name, only the sso.js copy was updated, so every other page said
+// "Ahmed" and THIS page still said "Account". Kept in step deliberately; if one is changed
+// again, the other has to move with it.
 function markNavSignedIn() {
   var a = document.querySelector('.nav a.signin')
        || document.querySelector('.nav a[href="account.html"]')
        || document.querySelector('.nav .signin');
   if (!a) return;
-  a.textContent = 'Account';
-  var nm = safeGet('edl_name');
+  // Same rule as assets/sso.js: first name, truncated so a long one cannot push the nav
+  // links off a narrow screen, falling back to "Account" when no name is stored yet — which
+  // is the normal case for the first paint, before /v1/auth/me has answered.
+  var nm = (safeGet('edl_name') || '').trim();
+  var first = nm ? nm.split(/\s+/)[0] : '';
+  if (first.length > 14) first = first.slice(0, 13) + '…';
+  a.textContent = first || 'Account';
   if (nm) a.title = 'Signed in as ' + nm;
   if (document.body) document.body.setAttribute('data-signed-in', '1');
 }
