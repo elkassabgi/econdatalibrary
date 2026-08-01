@@ -906,19 +906,29 @@ def _resolve_treasury(series_id: str, root: str) -> Resolution:
 
 # --- noaa ------------------------------------------------------------------
 def _resolve_noaa(series_id: str, root: str) -> Resolution:
-    # catalog: noaa:GSOM:USW00094728:TAVG
+    # catalog: noaa:gsom:USW00094728:TAVG
     # store: per-flow, per-station-prefix files  gsom__<2-char station prefix>.parquet
     #   flow = dataset lowercased (GSOM -> gsom, also gsoy); file = <flow>__<station[:2]>.parquet
-    # native key_col 'series_key' value = '<station>:<element>'  e.g. 'USW00094728:TAVG'
+    # native key_col 'series_key' value = '<flow>:<station>:<element>'
+    #
+    # THE NATIVE KEY CARRIES THE DATASET, since the 2026-08-01 re-key. It used to be
+    # '<station>:<element>', which named BOTH the monthly and the annual series: 1,046,291 of
+    # 2,089,582 ids appeared in gsom and gsoy alike, so one id served a monthly series with its
+    # own annual aggregates mixed in. There was never a (key, date) collision to reveal it -
+    # gsom stamps month-start and gsoy year-end - so it survived every duplicate check.
+    #
+    # Old uppercase ids keep working on purpose: `flow` is lowercased before it is used to build
+    # the key, so a bookmarked noaa:GSOM:USW00094728:TAVG resolves to gsom:USW00094728:TAVG and
+    # still returns its series.
     parts = series_id.split(":")
     if len(parts) != 4 or parts[0] != "noaa":
-        raise ResolveError(f"{series_id}: expected noaa:<DATASET>:<station>:<element>")
+        raise ResolveError(f"{series_id}: expected noaa:<dataset>:<station>:<element>")
     _, dataset, station, element = parts
     flow = dataset.lower()
     path = os.path.join(root, "noaa", f"{flow}__{station[:2]}.parquet")
     if not os.path.exists(path):
         raise ResolveError(f"{series_id}: expected NOAA file {path!r} not found")
-    native_key = f"{station}:{element}"
+    native_key = f"{flow}:{station}:{element}"
     return Resolution(
         series_id, "noaa", path, "series_key",
         pc.equal(ds.field("series_key"), native_key),
