@@ -52,7 +52,7 @@ import requests
 from ... import config, merge, blob
 from ...errors import DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import CURSOR_CAP, Tally, cursors_from_table, finalize, merge_cursor_map
 
 # Reuse the production parser (header-driven role mapping + stable key builder).
 # Importing the module also pins the exact key construction used in clean_full,
@@ -240,7 +240,7 @@ _CODE_FOR_PARSE = [""]
 
 
 def _process_domain(d: dict, out_dir: str, tally: Tally, sidecar: dict,
-                    only: set | None) -> None:
+                    only: set | None, cursors=None) -> None:
     """Gate one domain on its manifest vintage; if changed, download + parse +
     merge. Updates `tally` (one sub-unit per CHANGED domain) and `sidecar`."""
     code = d.get("DatasetCode")
@@ -291,6 +291,16 @@ def _process_domain(d: dict, out_dir: str, tally: Tally, sidecar: dict,
             tally.transient_unit()
             return
         tally.added_unit(max(0, n - before))
+        # Report WHICH series moved. Without this the orchestrator cannot re-derive their
+        # CSVs (§5.7) and logs 'merged N obs but reported no series_cursors' - which is
+        # exactly what happened on 2026-08-01: 170,645,319 observations merged into the
+        # parquets while every served CSV stayed at its old values. The parquet is right and
+        # the download is stale, and nothing fails, which is what makes it easy to miss.
+        # Cursors come from the NEW table, not the merged file: reporting every series in the
+        # file would re-derive millions of unchanged CSVs on a source this size.
+        if cursors is not None:
+            merge_cursor_map(cursors, cursors_from_table(tbl, cap=CURSOR_CAP),
+                             cap=CURSOR_CAP)
         # advance the per-domain vintage ONLY after a clean publish.
         sidecar[code] = cur_v
     finally:
@@ -320,8 +330,9 @@ def update(unit, since) -> Result:
 
     sidecar = _load_sidecar(out_dir)
     tally = Tally()
+    cursors: dict[str, str] = {}
     for d in ds:
-        _process_domain(d, out_dir, tally, sidecar, only)
+        _process_domain(d, out_dir, tally, sidecar, only, cursors=cursors)
 
     # Persist the per-domain vintages we successfully published (atomic sidecar).
     _save_sidecar_atomic(out_dir, sidecar)
@@ -336,7 +347,8 @@ def update(unit, since) -> Result:
     # empty_window_floor=10: if a LARGE number of attempted domains all came back
     # empty/404, that's a structural break — but here `attempted` counts only
     # CHANGED domains, so a quiet month (0 attempted) cleanly yields no_change.
-    res = finalize(tally, total_rows, last_obs, source=SOURCE)
+    res = finalize(tally, total_rows, last_obs, source=SOURCE,
+                   series_cursors=cursors or None)
     # finalize() stamps new_vintage="date-tail" (it is shared with the S2 date-tail
     # fetchers); for a bulk source the unit-level gate token is the MANIFEST HASH.
     # Overwrite it so the orchestrator persists the right upstream_vintage and can

@@ -268,6 +268,67 @@ reads as "we covered everything".
 """
 
 
+def _max_by_key(tbl, key_col="series_key", date_col="obs_date") -> dict:
+    """{key: max date ISO} WITHOUT pyarrow's group_by.
+
+    group_by is not merely slow on a big string column, it is UNSAFE: Arrow indexes string
+    data with int32 offsets, and past 2 GiB in one column the aggregate overflows and kills
+    the PROCESS (0xC0000005 / SIGABRT), it does not raise. That matters here because the
+    caller wraps this in `except Exception` and returns {} - which reads as "cursors are
+    best-effort, nothing can go wrong" while actually being incapable of catching the failure
+    mode that occurs. An updater run would simply vanish, mid-source, with no traceback.
+    That is how a whole night's daily run was lost before merge._dedup was rewritten the same
+    way (2026-07-31).
+
+    So: promote to large_string when the column is big enough to be at risk, then sort and
+    take the last row per key - the same shape merge.py uses, for the same reason.
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    from ... import merge as _merge
+
+    if _merge._needs_large_string(tbl):
+        tbl = _merge._promote_large_string(tbl)[0]
+    t = _merge._sort(tbl, (key_col, date_col))
+    n = t.num_rows
+    if n == 0:
+        return {}
+    keys = t.column(key_col).combine_chunks()
+    # last row of each key run == that key's max date, because the sort put dates ascending
+    # within a key.
+    if n == 1:
+        last = pa.array([True])
+    else:
+        changes = pc.invert(pc.equal(keys.slice(0, n - 1), keys.slice(1, n - 1)))
+        last = pa.concat_arrays([changes.cast(pa.bool_()), pa.array([True], pa.bool_())])
+    picked = t.filter(last)
+    ks = picked.column(key_col).to_pylist()
+    ds = picked.column(date_col).to_pylist()
+    return {k: d.isoformat() for k, d in zip(ks, ds) if k and d is not None}
+
+
+def cursors_from_table(tbl, cap: int = CURSOR_CAP, key_col="series_key",
+                       date_col="obs_date") -> dict:
+    """Cursors for rows a fetcher just merged, without re-reading the published file.
+
+    A bulk fetcher that has the new table in hand should report the series IT changed, not
+    every series in the file: over-reporting re-derives CSVs that did not move, and on a
+    170-million-observation source that is the difference between a few thousand PUTs and
+    millions. Returns {} on failure - a cursor problem must never sink a good publish.
+    """
+    try:
+        if tbl is None or tbl.num_rows == 0:
+            return {}
+        out = _max_by_key(tbl, key_col, date_col)
+        if cap and len(out) > cap:
+            print(f"[cursors] {len(out):,} changed series exceeds the {cap:,} cap - "
+                  f"reporting the first {cap:,} (sorted)", flush=True)
+            out = {k: out[k] for k in sorted(out)[:cap]}
+        return out
+    except Exception:                                        # noqa: BLE001
+        return {}
+
+
 def cursors_from_parquet(path, key_col="series_key", date_col="obs_date",
                          cap: int = CURSOR_CAP) -> dict:
     """{series_key: max obs_date ISO} for one published parquet.
@@ -287,14 +348,10 @@ def cursors_from_parquet(path, key_col="series_key", date_col="obs_date",
     """
     try:
         import pyarrow.parquet as pq
-        import pyarrow.compute as pc
         tbl = pq.read_table(path, columns=[key_col, date_col])
         if tbl.num_rows == 0:
             return {}
-        agg = tbl.group_by(key_col).aggregate([(date_col, "max")])
-        keys = agg.column(key_col).to_pylist()
-        maxes = agg.column(f"{date_col}_max").to_pylist()
-        out = {k: d.isoformat() for k, d in zip(keys, maxes) if k and d is not None}
+        out = _max_by_key(tbl, key_col, date_col)
         if cap and len(out) > cap:
             print(f"[cursors] {os.path.basename(path)}: {len(out):,} changed series exceeds the "
                   f"{cap:,} cursor cap — reporting the first {cap:,} (sorted); the orchestrator's "
