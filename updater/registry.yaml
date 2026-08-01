@@ -4906,6 +4906,19 @@ sources:
     - 'single parquet: data/clean_full/unhcr/unhcr.parquet (~0.8 MB). Schema: series_key (string), obs_date date32 (Dec 31),
       value float64. Keys: {endpoint}:{field}:{coo_iso}:{coa_iso} (e.g. population:refugees:SYR:DEU). Zero/empty values dropped.'
 - source_id: usda
+  # live: true 2026-08-01. usda had NO state at all - the updater had never once attempted the
+  # whole Quick Stats database - because it was registered with a strategy and a script and no
+  # fetcher. Built and proven: current_vintage hashes the five (sector, datestamp) pairs NASS
+  # publishes on its own datasets page (qs.crops_20260801.txt.gz and four siblings, identical
+  # across two fetches), and detect_change fetches on a first run, skips on a match and re-
+  # fetches when stale.
+  #
+  # run_location deliberately UNSET, so this runs in the cloud. Its refresh is genuinely large -
+  # five gzipped dumps and a re-parse of 57.6M rows - and that wall clock has NOT been measured
+  # against the 300-minute ceiling. Routing it to the workstation on a guess is what put `abs`
+  # there wrongly; the orchestrator's per-source deadline caps an overrun and reports partial,
+  # which is the honest outcome and strictly better than pre-emptively exiling it.
+  live: true
   scripts:
   - jobs/ingest_usda.py
   strategy: bulk_snapshot_if_changed
