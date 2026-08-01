@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import sys
 import time
@@ -215,7 +216,7 @@ def pull(flow: str, agency: str, source_id: str, out_path: str | None = None,
     url = f"{BASE}/data/{agency},{flow}/all"
     print(f"[imf_direct] GET {url}", flush=True)
     try:
-        return _pull_streamed(url, flow, source_id, out_path, min_obs)
+        return _pull_streamed(url, flow, agency, source_id, out_path, min_obs)
     finally:
         # The staged SDMX document is multi-GB for the big flows; leaving one behind per
         # flow would fill the disk in a few runs. Removed on success, failure and exception
@@ -228,7 +229,8 @@ def pull(flow: str, agency: str, source_id: str, out_path: str | None = None,
             pass
 
 
-def _pull_streamed(url: str, flow: str, source_id: str, out_path, min_obs: int) -> int:
+def _pull_streamed(url: str, flow: str, agency: str, source_id: str,
+                   out_path, min_obs: int) -> int:
     xml_tmp = (out_path or os.path.join(OUT, f"{source_id}.parquet")) + ".sdmx.tmp"
     os.makedirs(os.path.dirname(xml_tmp), exist_ok=True)
     n_bytes = http_get_to_file(url, xml_tmp)
@@ -258,6 +260,24 @@ def _pull_streamed(url: str, flow: str, source_id: str, out_path, min_obs: int) 
     dims = sorted(dimset - NON_IDENTITY)
     print(f"[imf_direct] {n_series:,} series; identity dims: {', '.join(dims)}",
           flush=True)
+
+    # RECORD THE KEY ORDER. The key is positional and this order is the ONLY thing that says
+    # which part means what. It cannot be recovered from the DSD afterwards: the order here is
+    # alphabetical over the attributes the DATA actually carries, and the DSD both declares a
+    # different order and omits attributes that appear in the data (METHODOLOGY is absent from
+    # the GFS datastructure yet present in every GFS key). Reconstructing it from the DSD
+    # shifts every part after the missing one, so `S1311B` - a SECTOR code - gets read as a
+    # TYPE_OF_TRANSFORMATION and the resulting title is confidently wrong.
+    #
+    # Written next to the parquet so a catalogue/title builder can decode keys without
+    # re-deriving a guess. Best-effort: a sidecar problem must never sink a good publish.
+    try:
+        dims_path = (out_path or os.path.join(OUT, f"{source_id}.parquet")) + ".dims.json"
+        with open(dims_path, "w", encoding="utf-8") as fh:
+            json.dump({"flow": flow, "agency": agency, "key_dims": dims}, fh, indent=1)
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[imf_direct] WARNING: could not record key dims ({e!r}); a title "
+              f"builder will have to re-derive them", flush=True)
 
     keys, dates, vals = [], [], []
     # THREE counters, not one. SDMX routinely declares period slots with no value,
