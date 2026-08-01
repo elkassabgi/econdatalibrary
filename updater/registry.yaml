@@ -6085,3 +6085,41 @@ sources:
     day 1, daily as-is; using period-end for monthly would have minted a parallel date space. PublishingDates genuinely
     differ per cube (2025-09-01 rendoblid to 2026-07-27 snbgwdzid). Two-run test - ok +1,091 rows (303,358 -> 304,449),
     764 cursors, then 12/12 unchanged/no_change.
+- source_id: worldbank
+  scripts: []
+  strategy: extend_by_date
+  strategy_reason: Projection of worldbank_wdi, not a separate crawl. 684 of the 692 published legacy ids exist
+    verbatim in clean_full/worldbank_wdi as WDI:<same code>; re-fetching the same indicators from api.worldbank.org
+    would double the upstream load and let two copies of one dataset drift apart.
+  cadence: monthly
+  refresh_cost: fast
+  out_dir: worldbank
+  live: false
+  review: true
+  adapter:
+    vintage_signal: None. Downstream of worldbank_wdi, so it re-projects on cadence and merge dedup makes a re-run
+      harmless. A fabricated token would either freeze it or make it re-pull for ever.
+    since_param: not used - the projection reads the whole upstream store each run
+    out_paths_note: single file clean_full/worldbank/worldbank.parquet. The fetcher self-migrates the 692 legacy
+      one-series-per-file parquets out of the OLD data/clean/ tier on first run, then extends them - migrating without
+      that step would drop the 8 aggregate-code series the upstream does not cover.
+    rate_note: no network access of its own
+    key_env: none
+    confidence: high
+    coverage_note: '8 of 692 not covered upstream: NY.GDP.MKTP.CD and SL.UEM.TOTL.ZS for XD/XM/XN/XT. Those are
+      2-char income-group/region codes that worldbank_wdi rewrites to their 3-char form via the /v2/country reference
+      list, so they are present under a different code rather than missing. Reported every run; the count reaching
+      zero is how anyone knows the mapping was added.'
+  matrix:
+    refresh_mechanism:
+    - projection-from-worldbank_wdi
+    force_refresh_procedure:
+    - 'Delete clean_full/worldbank/worldbank.parquet and re-run; the fetcher re-migrates the legacy tier and re-projects.
+      Safe: merge is never-shrink and dedups on (series_key, obs_date).'
+    incremental_path:
+    - Not needed - 31,445 observations across 684 series is a whole-store projection in seconds.
+    keys_or_blockers:
+    - none; depends only on worldbank_wdi having run
+    storage_layout:
+    - single parquet; 692 published series / ~31,838 rows; schema series_key(str), obs_date(date32, annual Dec-31),
+      value(float64)
