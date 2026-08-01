@@ -42,7 +42,7 @@
 
 (function () {
   var API = 'https://api.hfdatalibrary.com';
-  var K = 'edl_key', N = 'edl_name', C = 'edl_sso_checked';
+  var K = 'edl_key', N = 'edl_name', C = 'edl_sso_checked', F = 'edl_family';
 
   // Highlight the current page's nav link (parity with hfdatalibrary.com,
   // whose .nav-links a.active gets the same pill background as :hover).
@@ -60,7 +60,30 @@
     else document.addEventListener('DOMContentLoaded', mark);
   })();
 
-  function signedIn() { return !!localStorage.getItem(K); }
+  // "Signed in" used to mean ONLY "an api_key is in this browser". That was true when the
+  // api_key was the only credential there was. Family sign-in changed it: a visitor can now
+  // complete Google on accounts.elkassabgidata.com, download successfully on every page —
+  // and still be told "Sign in" in the nav, because no api_key was ever stored. The owner
+  // hit exactly that and reported it.
+  //
+  // F is written by account.html only when the account SERVER confirmed the family session
+  // (its 'login' event), and deleted on logout and on sign-out, so it cannot outlive the
+  // session. Deliberately not a read of the SDK's own storage: that is private to the SDK,
+  // and a bare token read reports true for a session the server has already refused —
+  // the mistake that produced a lockout on the account page earlier in this work.
+  // TWO DIFFERENT QUESTIONS. They were briefly one function and that broke downloads.
+  //
+  // hasKey()   — "is the api_key in this browser?" This is what the silent-SSO logic below
+  //              must ask. Step 2 returns early when it is true, skipping the one-per-session
+  //              bounce to HF's /v1/auth/sso that FETCHES the key. Widening this to include a
+  //              family session meant a signed-in visitor short-circuited that step, the key
+  //              was never fetched, and downloads stopped working — the regression the owner
+  //              reported as "back to sign-in and I can't download any more".
+  //
+  // signedIn() — "should the page present this visitor as signed in?" Used only by the nav.
+  //              A confirmed family session counts here, because it genuinely is one.
+  function hasKey()   { return !!localStorage.getItem(K); }
+  function signedIn() { return !!(localStorage.getItem(K) || localStorage.getItem(F)); }
 
   function updateUI() {
     if (!signedIn()) return;
@@ -68,38 +91,24 @@
          || document.querySelector('.nav a[href="account.html"]')
          || document.querySelector('.nav .signin');
     if (a) {
-      // Show the first name. /v1/auth/sso already returns it as sso_name and step 1 above
-      // already stores it in edl_name — it was only ever used for a tooltip nobody hovers,
-      // so a signed-in visitor saw a generic word barely distinguishable from the "Sign in"
-      // it replaced. Falls back to "Account" when no name was stored, and truncates so a
-      // long name cannot push the nav links off a narrow screen. textContent, never
-      // innerHTML: this value is a profile field the user types.
+      // Show the person's FIRST NAME rather than the word "Account". The name was already
+      // stored and used only for a tooltip, which nobody hovers — so a signed-in visitor
+      // got a generic label indistinguishable at a glance from the "Sign in" it replaced.
+      // A name is the clearest possible confirmation that the family sign-in worked, and
+      // this pill is the only signed-in indicator on most pages.
+      //
+      // Falls back to "Account" whenever there is no usable name (an older browser that
+      // stored a key before names were kept, or a name that is blank/whitespace), so the
+      // nav can never end up empty. First name only: the nav is a single line and long
+      // full names push the other links off narrow screens. textContent, never innerHTML —
+      // this value came from a profile field the user types.
       var nm = (localStorage.getItem(N) || '').trim();
       var first = nm ? nm.split(/\s+/)[0] : '';
-      if (first.length > 14) first = first.slice(0, 13) + '\u2026';
+      if (first.length > 14) first = first.slice(0, 13) + '…';
       a.textContent = first || 'Account';
       if (nm) a.title = 'Signed in as ' + nm;
     }
     if (document.body) document.body.setAttribute('data-signed-in', '1');
-  }
-  // FETCH THE NAME IF WE HAVE A KEY BUT NO NAME.
-  // edl_name is written in exactly one place: step 1, from the sso_name the SSO redirect
-  // returns. So anyone who got their key any OTHER way — pasted it into the box on
-  // account.html or download.html, which is what the owner did — has a key and no name, and
-  // the nav falls back to "Account" for ever. That is the whole reason it kept saying
-  // "Account" after signing in: not a display bug, a missing value.
-  // One request, only when a key exists and a name does not, result cached in localStorage.
-  function ensureName() {
-    try {
-      var k = localStorage.getItem(K);
-      if (!k || (localStorage.getItem(N) || '').trim()) return;
-      fetch(API + '/v1/auth/me', { headers: { 'X-API-Key': k } })
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (u) {
-          if (u && u.name) { localStorage.setItem(N, u.name); updateUI(); }
-        })
-        .catch(function () { /* the nav keeps saying "Account"; nothing else breaks */ });
-    } catch (e) {}
   }
   function onReady(fn) {
     if (document.readyState !== 'loading') fn();
@@ -124,14 +133,16 @@
     // so they don't immediately bounce again.
     window.__edl_ssoJustChecked = true;
     history.replaceState({}, document.title, location.pathname + location.search);
-    onReady(updateUI); onReady(ensureName);
+    onReady(updateUI);
     return;
   }
 
-  // 2) Already signed in on econ (key stored locally).
-  if (signedIn()) {
+  // 2) The key is already stored locally — nothing to fetch, so skip the bounce.
+  //    hasKey(), NOT signedIn(): a family session is not a key, and treating it as one
+  //    skips step 6 and leaves the visitor without the credential this step exists to get.
+  if (hasKey()) {
     if (hp.has('sso_recheck')) history.replaceState({}, document.title, location.pathname + location.search);
-    onReady(updateUI); onReady(ensureName);
+    onReady(updateUI);
     return;
   }
 
