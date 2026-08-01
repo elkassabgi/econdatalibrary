@@ -50,7 +50,14 @@ def main() -> int:
         print(f"no store for {a.source} at {store}")
         return 1
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"))
+    # busy_timeout, because catalog.db has OTHER writers. The updater's CSV derive and its
+    # catalogue sync both touch it, and a run can hold the write lock for minutes. Without a
+    # timeout sqlite raises "database is locked" the instant it collides - which is exactly
+    # what happened on the first batch: 4 of 7 sources failed and, because the loop grepped
+    # stdout for a success line, the tracebacks went to stderr and the failures looked like
+    # silence. Wait for the lock instead of losing the work.
+    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=120.0)
+    con.execute("PRAGMA busy_timeout = 120000")
 
     # --- licence gate, before anything else -------------------------------------------
     lic = con.execute("select reservable, name from license where license_id=?",
