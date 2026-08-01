@@ -4651,6 +4651,14 @@ sources:
     - 'single parquet: data/clean_full/ucdp/acd.parquet (29 KB). Schema: series_key (string), obs_date (date32), value (float64).
       Keys: UCDP:ACD:{var}:{conflict_id} and country-year aggregates UCDP:ACD:{n_conflicts|max_intensity|is_war|...}:{gwno}.'
 - source_id: un_wpp
+  # live: true 2026-08-01. 334,236 series served and never scheduled. The blocker was a MISSING
+  # GATE, not a broken fetcher: un_wpp had no current_vintage, so detect_change returned the
+  # "force" sentinel and the source could not join the live tier. Its update() was already
+  # incremental (per-file conditional GET with stored If-Modified-Since / If-None-Match, doing
+  # almost nothing on a 304), so the cost was eligibility rather than waste. current_vintage now
+  # hashes both WPP files' validators, MEASURED first: both answer HEAD 200 with a strong ETag
+  # and Last-Modified, identical across two probes. Gate proven in both directions.
+  live: true
   scripts:
   - jobs/ingest_un_wpp.py
   strategy: bulk_snapshot_if_changed
@@ -5632,7 +5640,10 @@ sources:
       GFS_COFOG -> GFS_COFOG:11.0.0. Corresponds to legacy imf_gfscofog.
     name: Government Finance Statistics — Expenditures by Function (COFOG)
 - source_id: imf_gfsssuc_direct
-  live: false
+  # live: true 2026-08-01. 45,019 series, catalogued with decoded titles and CSVs derived, but
+  # never scheduled. Gate PROVEN both directions: current_vintage returns the flow's own SDMX
+  # version (GFS_SSUC:10.0.0), a matching stored vintage skips and a stale one re-fetches.
+  live: true
   # ROUTED TO updater-heavy 2026-08-01. Measured first-hand at api.imf.org:
   #   GFS_SOO 667,386 series (482 s to return ONE observation each)
   #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
@@ -5716,7 +5727,9 @@ sources:
       GFS_SFCP -> GFS_SFCP:10.0.0. Corresponds to legacy imf_gfsfalcs.
     name: Government Finance Statistics — Stocks and Flows by Counterparty
 - source_id: imf_gfssoef_direct
-  live: false
+  # live: true 2026-08-01. 2,614 series, same family and same proof: current_vintage returns
+  # GFS_SOEF:11.0.0, skip on match, re-fetch when stale.
+  live: true
   # ROUTED TO updater-heavy 2026-08-01. Measured first-hand at api.imf.org:
   #   GFS_SOO 667,386 series (482 s to return ONE observation each)
   #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
