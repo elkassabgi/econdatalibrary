@@ -62,7 +62,7 @@ border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-sp
 .fallback[open]{padding-bottom:1.15rem}
 .who{font-size:.95rem;color:var(--g600);line-height:1.6;margin-top:.15rem}
 .who b{color:#111827}
-</style><script src="assets/sso.js?v=20260801f"></script>
+</style><script src="assets/sso.js?v=20260801j"></script>
 <!-- REMOVED 2026-07-31: the inline "clicking Sign in is explicit intent" block that
      ran location.replace() to api.hfdatalibrary.com/v1/auth/sso on page load.
      It was a FULL-PAGE redirect off econdatalibrary.com, which is exactly what the
@@ -490,6 +490,10 @@ async function onFamilyLogin() {
   // and it is written here because this is the one place that knows the difference.
   // Removed on sign-out and on the SDK's 'logout' below, so it cannot outlive the session.
   safeSet('edl_family', '1');
+  // A deliberate sign-in retires the "stay signed out" marker, so cross-site resume works
+  // again. Without this, one sign-out would disable family recognition for the rest of the
+  // browser session even after signing back in.
+  try { sessionStorage.removeItem('ekd_signed_out'); } catch (e) {}
   clearSigninPending();   // the account server honoured this session, so the attempt is
                           // over: download.html must stop saying it was never finished
                           // and start saying the thing that IS true — signed in, but the
@@ -776,6 +780,13 @@ bind('signout', 'click', async function (e) {
                              // the visitor of abandoning something they just ended
   safeDel('edl_key'); safeDel('edl_name'); safeDel('edl_email'); safeDel('edl_family');
   try { sessionStorage.setItem('edl_sso_checked', '1'); } catch (err) {}
+  // Suppress the silent family resume for the rest of this browser session. That resume fires
+  // exactly WHEN this origin holds no credential, which is the state the line above creates —
+  // so without this, signing out bounced to the IdP on the next page load and signed the visitor
+  // straight back in. The server now ends the IdP session too, but that is a network call that
+  // can be slow or fail (note the 2.5s race below), and whether a logout held must not depend on
+  // winning that race. A deliberate sign-in clears the flag again.
+  try { sessionStorage.setItem('ekd_signed_out', '1'); } catch (err) {}
   // Bounded wait. The SDK's logout() is a plain fetch with no timeout, and try/catch only
   // covers a request that FAILS — a connection that is accepted and never answered (captive
   // portal, hung origin) leaves the await pending forever, so location.reload() never runs
