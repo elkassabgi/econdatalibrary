@@ -1,6 +1,6 @@
 """S1 fetcher — NOAA NCEI GSOM + GSOY (US federal, public domain, no key).
 
-3,135,873 series / 552,548,787 observations. This source was in the registry and routed to the
+3,135,873 series / 549,412,914 observations. This source was in the registry and routed to the
 workstation, and had no fetcher. It therefore never ran: the orchestrator's no-adapter branch
 printed nothing during a run (fixed 2026-08-01), so noaa vanished out of a 14-source pass
 between `NOT DUE istat` and `>>> oecd` leaving no trace at all, and I read that silence as the
