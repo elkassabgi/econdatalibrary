@@ -124,7 +124,27 @@ def assess(store=None) -> dict:
         cadence = e.get("cadence", "monthly")
         period = CADENCE_DAYS.get(cadence, 7)
         sla_days = period * SLA_TOLERANCE
-        data_days = period * (SLA_TOLERANCE + DATA_SLACK_PERIODS)
+
+        # HOW OFTEN WE CHECK IS NOT HOW SOON DATA IS LATE. `period` comes from CADENCE_DAYS,
+        # which drives SCHEDULING, and "irregular" is not a key there - it falls to the 7-day
+        # default. That is right for checking (poll an unpredictable publisher weekly) and
+        # wrong for lateness: it declares data RED after 21 days for sources that publish
+        # every year or two. Judged that way, un_wpp went red 31 days after a release,
+        # yale_epi at 578 days when the EPI is biennial, and gapminder and imf_weo on annual
+        # data that was simply the publisher's own latest.
+        #
+        # This never mattered before because all four also carried forward-dated projections,
+        # so their obs_age was negative and RED-DATA could not fire at all. Fixing the recency
+        # signal (below) exposed the threshold underneath it. Correcting one without the other
+        # would trade silent-green for four false reds - and the gate's own note says a
+        # cry-wolf gate is how a real freeze gets ignored.
+        #
+        # So the LATENESS clock for an irregular publisher is a year: a genuine multi-year
+        # freeze still turns red (365 * 3 = 1,095 days), while a normal annual or biennial
+        # release cycle does not. Scheduling is untouched - CADENCE_DAYS still says 7.
+        LATENESS_PERIOD = {"irregular": 365}
+        data_days = (LATENESS_PERIOD.get(cadence, period)
+                     * (SLA_TOLERANCE + DATA_SLACK_PERIODS))
 
         src = store.get_source(sid)
         units = store.units_for_source(sid)
@@ -137,9 +157,30 @@ def assess(store=None) -> dict:
                      if u.get("status") in ATTENTION_STATUSES]
 
         # DATA recency: newest obs across per-series cursors and unit-level last_obs.
+        #
+        # FORWARD-DATED PERIODS ARE NOT EVIDENCE OF RECENCY. Many sources legitimately publish
+        # beyond today - ABS population/family/household projections run to 2046 and 2071,
+        # UN WPP to 2101, IMF WEO forecasts to 2031, ABS CAPEX_EST records expected capital
+        # expenditure a year out. Those rows are real data, not corruption (verified per
+        # dataflow: dense annual runs, no nulls, plausible values). But taking max() over them
+        # answers the wrong question. "Has this source received anything lately?" is about when
+        # data ARRIVED; a projection to 2071 published in 2019 still reads 2071 for ever.
+        #
+        # Measured 2026-07-31: 28 of 93 units reported a frontier in the future, so their
+        # obs_age was NEGATIVE and the staleness gate could never fire on them, whatever
+        # happened upstream. abs sat at 2046-12-31 - 7,458 days "ahead" - while 805 of its
+        # 1,222 sub-units were transient-failing.
+        #
+        # So recency is judged on the newest OBSERVED period, and the true frontier is kept
+        # separately for display: the board should still be able to say the store reaches 2071.
+        # If a unit holds nothing but forward-dated rows, recency is UNKNOWN (None) rather than
+        # a fabricated "ahead of schedule" - last_success_utc still governs whether it ran.
         obs_vals = [v for v in cursors.values() if v]
         obs_vals += [u.get("last_obs_date") for u in units if u.get("last_obs_date")]
-        newest_obs = max(obs_vals) if obs_vals else None
+        today_iso = now.date().isoformat() if hasattr(now, "date") else str(now)[:10]
+        observed = [v for v in obs_vals if str(v)[:10] <= today_iso]
+        frontier = max(obs_vals) if obs_vals else None          # incl. projections, display only
+        newest_obs = max(observed) if observed else None        # recency signal
         obs_age = _age_days(newest_obs, now)
         # staleness is judged in BUSINESS days for daily sources (FX/market feeds
         # publish nothing Sat/Sun — calendar age red-flagged every Monday morning);
@@ -206,6 +247,10 @@ def assess(store=None) -> dict:
             "health": health,
             "last_success_age_d": round(succ_age, 1) if succ_age is not None else None,
             "newest_obs": newest_obs,
+            # The furthest period the store holds, projections included. Distinct from
+            # newest_obs on purpose: one answers "how current is this", the other "how far
+            # does it reach". Equal for the ~70% of units that publish no forward data.
+            "frontier_obs": frontier,
             "newest_obs_age_d": round(obs_age, 1) if obs_age is not None else None,
             # Surfaced so an OK that depends on an upstream claim is never silent —
             # a reader can see WHICH claim is holding the source green, and when it
