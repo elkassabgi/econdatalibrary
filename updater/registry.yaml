@@ -5507,7 +5507,15 @@ sources:
       FSICDM -> FSICDM:7.0.0.
     name: Financial Soundness Indicators — Concentration and Distribution Measures
 - source_id: imf_gfssoo_direct
-  live: true
+  live: false
+  # ROUTED TO updater-heavy 2026-08-01. Measured first-hand at api.imf.org:
+  #   GFS_SOO 667,386 series (482 s to return ONE observation each)
+  #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
+  #   GFS_SSUC 102,961    GFS_SOEF 15,600
+  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
+  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
+  # not a share of the daily job's ceiling. live:false keeps it out of the daily
+  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -5527,7 +5535,15 @@ sources:
       GFS_SOO -> GFS_SOO:12.0.0. LARGEST of the family: 475,049 series over 220 indicators; a serieskeysonly listing alone is ~57 MB. Covers BOTH legacy imf_gfse (its G26* codes) and imf_gfsmab (its G11*/G12* codes).
     name: Government Finance Statistics — Statement of Operations
 - source_id: imf_gfscofog_direct
-  live: true
+  live: false
+  # ROUTED TO updater-heavy 2026-08-01. Measured first-hand at api.imf.org:
+  #   GFS_SOO 667,386 series (482 s to return ONE observation each)
+  #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
+  #   GFS_SSUC 102,961    GFS_SOEF 15,600
+  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
+  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
+  # not a share of the daily job's ceiling. live:false keeps it out of the daily
+  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -5547,7 +5563,15 @@ sources:
       GFS_COFOG -> GFS_COFOG:11.0.0. Corresponds to legacy imf_gfscofog.
     name: Government Finance Statistics — Expenditures by Function (COFOG)
 - source_id: imf_gfsssuc_direct
-  live: true
+  live: false
+  # ROUTED TO updater-heavy 2026-08-01. Measured first-hand at api.imf.org:
+  #   GFS_SOO 667,386 series (482 s to return ONE observation each)
+  #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
+  #   GFS_SSUC 102,961    GFS_SOEF 15,600
+  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
+  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
+  # not a share of the daily job's ceiling. live:false keeps it out of the daily
+  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -5567,7 +5591,15 @@ sources:
       GFS_SSUC -> GFS_SSUC:10.0.0. Corresponds to legacy imf_gfsssuc.
     name: Government Finance Statistics — Statement of Sources and Uses of Cash
 - source_id: imf_gfsbs_direct
-  live: true
+  live: false
+  # ROUTED TO updater-heavy 2026-08-01. Measured first-hand at api.imf.org:
+  #   GFS_SOO 667,386 series (482 s to return ONE observation each)
+  #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
+  #   GFS_SSUC 102,961    GFS_SOEF 15,600
+  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
+  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
+  # not a share of the daily job's ceiling. live:false keeps it out of the daily
+  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -5587,7 +5619,15 @@ sources:
       GFS_BS -> GFS_BS:12.0.0. Corresponds to legacy imf_gfsibs.
     name: Government Finance Statistics — Balance Sheet
 - source_id: imf_gfssfcp_direct
-  live: true
+  live: false
+  # ROUTED TO updater-heavy 2026-08-01. Measured first-hand at api.imf.org:
+  #   GFS_SOO 667,386 series (482 s to return ONE observation each)
+  #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
+  #   GFS_SSUC 102,961    GFS_SOEF 15,600
+  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
+  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
+  # not a share of the daily job's ceiling. live:false keeps it out of the daily
+  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -5607,7 +5647,15 @@ sources:
       GFS_SFCP -> GFS_SFCP:10.0.0. Corresponds to legacy imf_gfsfalcs.
     name: Government Finance Statistics — Stocks and Flows by Counterparty
 - source_id: imf_gfssoef_direct
-  live: true
+  live: false
+  # ROUTED TO updater-heavy 2026-08-01. Measured first-hand at api.imf.org:
+  #   GFS_SOO 667,386 series (482 s to return ONE observation each)
+  #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
+  #   GFS_SSUC 102,961    GFS_SOEF 15,600
+  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
+  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
+  # not a share of the daily job's ceiling. live:false keeps it out of the daily
+  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
