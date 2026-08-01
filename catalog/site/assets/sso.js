@@ -68,8 +68,16 @@
          || document.querySelector('.nav a[href="account.html"]')
          || document.querySelector('.nav .signin');
     if (a) {
-      a.textContent = 'Account';
-      var nm = localStorage.getItem(N);
+      // Show the first name. /v1/auth/sso already returns it as sso_name and step 1 above
+      // already stores it in edl_name — it was only ever used for a tooltip nobody hovers,
+      // so a signed-in visitor saw a generic word barely distinguishable from the "Sign in"
+      // it replaced. Falls back to "Account" when no name was stored, and truncates so a
+      // long name cannot push the nav links off a narrow screen. textContent, never
+      // innerHTML: this value is a profile field the user types.
+      var nm = (localStorage.getItem(N) || '').trim();
+      var first = nm ? nm.split(/\s+/)[0] : '';
+      if (first.length > 14) first = first.slice(0, 13) + '\u2026';
+      a.textContent = first || 'Account';
       if (nm) a.title = 'Signed in as ' + nm;
     }
     if (document.body) document.body.setAttribute('data-signed-in', '1');
