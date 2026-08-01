@@ -185,12 +185,17 @@ def main() -> int:
 
     t0 = time.time()
     cur_key, rows, n_tables, dropped = None, [], 0, 0
+    n_rows_written, n_empty = 0, 0
     last_pair = None
 
     def flush():
-        nonlocal n_tables
-        if cur_key is None or not rows:
+        nonlocal n_tables, n_rows_written, n_empty
+        if cur_key is None:
             return
+        if not rows:
+            n_empty += 1
+            return
+        n_rows_written += len(rows)
         sid = table_id(*cur_key)
         n_tables += 1
         if a.dry_run:
@@ -242,12 +247,20 @@ def main() -> int:
     dt = time.time() - t0
     print(f"\ntables: {n_tables:,}   put {counts['put']:,}   skipped {counts['skip']:,}   "
           f"errors {counts['err']:,}   {dt:,.0f}s")
-    print(f"duplicate (row_id, obs_date) rows collapsed: {dropped:,} "
-          f"({100*dropped/max(dropped+1,1):.4f}% — see the module docstring; these are the "
-          f"residual conflicts no column in the store can separate)")
+    # Percentage OF THE ROWS WRITTEN, which is the only denominator that means anything here.
+    # The first version divided by (dropped + 1) and printed "99.9942%" for 17,299 collapsed
+    # rows out of 53.5 million — a figure that would have read as "almost everything was a
+    # duplicate" in a summary nobody would re-derive.
+    pct = (100.0 * dropped / n_rows_written) if n_rows_written else 0.0
+    print(f"rows written: {n_rows_written:,}")
+    print(f"duplicate (row_id, obs_date) rows collapsed: {dropped:,} ({pct:.4f}% of rows "
+          f"written) — the residual conflicts no column in the store can separate")
+    print(f"tables with no usable row (every value or date NULL), so no CSV: {n_empty:,}")
     summary = os.path.join(ROOT, "logs", "usda_tables_summary.json")
-    json.dump({"tables": n_tables, "put": counts["put"], "skipped": counts["skip"],
-               "errors": counts["err"], "duplicates_collapsed": dropped,
+    json.dump({"tables": n_tables, "rows_written": n_rows_written,
+               "put": counts["put"], "skipped": counts["skip"], "errors": counts["err"],
+               "duplicates_collapsed": dropped, "duplicate_pct": round(pct, 4),
+               "tables_with_no_usable_row": n_empty,
                "seconds": round(dt)}, open(summary, "w"), indent=1)
     print(f"summary -> {summary}")
     return 1 if counts["err"] else 0
