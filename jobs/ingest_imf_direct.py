@@ -91,6 +91,62 @@ def http_get(url: str) -> bytes:
     raise RuntimeError(f"GET failed after {RETRIES} tries: {url} ({last!r})")
 
 
+def http_get_to_file(url: str, dest: str) -> int:
+    """Stream a response to DEST in chunks. Returns bytes written.
+
+    WHY NOT http_get(). It does `return r.read()`, materialising the whole body as one bytes
+    object, and ET.fromstring then builds the whole DOM on top of that. Both break on the big
+    flows: measured 2026-08-01, four of six GFS dataflows failed outright -
+
+        GFS_BS, GFS_COFOG, GFS_SOO   OverflowError('size does not fit in an int')
+        GFS_SFCP                     ParseError('out of memory: line 1, column 0')
+
+    The OverflowError is the same int32 ceiling that keeps biting: a single Python bytes
+    object cannot carry a >2 GiB read from this API, and expat runs out of memory building a
+    DOM for a document that size. The two GFS flows that DID succeed were simply the small
+    ones (GFS_SOEF 15,600 series; GFS_SSUC 102,961), which is what made the failure look
+    source-specific rather than size-specific.
+
+    Streaming to disk removes both ceilings: nothing larger than a chunk is ever in memory,
+    and iterparse then walks the file without a DOM.
+    """
+    last = None
+    for attempt in range(RETRIES):
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            n = 0
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r, open(dest, "wb") as fh:
+                while True:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    n += len(chunk)
+            return n
+        except urllib.error.HTTPError as e:
+            if e.code in (400, 404):
+                raise                                        # definitive: no such flow
+            last = e
+        except Exception as e:                               # noqa: BLE001
+            last = e
+        time.sleep(5 * (attempt + 1))
+    raise RuntimeError(f"GET failed after {RETRIES} tries: {url} ({last!r})")
+
+
+def iter_series(path: str):
+    """Yield each <Series> element from an SDMX file, clearing it as we go.
+
+    Two passes are cheap on a local file and the alternative is unsafe: identity dims are the
+    UNION of attribute keys across every series, so deciding them from the first few would
+    silently change the key shape whenever IMF reorders or adds an attribute. Memory stays
+    flat because each element is cleared once consumed.
+    """
+    for _ev, el in ET.iterparse(path, events=("end",)):
+        if el.tag.split("}")[-1] == "Series":
+            yield el
+            el.clear()
+
+
 def list_flows() -> list[tuple[str, str, str]]:
     root = ET.fromstring(http_get(f"{BASE}/dataflow"))
     out = []
@@ -158,23 +214,49 @@ def pull(flow: str, agency: str, source_id: str, out_path: str | None = None,
     """
     url = f"{BASE}/data/{agency},{flow}/all"
     print(f"[imf_direct] GET {url}", flush=True)
-    raw = http_get(url)
-    print(f"[imf_direct] {len(raw):,} bytes", flush=True)
-    root = ET.fromstring(raw)
+    try:
+        return _pull_streamed(url, flow, source_id, out_path, min_obs)
+    finally:
+        # The staged SDMX document is multi-GB for the big flows; leaving one behind per
+        # flow would fill the disk in a few runs. Removed on success, failure and exception
+        # alike - the early-return paths inside cannot be relied on to cover all three.
+        _tmp = (out_path or os.path.join(OUT, f"{source_id}.parquet")) + ".sdmx.tmp"
+        try:
+            if os.path.exists(_tmp):
+                os.remove(_tmp)
+        except OSError:
+            pass
 
-    series = [e for e in root.iter() if e.tag.split("}")[-1] == "Series"]
-    if not series:
+
+def _pull_streamed(url: str, flow: str, source_id: str, out_path, min_obs: int) -> int:
+    xml_tmp = (out_path or os.path.join(OUT, f"{source_id}.parquet")) + ".sdmx.tmp"
+    os.makedirs(os.path.dirname(xml_tmp), exist_ok=True)
+    n_bytes = http_get_to_file(url, xml_tmp)
+    print(f"[imf_direct] {n_bytes:,} bytes streamed to disk", flush=True)
+
+    # PASS 1 - identity dims only. Attributes are read and the element dropped, so a
+    # multi-GB document costs a few MB of memory here.
+    n_series = 0
+    dimset: set = set()
+    for el in iter_series(xml_tmp):
+        dimset |= set(el.attrib)
+        n_series += 1
+    if not n_series:
         # A 200 that parsed no series is a STRUCTURAL signal, not an empty dataset —
         # report it rather than writing an empty file over good data.
         print(f"[imf_direct] FAIL {flow}: 200 but ZERO series parsed "
-              f"({len(raw):,} bytes) — schema change or wrong flow id", flush=True)
+              f"({n_bytes:,} bytes) — schema change or wrong flow id", flush=True)
+        try:
+            os.remove(xml_tmp)
+        except OSError:
+            pass
         return 0
 
     # Identity dimensions = whatever this flow actually declares, minus the
     # publication-metadata ones. Order is sorted for stability: IMF may reorder
     # attributes between releases and the key must not move when they do.
-    dims = sorted({k for s in series for k in s.attrib} - NON_IDENTITY)
-    print(f"[imf_direct] {len(series):,} series; identity dims: {', '.join(dims)}",
+    dims = sorted(dimset - NON_IDENTITY)
+    print(f"[imf_direct] {n_series:,} series; identity dims: {', '.join(dims)}",
           flush=True)
 
     keys, dates, vals = [], [], []
@@ -185,7 +267,7 @@ def pull(flow: str, agency: str, source_id: str, out_path: str | None = None,
     # blank in IMF's feed, zero non-numeric. That number is alarming until it is
     # broken down, and harmless once it is.
     n_empty = n_badval = n_baddate = 0
-    for s in series:
+    for s in iter_series(xml_tmp):        # PASS 2 - observations, same streaming guarantee
         key = f"{flow}:" + ".".join((s.attrib.get(d) or "").replace(".", "_")
                                     for d in dims)
         for o in s:
@@ -238,7 +320,7 @@ def pull(flow: str, agency: str, source_id: str, out_path: str | None = None,
     if min_obs and len(keys) < min_obs:
         print(f"[imf_direct] FAIL {flow}: PARTIAL RESPONSE — {len(keys):,} usable obs "
               f"across {len(set(keys)):,} series, below the floor of {min_obs:,} "
-              f"({len(raw):,} bytes). The document is well-formed; the DATA is "
+              f"({n_bytes:,} bytes). The document is well-formed; the DATA is "
               f"missing. Refusing to write — existing rows are kept.", flush=True)
         return 0
     print(f"[imf_direct] {len(keys):,} usable obs / {len(set(keys)):,} series = "
