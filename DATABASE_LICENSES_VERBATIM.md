@@ -3420,3 +3420,83 @@ than any terms, so it neither adds nor contradicts anything; the legal notice go
 **Carry forward:** attribution must name Istat. If a specific ISTAT dataflow is ever identified as
 carrying third-party licensed content, exclude that flow individually rather than reclassifying
 the source.
+
+---
+
+### FDIC (Federal Deposit Insurance Corporation) — BankFind Suite API
+
+- **Databases (1):** `fdic`
+- **Official terms URL:** https://www.fdic.gov/about/website-policies (API docs: https://api.fdic.gov/banks/docs)
+- **License:** None stated. Neither the website-policies page nor the BankFind Suite API
+  documentation declares a licence, a public-domain dedication, or any reuse permission for
+  FDIC's own content.
+- **Classification:** unclear_not_found
+- **Commercial OK:** None · **Attribution required:** None · **ShareAlike:** None · **Fetch:** fetched_ok
+- **Adversarial verdict:** **RESEARCHER-ASSESSED, single pass** — two official surfaces checked,
+  no independent verifier pass. Same caveat as the istat entry above.
+- **Decision tier:** NEEDS HUMAN REVIEW (keep gated)
+
+**Verbatim quote (the only reuse-adjacent language found, and it is about THIRD-PARTY content):**
+> External sites may contain information that is copyrighted with restrictions on reuse. Permission to use copyrighted materials must be obtained from the original source and cannot be obtained from the FDIC.
+> Reference to any specific commercial product, process, or service by trade name, trademark, manufacture, or otherwise does not constitute an endorsement, a recommendation, or a favoring by the FDIC or the United States government.
+
+*Researcher reasoning:* Assessed 2026-08-01 because `fdic` is REGISTERED, LIVE and refreshing on
+a quarterly cadence with 20,541,159 rows on disk (including a 19.9M-row long-format financials
+table) and had NO entry in this file at all — crawled and stored indefinitely while unservable
+for want of a verdict. Surfaced by the "stored but in neither list" axis of
+tools/reconcile_serving.py, not by anyone noticing.
+
+Two official surfaces were read in full: the FDIC website-policies page and the BankFind Suite
+API documentation at api.fdic.gov/banks/docs. NEITHER contains a licence name, a public-domain
+dedication, a copyright waiver, or any statement permitting reuse or redistribution of FDIC's
+own data. The only reuse language on either page concerns THIRD-PARTY copyrighted material
+reached via external links, which says nothing about FDIC's own content.
+
+The tempting inference — US federal works are generally not subject to copyright under
+17 U.S.C. §105, so this must be public domain — is exactly the assumption this file exists to
+replace. The `census` entry above is classified redistributable_attribution because the Census
+Bureau SAYS SO on its own terms page; FDIC says nothing, and "probably fine" is not a quote.
+Compare the `whr` and `damodaran` entries, both unclear_not_found on the same basis.
+
+**Carry forward:** this is answerable by asking. FDIC publishes a contact (webmaster@fdic.gov)
+and the request is narrow: written confirmation that BankFind Suite data may be redistributed.
+Until then the source stays gated, which is what it already is — but now by decision rather
+than by omission.
+
+---
+
+### GLEIF (Global Legal Entity Identifier Foundation) — LEI data
+
+- **Databases (1):** `gleif`
+- **Official terms URL:** https://www.gleif.org/en/meta/lei-data-terms-of-use
+- **License:** CC0 1.0 Universal (public-domain dedication)
+- **Classification:** redistributable_open
+- **Commercial OK:** True · **Attribution required:** False · **ShareAlike:** None · **Fetch:** fetched_ok
+- **Adversarial verdict:** **RESEARCHER-ASSESSED, single pass** — one official surface, no
+  independent verifier pass. Same caveat as the istat and fdic entries above.
+- **Decision tier:** CLEARED - re-host OK (no endorsement implied)
+
+**Verbatim quote:**
+> The data available through the Access Service are provided under the CC0 licence
+
+**The conditions GLEIF does attach, quoted:**
+> refrain from creating, in whatever way, the impression that data ... except the original LEI and LE-RD downloaded by you through the Access Service, are provided or supported or authorized ... by GLEIF
+> refrain from any actions or statements which may mislead the public ... to believe that any products or services provided by you ... are services or products of GLEIF
+
+*Researcher reasoning:* Assessed 2026-08-01 because `gleif` is REGISTERED, LIVE and refreshing
+daily with 3,383,323 LEI records on disk, had no entry in this file, and was therefore being
+crawled indefinitely while unservable for want of a verdict.
+
+CC0 is a public-domain dedication, so redistribution and commercial use are unrestricted and no
+attribution is legally required. The two clauses above are a NON-MISREPRESENTATION condition,
+not a redistribution restriction: they forbid implying GLEIF endorsement or that a redistributed
+copy is GLEIF's own service. That is the same shape as the endorsement disclaimers already
+recorded for census and fdic, and it is satisfied by presenting the data as redistributed by
+this library rather than as a GLEIF product.
+
+**Carry forward — the blocker here is SHAPE, not licence.** gleif is an ENTITY REGISTRY, not a
+time series: `lei_records.parquet` carries LEI, LegalName, LegalJurisdiction,
+EntityLegalFormCode, EntityStatus, RegistrationStatus, ManagingLOU — no series_key, no obs_date,
+no value. It cannot be catalogued in the current series model at any grain, so clearing the
+licence does not by itself make it servable. Serving it needs an entity-lookup surface, which is
+a product decision rather than a compliance one.
