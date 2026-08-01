@@ -485,6 +485,30 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 f"registry: {', '.join(unknown)} — check the spelling, or the source's "
                 f"registry entry. Refusing to run a partial set silently.")
 
+    # STALEST FIRST, so a slow head of the alphabet cannot starve the tail forever.
+    #
+    # The loop used to walk `units` in registry order, which is effectively alphabetical, and
+    # the whole-run budget then cut the SAME tail off every night. Measured on CI run
+    # 30690884454 (2026-08-01): seven sources consumed 3.7 of the 4-hour budget — stat_slovenia
+    # 2,700s, unesco_natmon 2,999s, unesco_sdg 2,912s, ssb 2,401s, ecb 2,108s, wikidata 770s,
+    # comtrade 408s — and 29 sources were NOT ATTEMPTED. That is not a one-night miss: three of
+    # them (imf_fsibsis_direct, imf_fsic_direct, imf_fsicdm_direct) have NO STATE AT ALL, live
+    # and due and never once attempted by any run. Their fetchers work — all three return real
+    # vintage tokens when called by hand — they simply never got a turn.
+    #
+    # Ordering by staleness makes starvation self-correcting: a source skipped tonight is the
+    # stalest tomorrow, so it goes first. Never-run units sort ahead of everything, which is the
+    # only ordering under which a brand-new source is guaranteed a first run.
+    #
+    # It does NOT reorder anything else — cadence, protection, location and budget checks all
+    # still apply per unit, and an explicit --source list is unaffected because it is a filter,
+    # not an order.
+    def _staleness(unit):
+        st = store.get_unit(unit.source_id, unit.unit_id) or {}
+        last = st.get("last_success_utc") or st.get("last_attempt_utc")
+        return (last or "", unit.key)          # "" (never run) sorts first
+    units = sorted(units, key=_staleness)
+
     results = []
     pending_live, pending_other = [], []  # no-adapter sources, split by live tier
     # Rollout perimeter enforced at EXECUTION (learned from CI run 28682266857,
