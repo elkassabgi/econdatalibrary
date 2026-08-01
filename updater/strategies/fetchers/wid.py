@@ -50,7 +50,7 @@ import requests
 from ... import blob, config, merge
 from ...errors import TransientError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import CURSOR_CAP, Tally, cursors_from_table, finalize, merge_cursor_map
 from ._vintage import UA
 
 SOURCE = "wid"
@@ -140,6 +140,7 @@ def _save_done(out_dir, done):
 
 
 def update(unit, since) -> Result:
+    cursors: dict[str, str] = {}
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
     tally = Tally()
@@ -202,6 +203,12 @@ def update(unit, since) -> Result:
                         "value": pa.array(vals, pa.float64())})
         before = blob.row_count(path) if blob.exists(path) else 0
         n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+        # Report WHICH series moved, or the orchestrator cannot re-derive their CSVs
+        # (contract §5.7) and the published downloads silently drift away from the
+        # parquet: right data in the store, stale values in every CSV a user fetches.
+        # Cursors come from the NEW table rather than the merged file - on a source
+        # this size, reporting every series would re-derive millions of unchanged CSVs.
+        merge_cursor_map(cursors, cursors_from_table(tbl, cap=CURSOR_CAP), cap=CURSOR_CAP)
         tally.added_unit(max(0, n - before), country)
         total_rows += n
         if md and (newest is None or md > newest):
@@ -225,4 +232,5 @@ def update(unit, since) -> Result:
               flush=True)
         tally.transient_unit(f"{deferred} countries deferred")
 
-    return finalize(tally, total_rows, newest, source=SOURCE)
+    return finalize(tally, total_rows, newest, source=SOURCE,
+                    series_cursors=cursors or None)

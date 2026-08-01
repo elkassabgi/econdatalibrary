@@ -82,7 +82,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import CURSOR_CAP, Tally, cursors_from_table, finalize, merge_cursor_map
 
 # Reuse the AUTHORITATIVE production parsers so the updater and the first-pass
 # ingest agree byte-for-byte on obs_date mapping, value cleaning, and series_id.
@@ -413,6 +413,7 @@ def current_vintage(unit) -> str | None:
 
 
 def update(unit, since) -> Result:
+    cursors: dict[str, str] = {}
     """Per-survey: gate on Last-Modified, download the cheap tail, parse, and MERGE
     into the existing parquet (dedup on series_id+obs_date, never-shrink, atomic).
     Only surveys ALREADY on disk are touched; unchanged surveys are skipped."""
@@ -504,6 +505,13 @@ def update(unit, since) -> Result:
             # shrink good data; run tools/dedup_bls_legacy.py on that store instead).
             try:
                 n, last = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+        # Report WHICH series moved, or the orchestrator cannot re-derive their CSVs
+            # (contract §5.7) and the published downloads silently drift away from the
+            # parquet: right data in the store, stale values in every CSV a user fetches.
+            # Cursors come from the NEW table rather than the merged file - on a source
+            # this size, reporting every series would re-derive millions of unchanged CSVs.
+                merge_cursor_map(cursors, cursors_from_table(tbl, cap=CURSOR_CAP),
+                                 cap=CURSOR_CAP)
             except DefinitiveError as e:
                 tally.transient_unit()
                 self_dups = _preexisting_dups(path)
@@ -528,4 +536,5 @@ def update(unit, since) -> Result:
     # ok (added>0) / no_change. empty_window_floor scales with survey count so a few
     # no-tail/quiet surveys don't trip the all-empty structural floor.
     return finalize(tally, total_rows, max_last, source=SOURCE,
+                    series_cursors=cursors or None,
                     empty_window_floor=max(10, len(surveys)))
