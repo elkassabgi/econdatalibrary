@@ -54,6 +54,10 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // turns a 501 into a 404 and a 404 says the series does not exist.
   "imf_afrreo_direct", "imf_apdreo_direct", "imf_cofer_direct", "imf_fas_direct",
   "imf_fdi_direct", "imf_whdreo_direct", "imf_world_direct",
+  // GFS direct, added 2026-08-01. These held data in R2 with ZERO catalogue rows - hosted and
+  // downloadable by id, invisible to search. Now catalogued with titles decoded from IMF's own
+  // codelists and their CSVs derived, so listing them here is an offer we can actually meet.
+  "imf_gfssoef_direct", "imf_gfsssuc_direct",
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
