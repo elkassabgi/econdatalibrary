@@ -769,6 +769,12 @@ sources:
     - single-file-per-vintage — baci_hs17.parquet and baci_hs96.parquet under data/clean_full/cepii_baci/; raw zips cached
       under data/raw/cepii_baci/{HS17,HS96}.zip. Streamed in 500k-row batches via one ParquetWriter per vintage (no part files).
 - source_id: cepii_gravity
+  # PROMOTED 2026-08-01 on a proven run, not on hope. The workstation pass completed it
+  # in 3,355 s and derived 50,000 CSVs with 0 failures, and
+  # cepii_gravity:GRAVITY:col_dep:ABW:ABW returns 36 observations from the live API.
+  # Its previous attempt died after 20,000,000 rows on a Windows os.replace lock race,
+  # fixed in 6d2e1e5.
+  live: true
   # BACK TO THE WORKSTATION 2026-07-31. I moved this to the cloud on a MEASUREMENT
   # THAT MEASURED THE WRONG THING: tools/measure_merge_peak.py ran _dedup+_sort on the
   # EXISTING file only, giving 11 GB, but a real run also downloads and parses the NEW
