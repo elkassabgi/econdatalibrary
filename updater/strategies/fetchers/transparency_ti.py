@@ -1,6 +1,11 @@
 """S1 fetcher — Transparency International Corruption Perceptions Index (CPI).
 
-License: CC BY-ND 4.0 (TI) / CC BY 4.0 (OWID). ~180 countries, annual, 2012-present.
+License: CC BY 4.0 both ways. The earlier note here said "CC BY-ND 4.0 (TI)", which conflated
+TI's SITE-CONTENT licence with its DATASET licence — DATABASE_LICENSES_VERBATIM.md records the
+distinction verbatim and CONFIRMED: "the CPI and datasets are licensed under CC BY 4.0", while
+"Except where otherwise noted, this work is licensed under CC BY-ND 4.0" covers the rest of the
+site. So there is NO licensing reason to prefer OWID's copy; the choice is purely about which
+host answers. ~180 countries, annual, 2012-present.
 Single grouped parquet clean_full/transparency_ti/transparency_ti.parquet, schema
 (series_key, obs_date, value) with series_key = "TI_CPI:cpi_score:{iso3}" and
 obs_date = Dec-31 of the survey year.
@@ -29,8 +34,19 @@ from ._common import Tally, finalize
 from ._vintage import UA
 
 # OWID mirrors TI CPI — confirmed working 2026-06 (reliably public, CC BY).
+#
+# THIS IS THE ONLY URL THIS FETCHER EVER USES, and the data therefore comes from Our World In
+# Data, not from transparency.org. The catalogue's citation said "Retrieved from
+# https://www.transparency.org/en/cpi" and "Retrieved from the official source" on all 182
+# rows; both were false and were corrected 2026-08-01 to name the actual path.
 URL = "https://ourworldindata.org/grapher/ti-corruption-perception-index.csv"
-# TI CDN xlsx fallback — derived from current year (CPI20XX), frequently 403.
+
+# NOT A FALLBACK — NOTHING READS THIS. TI_CDN_TMPL is defined and never referenced, so the
+# comment calling it a fallback made the code read as though TI's own host were tried first or
+# at all. It is not. Probed 2026-08-01 with a browser-like User-Agent: CPI2024 returns 200,
+# while 2025/2023/2022 return 403, so re-sourcing direct from TI is FEASIBLE for at least the
+# current edition but needs an xlsx parser this module does not have. Left in place as the
+# starting point for that, labelled honestly.
 TI_CDN_TMPL = "https://files.transparencycdn.org/images/CPI{yr}-Results-and-trends.xlsx"
 SOURCE = "transparency_ti"
 DEDUP = ("series_key", "obs_date")
