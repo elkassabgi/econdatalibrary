@@ -91,7 +91,7 @@ tbody tr:hover{background:var(--g50)}
 border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-space:nowrap;margin-left:0}
 .nav-links a:hover,.nav-links a.active{color:#fff;background:rgba(255,255,255,.1)}
 </style>
-<script src="assets/sso.js?v=20260801a"></script></head>
+<script src="assets/sso.js?v=20260715c"></script></head>
 <body>
 <div class="nav"><div class="nav-in">
   <div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" title="Part of the ElkassabgiData family" style="font-size:.62rem;color:#d4a843;border:1px solid rgba(212,168,67,.5);border-radius:999px;padding:.12rem .5rem;margin-left:.55rem;white-space:nowrap;font-weight:600;text-decoration:none;vertical-align:middle">part of ElkassabgiData</a></div>
@@ -327,70 +327,16 @@ function getKey(){ return readStoredKey(); }
 //
 // The api_key path stays first and untouched, because scripts and API users depend on it
 // and it works when the visitor has no browser session at all.
-// THE SDK IS NOT ON THIS PAGE UNLESS WE PUT IT HERE. account.html loads
-// accounts.elkassabgidata.com/sdk/ekd-sso.js dynamically; this page never did, because until
-// now it only ever needed a pasted api_key. So window.EKD was undefined here, the guard in
-// authHeaders() below fell straight through, and the request went out with no credential —
-// the family-token fix was inert on the one page that needed it. Loading it here is what
-// makes signing in enough to download.
-//
-// Resolves to false rather than rejecting when the script is blocked or unreachable: this
-// page must still work for someone using a pasted api_key with the SDK blocked, so a
-// missing SDK degrades to "no family credential", never to a broken download button.
-const ACCOUNTS_BASE = 'https://accounts.elkassabgidata.com';
-const sdkReady = new Promise(function(resolve){
-  try{
-    if(window.EKD && window.EKD.__ready) return resolve(true);
-    const s = document.createElement('script');
-    s.src = ACCOUNTS_BASE + '/sdk/ekd-sso.js';
-    s.onload = function(){
-      try{
-        if(window.EKD){
-          // clientId defaults to location.origin and callbackPath to /auth/callback, which
-          // is exactly what is registered for econdatalibrary.com as redirect_exact.
-          window.EKD.init();
-          return resolve(true);
-        }
-      }catch(e){}
-      resolve(false);
-    };
-    s.onerror = function(){ resolve(false); };
-    document.head.appendChild(s);
-  }catch(e){ resolve(false); }
-});
-
-// Records what actually happened the last time we tried to authorise, so a failure can say
-// WHICH credential it used instead of the single unhelpful phrase "no key set". Five rounds
-// of this were diagnosed by inference and every one of them guessed a different cause; the
-// page knows the answer and should simply report it.
-let lastAuth = { how: 'not attempted', sdk: null, token: null, detail: '' };
-
 async function authHeaders(){
   const key = readStoredKey();
-  if(key){ lastAuth = { how: 'api key', sdk: null, token: true, detail: 'stored api_key' }; return {'X-API-Key': key}; }
+  if(key) return {'X-API-Key': key};
   try{
-    const ok = await sdkReady;
-    lastAuth.sdk = ok;
-    if(!ok){ lastAuth = { how: 'none', sdk: false, token: false, detail: 'sign-in script did not load' }; return {}; }
     if(window.EKD && window.EKD.getAccessToken){
       const at = await window.EKD.getAccessToken();
-      if(at){ lastAuth = { how: 'family session', sdk: true, token: true, detail: 'token length ' + String(at).length }; return {'Authorization': 'Bearer ' + at}; }
-      lastAuth = { how: 'none', sdk: true, token: false,
-                   detail: (window.EKD.isLoggedIn && window.EKD.isLoggedIn())
-                     ? 'signed in, but the account server returned no token (refresh failed)'
-                     : 'no ElkassabgiData session in this browser' };
-      return {};
+      if(at) return {'Authorization': 'Bearer ' + at};
     }
-    lastAuth = { how: 'none', sdk: true, token: false, detail: 'sign-in script loaded but exposed no token function' };
-  }catch(e){ lastAuth = { how: 'none', sdk: null, token: false, detail: 'error: ' + (e && e.message) }; }
+  }catch(e){ /* fall through to anonymous; the server decides, not this page */ }
   return {};
-}
-
-// One sentence naming the real state, for the failure message.
-function authExplain(){
-  if(lastAuth.how === 'api key') return 'Used your stored API key.';
-  if(lastAuth.how === 'family session') return 'Used your ElkassabgiData sign-in.';
-  return 'No credential was sent — ' + (lastAuth.detail || 'unknown') + '.';
 }
 
 // True when the visitor can actually download — by either credential. Anything that used to
@@ -398,21 +344,8 @@ function authExplain(){
 // signed in", and those stopped being the same question when family sign-in arrived.
 async function canDownload(){
   if(readStoredKey()) return true;
-  // Populate lastAuth even on the refusal path, so announceNoKey can say WHICH thing was
-  // missing rather than the bare "no key set" that sent the owner round this loop five times.
-  try{
-    await sdkReady;
-    if(!window.EKD){ lastAuth = { how:'none', sdk:false, token:false, detail:'sign-in script did not load' }; }
-    else if(!(window.EKD.isLoggedIn && window.EKD.isLoggedIn())){ lastAuth = { how:'none', sdk:true, token:false, detail:'no ElkassabgiData session in this browser' }; }
-  }catch(e){}
-  try{
-    // await sdkReady for the same reason authHeaders does: this runs on a click, which can
-    // easily land before the injected script has finished loading. Without the await it
-    // answers "no" for a signed-in visitor purely on timing, which is the original bug
-    // wearing a race condition.
-    await sdkReady;
-    return !!(window.EKD && window.EKD.isLoggedIn && window.EKD.isLoggedIn());
-  }catch(e){ return false; }
+  try{ return !!(window.EKD && window.EKD.isLoggedIn && window.EKD.isLoggedIn()); }
+  catch(e){ return false; }
 }
 
 // ---- search ----
@@ -566,10 +499,8 @@ async function downloadOne(id, title, btn){
     saveBlob(id.replace(/[^\w.-]+/g,'_')+'.csv', csv);
     toast('Downloaded '+id);
   }catch(e){
-    // Name the credential that was actually sent. "Your API key was rejected" is wrong and
-    // misleading when no key was involved and the family session is what failed.
-    if(e.message==='AUTH'){ toast('Refused by the server. ' + authExplain()); }
-    else toast('Download failed: '+e.message+' · '+authExplain());
+    if(e.message==='AUTH'){ toast('Your API key was rejected — check it above'); }
+    else toast('Download failed: '+e.message);
   }finally{ if(btn){btn.disabled=false;btn.textContent=old;} }
 }
 

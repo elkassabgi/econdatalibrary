@@ -68,21 +68,8 @@
          || document.querySelector('.nav a[href="account.html"]')
          || document.querySelector('.nav .signin');
     if (a) {
-      // Show the person's FIRST NAME rather than the word "Account". The name was already
-      // stored and used only for a tooltip, which nobody hovers — so a signed-in visitor
-      // got a generic label indistinguishable at a glance from the "Sign in" it replaced.
-      // A name is the clearest possible confirmation that the family sign-in worked, and
-      // this pill is the only signed-in indicator on most pages.
-      //
-      // Falls back to "Account" whenever there is no usable name (an older browser that
-      // stored a key before names were kept, or a name that is blank/whitespace), so the
-      // nav can never end up empty. First name only: the nav is a single line and long
-      // full names push the other links off narrow screens. textContent, never innerHTML —
-      // this value came from a profile field the user types.
-      var nm = (localStorage.getItem(N) || '').trim();
-      var first = nm ? nm.split(/\s+/)[0] : '';
-      if (first.length > 14) first = first.slice(0, 13) + '…';
-      a.textContent = first || 'Account';
+      a.textContent = 'Account';
+      var nm = localStorage.getItem(N);
       if (nm) a.title = 'Signed in as ' + nm;
     }
     if (document.body) document.body.setAttribute('data-signed-in', '1');
