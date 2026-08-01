@@ -1084,6 +1084,58 @@ def _resolve_istat(series_id: str, root: str) -> Resolution:
     return Resolution(series_id, "istat", path, "series_key", pred)
 
 
+
+# --- census (table grain) ---------------------------------------------------
+def _resolve_census_table(series_id: str, root: str) -> Resolution:
+    """TABLE GRAIN. catalog: `census:<table>` or `census:<table>#<part>`.
+
+    census is 80 WIDE tables (11-238 columns, measures as columns) over 44,242,170 rows. Cell
+    grain would be 1,202,396,034 nominal series, so a table is the unit -- and 70 of the 80 are
+    genuine PANELS (>3 periods), not the single-period censuses two early samples suggested.
+
+    THIS COEXISTS WITH THE OLDER SERIES-GRAIN `census:<flow>:<cat>:<dtype>:<sa|nsa>` ids, which
+    address individual EITS series inside eits__<flow>.parquet. They are told apart the same way
+    fhfa's two shapes are: if the second segment names a real store file, this is the table form.
+    Counting colons would not work -- the older form has four segments and a table name can
+    contain neither, but relying on that is a coincidence rather than a rule.
+
+    Served WIDE, verbatim: no tidy projection, because the measures ARE the columns and melting
+    them here would disagree with what the derive writes.
+    """
+    rest = series_id.split(":", 1)[1]
+    table, _, part = rest.partition("#")
+    path = os.path.join(root, "census", f"{table}.parquet")
+    if not os.path.exists(path):
+        raise ResolveError(f"{series_id}: no census table file at {path!r}")
+    pred = ds.field("obs_date").is_valid()
+    if part:
+        smap_path = os.path.join(root, "census", "_split_map.json")
+        try:
+            with open(smap_path, encoding="utf-8") as fh:
+                smap = json.load(fh)
+        except (OSError, ValueError) as e:
+            raise ResolveError(
+                f"{series_id}: names a split part but {smap_path!r} is unreadable ({e!r})") from e
+        entry = smap.get(table)
+        if not entry:
+            raise ResolveError(
+                f"{series_id}: table {table!r} is not in the split map, so it was never split")
+        dim = entry["dim"]
+        got = pc.struct_field(
+            pc.extract_regex(ds.field("series_key"), pattern=f"{dim}=(?P<v>[^|]*)"), "v")
+        pred = pred & (got == part)
+    return Resolution(series_id, "census", path, "series_key", pred, tidy_ok=False)
+
+
+def _resolve_census_any(series_id: str, root: str) -> Resolution:
+    """Route between census's two id shapes by whether segment 2 names a store file."""
+    rest = series_id.split(":", 1)[1]
+    table = rest.split("#", 1)[0].split(":", 1)[0]
+    if os.path.exists(os.path.join(root, "census", f"{table}.parquet")):
+        return _resolve_census_table(series_id, root)
+    return _resolve_census(series_id, root)
+
+
 # --- eia -------------------------------------------------------------------
 def _resolve_eia(series_id: str, root: str) -> Resolution:
     # catalog: eia:PET.RWTC.D  native file: PET.parquet  key_col: series_id  value: 'PET.RWTC.D'
@@ -1131,7 +1183,7 @@ _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "worldbank_pink": _resolve_worldbank_pink,
     "istat": _resolve_istat,
     "usda": _resolve_usda,
-    "census": _resolve_census,
+    "census": _resolve_census_any,
     "fed_board": _resolve_fed_board,
     "dbnomics": _resolve_dbnomics,
     "boe": _resolve_boe,
