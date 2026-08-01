@@ -17,6 +17,14 @@ import type { Env, LicenseRow, LicenseBlock } from "./types";
 // Regenerated 2026-07-02 from supported_sources() (was a stale 33-entry list, which
 // made ~158 genuinely-migrated sources return 501 instead of the honest 502).
 export const SUPPORTED_SOURCES: readonly string[] = [
+  // zillow REMOVED 2026-08-01. Unlike the 17 removed above, this one WAS being served: 52
+  // catalogue rows, 52 derived CSVs in R2, and this listing. Zillow's Terms of Use (updated
+  // 2025-10-28) are CONFIRMED permission_required and the audit's tier is RESTRICTED (keep
+  // gated) — Section 5 forbids reproducing or "otherwise mak[ing] accessible on or through any
+  // other website, application, or service" its data without prior written approval. The 52
+  // rows and the 52 objects were withdrawn (manifest in logs/zillow_gate_manifest.json); the
+  // 412 local parquet files are KEPT, so this is reversible the moment permission exists.
+
   // REMOVED 2026-08-01 — 17 ids whose licence verdict in DATABASE_LICENSES_VERBATIM.md is
   // RESTRICTED (keep gated) or NEEDS HUMAN REVIEW, so this list must not offer them:
   //   gated:  cboe, cow, famafrench, nbp, polity, sipri, tcmb, and the eight wto_* flows
@@ -161,8 +169,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // NEEDS-REVIEW default for this source; that divergence was corrected before serving.
   "un_wpp",
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
-  "worldbank_wdi", "yale_epi", "zillow",
-  // 9 national-statistical PxWeb sources — flow-grain per-table publish (2026-07-22).
+  "worldbank_wdi", "yale_epi", // 9 national-statistical PxWeb sources — flow-grain per-table publish (2026-07-22).
   "ssb", "stat_slovenia", "stat_latvia", "dst", "scb", "statfin", "hagstofa", "stat_estonia", "bfs",
 ];
 
