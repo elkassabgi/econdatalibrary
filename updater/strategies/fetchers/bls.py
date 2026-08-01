@@ -510,7 +510,16 @@ def update(unit, since) -> Result:
             # parquet: right data in the store, stale values in every CSV a user fetches.
             # Cursors come from the NEW table rather than the merged file - on a source
             # this size, reporting every series would re-derive millions of unchanged CSVs.
-                merge_cursor_map(cursors, cursors_from_table(tbl, cap=CURSOR_CAP),
+                # key_col='series_id': bls stores (series_id, obs_date, value, period),
+                # NOT the (series_key, obs_date) shape most sources use - its DEDUP is
+                # ('series_id','obs_date','period'). Calling cursors_from_table with the
+                # default key would raise inside, be swallowed by its `except: return {}`,
+                # and report NOTHING while looking wired up. Verified against the store:
+                # catalog ids are bls:<series_id> (bls:CUUR0000SA0), so series_id is exactly
+                # what _catalog_ids_for needs to map back.
+                merge_cursor_map(cursors,
+                                 cursors_from_table(tbl, cap=CURSOR_CAP,
+                                                    key_col="series_id"),
                                  cap=CURSOR_CAP)
             except DefinitiveError as e:
                 tally.transient_unit()
