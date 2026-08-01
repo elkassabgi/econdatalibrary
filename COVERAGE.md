@@ -12,7 +12,7 @@ Legend: ✅FULL · 🟡PARTIAL/growing · 🔗REFERENCED · ⛔BLOCKED(keys)
 | oecd | 🟡 | 6,004,142,903 | 1,406/1,509 files. Fresh pass running (102 remain, mostly 404 empties). |
 | hf_equities | 🔗 | 1,498,837,188 | 1-min clean referenced in R2 (other tiers not bridged) |
 | abs | ✅ | 975,186,637 | all SDMX dataflows |
-| noaa | ✅ | 552,553,147 | GSOM 127,905 stations + GSOY 86,018 stations (100% both). --verify confirmed |
+| noaa | ✅ | 549,412,914 | GSOM 127,905 stations + GSOY 86,018 stations (100% both). Re-measured 2026-08-01: 549,412,914 OBSERVATIONS over 3,135,873 series. The old 552,553,147 counted the __series.parquet sidecars alongside the observation shards — obs + 3,135,873 sidecar rows = 552,548,787, which is what a whole-directory row count returns. |
 | bls | ✅ | 482,052,185 | 63/69 surveys (6 legitimate empties: compressed, sdmx, yy, esbr, nc, pb) |
 | ilostat | ✅ | 388,164,886 | = full TOC (1,947 indicators) |
 | eia | ✅ | 316,437,940 | 26/26 bulk datasets |
