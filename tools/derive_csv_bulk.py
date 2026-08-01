@@ -88,7 +88,7 @@ def _csv_bytes(short_id: str, rows) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
-def _stream(con, path):
+def _stream_one(con, path):
     """Yield (series_key, [(obs_date, value), ...]) in key order, one series at a time."""
     cur = con.execute(
         "SELECT series_key, obs_date, value FROM read_parquet(?) "
@@ -109,6 +109,37 @@ def _stream(con, path):
         yield key, acc
 
 
+def _stream(con, paths):
+    """Same, over a SHARDED source: one sorted scan PER SHARD, in sequence.
+
+    Sharded stores are the norm above a certain size - noaa is 417 country-prefix shards over
+    549,412,914 rows - and a single ORDER BY across all of them would sort the whole corpus to
+    produce output that is already grouped. Per-shard sorting is bounded by the largest shard
+    instead of by the source.
+
+    THE PRECONDITION IS THAT SHARDS DO NOT SHARE A series_key, and it is CHECKED, not assumed:
+    if two shards held the same key, each would flush its own CSV and the second would silently
+    overwrite the first with a partial history. The check is a running set of keys already
+    emitted, which costs one string per series and turns a silent truncation into a loud stop.
+    """
+    if isinstance(paths, str):
+        paths = [paths]
+    emitted: set[str] = set()
+    for i, p in enumerate(paths, 1):
+        if len(paths) > 1:
+            print(f"  shard {i}/{len(paths)}: {os.path.basename(p)}", flush=True)
+        for k, rows in _stream_one(con, p):
+            if len(paths) > 1:
+                if k in emitted:
+                    raise SystemExit(
+                        f"REFUSING to continue: series_key {k!r} appears in more than one shard "
+                        f"({os.path.basename(p)} and an earlier one). Per-shard streaming would "
+                        f"write this series twice and keep only the last, partial history. "
+                        f"Derive this source with a single sorted scan instead.")
+                emitted.add(k)
+            yield k, rows
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True)
@@ -123,12 +154,19 @@ def main() -> int:
 
     import duckdb
     src_dir = os.path.join(ROOT, "data", "clean_full", a.source)
-    pqs = [f for f in os.listdir(src_dir) if f.endswith(".parquet")
-           and not f.endswith("__series.parquet")]
-    if len(pqs) != 1:
-        print(f"expected exactly one parquet in {src_dir}, found {pqs}")
+    pqs = sorted(f for f in os.listdir(src_dir) if f.endswith(".parquet")
+                 and not f.endswith("__series.parquet"))
+    if not pqs:
+        print(f"no parquet in {src_dir}")
         return 2
-    path = os.path.join(src_dir, pqs[0])
+    paths = [os.path.join(src_dir, f) for f in pqs]
+    # `path` is what the VERIFY step and the distinct-key count read. DuckDB's read_parquet
+    # takes a list as happily as a string, so a sharded source is verified across all of its
+    # shards rather than only the first - sampling one shard of 417 would certify a format
+    # that the other 416 might not share.
+    path = paths if len(paths) > 1 else paths[0]
+    if len(paths) > 1:
+        print(f"{len(paths)} shards in {src_dir}", flush=True)
     con = duckdb.connect()
     con.execute("PRAGMA threads=4")
 
@@ -228,7 +266,7 @@ def main() -> int:
             threads.append(t)
 
     seen = 0
-    for k, rows in _stream(con, path):
+    for k, rows in _stream(con, paths):
         seen += 1
         key = csv_key(a.prefix, a.source, k)
         if key in existing:

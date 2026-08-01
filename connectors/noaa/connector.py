@@ -2,6 +2,18 @@
 
 CDO v2 API (header `token`). Pulls GSOM (Global Summary of the Month) average temperature
 and precipitation for a handful of major US city stations -- a climate-economics starter set.
+
+SUPERSEDED 2026-08-01, AND NOT WIRED INTO ANY RUN (jobs/ingest_all.py does not list it). The
+source is now served whole from the NCEI bulk archive -- 3,135,873 series, every station on
+earth -- via updater/strategies/fetchers/noaa.py. This connector's ten stations x two datatypes
+are a subset of that, and the ten catalogue rows it produced were the ONLY noaa rows that
+existed: all ten keyed `noaa:GSOM:...`, a format the store has never used, so all ten were
+listed and would not download. They also understated coverage, claiming 1990 for a New York
+series the store holds from 1869.
+
+Kept because it documents the CDO API path, which the bulk archive does not offer. Its id
+builder is brought to the current format below so that running it can no longer re-create the
+broken rows -- but prefer the bulk fetcher for anything real.
 """
 from __future__ import annotations
 import datetime as dt
@@ -38,7 +50,9 @@ class NOAAConnector(Connector):
     homepage = "https://www.ncei.noaa.gov"
 
     def _sid(self, station, dtid):
-        return f"noaa:GSOM:{station.split(':')[1]}:{dtid}"
+        # lowercase `gsom`, matching the store's dataset-qualified series_key. Uppercase GSOM
+        # is what made every row this connector ever wrote undownloadable.
+        return f"noaa:gsom:{station.split(':')[1]}:{dtid}"
 
     def discover(self):
         return [SeriesMeta(self._sid(st, dtid), f"{stn} - {dtn}", "M", None, "US", "climate",
