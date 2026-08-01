@@ -359,17 +359,38 @@ const sdkReady = new Promise(function(resolve){
   }catch(e){ resolve(false); }
 });
 
+// Records what actually happened the last time we tried to authorise, so a failure can say
+// WHICH credential it used instead of the single unhelpful phrase "no key set". Five rounds
+// of this were diagnosed by inference and every one of them guessed a different cause; the
+// page knows the answer and should simply report it.
+let lastAuth = { how: 'not attempted', sdk: null, token: null, detail: '' };
+
 async function authHeaders(){
   const key = readStoredKey();
-  if(key) return {'X-API-Key': key};
+  if(key){ lastAuth = { how: 'api key', sdk: null, token: true, detail: 'stored api_key' }; return {'X-API-Key': key}; }
   try{
-    await sdkReady;
+    const ok = await sdkReady;
+    lastAuth.sdk = ok;
+    if(!ok){ lastAuth = { how: 'none', sdk: false, token: false, detail: 'sign-in script did not load' }; return {}; }
     if(window.EKD && window.EKD.getAccessToken){
       const at = await window.EKD.getAccessToken();
-      if(at) return {'Authorization': 'Bearer ' + at};
+      if(at){ lastAuth = { how: 'family session', sdk: true, token: true, detail: 'token length ' + String(at).length }; return {'Authorization': 'Bearer ' + at}; }
+      lastAuth = { how: 'none', sdk: true, token: false,
+                   detail: (window.EKD.isLoggedIn && window.EKD.isLoggedIn())
+                     ? 'signed in, but the account server returned no token (refresh failed)'
+                     : 'no ElkassabgiData session in this browser' };
+      return {};
     }
-  }catch(e){ /* fall through to anonymous; the server decides, not this page */ }
+    lastAuth = { how: 'none', sdk: true, token: false, detail: 'sign-in script loaded but exposed no token function' };
+  }catch(e){ lastAuth = { how: 'none', sdk: null, token: false, detail: 'error: ' + (e && e.message) }; }
   return {};
+}
+
+// One sentence naming the real state, for the failure message.
+function authExplain(){
+  if(lastAuth.how === 'api key') return 'Used your stored API key.';
+  if(lastAuth.how === 'family session') return 'Used your ElkassabgiData sign-in.';
+  return 'No credential was sent — ' + (lastAuth.detail || 'unknown') + '.';
 }
 
 // True when the visitor can actually download — by either credential. Anything that used to
@@ -377,6 +398,13 @@ async function authHeaders(){
 // signed in", and those stopped being the same question when family sign-in arrived.
 async function canDownload(){
   if(readStoredKey()) return true;
+  // Populate lastAuth even on the refusal path, so announceNoKey can say WHICH thing was
+  // missing rather than the bare "no key set" that sent the owner round this loop five times.
+  try{
+    await sdkReady;
+    if(!window.EKD){ lastAuth = { how:'none', sdk:false, token:false, detail:'sign-in script did not load' }; }
+    else if(!(window.EKD.isLoggedIn && window.EKD.isLoggedIn())){ lastAuth = { how:'none', sdk:true, token:false, detail:'no ElkassabgiData session in this browser' }; }
+  }catch(e){}
   try{
     // await sdkReady for the same reason authHeaders does: this runs on a click, which can
     // easily land before the injected script has finished loading. Without the await it
@@ -538,8 +566,10 @@ async function downloadOne(id, title, btn){
     saveBlob(id.replace(/[^\w.-]+/g,'_')+'.csv', csv);
     toast('Downloaded '+id);
   }catch(e){
-    if(e.message==='AUTH'){ toast('Your API key was rejected — check it above'); }
-    else toast('Download failed: '+e.message);
+    // Name the credential that was actually sent. "Your API key was rejected" is wrong and
+    // misleading when no key was involved and the family session is what failed.
+    if(e.message==='AUTH'){ toast('Refused by the server. ' + authExplain()); }
+    else toast('Download failed: '+e.message+' · '+authExplain());
   }finally{ if(btn){btn.disabled=false;btn.textContent=old;} }
 }
 
