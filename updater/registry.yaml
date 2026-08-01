@@ -249,6 +249,12 @@ sources:
     - 'single parquet: data/clean_full/bcrp/bcrp.parquet (zstd), columns (series_key=''BCRP:{label}'', obs_date, value). 6
       daily FX series (USD/EUR/GBP/JPY vs PEN). Plus _bcrp_log.txt.'
 - source_id: bea
+  # live: true 2026-08-01. Never run once - no state at all - despite the fetcher being built
+  # and proven (task #23). extend_by_date, so its gate is a cheap poll BY DESIGN (constant
+  # "date-tail" token, per that strategy's docstring) and incrementality lives in the since-
+  # param; cadence bounds how often it polls. Judging it against the vintage-token criterion
+  # reads as broken and is the wrong yardstick.
+  live: true
   scripts:
   - jobs/ingest_bea_full.py
   strategy: extend_by_date
@@ -2057,6 +2063,10 @@ sources:
       Dec-31), value(float64). CURRENTLY ABSENT -- only _gii_log.txt and empty _gii_err.txt are present because every source
       URL 404'd. Whole-table write, non-atomic.
 - source_id: gleif
+  # live: true 2026-08-01. Never run once. Gate PROVEN in both directions: current_vintage
+  # returns a real token (gleif:41804|2026-08-01 09:00:01|33), a matching stored vintage skips,
+  # a stale one re-fetches.
+  live: true
   scripts:
   - jobs/ingest_gleif.py
   strategy: bulk_snapshot_if_changed
@@ -3903,6 +3913,9 @@ sources:
       cache) and _scb_log.txt. MAX_CELLS=100000 caps each table query; oversized tables fall back to selecting only the first/aggregate
       value of non-time dims (partial coverage).'
 - source_id: sec_edgar
+  # live: true 2026-08-01. Never run once. Gate PROVEN in both directions: current_vintage
+  # returns cat:7282cd16224c0ba9, a matching stored vintage skips, a stale one re-fetches.
+  live: true
   id_collision_warning: >-
     2026-07-29 — THIS ENTRY IS NOT THE COMPANY FUNDAMENTALS. `sec_edgar` means two
     different things depending on which store you read:
@@ -6153,7 +6166,10 @@ sources:
   cadence: monthly
   refresh_cost: fast
   out_dir: worldbank
-  live: false
+  # live: true 2026-08-01. Never run once, though task #20's migration off the legacy clean/
+  # layout completed. extend_by_date: cheap-poll gate by design, incremental via the since-
+  # param.
+  live: true
   review: true
   adapter:
     vintage_signal: None. Downstream of worldbank_wdi, so it re-projects on cadence and merge dedup makes a re-run
