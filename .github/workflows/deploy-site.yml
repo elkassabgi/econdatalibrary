@@ -1,0 +1,68 @@
+name: Deploy Econ Data Library site
+
+# WHY THIS EXISTS. econdatalibrary.com had no deploy workflow at all, so the site was
+# published by hand with `wrangler pages deploy` and a push to main published NOTHING. That
+# is a quiet failure mode: the repo and the live site drift apart, and the only symptom is
+# that a change you believe you shipped is not there. It has bitten this project before.
+#
+# WHY IT IS PATH-FILTERED rather than firing on every push. main receives automated commits
+# several times a day — updater heartbeats, data runs, status-board writes. Deploying on
+# every push would republish the site constantly and, worse, would publish whatever happened
+# to be sitting in main at that moment. Restricting the trigger to the site directory means
+# a deploy happens when, and only when, something a visitor can see has actually changed.
+#
+# workflow_dispatch stays available for the case where the site must be republished without
+# a content change — a rollback, or a Pages-side problem.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'catalog/site/**'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch:
+
+# Cloudflare makes the LAST-CREATED deployment live, so two overlapping runs can leave the
+# older build serving. Queue them in push order and never cancel one in flight.
+concurrency:
+  group: deploy-econ-site
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy static site
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy catalog/site --project-name=econdatalibrary --branch=main
+
+      # A green wrangler step means "Cloudflare accepted the upload", NOT "the site serves".
+      # The custom domain is managed in the dashboard and is independent of the upload, so a
+      # detached domain leaves this job green while econdatalibrary.com is dark. Assert the
+      # live hostname actually answers, and retry to absorb edge propagation.
+      - name: Verify the live site actually serves
+        run: |
+          set -u
+          code() { curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$@" || echo 000; }
+          assert() {
+            label="$1"; want="$2"; url="$3"
+            for i in 1 2 3 4 5 6; do
+              c=$(code "$url")
+              echo "attempt $i: $label -> $c"
+              [ "$c" = "$want" ] && return 0
+              sleep 10
+            done
+            echo "FAIL: $label expected $want, last got $c"; exit 1
+          }
+          assert "econdatalibrary.com == 200"          200 "https://econdatalibrary.com/"
+          assert "econdatalibrary.com/account == 200"  200 "https://econdatalibrary.com/account"
+          echo "OK: the deployed site is reachable on its custom domain."
