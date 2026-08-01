@@ -36,6 +36,17 @@ h1{font-family:var(--serif);color:var(--navy);font-size:2rem;line-height:1.2;mar
 .keyrow .status.ok{color:var(--green)}.keyrow .status.no{color:var(--g500)}
 .keybar .hint{font-size:.83rem;color:var(--g600);margin:.55rem 0 0}
 .keybar .hint a{color:var(--blue);text-decoration:none}
+/* Added 2026-08-01 with the three no-key states below. `.status.no` is grey —
+   the right colour for a neutral fact, the wrong one for "you are not signed in
+   and nothing here will work until you are", which is a thing to act on. Amber
+   is already this page's attention colour (--amber), so nothing new is imported.
+   .keyaction is the action that used to be missing entirely: the keybar stated a
+   fact and offered no way to change it. */
+.keyrow .status.warn{color:var(--amber)}
+.keyaction{font-size:.85rem;font-weight:600;color:var(--blue);text-decoration:none;white-space:nowrap}
+.keyaction:hover{text-decoration:underline}
+.keybar .keymsg{font-size:.86rem;color:var(--amber);line-height:1.5;margin:.55rem 0 0}
+[hidden]{display:none!important}
 /* search + facets */
 .searchrow{display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:.8rem}
 #q{flex:1;min-width:260px;font-size:1rem;padding:.7rem .9rem;border:1.5px solid var(--g300);border-radius:8px}
@@ -96,8 +107,16 @@ border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-sp
     <div class="keyrow">
       <input id="key" type="text" placeholder="hfd_… or your ElkassabgiData API key" autocomplete="off" spellcheck="false">
       <button class="dlbtn" id="savekey">Save</button>
+      <!-- The status text is filled by setKeyStatus() and is now state-specific;
+           "no key set" stays only as the pre-script default. #keyaction is new:
+           the keybar used to state a fact with nothing to click, so a visitor who
+           believed they had just signed in had no next move. Both are written
+           with textContent/setAttribute from constants in this file — no server
+           value and no URL parameter reaches them. -->
       <span class="status no" id="keystatus">no key set</span>
+      <a class="keyaction" id="keyaction" href="account.html" hidden></a>
     </div>
+    <p class="keymsg" id="keymsg" hidden></p>
     <p class="hint">One free key works across every Elkassabgi data library (hfdatalibrary.com &amp; econdatalibrary.com). Already registered on either site? Your existing key works here. <a href="https://hfdatalibrary.com/pages/download" target="_blank" rel="noopener">Get a free key →</a> Your key is stored only in this browser.</p>
   </div>
 
@@ -143,6 +162,8 @@ const selected = new Map(); // series_id -> {title, source}
 // ---- API key ----
 const keyInput = document.getElementById('key');
 const keyStatus = document.getElementById('keystatus');
+const keyAction = document.getElementById('keyaction');   // added with the no-key states below
+const keyMsg = document.getElementById('keymsg');
 // SSO stores the family key under 'edl_key' — assets/sso.js writes it there on the
 // sign-in return trip, and account.html and mcp.html both read that name. THIS PAGE
 // ALONE read 'edl_api_key'. So signing in on hfdatalibrary and coming here left the
@@ -165,9 +186,167 @@ function readStoredKey(){
   return legacy;
 }
 function loadKey(){ const k = readStoredKey(); keyInput.value=k; setKeyStatus(k); }
-function setKeyStatus(k){ if(k){keyStatus.textContent='key saved ✓';keyStatus.className='status ok';} else {keyStatus.textContent='no key set';keyStatus.className='status no';} }
-document.getElementById('savekey').onclick=()=>{ const k=keyInput.value.trim(); localStorage.setItem(SSO_KEY,k); localStorage.removeItem(LEGACY_KEY); setKeyStatus(k); toast(k?'API key saved':'API key cleared'); };
+
+// ── "no key set" is three different situations wearing one label ────────────
+// ADDED 2026-08-01. What was wrong: this page had a single no-key state and a
+// single phrase for it — "no key set" — shown to three people with three
+// different problems and three different next steps:
+//   * someone who has never signed in;
+//   * someone who STARTED an ElkassabgiData sign-in and abandoned it, and
+//     therefore believes they are signed in;
+//   * someone genuinely signed in with a family session, which deliberately
+//     never carries an API key (the account server strips it for family tokens),
+//     so they are signed in AND keyless, which is not a contradiction.
+// The middle one is how this was reported: the visitor came here convinced he had
+// signed in, clicked Download, and was handed a flat statement of fact with
+// nothing to click. "no key set" reads as a broken download, not an unfinished
+// sign-in. Each state now gets its own sentence and, more importantly, its own
+// action. Nothing is hidden or disabled by any of this — the key box, the Save
+// button and every Download button behave exactly as before in every state.
+//
+// 'edl_signin_pending' is written by account.html the moment a pop-up sign-in
+// starts and cleared the moment one succeeds by ANY route; the name is duplicated
+// there and the two must stay in step. sessionStorage keeps it to this tab's
+// visit (account → catalog → download, the path actually walked) and the age
+// check keeps a forgotten marker from accusing someone days later.
+const PENDING_KEY = 'edl_signin_pending', PENDING_MAX_AGE_MS = 30*60*1000;
+function ssGet(k){ try{ return sessionStorage.getItem(k); }catch(_e){ return null; } }
+function ssDel(k){ try{ sessionStorage.removeItem(k); }catch(_e){} }
+function signinPending(){
+  const t = parseInt(ssGet(PENDING_KEY)||'', 10);
+  if(!t || !isFinite(t)) return false;
+  if(Date.now()-t > PENDING_MAX_AGE_MS){ ssDel(PENDING_KEY); return false; }
+  return true;
+}
+// Order matters. hasFamilySession() (declared with the download guards further
+// down — a function declaration, so it is hoisted and safe to call from here) is
+// only a localStorage read of 'ekd_rt', which can outlive the session it stood
+// for. The pending marker is stronger evidence because it is only ever LEFT
+// BEHIND when the account server did not complete a sign-in in this tab, so an
+// abandoned attempt by someone holding a stale ekd_rt must be read as abandoned,
+// not as "signed in, key missing".
+function noKeyState(){
+  if(signinPending())    return 'unfinished';
+  if(hasFamilySession()) return 'family';
+  return 'signedout';
+}
+const NO_KEY_UI = {
+  unfinished: {
+    cls:'status warn',
+    status:'sign-in not finished',
+    msg:'You started signing in with ElkassabgiData but the window was never finished, so you are not signed in and downloads stay locked. Finish it — every step, including the last button ("Continue as …").',
+    toast:'Your ElkassabgiData sign-in was never finished, so you are not signed in. Finish it on the Account page and downloads unlock.',
+    label:'Finish signing in →',
+    href:'account.html',
+    blank:false
+  },
+  family: {
+    cls:'status warn',
+    // Names the destination, not the nav: a keyless family user's nav pill still
+    // reads "Sign in" (deliberately — see account.html render()), so "open
+    // Account" would point at a control that does not say Account.
+    status:'signed in — key not in this browser',
+    msg:'You are signed in with ElkassabgiData. This site needs your API key as well, and the sign-in window never hands it over, so copy it from your account page and paste it in the box above — once.',
+    toast:'Signed in — but your API key is not in this browser yet. Copy it from your ElkassabgiData account page and paste it above.',
+    label:'Get my API key →',
+    href:'https://accounts.elkassabgidata.com/account',
+    blank:true
+  },
+  signedout: {
+    cls:'status no',
+    status:'not signed in',
+    msg:'Downloads need a free ElkassabgiData account — one account works on every Elkassabgi data library. Already have a key? Paste it in the box above.',
+    toast:'Sign in free to download — one ElkassabgiData account works on every library.',
+    label:'Sign in (free) →',
+    href:'account.html',
+    blank:false
+  }
+};
+function setKeyStatus(k){
+  if(k){
+    keyStatus.textContent='key saved ✓'; keyStatus.className='status ok';
+    if(keyAction) keyAction.hidden=true;
+    if(keyMsg){ keyMsg.textContent=''; keyMsg.hidden=true; }
+    return;
+  }
+  const ui=NO_KEY_UI[noKeyState()];
+  keyStatus.textContent=ui.status; keyStatus.className=ui.cls;
+  if(keyAction){
+    keyAction.textContent=ui.label;             // textContent + setAttribute, and every
+    keyAction.setAttribute('href', ui.href);    // value here is a literal in this file
+    if(ui.blank){ keyAction.setAttribute('target','_blank'); keyAction.setAttribute('rel','noopener'); }
+    else { keyAction.removeAttribute('target'); keyAction.removeAttribute('rel'); }
+    keyAction.hidden=false;
+  }
+  if(keyMsg){ keyMsg.textContent=ui.msg; keyMsg.hidden=false; }
+}
+// One place that both re-reads the situation and says it out loud. Every dead end
+// on this page used to end in a toast that vanished in 2.6 seconds and left the
+// keybar still reading "no key set"; now the keybar is brought up to date too, so
+// the explanation is still on screen — with its action — after the toast is gone.
+// `reveal` is for the dead ends the visitor reached by clicking Download, where
+// the keybar may be scrolled off the top of a long results table; it is off for
+// the on-load case, where yanking the page around would be its own annoyance.
+function announceNoKey(opts){
+  const st=noKeyState();
+  setKeyStatus('');
+  toast(NO_KEY_UI[st].toast);
+  if(opts && opts.reveal){
+    try{ const kb=document.querySelector('.keybar'); if(kb) kb.scrollIntoView({behavior:'smooth',block:'center'}); }catch(_e){}
+    // Focus the box only when pasting a key IS the next step. Dropping a
+    // signed-out visitor's cursor into a field they have nothing to type into
+    // would point away from the "Sign in (free)" link they actually need.
+    if(st==='family' && keyInput) keyInput.focus();
+  }
+}
+document.getElementById('savekey').onclick=()=>{
+  const k=keyInput.value.trim();
+  localStorage.setItem(SSO_KEY,k); localStorage.removeItem(LEGACY_KEY);
+  // A working key is the destination the pop-up sign-in existed to reach, so an
+  // attempt still marked unfinished is moot — clearing it stops a fully working
+  // visitor being told their sign-in failed if they ever empty the box again.
+  if(k) ssDel(PENDING_KEY);
+  setKeyStatus(k); toast(k?'API key saved':'API key cleared');
+};
 function getKey(){ return readStoredKey(); }
+
+// Authorisation for a download, in priority order — and the reason this page ever said
+// "no key set" to somebody who had just signed in.
+//
+// The page used to know exactly ONE credential: an api_key pasted into localStorage as
+// edl_key, sent as X-API-Key. Sign in through the ElkassabgiData pop-up and you get a
+// FAMILY session instead, which is a different credential entirely — so this page looked in
+// the only drawer it knew about, found it empty, and refused before making any request. The
+// owner hit precisely that: signed in with Google, went to download, "no key set".
+//
+// The plumbing was already there and unused. econdl-api's auth.ts validates a family
+// access token as `Authorization: Bearer` (validateFamilyToken, added in M2c) exactly as it
+// validates X-API-Key, and the deployed SDK hands the page one via EKD.getAccessToken().
+// Neither end needed changing — this page simply never asked. Nothing here loosens auth:
+// the token is short-lived, minted by the IdP for this origin, and checked server-side.
+//
+// The api_key path stays first and untouched, because scripts and API users depend on it
+// and it works when the visitor has no browser session at all.
+async function authHeaders(){
+  const key = readStoredKey();
+  if(key) return {'X-API-Key': key};
+  try{
+    if(window.EKD && window.EKD.getAccessToken){
+      const at = await window.EKD.getAccessToken();
+      if(at) return {'Authorization': 'Bearer ' + at};
+    }
+  }catch(e){ /* fall through to anonymous; the server decides, not this page */ }
+  return {};
+}
+
+// True when the visitor can actually download — by either credential. Anything that used to
+// branch on readStoredKey() alone was answering "do you have an api_key", not "are you
+// signed in", and those stopped being the same question when family sign-in arrived.
+async function canDownload(){
+  if(readStoredKey()) return true;
+  try{ return !!(window.EKD && window.EKD.isLoggedIn && window.EKD.isLoggedIn()); }
+  catch(e){ return false; }
+}
 
 // ---- search ----
 let searchTimer=null;
@@ -226,8 +405,10 @@ document.getElementById('chkall').onchange=e=>{ document.querySelectorAll('.rowc
 // ---- downloads ----
 function encId(id){ return encodeURIComponent(id); }
 async function fetchCsv(id){
-  const key=getKey();
-  const r=await fetch(`${API}/v1/series/${encId(id)}.csv`, {headers: key?{'X-API-Key':key}:{}} );
+  // authHeaders() rather than getKey(): a family sign-in authorises this request just as
+  // well as a pasted api_key, and sending neither is what turned a signed-in visitor's
+  // download into a 401. See the note on authHeaders above.
+  const r=await fetch(`${API}/v1/series/${encId(id)}.csv`, {headers: await authHeaders()} );
   if(r.status===401){ throw new Error('AUTH'); }
   if(!r.ok){ throw new Error('HTTP '+r.status); }
   return await r.text();
@@ -261,18 +442,18 @@ function saveBlob(name, text){
 // under THIS origin, so its presence is a reliable local signal — no SDK on this
 // page, no network call, no new failure mode.
 function hasFamilySession(){ try{ return !!localStorage.getItem('ekd_rt'); }catch(_e){ return false; } }
-function noKeyMessage(){
-  return hasFamilySession()
-    // Names the destination, not the nav: a keyless family user's nav pill still
-    // reads "Sign in" (deliberately — see account.html render()), so "open Account"
-    // would point at a control that does not say Account.
-    ? 'Signed in — your API key just is not in this browser yet. Get it from accounts.elkassabgidata.com/account and paste it in the box above.'
-    : 'Sign in (free) to download — no account yet? It takes a minute.';
-}
+// noKeyMessage() was removed 2026-08-01: it had two answers for what turned out to
+// be three situations, and it only ever produced a toast — a sentence that erased
+// itself in 2.6 seconds and left the keybar above still reading "no key set" with
+// nothing to click. Its job is now done by NO_KEY_UI / announceNoKey() up in the
+// key section, which say the same thing in the keybar, where it stays put and
+// carries a link.
 function trySsoThenRetry(){
   try{
     if(sessionStorage.getItem('edl_dl_recheck')){
-      toast(noKeyMessage());
+      // Already bounced once this session: nothing left to try silently, so hand
+      // back to the caller, which announces the real state. (It used to toast
+      // here and ALSO return false, so restructuring avoids two messages.)
       return false;
     }
     sessionStorage.setItem('edl_dl_recheck','1');
@@ -294,14 +475,24 @@ function trySsoThenRetry(){
   try{
     if(sessionStorage.getItem('edl_dl_recheck') && !readStoredKey()){
       setTimeout(function(){
-        toast(noKeyMessage());   // same two-way message as the guard: a pop-up user IS
-                                 // signed in, and "sign in" is not their next step
+        // Same three-way answer as the download guard, and it now also repaints
+        // the keybar, so the explanation survives the toast instead of leaving
+        // the page looking untouched again. reveal:false — nobody asked to be
+        // scrolled anywhere by a page that just loaded itself.
+        announceNoKey({reveal:false});
       }, 600);   // after sso.js has had its chance to deliver a key
     }
   }catch(_e){}
 })();
 async function downloadOne(id, title, btn){
-  if(!getKey()){ if(!trySsoThenRetry()) keyInput.focus(); return; }
+  // Was: `if(!trySsoThenRetry()) keyInput.focus();` — the dead end put a cursor in
+  // an empty box and said nothing about why. For the visitor who thinks they just
+  // signed in, a blinking cursor is not an explanation; announceNoKey() names the
+  // actual state, offers the matching link, and leaves both on screen.
+  // canDownload(), not getKey(): a family sign-in is a working credential here, and gating
+  // on the api_key alone is what refused the owner's download seconds after he had signed
+  // in with Google. Only a visitor with NEITHER credential should ever reach announceNoKey.
+  if(!(await canDownload())){ if(!trySsoThenRetry()) announceNoKey({reveal:true}); return; }
   const old=btn?btn.textContent:''; if(btn){btn.disabled=true;btn.textContent='…';}
   try{
     const csv=await fetchCsv(id);
@@ -332,7 +523,10 @@ function loadJSZip(){
 async function downloadSelected(){
   // Same recovery as downloadOne — a keyless bulk download is the identical dead
   // button, and fixing only the per-row path would leave this one broken.
-  if(!getKey()){ if(!trySsoThenRetry()) keyInput.focus(); return; }
+  // canDownload(), not getKey(): a family sign-in is a working credential here, and gating
+  // on the api_key alone is what refused the owner's download seconds after he had signed
+  // in with Google. Only a visitor with NEITHER credential should ever reach announceNoKey.
+  if(!(await canDownload())){ if(!trySsoThenRetry()) announceNoKey({reveal:true}); return; }
   const ids=[...selected.keys()];
   if(ids.length===1){ return downloadOne(ids[0], '', document.getElementById('dlsel')); }
   const btn=document.getElementById('dlsel'); const old=btn.textContent; btn.disabled=true;

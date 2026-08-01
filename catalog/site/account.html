@@ -195,6 +195,38 @@ function safeSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 function safeDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
 function $(id) { return document.getElementById(id); }
 
+// ── the unfinished-sign-in marker (shared contract with download.html) ──────
+// What was wrong: a sign-in that was STARTED and never finished left no trace
+// anywhere, on any page. The account server's last step looks optional, so
+// walking away from it is an ordinary thing to do — and doing it issues no
+// authorization code, delivers no key, and produces not one word on this site.
+// The visitor then met the failure several clicks later as download.html's flat
+// "no key set", which reads as a broken download rather than an unfinished
+// sign-in. That is exactly how it was reported.
+//
+// This marker is the missing trace: written the moment a pop-up sign-in starts,
+// cleared the moment one actually succeeds, and read by BOTH this page and
+// download.html so that neither of them can stay silent about it. The name
+// 'edl_signin_pending' is duplicated in download.html and must stay in step.
+//
+// sessionStorage, not localStorage, and time-stamped, for two opposite reasons:
+// the notice must follow the visitor through THIS tab's visit (account →
+// catalog → download, the exact path walked), and it must never resurface days
+// later on an unrelated visit as a false accusation.
+var PENDING_KEY = 'edl_signin_pending';
+var PENDING_MAX_AGE_MS = 30 * 60 * 1000;
+function ssGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+function ssSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} }
+function ssDel(k) { try { sessionStorage.removeItem(k); } catch (e) {} }
+function markSigninPending() { ssSet(PENDING_KEY, String(Date.now())); }
+function clearSigninPending() { ssDel(PENDING_KEY); }
+function signinPending() {
+  var t = parseInt(ssGet(PENDING_KEY) || '', 10);
+  if (!t || !isFinite(t)) return false;
+  if (Date.now() - t > PENDING_MAX_AGE_MS) { clearSigninPending(); return false; }
+  return true;
+}
+
 // render() and the wiring below used to do `$('id').hidden = …` and
 // `$('id').addEventListener(…)` directly. A single element missing or renamed
 // threw a TypeError, and because render() is the function that puts the sign-in
@@ -339,6 +371,11 @@ function onRegisterClick(e) {
 function startLogin(opts) {
   endFamilyCheck();   // the user is signing in explicitly; the background "checking…"
                       // timeout must not land on top of the popup's own messages
+  // Record the attempt BEFORE the window opens. From this instant until something
+  // actually succeeds, every page in this tab can tell that a sign-in was begun
+  // and not finished — which is the one fact the whole site was missing when the
+  // visitor abandoned the account server's final step and walked to Download.
+  markSigninPending();
   setEkdMsg('Opening the ElkassabgiData sign-in window…', '');
   // If the visitor leaves the pop-up OPEN and switches back to this tab — which is what
   // people actually do, rather than closing it — the SDK's login() promise stays pending:
@@ -353,12 +390,24 @@ function startLogin(opts) {
   setTimeout(function () {
     if (settled) return;
     openFallback();
-    setEkdMsg('The ElkassabgiData sign-in window may still be open — finish there, or use ' +
-              'your email and password below. It is the same account either way.', '');
+    // Was: "The … window may still be open — finish there, or use your email and
+    // password below." True, but it never said what the visitor's CURRENT state
+    // is, and "may still be open" invites the reading that something is quietly
+    // working. It is not: nothing on this page can complete that window, and the
+    // step people stop at is the last one, because a button labelled "Continue
+    // as …" looks like a confirmation of something already done. So state the
+    // state first, then name the step, then name the way round it.
+    setEkdMsg('You are NOT signed in yet — the ElkassabgiData window is still waiting for you. ' +
+              'Finish every step in it, including the last button ("Continue as …"), and this ' +
+              'page will sign you in by itself. Or use your email and password below — it is ' +
+              'the same account and skips the window entirely.', '');
   }, 10000);
   try {
     window.EKD.login(opts)
-      .then(function () { settled = true; setEkdMsg('', ''); })
+      // A resolved login() means the account server exchanged the code for real
+      // tokens, so the attempt is finished and the marker must go — otherwise a
+      // successful visitor would be told on Download that they never finished.
+      .then(function () { settled = true; clearSigninPending(); setEkdMsg('', ''); })
       .catch(function (e) { settled = true; showSigninError(e); });
   } catch (e) { settled = true; showSigninError(e); }
 }
@@ -392,7 +441,15 @@ function showSigninError(err) {
                 'password below; it is the same account and does not need the pop-up.', 'err');
       return;
     }
-    setEkdMsg('The sign-in window was closed before it finished. Click Sign in to try again.', 'err');
+    // Was: "The sign-in window was closed before it finished. Click Sign in to
+    // try again." It described the window and left the visitor to infer their own
+    // status — and the inference people actually make after clicking a sign-in
+    // button is that they are signed in. Say the status outright, because this is
+    // the branch that fires when someone walks away from the account server's last
+    // step, and it is the last chance to correct them before they click Download.
+    setEkdMsg('The ElkassabgiData window closed before it finished, so you are NOT signed in ' +
+              'and downloads on this site stay locked. Click Sign in to try again — or use ' +
+              'your email and password below, which needs no window.', 'err');
     return;
   }
   if (code === 'popup_blocked') {
@@ -423,6 +480,10 @@ async function onFamilyLogin() {
   // signed-in user wait on a network call (or miss out entirely if it hangs) is
   // the failure this fix is meant to avoid in the other direction.
   familyConfirmed = true;
+  clearSigninPending();   // the account server honoured this session, so the attempt is
+                          // over: download.html must stop saying it was never finished
+                          // and start saying the thing that IS true — signed in, but the
+                          // API key is not in this browser yet.
   popupClosedCount = 0;   // the popup route demonstrably works for this visitor, so a
                           // window they closed earlier must not count toward the
                           // "keeps closing" reading above — that counter is about
@@ -577,6 +638,10 @@ async function login(ev) {
                   '"Sign in with ElkassabgiData" button above — the sign-in window asks for your code.', 'err');
       return false;
     }
+    // Signed in by form instead of by window: whatever pop-up attempt was left
+    // hanging is now moot, so the marker must not follow this visitor to Download
+    // and tell them a sign-in they completed another way was never finished.
+    clearSigninPending();
     const key = (d && d.user && d.user.api_key) || null;
     const name = (d && d.user && d.user.name) || '';
     const email = (d && d.user && d.user.email) || '';
@@ -603,6 +668,32 @@ function copyMcp(ev) {
     var b = ev.target, o = b.textContent; b.textContent = 'Copied!';
     setTimeout(function () { b.textContent = o; }, 2000);
   });
+}
+
+// ── coming back to this page with a sign-in still unfinished ────────────────
+// The abandonment case does not end when the visitor leaves this page — that is
+// precisely when it starts hurting. They wander to the catalog, click Download,
+// are refused, and come back here to find a page in its neutral signed-out state
+// that says nothing about the attempt they remember making. So on every load,
+// if this tab began a sign-in that nothing has since completed, say it plainly
+// in the same box the sign-in button writes to.
+//
+// This only ever ADDS a sentence. It does not hide the Sign in button, does not
+// touch #pw-fallback, and does not change what render() decides — the signed-out
+// card, the password form and the paste-a-key path are all exactly as reachable
+// as they were. A message cannot lock anybody out.
+function showUnfinishedSigninNotice() {
+  if (!signinPending()) return;
+  // A key in this browser, or a session the SDK has already confirmed, means the
+  // visitor got where they were going by some route; the marker is stale, so drop
+  // it rather than contradict a page that is showing them their own account.
+  if (safeGet('edl_key') || familyConfirmed) { clearSigninPending(); return; }
+  setEkdMsg('You started signing in with ElkassabgiData and it was never finished, so you ' +
+            'are NOT signed in and downloads on this site stay locked. Click "Sign in with ' +
+            'ElkassabgiData" above and complete EVERY step in the window that opens — the ' +
+            'last one is a button reading "Continue as …", and closing the window before you ' +
+            'press it signs in nobody. Or use your email and password below; it needs no ' +
+            'window at all.', 'err');
 }
 
 // ── wiring ──────────────────────────────────────────────────────────────────
@@ -634,6 +725,11 @@ bind('savekey', 'click', function () {
     return;
   }
   safeSet('edl_key', v);
+  // A pasted key is what the rest of this site actually needs, so the visitor has
+  // arrived — by hand — at the destination the pop-up was for. Retiring the marker
+  // here stops download.html greeting a fully working visitor with "your sign-in
+  // was never finished".
+  clearSigninPending();
   setMsg($('pastemsg'), '', '');
   render();
 });
@@ -649,6 +745,9 @@ bind('signout', 'click', async function (e) {
   e.preventDefault();
   familyConfirmed = false;   // the page must not keep claiming a confirmed session
                              // across the reload if EKD.logout() below throws
+  clearSigninPending();      // deliberately signing OUT is not an unfinished sign-in;
+                             // leaving the marker would make the reloaded page accuse
+                             // the visitor of abandoning something they just ended
   safeDel('edl_key'); safeDel('edl_name'); safeDel('edl_email');
   try { sessionStorage.setItem('edl_sso_checked', '1'); } catch (err) {}
   // Bounded wait. The SDK's logout() is a plain fetch with no timeout, and try/catch only
@@ -673,5 +772,13 @@ bind('signout', 'click', async function (e) {
 // First paint: assets/sso.js may already have stored a key on the return trip of
 // its silent check, so the signed-in state can be correct before the SDK lands.
 render();
+// …and immediately after it, because render() alone leaves an abandoned sign-in
+// looking identical to a first visit. Ordering: this runs before the SDK script
+// arrives, so if a stored ekd_rt is about to be validated, beginFamilyCheck's
+// "Checking your ElkassabgiData session…" replaces this line with something more
+// current, and either onFamilyLogin (clears the marker) or onFamilyLogout has the
+// final word. Losing the notice to a fresher, truer message is the correct
+// outcome; losing it to silence is what this whole change is about.
+showUnfinishedSigninNotice();
 </script>
 </body></html>
