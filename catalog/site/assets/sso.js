@@ -169,6 +169,63 @@
     return;
   }
 
+  // 1b) §SILENT-FAMILY-RESUME — ask the ACCOUNT SERVER, not just HF.
+  //
+  //     Steps 3–6 below ask exactly one question: "does this browser have an hfd_session
+  //     cookie on api.hfdatalibrary.com?" That is the right question for someone who signed
+  //     in to hfdatalibrary with a password, and the wrong one for someone who signed in
+  //     through the ElkassabgiData pop-up — that flow sets ekd_session on
+  //     accounts.elkassabgidata.com and never creates an hfd_session at all. So /v1/auth/sso
+  //     truthfully answers "no session", econ shows "Sign in", and the visitor who signed in
+  //     one tab ago is told they are a stranger. This is why econ → hf worked and hf → econ
+  //     did not: hf now asks the IdP directly and econ still only asked HF.
+  //
+  //     A TOP-LEVEL navigation is required, not an iframe: ekd_session is SameSite=Lax, which
+  //     a top-level GET carries and a framed request does not, and an iframe would also be
+  //     third-party — so Safari, Firefox and Chrome-incognito would strip the cookie and
+  //     report a signed-in visitor as signed out.
+  //
+  //     LOOP SAFETY: auth/callback.html writes ekd_silent_done BEFORE it can fail — on
+  //     login_required, on a state mismatch, on a failed exchange — and this refuses to start
+  //     when that flag is present. One attempt per browser session, then never again.
+  //
+  //     Placed BEFORE step 2 but AFTER step 1 on purpose. Before step 2, because a family
+  //     visitor has no key and would otherwise fall through to the HF-only question that
+  //     cannot see their session. After step 1, so the return trip from /v1/auth/sso is
+  //     handled first and this never fires on a page load that is already completing a check.
+  if (!hasKey() && !localStorage.getItem(F) && !sessionStorage.getItem('ekd_silent_done')
+      && /^(www\.)?econdatalibrary\.com$/.test(location.hostname)) {
+    try {
+      var _ua = navigator.userAgent || '';
+      // Never bounce a crawler. Googlebot renders JavaScript, so without this it would follow
+      // the redirect off econdatalibrary.com to a noindex auth host on the first view of every
+      // page it crawls — and unlike a human, a bot is never signed in, so it would pay it on
+      // every page of every crawl. That is an SEO wound inflicted by a sign-in convenience.
+      var _bot = navigator.webdriver
+        || /bot|crawl|spider|slurp|bingpreview|duckduckbot|baiduspider|yandex|facebookexternalhit|slackbot|discordbot|telegrambot|whatsapp|applebot|petalbot|semrush|ahrefs|mj12bot|dotbot|lighthouse|headless/i.test(_ua);
+      if (!_bot && window.isSecureContext !== false && window.crypto && crypto.subtle && crypto.getRandomValues) {
+        var _b64 = function (b) { var s = ''; for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+        var _rand = function () { return _b64(crypto.getRandomValues(new Uint8Array(32))); };
+        var _ver = _rand(), _st = _rand();
+        crypto.subtle.digest('SHA-256', new TextEncoder().encode(_ver)).then(function (d) {
+          sessionStorage.setItem('ekd_silent_v', _ver);
+          sessionStorage.setItem('ekd_silent_s', _st);
+          sessionStorage.setItem('ekd_silent_r', location.pathname + location.search + location.hash);
+          var u = 'https://accounts.elkassabgidata.com/authorize?response_type=code&prompt=none'
+            + '&client_id=' + encodeURIComponent(location.origin)
+            + '&redirect_uri=' + encodeURIComponent(location.origin + '/auth/callback')
+            + '&state=' + encodeURIComponent(_st)
+            + '&code_challenge=' + encodeURIComponent(_b64(new Uint8Array(d)))
+            + '&code_challenge_method=S256';
+          // replace(), not assign(): the bounce must not become a history entry, or Back from
+          // the restored page lands the visitor straight back in the redirect.
+          location.replace(u);
+        }).catch(function () {});
+        return;   // navigating away — do not run the HF-only steps on this page load
+      }
+    } catch (e) { /* storage or crypto unavailable → fall through to the existing flow */ }
+  }
+
   // 2) The key is already stored locally — nothing to fetch, so skip the bounce.
   //    hasKey(), NOT signedIn(): a family session is not a key, and treating it as one
   //    skips step 6 and leaves the visitor without the credential this step exists to get.

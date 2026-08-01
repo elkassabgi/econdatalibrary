@@ -20,26 +20,104 @@
   <div class="m"><p><strong>ElkassabgiData</strong><br>Completing sign-in…</p><p class="ret"><a href="/">Return to the site</a></p></div>
   <script>
   (function () {
-    // The IdP 303'd here with the family code + state in the URL FRAGMENT (never
-    // sent to any server). Hand it back to the opener (same origin) and close.
-    try {
-      var p = new URLSearchParams(location.hash.slice(1));
-      var msg = { type: 'ekd_auth', code: p.get('code') || '', state: p.get('state') || '' };
-      // Strip the code from the address bar / history immediately.
-      try { history.replaceState(null, '', location.pathname); } catch (e) {}
+    'use strict';
+    // Two arrivals land here, told apart by window.opener.
+    //
+    //  1. POPUP (unchanged) — EKD.login() opened us. The SDK is alive in the opener and owns
+    //     the PKCE verifier, so hand the code over and close.
+    //  2. TOP-LEVEL (new)   — the silent prompt=none resume in assets/sso.js navigated this
+    //     tab here. No opener, no SDK listening: anything not done here is not done at all.
+    //
+    // Branch 2 is what makes hf → econ work. Signing in on hfdatalibrary leaves econ's
+    // localStorage empty (per-origin) and leaves no hfd_session cookie when the sign-in went
+    // through the family popup — so econ's older bounce to HF's /v1/auth/sso, which reads
+    // exactly that cookie, finds nothing and the visitor is shown "Sign in". Asking the IdP
+    // directly is the only question that has the right answer.
+    var ACCOUNTS = 'https://accounts.elkassabgidata.com';
+    var API = 'https://api.hfdatalibrary.com';
+    var SS = { v: 'ekd_silent_v', s: 'ekd_silent_s', r: 'ekd_silent_r', done: 'ekd_silent_done' };
+
+    function ss(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+    function ssSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} }
+    function ssDel(k) { try { sessionStorage.removeItem(k); } catch (e) {} }
+    function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+    // Same-origin only. The value comes from sessionStorage, which is same-origin by
+    // definition, but it is fed to location.replace, so it is checked rather than trusted:
+    // one leading slash and no second slash rules out "//evil.com" and any absolute URL.
+    function safeReturn(u) {
+      if (typeof u !== 'string' || u.charAt(0) !== '/' || u.charAt(1) === '/') return '/';
+      return u;
+    }
+    function goBack() {
+      var dest = safeReturn(ss(SS.r) || '/');
+      ssDel(SS.v); ssDel(SS.s); ssDel(SS.r);
+      try { location.replace(dest); } catch (e) { location.href = dest; }
+    }
+
+    var p, code, state, err, hasOpener = false;
+    try { p = new URLSearchParams(location.hash.slice(1)); } catch (e) { p = new URLSearchParams(''); }
+    code = p.get('code') || '';
+    state = p.get('state') || '';
+    err = p.get('error') || '';
+    try { hasOpener = !!(window.opener && !window.opener.closed); } catch (e) {}
+    // Strip the code from the address bar / history immediately.
+    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+
+    // ── Branch 1: popup. Unchanged, and FIRST, so the existing login flow is untouched.
+    if (hasOpener) {
+      var msg = { type: 'ekd_auth', code: code, state: state };
       var delivered = false;
-      try {
-        if (window.opener && !window.opener.closed) {
-          window.opener.postMessage(msg, location.origin); // same-origin only
-          delivered = true;
-        }
-      } catch (e) {}
-      // Fallback for opener-less contexts (e.g. COOP): same-origin BroadcastChannel.
+      try { window.opener.postMessage(msg, location.origin); delivered = true; } catch (e) {}
       if (!delivered && 'BroadcastChannel' in window) {
         try { var bc = new BroadcastChannel('ekd_auth'); bc.postMessage(msg); bc.close(); } catch (e) {}
       }
-    } catch (e) {}
-    setTimeout(function () { try { window.close(); } catch (e) {} }, 200);
+      setTimeout(function () { try { window.close(); } catch (e) {} }, 200);
+      return;
+    }
+
+    // ── Branch 2: top-level silent return.
+    // Spend the attempt BEFORE anything can fail. sso.js only bounces when this flag is
+    // absent, so setting it here is what guarantees at most one bounce per browser session —
+    // including on login_required, a state mismatch, and a failed exchange. Any path that
+    // leaves it unset is a redirect loop.
+    ssSet(SS.done, '1');
+
+    // login_required is the ordinary answer for a signed-out visitor, not an error.
+    if (err || !code) { goBack(); return; }
+
+    var verifier = ss(SS.v), expectState = ss(SS.s);
+    // A code arriving with a state this browser did not mint belongs to someone else's flow.
+    if (!verifier || !expectState || state !== expectState) { goBack(); return; }
+
+    fetch(ACCOUNTS + '/token/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code, code_verifier: verifier, client_origin: location.origin })
+    })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.access_token) return null;
+        // Stored in the SDK's own shape so EKD.getAccessToken() adopts them without knowing
+        // this page exists — that is what lets download.html send Authorization: Bearer.
+        if (d.refresh_token) lsSet('ekd_rt', d.refresh_token);
+        lsSet('ekd_at', JSON.stringify({ t: d.access_token, e: Date.now() + (Number(d.expires_in || 900) * 1000) }));
+        // edl_family is what assets/sso.js reads to decide the nav says a name rather than
+        // "Sign in". Deliberately NOT edl_key: that key guards the separate one-per-session
+        // bounce that FETCHES the api_key, and writing it here would short-circuit that step
+        // and stop downloads working — the exact regression that was reported as "back to
+        // sign-in and I can't download any more".
+        lsSet('edl_family', '1');
+        return fetch(API + '/v1/auth/me', { headers: { 'Authorization': 'Bearer ' + d.access_token } })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (u) {
+            if (u && u.name) lsSet('edl_name', u.name);
+            if (u && u.email) lsSet('edl_email', u.email);
+          })
+          .catch(function () { /* identity is cosmetic; the session is already valid */ });
+      })
+      .catch(function () {})
+      .then(function () { goBack(); });
   })();
   </script>
 </body>
