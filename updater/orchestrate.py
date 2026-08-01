@@ -27,6 +27,7 @@ from . import registry
 from .state import StateStore, now_utc
 from .strategies import get as get_strategy
 from .strategies.fetchers import implemented as fetcher_implemented
+from .strategies.fetchers._common import sane_since
 from .errors import TransientError, DefinitiveError
 
 # In-flight first-pass backfills — NEVER touched by updates. These are the
@@ -539,7 +540,24 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
 
         t0 = time.time()
         try:
-            res = strat.run(unit, since=(us or {}).get("last_obs_date"))
+            # sane_since GUARDS THE CURSOR AT THE HAND-OFF, not in each fetcher. The stored
+            # frontier is the furthest period the store holds, and for a source carrying
+            # forecasts or projections that is decades ahead: abs 2046, un_wpp 2101,
+            # bfs 2150. Handing that to a delta fetcher as "only fetch periods after this"
+            # selects nothing, for ever, silently - and it is wrong whether the date is a
+            # legitimate projection horizon or a corrupt sentinel, because new OBSERVED data
+            # lands before it either way.
+            #
+            # sane_since already existed for exactly this, but only as something each fetcher
+            # could remember to call. Measured 2026-07-31: 28 of 93 units carried a future
+            # frontier, 12 of their fetchers took `since`, and only 4 guarded it. None is
+            # actively frozen today - the other 8 happen not to filter on it - but that is
+            # luck, and the next fetcher to start honouring `since` inherits the trap
+            # invisibly. Guarding here makes it structurally impossible instead.
+            #
+            # None means "no usable lower bound", which every fetcher already handles: it is
+            # what a first run passes.
+            res = strat.run(unit, since=sane_since((us or {}).get("last_obs_date")))
             status = res.status
             ok = status in ("ok", "no_change")
             err_note = res.error

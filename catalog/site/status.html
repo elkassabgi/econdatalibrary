@@ -28,6 +28,13 @@ th{background:#f3f4f6;border-top:none;font-size:.8rem;text-transform:uppercase;l
 .db .desc{display:block;color:var(--g600);font-size:.82rem;line-height:1.45;margin-top:.12rem}
 .db code{display:inline-block;margin-top:.22rem;font-size:.76em;color:var(--g500)}
 .db .unit{color:var(--g500);font-weight:400}
+/* A period beyond today is a forecast or projection, not observed data. Several publishers
+   ship them: ABS population/family/household projections run to 2046 and 2071, UN WPP to
+   2101, IMF WEO forecasts to 2031. The column showed the store's furthest period with no
+   distinction, so "2046-12-31" read as "observed data is current to 2046". */
+.proj{display:inline-block;margin-left:.4rem;font-size:.68rem;font-weight:600;color:#92400e;
+background:#fef3c7;border:1px solid #fcd34d;border-radius:4px;padding:.03rem .3rem;
+vertical-align:1px}
 .count{color:var(--g600);margin-top:1rem;font-size:.92rem}
 code{background:#f3f4f6;padding:.08rem .35rem;border-radius:5px;font-size:.85em}
 
@@ -51,7 +58,7 @@ rollout in phases; until a source joins, its data is the verified initial load a
 listed here honestly as “initial load” rather than pretended current.</p>
 <div class="count" id="summary">Loading…</div>
 <table id="tbl" hidden>
-<thead><tr><th></th><th>Database</th><th>Status</th><th>Data through</th><th>Last checked</th><th>Next expected</th></tr></thead>
+<thead><tr><th></th><th>Database</th><th>Status</th><th>Latest period</th><th>Last checked</th><th>Next expected</th></tr></thead>
 <tbody id="rows"></tbody>
 </table>
 <p class="legend">
@@ -119,8 +126,17 @@ Promise.all([
       (m.desc?'<span class="desc">'+esc(m.desc)+'</span>':'')+
       (m.name?'<code>'+esc(r.source)+'</code>':'');
     const tr=document.createElement('tr');
+    // Mark a period that lies beyond today. The ledger reports the furthest period the store
+    // holds, which for a projection dataset is decades out; labelling it keeps the cell true
+    // without hiding data a user may specifically want.
+    const lastObs=r.last_obs_date||'';
+    const isProj=lastObs && lastObs.slice(0,10) > new Date().toISOString().slice(0,10);
+    const obsCell=lastObs
+      ? esc(lastObs)+(isProj?'<span class="proj" title="Beyond today: this publisher issues '+
+          'forecasts or projections. Observed data ends earlier.">projected</span>':'')
+      : '—';
     tr.innerHTML='<td><span class="dot '+cls+'"></span></td><td class="db">'+db+'</td>'+
-      '<td>'+esc(st)+'</td><td>'+esc(r.last_obs_date||'—')+'</td>'+
+      '<td>'+esc(st)+'</td><td>'+obsCell+'</td>'+
       '<td>'+esc((r.source_date_accessed||r.last_updated||'—').slice(0,16).replace('T',' '))+'</td>'+
       '<td>'+esc((r.next_update_expected||'—').slice(0,10))+'</td>';
     tb.appendChild(tr);
