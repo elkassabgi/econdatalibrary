@@ -229,11 +229,17 @@ def main() -> int:
     keys = [r[0].split(":", 1)[1] for r in con.execute(
         "select series_id from series where source_id=? limit ?", (a.source, a.sample))]
     if not keys:
-        import pyarrow.parquet as pq
-        if not os.path.exists(store):
-            print(f"no catalogue rows and no store for {a.source}")
+        # BLOB-ROUTED, not os.path/pq direct. The sources that most need titles are exactly the
+        # ones whose store lives only in R2 - the six GFS flows were written by a CI runner and
+        # have no local copy - and a raw local read reports "no store" for data that plainly
+        # exists (ledger R36). blob.exists/read_table honour AQUEDUCT_BACKEND and work in both
+        # places.
+        from updater import blob
+        if not blob.exists(store):
+            print(f"no catalogue rows and no store for {a.source} "
+                  f"(looked via blob at {store}; set AQUEDUCT_BACKEND=r2 if it is in R2)")
             return 1
-        t = pq.read_table(store, columns=["series_key"])
+        t = blob.read_table(store, columns=["series_key"])
         keys = list(dict.fromkeys(t.column("series_key").to_pylist()))[:a.sample]
     print(f"{len(keys)} sample key(s), e.g. {keys[0]}")
 
