@@ -2575,6 +2575,19 @@ sources:
     - 'single parquet: data/clean_full/imf_commodity/imf_commodity.parquet. Schema series_key(str), obs_date(date32), value(float64).
       series_key = IMF_COMMODITY:<series_code>. (Companion _log/_err text files in same dir are run logs, not data.)'
 - source_id: imf_fsi
+  # NOT BUILDABLE UNDER THE DIRECT-SOURCE POLICY - recorded so it stops being
+  # re-investigated as missing work. jobs/ingest_imf_direct.py states the rule: IMF
+  # data comes first-hand from api.imf.org, not relayed through DBnomics, because an
+  # aggregator makes our freshness a function of theirs. These 73,288 published ids
+  # are DBnomics-shaped (FSI:<series_code>, e.g. FSI:Q.RO.FSRR_PT) - measured
+  # 2026-08-01, 73,288 of 73,288 - and IMF publishes NO "FSI" dataflow at all: the
+  # catalogue offers FSIC, FSIBSIS and FSICDM, which are separate flows with their own
+  # key grammar. So there is no first-hand refresh that preserves these ids, and a
+  # DBnomics fetcher (built and reverted on 2026-08-01) is against policy.
+  # The three *_direct FSI sources are the supported path; this one stays as verified
+  # historical data, exactly like the 26 other DBnomics-era imf_* sources.
+  # Retiring or re-keying 73,288 live ids is the owner's call, not a build task.
+  supersession: superseded-by-imf_fsic_direct-imf_fsibsis_direct-imf_fsicdm_direct
   scripts:
   - jobs/ingest_imf_fsi.py
   strategy: extend_by_date
