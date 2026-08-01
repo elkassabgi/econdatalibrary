@@ -260,7 +260,7 @@
   //     Bounded by tries so it can never run away: at most RESUME_MAX_TRIES round trips per
   //     browser session no matter what the server says. Clock decides responsiveness, counter
   //     decides whether it can loop — the same division §3b settled on.
-  var RESUME_RECHECK_MS = 60 * 1000;
+  var RESUME_RECHECK_MS = 10 * 60 * 1000;
   var RESUME_MAX_TRIES = 3;
   var RESUME_TRIES_K = 'ekd_silent_tries';
   try {
