@@ -212,6 +212,31 @@ jobs:
             # Only the genuinely-wrong cases fail; a cadence skip already passed above.
             if ! grep -q 'NOT DUE' /tmp/updater_out.txt; then rc=1; fi
           fi
+
+          # A DEDICATED RUN WHOSE ONE SOURCE FAILED IS NOT A SUCCESS. The zero-unit guard above
+          # only catches "0 unit(s) processed". It misses the shape that actually occurred on
+          # 2026-08-01: the unit RAN, transient-failed, produced 0 observations, and the
+          # updater exited 0 because a non-live source's failure does not fail the whole run -
+          # which is right for the shared daily job and wrong here, where the entire point of
+          # the job is this one source. Four of six GFS jobs reported SUCCESS that morning
+          # while merging nothing (OverflowError / expat out-of-memory on the big flows).
+          #
+          # Reads the orchestrator's own per-unit summary line rather than guessing, and names
+          # the status so the failure is actionable from the job title alone.
+          #
+          # `partial` is DELIBERATELY not in this list. It is the designed honest state for
+          # "some sub-units failed while the rest merged" - bis, bls, eia and faostat are
+          # routinely partial while moving hundreds of millions of rows. Failing on it would
+          # make this workflow permanently red, and a permanently red workflow is one nobody
+          # reads: the same cry-wolf trap as the irregular-cadence lateness clock. The health
+          # board and the daily digest already carry partials.
+          if [ "$rc" = "0" ]; then
+            bad=$(grep -E "^\s+(transient_fail|broken_adapter|timeout)\s+${{ matrix.source }}/" /tmp/updater_out.txt | head -1 || true)
+            if [ -n "$bad" ]; then
+              echo "::error::${{ matrix.source }} did not succeed: ${bad}. This job exists to run that one source, so its failure is the job's failure - the shared daily run tolerates it, a dedicated runner must not."
+              rc=1
+            fi
+          fi
           if [ "$rc" = "137" ] || [ "$rc" = "143" ]; then
             echo "::error::${{ matrix.source }} was KILLED (exit ${rc}) — still out of memory WITH a runner to itself. Isolation was not enough; this source needs a real fix (streaming parse or chunked merge), not more capacity."
           fi
