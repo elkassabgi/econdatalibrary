@@ -17,6 +17,13 @@ The two failure modes it exists for:
 It also flags entries in SUPPORTED_SOURCES with NO STORE AT ALL - a promise to serve data that
 does not exist anywhere, which answers 404 rather than 501 and is the least visible of the three.
 
+AND IT CATCHES PARTIAL CATALOGUING, which a zero-test cannot. census has 22 catalogue rows over
+an 80-table, 44,939,061-row store; noaa had 10 over 3,135,873 series. Both are the same defect as
+"zero rows" and both pass a test that only looks for zero. Where a source ships
+`*__series.parquet` sidecars the exact series count is in the parquet FOOTER, so the comparison
+costs a metadata read and no scan. Sources without sidecars are reported as "needs a scan"
+rather than silently omitted - see tools/audit_store_vs_catalog.py for that.
+
     python tools/reconcile_serving.py
 """
 from __future__ import annotations
@@ -52,6 +59,24 @@ def store_size(source_id: str) -> tuple[int, float]:
     return len(files), sum(os.path.getsize(f) for f in files) / 1e6
 
 
+def sidecar_series(source_id: str) -> int | None:
+    """Exact series count from `*__series.parquet` FOOTERS, or None if the source has none.
+
+    A footer read is metadata only - no column is decoded and no row is scanned - so this is
+    affordable across every source on every run, which a distinct-count is not.
+    """
+    files = []
+    for d in glob.glob(os.path.join(ROOT, "data", "*", source_id)):
+        files += glob.glob(os.path.join(d, "*__series.parquet"))
+    if not files:
+        return None
+    import pyarrow.parquet as pq
+    try:
+        return sum(pq.ParquetFile(f).metadata.num_rows for f in files)
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
 def main() -> int:
     supported = supported_sources()
     con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
@@ -84,6 +109,22 @@ def main() -> int:
     print(f"\nPROMISED BUT ABSENT — in SUPPORTED_SOURCES with no store anywhere ({len(phantom)})")
     for s, _, _ in phantom:
         print(f"   {s:24s} registry={s in reg}")
+
+    # --- partial cataloguing, from parquet footers only ------------------------------
+    part = []
+    for s in sorted(supported):
+        if cat.get(s, 0) == 0:
+            continue                                           # already reported above
+        n = sidecar_series(s)
+        if n is None or n <= cat[s]:
+            continue
+        part.append((s, n, cat[s]))
+    print(f"\nPARTIALLY CATALOGUED — the store's own sidecars list more series than the "
+          f"catalogue does ({len(part)})")
+    for s, n, c in part:
+        print(f"   {s:24s} store {n:>12,}  catalogue {c:>12,}  missing {n - c:>12,}")
+    print("   (sources with no __series.parquet sidecar cannot be judged from metadata; "
+          "use tools/audit_store_vs_catalog.py)")
     return 0
 
 
