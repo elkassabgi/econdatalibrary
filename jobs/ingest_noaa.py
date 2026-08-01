@@ -369,7 +369,7 @@ class ShardWriter:
             sm = station_meta.get(station, {})
             shard_series.setdefault(prefix, []).append({
                 "dataset": self.ds,
-                "series_key": f"{station}:{element}",
+                "series_key": f"{self.ds}:{station}:{element}",
                 "station": station,
                 "element": element,
                 "name": sm.get("name", ""),
@@ -466,7 +466,17 @@ def _melt_csv(ds: str, path: str, sid: str, prefix: str, sw: ShardWriter):
                     continue
                 ai = attr_idx.get(elem)
                 attrs = row[ai].strip() if (ai is not None and ai < len(row)) else ""
-                sk = f"{sid}:{elem}"
+                # DATASET-QUALIFIED KEY. "<station>:<element>" alone is AMBIGUOUS across the two
+                # datasets this script writes. Measured 2026-08-01: 1,046,291 of 2,089,582 keys appear
+                # in BOTH gsom (monthly) and gsoy (yearly), so one id would serve a monthly series
+                # with its own annual aggregates mixed in - ACW00011647:DP1X returns 122 monthly
+                # points and 6 annual ones, which plots as a monthly line with six spikes. There is no
+                # (key, date) COLLISION, because gsom stamps month-start and gsoy year-end, so the
+                # defect is invisible to a duplicate check and only shows up when someone reads the
+                # series. That is the comtrade under-keying failure caught before publication instead
+                # of after: nothing is catalogued yet, so the fix costs nothing now and would cost
+                # 2,089,582 published ids later.
+                sk = f"{sw.ds}:{sid}:{elem}"
                 sw.add_obs(prefix, sid, sk, od, elem, val, attrs)
                 sw.bump_series(prefix, sid, elem, od)
                 n += 1
