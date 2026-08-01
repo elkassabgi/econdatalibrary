@@ -83,7 +83,25 @@
   // signedIn() — "should the page present this visitor as signed in?" Used only by the nav.
   //              A confirmed family session counts here, because it genuinely is one.
   function hasKey()   { return !!localStorage.getItem(K); }
-  function signedIn() { return !!(localStorage.getItem(K) || localStorage.getItem(F)); }
+
+  // ekd_rt counts for the NAV as well, and only for the nav.
+  //
+  // edl_family is written in exactly two places: account.html (on the SDK's login event) and
+  // auth/callback.html (on a silent resume). Sign in through the pop-up on ANY other page —
+  // download.html, most obviously — and neither runs, so the SDK holds a perfectly good session
+  // while the nav still says "Sign in". Ahmed reported precisely that: "it showed as signed in
+  // but the 'sign-in' button still showed sign-in, but I was able to download something." The
+  // download worked because download.html asks the SDK directly; only the nav was lying.
+  //
+  // The standing warning against reading the SDK's storage is about a token that outlives the
+  // session it names. That risk is real and bounded here: ekd_rt is removed by the SDK on logout
+  // and whenever a refresh comes back 401, so the worst case is a nav pill that reads a name for
+  // one page view after a server-side revocation, then corrects itself. Weigh that against the
+  // status quo — telling every pop-up user they are signed out — and it is not close.
+  //
+  // hasKey() is deliberately NOT touched. It guards the bounce that FETCHES the api_key, and
+  // widening it is what broke downloads before.
+  function signedIn() { return !!(localStorage.getItem(K) || localStorage.getItem(F) || localStorage.getItem('ekd_rt')); }
 
   // Fill in the display name AFTER the page is up, not before it appears.
   //
@@ -101,7 +119,11 @@
   // 401s, we set nothing, and the nav keeps its fallback — a wrong answer is impossible.
   function backfillName() {
     try {
-      if (!localStorage.getItem(F) || localStorage.getItem(N)) return;   // nothing to do
+      // Same widening as signedIn(): a pop-up sign-in on a page that is not account.html leaves
+      // edl_family unset but ekd_rt present, and that visitor needs their name filled in too —
+      // otherwise the pill they just earned reads "Account" forever.
+      if (!(localStorage.getItem(F) || localStorage.getItem('ekd_rt'))) return;
+      if (localStorage.getItem(N)) return;                                // already known
       var raw = localStorage.getItem('ekd_at');
       if (!raw) return;
       var at = JSON.parse(raw);
@@ -224,8 +246,38 @@
   //     visitor has no key and would otherwise fall through to the HF-only question that
   //     cannot see their session. After step 1, so the return trip from /v1/auth/sso is
   //     handled first and this never fires on a page load that is already completing a check.
+  //     A "no session" ANSWER GOES STALE — the same defect this file already fixed once, for
+  //     its own flag, twenty lines further down (§3b, RECHECK_MS/MAX_TRIES). I rebuilt it:
+  //     ekd_silent_done was a bare sessionStorage flag with no expiry and no re-arm, so
+  //         log out of econ -> log out of hf -> log back in to hf -> return to econ
+  //     found the flag still set from the signed-out visit, never asked again, and showed
+  //     "Sign in" to someone who had just signed in. Reported exactly that way.
+  //
+  //     Re-armed on the two signals that mean the answer may have changed:
+  //       * arriving from a family site (that IS the "I just signed in over there" case), and
+  //       * age, as a backstop for a bookmark, a typed address or an already-open tab, where
+  //         there is no referrer at all.
+  //     Bounded by tries so it can never run away: at most RESUME_MAX_TRIES round trips per
+  //     browser session no matter what the server says. Clock decides responsiveness, counter
+  //     decides whether it can loop — the same division §3b settled on.
+  var RESUME_RECHECK_MS = 60 * 1000;
+  var RESUME_MAX_TRIES = 3;
+  var RESUME_TRIES_K = 'ekd_silent_tries';
+  try {
+    var famRef = /^https:\/\/(www\.)?(hfdatalibrary|elkassabgidata|ipdatalibrary)\.com(\/|$)/;
+    var doneAt = parseInt(sessionStorage.getItem('ekd_silent_done') || '0', 10) || 0;
+    var rTries = parseInt(sessionStorage.getItem(RESUME_TRIES_K) || '0', 10) || 0;
+    // '1' is what the first build wrote — treat it as "checked, time unknown" and let it expire
+    // at once rather than stranding this visitor until they close the browser.
+    if (doneAt && rTries < RESUME_MAX_TRIES &&
+        ((document.referrer && famRef.test(document.referrer)) || doneAt === 1 || (Date.now() - doneAt) > RESUME_RECHECK_MS)) {
+      sessionStorage.removeItem('ekd_silent_done');
+    }
+  } catch (e) {}
+
   if (!hasKey() && !localStorage.getItem(F) && !sessionStorage.getItem('ekd_silent_done')
       && /^(www\.)?econdatalibrary\.com$/.test(location.hostname)) {
+    try { sessionStorage.setItem(RESUME_TRIES_K, String((parseInt(sessionStorage.getItem(RESUME_TRIES_K) || '0', 10) || 0) + 1)); } catch (e) {}
     try {
       var _ua = navigator.userAgent || '';
       // Never bounce a crawler. Googlebot renders JavaScript, so without this it would follow
