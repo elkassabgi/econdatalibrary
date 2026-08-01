@@ -97,7 +97,10 @@ def main() -> int:
         t0 = time.time()
         try:
             con.execute(f"SET memory_limit='{a.memory_limit}'")
-            con.execute(f"SET temp_directory='{os.path.join(ROOT, 'logs', '_duckspill')}'")
+            spill = os.path.join(ROOT, "logs", "_duckspill")
+            os.makedirs(spill, exist_ok=True)   # DuckDB will not create it and errors if absent
+            con.execute(f"SET temp_directory='{spill}'")
+            con.execute("SET preserve_insertion_order=false")
             # EXPRESSED SO IT SPILLS. `count(distinct value)` inside a GROUP BY keeps a
             # per-group distinct set in memory and DuckDB cannot spill it: cepii_gravity
             # (69,666,545 rows) died with "failed to allocate 8.0 KiB (6.9 GiB/6.0 GiB)" even
