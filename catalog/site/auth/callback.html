@@ -17,7 +17,16 @@
 </style>
 </head>
 <body>
-  <div class="m"><p><strong>ElkassabgiData</strong><br>Completing sign-in…</p><p class="ret"><a href="/">Return to the site</a></p></div>
+  <!-- Hidden until the flow is demonstrably SLOW.
+       This page exists only to hand a code over and leave; on a healthy round trip it is on
+       screen for a few hundred milliseconds, and painting a full-viewport dark panel for that
+       long is the "page that shows up for a brief second" Ahmed reported between sites. It is
+       not a page anyone is meant to read — it is a waypoint.
+       So it renders nothing by default and reveals itself after 600 ms, which only happens when
+       the exchange is genuinely slow or has failed. Then it is doing real work: telling the user
+       something is happening and offering a way out. Fast path: invisible. Slow path: unchanged. -->
+  <div class="m" id="m" hidden><p><strong>ElkassabgiData</strong><br>Completing sign-in&hellip;</p><p class="ret"><a href="/">Return to the site</a></p></div>
+  <script>setTimeout(function(){var m=document.getElementById('m');if(m)m.hidden=false;},600);</script>
   <script>
   (function () {
     'use strict';
@@ -108,13 +117,19 @@
         // and stop downloads working — the exact regression that was reported as "back to
         // sign-in and I can't download any more".
         lsSet('edl_family', '1');
-        return fetch(API + '/v1/auth/me', { headers: { 'Authorization': 'Bearer ' + d.access_token } })
-          .then(function (r) { return r.ok ? r.json() : null; })
-          .then(function (u) {
-            if (u && u.name) lsSet('edl_name', u.name);
-            if (u && u.email) lsSet('edl_email', u.email);
-          })
-          .catch(function () { /* identity is cosmetic; the session is already valid */ });
+        // The NAME IS NOT FETCHED HERE, on purpose.
+        //
+        // This page is visible for exactly as long as the work in front of the redirect takes,
+        // and every network round trip on that path is a round trip the user watches. Fetching
+        // the display name here put a SECOND request between the exchange and goBack(), which
+        // is why hf -> econ flashed a "Completing sign-in…" page and econ -> hf did not: hf's
+        // callback does one request, econ's did two. The name is cosmetic — it decides whether
+        // the nav pill reads "Ahmed" or "Account" — so paying for it while the user stares at
+        // an interstitial is the wrong trade.
+        //
+        // assets/sso.js backfills it on the destination page instead, off the critical path,
+        // where a slow response costs nothing visible. edl_family is set here because THAT is
+        // what the nav needs synchronously to stop saying "Sign in".
       })
       .catch(function () {})
       .then(function () { goBack(); });

@@ -85,6 +85,37 @@
   function hasKey()   { return !!localStorage.getItem(K); }
   function signedIn() { return !!(localStorage.getItem(K) || localStorage.getItem(F)); }
 
+  // Fill in the display name AFTER the page is up, not before it appears.
+  //
+  // auth/callback.html deliberately does not fetch the name: it is visible for exactly as long
+  // as the work in front of its redirect takes, and a second round trip there is a second round
+  // trip the user watches — the reason hf -> econ flashed an interstitial and econ -> hf did
+  // not. So the callback stores the token and edl_family (which is what the nav needs
+  // synchronously to stop saying "Sign in") and leaves the name to here, where a slow response
+  // costs nothing visible: the pill simply reads "Account" until it resolves, then becomes
+  // "Ahmed".
+  //
+  // Reading ekd_at directly is safe FOR A FETCH even though §hasKey warns against reading the
+  // SDK's storage: that warning is about using a bare token as a signed-in TEST, where a stale
+  // value reports true for a session the server already refused. Here a stale token simply
+  // 401s, we set nothing, and the nav keeps its fallback — a wrong answer is impossible.
+  function backfillName() {
+    try {
+      if (!localStorage.getItem(F) || localStorage.getItem(N)) return;   // nothing to do
+      var raw = localStorage.getItem('ekd_at');
+      if (!raw) return;
+      var at = JSON.parse(raw);
+      if (!at || !at.t || !at.e || Date.now() >= at.e) return;           // expired → let the SDK refresh it elsewhere
+      fetch('https://api.hfdatalibrary.com/v1/auth/me', { headers: { 'Authorization': 'Bearer ' + at.t } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (u) {
+          if (u && u.name) { localStorage.setItem(N, u.name); updateUI(); }
+          if (u && u.email) localStorage.setItem('edl_email', u.email);
+        })
+        .catch(function () { /* cosmetic — the session is valid either way */ });
+    } catch (e) {}
+  }
+
   function updateUI() {
     if (!signedIn()) return;
     var a = document.querySelector('.nav a.signin')
@@ -165,7 +196,7 @@
     // so they don't immediately bounce again.
     window.__edl_ssoJustChecked = true;
     history.replaceState({}, document.title, location.pathname + location.search);
-    onReady(updateUI); onReady(showNote);
+    onReady(updateUI); onReady(backfillName); onReady(showNote);
     return;
   }
 
@@ -232,7 +263,7 @@
   if (hasKey()) {
     note('have-key', 'a key is already stored in this browser');
     if (hp.has('sso_recheck')) history.replaceState({}, document.title, location.pathname + location.search);
-    onReady(updateUI); onReady(showNote);
+    onReady(updateUI); onReady(backfillName); onReady(showNote);
     return;
   }
 
