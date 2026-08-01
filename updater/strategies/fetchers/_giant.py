@@ -197,12 +197,29 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     state = load_state(source_dir)
     selected, capped = select_flows(catalog, state, max_flows=max_flows)
 
+    # ANNOUNCE THE SCOPE, then report progress through it. A giant is the longest-running
+    # thing in any pass - oecd ran for over three hours on 2026-08-01 - and the orchestrator
+    # only prints once per SOURCE, so the run log said nothing at all between ">>> oecd/_all"
+    # and its eventual completion. Working and wedged looked identical, and the only way to
+    # tell them apart was to go and stat the output directory. That is the same defect as the
+    # orchestrator's silent no-adapter skip (R211), one level down.
+    print(f"[{source}] catalogue {len(catalog):,} flow(s); selected {len(selected):,} "
+          f"changed/new/redo{' (CAPPED — remainder next tick)' if capped else ''}", flush=True)
+    t_start = time.time()
+
     tally = Tally()
     sess = requests.Session()
     total_rows = 0
     max_last = None
 
-    for fid in selected:
+    for n_done, fid in enumerate(selected, 1):
+        # Every 25 flows, and always on the last one. Bounded on purpose: one line per flow
+        # would bury a 1,400-flow sweep's real events in noise.
+        if n_done % 25 == 0 or n_done == len(selected):
+            print(f"[{source}] {n_done:,}/{len(selected):,} flows — "
+                  f"+{tally.added:,} rows, {tally.empty:,} quiet, "
+                  f"{tally.transient:,} transient, {tally.structural:,} structural, "
+                  f"{time.time() - t_start:,.0f}s", flush=True)
         meta = catalog[fid]
         out_path = os.path.join(source_dir, meta["filename"])
         since = sane_since(_max_obs_date(out_path))
