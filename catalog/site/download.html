@@ -250,10 +250,29 @@ function saveBlob(name, text){
 // So when a download is ATTEMPTED with no key, re-check once instead of blaming the
 // user for not pasting a key they should never have needed. Guarded by its own
 // one-shot marker so a genuinely signed-out visitor cannot be bounced in a loop.
+// ADDED 2026-07-31. What was wrong: both dead-ends below said "Sign in (free) to
+// download", which is the wrong instruction for the visitor who arrives from the new
+// ElkassabgiData pop-up sign-in on account.html. That sign-in is real — it mints a
+// family session — but it deliberately never yields an api_key (the account server
+// scrubs it from /v1/auth/me for family tokens, and /token/exchange never carries
+// one), so such a visitor reaches this guard signed in and keyless, and was told to
+// do the single thing they had just done. Telling them the truth costs one
+// same-origin localStorage read: the family SDK keeps its refresh token in 'ekd_rt'
+// under THIS origin, so its presence is a reliable local signal — no SDK on this
+// page, no network call, no new failure mode.
+function hasFamilySession(){ try{ return !!localStorage.getItem('ekd_rt'); }catch(_e){ return false; } }
+function noKeyMessage(){
+  return hasFamilySession()
+    // Names the destination, not the nav: a keyless family user's nav pill still
+    // reads "Sign in" (deliberately — see account.html render()), so "open Account"
+    // would point at a control that does not say Account.
+    ? 'Signed in — your API key just is not in this browser yet. Get it from accounts.elkassabgidata.com/account and paste it in the box above.'
+    : 'Sign in (free) to download — no account yet? It takes a minute.';
+}
 function trySsoThenRetry(){
   try{
     if(sessionStorage.getItem('edl_dl_recheck')){
-      toast('Sign in (free) to download — no account yet? It takes a minute.');
+      toast(noKeyMessage());
       return false;
     }
     sessionStorage.setItem('edl_dl_recheck','1');
@@ -275,7 +294,8 @@ function trySsoThenRetry(){
   try{
     if(sessionStorage.getItem('edl_dl_recheck') && !readStoredKey()){
       setTimeout(function(){
-        toast('Sign in (free) to download — no account yet? It takes a minute.');
+        toast(noKeyMessage());   // same two-way message as the guard: a pop-up user IS
+                                 // signed in, and "sign in" is not their next step
       }, 600);   // after sso.js has had its chance to deliver a key
     }
   }catch(_e){}
