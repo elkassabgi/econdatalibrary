@@ -17,17 +17,27 @@ import type { Env, LicenseRow, LicenseBlock } from "./types";
 // Regenerated 2026-07-02 from supported_sources() (was a stale 33-entry list, which
 // made ~158 genuinely-migrated sources return 501 instead of the honest 502).
 export const SUPPORTED_SOURCES: readonly string[] = [
+  // REMOVED 2026-08-01 — 17 ids whose licence verdict in DATABASE_LICENSES_VERBATIM.md is
+  // RESTRICTED (keep gated) or NEEDS HUMAN REVIEW, so this list must not offer them:
+  //   gated:  cboe, cow, famafrench, nbp, polity, sipri, tcmb, and the eight wto_* flows
+  //   unreviewed: irena, shiller (classification unclear_not_found)
+  // Nothing was withdrawn from service: all 17 already had ZERO derived CSVs in R2 and ZERO
+  // catalogue rows, so a request for one answered 404 either way. What they did do was make
+  // this list — the thing that is supposed to say what we serve — disagree with the licence
+  // audit, and hide that disagreement behind an error code that looks like "no such series".
+  // Re-add one only after its verdict changes in the audit AND its CSVs are verified present.
+
   "abs", "barro_lee", "bcb", "bcrp", "bea", "bis",
-  "bls", "boc", "boe", "bundesbank", "cboe", "census",
+  "bls", "boc", "boe", "bundesbank", "census",
   // cepii_gravity added 2026-07-30: 1,143,250 series were catalogued and SEARCHABLE but
   // absent from this list, so every one of them answered 501 not_migrated. The derive is
   // complete and verified both directions (MISSING 0, ORPHANED 0 against a full listing
   // of all 1,143,250 objects), and the licence is CONFIRMED redistributable_attribution
   // (Etalab Open Licence 2.0, 100% dated from CEPII's own Last-Modified, 2024-04-15).
   "cepii_gravity",
-  "cnb", "comtrade", "cow", "damodaran", "dbnomics", "defillama",
+  "cnb", "comtrade", "damodaran", "dbnomics", "defillama",
   "ecb", "edgar_jrc", "ei_statreview", "eia", "ember", "epu",
-  "eurostat", "famafrench", "fao_ae", "fao_af", "fao_ec", "fao_ep",
+  "eurostat", "fao_ae", "fao_af", "fao_ec", "fao_ep",
   "fao_es", "fao_et", "fao_ew", "fao_fo", "fao_ga", "fao_gb",
   "fao_ge", "fao_gf", "fao_gl", "fao_gn", "fao_gr", "fao_gt",
   "fao_gy", "fao_ic", "fao_oa", "fao_pp", "fao_qa", "fao_qcl",
@@ -71,11 +81,10 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // retired (not re-crawlable) and 184 that KSH still publishes but ksh_stadat's parser
   // skips with "no parseable time dimension". Verified before removal: 0 ksh tables absent
   // from ksh_stadat. The parquets under clean_full/ksh/ are KEPT, so this is reversible.
-  "irena", "kof_globalization", "ksh_stadat", "maddison", "nasa_giss", "nbp",
-  "noaa", "nyfed", "oecd", "ofr", "owid", "oxcgrt",
-  "penn_world_table", "pip", "polity", "pwt", "rba", "riksbank",
-  "sec_edgar", "shiller", "sipri", "snb", "statcan", "stats_nz",
-  "swiid", "tcmb", "transparency_ti", "treasury", "ucdp", "unctad_bopcaba",
+  "kof_globalization", "ksh_stadat", "maddison", "nasa_giss", "noaa", "nyfed", "oecd", "ofr", "owid", "oxcgrt",
+  "penn_world_table", "pip", "pwt", "rba", "riksbank",
+  "sec_edgar", "snb", "statcan", "stats_nz",
+  "swiid", "transparency_ti", "treasury", "ucdp", "unctad_bopcaba",
   "unctad_ciocgeaia", "unctad_cioiuibbicoeair4a", "unctad_cpa", "unctad_cpia", "unctad_cpta", "unctad_fdiiaofasa",
   "unctad_fmcpa", "unctad_fmcpia21", "unctad_gasbeaiogasa", "unctad_gasbtbia", "unctad_gasbtoia", "unctad_gdpgbtoevbkoeatasa",
   "unctad_gdptapccac2pa", "unctad_lscia", "unctad_lsciq", "unctad_mfbcoboa", "unctad_mmcascioeaiopa", "unctad_mpcadioeaia",
@@ -152,8 +161,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // NEEDS-REVIEW default for this source; that divergence was corrected before serving.
   "un_wpp",
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
-  "worldbank_wdi", "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025", "wto_hs_a_0030",
-  "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax", "yale_epi", "zillow",
+  "worldbank_wdi", "yale_epi", "zillow",
   // 9 national-statistical PxWeb sources — flow-grain per-table publish (2026-07-22).
   "ssb", "stat_slovenia", "stat_latvia", "dst", "scb", "statfin", "hagstofa", "stat_estonia", "bfs",
 ];
