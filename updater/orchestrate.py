@@ -71,6 +71,88 @@ def _ttl(unit) -> int:
     return _TTL_BY_COST.get((unit.config or {}).get("refresh_cost"), 7200)
 
 
+# HARD PER-SOURCE WALL CLOCK. AQUEDUCT_UNIT_TIMEOUT_MIN, 0 disables.
+#
+# The whole-run budget is checked BETWEEN units, so it cannot bound a unit that never returns.
+# Measured 2026-07-31: ssb ran 2h31m inside one update() and took GitHub's 300-minute ceiling
+# with it - the run was killed, "RUN BUDGET" never printed, and the graceful stop (finish what
+# we started, push state, name what we skipped) never happened. Per-source Deadlines fix the
+# fetchers that cooperate; only 18 of 107 live cloud sources have one, and a fetcher making a
+# single blocking call (imf _direct's one ing.pull) has nothing to check a Deadline between.
+#
+# SIGALRM, not a thread. Injecting an exception across threads needs ctypes and cannot
+# interrupt a blocking C call; SIGALRM is the standard tool and lands in the main thread as a
+# normal Python exception, so the existing `except Exception` records it transient and the run
+# CONTINUES to the next source. Interrupting is safe for data because merge_and_write publishes
+# through write_table_atomic - a half-written store is not reachable.
+#
+# POSIX only. signal.setitimer does not exist on Windows, where this is a no-op by design: the
+# ceiling being defended is GitHub's, and the workstation job runs with a 2,880-minute budget
+# and no hard kill. Never silently: _unit_timeout says which platform it is on the first call.
+_TIMEOUT_WARNED = False
+
+
+class UnitTimeout(Exception):
+    """One source exceeded its hard wall clock. Deliberately an Exception, not BaseException:
+    it must be caught by the unit handler and demote THAT source, never abort the run."""
+
+
+def _unit_timeout_min() -> float:
+    try:
+        return float(os.environ.get("AQUEDUCT_UNIT_TIMEOUT_MIN", "45"))
+    except ValueError:
+        return 45.0
+
+
+class _unit_deadline:
+    """Context manager arming SIGALRM for one unit; a no-op where unavailable."""
+
+    def __init__(self, key: str, minutes: float):
+        self.key, self.minutes = key, minutes
+        self.armed = False
+
+    def __enter__(self):
+        global _TIMEOUT_WARNED
+        if self.minutes <= 0:
+            return self
+        try:
+            import signal
+            if not hasattr(signal, "setitimer"):
+                raise AttributeError("setitimer")
+
+            def _fire(signum, frame):
+                raise UnitTimeout(
+                    f"{self.key} exceeded its {self.minutes:.0f}-minute hard limit and was "
+                    f"interrupted; existing data untouched, re-queued for the next tick")
+
+            self._prev = signal.signal(signal.SIGALRM, _fire)
+            signal.setitimer(signal.ITIMER_REAL, self.minutes * 60.0)
+            self.armed = True
+            if not _TIMEOUT_WARNED:
+                # Once per run, so the log PROVES the guard is active rather than asserting
+                # it. This path cannot be exercised on the Windows workstation (no setitimer),
+                # so the first CI run is its first real test and must say so out loud.
+                print(f"[orchestrator] per-unit hard timeout ARMED at "
+                      f"{self.minutes:.0f} min (SIGALRM)", flush=True)
+                _TIMEOUT_WARNED = True
+        except (ImportError, AttributeError, ValueError):
+            if not _TIMEOUT_WARNED:
+                print("[orchestrator] per-unit hard timeout UNAVAILABLE on this platform "
+                      "(no signal.setitimer); relying on per-source Deadlines only", flush=True)
+                _TIMEOUT_WARNED = True
+        return self
+
+    def __exit__(self, *exc):
+        if self.armed:
+            try:
+                import signal
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, self._prev)
+            except Exception:                                # noqa: BLE001
+                pass
+        return False
+
+
 def _has_adapter(unit) -> bool:
     """True if this unit's strategy is runnable now (strategy registered, and for
     extend_by_date the per-source fetcher exists). Lets Phase-3 roll out incrementally."""
@@ -570,7 +652,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             #
             # None means "no usable lower bound", which every fetcher already handles: it is
             # what a first run passes.
-            res = strat.run(unit, since=sane_since((us or {}).get("last_obs_date")))
+            with _unit_deadline(unit.key, _unit_timeout_min()):
+                res = strat.run(unit, since=sane_since((us or {}).get("last_obs_date")))
             status = res.status
             ok = status in ("ok", "no_change")
             err_note = res.error
@@ -615,6 +698,13 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             store.log_run(unit.source_id, unit.unit_id, status, obs=(res.obs or 0),
                           dur_s=round(time.time() - t0, 1), note=err_note)
             results.append((unit.key, status))
+        except UnitTimeout as e:
+            # Its own branch so the log names the cap rather than reporting a generic
+            # UNEXPECTED. Transient by design: nothing was corrupted, the source simply did
+            # not finish, and it is re-queued.
+            print(f"[orchestrator] TIMEOUT {unit.key} — {e}", flush=True)
+            _record(store, unit, "transient_fail", err=str(e)[:300], dur=time.time() - t0)
+            results.append((unit.key, "timeout"))
         except TransientError as e:
             _record(store, unit, "transient_fail", err=str(e)[:300], dur=time.time() - t0)
             results.append((unit.key, "transient_fail"))
