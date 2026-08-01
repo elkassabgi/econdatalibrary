@@ -56,17 +56,25 @@ def csv_key(prefix: str, sid: str) -> str:
 
 
 def choose_split(con, path: str, n_rows: int, max_rows: int):
-    """-> (dimension, parts) or (None, []) when the table needs no split.
+    """-> (dimension-expression, label, parts) or (None, None, []) when no split is needed.
 
-    Keys are pipe-delimited NAME=VALUE fragments. Candidates are tried coarsest-first and each
-    is CHECKED by grouping — the largest part must fit, because a dimension can have plenty of
+    Keys are pipe-delimited NAME=VALUE fragments. Candidates are tried coarsest-first and each is
+    CHECKED by grouping — the largest part must fit, because a dimension can have plenty of
     distinct values and still put almost every row in one of them.
+
+    COMPOSITE SPLITS, because single dimensions are not always enough. Six census tables were
+    refused on the first run — intltrade__exports__hs (8,718,542 rows),
+    intltrade__imports__hs (4,623,339), intltrade__exports__sitcexport (1,670,570) and three
+    more, about 15.6 million rows in total — because no ONE dimension divided them below the
+    bound. Trade data is naturally two-dimensional (commodity x country, commodity x district),
+    so pairs are tried next, ordered by the product of their cardinalities so the coarsest
+    workable pair wins. A table neither can divide is still refused and named.
     """
     if n_rows <= max_rows:
-        return None, []
+        return None, None, []
     row = con.execute(f"select series_key from read_parquet('{path}') limit 1").fetchone()
     if not row:
-        return None, []
+        return None, None, []
     dims = [p.split("=", 1)[0] for p in row[0].split("|") if "=" in p]
     card = {}
     for d in dims:
@@ -76,20 +84,70 @@ def choose_split(con, path: str, n_rows: int, max_rows: int):
                 f"from read_parquet('{path}')").fetchone()[0]
         except Exception:                                      # noqa: BLE001
             continue
-    for c, d in sorted((c, d) for d, c in card.items() if 2 <= c <= 2000):
-        expr = f"regexp_extract(series_key, '{d}=([^|]*)', 1)"
+
+    def expr_for(ds_list):
+        parts = [f"regexp_extract(series_key, '{d}=([^|]*)', 1)" for d in ds_list]
+        return parts[0] if len(parts) == 1 else " || '~' || ".join(parts)
+
+    def try_combo(ds_list):
+        e = expr_for(ds_list)
         try:
             biggest = con.execute(
                 f"select max(n) from (select count(*) n from read_parquet('{path}') "
-                f"where obs_date is not null group by {expr})").fetchone()[0]
-            if biggest and biggest <= max_rows:
-                parts = [r[0] for r in con.execute(
-                    f"select distinct {expr} from read_parquet('{path}') "
-                    f"where obs_date is not null order by 1").fetchall()]
-                return d, parts
+                f"where obs_date is not null group by {e})").fetchone()[0]
         except Exception:                                      # noqa: BLE001
+            return None
+        if not biggest or biggest > max_rows:
+            return None
+        parts = [r[0] for r in con.execute(
+            f"select distinct {e} from read_parquet('{path}') "
+            f"where obs_date is not null order by 1").fetchall()]
+        return parts
+
+    usable = {d: c for d, c in card.items() if 2 <= c <= 2000}
+    for _, d in sorted((c, d) for d, c in usable.items()):
+        parts = try_combo([d])
+        if parts:
+            return expr_for([d]), [d], parts
+
+    # TRUNCATIONS, which is what trade data actually wants. intltrade__exports__hs has an
+    # E_COMMODITY dimension of 18,511 values whose largest part is 585 rows — a perfect
+    # splitter that the 2,000 cap above excluded, and excluding it is why this table was
+    # refused on the first run. But 18,511 units of ~471 rows each is shredding, and HS codes
+    # are HIERARCHICAL: 551529 is chapter 55, heading 5515, subheading 551529. Truncating to 2
+    # gives ~99 chapters, to 4 gives ~1,200 headings — real classification levels a user
+    # recognises, not arbitrary shards. Coarsest first.
+    for d, c in sorted(card.items(), key=lambda kv: -kv[1]):
+        if c <= 2000:
             continue
-    return "", []                                              # refused
+        for t in (2, 3, 4, 6):
+            e = f"substr(regexp_extract(series_key, '{d}=([^|]*)', 1), 1, {t})"
+            try:
+                tc = con.execute(f"select count(distinct {e}) "
+                                 f"from read_parquet('{path}')").fetchone()[0]
+                if not (2 <= tc <= 2000):
+                    continue
+                biggest = con.execute(
+                    f"select max(n) from (select count(*) n from read_parquet('{path}') "
+                    f"where obs_date is not null group by {e})").fetchone()[0]
+                if biggest and biggest <= max_rows:
+                    parts = [r[0] for r in con.execute(
+                        f"select distinct {e} from read_parquet('{path}') "
+                        f"where obs_date is not null order by 1").fetchall()]
+                    return e, [f"{d}:{t}"], parts
+            except Exception:                                  # noqa: BLE001
+                continue
+
+    # pairs, coarsest product first
+    pairs = sorted(((usable[a] * usable[b], a, b)
+                    for i, a in enumerate(sorted(usable))
+                    for b in sorted(usable)[i + 1:]
+                    if usable[a] * usable[b] <= 20_000))
+    for _, a, b in pairs:
+        parts = try_combo([a, b])
+        if parts:
+            return expr_for([a, b]), [a, b], parts
+    return "", None, []                                        # refused
 
 
 def main() -> int:
@@ -149,17 +207,21 @@ def main() -> int:
         con.execute("SET memory_limit='6GB'")
         con.execute(f"SET temp_directory='{spill}'")
         con.execute("SET preserve_insertion_order=false")
-        dim, parts = choose_split(con, f, n_rows, a.max_rows)
+        expr, dim, parts = choose_split(con, f, n_rows, a.max_rows)
         con.close()
-        if dim == "":
+        if expr == "":
             refused.append((table, f"{n_rows:,} rows, no dimension divides it"))
             print(f"  [{i}/{len(files)}] {table}: REFUSED — {n_rows:,} rows", flush=True)
             continue
-        if dim:
-            split_map[table] = {"dim": dim, "parts": len(parts), "rows": n_rows}
+        if expr:
+            # dims as a LIST, not a "~"-joined string: the join character also
+            # separates the VALUES in a composite part id, so one string cannot be split back
+            # unambiguously if a code ever contains it.
+            split_map[table] = {"dims": dim, "sep": "~",
+                                "parts": len(parts), "rows": n_rows}
             ids += [table_sid(table, p) for p in parts if p]
-            print(f"  [{i}/{len(files)}] {table}: {n_rows:,} rows split by {dim} "
-                  f"-> {len(parts)} parts", flush=True)
+            print(f"  [{i}/{len(files)}] {table}: {n_rows:,} rows split by "
+                  f"{'+'.join(dim)} -> {len(parts)} parts", flush=True)
         else:
             ids.append(table_sid(table))
         if a.limit and i >= a.limit:
