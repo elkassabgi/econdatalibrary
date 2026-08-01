@@ -5284,7 +5284,19 @@ sources:
     - 'single zstd parquet data/clean_full/yale_epi/yale_epi.parquet (small, ~thousands of obs: 180 countries x ~40 indicators
       x 1 year), schema (series_key ''EPI:{var}:{iso3}'', obs_date date32 year-end, value float64).'
 - source_id: zillow
-  live: true
+  # live: false 2026-08-01 — GATED, not broken. Zillow's Terms of Use are CONFIRMED
+  # permission_required (DATABASE_LICENSES_VERBATIM.md, tier "RESTRICTED (keep gated)"):
+  # Section 5 forbids reproducing or "otherwise mak[ing] accessible on or through any
+  # other website, application, or service" its data without prior written approval.
+  # It had been serving 52 series — 52 catalogue rows, 52 CSVs in R2, listed in
+  # SUPPORTED_SOURCES — all of which were withdrawn (manifest in
+  # logs/zillow_gate_manifest.json). Leaving live: true would keep refreshing 543,001
+  # series that by design now reach nobody, and would show forever in the coverage
+  # audit as "scheduled but not served" with no explanation attached.
+  #
+  # The 412 local parquet files are KEPT. Flip this back the moment Zillow grants
+  # written permission; nothing needs re-crawling.
+  live: false
   scripts:
   - jobs/ingest_zillow.py
   strategy: bulk_snapshot_if_changed
