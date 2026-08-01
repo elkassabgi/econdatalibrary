@@ -469,6 +469,22 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     if problems:
         raise SystemExit("registry invalid (fix before running):\n  " + "\n  ".join(problems[:20]))
     units = registry.all_units()
+
+    # RECONCILE WHAT WAS ASKED FOR AGAINST WHAT EXISTS, before running anything. `--source`
+    # is a promise the caller makes to a human ("running updater for 14 source(s)") and the
+    # loop below silently drops any name that matches no unit — a typo, a renamed source, or
+    # a registry entry that produces no units all look identical to a clean run that simply
+    # had less to do. Fail fast and name them: the caller can fix a typo in seconds, whereas
+    # a missing source is only noticed weeks later as unexplained staleness.
+    if sources:
+        have = {u.source_id for u in units}
+        unknown = sorted(set(sources) - have)
+        if unknown:
+            raise SystemExit(
+                f"[orchestrator] {len(unknown)} requested source(s) have no unit in the "
+                f"registry: {', '.join(unknown)} — check the spelling, or the source's "
+                f"registry entry. Refusing to run a partial set silently.")
+
     results = []
     pending_live, pending_other = [], []  # no-adapter sources, split by live tier
     # Rollout perimeter enforced at EXECUTION (learned from CI run 28682266857,
@@ -559,9 +575,20 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             results.append((unit.key, "broken_adapter"))
             continue
         if not runnable:
-            # never a silent skip: every no-adapter source gets a PENDING line below,
-            # and a live-tier one fails the whole run (§5.3)
+            # ANNOUNCED INLINE, not only in the end-of-run summary. This branch claimed to
+            # be "never a silent skip" on the strength of a PENDING line printed AFTER the
+            # loop — which is no use at all while the run is still going, and no use ever
+            # if the run is killed. noaa proved it: the 2026-08-01 workstation pass listed
+            # 14 sources, jumped from `NOT DUE istat` straight to `>>> oecd`, and emitted
+            # not one character about noaa in either stdout or stderr. I read that silence
+            # as "the pass is working on noaa's files" and parked its re-key as blocked for
+            # a source the run had never touched (R211).
+            #
+            # Every other `continue` in this loop prints where the reader is looking. This
+            # one now does too; the summary line below still restates it.
             (pending_live if _is_live(unit) else pending_other).append(unit.source_id)
+            print(f"[orchestrator] PENDING {unit.key} — no adapter built for "
+                  f"strategy={unit.strategy}; not attempted", flush=True)
             continue
 
         us = store.get_unit(unit.source_id, unit.unit_id)
