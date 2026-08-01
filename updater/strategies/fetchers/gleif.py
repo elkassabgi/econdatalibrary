@@ -1,5 +1,10 @@
 """S5 bulk fetcher — GLEIF LEI golden copy (CC0). A REFERENCE TABLE, not a time series.
 
+NO series_cursors BY DESIGN — do not "fix" this. A sweep for fetchers that merge data without
+reporting changed series (contract §5.7) flags this module, and it is a false positive every
+time: there is no series_key/obs_date here, the catalogue holds 0 series for it, and nothing
+derives per-series CSVs from it. Cursors would be meaningless, not missing.
+
 One parquet: clean_full/gleif/lei_records.parquet (3,330,161 rows on R2), columns
 (LEI, LegalName, LegalJurisdiction, EntityLegalFormCode, EntityStatus, RegistrationStatus,
 ManagingLOU). There is NO series_key/obs_date/value here — row identity is the 20-char LEI —
