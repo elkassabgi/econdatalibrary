@@ -19,7 +19,9 @@ GROUPED storage (anti-bloat -- NEVER one file per station):
       data/clean_full/noaa/gsom__<PREFIX>.parquet      (obs, many stations)
       data/clean_full/noaa/gsom__<PREFIX>__series.parquet  (series meta)
   ~250 prefixes x 2 datasets + sidecars => a few hundred files total.
-  series_key = "<station>:<element>"  (one series per station x element).
+  series_key = "<dataset>:<station>:<element>"  (one series per dataset x station
+  x element).  The dataset qualifier is NOT decoration: without it 1,046,291 ids
+  name both a monthly and an annual series -- see the comment at the add_obs call.
 
 Stages (resumable):
   --enumerate   (re)fetch the station-id manifests + station metadata
@@ -62,13 +64,30 @@ HOMEPAGE = "https://www.ncei.noaa.gov/cdo-web/"
 DATASETS = {
     "gsom": {
         "access": "https://www.ncei.noaa.gov/data/gsom/access/",
+        "archive": "https://www.ncei.noaa.gov/data/gsom/archive/gsom-latest.tar.gz",
         "freq": "M",
     },
     "gsoy": {
         "access": "https://www.ncei.noaa.gov/data/gsoy/access/",
+        "archive": "https://www.ncei.noaa.gov/data/gsoy/archive/gsoy-latest.tar.gz",
         "freq": "A",
     },
 }
+# THE ARCHIVE TARBALL IS WHAT THE UPDATER USES, not `access`. `access` is one wide CSV per
+# station: ~130,000 HTTP requests for a refresh, which is why this source was built as a
+# one-off backfill and never got a fetcher. `archive` is the identical corpus as a single
+# object (gsom 1.50 GB, gsoy 141.7 MB) carrying ETag + Last-Modified + Content-Length, so the
+# vintage probe is two HEADs and the refresh is two downloads.
+#
+# VERIFIED COMPLETE, NOT A DELTA (2026-08-01): members are flat <STATION>.csv at the tar root
+# and each one holds that station's WHOLE history - AE000041196.csv spans 1945..2023,
+# ACW00011647.csv spans 1958..2026. That is what lets the shards be published by OVERWRITE
+# rather than merged: the publisher restates everything every time, so a rewrite loses nothing
+# and the 262-million-row gsom__US shard never has to be read back to be updated.
+#
+# Member order is NOT sorted (AEM..., AE0..., ACW..., AEM..., AG0...), so nothing may assume
+# that all stations of one country prefix arrive contiguously. ShardWriter already keeps a
+# buffer and an open writer per prefix, which is exactly the right shape for arbitrary order.
 
 # Non-element columns in every station CSV.
 META_COLS = {"STATION", "DATE", "LATITUDE", "LONGITUDE", "ELEVATION", "NAME"}
@@ -280,9 +299,22 @@ class ShardWriter:
         ("attributes", pa.string()),
     ])
 
-    def __init__(self, ds: str, batch_rows: int = 400_000):
+    def __init__(self, ds: str, batch_rows: int = 400_000,
+                 total_cap: int = 1_000_000):
         self.ds = ds
         self.batch_rows = batch_rows
+        # A PER-PREFIX threshold does not bound memory. `batch_rows` only flushes the ONE
+        # buffer that reached it, and there are ~250 prefixes, so the worst case is 250 x
+        # batch_rows rows resident in Python lists - at the default that is 100 million
+        # slots across seven fields, tens of GB, on a source whose gsom tarball alone melts
+        # to ~450M rows. It never bit the one-off backfill because most prefixes are tiny
+        # and the big ones flush often, but "usually fine" is not a bound.
+        #
+        # total_cap bounds the SUM. When the buffered total crosses it every buffer is
+        # flushed, so resident rows can never exceed it regardless of how the tar interleaves
+        # countries - which matters here precisely because member order is arbitrary.
+        self.total_cap = total_cap
+        self._buffered = 0
         self.writers: dict[str, pq.ParquetWriter] = {}
         self.buffers: dict[str, dict] = {}
         self.n_obs: dict[str, int] = {}
@@ -318,8 +350,12 @@ class ShardWriter:
         b["value"].append(value)
         b["attributes"].append(attributes)
         self.n_obs[prefix] += 1
+        self._buffered += 1
         if len(b["station"]) >= self.batch_rows:
             self._flush(prefix)
+        elif self._buffered >= self.total_cap:
+            for p in list(self.buffers):
+                self._flush(p)
 
     def bump_series(self, prefix, station, element, obs_date):
         k = (prefix, station, element)
@@ -342,6 +378,9 @@ class ShardWriter:
         # longer than the others (can happen on malformed stations).
         n = min(len(b[k]) for k in b)
         if n == 0:
+            # discarded, but still accounted for: leaving _buffered high here would make the
+            # total_cap fire early forever after, which is safe but silently wrong
+            self._buffered -= len(b["station"])
             for key in b:
                 b[key].clear()
             return
@@ -355,6 +394,7 @@ class ShardWriter:
             "attributes": pa.array(b["attributes"][:n], type=pa.string()),
         }, schema=self.SCHEMA)
         self._writer(prefix).write_batch(batch)
+        self._buffered -= len(b["station"])
         for key in b:
             b[key].clear()
 
@@ -424,62 +464,73 @@ def load_station_meta() -> dict:
 
 
 def _melt_csv(ds: str, path: str, sid: str, prefix: str, sw: ShardWriter):
-    """Parse one wide station CSV, emit long rows into the shard writer.
+    """Parse one wide station CSV ON DISK, emit long rows into the shard writer.
 
     Returns number of obs emitted for this station.
     """
-    n = 0
     with open(path, "r", encoding="utf-8", newline="") as f:
-        reader = csv.reader(f)
-        try:
-            header = next(reader)
-        except StopIteration:
-            return 0
-        # map column index -> element name; and element -> its _ATTRIBUTES index
-        elem_idx = {}
-        attr_idx = {}
-        date_i = None
-        for i, col in enumerate(header):
-            c = col.strip()
-            if c == "DATE":
-                date_i = i
-            elif c in META_COLS:
+        return melt_stream(ds, f, sid, prefix, sw)
+
+
+def melt_stream(ds: str, f, sid: str, prefix: str, sw: ShardWriter):
+    """Same parse, over an already-open TEXT stream.
+
+    Split out so the updater's fetcher can feed members of <ds>-latest.tar.gz straight in
+    without landing 130,000 CSVs on disk first. There must be exactly ONE melt: a second
+    implementation reading the same columns is how the tarball path and the per-station path
+    drift into disagreeing about what an element or an attribute means.
+    """
+    n = 0
+    reader = csv.reader(f)
+    try:
+        header = next(reader)
+    except StopIteration:
+        return 0
+    # map column index -> element name; and element -> its _ATTRIBUTES index
+    elem_idx = {}
+    attr_idx = {}
+    date_i = None
+    for i, col in enumerate(header):
+        c = col.strip()
+        if c == "DATE":
+            date_i = i
+        elif c in META_COLS:
+            continue
+        elif c.endswith("_ATTRIBUTES"):
+            attr_idx[c[:-len("_ATTRIBUTES")]] = i
+        else:
+            elem_idx[c] = i
+    if date_i is None:
+        return 0
+    for row in reader:
+        if len(row) <= date_i:
+            continue
+        od = _parse_date(ds, row[date_i])
+        if od is None:
+            continue
+        for elem, ci in elem_idx.items():
+            if ci >= len(row):
                 continue
-            elif c.endswith("_ATTRIBUTES"):
-                attr_idx[c[:-len("_ATTRIBUTES")]] = i
-            else:
-                elem_idx[c] = i
-        if date_i is None:
-            return 0
-        for row in reader:
-            if len(row) <= date_i:
+            raw = row[ci]
+            val = _to_float(raw)
+            if val is None:
                 continue
-            od = _parse_date(ds, row[date_i])
-            if od is None:
-                continue
-            for elem, ci in elem_idx.items():
-                if ci >= len(row):
-                    continue
-                raw = row[ci]
-                val = _to_float(raw)
-                if val is None:
-                    continue
-                ai = attr_idx.get(elem)
-                attrs = row[ai].strip() if (ai is not None and ai < len(row)) else ""
-                # DATASET-QUALIFIED KEY. "<station>:<element>" alone is AMBIGUOUS across the two
-                # datasets this script writes. Measured 2026-08-01: 1,046,291 of 2,089,582 keys appear
-                # in BOTH gsom (monthly) and gsoy (yearly), so one id would serve a monthly series
-                # with its own annual aggregates mixed in - ACW00011647:DP1X returns 122 monthly
-                # points and 6 annual ones, which plots as a monthly line with six spikes. There is no
-                # (key, date) COLLISION, because gsom stamps month-start and gsoy year-end, so the
-                # defect is invisible to a duplicate check and only shows up when someone reads the
-                # series. That is the comtrade under-keying failure caught before publication instead
-                # of after: nothing is catalogued yet, so the fix costs nothing now and would cost
-                # 2,089,582 published ids later.
-                sk = f"{sw.ds}:{sid}:{elem}"
-                sw.add_obs(prefix, sid, sk, od, elem, val, attrs)
-                sw.bump_series(prefix, sid, elem, od)
-                n += 1
+            ai = attr_idx.get(elem)
+            attrs = row[ai].strip() if (ai is not None and ai < len(row)) else ""
+            # DATASET-QUALIFIED KEY. "<station>:<element>" alone is AMBIGUOUS across the two
+            # datasets this script writes. Measured 2026-08-01: 1,046,291 of 2,089,582 keys appear
+            # in BOTH gsom (monthly) and gsoy (yearly), so one id would serve a monthly series
+            # with its own annual aggregates mixed in - ACW00011647:DP1X returns 122 monthly
+            # points and 6 annual ones, which plots as a monthly line with six spikes. There is no
+            # (key, date) COLLISION, because gsom stamps month-start and gsoy year-end, so the
+            # defect is invisible to a duplicate check and only shows up when someone reads the
+            # series. That is the comtrade under-keying failure caught before publication instead
+            # of after: nothing is catalogued yet, so the fix costs nothing now and would cost
+            # 2,089,582 published ids later.
+            sk = f"{sw.ds}:{sid}:{elem}"
+            sw.add_obs(prefix, sid, sk, od, elem, val, attrs)
+            sw.bump_series(prefix, sid, elem, od)
+            n += 1
     return n
 
 

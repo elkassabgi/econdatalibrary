@@ -3190,17 +3190,29 @@ sources:
     - 'single parquet: data/clean_full/nasa_giss/giss_temp.parquet (~28 KB). Schema: series_key (str, ''GISS:{table}:{period}''),
       obs_date (date32), value (float64).'
 - source_id: noaa
-  # CLOUD-INFEASIBLE - measured 262,514,152 rows in a single file (gsom__US.parquet),
-  # about 18.4 GB once decoded into Arrow. merge_and_write materialises the whole
-  # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
-  # Routed to the workstation per the owner's standing rule: a database the cloud
-  # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  # STILL LOCAL, BUT NOT FOR THE REASON THIS ENTRY USED TO GIVE. The old note said
+  # "CLOUD-INFEASIBLE - 262,514,152 rows in gsom__US.parquet, ~18.4 GB decoded into
+  # Arrow, because merge_and_write materialises the whole existing parquet per call".
+  # That peak was real for a MERGE, and the fetcher built 2026-08-01 does not merge:
+  # the archive is a whole-history restatement, so shards are written straight through
+  # a streaming ParquetWriter and the existing parquet is never read back. Resident
+  # memory is bounded by ShardWriter.total_cap (1M rows), not by the largest shard.
+  #
+  # What keeps it local is now WALL CLOCK AND EGRESS, and neither has been measured:
+  # a refresh melts ~130,000 station CSVs to 552M rows and republishes ~1.4 GB across
+  # 834 objects. Until that is timed against the 300-minute ceiling the workstation is
+  # the safe place for it. Routing on an unmeasured estimate is what put `abs` here
+  # wrongly (see its entry), so this says plainly that it is an estimate.
   run_location: local
   scripts:
   - jobs/ingest_noaa.py
-  strategy: bulk_snapshot_if_changed
-  strategy_reason: Bulk per-station GSOM/GSOY CSV archive (~214K files) with NO date param; gate each station file on Last-Modified,
-    re-download only changed stations, then full --build to rebuild shards.
+  strategy: overwrite_if_changed
+  strategy_reason: 'NCEI publishes the whole corpus as one object per dataset - gsom-latest.tar.gz (1.50 GB) and gsoy-latest.tar.gz
+    (141.7 MB) - each carrying ETag/Last-Modified/Content-Length, so the vintage probe is two HEADs instead of ~214K conditional
+    GETs. VERIFIED 2026-08-01 that every member holds its station''s full history (AE000041196 spans 1945..2023, ACW00011647
+    spans 1958..2026), which makes the archive a complete restatement and OVERWRITE the correct publish - the fetcher asserts
+    that precondition on every run before it writes anything. This supersedes the per-station conditional-GET plan, whose own
+    open_question (does NCEI emit reliable per-file Last-Modified?) is moot once the whole corpus is one gated object.'
   cadence: monthly
   refresh_cost: large
   out_dir: noaa
