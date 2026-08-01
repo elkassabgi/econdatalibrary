@@ -47,7 +47,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import CURSOR_CAP, Deadline, Tally, cursors_from_table, finalize, merge_cursor_map
 from ._vintage import http_vintage
 from jobs import ingest_statsnz as ig     # reuse the production parser
 
@@ -176,6 +176,7 @@ def _save(out_dir, data) -> None:
 
 
 def update(unit, since) -> Result:
+    cursors: dict[str, str] = {}
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
     sess = requests.Session()
@@ -232,6 +233,9 @@ def update(unit, since) -> Result:
             tally.transient_unit(prefix)                     # one dataset must not sink the source
             continue
         published += n
+        # Which series moved (contract §5.7). Without it the orchestrator cannot re-derive
+        # these series' CSVs and the published downloads drift away from the parquet.
+        merge_cursor_map(cursors, cursors_from_table(tbl, cap=CURSOR_CAP), cap=CURSOR_CAP)
         tally.added_unit(max(0, n - before), prefix)
         if md and (maxd is None or str(md) > str(maxd)):
             maxd = md
@@ -241,4 +245,5 @@ def update(unit, since) -> Result:
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
-    return finalize(tally, published, maxd or (since or None), source=SOURCE)
+    return finalize(tally, published, maxd or (since or None), source=SOURCE,
+                    series_cursors=cursors or None)

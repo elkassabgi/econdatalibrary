@@ -82,7 +82,7 @@ import pyarrow as pa
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import CURSOR_CAP, Tally, cursors_from_table, finalize, merge_cursor_map
 
 SOURCE = "sec_edgar"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
@@ -398,7 +398,8 @@ def _to_table(df: pd.DataFrame, prod_cfg: dict, table: str, key: str) -> pa.Tabl
     return pa.Table.from_pandas(df, preserve_index=False)
 
 
-def _fetch_key(prod_cfg: dict, key: str, session, tally: Tally) -> int:
+def _fetch_key(prod_cfg: dict, key: str, session, tally: Tally,
+               cursors: dict | None = None) -> int:
     """Download + parse one dataset key's zip and merge every table into its own
     per-period parquet (never-shrink/dedup). Returns rows added across tables.
     Raises TransientError on download/zip failure (the key re-runs next tick)."""
@@ -443,6 +444,14 @@ def _fetch_key(prod_cfg: dict, key: str, session, tally: Tally) -> int:
         n, _ = merge.merge_and_write(out_path, new_tbl, mode="merge",
                                      dedup_keys=dedup, allow_empty=True)
         added = max(0, n - before)
+        # Cursors only where the table IS a series table. sec_edgar merges filing tables
+        # (INFOTABLE, nonderiv_trans, ...) whose identity is all columns, not
+        # (series_key, obs_date) - the dedup fallback above says as much. Reporting cursors
+        # for those would be meaningless; withholding them for the series-shaped ones leaves
+        # their CSVs stale (§5.7), so the test is the columns, not the source.
+        if cursors is not None and {"series_key", "obs_date"} <= set(new_tbl.column_names):
+            merge_cursor_map(cursors, cursors_from_table(new_tbl, cap=CURSOR_CAP),
+                             cap=CURSOR_CAP)
         added_here += added
         tally.added_unit(added)
         if table in ("INFOTABLE", "nonderiv_trans"):
@@ -509,6 +518,7 @@ def current_vintage(unit) -> str | None:
 
 
 def update(unit, since) -> Result:
+    cursors: dict[str, str] = {}
     """Fetch only the dataset keys NEW since what's on disk (per product), merge each
     table into its own per-period parquet under never-shrink/dedup, and return one
     honest source-level Result. `since` is unused (EDGAR has no row-level date param;
@@ -548,7 +558,7 @@ def update(unit, since) -> Result:
         for key in want:
             selected_total += 1
             try:
-                added = _fetch_key(prod_cfg, key, sess, tally)
+                added = _fetch_key(prod_cfg, key, sess, tally, cursors=cursors)
             except TransientError:
                 tally.transient_unit()
                 pstate[key] = {"status": "transient_fail"}
@@ -580,4 +590,5 @@ def update(unit, since) -> Result:
     # ok (added>0) / no_change. empty_window_floor is high because most ticks add 0
     # keys (no new quarter) -> that is a legitimate no_change, never a structural break.
     return finalize(tally, total_added, last_key_overall, source=SOURCE,
+                    series_cursors=cursors or None,
                     empty_window_floor=10_000)
