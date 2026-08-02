@@ -40,7 +40,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+                      save_rotation)
 
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 BASE = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.{sid}/dados"
@@ -337,8 +338,38 @@ def update(unit, since) -> Result:
     dates: list[dt.date] = []
     vals: list[float] = []
 
-    for sid, label, _desc in SERIES:
+    # BOUND BELOW THE ORCHESTRATOR'S 45-MINUTE CAP, AND ROTATE.
+    # bcb's measured cloud runs are 47.9 and 49.2 minutes — CONSISTENTLY over the cap, which
+    # landed 2026-08-01 (36130d02), after bcb's last run. There is exactly one
+    # merge_and_write in this function and it sits after the loop, so the next run would be
+    # killed mid-sweep and store NOTHING: a discard, not a truncation (R243).
+    #
+    # SERIES is a module-level literal, i.e. a fixed order, so a bound alone would re-walk
+    # the same head every run and never reach the tail (R190). 30 minutes carries the sweep
+    # across in two ticks.
+    budget_min = float(os.environ.get("BCB_BUDGET_MIN", "30"))
+    dl = Deadline(minutes=budget_min)
+    # Bookmark on the SERIES_KEY, not the sid: sids are ints (a bookmark is a string, so
+    # `kf(it) == bookmark` would never match and the rotation would silently never
+    # advance) and they are not unique — 1, 188, 7326 and 13762 each appear twice under
+    # different labels. "label:sid" is the identity the store itself uses.
+    order = rotate_after(list(SERIES), load_rotation(out_dir),
+                         key=lambda t: f"{t[1]}:{t[0]}")
+    stopped_early = False
+    last_sid = ""
+    done_series = 0
+
+    for sid, label, _desc in order:
+        if dl.spent():
+            stopped_early = True
+            print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
+                  f"{dl.elapsed_min():.1f} min — {done_series}/{len(order)} series done, "
+                  f"{len(order) - done_series} deferred to the next tick "
+                  f"(resuming after {last_sid!r})", flush=True)
+            break
+        done_series += 1
         series_key = f"{label}:{sid}"
+        last_sid = series_key
         start = _series_start(sid, last_max, since, today)
         if start > today:
             tally.empty_unit()  # already current through today — nothing to request
@@ -432,6 +463,12 @@ def update(unit, since) -> Result:
     last_obs = max(cursors.values()).isoformat() if cursors else (since or None)
     series_cursors = {k: v.isoformat() for k, v in cursors.items()}
 
+    # Bookmark BEFORE the early return below: the series walked this tick were walked
+    # whether or not any of them yielded rows, and a quiet upstream must not pin the
+    # rotation to the same head forever.
+    if last_sid:
+        save_rotation(out_dir, last_sid)
+
     if not vals:
         # Nothing new fetched. finalize() decides honest status: 'partial' if any
         # series transient-failed, DefinitiveError on a large all-empty window
@@ -445,6 +482,8 @@ def update(unit, since) -> Result:
         "value":      pa.array(vals, pa.float64()),
     })
 
+    print(f"[{SOURCE}] merging {len(vals):,} obs from {done_series}/{len(order)} series "
+          f"({'PARTIAL sweep, rest next tick' if stopped_early else 'full sweep'})", flush=True)
     n, maxd = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
     # finalize() honors transient -> 'partial' even though rows were merged.
     return finalize(tally, n, maxd or last_obs, source=SOURCE,
