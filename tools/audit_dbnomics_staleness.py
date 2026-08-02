@@ -46,6 +46,32 @@ OVERRIDES = {
 }
 
 
+RELAY_MAP = os.path.join(ROOT, "updater", "dbnomics_relay_map.json")
+"""Committed {source_id: [PROVIDER, DATASET]} for every DBnomics-relayed source.
+
+WHY THIS FILE EXISTS. The mapping is normally derived from the crawl checkpoints under
+data/raw/dbnomics/_ckpt_datasets — but `data/` is gitignored, so on a CI runner that
+directory is absent and the audit had nothing to audit. This is a compact, committed
+projection of exactly the part the audit needs: the crawl-time indexed_at in those
+checkpoints is NEVER used here (we re-probe DBnomics live), so ~101 id pairs replace
+7 MB of crawl artifacts.
+
+Regenerate with `--write-map` whenever the relayed set changes. It is a projection of
+the checkpoints, not a second source of truth: the checkpoints win when present.
+"""
+
+
+def load_relay_map() -> dict:
+    """{source_id: (PROVIDER, DATASET)} from the committed map; {} if absent/bad."""
+    try:
+        with io.open(RELAY_MAP, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        return {k: (v[0], v[1]) for k, v in raw.items()
+                if isinstance(v, (list, tuple)) and len(v) == 2}
+    except Exception:                                         # noqa: BLE001
+        return {}
+
+
 def checkpoint_datasets() -> dict:
     """{(PROVIDER, DATASET): crawl-time indexed_at} for every dataset we crawled."""
     out = {}
@@ -128,10 +154,47 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=180,
                     help="flag datasets not re-indexed within this many days")
     ap.add_argument("--json", help="write the full result set here")
+    ap.add_argument("--write-map", action="store_true",
+                    help="regenerate the committed relay map from the local crawl "
+                         "checkpoints (run this where data/raw/dbnomics exists)")
     a = ap.parse_args()
 
     ck = checkpoint_datasets()
-    print(f"checkpointed DBnomics datasets: {len(ck):,}")
+    rmap = load_relay_map()
+    print(f"checkpointed DBnomics datasets: {len(ck):,}"
+          + (f"   (committed relay map: {len(rmap)} source(s))" if rmap else ""))
+    if not ck and rmap:
+        print("  no crawl checkpoints here — using the committed relay map "
+              "(this is the CI path)")
+
+    # A MONITOR THAT EXAMINES NOTHING MUST NOT REPORT NOTHING WRONG.
+    #
+    # The relayed-source list is derived entirely from the crawl checkpoints under
+    # data/raw/dbnomics/_ckpt_datasets. That directory is gitignored (`data/` in
+    # .gitignore) so it is NOT on a CI runner, and checkpoint_datasets() returns an
+    # empty dict for a missing directory without complaint. This audit is wired into
+    # updater-daily precisely because it is the ONLY check that can see a frozen
+    # relay — so as written it would have printed "0 datasets / 0 stale" on every CI
+    # run and passed: a clean green over 1,481,345 frozen series, produced by looking
+    # at nothing.
+    #
+    # Exit 2 is reserved for THIS — "the audit could not run". Probe failures still
+    # return 0, because a DBnomics outage is not a reason to red a run whose actual
+    # updating was fine. The caller separates the two by exit code, so the workflow
+    # no longer needs a blanket `|| true` that would swallow both alike.
+    if not ck and not rmap:
+        print()
+        print("=" * 72)
+        print("CANNOT AUDIT: no DBnomics crawl checkpoints AND no committed relay map.")
+        print(f"  looked in: {CKPT}")
+        print(f"  and      : {RELAY_MAP}   (regenerate with --write-map)")
+        print("  This is the ONLY check that distinguishes a frozen relay from a")
+        print("  quiet publisher. With no checkpoints it examines NOTHING, so a")
+        print("  'nothing stale' result would be meaningless, not reassuring.")
+        print("  Ship the checkpoints to wherever this runs (gitignored crawl")
+        print("  artifacts, ~7 MB / 91 files) or run it where the crawl store lives.")
+        print("=" * 72)
+        return 2
 
     con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"))
     counts = {r[0]: r[1] for r in con.execute(
@@ -148,9 +211,13 @@ def main() -> int:
         if sid in OVERRIDES:
             todo.append((sid,) + OVERRIDES[sid])
             continue
+        # Checkpoints win when present (they ARE the crawl); the committed map is the
+        # projection used where `data/` does not exist, i.e. CI.
         hit = next((k for k in ck if f"{k[0]}_{k[1]}".lower() == sid), None)
         if hit:
             todo.append((sid, hit[0], hit[1]))
+        elif sid in rmap:
+            todo.append((sid,) + rmap[sid])
         else:
             unmapped.append(sid)
 
@@ -162,6 +229,16 @@ def main() -> int:
               f"{', ...' if len(migrated) > 8 else ''})")
     print(f"series behind the relay: "
           f"{sum(counts.get(s, 0) for s, _, _ in todo):,}")
+    if a.write_map:
+        if not ck:
+            print("--write-map needs the crawl checkpoints; none found. Nothing written.")
+            return 2
+        out = {sid: [prov, ds] for sid, prov, ds in sorted(todo)}
+        io.open(RELAY_MAP, "w", encoding="utf-8").write(
+            json.dumps(out, indent=1, sort_keys=True) + "\n")
+        print(f"wrote {RELAY_MAP} with {len(out)} relayed source(s)")
+        return 0
+
     print("re-probing DBnomics for current indexed_at ...")
     print()
 
