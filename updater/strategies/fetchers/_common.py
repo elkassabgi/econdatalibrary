@@ -329,6 +329,40 @@ def cursors_from_table(tbl, cap: int = CURSOR_CAP, key_col="series_key",
         return {}
 
 
+def api_key(name: str) -> str | None:
+    """An API key from the environment, falling back to the repo's .env files.
+
+    NOTHING ELSE LOADS .env. Not the orchestrator, not run_local_heavy.ps1, not any module
+    here — a fetcher that reads only os.environ therefore cannot see a key that IS present
+    on the workstation. bea is the case that exposed it: BEA_API_KEY has been sitting in
+    .env while bea refused every run with "BEA_API_KEY is not set, so nothing can be
+    fetched", and that was recorded as blocked on Ahmed creating a GitHub secret. The
+    secret is genuinely missing; the KEY was not.
+
+    Order is env first so CI (which injects real secrets and has no .env) is unaffected and
+    a shell override still wins locally. Never logs or returns anything but the value.
+    """
+    v = os.environ.get(name)
+    if v and v.strip():
+        return v.strip()
+    from ... import config as _config
+    for fname in (".env", ".env.local"):
+        p = os.path.join(_config.ROOT, fname)
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.startswith(f"{name}="):
+                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if val:
+                            return val
+        except Exception:                                    # noqa: BLE001
+            pass
+    return None
+
+
 def cursors_from_parquet(path, key_col="series_key", date_col="obs_date",
                          cap: int = CURSOR_CAP, key_prefix: str = "") -> dict:
     """{series_key: max obs_date ISO} for one published parquet.

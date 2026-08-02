@@ -249,6 +249,15 @@ sources:
     - 'single parquet: data/clean_full/bcrp/bcrp.parquet (zstd), columns (series_key=''BCRP:{label}'', obs_date, value). 6
       daily FX series (USD/EUR/GBP/JPY vs PEN). Plus _bcrp_log.txt.'
 - source_id: bea
+  # run_location: local 2026-08-02. bea has refused EVERY run with "BEA_API_KEY is not set",
+  # and that was recorded as blocked on Ahmed creating a GitHub secret. The secret is indeed
+  # missing — but BEA_API_KEY has been sitting in the repo's .env the whole time, and NOTHING
+  # loads .env into the environment (not the orchestrator, not run_local_heavy.ps1, not any
+  # module). So the key existed and no process could see it. The fetcher now reads it via
+  # _common.api_key(), and routing bea to the workstation puts it where .env lives — the same
+  # answer census got today. Once BEA_API_KEY exists as a repo secret this can drop back to
+  # cloud by deleting this one line; the workflow already passes it through.
+  run_location: local
   # live: true 2026-08-01. Never run once - no state at all - despite the fetcher being built
   # and proven (task #23). extend_by_date, so its gate is a cheap poll BY DESIGN (constant
   # "date-tail" token, per that strategy's docstring) and incrementality lives in the since-
