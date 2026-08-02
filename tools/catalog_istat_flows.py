@@ -164,7 +164,7 @@ def main() -> int:
               f"--only {','.join(sorted(absent))}")
         return 1
 
-    spill = os.path.join(ROOT, "logs", "_duckspill")
+    spill = os.path.join(ROOT, "logs", "_duckspill", f"pid{os.getpid()}")
     os.makedirs(spill, exist_ok=True)
     meta = json.dumps({
         "citation_short": "Istat (Istituto nazionale di statistica).",
