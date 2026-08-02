@@ -91,7 +91,16 @@ jobs:
           # is one nobody reads. They are NOT forgotten: tools/audit_schedule_coverage.py
           # reports them under "SCHEDULED ON PAPER, CANNOT RUN". Put them back the moment a
           # fetcher exists.
-          ALL='["un_wpp","bundesbank","imf_gfsbs_direct","imf_gfscofog_direct","imf_gfssfcp_direct","imf_gfssoef_direct","imf_gfssoo_direct","imf_gfsssuc_direct"]'
+          # cepii_baci RESTORED 2026-08-02, on the exact condition the removal above set —
+          # "Put them back the moment a fetcher exists." It does now:
+          # updater/strategies/fetchers/cepii_baci.py (5,904 bytes), implemented() True, and
+          # current_vintage() returns a REAL token, measured cepii_baci:4915c90e0a7efbc6 — a
+          # hash over the (classification, version) pairs CEPII advertises — not the "force"
+          # sentinel. It was pulled for burning a runner to print "0 unit(s) processed", which
+          # is what a fetcher-less source does and this one is no longer.
+          # insee_sirene stays OUT: implemented() is still False, and it is an entity registry
+          # whose serving shape is an open product decision, not a missing module.
+          ALL='["un_wpp","bundesbank","cepii_baci","imf_gfsbs_direct","imf_gfscofog_direct","imf_gfssfcp_direct","imf_gfssoef_direct","imf_gfssoo_direct","imf_gfsssuc_direct"]'
           REQ='${{ inputs.source }}'
           if [ -z "$REQ" ]; then
             echo "sources=$ALL" >> "$GITHUB_OUTPUT"
