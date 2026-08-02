@@ -62,7 +62,7 @@ border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-sp
 .fallback[open]{padding-bottom:1.15rem}
 .who{font-size:.95rem;color:var(--g600);line-height:1.6;margin-top:.15rem}
 .who b{color:#111827}
-</style><script src="assets/sso.js?v=20260801j"></script>
+</style><script src="assets/sso.js?v=20260801k"></script>
 <!-- REMOVED 2026-07-31: the inline "clicking Sign in is explicit intent" block that
      ran location.replace() to api.hfdatalibrary.com/v1/auth/sso on page load.
      It was a FULL-PAGE redirect off econdatalibrary.com, which is exactly what the
@@ -474,7 +474,7 @@ function showSigninError(err) {
 // family bearer token. /v1/auth/me answers name/email for a family token but
 // NEVER the api_key — that is deliberate in the worker, so the key panel below
 // has to get the key from somewhere else.
-async function onFamilyLogin() {
+async function onFamilyLogin(detail) {
   // THIS is the confirmation. The SDK emits 'login' only after the account server
   // actually returned tokens, so it — not a localStorage read — is what flips the
   // page to the signed-in card. Set the flag and render BEFORE the /v1/auth/me
@@ -490,10 +490,15 @@ async function onFamilyLogin() {
   // and it is written here because this is the one place that knows the difference.
   // Removed on sign-out and on the SDK's 'logout' below, so it cannot outlive the session.
   safeSet('edl_family', '1');
-  // A deliberate sign-in retires the "stay signed out" marker, so cross-site resume works
-  // again. Without this, one sign-out would disable family recognition for the rest of the
-  // browser session even after signing back in.
-  try { sessionStorage.removeItem('ekd_signed_out'); } catch (e) {}
+  // ONLY a DELIBERATE sign-in retires the "stay signed out" marker. This handler also runs
+  // for the AUTOMATIC resume that EKD.init() performs on every page load, and clearing the
+  // marker there defeated the entire suppression: sign out, page reloads, init() resumes the
+  // session, this line wipes the marker, and the visitor is signed back in with their API key
+  // a moment after pressing Sign out. That is the bug Ahmed reported on 2026-08-02. The SDK
+  // now says which kind of login this was.
+  if (detail && detail.deliberate) {
+    try { sessionStorage.removeItem('ekd_signed_out'); } catch (e) {}
+  }
   clearSigninPending();   // the account server honoured this session, so the attempt is
                           // over: download.html must stop saying it was never finished
                           // and start saying the thing that IS true — signed in, but the
