@@ -3070,9 +3070,12 @@ sources:
 # already there (with MORE series each), and its 21 unique tables — 903 series — were
 # migrated and verified serving BEFORE removal. Its resolver entry, catalog rows, D1 rows
 # and 25,057 R2 CSVs are gone; the parquets under clean_full/ksh/ are kept, so it is
-# reversible. DO NOT set live: true — fetchers/ksh.py cannot even import (it loads
-# jobs/ingest_ksh_hungary.py, which does not exist), and the source now has no catalog or
-# CSVs behind it. Entry retained rather than deleted so this history is not lost.
+# reversible. DO NOT set live: true — the source has no catalog rows, no D1 rows and no
+# CSVs behind it. Its fetcher (fetchers/ksh.py) was DELETED 2026-08-02: it could not import
+# at all (it loaded jobs/ingest_ksh_hungary.py, which does not exist), so it was dead code
+# that crashed any sweep asking whether ksh's adapter was built. Recoverable from git
+# history if ksh is ever revived. Entry retained rather than deleted so this history is not
+# lost; the orchestrator now correctly reads ksh as PENDING (no adapter), not as broken.
 - source_id: ksh
   live: false
   scripts:
