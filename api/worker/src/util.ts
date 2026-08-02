@@ -121,13 +121,19 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // retired (not re-crawlable) and 184 that KSH still publishes but ksh_stadat's parser
   // skips with "no parseable time dimension". Verified before removal: 0 ksh tables absent
   // from ksh_stadat. The parquets under clean_full/ksh/ are KEPT, so this is reversible.
-  // ksh added 2026-08-01 — 25,057 series / 512,995 observations (20.5 obs each), per-series
-  // grain via core/broaden_catalog.py. DISTINCT from the already-served ksh_stadat: 0 of 109
-  // sampled ksh keys appear in it. Licence CONFIRMED CLEARED, cc-by-4.0, and it passed
-  // broaden_catalog's own hostability gate — which is the check that matters, since that gate
-  // unions the hand-curated denylist and deliberately overrides the DB's reservable flag so a
-  // new licence row can never silently un-gate a source.
-  "kof_globalization", "ksh", "ksh_stadat", "maddison", "nasa_giss", "noaa", "nyfed", "oecd", "ofr", "owid", "oxcgrt",
+  // ksh WITHDRAWN 2026-08-02, the same day I added it, because adding it was the mistake.
+  // jobs/ingest_ksh_hungary.py was DELETED on 2026-07-02 by an explicit owner decision —
+  // "Retire ... ingest_ksh_hungary.py (ksh_stadat is the owner)", under a stated "one owner per
+  // source" policy. The store it left behind is frozen at 2026-06-23 (25 files, 512,995 rows)
+  // while ksh_stadat is current to 2026-07-29 with 1,260,990 rows over 98,423 series — four
+  // times the data and actually updating. Serving ksh published a stale duplicate of a source
+  // the library already owns properly.
+  // What misled me: broaden_catalog's hostability gate passed it (the licence IS cc-by-4.0
+  // CLEARED), and a key-overlap sample showed 0 of 109 ksh keys inside ksh_stadat, which I read
+  // as "distinct data" when it only meant "different key convention" — the same trap ilo/ilostat
+  // set. A retirement decision is not visible in either check; it lives in git history and in
+  // the absence of an ingest file (R226).
+  "kof_globalization", "ksh_stadat", "maddison", "nasa_giss", "noaa", "nyfed", "oecd", "ofr", "owid", "oxcgrt",
   "penn_world_table", "pip", "pwt", "rba", "riksbank",
   "sec_edgar", "snb", "statcan", "stats_nz",
   "swiid", "transparency_ti", "treasury", "ucdp", "unctad_bopcaba",
