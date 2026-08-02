@@ -40,7 +40,9 @@ import pyarrow as pa
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+import pyarrow.compute as pc                                       # noqa: E402
 from updater import blob, config                                   # noqa: E402
+from updater.merge import _dedup                                   # noqa: E402
 from updater.strategies.fetchers.eurostat import _NON_KEY, _norm   # noqa: E402
 
 # A segment begins at a `NAME=` token: letters/digits/underscore/space before '='.
@@ -79,59 +81,65 @@ def main() -> int:
     files = blob.list_parquets(out_dir)
     if a.limit:
         files = files[:a.limit]
-    print(f"eurostat store: {len(files):,} file(s) under {out_dir}  (backend={config.BACKEND})")
+    # flush=True on EVERY progress line. Without it stdout is block-buffered when redirected
+    # to a file, so a long run emits NOTHING until it exits — 18 minutes of a dry run with no
+    # way to tell progress from a hang. A job that says nothing can only be guessed at.
+    print(f"eurostat store: {len(files):,} file(s) under {out_dir}  (backend={config.BACKEND})",
+          flush=True)
 
     tot_rows = tot_out = touched = clean = 0
     tot_keys_before = tot_keys_after = 0
-    revisions = 0
     for i, fn in enumerate(files, 1):
         path = os.path.join(out_dir, fn)
+        # CHEAP SKIP FIRST: one column, one value. A key scheme is uniform within a file (one
+        # ingest wrote it), so a single row answers "does this need re-keying?".
         try:
-            t = blob.read_table(path)
+            probe = blob.read_table(path, columns=["series_key"])
         except Exception as e:                                  # noqa: BLE001
-            print(f"  [{i}/{len(files)}] {fn}: UNREADABLE ({type(e).__name__}) — skipped")
+            print(f"  [{i}/{len(files)}] {fn}: UNREADABLE ({type(e).__name__}) — skipped", flush=True)
             continue
-        if t.num_rows == 0 or "series_key" not in t.column_names:
+        if probe.num_rows == 0:
             continue
-        keys = t.column("series_key").to_pylist()
-        if not any(k and "LAST UPDATE" in k for k in keys):
+        head = probe.column("series_key")[0].as_py()
+        if not head or "LAST UPDATE" not in head:
             clean += 1
-            continue
-        dates = t.column("obs_date").to_pylist()
-        vals = t.column("value").to_pylist()
-        new = [stable_key(k) if k else k for k in keys]
-
-        # keep the LAST row per (key, obs_date): merge's "new wins on revision"
-        seen: dict[tuple, int] = {}
-        for idx, (k, d) in enumerate(zip(new, dates)):
-            kk = (k, d)
-            if kk in seen and vals[seen[kk]] != vals[idx]:
-                revisions += 1
-            seen[kk] = idx
-        keep = sorted(seen.values())
-
-        tot_rows += t.num_rows
-        tot_out += len(keep)
-        tot_keys_before += len(set(keys))
-        tot_keys_after += len({new[j] for j in keep})
-        touched += 1
-
-        if a.apply:
-            tbl = pa.table({
-                "series_key": pa.array([new[j] for j in keep], pa.string()),
-                "obs_date":   pa.array([dates[j] for j in keep], pa.date32()),
-                "value":      pa.array([vals[j] for j in keep], pa.float64()),
-            })
-            blob.write_table_atomic(path, tbl)
-        if i % 500 == 0 or i == len(files):
-            print(f"  [{i}/{len(files)}] touched={touched:,} rows={tot_rows:,} -> {tot_out:,}", flush=True)
+        else:
+            t = blob.read_table(path)
+            before_rows = t.num_rows
+            # TRANSFORM DISTINCT KEYS, NOT ROWS. AACT_ALI01 holds 3,945 rows across 219
+            # distinct keys — running the regex per row is 18x redundant, and over 7,754 files
+            # that is the difference between a ~6-hour pass and a short one.
+            # Dictionary-encode so the regex runs over the DICTIONARY (219 values in
+            # AACT_ALI01) and the row-wise expansion is an Arrow take() — no multi-million-row
+            # Python list is ever materialised. col.to_pylist() on the big files was the
+            # remaining cost after the per-row regex was removed.
+            col = t.column("series_key").combine_chunks()
+            enc = pc.dictionary_encode(col)
+            dic = enc.dictionary if hasattr(enc, "dictionary") else enc.chunk(0).dictionary
+            idx = enc.indices if hasattr(enc, "indices") else enc.chunk(0).indices
+            newdict = pa.array([stable_key(k) if k else k for k in dic.to_pylist()], pa.string())
+            newcol = pc.take(newdict, idx)
+            uniq = dic.to_pylist()
+            mapping = {k: stable_key(k) for k in uniq if k}
+            t = t.set_column(t.column_names.index("series_key"), "series_key", newcol)
+            # Dedup with the SAME routine the merge path uses, so this migration and the
+            # fetcher agree on identity — including its null handling (R254).
+            t = _dedup(t, ["series_key", "obs_date"])
+            tot_rows += before_rows
+            tot_out += t.num_rows
+            tot_keys_before += len(uniq)
+            tot_keys_after += len(set(mapping.values()))
+            touched += 1
+            if a.apply:
+                blob.write_table_atomic(path, t)
+        if i % 100 == 0 or i == len(files):
+            print(f"  [{i}/{len(files)}] touched={touched:,} clean={clean:,} "
+                  f"rows={tot_rows:,} -> {tot_out:,}", flush=True)
 
     print(f"\nfiles needing re-key : {touched:,}")
     print(f"files already clean  : {clean:,}")
     print(f"rows                 : {tot_rows:,} -> {tot_out:,}  (collapsed {tot_rows - tot_out:,})")
     print(f"distinct series_key  : {tot_keys_before:,} -> {tot_keys_after:,}")
-    print(f"(key,date) pairs whose duplicates disagreed on value: {revisions:,}  "
-          f"(kept the LAST, matching merge's new-wins-on-revision)")
     if a.dry_run:
         print("\n--dry-run: nothing written.")
     return 0
