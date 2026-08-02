@@ -68,7 +68,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import CURSOR_CAP, Deadline, Tally, cursors_from_table, finalize, merge_cursor_map
+from ._common import (CURSOR_CAP, Deadline, Tally, api_key, cursors_from_table, finalize,
+                      merge_cursor_map)
 
 SOURCE = "census"
 BASE = "https://api.census.gov/data/timeseries"
@@ -91,21 +92,12 @@ def implemented() -> bool:
 
 
 def _api_key() -> str | None:
-    """CENSUS_API_KEY from the environment, else from .env (registry key_env)."""
-    k = os.environ.get("CENSUS_API_KEY")
-    if k:
-        return k.strip()
-    for name in (".env", ".env.local"):
-        p = os.path.join(config.ROOT, name)
-        if not os.path.exists(p):
-            continue
-        try:
-            for line in io.open(p, encoding="utf-8"):
-                if line.startswith("CENSUS_API_KEY="):
-                    return line.split("=", 1)[1].strip()
-        except Exception:                                    # noqa: BLE001
-            pass
-    return None
+    """CENSUS_API_KEY from the environment, else from .env (registry key_env).
+
+    Thin wrapper over the shared _common.api_key, which bea now uses too — the same
+    "the key is in .env and nothing loads .env" problem, found twice in one day.
+    """
+    return api_key("CENSUS_API_KEY")
 
 
 def _ingest():

@@ -44,7 +44,8 @@ import pyarrow as pa
 from ... import blob, config, merge
 from ...errors import TransientError
 from ..base import Result
-from ._common import CURSOR_CAP, Deadline, Tally, cursors_from_table, finalize, merge_cursor_map
+from ._common import (CURSOR_CAP, Deadline, Tally, api_key, cursors_from_table, finalize,
+                      merge_cursor_map)
 
 SOURCE = "bea"
 DEDUP = ("series_key", "obs_date")
@@ -123,11 +124,21 @@ def _stored_frontier(path: str) -> dt.date | None:
 
 
 def update(unit, since) -> Result:
-    if not os.environ.get("BEA_API_KEY", "").strip():
+    # api_key() checks the environment FIRST, then the repo's .env — because NOTHING else
+    # loads .env, and BEA_API_KEY has been sitting in it the whole time. This source has
+    # refused on every run with "BEA_API_KEY is not set", and that was recorded as blocked
+    # on Ahmed creating a GitHub secret. The SECRET is genuinely missing; the KEY was not,
+    # and the workstation could have run this all along. bea is routed run_location: local
+    # for exactly that reason — see its registry entry.
+    key = api_key("BEA_API_KEY")
+    if not key:
         # Loud, never a quiet no-op: a source that silently does nothing is indistinguishable
         # from one that is up to date, which is how staleness hides.
         raise TransientError(
-            f"{SOURCE}: BEA_API_KEY is not set, so nothing can be fetched. Existing data kept.")
+            f"{SOURCE}: BEA_API_KEY is not set (checked the environment and .env), so nothing "
+            f"can be fetched. Existing data kept.")
+    # The ingester reads the key from the environment, so make the .env value visible to it.
+    os.environ.setdefault("BEA_API_KEY", key)
 
     from jobs import ingest_bea_full as ig                   # rate limiter + parser + keys
 
