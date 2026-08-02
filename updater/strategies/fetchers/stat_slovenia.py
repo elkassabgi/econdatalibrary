@@ -526,11 +526,25 @@ def update(unit, since) -> Result:
     # structural-empty results feed the outage floor — the same resolution treasury/bcb use.
     current = 0
 
-    for grp in sorted(by_group.keys()):
+    # OBSERVABILITY FIRST. This fetcher had ZERO print statements, and it has spent the full
+    # 45-minute unit cap on every tick since 2026-07-22 while merging nothing — 144 store files
+    # untouched for ten days. A source that runs three quarters of an hour and says nothing can
+    # only be guessed at, so the loop now reports where the time goes. That matters here
+    # specifically because a group merges only AFTER all of its tables are fetched: a group
+    # bigger than the remaining budget commits nothing at all, which is consistent with every
+    # symptom observed.
+    _t0 = time.time()
+    _groups = sorted(by_group.keys())
+    print(f"[{SOURCE}] {len(_groups)} group(s), {sum(len(v) for v in by_group.values()):,} "
+          f"table(s) to consider", flush=True)
+
+    for _gi, grp in enumerate(_groups, 1):
         path = _group_path(out_dir, grp)
         before = blob.row_count(path)
         total_rows += before
         tbl_max = _table_max_by_group(path)   # one read per group file
+        print(f"[{SOURCE}] group {_gi}/{len(_groups)} {grp}: {len(by_group[grp]):,} table(s), "
+              f"{before:,} row(s) on disk, {time.time()-_t0:,.0f}s elapsed", flush=True)
 
         # seed cursors from the on-disk frontier so untouched tables still report real
         # freshness (clamped past the projection horizon — see _FRESH_HORIZON).
