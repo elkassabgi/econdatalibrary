@@ -1,17 +1,17 @@
-"""WHO Reproductive health / population — from DBnomics dataset WHO/RS.
+"""WHO Road Safety — from WHO's OWN Global Health Observatory API (ghoapi.azureedge.net).
 
-Thin wrapper; all behaviour lives in _dbnomics.py, including WHY DBnomics is a legitimate
-upstream for WHO specifically (its WHO index was re-run 2026-07-24) and not for UNCTAD,
-UNESCO or FAO, whose indexes stopped years ago.
+Migrated off the DBnomics mirror 2026-08-02: DBnomics is banned (CLAUDE.md §0, ledger R251)
+and every source now comes from its publisher. Behaviour lives in _who_gho.py, including the
+key grammar and the proof that it reconstructs our published ids exactly.
 """
-from . import _dbnomics as _base
+from . import _who_gho as _base
 
-SOURCE, PROVIDER, DATASET = "who_rs", "WHO", "RS"
+SOURCE, PREFIX = "who_rs", "WHO_RS"
 
 
 def current_vintage(unit):
-    return _base.vintage(PROVIDER, DATASET)
+    return _base.current_vintage(unit, SOURCE)
 
 
 def update(unit, since):
-    return _base.run(SOURCE, PROVIDER, DATASET)
+    return _base.run(SOURCE, PREFIX)
