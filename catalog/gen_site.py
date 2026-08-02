@@ -7,10 +7,7 @@ plus the operational sidecar (catalog/catalog.json) and emits, under catalog/sit
                           embedding a VALID schema.org/Dataset JSON-LD block
                           (the thing Google Dataset Search indexes) AND an inline
                           Croissant (schema.org JSON-LD) block.
-  * sitemap.xml           every indexable page (datasets + hub/info pages), at the
-                          extensionless URL the host actually serves, each with a
-                          <lastmod> proven against the previous build's content
-                          hash (catalog/sitemap_state.json) rather than the run date.
+  * sitemap.xml           lists every generated dataset page + the index.
   * index.html            a simple client-side searchable index of all datasets.
 
 Design rules (ARCHITECTURE.md s3, STRATEGY.md):
@@ -29,13 +26,11 @@ Run:  python catalog/gen_site.py
 """
 from __future__ import annotations
 
-import hashlib
 import html
 import json
 import os
 import re
 import sqlite3
-import unicodedata
 from datetime import date, datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -66,119 +61,6 @@ PUBLISHER = {
     "name": "Econ Data Library",
     "url": SITE_BASE,
 }
-
-
-# --- The URL the host actually SERVES ----------------------------------------
-# WHAT WAS WRONG (measured live 2026-08-01):
-#   Every canonical, every og:url, every schema.org `url` and all 207 sitemap
-#   <loc> values were of the form https://econdatalibrary.com/<page>.html, but
-#   Cloudflare Pages strips the extension and answers those with a 308:
-#       GET /fao_ge.html   -> 308 -> https://econdatalibrary.com/fao_ge   (200)
-#       GET /docs.html     -> 308 -> https://econdatalibrary.com/docs     (200)
-#       GET /index.html    -> 308 -> https://econdatalibrary.com/         (200)
-#   So the SITEMAP consisted 207/207 of redirects, and every page's "self"-
-#   referencing canonical pointed somewhere other than itself.
-# WHY IT MATTERED: a sitemap of redirects is the weakest possible crawl signal
-#   (Google follows it, then drops the submitted URL as non-canonical), and a
-#   canonical that does not resolve to the URL being indexed hands Google a
-#   contradiction to resolve on a site already suffering duplicate-collapse.
-#   The one hand-maintained page written most recently (mcp.html) had ALREADY
-#   switched to the extensionless form on its own — the generator was the outlier.
-def site_url(page: str) -> str:
-    """Absolute public URL for a generated page, in the form the host serves 200 for.
-
-    `page` is the output basename ("fao_ge.html", "index.html"). index.html is
-    served at the bare origin root, everything else extensionless.
-    """
-    name = page[:-5] if page.endswith(".html") else page
-    return f"{SITE_BASE}/" if name == "index" else f"{SITE_BASE}/{name}"
-
-
-# --- Honest sitemap <lastmod> -------------------------------------------------
-# WHAT WAS WRONG: render_sitemap wrote `TODAY` for the two hub URLs and
-#   `r["last_updated"] or TODAY` for every dataset URL. `last_updated` is
-#   populated for 3 of 203 sources, so 204 of 207 URLs were stamped with the run
-#   date on EVERY run. Today's regeneration produced 202 insertions and 202
-#   deletions in sitemap.xml with not one <loc> altered — only the date.
-# WHY IT MATTERED: Google's documented behaviour is to ignore lastmod from sites
-#   whose lastmod is not "consistently and verifiably accurate". A site-wide date
-#   bump on every build is the exact pattern that earns that discount, so the
-#   site was spending its own credibility to say nothing.
-# THE APPROACH: fingerprint each page's CONTENT and only move its date when the
-#   content actually moves.
-#   * `_track_page` hashes the finished HTML *before* the volatile generation
-#     stamp (__SITE_UPDATED__ -> TODAY) is substituted, so a rebuild on a new day
-#     with identical data produces an identical digest.
-#   * The digest and the date it was first seen are persisted in
-#     catalog/sitemap_state.json (NOT under site/, so it is neither deployed nor
-#     swept). A page whose digest matches the stored one keeps its stored
-#     lastmod; a page whose digest changed — or that we have never seen — gets
-#     TODAY, which is then true.
-#   * Hand-maintained pages (download.html, mcp.html, ...) are fingerprinted
-#     straight off disk by the same function, so they follow the same rule.
-#   NOTE: sitemap_state.json must be COMMITTED for the memory to survive; without
-#   it the first build resets every date to its run date (announced in the log).
-#   That reset is harmless the first time — this very build rewrites the <title>,
-#   meta description, social tags and JSON-LD of every page, so 2026-08-01 is a
-#   genuine modification date for all of them.
-SITEMAP_STATE = os.path.join(HERE, "sitemap_state.json")
-
-# Matches <meta name="robots" ... content="...noindex..."> in either quote style.
-# Used to keep noindex pages OUT of the sitemap (submitting a page you have asked
-# Google not to index is a self-contradicting signal) — and, because it reads the
-# emitted bytes rather than a hard-coded list, a page that stops being noindex
-# joins the sitemap automatically on the next build.
-_NOINDEX_RE = re.compile(
-    r'<meta[^>]+name=["\']robots["\'][^>]*content=["\'][^"\']*noindex', re.I)
-
-_LASTMOD: dict[str, dict] = {}       # basename -> {sha256, lastmod, noindex}
-_LASTMOD_PREV: dict[str, dict] = {}  # same, loaded from the previous build
-
-
-def _load_lastmod_state() -> dict:
-    try:
-        with open(SITEMAP_STATE, encoding="utf-8") as f:
-            st = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    pages = st.get("pages") if isinstance(st, dict) else None
-    return pages if isinstance(pages, dict) else {}
-
-
-def _track_page(name: str, body: str) -> dict:
-    """Fingerprint one page and decide its sitemap <lastmod>.
-
-    `body` must be the page content WITHOUT the per-run generation stamp
-    substituted, otherwise every page would look modified every day.
-    """
-    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
-    prev = _LASTMOD_PREV.get(name) or {}
-    keep = prev.get("sha256") == digest and prev.get("lastmod")
-    ent = {
-        "sha256": digest,
-        "lastmod": prev["lastmod"] if keep else TODAY,
-        "noindex": bool(_NOINDEX_RE.search(body)),
-    }
-    _LASTMOD[name] = ent
-    return ent
-
-
-# Non-dataset pages that belong in the sitemap, with the change cadence each one
-# genuinely has. Any entry that is missing from OUT_DIR, or that carries a robots
-# noindex, is dropped by main() — that is how account.html / 404.html /
-# auth/callback.html stay out without a second exclusion list to keep in sync.
-SITEMAP_EXTRA = [
-    ("index.html", "daily"),
-    ("catalog.html", "daily"),
-    ("download.html", "weekly"),
-    ("status.html", "daily"),
-    ("docs.html", "monthly"),
-    ("api.html", "monthly"),
-    ("mcp.html", "monthly"),
-    ("cite.html", "monthly"),
-    ("stats.html", "monthly"),
-    ("contact.html", "yearly"),
-]
 
 # sameAs spokes. Per-source HF/Zenodo handles are not yet minted, so we emit a
 # deterministic *placeholder* slug under the org accounts. Marked as placeholder
@@ -316,480 +198,9 @@ def first_sentence(text, limit=300):
 
 
 # ---------------------------------------------------------------------------- #
-#  Page <title> + meta description  (SEO: survive Google's ~60-char truncation)
-# ---------------------------------------------------------------------------- #
-# WHAT WAS WRONG (measured live 2026-08-01, before this change):
-#   The title was literally `source.name + " — Econ Data Library"`. `source.name`
-#   is a producer-first string, so 154 of 203 titles ran past 60 characters with
-#   the DISTINGUISHING words at the far end. Truncated to 60, 18 prefixes were
-#   shared by 2+ pages and covered 83 pages -- e.g. 13 FAO pages all read
-#   "Food and Agriculture Organization of the United Nations (FAO" and 6 IMF GFS
-#   pages all read "International Monetary Fund — Government Finance Statistics ".
-#   A `site:` query returned 5 results plus "we have omitted some entries very
-#   similar to the 5 already displayed": Google's near-duplicate filter was
-#   collapsing the catalogue because every result LOOKED identical.
-#   The meta description was ~70 characters of licence boilerplate, and 57 pages
-#   carried a description byte-identical to another page's (the sidecar covers
-#   only 79 of 203 sources, so 124 fell back to `attribution`, a credit line).
-#
-# WHY IT MATTERED: a collapsed SERP means 198 of 203 dataset pages were
-#   effectively unfindable, however good the data behind them is.
-#
-# THE RULE HERE: every character emitted below is a VERBATIM registry string
-#   (source.name fragment, the derived/curated subtitle, the licence label) or a
-#   number counted from the registry (series count, coverage years). Nothing is
-#   estimated, rounded, inferred from a sibling source, or carried over. A field
-#   that is missing produces NO clause -- never a guess. That is why country
-#   counts and update frequencies are absent: `geography` is empty on 173 of 203
-#   sources and `frequency` on 171, so any "N countries / updated monthly" clause
-#   would be fabricated for the large majority of pages.
-# ---------------------------------------------------------------------------- #
-NAME_SPLIT = re.compile(r"\s+(?:—|--|–)\s+|\s+-\s+")
-_GLOSS = re.compile(r"\s*\(([^()]*)\)")
-_CODE_TAIL = re.compile(r"\(code:\s*[^)]+\)\s*$", re.I)
-_JUNK_CLAUSE = re.compile(r"^[\d\s.,;:()–—-]+$")
-_RAW_LICENSE_TOKEN = re.compile(r"^[a-z0-9][a-z0-9._+-]*$")
-_YEARISH = re.compile(r"^[\d\s./–—-]+$")
-
-PRODUCER_FULL_MAX = 42   # longer than this -> prefer the registry's own acronym
-LEAD_MIN_USEFUL = 24     # a shorter dataset phrase cannot carry a title
-LEAD_BUDGET = 120        # a dataset phrase from `name` is one coherent title
-SUBTITLE_BUDGET = 78     # a subtitle is ';'-joined stems: extra clauses add no
-                         # distinguishing power, only length
-TITLE_PREFIX_N = 60      # roughly what Google shows / de-duplicates on
-DESC_MAX = 160           # hard cap on the rendered meta description
-
-
-def _fold(ch):
-    """Accent-folded uppercase, so 'études économiques' still supplies E for INSEE."""
-    d = unicodedata.normalize("NFD", ch)
-    return "".join(c for c in d if not unicodedata.combining(c)).upper()
-
-
-def _short_token(t):
-    return bool(t) and " " not in t and len(t) <= 12 and re.fullmatch(r"[A-Za-z][A-Za-z0-9./&+-]*", t)
-
-
-def _strip_glosses(seg):
-    """Drop long parenthetical glosses (native-language names, expansions) but KEEP
-    short acronym parentheticals -- '(UNCTAD)' is a search keyword, '(Statistisk
-    sentralbyrå, SSB)' is noise in a title."""
-    def repl(m):
-        inner = m.group(1).strip()
-        return f" ({inner})" if _short_token(inner) else ""
-    return re.sub(r"\s{2,}", " ", _GLOSS.sub(repl, seg or "")).strip(" ,;-—–")
-
-
-def acronym_of(seg):
-    """Return a parenthetical acronym ONLY if its letters are, in order, the initials
-    of the words preceding it -- i.e. the catalogue itself asserts the abbreviation.
-    'Food and Agriculture Organization of the United Nations (FAO)' -> FAO;
-    'International Monetary Fund — Consumer Price Index (CPI)' -> None for the
-    producer segment (CPI abbreviates the dataset, not the producer);
-    'UN Trade and Development (UNCTAD)' -> None (UNCTAD is not the initials of that
-    shortened form) so the caller keeps the full producer string.
-    NEVER invents an abbreviation: it fails safe to None."""
-    for m in re.finditer(r"\(([^()]{2,12})\)", seg or ""):
-        cand = m.group(1).strip()
-        if not _short_token(cand) or not cand[0].isupper():
-            continue
-        letters = [_fold(c) for c in cand if c.isalpha()]
-        if len(letters) < 2:
-            continue
-        initials = [_fold(w[0]) for w in re.findall(r"[^\W\d_]+", seg[:m.start()], re.UNICODE)]
-        i = 0
-        for ini in initials:
-            if i < len(letters) and ini == letters[i]:
-                i += 1
-        if i == len(letters):
-            return cand
-    return None
-
-
-def split_name(name):
-    """(producer_display, dataset_phrase, producer_long_form) from `source.name`.
-
-    `producer_display` is the acronym for long producer names; `producer_long_form`
-    is the spelled-out name minus the acronym parenthetical, used when the lead
-    already contains the acronym (a title leading with 'GISTEMP (GISS Surface
-    Temperature Analysis)' must still say NASA rather than drop the producer)."""
-    name = " ".join((name or "").split())
-    m = NAME_SPLIT.search(name)
-    if m:
-        producer_raw, dataset = name[:m.start()].strip(), name[m.end():].strip()
-    else:
-        producer_raw, dataset = name, ""
-
-    full = _strip_glosses(producer_raw) or producer_raw
-    acr = acronym_of(producer_raw)
-    long_form = (re.sub(r"\s*\(" + re.escape(acr) + r"\)", "", full).strip(" ,;-—–")
-                 if acr else full) or full
-    producer = acr if (acr and len(full) > PRODUCER_FULL_MAX) else full
-
-    # Shape "<Database> -- <Dataset ...>, <Producing organisation (ACR)>" (the 7
-    # FAOSTAT ASTI/climate rows): the producing body is repeated as the LAST comma
-    # clause. Move it out of the dataset phrase so the title leads with the dataset.
-    if dataset and ", " in dataset:
-        head, _, tail = dataset.rpartition(", ")
-        org = acronym_of(tail)
-        if org and len(tail) >= 20 and len(head) >= LEAD_MIN_USEFUL:
-            dataset = head.strip()
-            if org.lower() not in producer.lower():
-                producer = f"{producer} ({org})"
-                long_form = producer
-    return producer, dataset, long_form
-
-
-def _balance(t):
-    """Never leave a title/description with an unclosed '(' after truncation."""
-    while t.count("(") > t.count(")"):
-        i = t.rfind("(")
-        if i <= 0:
-            return t
-        t = t[:i].rstrip(" ,;:-—–")
-    return t
-
-
-_TRIM_SPLITS = ("; ", " — ", " -- ", ": ", ", ")
-
-
-def trim_phrase(text, budget, tolerance=1.15):
-    """Cut at a clause boundary where possible, else at a word boundary. A boundary
-    cut is rejected if it would leave a stub ('06307' out of '06307: Forest
-    properties, by size class'). Title leads get a 15% tolerance -- truncating a
-    phrase one or two characters over budget costs more (an ugly mid-word ellipsis)
-    than the length saves; the description passes tolerance=1.0 because its budget
-    is a hard cap on the rendered tag."""
-    t = " ".join((text or "").split())
-    if len(t) <= budget * tolerance:
-        return t
-    floor = max(24, int(budget * 0.35))
-    for sep in _TRIM_SPLITS:
-        idx, best = t.find(sep), -1
-        while idx != -1 and idx <= budget:
-            best, idx = idx, t.find(sep, idx + len(sep))
-        if best > 0:
-            cand = _balance(t[:best].rstrip(" ,;:-—–"))
-            if len(cand) >= floor:
-                return cand
-    cut = _balance(t[:budget].rsplit(" ", 1)[0].rstrip(" ,;:-—–"))
-    return (cut or t[:budget].rstrip()) + "…"
-
-
-def _drop_junk_clauses(text):
-    """Derived subtitles occasionally open on a bare year or numeric code
-    ('2014; 06307: Forest properties...'); do not open a title on a meaningless
-    number when a real clause follows."""
-    if "; " not in (text or ""):
-        return text
-    parts = text.split("; ")
-    while len(parts) > 1 and _JUNK_CLAUSE.match(parts[0] or ""):
-        parts.pop(0)
-    return "; ".join(parts)
-
-
-def _is_junk(text):
-    t = (text or "").strip()
-    return not t or bool(_JUNK_CLAUSE.match(t))
-
-
-def _codey(text):
-    """First clause is a raw machine identifier ('ETR:Demographic_Pressure:Albania')."""
-    first = (text or "").split("; ")[0]
-    return bool(first) and " " not in first and sum(first.count(c) for c in ":_") >= 2
-
-
-def _good_dataset_lead(dataset, shared=frozenset()):
-    """Reject dataset phrases that cannot carry a title:
-      - too short, or opening on a lowercase filing word
-        ('domain QCL (Crops and livestock products)');
-      - a generic family label whose only specific content is a machine code
-        ('Foreign direct investment dataset (code: FMCPA)');
-      - a label shared by other published sources -- 11 UNCTAD rows carry the very
-        same 'UNCTAD Data Hub (UNCTADstat)', which by definition differentiates
-        nothing and is precisely what Google collapsed."""
-    return bool(dataset) and (len(dataset) >= LEAD_MIN_USEFUL
-                              and not dataset[:1].islower()
-                              and not _CODE_TAIL.search(dataset)
-                              and dataset not in shared)
-
-
-def shared_dataset_labels(records):
-    from collections import Counter
-    c = Counter()
-    for r in records:
-        ds = split_name(r["name"])[1]
-        if ds:
-            c[ds] += 1
-    return {ds for ds, n in c.items() if n > 1}
-
-
-def _lead_candidates(rec, shared):
-    """(producer, producer_long, [(lead_text, budget), ...]). Every candidate is a
-    verbatim registry string, in descending order of how well it identifies THIS
-    dataset: the dataset phrase from `name`, then the subtitle (unique across all
-    203 published sources), then the raw name."""
-    producer, dataset, long_form = split_name(rec["name"])
-    sub = _drop_junk_clauses(rec.get("subtitle") or "")
-    out, seen = [], set()
-
-    def add(text, budget):
-        if text and text not in seen and not _is_junk(text):
-            seen.add(text)
-            out.append((text, budget))
-
-    if _good_dataset_lead(dataset, shared):
-        add(dataset, LEAD_BUDGET)
-    add(sub, SUBTITLE_BUDGET)
-    add(dataset, LEAD_BUDGET)
-    add(rec["name"], LEAD_BUDGET)
-    if not out:
-        out.append((rec["name"], LEAD_BUDGET))
-    return producer, long_form, out
-
-
-def _mentions(hay, needle):
-    """Word-boundary containment. Substring matching would suppress the producer
-    'FAO' on every title that merely contains 'FAOSTAT'."""
-    if not needle:
-        return True
-    return re.search(r"(?<![\w])" + re.escape(needle) + r"(?![\w])", hay or "", re.I) is not None
-
-
-def short_license(label):
-    """A snippet-sized licence phrase taken VERBATIM from the label itself: either its
-    compact parenthetical ('CC BY 4.0') or the text before it. Never maps, infers or
-    upgrades a licence -- it only shortens the label the registry already carries.
-    Returns None when the registry still holds a raw internal id (28 of 203 sources
-    carry ids like 'cc-by-sa-4.0-unesco_sdg'), so a machine token can never leak into
-    a public snippet; those pages simply get no licence clause."""
-    lab = " ".join((label or "").split())
-    if not lab or _RAW_LICENSE_TOKEN.match(lab):
-        return None
-    m = re.search(r"\(([^()]{2,14})\)", lab)
-    if m and not _YEARISH.match(m.group(1).strip()):
-        return m.group(1).strip()
-    head = lab.split("(", 1)[0].strip(" ,;-—–")
-    return head if len(head) >= 8 else lab
-
-
-# Latest end year we will repeat in public. Real projections exist and must survive:
-# un_wpp runs to 2101 and several FAO outlook tables to 2100, so the ceiling cannot be
-# "this year". Anything beyond a century out is not a projection, it is a sentinel.
-_MAX_PLAUSIBLE_END = 2126
-
-
-def _year(v):
-    """Leading 4-digit year as an int, or None if the field cannot supply one."""
-    try:
-        return int(str(v)[:4])
-    except (TypeError, ValueError):
-        return None
-
-
-def _coverage_clause(rec):
-    """'1961–2024' when both ends are known, 'from 1961' when only the start is.
-    OMITTED entirely when neither is -- 45 of 203 sources have no usable end date
-    and 21 no usable start, and an invented range would be the worst kind of error
-    on an academic catalogue.
-
-    A DATE THAT EXISTS IS NOT A DATE THAT IS TRUE. cov_end is MAX(end_date) over the
-    source's series, and 35 of 217 sources carry a sentinel or corrupt value there --
-    measured 2026-08-02: eurostat and statfin 9999, cso 9999 on a 0001 start,
-    stat_slovenia 6152, sec_edgar 6016, hagstofa 3005, bfs 2150. Rendering those
-    verbatim would have published "1947–9999" as a factual coverage claim on 35 pages
-    of an academic catalogue, which is precisely the error the docstring above says
-    this function exists to avoid; the original guard only covered MISSING values, not
-    present-but-impossible ones. An implausible end is discarded and the clause
-    degrades to "from <start>" -- the same shape used when the end is simply absent.
-    """
-    sy, ey = _year(rec.get("cov_start")), _year(rec.get("cov_end"))
-    end_was_corrupt = ey is not None and not (1 <= ey <= _MAX_PLAUSIBLE_END)
-    if end_was_corrupt:
-        ey = None                      # sentinel/corrupt: treat exactly as "no end date"
-    if sy is not None and ey is not None and ey < sy:
-        ey = None                      # a range that runs backwards is not a range
-    # BOTH bounds broken means the source's dates cannot be trusted at all, so make no claim.
-    # cso is the case this exists for: its end is 9999 AND its starts are 0001, 0011, 0029,
-    # 0101, 0111 -- enough sub-1500 values to satisfy the corroboration test upstream, yet
-    # obviously period codes misread as years for an Irish statistics office. maddison is
-    # untouched by this: its year-1 start is paired with a perfectly good end of 2018, so
-    # only one bound is in question and the true range still publishes.
-    if end_was_corrupt and sy is not None and sy < 1000:
-        return None
-    if sy is not None and ey is not None:
-        return f"{sy}–{ey}" if sy != ey else f"{sy}"
-    return f"from {sy}" if sy is not None else None
-
-
-def build_meta_desc(rec, shared=frozenset()):
-    """~150 characters, unique per page, assembled from real fields only:
-    what the series actually measure, the producer, the counted series total,
-    the measured coverage years, and the licence -- each clause dropped, not
-    guessed, when its field is missing."""
-    producer, dataset, _long = split_name(rec["name"])
-    sub = _drop_junk_clauses(rec.get("subtitle") or "")
-    # Prefer the subtitle (derived from the source's OWN series titles, unique
-    # across all 203); fall back to the registry dataset phrase when the subtitle
-    # is a raw identifier dump or empty.
-    what = dataset if (_codey(sub) and _good_dataset_lead(dataset, shared)) else sub
-    if _is_junk(what):
-        what = (dataset if not _is_junk(dataset) else "") or rec["name"]
-
-    facts = []
-    if rec.get("n_series"):
-        facts.append(f"{rec['n_series']:,} series")
-    cov = _coverage_clause(rec)
-    if cov:
-        facts.append(cov)
-    lic = short_license(rec.get("license_label"))
-    access = "Free download" if rec.get("reservable") else "Catalogued metadata"
-
-    def assemble(head, with_lic):
-        bits = []
-        if producer and not _mentions(head, producer):
-            bits.append(producer)
-        if facts:
-            bits.append(", ".join(facts))
-        bits.append(access + (f" under {lic}" if (with_lic and lic) else ""))
-        sep = "" if head.endswith("…") else "."
-        return f"{head}{sep} " + ". ".join(bits) + "."
-
-    full = " ".join((what or "").split())
-    for with_lic in (True, False):          # substance first: the licence clause is
-        out = assemble(full, with_lic)      # the first thing dropped when space is tight
-        if len(out) <= DESC_MAX:
-            return out
-    room = DESC_MAX - len(assemble("", False))
-    return assemble(trim_phrase(full, max(room, 40), tolerance=1.0), False)
-
-
-def build_page_seo(records):
-    """{source_id: (title, meta_description)} for every published record.
-
-    Titles lead with what makes THIS page different, then the producer, then the
-    site, so the distinguishing words land inside Google's ~60-character budget.
-    A final pass GUARANTEES that no two pages share their first 60 characters:
-    colliding pages first widen their trim, then fall through to the next honest
-    candidate (the unique subtitle), and only as an unreachable last resort append
-    their registry id -- which prints a warning if it ever fires."""
-    from collections import defaultdict
-    suffix = f" | {SITE_NAME}"
-    shared = shared_dataset_labels(records)
-    state = {}
-    for r in records:
-        producer, long_form, cands = _lead_candidates(r, shared)
-        state[r["id"]] = {"prod": producer, "long": long_form, "cands": cands,
-                          "ci": 0, "extra": 0, "id_fb": False}
-
-    def title_for(r):
-        st = state[r["id"]]
-        text, budget = st["cands"][st["ci"]]
-        lead = trim_phrase(text, budget + st["extra"])
-        for prod in (st["prod"], st["long"]):
-            if prod and not _mentions(lead, prod):
-                return f"{lead} — {prod}{suffix}"
-        return f"{lead}{suffix}"
-
-    titles = {}
-    for _ in range(16):
-        titles = {r["id"]: title_for(r) for r in records}
-        groups = defaultdict(list)
-        for sid, t in titles.items():
-            groups[t[:TITLE_PREFIX_N]].append(sid)
-        clashes = [g for g in groups.values() if len(g) > 1]
-        if not clashes:
-            break
-        for g in clashes:
-            for sid in sorted(g)[1:]:        # deterministic: keep the first id, move the rest
-                st = state[sid]
-                if st["extra"] < 120:
-                    st["extra"] += 40
-                elif st["ci"] + 1 < len(st["cands"]):
-                    st["ci"] += 1
-                    st["extra"] = 0
-                elif not st["id_fb"]:
-                    st["id_fb"] = True
-                    st["cands"].append((f'{st["cands"][st["ci"]][0]} ({sid})', 240))
-                    st["ci"] += 1
-    else:
-        titles = {r["id"]: title_for(r) for r in records}
-
-    dupes = defaultdict(list)
-    for sid, t in titles.items():
-        dupes[t[:TITLE_PREFIX_N]].append(sid)
-    still = {k: v for k, v in dupes.items() if len(v) > 1}
-    if still:
-        print(f"  WARNING: {len(still)} shared {TITLE_PREFIX_N}-char title prefix(es): "
-              + "; ".join(f"{k!r} -> {v}" for k, v in list(still.items())[:5]))
-    if any(st["id_fb"] for st in state.values()):
-        print("  WARNING: title fell back to the source id for "
-              + ", ".join(s for s, st in state.items() if st["id_fb"]))
-
-    return {r["id"]: (titles[r["id"]], build_meta_desc(r, shared)) for r in records}
-
-
-# Filled once per run by main() (a title must be unique across the WHOLE catalogue,
-# so it cannot be computed from a single record in isolation). render_dataset_page
-# falls back to a self-contained build when a record is not in the map, so the
-# renderer still works if called on its own.
-PAGE_SEO: dict = {}
-
-
-# ---------------------------------------------------------------------------- #
 #  Load the registry + sidecar
 # ---------------------------------------------------------------------------- #
 _FREQ_WORDS = {"annually", "annual", "monthly", "quarterly", "daily", "weekly"}
-
-
-# ---------------------------------------------------------------------------- #
-#  schema.org/variableMeasured source data
-# ---------------------------------------------------------------------------- #
-# The registry has no "variable" column. What it does have is the series TITLE,
-# whose leading segment carries the measured quantity (and, where the producer
-# supplies one, its unit): 'Revenue (% of GDP)', 'WTI crude oil spot price,
-# Cushing OK ($/bbl)', 'Gini index of disposable (post-tax, post-transfer) income'.
-#
-# THE RULE: publish the stems only when the COMPLETE distinct set is small enough
-# to enumerate. A "top 12 of 1,486" list would be an arbitrary sample presented as
-# the dataset's variables -- true strings, false claim. So a source either gets its
-# whole, verbatim variable list or gets no variableMeasured at all. Measured
-# 2026-08-01 over the 205 published sources: 60 pass the enumerability test, 59
-# emit the field (noaa is denied below), 146 emit nothing. main() prints the count
-# every run, so a change in that ratio shows up in the build log.
-MEASURES_MAX = 12
-
-# Sources whose leading title segment is an ENTITY, not a measured variable. Read
-# and verified by hand 2026-08-01 against the store's own titles. noaa's stems are
-# weather STATIONS ("New York (Central Park)", "Chicago O'Hare"): publishing them
-# would assert that the dataset measures "Chicago O'Hare", which is false, and a
-# wrong typed claim in structured data is worse than an absent field. No structural
-# test separates this from a source whose titles genuinely ARE variable names
-# (bls: "Unemployment rate, 16+ (SA, %)"), so the exclusion is explicit + reviewed
-# rather than heuristic. Add an id here after reading that source's series titles.
-MEASURES_DENY = {"noaa"}
-
-_MEASURE_CODEY = re.compile(r"^[A-Z0-9:_.,/\-]+$")
-
-
-def _measure_stems(sid, heads):
-    """The complete distinct set of indicator stems for one source, verbatim from
-    its own series titles -- or [] when that set is not safe to publish. Fails
-    closed: ONE unusable stem drops the whole list, because a partial list would
-    misrepresent what the dataset measures."""
-    if sid in MEASURES_DENY:
-        return []
-    stems = list(dict.fromkeys(h for h in heads if h))
-    if not stems or len(stems) > MEASURES_MAX:
-        return []
-    for h in stems:
-        # " " not in h and the all-caps/punctuation test reject raw machine keys
-        # ("ADB:EGELC:AOMPC_BBL", "GRAVITY:col_dep") that 28 sources carry instead
-        # of human titles; _is_junk rejects bare numbers and codes.
-        if (_is_junk(h) or _codey(h) or " " not in h
-                or not (3 <= len(h) <= 120) or _MEASURE_CODEY.match(h)):
-            return []
-    return stems
 
 
 def _derive_subtitles(con):
@@ -802,10 +213,6 @@ def _derive_subtitles(con):
     (geographies/entities), and show the top remaining indicator stems.
     Derived from the FULL registry, never invented; curated overrides in
     SOURCE_SUBTITLES win where hand wording is better.
-
-    Returns (subtitles, measures). `measures` reuses the SAME already-parsed
-    titles to build the schema.org/variableMeasured candidate list (see
-    _measure_stems), so adding it costs no extra pass over the 6.2M series rows.
     """
     from collections import Counter, defaultdict
     per = defaultdict(list)
@@ -841,9 +248,7 @@ def _derive_subtitles(con):
         if len(out) > 140:
             out = out[:137] + "…"
         subs[sid] = out
-    measures = {sid: _measure_stems(sid, [r[0] for r in rows if r])
-                for sid, rows in per.items()}
-    return subs, measures
+    return subs
 
 
 # Hand-curated subtitles wherever the derived stems read poorly (raw codes,
@@ -1022,46 +427,9 @@ def load_registry():
     for r in con.execute(q):
         series_roll[r["source_id"]] = dict(r)
 
-    # A MIN() is only as honest as its worst row.
-    #
-    # Measured 2026-08-02: five sources report a start year below 1000, and they are not the
-    # same kind of thing. maddison and ggdc genuinely begin in year 1 -- their next distinct
-    # starts are 0730, 1000, 1300, 1348, a real historical progression, and censoring them
-    # would delete a true fact from a catalogue whose whole value is long-run coverage. But
-    # cso (0001, 0011, 0029, 0101, 0111), scb (0114 then a jump straight to 1749) and
-    # stat_slovenia (0001 then 1857) are parse damage: a lone impossible value with nothing
-    # near it, almost certainly a period code read as a year.
-    #
-    # The test is CORROBORATION, not a cutoff. An ancient start is trusted only when other
-    # ancient starts stand near it; an isolated one is dropped and the source falls back to
-    # its first plausible year. This keeps Maddison's year 1 and refuses to publish
-    # "from 114" for Sweden.
-    for sid, roll in series_roll.items():
-        try:
-            first = int(str(roll.get("min_start"))[:4])
-        except (TypeError, ValueError):
-            continue
-        if first >= 1000:
-            continue
-        years = [int(y[0]) for y in con.execute(
-            "SELECT DISTINCT substr(start_date,1,4) y FROM series "
-            "WHERE source_id=? AND start_date IS NOT NULL ORDER BY y LIMIT 4", (sid,))
-            if y[0] and y[0].isdigit()]
-        corroborated = sum(1 for y in years if y < 1500) >= 3
-        if not corroborated:
-            plausible = [y for y in years if y >= 1000]
-            roll["min_start"] = f"{plausible[0]:04d}-01-01" if plausible else None
-            roll["start_outlier_dropped"] = first
-
-    _subs, _measures = _derive_subtitles(con)
-    for sid, s in _subs.items():
+    for sid, s in _derive_subtitles(con).items():
         if sid in series_roll:
             series_roll[sid]["auto_subtitle"] = s
-    # schema.org/variableMeasured candidates (complete enumerations only -- see
-    # _measure_stems); an empty list simply means the field is omitted downstream.
-    for sid, m in _measures.items():
-        if sid in series_roll:
-            series_roll[sid]["measures"] = m
 
     # Distinct frequency / category per source (small sets -> fetch separately).
     freqs, cats, geos = {}, {}, {}
@@ -1445,9 +813,6 @@ def build_record(sid, src, lic, roll, side, s5=None):
                        or [_PILLAR_DEFAULT_TOPIC[classify_pillar(
                            {"id": sid, "name": src.get("name") or sid})]]),
         "subtitle": SOURCE_SUBTITLES.get(sid) or (roll or {}).get("auto_subtitle") or "",
-        # Complete, verbatim indicator list for schema.org/variableMeasured; [] when
-        # the source's variable set is too large to enumerate honestly.
-        "measures": (roll or {}).get("measures") or [],
         "n_geo": (roll or {}).get("n_geo", 0),
         "last_updated": sane_date((roll or {}).get("last_updated")),
         # operational (sidecar) extras -- display only
@@ -1456,10 +821,7 @@ def build_record(sid, src, lic, roll, side, s5=None):
         "storage_layout": (side or {}).get("storage_layout"),
         "scripts": (side or {}).get("scripts") or [],
         "measured_obs": (side or {}).get("measured_obs"),
-        # The 200 URL, not the 308 one (see site_url): this single field feeds the
-        # canonical, og:url, schema.org Dataset.url, the Croissant url, the visible
-        # "Canonical landing" row and the sitemap <loc>.
-        "page_url": site_url(f"{sid}.html"),
+        "page_url": f"{SITE_BASE}/{sid}.html",
         "hf_url": f"{HF_ORG}-{sid}",
         "zenodo_url": ZENODO_COMMUNITY,
         # Task#5 series-tier metadata (producer-first citation + honest caveats).
@@ -1474,96 +836,7 @@ def build_record(sid, src, lic, roll, side, s5=None):
 # ---------------------------------------------------------------------------- #
 #  schema.org/Dataset JSON-LD  (the Google-Dataset-Search payload)
 # ---------------------------------------------------------------------------- #
-# Google Dataset Search is a separate vertical: these pages compete against other
-# DATASETS, not against the whole finance web, which makes this block the highest-
-# value structured data on the site. Google validates it, and one bad field can
-# disqualify the page -- so every value below is a verbatim registry string or a
-# number counted from the registry, and anything the catalogue does not have is
-# OMITTED rather than guessed.
-#
-# The DataCatalog the homepage and catalog page already publish under this @id.
-# Emitting it here as includedInDataCatalog is what links 203 orphan Dataset nodes
-# into one catalogue for Dataset Search; it costs no new data (see render_index).
-CATALOG_REF = {
-    "@type": "DataCatalog",
-    "@id": f"{SITE_BASE}/#catalog",
-    "name": SITE_NAME,
-    "url": site_url("catalog.html"),
-}
-
-
-def jsonld_license(rec):
-    """A licence value that is a resolvable URL or a HUMAN label -- never a raw
-    internal token, and never omitted-by-accident.
-
-    WAS WRONG: `LICENSE_LABEL.get(license_id, license_id)` fell back to the id
-    itself, so bundesbank.html published `"license": "custom-terms-bundesbank"` and
-    damodaran.html `"license": "custom-terms-damodaran"` (those two ids are absent
-    from LICENSE_LABEL, which carries "custom-terms" and "bundesbank-granted").
-    WHY IT MATTERED: licence is the single field on this site that must never be
-    approximated. A machine token asserts a licence no one can read, and guessing
-    that "custom-terms-bundesbank" means the same as the "bundesbank-granted" label
-    would be inferring terms -- exactly what the verbatim licence audit forbids.
-    So: omit, and let main() print a warning naming the ids that need a label."""
-    if rec["license_url"]:
-        return rec["license_url"]
-    lid = rec.get("license_id")
-    if not lid or lid == "NEEDS-REVIEW":
-        return None
-    return LICENSE_LABEL.get(lid)          # no id fallback -- None means "omit"
-
-
-def jsonld_creator(rec):
-    """The PRODUCING ORGANISATION.
-
-    WAS WRONG: `creator = {"name": rec["name"]}` on all 203 pages, but `rec["name"]`
-    is the whole producer-plus-dataset string, so fao_ge published a creator
-    organisation literally named "Food and Agriculture Organization of the United
-    Nations (FAO) — FAOSTAT, Emissions — Agriculture: Energy Use (domain GE)".
-    WHY IT MATTERED: Dataset Search reads `creator` as the producer and groups /
-    attributes datasets by it; a per-dataset "organisation" name groups nothing.
-    split_name() already isolates the producer segment for the <title> work, and
-    its long form is the spelled-out body ("Deutsche Bundesbank", "Bureau of Labor
-    Statistics"). alternateName carries the registry's OWN acronym only when the
-    catalogue itself asserts it (acronym_of never invents one)."""
-    producer, _dataset, long_form = split_name(rec["name"])
-    name = long_form or producer or rec["name"]
-    out = {"@type": "Organization", "name": name}
-    if producer and producer != name and _short_token(producer):
-        out["alternateName"] = producer
-    if rec["homepage"]:
-        out["url"] = rec["homepage"]
-    return out
-
-
-def jsonld_description(rec, page_desc=None):
-    """Dataset.description -- one of the two fields Google Dataset Search REQUIRES,
-    and the text it SHOWS in a result.
-
-    WAS WRONG: `desc_short`, i.e. the first 300 characters of `desc_full`, which is
-    the operational sidecar note when there is one and the licence `attribution`
-    line otherwise. Both are wrong for a public description, in different ways:
-
-      * `attribution` (124 of 203 sources) is a credit line, and 57 pages carried
-        one byte-identical to another page's -- 11 x "Source: United Nations Trade
-        and Development Data Hub (UNCTADstat)".
-      * the sidecar note is CRAWLER DOCUMENTATION. Measured 2026-08-01: 115 of 115
-        sidecar descriptions contain internal build detail -- bls read "FULL-COVERAGE
-        ingest of the U.S. BLS flat files ... GROUPED storage (mirrors
-        jobs/ingest_eurostat.py) ... flushed to the Parquet writer in row-group
-        batches". Publishing internal file paths and RAM notes as the dataset
-        description is worse than the duplicate credit line, not better.
-
-    So the description is the page's OWN meta description: assembled per page from
-    counted registry facts (what the series measure, the producer, the series total,
-    the measured coverage years, the licence), unique across the catalogue, and
-    already the text this page shows search engines. The old values remain only as
-    a fallback so the required field can never be empty."""
-    return (page_desc or rec.get("desc_short") or rec.get("attribution")
-            or f"{rec['name']} — dataset catalogued in the {SITE_NAME}.")
-
-
-def dataset_jsonld(rec, page_desc=None):
+def dataset_jsonld(rec):
     """Build a VALID schema.org/Dataset object. Required-by-Google fields:
     name, description; strongly recommended: license, creator/publisher,
     distribution, identifier, sameAs, temporalCoverage, isAccessibleForFree."""
@@ -1572,41 +845,33 @@ def dataset_jsonld(rec, page_desc=None):
         "@type": "Dataset",
         "name": rec["name"],
         # description is required; guarantee a non-empty string.
-        "description": jsonld_description(rec, page_desc),
+        "description": rec["desc_short"]
+        or rec["attribution"]
+        or f"{rec['name']} — dataset catalogued in the {SITE_NAME}.",
         "url": rec["page_url"],
         "identifier": rec["id"],
         "isAccessibleForFree": True,
         "publisher": PUBLISHER,
-        # Ties this Dataset to the DataCatalog node the hub pages already publish.
-        "includedInDataCatalog": dict(CATALOG_REF),
     }
 
-    obj["creator"] = jsonld_creator(rec)
+    # creator = the originating provider (with homepage as sameAs when known).
+    creator = {"@type": "Organization", "name": rec["name"]}
+    if rec["homepage"]:
+        creator["url"] = rec["homepage"]
+    obj["creator"] = creator
 
-    # license: a resolvable URL, or a human label; omitted when the registry holds
-    # only an unverified status or a raw id (see jsonld_license).
-    _lic = jsonld_license(rec)
-    if _lic:
-        obj["license"] = _lic
+    # license: prefer a resolvable URL; else the HUMAN label for our internal
+    # status ids (audit-restricted / verified-*) so JSON-LD never leaks a bare
+    # internal token; omit entirely for unverified so we never assert a fake license.
+    if rec["license_url"]:
+        obj["license"] = rec["license_url"]
+    elif rec["license_id"] and rec["license_id"] != "NEEDS-REVIEW":
+        obj["license"] = LICENSE_LABEL.get(rec["license_id"], rec["license_id"])
 
     # keywords from registry categories + provider id.
     kw = list(rec["categories"]) + [rec["id"]]
     if kw:
         obj["keywords"] = kw
-
-    # variableMeasured: the source's COMPLETE indicator list, verbatim from its own
-    # series titles, or nothing at all (see _measure_stems / MEASURES_MAX).
-    if rec.get("measures"):
-        obj["variableMeasured"] = list(rec["measures"])
-
-    # spatialCoverage: DELIBERATELY NOT EMITTED. Measured 2026-08-01: `series.geography`
-    # is non-empty on only 30 sources, and where it IS populated it is not a resolvable
-    # place. The same token means different things in different sources -- statcan's
-    # only geography is "CA" (Canada) while fhfa's "CA" is one of 61 US STATE codes --
-    # and un_wpp's geography column carries "ADB region: East Asia"-style aggregates.
-    # No rule over that column can tell a country from a state from a regional
-    # aggregate, so any spatialCoverage would be a coin flip on an academic catalogue.
-    # It stays omitted until the registry carries a coded place column.
 
     # temporalCoverage as an ISO-8601 interval, only when both ends are sane.
     if rec["cov_start"] and rec["cov_end"]:
@@ -1637,11 +902,9 @@ def dataset_jsonld(rec, page_desc=None):
     if rec["reservable"]:
         dist = {
             "@type": "DataDownload",
-            "name": f"{rec['id']} — CSV",
             "encodingFormat": "text/csv",
             "contentUrl": f"{SITE_BASE}/download.html?source={rec['id']}",
         }
-        # contentSize is NOT emitted: the registry counts series, not served bytes.
         if rec["license_url"]:
             dist["license"] = rec["license_url"]
         obj["distribution"] = [dist]
@@ -1660,15 +923,11 @@ def dataset_jsonld(rec, page_desc=None):
 # ---------------------------------------------------------------------------- #
 #  Croissant JSON-LD  (ML-ready, schema.org + mlcommons context)
 # ---------------------------------------------------------------------------- #
-def croissant_jsonld(rec, page_desc=None):
+def croissant_jsonld(rec):
     """A minimal-but-valid Croissant record. Croissant is schema.org/Dataset
     plus the mlcommons:croissant context and (for reservable data) a parquet
     FileObject distribution. We keep it conservative: no fabricated RecordSet
-    field types we can't verify -- just the dataset envelope + distribution.
-
-    Shares jsonld_creator / jsonld_license / jsonld_description with the Dataset
-    block above: the wrong-creator and raw-licence-token defects were identical in
-    both blocks, and two copies of the same rule drift apart."""
+    field types we can't verify -- just the dataset envelope + distribution."""
     obj = {
         "@context": {
             "@language": "en",
@@ -1683,14 +942,17 @@ def croissant_jsonld(rec, page_desc=None):
         "@type": "sc:Dataset",
         "conformsTo": "http://mlcommons.org/croissant/1.0",
         "name": re.sub(r"[^A-Za-z0-9_\-]+", "_", rec["id"]),
-        "description": jsonld_description(rec, page_desc),
+        "description": rec["desc_short"]
+        or rec["attribution"]
+        or f"{rec['name']} — catalogued in the {SITE_NAME}.",
         "url": rec["page_url"],
-        "creator": dict(jsonld_creator(rec), **{"@type": "sc:Organization"}),
+        "creator": {"@type": "sc:Organization", "name": rec["name"]},
         "publisher": {"@type": "sc:Organization", "name": SITE_NAME, "url": SITE_BASE},
     }
-    _lic = jsonld_license(rec)
-    if _lic:
-        obj["license"] = _lic
+    if rec["license_url"]:
+        obj["license"] = rec["license_url"]
+    elif rec["license_id"] and rec["license_id"] != "NEEDS-REVIEW":
+        obj["license"] = LICENSE_LABEL.get(rec["license_id"], rec["license_id"])
     if rec["categories"]:
         obj["keywords"] = list(rec["categories"])
     if rec["cov_start"] and rec["cov_end"]:
@@ -1799,7 +1061,6 @@ HEAD = """<!DOCTYPE html>
 <title>{title}</title>
 <meta name="description" content="{meta_desc}">
 <link rel="canonical" href="{canonical}">
-{social}
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1821,7 +1082,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}}
 @media (max-width:680px){{.nav .fam-tag{{display:none}}}}
 </style>
 {jsonld}
-<script src="assets/sso.js?v=20260801k"></script>
+<script src="assets/sso.js?v=20260801f"></script>
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
@@ -1877,70 +1138,6 @@ def jsonld_script(obj):
 
 
 # ---------------------------------------------------------------------------- #
-#  Open Graph / Twitter card
-# ---------------------------------------------------------------------------- #
-# WHAT WAS WRONG: measured 2026-08-01, ZERO of the 215 generated files carried a
-# single og:* or twitter:* tag -- the homepage included, while hfdatalibrary.com
-# emits nine. WHY IT MATTERED: without them Slack, Teams, LinkedIn, WhatsApp and
-# iMessage render a shared link as a bare URL with whatever text they scrape. This
-# catalogue is passed around exactly that way (one academic drops a dataset link in
-# a channel), so the unfurl IS the first impression of the page.
-#
-# Every value comes from the SAME real per-page strings as <title> and
-# <meta description>, so an OG tag can never disagree with the page it describes.
-#
-# NO og:image. site/assets/ holds only SVGs (elkassabgidata-logo.svg, favicon.svg)
-# and Facebook/LinkedIn/X do not render SVG -- pointing og:image at one produces a
-# BROKEN card, worse than none. For the same reason twitter:card is "summary" and
-# not "summary_large_image", which requires an image. The moment a raster preview
-# (PNG/JPG, >=1200x630) exists under assets/, add it here as an ABSOLUTE
-# {SITE_BASE}/... URL and switch the card type -- those are the only two changes.
-def social_meta(title, description, canonical, og_type="website"):
-    """Open Graph + Twitter card tags for one page. Takes RAW (unescaped) text."""
-    og_title = title
-    for _sep in (f" | {SITE_NAME}", f" — {SITE_NAME}"):
-        if og_title.endswith(_sep):
-            # og:site_name already carries the brand; repeating it inside og:title
-            # just eats the ~60 characters an unfurl shows before it truncates.
-            og_title = og_title[: -len(_sep)]
-            break
-    tags = [
-        ("property", "og:title", og_title),
-        ("property", "og:description", description),
-        ("property", "og:type", og_type),
-        ("property", "og:url", canonical),
-        ("property", "og:site_name", SITE_NAME),
-        ("name", "twitter:card", "summary"),
-        ("name", "twitter:title", og_title),
-        ("name", "twitter:description", description),
-    ]
-    return "\n".join(f'<meta {attr}="{k}" content="{esc(v)}">'
-                     for attr, k, v in tags if v)
-
-
-def render_head(title, meta_desc, canonical, css, jsonld="", og_type="website"):
-    """The ONE way to build a page <head>.
-
-    Every page previously called HEAD.format() itself, which is how the site ended
-    up with four head-builders and zero Open Graph tags: a new tag had to be
-    remembered in four places. Routing all of them through here means a page cannot
-    be published without its social tags.
-
-    Takes RAW (unescaped) title / description / canonical and escapes each exactly
-    once, so the same string cannot be double-escaped in one tag and emitted raw in
-    another (the index and info pages were passing an unescaped '&' straight into
-    the description attribute)."""
-    return HEAD.format(
-        title=esc(title),
-        meta_desc=esc(meta_desc),
-        canonical=esc(canonical),
-        css=css,
-        jsonld=jsonld,
-        social=social_meta(title, meta_desc, canonical, og_type),
-    )
-
-
-# ---------------------------------------------------------------------------- #
 #  Per-source embeds granted by the provider in writing. NEVER add one without a
 #  documented permission trail. Each entry: heading, permission note (shown on
 #  the page), and the provider-supplied embed HTML (cleaned of mail-relay link
@@ -1986,26 +1183,18 @@ def render_dataset_page(rec):
             if rec.get(_k):
                 rec[_k] = rec[_k].replace(
                     "Compiled and redistributed by the Elkassabgi Data Library.", _honest)
-    # Title + meta description (see build_page_seo above). Previously the title was
-    # `source.name + " — Econ Data Library"` -- producer-first, so the words that
-    # tell two datasets apart fell past Google's ~60-char truncation and 83 pages
-    # shared a visible prefix; and meta_desc was `desc_short`, which is a licence
-    # credit line on 124 of 203 pages and byte-identical across 57 of them.
-    # PAGE_SEO is computed once over the whole catalogue because uniqueness of the
-    # first 60 characters is a cross-page property; the fallback keeps this renderer
-    # usable standalone.
-    title, meta_desc = PAGE_SEO.get(rec["id"]) or (
-        f"{rec['name']} — {SITE_NAME}", build_meta_desc(rec))
-
-    # JSON-LD is built AFTER the title/description because both blocks now fall back
-    # to this page's unique meta description when the sidecar has no real prose --
-    # Dataset.description is required by Google Dataset Search and used to be a
-    # licence credit line shared with up to 10 other pages.
-    ds_ld = dataset_jsonld(rec, meta_desc)
-    cr_ld = croissant_jsonld(rec, meta_desc)
+    ds_ld = dataset_jsonld(rec)
+    cr_ld = croissant_jsonld(rec)
     jsonld_block = jsonld_script(ds_ld) + "\n" + jsonld_script(cr_ld)
 
-    head = render_head(title, meta_desc, rec["page_url"], PAGE_CSS, jsonld_block)
+    meta_desc = rec["desc_short"] or rec["attribution"] or rec["name"]
+    head = HEAD.format(
+        title=f"{esc(rec['name'])} — {SITE_NAME}",
+        meta_desc=esc(meta_desc)[:300],
+        canonical=esc(rec["page_url"]),
+        css=PAGE_CSS,
+        jsonld=jsonld_block,
+    )
 
     badges = []
     if rec["reservable"]:
@@ -2182,11 +1371,7 @@ def render_dataset_page(rec):
 
     body.append(
         f'<div class="foot">Part of the {SITE_NAME} catalog &middot; '
-        # Was an f-string TODAY baked straight into the page: it made every dataset
-        # page's bytes differ on every calendar day, which would have defeated the
-        # content-hash lastmod below. The placeholder is substituted by _write()
-        # AFTER the fingerprint is taken, so the rendered text is unchanged.
-        'metadata generated __SITE_UPDATED__ from the central registry &middot; '
+        f'metadata generated {TODAY} from the central registry &middot; '
         '<a href="index.html">browse all datasets</a></div>'
     )
     body.append("</div></body></html>")
@@ -2437,7 +1622,7 @@ def render_index(records, generated):
                 "@type": "DataCatalog",
                 "@id": f"{SITE_BASE}/#catalog",
                 "name": SITE_NAME,
-                "url": site_url("catalog.html"),
+                "url": f"{SITE_BASE}/catalog.html",
                 "description": (
                     f"Searchable catalog of {n_total} economic and financial data sources "
                     "with license, provenance, and machine-readable Dataset + Croissant metadata."
@@ -2484,14 +1669,14 @@ def render_index(records, generated):
         ],
     }
 
-    head = render_head(
+    head = HEAD.format(
         # Formal/official title = the Zenodo DOI title (10.5281/zenodo.21405120) so the
         # <title> tag, search results, and the citation record agree. The visible brand
         # LABEL stays SITE_NAME "Econ Data Library" (nav + per-page titles) — cf. HF /
         # High-Frequency, IHOP / International House of Pancakes.
         title="Economic Data Library: Free Economic and Financial Data",
         meta_desc=f"Free, research-grade economic & financial data: {n_total} sources in one namespace, with licenses, provenance, and producer-first citations on every series.",
-        canonical=site_url("index.html"),  # the bare origin; /index.html 308s to it
+        canonical=f"{SITE_BASE}/index.html",
         css=PAGE_CSS
         + """
 /* ── HF-landing replica (mirrors hfdatalibrary.com css/style.css) ── */
@@ -2937,7 +2122,7 @@ def render_catalog(records, generated):
         "@type": "DataCatalog",
         "@id": f"{SITE_BASE}/#catalog",
         "name": SITE_NAME,
-        "url": site_url("catalog.html"),
+        "url": f"{SITE_BASE}/catalog.html",
         "description": (
             f"Searchable catalog of {n_total} economic and financial data sources "
             "with license, provenance, and machine-readable Dataset + Croissant metadata."
@@ -2953,13 +2138,13 @@ def render_catalog(records, generated):
         f'<option value="{esc(x)}">{esc(x)}</option>' for x in REGIONS
     )
 
-    head = render_head(
+    head = HEAD.format(
         title=f"Data Catalog — {SITE_NAME}",
         meta_desc=(
             f"Browse all {n_total} economic & financial data sources — filter by "
             "pillar, region, topic, and access tier; search series in 6 languages."
         ),
-        canonical=site_url("catalog.html"),
+        canonical=f"{SITE_BASE}/catalog.html",
         css=PAGE_CSS + CATALOG_UI_CSS,
         jsonld=jsonld_script(catalog_ld),
     )
@@ -3146,10 +2331,10 @@ overflow-x:auto;font-size:.82rem;line-height:1.6;font-family:var(--mono);margin:
 
 
 def _info_page(title, meta_desc, page, body):
-    head = render_head(
+    head = HEAD.format(
         title=f"{title} — {SITE_NAME}",
         meta_desc=meta_desc,
-        canonical=site_url(page),  # /docs, not /docs.html (which 308-redirects)
+        canonical=f"{SITE_BASE}/{page}",
         css=PAGE_CSS + _INFO_CSS,
         jsonld="",
     )
@@ -3428,28 +2613,27 @@ load();
                       "stats.html", body)
 
 
-def render_sitemap(entries):
-    """Serialize the sitemap from already-decided (loc, lastmod, changefreq) rows.
-
-    WHAT WAS WRONG: this function used to source the dates itself — `TODAY` for the
-    two hub URLs and `r["last_updated"] or TODAY` for the datasets. Because
-    `last_updated` (MAX(series.last_updated)) exists for 3 of 203 sources, 204 of
-    207 URLs were re-dated on every single build; the last run rewrote 202 dates
-    without changing one <loc>. Google discounts lastmod that behaves like this,
-    so an unchanged page was paying a credibility cost to say nothing.
-    Every date now arrives here already proven against the previous build's
-    content hash (see _track_page / SITEMAP_STATE); this function only formats.
-
-    It also used to carry exactly two non-dataset URLs and it hard-coded them with
-    a `.html` extension the host 308-redirects. Both are now caller decisions.
-    """
-    parts = ['<?xml version="1.0" encoding="UTF-8"?>',
-             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
-    for loc, lastmod, changefreq in entries:
+def render_sitemap(records):
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+        "  <url>",
+        f"    <loc>{xml_esc(SITE_BASE)}/index.html</loc>",
+        f"    <lastmod>{TODAY}</lastmod>",
+        "    <changefreq>daily</changefreq>",
+        "  </url>",
+        "  <url>",
+        f"    <loc>{xml_esc(SITE_BASE)}/catalog.html</loc>",
+        f"    <lastmod>{TODAY}</lastmod>",
+        "    <changefreq>daily</changefreq>",
+        "  </url>",
+    ]
+    for r in records:
         parts.append("  <url>")
-        parts.append(f"    <loc>{xml_esc(loc)}</loc>")
-        parts.append(f"    <lastmod>{xml_esc(lastmod)}</lastmod>")
-        parts.append(f"    <changefreq>{xml_esc(changefreq)}</changefreq>")
+        parts.append(f"    <loc>{xml_esc(r['page_url'])}</loc>")
+        lm = r["last_updated"] or TODAY
+        parts.append(f"    <lastmod>{xml_esc(lm)}</lastmod>")
+        parts.append("    <changefreq>weekly</changefreq>")
         parts.append("  </url>")
     parts.append("</urlset>")
     return "\n".join(parts) + "\n"
@@ -3487,53 +2671,15 @@ def main():
         if bool(rec["reservable"]) and bool(series_roll.get(sid)):
             records.append(rec)
 
-    _LASTMOD_PREV.update(_load_lastmod_state())
-    if not _LASTMOD_PREV:
-        print("  sitemap lastmod: no catalog/sitemap_state.json found -- every page "
-              "gets today's date this run; commit the state file so the NEXT build "
-              "can tell changed pages from unchanged ones")
-
     def _write(path, html):
         # single post-process point: stamp the generation date, and append the
         # ElkassabgiData family plate at the very bottom of EVERY page (below the
         # page's own footer), just before </body>.
-        html = html.replace("</body>", FAMILY_BAND + "</body>", 1)
-        # Fingerprint HERE -- after the family plate (a change to it IS a change to
-        # the page) but BEFORE __SITE_UPDATED__ is substituted. That placeholder is
-        # the one piece of every page that moves with the calendar rather than with
-        # the content; hashing after substitution would mark all 200+ pages modified
-        # every day and put us straight back to the meaningless lastmod this fixes.
-        # This is what the spec asks for, not a loophole: lastmod is defined as the
-        # date of the last SIGNIFICANT change, and a re-rendered "generated on"
-        # stamp in the footer is the textbook example of an insignificant one.
-        _track_page(os.path.basename(path), html)
         html = html.replace("__SITE_UPDATED__", TODAY)
+        html = html.replace("</body>", FAMILY_BAND + "</body>", 1)
         with open(path, "w", encoding="utf-8") as f:
             f.write(html)
         _WRITTEN.add(os.path.basename(path))
-
-    # Per-dataset <title> / meta description. Computed ONCE over the full published
-    # set because "no two pages share their first 60 characters" cannot be decided
-    # from a single record; render_dataset_page reads the result out of PAGE_SEO.
-    PAGE_SEO.update(build_page_seo(records))
-    _t = {v[0][:TITLE_PREFIX_N] for v in PAGE_SEO.values()}
-    print(f"  page titles: {len(PAGE_SEO)} pages, {len(_t)} distinct "
-          f"{TITLE_PREFIX_N}-char prefixes")
-
-    # --- structured-data coverage (so a silent regression is visible in the log) ---
-    _vm = [r["id"] for r in records if r.get("measures")]
-    print(f"  schema.org variableMeasured: {len(_vm)}/{len(records)} pages "
-          f"(complete verbatim enumerations only; {len(records) - len(_vm)} omitted)")
-    # A licence id with neither a URL nor a LICENSE_LABEL row makes jsonld_license
-    # return None, so those pages publish NO licence rather than a raw token. Name
-    # them: the fix is one label in LICENSE_LABEL, quoted from the verbatim audit.
-    _nolic = sorted({r["license_id"] for r in records
-                     if not jsonld_license(r) and r["license_id"]
-                     and r["license_id"] != "NEEDS-REVIEW"})
-    if _nolic:
-        print(f"  WARNING: schema.org license OMITTED for license id(s) {_nolic} "
-              "-- no license.url and no LICENSE_LABEL entry (add the label, quoted "
-              "from DATABASE_LICENSES_VERBATIM.md; never publish the raw id)")
 
     # Per-dataset pages
     n_pages = 0
@@ -3573,63 +2719,15 @@ def main():
     _write(os.path.join(OUT_DIR, "contact.html"), render_contact())
     _write(os.path.join(OUT_DIR, "stats.html"), render_stats())
 
-    # ---- sitemap.xml --------------------------------------------------------
-    # WHAT WAS WRONG: the sitemap held the two hub URLs plus the dataset pages and
-    # NOTHING else, so eight real, indexable pages (docs, api, cite, contact,
-    # stats, download, mcp, status) were invisible to it. Every URL it did hold
-    # ended in .html, which the host 308-redirects (see site_url).
-    # The candidate list is filtered against two facts measured from the emitted
-    # bytes, not from a maintained exclusion list: the file has to exist, and it
-    # must not carry a robots noindex. That is what keeps /account.html, /404.html
-    # and (today) /status.html out, and what will let status.html back in by
-    # itself if its noindex is ever removed.
-    entries, skipped = [], []
-    for name, changefreq in SITEMAP_EXTRA:
-        path = os.path.join(OUT_DIR, name)
-        if not os.path.isfile(path):
-            skipped.append(f"{name} (absent)")
-            continue
-        if name not in _LASTMOD:
-            # Hand-maintained page (KEEP_UNGENERATED): fingerprint it off disk so
-            # it obeys exactly the same "unchanged content keeps its date" rule.
-            with open(path, encoding="utf-8") as f:
-                _track_page(name, f.read())
-        if _LASTMOD[name]["noindex"]:
-            skipped.append(f"{name} (noindex)")
-            continue
-        entries.append((site_url(name), _LASTMOD[name]["lastmod"], changefreq))
-    for r in records:
-        entries.append((r["page_url"], _LASTMOD[f"{r['id']}.html"]["lastmod"], "weekly"))
-
+    # sitemap.xml
     with open(os.path.join(OUT_DIR, "sitemap.xml"), "w", encoding="utf-8") as f:
-        f.write(render_sitemap(entries))
-
-    # Persist the fingerprints for the next build. Lives in catalog/ (not site/) so
-    # it is neither deployed nor removed by the orphan sweep. COMMIT IT: it is the
-    # only memory of which pages were unchanged.
-    with open(SITEMAP_STATE, "w", encoding="utf-8") as f:
-        json.dump({"generated": TODAY, "pages": _LASTMOD}, f,
-                  indent=1, sort_keys=True, ensure_ascii=False)
-
-    # Audit line: a healthy steady-state build reports a SMALL changed count. If it
-    # ever reports "changed on all N", something volatile has crept back into the
-    # page body and lastmod has quietly gone back to being worthless.
-    _changed = [n for n, e in _LASTMOD.items()
-                if (_LASTMOD_PREV.get(n) or {}).get("sha256") != e["sha256"]]
-    print(f"  sitemap: {len(entries)} URLs, all extensionless (the form the host "
-          f"serves 200 for); content changed on {len(_changed)}/{len(_LASTMOD)} "
-          f"tracked pages -> those get lastmod {TODAY}, the rest keep theirs"
-          + (f"; skipped {', '.join(skipped)}" if skipped else ""))
+        f.write(render_sitemap(records))
 
     # robots.txt — allow crawlers, keep the account page out of the index, and
     # point them at the sitemap (hfdatalibrary parity; previously the SPA served
     # index.html for /robots.txt, so there was no Sitemap directive for crawlers).
-    # WHAT WAS WRONG: the rule read `Disallow: /account.html`, but the host serves
-    # the sign-in page at /account and 308-redirects the .html form, so the only
-    # URL a crawler ever sees was NOT covered by the rule. robots.txt matching is
-    # by path prefix, so `/account` covers both /account and /account.html.
     with open(os.path.join(OUT_DIR, "robots.txt"), "w", encoding="utf-8") as f:
-        f.write("User-agent: *\nAllow: /\nDisallow: /account\n\n"
+        f.write("User-agent: *\nAllow: /\nDisallow: /account.html\n\n"
                 f"Sitemap: {SITE_BASE}/sitemap.xml\n")
 
     # ---- orphan sweep -------------------------------------------------------------
@@ -3658,8 +2756,7 @@ def main():
     print(f"  redistributed (with distribution): {n_open}")
     print(f"  metadata-only (no distribution):   {n_pages - n_open}")
     print(f"Wrote index.html and sitemap.xml")
-    print(f"Sitemap lists {len(entries)} URLs "
-          f"({len(entries) - n_pages} hub/info + {n_pages} datasets)")
+    print(f"Sitemap lists {n_pages + 1} URLs (index + {n_pages} datasets)")
 
 
 if __name__ == "__main__":
