@@ -3226,6 +3226,17 @@ sources:
   # 834 objects. Until that is timed against the 300-minute ceiling the workstation is
   # the safe place for it. Routing on an unmeasured estimate is what put `abs` here
   # wrongly (see its entry), so this says plainly that it is an estimate.
+  # PROMOTED live 2026-08-02, on evidence rather than on the fetcher merely existing:
+  #   * current_vintage() returns a REAL token — measured 'noaa:b1ea514a2ddee8f6', two HEADs
+  #     over the NCEI archives hashed together, not the "force" sentinel that means
+  #     "undeterminable".
+  #   * the source is fully SERVED and verified both directions: 3,135,873 catalogue rows,
+  #     3,135,873 CSVs derived (put 3,135,873, skipped 0, errors 0), MISSING 0, 0 unreachable
+  #     objects, byte-compare 20/20 identical, 10 retained legacy ids that still resolve.
+  # Held back until now for a concrete reason and not caution: the fetcher publishes BY
+  # OVERWRITE, and tools/derive_csv_bulk.py was reading the same store for ~9 hours. Promoting
+  # mid-derive would have rewritten the parquet under a live reader.
+  live: true
   run_location: local
   scripts:
   - jobs/ingest_noaa.py
