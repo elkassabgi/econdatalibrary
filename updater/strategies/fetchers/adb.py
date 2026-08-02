@@ -68,7 +68,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import (CURSOR_CAP, Deadline, Tally, cursors_from_table, finalize,
+                      merge_cursor_map)
 
 # Minutes adb may spend before deferring the remaining flows to the next tick.
 BUDGET_MIN = 25
@@ -319,7 +320,21 @@ def update(unit, since) -> Result:
     tally = Tally()
     total = 0
     maxd: dt.date | None = None
-    cursors: dict[str, str] = {}     # flow -> max obs_date written (per-flow freshness)
+    # TWO SEPARATE THINGS THAT USED TO BE ONE DICT.
+    #
+    # flow_max is {flow: max obs_date} — per-flow freshness, and the fallback for
+    # last_obs. It is keyed by FLOW because that is the unit this fetcher iterates.
+    #
+    # cursors is the §5.7 changed-series set and MUST be keyed by the store's
+    # series_key, because orchestrate._catalog_ids_for rebuilds the catalog id as
+    # "<source>:" + key. Reporting flow codes there mapped 9 keys against 53,458
+    # catalogued series, so coherence was never met and adb reported `partial` every
+    # run with its published CSVs drifting from the parquet (measured 2026-08-02).
+    # adb's stored key is already exactly right — "ADB:EGELC:AOMPC_BBL:AUS", and
+    # "adb:" + that IS the catalog id — so the changed set is read back from each
+    # rewritten flow parquet, the same way fed_board/fhfa/zillow/bis do it.
+    flow_max: dict[str, str] = {}
+    cursors: dict[str, str] = {}
 
     # Wall-clock budget. adb is not broken -- its fetch() correctly refuses to retry
     # 400/404/422 -- it is simply SLOW: a 240 s timeout x 3 attempts across many
@@ -353,10 +368,11 @@ def update(unit, since) -> Result:
             total += before
             continue
 
-        # Seed this flow's cursor from the on-disk frontier so a frozen/untouched
-        # flow still reports its real cursor.
+        # Seed this flow's freshness from the on-disk frontier so a frozen/untouched
+        # flow still reports its real date. This is NOT the §5.7 changed set — an
+        # untouched flow has no changed series and must not claim any.
         if mx is not None:
-            cursors[flow] = mx.isoformat()
+            flow_max[flow] = mx.isoformat()
 
         if not inds or mx is None:
             # No usable on-disk series to date-tail (shouldn't happen for a real
@@ -447,14 +463,31 @@ def update(unit, since) -> Result:
         # its boundary year, zero net-new) would have empty==attempted and wrongly raise
         # DefinitiveError. The REAL net-new delta is reflected in obs (total) and the note.
         tally.added_unit(len(keys))
+        # §5.7: report the SERIES we just merged — taken from new_tbl, NOT read back
+        # from the whole parquet. The parquet holds all history, so reading it back
+        # would mark every series changed on every run and trigger a full re-derive
+        # each tick. new_tbl is exactly the boundary-year re-fetch, which is the
+        # honest changed set: it covers same-year REVISIONS (merge lets new win) as
+        # well as genuinely new rows, and excludes untouched history. Same pattern as
+        # the bls fetcher.
+        merge_cursor_map(cursors,
+                         cursors_from_table(new_tbl, cap=CURSOR_CAP,
+                                            key_col="series_key"),
+                         cap=CURSOR_CAP)
         if md:
-            cursors[flow] = md
+            flow_max[flow] = md
             mdd = dt.date.fromisoformat(md)
             if maxd is None or mdd > maxd:
                 maxd = mdd
 
     last_obs = maxd.isoformat() if maxd is not None else (
-        max(cursors.values()) if cursors else (since or None))
+        max(flow_max.values()) if flow_max else (since or None))
+
+    if len(cursors) >= CURSOR_CAP:
+        print(f"[{SOURCE}] cursor set hit the {CURSOR_CAP:,} cap — further changed "
+              f"series are not individually reported; adb has 53,458 catalogued "
+              f"series, so the remainder relies on the orchestrator's derive-all path",
+              flush=True)
 
     # One sub-unit per flow attempted; floor = (#sub-units) - 1 per the contract.
     res = finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
