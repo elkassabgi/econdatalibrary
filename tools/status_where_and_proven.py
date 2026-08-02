@@ -32,8 +32,9 @@ sys.path.insert(0, ROOT)
 def extra_scheduled() -> dict:
     """Sources scheduled by a WORKFLOW rather than by `live: true`, and why.
 
-    `live` is not the whole schedule and treating it as such under-reports. Two workflows
-    dispatch sources explicitly and BYPASS the live gate:
+    `live` is not the whole schedule and treating it as such under-reports. THREE
+    schedulers dispatch sources while bypassing the live gate — two workflows and the
+    workstation runner:
 
       updater-heavy.yml  — one runner per heavy source. imf_gfssoo_direct's registry entry
                            spells the reason out: _imf_direct.run() makes ONE blocking pull
@@ -42,6 +43,15 @@ def extra_scheduled() -> dict:
                            it anyway. Reading that as "not scheduled" inverts the meaning.
       sec-edgar-daily.yml — sec_edgar is served from clean_grouped in its own shape and has its
                            own workflow rather than a slot in the orchestrator.
+      run_local_heavy.ps1 — the workstation job. It selects targets via
+                           tools/_list_local_sources.py, which filters on
+                           `run_location == "local"` and NEVER READS `live`. So a
+                           local-tier source with live:false IS scheduled — it just runs
+                           on the workstation instead of CI. Missing this under-reported
+                           by 10 sources (bis, bls, cbs_nl, eia, faostat, gus_dbw, istat,
+                           oecd, statcan, vdem), measured 2026-08-02, which is the same
+                           "live is not the whole schedule" mistake this docstring was
+                           written to prevent — made once more, one scheduler later.
 
     Parsed from the workflow files, not hardcoded here, so this cannot drift away from what CI
     actually runs.
@@ -91,9 +101,15 @@ def main() -> int:
               f"{', '.join(sorted(extra))}\n")
     for s, n in served.items():
         entry = reg.get(s)
-        # SCHEDULED, not LIVE. A source the heavy matrix or sec-edgar-daily dispatches IS
-        # scheduled even with live:false — that flag only governs the daily orchestrator run.
-        live = bool(entry and entry.get("live") is True) or s in extra
+        # SCHEDULED, not LIVE. A source the heavy matrix, sec-edgar-daily, or the
+        # WORKSTATION runner dispatches IS scheduled even with live:false — that flag
+        # only governs the daily CI orchestrator run. run_local_heavy.ps1 picks its
+        # targets from run_location alone (tools/_list_local_sources.py never reads
+        # `live`), so omitting this clause reported 10 genuinely-scheduled sources as
+        # pending.
+        routed_local = bool(entry and entry.get("run_location") == "local")
+        live = (bool(entry and entry.get("live") is True)
+                or s in extra or routed_local)
         if not live:
             buckets["pending"].append((s, n))
             continue
