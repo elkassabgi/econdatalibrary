@@ -678,6 +678,25 @@ sources:
     - per-series files — one {tableId}.parquet per CBS table under data/clean_full/cbs_nl/ (~2180 files); huge tables flushed
       via {tableId}.part{i}.parquet + {tableId}.ckpt.json then concatenated into the final parquet and parts/ckpt removed.
 - source_id: census
+  # SCHEDULED 2026-08-02 via run_location, NOT live. Fetcher built and PROVEN:
+  # updater/strategies/fetchers/census.py covers the 20 EITS time-series flows only — the other
+  # 60 datasets here are wide periodic snapshots served at table grain and need a reference-year
+  # vintage check, not a date tail. Verified end-to-end on a sandbox copy: run 1 advanced marts
+  # 2026-04 -> 2026-06, qfr 2025-10 -> 2026-01, vip 2026-04 -> 2026-05 (+5,408 rows); run 2
+  # returned no_change over a byte-identical store, which is what proves the rebuilt series_keys
+  # equal the stored ones.
+  #
+  # WHY LOCAL AND NOT live: true — the Census API REQUIRES a key for these endpoints, and there
+  # is no CENSUS_API_KEY repo secret (gh secret list: CLOUDFLARE_*, COMTRADE, FRED, R2_*,
+  # RESEND). Ahmed's key is in .env ON THE WORKSTATION, which is where run_location: local runs
+  # and where the fetcher can read it. Setting live: true would schedule it into CI, where it
+  # would fail every day for want of a credential that already exists elsewhere.
+  # Do not "helpfully" flip this to live until the secret exists in the repo.
+  #
+  # And note HOW it fails without a key: HTTP *200* with an HTML "Missing Key" page, not a 401.
+  # A fetcher that trusted the status code would record a successful empty run forever, so the
+  # fetcher detects that page explicitly and refuses.
+  run_location: local
   scripts:
   - jobs/ingest_census.py
   strategy: extend_by_date

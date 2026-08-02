@@ -91,6 +91,13 @@ jobs:
       # rather than needing a second discovery; until then an unset secret is an empty string
       # and bea keeps refusing loudly, exactly as it does today.
       BEA_API_KEY: ${{ secrets.BEA_API_KEY }}
+      # CENSUS_API_KEY is REQUIRED by the Census API, and there is no such repo secret today —
+      # so census is deliberately routed run_location: local, where Ahmed's key already lives in
+      # .env, rather than live: true. This passthrough exists only so that adding the secret is
+      # sufficient to move it into CI later; it changes nothing while unset.
+      # Measured 2026-08-02: an unauthenticated request returns HTTP *200* with an HTML
+      # "Missing Key" page, so nothing here may infer success from a status code.
+      CENSUS_API_KEY: ${{ secrets.CENSUS_API_KEY }}
       AQUEDUCT_BACKEND: r2
       # Rollout perimeter: scheduled runs execute ONLY live: true sources.
       # (Learned from run 28682266857: without this, every due source with an
