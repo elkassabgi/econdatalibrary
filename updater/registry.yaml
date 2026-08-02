@@ -1676,7 +1676,7 @@ sources:
   strategy_reason: Each release is served as a whole ZIP via Output.aspx?rel=<REL>&filetype=zip with no date filter. CORRECTED
     2026-07-29 - the original plan here ("store an HTTP ETag/Last-Modified per release") CANNOT WORK; it was measured, not
     assumed (see adapter.vintage_signal). The fetcher gates on a CONTENT HASH of each release zip instead.
-  upstream_verified: 2026-07-29 - 18 releases discovered live; all 18 zips = 79.9 MB / 9.4 s total; two-run test parses+publishes
+  fetcher_verified: 2026-07-29 - 18 releases discovered live; all 18 zips = 79.9 MB / 9.4 s total; two-run test parses+publishes
     then reports byte-identical no_change.
   cadence: daily
   refresh_cost: medium
@@ -1735,7 +1735,7 @@ sources:
   strategy_reason: 9 full-history snapshot files (CSV/XLSX) at fixed fhfa.gov URLs with no date param; build fully overwrites
     every cube, so gate on the union of the 9 files. NOTE rebuild is deliberately all-or-nothing - build() regenerates all 9
     cubes from RAW in one call and has no per-cube entry point, so splitting the gate would mean reimplementing the parser.
-  upstream_verified: 2026-07-30 - validators measured STABLE (two HEADs 20s apart, identical on three files - hpi_master.csv
+  fetcher_verified: 2026-07-30 - validators measured STABLE (two HEADs 20s apart, identical on three files - hpi_master.csv
     Content-Length 17,046,224; hpi_at_3zip.xlsx 3,166,176; annual_hpi_at_national.xlsx Last-Modified Mon 30 Mar 2026 17:44:29).
     No ETag is served, so the weakest files are SIZE-only and cannot see a same-length revision - MAX_AGE_DAYS=30 forces a
     rebuild in that case. The ingest is already safe to re-run (download() never skips, build() reparses), so both are reused
@@ -2465,7 +2465,7 @@ sources:
     strictly weaker than what ILO already publishes. A revision that rewrites values without changing the row count is
     invisible to a count gate, and so is a correction that SHRINKS it. The TOC's own last.update stamp is populated for
     1,956 of 1,956 indicators, so the fetcher gates on that instead.
-  upstream_verified: 2026-07-30 - TOC re-downloaded live; last.update present on 1,956/1,956 indicators; vintage token stable
+  fetcher_verified: 2026-07-30 - TOC re-downloaded live; last.update present on 1,956/1,956 indicators; vintage token stable
     across two calls; two-run test published 446 rows then reported 2/2 unchanged/no_change. Note the FRESH TOC listed 1,956
     indicators where the on-disk cached copy had 1,947 - reading the cache would have hidden 9 indicators.
   cadence: monthly
@@ -3131,7 +3131,7 @@ sources:
     only when a new edition ships, gated on the file's vintage signal. NOTE the honest expectation here is no_change
     essentially forever - mpd2020 has not moved since 2020 and the next release will be a NEW file - so the gate must key on
     the publisher's own validator, never on a clock.
-  upstream_verified: 2026-07-30 - primary URL validator measured STABLE (two HEADs 15s apart, identical ETag
+  fetcher_verified: 2026-07-30 - primary URL validator measured STABLE (two HEADs 15s apart, identical ETag
     W/"69d3b691-...-33.36;1605281601766", Last-Modified Fri 13 Nov 2020 15:33:21 GMT, Content-Length 1,764,793). The
     dataverse.nl mirror returns 403 to us and is deliberately NOT part of the vintage - hashing a 403 yields a stable token
     that means nothing. Parse EXTRACTED from main() into ingest_maddison.parse_xlsx so fetcher and ingest share ONE parser;
@@ -5362,7 +5362,7 @@ sources:
     HTTP validator and rebuild only changed cubes. The stale-raw-cache bug this entry warned about is handled - the fetcher
     passes cache_raw=False, because fetch_csv_text returns the cached raw copy when one exists and would otherwise re-parse
     the same bytes forever while reporting success.
-  upstream_verified: 2026-07-30 - 208 CSVs discovered LIVE from the research page (not the cached list); validators measured
+  fetcher_verified: 2026-07-30 - 208 CSVs discovered LIVE from the research page (not the cached list); validators measured
     STABLE (two HEADs 25s apart returned identical ETag/Last-Modified/Content-Length on three files, e.g. Metro_zhvi ETag
     "fcde3e8e9a6fca03f6f3d30a53c663e5"), unlike fed_board and bis where they are not; two-run test published 15,990 rows then
     reported unchanged/no_change.
@@ -6136,7 +6136,7 @@ sources:
   refresh_cost: fast
   out_dir: who_hwf
   review: true
-  upstream_verified: 2026-07-30 - DBnomics WHO/HWF indexed_at 2026-07-24 (six days old, so this mirror is genuinely live,
+  fetcher_verified: 2026-07-30 - DBnomics WHO/HWF indexed_at 2026-07-24 (six days old, so this mirror is genuinely live,
     unlike UNCTAD 2023-06-30 / FAO 2024-05-09 / UNESCO 2022-04-04). FULL id comparison, not a sample - 4,421 upstream codes
     vs 4,421 published ids, 4,421 reproduced exactly, 0 missing either way. A pull reproduced the store exactly (54,320 rows,
     4,421 series); 25,315 upstream slots are the literal string NA and are dropped deliberately.
@@ -6151,7 +6151,7 @@ sources:
   refresh_cost: fast
   out_dir: who_rs
   review: true
-  upstream_verified: 2026-07-30 - DBnomics WHO/RS indexed_at 2026-07-24. A pull returned 7,388 series and reproduced our
+  fetcher_verified: 2026-07-30 - DBnomics WHO/RS indexed_at 2026-07-24. A pull returned 7,388 series and reproduced our
     store exactly (2,211 rows / 2,207 series). The 5,181 upstream series we do NOT hold are genuinely EMPTY - every one of
     their 5,198 observation slots is the literal string NA - so they are not data we are missing.
 - source_id: who_sdg
@@ -6165,7 +6165,7 @@ sources:
   refresh_cost: medium
   out_dir: who_sdg
   review: true
-  upstream_verified: 2026-07-30 - DBnomics WHO/SDG indexed_at 2026-07-24; 29,245 series upstream against 28,160 published,
+  fetcher_verified: 2026-07-30 - DBnomics WHO/SDG indexed_at 2026-07-24; 29,245 series upstream against 28,160 published,
     so this one should GAIN coverage on its first run. Vintage token proven stable across two calls.
 - source_id: boc
   live: true
@@ -6179,7 +6179,7 @@ sources:
   refresh_cost: medium
   out_dir: boc
   review: true
-  upstream_verified: 2026-07-30 - ids need NO crosswalk, verified as a FULL set comparison rather than a sample. Valet's own
+  fetcher_verified: 2026-07-30 - ids need NO crosswalk, verified as a FULL set comparison rather than a sample. Valet's own
     series names ARE our series_keys (A.BCPI, A.BCNE, A.ENER); Valet lists 15,906 against our 12,862 published ids, with
     12,862 reproduced EXACTLY and 0 of ours missing upstream. The 3,044 extra Valet series are new coverage and are
     deliberately NOT fetched - widening the published id space is a cataloguing decision, not an update. Live run - ok in
@@ -6198,7 +6198,7 @@ sources:
   refresh_cost: fast
   out_dir: snb
   review: true
-  upstream_verified: 2026-07-30 - keys come from the CSV's OWN dimension columns (SNB:<cube>:<D0>:<D1>[:<D2>], codes like
+  fetcher_verified: 2026-07-30 - keys come from the CSV's OWN dimension columns (SNB:<cube>:<D0>:<D1>[:<D2>], codes like
     M0/EUR1), NOT from /dimensions/en, whose item ids (D0_0, D0_1) are a different id space - reconstructing from those
     reproduced only 191 of 762 (25%), an artifact of comparing incomparable spaces. Parsing the CSV reproduces 762 of 762
     keys (100.00%) AND all 303,358 stored (series_key, obs_date) rows (100.00%), verified per cube. Column ORDER is read from
