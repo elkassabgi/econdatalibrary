@@ -58,6 +58,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import os
+import re
 import sys
 import time
 
@@ -156,6 +157,62 @@ def _stored_max(path: str):
         return None
 
 
+def _geo_col(cols: list[str]) -> str | None:
+    for c in cols:
+        if c.lower() == "geo_level_code":
+            return c
+    return None
+
+
+def _store_geo_levels(path: str, gcol: str) -> set:
+    try:
+        tbl = blob.read_table(path, columns=[gcol])
+        return {v for v in tbl.column(gcol).to_pylist() if v}
+    except Exception:                                        # noqa: BLE001
+        return set()
+
+
+def _predicates(levels: set) -> list[str]:
+    """`for=` predicates this tail requests. US ONLY, deliberately — see below.
+
+    20 of the 21 EITS flows are entirely geo_level_code=US, so us:* is complete for them.
+    eits/qtax is not: it stores 77 US series and 1,344 STATE ones, and a us-only tail cannot
+    refresh those. I tried adding `for=state:*` and REVERTED it, because the state response
+    does not carry the same dimensions as the stored state rows:
+
+        stored  ...|GEO_ID=0400000US32|...|STATE=32|...|GEO_LEVEL_CODE=NV
+        state:* ...|GEO_ID=0400000US01|...            |GEO_LEVEL_CODE=AL|us=01
+
+    No STATE, an extra us — so series_key_of produces a key SHAPE the store has never held,
+    and the merge adds 1,209 brand-new series instead of extending the 1,344 that exist.
+    Measured in a sandbox: qtax went 1,421 -> 2,630 distinct series. That is silent
+    duplication of real data, which is far worse than the gap it was meant to close.
+
+    Under-coverage is honest and is reported; corruption is neither. So qtax's state series
+    stay un-refreshed and NAMED until the state response is mapped onto the stored dimensions
+    properly, and _shape_guard below makes this whole class of mistake impossible to ship
+    again rather than relying on someone re-running my sandbox comparison.
+    """
+    return ["us:*"]
+
+
+_SHAPE = re.compile(r"=[^|]*")
+
+
+def _shape(key: str) -> str:
+    """A series_key with its VALUES blanked: the structural signature of the key."""
+    return _SHAPE.sub("=*", key)
+
+
+def _store_shapes(path: str) -> set:
+    try:
+        return {_shape(k) for k in
+                blob.read_table(path, columns=["series_key"]).column("series_key").to_pylist()
+                if k}
+    except Exception:                                        # noqa: BLE001
+        return set()
+
+
 def _stored_series(path: str) -> int:
     try:
         import pyarrow.compute as pc
@@ -165,10 +222,11 @@ def _stored_series(path: str) -> int:
         return 0
 
 
-def _fetch(sess: requests.Session, flow: str, get_cols: list[str], year: int, key: str | None):
+def _fetch(sess: requests.Session, flow: str, get_cols: list[str], year: int, key: str | None,
+           pred: str = "us:*"):
     """One flow's date tail -> the raw JSON matrix. Raises TransientError on flaky failures,
     DefinitiveError on a hard 4xx that is not a rate limit (a broken request, not a bad day)."""
-    params = {"get": ",".join(get_cols), "time": f"from {year}", "for": "us:*"}
+    params = {"get": ",".join(get_cols), "time": f"from {year}", "for": pred}
     if key:
         params["key"] = key
     url = f"{BASE}/eits/{flow}"
@@ -248,19 +306,29 @@ def update(unit, since) -> Result:
         if not dim_cols:
             tally.structural_unit(f"{flow}: no dimensions recoverable from stored series_key")
             continue
-        get_cols = [c for c in data_cols if c not in _IMPLICIT]
+        get_cols = [c for c in data_cols if c.lower() not in _IMPLICIT]
+        gcol = _geo_col(data_cols)
+        levels = _store_geo_levels(path, gcol) if gcol else set()
 
-        try:
-            rows = _fetch(sess, flow, get_cols, mx.year, key)
-        except TransientError:
-            tally.transient_unit(flow)
+        rows = []
+        failed = False
+        for pred in _predicates(levels):
+            try:
+                part = _fetch(sess, flow, get_cols, mx.year, key, pred)
+            except TransientError:
+                tally.transient_unit(f"{flow} for={pred}")
+                failed = True
+                break
+            except DefinitiveError:
+                tally.structural_unit(f"{flow} for={pred}")
+                failed = True
+                break
             time.sleep(RATE)
+            if not part or len(part) < 2:
+                continue
+            rows = part if not rows else rows + part[1:]     # one header, then bodies
+        if failed:
             continue
-        except DefinitiveError:
-            tally.structural_unit(flow)
-            time.sleep(RATE)
-            continue
-        time.sleep(RATE)
 
         if not rows or len(rows) < 2:
             # A BOUNDARY re-fetch must re-return at least the boundary period. Nothing at all
@@ -270,8 +338,17 @@ def update(unit, since) -> Result:
 
         header = rows[0]
         hidx = {c: i for i, c in enumerate(header)}
-        ti = hidx.get("time")
-        vi = hidx.get("cell_value")
+        # CASE-INSENSITIVE for the two well-known columns. eits/qtax names its variables in
+        # UPPERCASE both in our store and upstream (CELL_VALUE, TIME_SLOT_ID, ...) while the
+        # other 20 flows are lowercase — and it is not cosmetic: asking qtax for `cell_value`
+        # returns 400 "unknown variable". A case-sensitive lookup here found no cell_value,
+        # counted a structural break, and finalize turned that into a DefinitiveError, so ONE
+        # oddly-cased flow failed the entire source every run. dim_cols and the get= list are
+        # both read from the store, so they already carry each flow's own casing; only these
+        # two fixed names needed it.
+        lidx = {c.lower(): i for i, c in enumerate(header)}
+        ti = lidx.get("time")
+        vi = lidx.get("cell_value")
         if ti is None or vi is None:
             tally.structural_unit(f"{flow}: response lacks time/cell_value")
             continue
@@ -301,6 +378,28 @@ def update(unit, since) -> Result:
             tally.empty_unit(flow)                           # already at the publisher's frontier
             continue
 
+        # KEY-SHAPE GUARD — refuse to merge keys whose STRUCTURE the store has never held.
+        #
+        # merge dedups on (series_key, obs_date). A key built from a different dimension set
+        # therefore does not update an existing series, it CREATES one — silently, and with
+        # real values, so nothing downstream looks broken. That is exactly what a `state:*`
+        # request did here in testing: its rows lack STATE and carry an extra `us`, and qtax
+        # jumped from 1,421 to 2,630 distinct series.
+        #
+        # A shape check catches the whole class rather than that one instance, and it cannot
+        # be fooled by values (only the dimension NAMES and their order matter). If a flow
+        # legitimately gains a dimension upstream, this fires and a human decides — which is
+        # the right outcome, because that is a schema change, not a date tail.
+        known = _store_shapes(path)
+        if known:
+            bad = {k for k in set(keys) if _shape(k) not in known}
+            if bad:
+                tally.structural_unit(
+                    f"{flow}: {len(bad)} key shape(s) absent from the store — refusing to "
+                    f"merge (would create new series, not extend existing ones); e.g. "
+                    f"{_shape(sorted(bad)[0])[:110]}")
+                continue
+
         held = _stored_series(path)
         arrays = {"series_key": pa.array(keys, pa.string()),
                   "obs_date": pa.array(dates, pa.date32())}
@@ -315,18 +414,24 @@ def update(unit, since) -> Result:
             continue
         added = max(0, n - before_rows)
 
-        # COVERAGE — only meaningful when the frontier ACTUALLY MOVED.
-        #
-        # The tail should reach the series we store, and a shortfall while rows are landing
-        # means some series advanced and the rest silently fell behind: real drift, worth a
-        # partial. But a shortfall with NOTHING merged is not drift, it is a RETIRED flow.
-        # Measured on the first run of this fetcher: eits__mhs (the discontinued Manufactured
-        # Housing Survey) returned 2 of its 22 stored series and added 0 rows, and an
-        # added-blind check reported the whole source `partial` over it — permanently, since
-        # a retired survey never publishes again. That is the cry-wolf failure the health
-        # gate's own note warns about, so the guard is conditioned on `added`.
-        if added and held and len(seen_series) < held:
-            under.append(f"{flow}={len(seen_series)}/{held}")
+        # COVERAGE IS A STRUCTURAL QUESTION — "did we ASK for everything?" — not a statistical
+        # one. The first version of this guard compared distinct series returned against
+        # distinct series stored, and it conflated two unrelated things:
+        #   * eits/qtax 66 of 1,421 — REAL: the us-only predicate could not reach 1,344 state
+        #     series, so they would never have refreshed. Our fault, and invisible.
+        #   * eits/bfs 336 of 462, mrts 555 of 568 — NORMAL: those flows are 100% geo US, we
+        #     asked for all of them, and the publisher simply did not release every series in
+        #     the window. Nothing is behind.
+        # A count test flags both, so it would have reported `partial` forever on healthy
+        # flows — the same cry-wolf that eits/mhs already caused once. What actually matters
+        # is whether a geography we STORE was one we never REQUESTED, which is exact.
+        if gcol:
+            gi = lidx.get("geo_level_code")
+            got_levels = {r[gi] for r in rows[1:] if gi is not None and gi < len(r) and r[gi]}
+            missed = levels - got_levels
+            if missed:
+                under.append(f"{flow} geo {','.join(sorted(missed)[:4])}"
+                             f"{'...' if len(missed) > 4 else ''}")
 
         total += added
         tally.added_unit(added, flow)
