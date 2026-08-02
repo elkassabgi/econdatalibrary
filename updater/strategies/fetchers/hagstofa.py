@@ -58,7 +58,8 @@ import requests
 
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
-from ._common import Tally, finalize, sane_since
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+                      sane_since, save_rotation)
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -424,7 +425,30 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
     maxd: dt.date | None = None
     total = 0
 
-    for db in sorted(by_db):
+    # BOUND BELOW THE ORCHESTRATOR'S 45-MINUTE CAP, AND ROTATE.
+    # hagstofa's measured cloud runs are 53.0 min median / 72.4 max — over the cap on every
+    # run, and the cap landed 2026-08-01 (36130d02) after its last run. The merge is INSIDE
+    # this loop, so a kill truncates rather than discards (unlike bcb/unhcr, which merged
+    # after their loops) — but `sorted(by_db)` is a FIXED order, so the kill lands in the
+    # same place every time and the tail dbs are never reached at all, however many runs
+    # pass. A bound over a fixed order is a truncation, not a budget (R190).
+    #
+    # 30 minutes also gives the shared daily run its time back: all 106 live cloud sources
+    # cost a median 1,211 min against a 240-min budget, and only 20 were attempted on
+    # 2026-08-02 because a handful ran to the cap.
+    budget_min = float(os.environ.get("HAGSTOFA_BUDGET_MIN", "30"))
+    dl = Deadline(minutes=budget_min)
+    dbs = rotate_after(sorted(by_db), load_rotation(out_dir))
+    last_db = ""
+
+    for db in dbs:
+        if dl.spent():
+            print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
+                  f"{dl.elapsed_min():.1f} min — stopped after db {last_db!r}, "
+                  f"{len(dbs) - dbs.index(db)} of {len(dbs)} db(s) deferred to the next "
+                  f"tick", flush=True)
+            break
+        last_db = db
         path = os.path.join(out_dir, f"{db}.parquet")
         before = blob.row_count(path)
         tmax = db_table_max.get(db, {})
@@ -501,6 +525,11 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                     maxd = md_d
         else:
             total += before
+
+    # Bookmark after a complete pass too, so the wrap goes through this same path and no
+    # branch can quietly stop the rotation.
+    if last_db:
+        save_rotation(out_dir, last_db)
 
     last_obs = maxd.isoformat() if maxd else None
     # empty_window_floor = <#subunits> - 1 (per the S3 contract). The blunt all-empty
