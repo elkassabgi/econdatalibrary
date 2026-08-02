@@ -330,8 +330,17 @@ def cursors_from_table(tbl, cap: int = CURSOR_CAP, key_col="series_key",
 
 
 def cursors_from_parquet(path, key_col="series_key", date_col="obs_date",
-                         cap: int = CURSOR_CAP) -> dict:
+                         cap: int = CURSOR_CAP, key_prefix: str = "") -> dict:
     """{series_key: max obs_date ISO} for one published parquet.
+
+    key_prefix is prepended to every key. It exists because the cursor key must satisfy
+    ONE contract: `<source>:` + key == the catalog id, since that is exactly what
+    orchestrate._catalog_ids_for reconstructs. Sources whose catalog ids carry a
+    dataset/release segment (fed_board:CHGDEL:<series>, fhfa:annual_cbsa:<series>) store
+    only the bare series in the parquet, so a raw read-back maps to NOTHING — the source
+    reports `partial` forever and its published CSVs drift from the parquet while the
+    fetch itself looks healthy. Measured 2026-08-02: fed_board 2,004 unmapped keys over
+    52,322 real catalog rows, fhfa the same shape. Pass the segment here.
 
     WHY EVERY BULK FETCHER NEEDS THIS. orchestrate._derive_changed_csvs takes the changed-series
     set from `Result.series_cursors` and nothing else. A fetcher that merges rows and reports no
@@ -357,6 +366,8 @@ def cursors_from_parquet(path, key_col="series_key", date_col="obs_date",
                   f"{cap:,} cursor cap — reporting the first {cap:,} (sorted); the orchestrator's "
                   f"derive-all path covers the rest for small catalogs", flush=True)
             out = {k: out[k] for k in sorted(out)[:cap]}
+        if key_prefix:
+            out = {f"{key_prefix}{k}": v for k, v in out.items()}
         return out
     except Exception:                                        # noqa: BLE001
         return {}

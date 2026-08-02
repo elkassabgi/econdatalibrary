@@ -136,7 +136,12 @@ def update(unit, since) -> Result:
         blob.publish_file(local)
         if not f.endswith("__series.parquet"):
             published += pq.ParquetFile(local).metadata.num_rows
-            merge_cursors(cursors, local)
+            # key_prefix=<cube>: — catalog ids are fhfa:<CUBE>:<series_key> while the
+            # parquet holds the bare key, so an unprefixed read-back maps to nothing and
+            # the source reports `partial` forever with stale published CSVs.
+            # Verified against catalog.db: fhfa:annual_cbsa:01, fhfa:annual_county:01001.
+            merge_cursors(cursors, local,
+                          key_prefix=f"{f[:-len('.parquet')]}:")
     if len(cursors) >= CURSOR_CAP:
         print(f"[fhfa] cursor set hit the {CURSOR_CAP:,} cap — further changed series are not "
               f"individually reported; the orchestrator's derive-all path covers small "
