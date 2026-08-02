@@ -250,6 +250,24 @@ jobs:
         continue-on-error: true
         run: python core/sync_catalog_d1.py
 
+      - name: Relay staleness (the failure the health gate CANNOT see)
+        # A DBnomics-relayed source that is frozen UPSTREAM reports no_change every day,
+        # succeeds every day, and serves data years out of date. Our change signal is
+        # DBnomics' own dataset hash, so "nothing changed" is true of the relay and false of the
+        # publisher — a frozen relay and a genuinely quiet publisher produce byte-identical
+        # evidence on our side, and the health gate below is blind to it by construction.
+        #
+        # Measured 2026-08-02: 98 of 101 relayed sources stale past 180 days, 1,481,345 series;
+        # the FAO block last re-indexed 2022-04-05, i.e. 1,580 days. None of that was visible
+        # anywhere in CI, which is why it went unnoticed for years.
+        #
+        # REPORTS ONLY, deliberately. Migrating a source off the relay re-keys its series (the
+        # flow id is embedded in every key), so the call belongs to a human; this makes the
+        # number impossible to miss and changes nothing on its own. `|| true` keeps a DBnomics
+        # probe outage from reddening a run whose actual updating was fine.
+        if: ${{ always() }}
+        run: python tools/audit_dbnomics_staleness.py --days 180 || true
+
       - name: Health gate (fail past 2x SLA)
         # Exit 1 -> red run -> GH notification. D1 keeps serving the true stale
         # date — the public endpoint never lies to hide our failure (§5.3).
