@@ -78,6 +78,19 @@ jobs:
       # falling back would have silently republished a truncated store - but the key has to
       # reach the process for the source to work at all.
       COMTRADE_API_KEY: ${{ secrets.COMTRADE_API_KEY }}
+      # bea has NEVER been able to run in CI, and the health gate reports it RED-UNRUN: no
+      # successful run has ever been recorded. fetchers/bea.py line 126 refuses outright when
+      # BEA_API_KEY is unset — "BEA_API_KEY is not set, so nothing can be fetched. Existing data
+      # kept." — which is the correct refusal (a silent no-op would republish a stale store as
+      # a success), but the key has to reach the process for the source to work at all.
+      #
+      # This is HALF the fix and cannot work alone: unlike comtrade above, the repo secret does
+      # NOT exist yet (gh secret list: CLOUDFLARE_*, COMTRADE_API_KEY, FRED_API_KEY, R2_*,
+      # RESEND_API_KEY — no BEA key). Creating it needs a bea.gov registration, which is
+      # Ahmed's. Wiring it now means the source starts working the moment the secret lands
+      # rather than needing a second discovery; until then an unset secret is an empty string
+      # and bea keeps refusing loudly, exactly as it does today.
+      BEA_API_KEY: ${{ secrets.BEA_API_KEY }}
       AQUEDUCT_BACKEND: r2
       # Rollout perimeter: scheduled runs execute ONLY live: true sources.
       # (Learned from run 28682266857: without this, every due source with an
