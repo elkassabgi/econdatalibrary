@@ -42,7 +42,8 @@ import requests
 
 from ... import config, blob, merge
 from ..base import Result
-from ._common import Tally, finalize, sane_since
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after, save_rotation,
+                      sane_since)
 from ._vintage import UA
 
 SOURCE = "worldbank_wdi"
@@ -51,6 +52,10 @@ WDI_SOURCE_ID = "2"          # source=2 is the WDI database in the v2 API
 DEDUP = ("series_key", "obs_date")
 PER_PAGE = 20000             # one indicator x small date window fits well within one page
 RATE = 0.15                  # polite pause between indicator GETs
+# Deliberately UNDER the orchestrator's 45-minute per-source cap. A hard kill at 45 min
+# destroys the run (the single end-of-run merge never executes), so the fetcher must yield
+# first and merge what it has. Rotation carries the remainder to the next run.
+BUDGET_MIN = float(os.environ.get("WDI_BUDGET_MIN", "35"))
 LOOKBACK_YEARS = 2           # re-pull this many stored years to absorb back-revisions
 # Floor the window so a fresh/empty parquet still pulls a sensible recent tail rather
 # than the whole 1960- history (which would be the bulk path, not a date-tail).
@@ -282,18 +287,56 @@ def update(unit, since) -> Result:
     #
     # A hard kill leaves no summary line, so progress is printed AS IT GOES; the absence of
     # the final "pass COMPLETE" line is then itself the signal that the cap fired.
+    # BUDGET + ROTATION. Without these this source did 45 minutes of work and stored NOTHING,
+    # on every run, forever.
+    #
+    # Every observation is accumulated in memory and merged ONCE after the loop. The
+    # orchestrator's 45-minute hard cap therefore did not truncate the pass — it destroyed it:
+    # the merge never executed, so nothing reached the store. Measured in CI run 30738981790:
+    #     TIMEOUT worldbank_wdi/_all — exceeded its 45-minute hard limit and was interrupted
+    #     took 2,700s, peak_rss=3,463MB, status `timeout`
+    # and worldbank_wdi has NO unit_state row at all — it has never once succeeded. The data in
+    # the store is what the original bulk ingest left, which is why NY.GDP.MKTP.CD sits without
+    # 2025 while the World Bank publishes it (#64).
+    #
+    # A full pass cannot fit the cap anyway: measured locally, 1,000 of 1,498 indicators took
+    # 42.5 minutes and the rate DEGRADES (0.5/s -> 0.4/s) because a single bad indicator costs
+    # up to ~7 minutes in retries (4 attempts x 90s timeout plus backoff) before it gives up.
+    #
+    # So: stop starting new indicators at BUDGET_MIN, which is deliberately UNDER the
+    # orchestrator's cap so the fetcher yields on its own terms and the merge below actually
+    # runs; then resume past the bookmark next time so the tail is reached rather than
+    # re-walked. A bound over a fixed order without rotation is a truncation, not a budget
+    # (R190) — and this one was not even a truncation, it was a discard.
+    dl = Deadline(minutes=BUDGET_MIN)
+    order = rotate_after(list(indicators), load_rotation(out_dir))
     keys, dates, vals = [], [], []
     t0 = time.monotonic()
-    for n, code in enumerate(indicators, 1):
+    done = 0
+    capped = False
+    last_code = None
+    for n, code in enumerate(order, 1):
+        if dl.spent():
+            capped = True
+            break
         _fetch_indicator(code, date_param, iso2to3, tally, keys, dates, vals)
+        last_code = code
+        done = n
         time.sleep(RATE)
-        if n % 200 == 0 or n == len(indicators):
+        if n % 200 == 0:
             el = time.monotonic() - t0
-            print(f"[{SOURCE}] {n:,}/{len(indicators):,} indicators in {el/60:.1f} min "
+            print(f"[{SOURCE}] {n:,}/{len(order):,} indicators in {el/60:.1f} min "
                   f"({n/max(el, 1):.1f}/s), {len(keys):,} obs so far", flush=True)
-    print(f"[{SOURCE}] pass COMPLETE: {len(indicators):,} indicators in "
-          f"{(time.monotonic()-t0)/60:.1f} min — if this line is missing from a run, the "
-          f"per-source cap truncated the pass and the tail was never requested", flush=True)
+    if last_code:
+        save_rotation(out_dir, last_code)                    # resume past here next run
+    el = (time.monotonic() - t0) / 60
+    if capped:
+        print(f"[{SOURCE}] budget of {BUDGET_MIN} min spent after {el:.1f} min — "
+              f"{done:,}/{len(order):,} indicators done, {len(order)-done:,} deferred to the "
+              f"NEXT run (rotation bookmark saved); merging what was collected", flush=True)
+    else:
+        print(f"[{SOURCE}] pass COMPLETE: {len(order):,} indicators in {el:.1f} min",
+              flush=True)
 
     tbl = pa.table({
         "series_key": pa.array(keys, pa.string()),
