@@ -114,8 +114,26 @@ def derive_and_put(series_ids: list[str], blob) -> dict:
             _local.b = b
         return b
 
+    # WALL-CLOCK BOUND. Until now this ran to completion however long that took, and this
+    # module's own docstring records the cost: the yale_epi re-derive was heading for ~253
+    # further minutes against a 300-minute job ceiling — "would have been killed at the
+    # ceiling with its state never pushed — hours spent for nothing". The concurrency change
+    # made that case survivable and left the ceiling itself unguarded.
+    #
+    # A budget makes the failure GRADUAL rather than total: ids not reached come back in
+    # `failed`, which the caller already feeds verbatim into csv_retry_queue, so they are
+    # retried next run instead of lost — and the run keeps its state push. This matters most
+    # for the sources that would trip it: usda alone has 69,704 catalogued series and a full
+    # re-derive of its monthly vintage is a multi-hour job (task #57).
+    #
+    # 45 min matches the orchestrator's per-source cap, so a derive cannot outlive the source
+    # slot that owns it. AQUEDUCT_DERIVE_BUDGET_MIN=0 disables it for a deliberate backfill.
+    budget_min = float(os.environ.get("AQUEDUCT_DERIVE_BUDGET_MIN", "45") or 45)
+    deadline = (time.monotonic() + budget_min * 60.0) if budget_min > 0 else None
+
     put = 0
     failed: list[str] = []
+    deferred = 0
     lock = threading.Lock()
 
     def _one(sid):
@@ -138,14 +156,47 @@ def derive_and_put(series_ids: list[str], blob) -> dict:
                 failed.append(sid)
                 print(f"  CSV derive FAILED {sid}: {why}", flush=True)
 
+    def _spent() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
     if workers == 1:
-        for sid in ids:
+        for i, sid in enumerate(ids):
+            if _spent():
+                deferred = len(ids) - i
+                failed.extend(ids[i:])
+                break
             _record(*_one(sid))
     else:
+        # submit/as_completed rather than ex.map: map has no way to stop feeding work, so a
+        # spent budget could not take effect until the whole iterable had been consumed.
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-            for sid, ok, why in ex.map(_one, ids):
-                _record(sid, ok, why)
-    return {"put": put, "failed": failed}
+            futs = {}
+            it = iter(ids)
+            for sid in it:
+                if _spent():
+                    rest = [sid] + list(it)
+                    deferred = len(rest)
+                    failed.extend(rest)
+                    break
+                futs[ex.submit(_one, sid)] = sid
+                # Keep the queue shallow so the budget is checked often instead of after
+                # every id has already been handed to the pool.
+                while len(futs) >= workers * 4:
+                    done, _ = concurrent.futures.wait(
+                        futs, return_when=concurrent.futures.FIRST_COMPLETED)
+                    for f in done:
+                        _record(*f.result())
+                        futs.pop(f, None)
+            for f in concurrent.futures.as_completed(list(futs)):
+                _record(*f.result())
+
+    if deferred:
+        # Disclosed, never silent: a capped derive that said nothing would read as full
+        # coverage, and the caller's `partial` would have no explanation attached to it.
+        print(f"  derive budget of {budget_min:.0f} min spent — {deferred:,} id(s) deferred "
+              f"to csv_retry_queue (put {put:,}, failed {len(failed) - deferred:,})",
+              flush=True)
+    return {"put": put, "failed": failed, "deferred": deferred}
 
 
 def _check(series_id: str | None) -> int:
