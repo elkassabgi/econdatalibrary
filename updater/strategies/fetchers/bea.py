@@ -115,11 +115,29 @@ def _migrate_legacy(path: str) -> int:
 
 
 def _stored_frontier(path: str) -> dt.date | None:
+    """Newest stored obs_date as a DATE.
+
+    merge._max_obs_date is annotated `-> str | None` and returns `str(m)`, so returning it
+    straight from a function typed `-> dt.date | None` was a lie the type hint did not catch.
+    The caller does `frontier.year`, which raised
+        AttributeError: 'str' object has no attribute 'year'
+    on the very first line of real work — which is why bea has NEVER completed a run. The
+    missing key (see update()) hid this: the fetcher refused before reaching here, so the
+    second bug could not be observed until the first was fixed. Both were needed.
+    """
     if not blob.exists(path):
         return None
     try:
-        return merge._max_obs_date(blob.read_table(path, columns=["obs_date"]))
+        m = merge._max_obs_date(blob.read_table(path, columns=["obs_date"]))
     except Exception:                                        # noqa: BLE001
+        return None
+    if not m:
+        return None
+    if isinstance(m, dt.date):
+        return m
+    try:
+        return dt.date.fromisoformat(str(m)[:10])
+    except ValueError:
         return None
 
 
