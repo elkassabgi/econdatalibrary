@@ -110,6 +110,11 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 @media (max-width:680px){.nav .fam-tag{display:none}}
 </style>
 
+<!-- sso.js pin: bump this string whenever assets/sso.js changes. It is a cache-buster,
+     and because this generator rewrites all 216 pages, a stale value here silently
+     reverts every page to an older script for returning visitors -- which is how a
+     deployed sign-out fix can appear not to work. Last bump: 20260802a, the cross-tab
+     sign-out marker. -->
 <script src="assets/sso.js?v=20260802a"></script>
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
@@ -129,7 +134,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-01');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-02');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -166,7 +171,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>University of Central Arkansas</h2>
 <p style="color:var(--g600)">College of Business<br>201 Donaghey Avenue<br>Conway, AR 72035<br>United States</p>
 
-<div class="foot">Generated 2026-08-01 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div>
+<div class="foot">Generated 2026-08-02 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
     <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="300" height="80" style="max-width:78%;height:auto">

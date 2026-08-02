@@ -1788,7 +1788,12 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}}
 @media (max-width:680px){{.nav .fam-tag{{display:none}}}}
 </style>
 {jsonld}
-<script src="assets/sso.js?v=20260801k"></script>
+<!-- sso.js pin: bump this string whenever assets/sso.js changes. It is a cache-buster,
+     and because this generator rewrites all 216 pages, a stale value here silently
+     reverts every page to an older script for returning visitors -- which is how a
+     deployed sign-out fix can appear not to work. Last bump: 20260802a, the cross-tab
+     sign-out marker. -->
+<script src="assets/sso.js?v=20260802a"></script>
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
