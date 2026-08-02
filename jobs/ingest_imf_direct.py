@@ -135,17 +135,39 @@ def http_get_to_file(url: str, dest: str) -> int:
 
 
 def iter_series(path: str):
-    """Yield each <Series> element from an SDMX file, clearing it as we go.
+    """Yield each <Series> element from an SDMX file, DETACHING it as we go.
 
     Two passes are cheap on a local file and the alternative is unsafe: identity dims are the
     UNION of attribute keys across every series, so deciding them from the first few would
-    silently change the key shape whenever IMF reorders or adds an attribute. Memory stays
-    flat because each element is cleared once consumed.
+    silently change the key shape whenever IMF reorders or adds an attribute.
+
+    MEMORY DOES NOT STAY FLAT WITH `el.clear()` ALONE, which is what this used to do and what
+    its docstring used to claim. clear() empties an element's own children, but the PARENT
+    still holds a reference to the (now empty) element, so the tree grows by one node per
+    series — 297,673 of them for GFS_BS — and nothing is ever freed. That is invisible on a
+    workstation with 383 GB and fatal on a 16 GB CI runner, which is exactly the split
+    observed: GFS_BS parses here at 2,293,565,648 bytes and produces 954,482 observations,
+    while CI reported OverflowError('size does not fit in an int') for it and
+    ParseError('out of memory') for GFS_SFCP. So the element is now REMOVED from its parent
+    too, which is what actually bounds the memory.
+
+    ElementTree has no getparent(), so the parent is tracked with an explicit stack over
+    start/end events rather than by clearing the root — clearing the root would detach the
+    in-progress <DataSet> and let its children accumulate on a node nothing ever clears again.
     """
-    for _ev, el in ET.iterparse(path, events=("end",)):
-        if el.tag.split("}")[-1] == "Series":
-            yield el
-            el.clear()
+    stack = []
+    for ev, el in ET.iterparse(path, events=("start", "end")):
+        if ev == "start":
+            stack.append(el)
+            continue
+        stack.pop()
+        if el.tag.split("}")[-1] != "Series":
+            continue
+        yield el
+        el.clear()
+        if stack:
+            # Drop it from the parent as well; clear() alone leaves the husk attached.
+            stack[-1].remove(el)
 
 
 def list_flows() -> list[tuple[str, str, str]]:
@@ -216,7 +238,29 @@ def pull(flow: str, agency: str, source_id: str, out_path: str | None = None,
     url = f"{BASE}/data/{agency},{flow}/all"
     print(f"[imf_direct] GET {url}", flush=True)
     try:
-        return _pull_streamed(url, flow, agency, source_id, out_path, min_obs)
+        try:
+            return _pull_streamed(url, flow, agency, source_id, out_path, min_obs)
+        except Exception as e:                               # noqa: BLE001
+            # A BELT-AND-BRACES FALLBACK for the size errors CI reports —
+            # OverflowError('size does not fit in an int') on GFS_BS, GFS_COFOG and GFS_SOO,
+            # ParseError('out of memory') on GFS_SFCP.
+            #
+            # I FIRST READ THOSE AS A HARD 2 GiB PYEXPAT CEILING and wrote this as the primary
+            # fix. Testing it disproved that: GFS_BS parses HERE at 2,293,565,648 bytes and
+            # yields 954,482 observations, so there is no absolute document-size wall. The real
+            # cause was the retained-node leak in iter_series (see its docstring) — invisible on
+            # a 383 GB workstation, fatal on a 16 GB runner. That is now fixed, and the same
+            # pull peaks at 137 MB.
+            #
+            # This path is kept anyway because it is free when it does not fire and cheap
+            # insurance if a flow ever genuinely outgrows the parser. The whole-flow pull is
+            # tried first and is untouched, so the flows that work today take exactly the path
+            # they always did; only one that has already failed on size reaches the sliced one.
+            if not _is_size_ceiling(e):
+                raise
+            print(f"[imf_direct] {flow}: {type(e).__name__}({str(e)[:60]}) — document exceeds "
+                  f"pyexpat's 2 GiB ceiling; retrying as period slices", flush=True)
+            return _pull_sliced(flow, agency, source_id, out_path, min_obs)
     finally:
         # The staged SDMX document is multi-GB for the big flows; leaving one behind per
         # flow would fill the disk in a few runs. Removed on success, failure and exception
@@ -227,6 +271,87 @@ def pull(flow: str, agency: str, source_id: str, out_path: str | None = None,
                 os.remove(_tmp)
         except OSError:
             pass
+
+
+def _is_size_ceiling(e: BaseException) -> bool:
+    """Is this pyexpat refusing an oversized document, rather than a real parse error?
+
+    Matched on TYPE AND MESSAGE, not type alone: a genuine malformed-XML ParseError must keep
+    propagating, because retrying it as slices would turn 'IMF served us broken XML' into a
+    slow, silent, partial success. Only these two signatures mean 'too big'.
+    """
+    if isinstance(e, OverflowError):
+        return "does not fit in an int" in str(e)
+    if isinstance(e, ET.ParseError):
+        return "out of memory" in str(e).lower()
+    return False
+
+
+def _slice_windows(first: int = 1950) -> list:
+    """[(startPeriod, endPeriod), ...] decade windows from `first` to next year.
+
+    Decades rather than years: GFS_BS is ~2 GiB whole, so a decade is comfortably inside the
+    ceiling while keeping the request count (and therefore the rate-limit exposure) small. The
+    window runs one year PAST today so a flow that has already published next year's forecast
+    is not silently truncated.
+    """
+    end = dt.date.today().year + 1
+    return [(str(y), str(min(y + 9, end))) for y in range(first, end + 1, 10)]
+
+
+def _pull_sliced(flow: str, agency: str, source_id: str, out_path, min_obs: int) -> int:
+    """Pull one flow as period slices and merge them, for documents past the 2 GiB ceiling.
+
+    THE COMPLETENESS GATE MOVES TO THE TOTAL. _pull_streamed refuses any response carrying
+    fewer than min_obs rows, which exists to stop IMF's occasional ~5%-of-the-data responses
+    being recorded as a successful no-op. Applied per slice that gate would refuse every
+    legitimate slice, so each slice is pulled with min_obs=0 and the floor is checked ONCE
+    against the assembled total. A slice that is genuinely empty is normal — IMF publishes
+    nothing for many flows before ~1990 — so an empty slice is counted and skipped, never
+    treated as failure. A slice that RAISES still fails the run: a partial pull silently
+    reported as complete is the exact lie this gate exists to prevent.
+    """
+    import pyarrow.parquet as _pq
+
+    windows = _slice_windows()
+    parts, empty, total = [], 0, 0
+    base = out_path or os.path.join(OUT, f"{source_id}.parquet")
+    for i, (a, b) in enumerate(windows):
+        url = f"{BASE}/data/{agency},{flow}/all?startPeriod={a}&endPeriod={b}"
+        part = f"{base}.slice{i:02d}.parquet"
+        print(f"[imf_direct] slice {i + 1}/{len(windows)} {a}-{b}", flush=True)
+        n = _pull_streamed(url, flow, agency, source_id, part, 0)
+        if not n:
+            empty += 1
+            continue
+        parts.append(part)
+        total += n
+    if not parts:
+        print(f"[imf_direct] FAIL {flow}: every one of {len(windows)} slices was empty",
+              flush=True)
+        return 0
+    if total < min_obs:
+        # The floor, checked once on the assembled total — see the docstring.
+        print(f"[imf_direct] FAIL {flow}: sliced pull assembled {total:,} rows, under the "
+              f"{min_obs:,} floor; refusing to publish a partial as complete", flush=True)
+        for p in parts:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        return 0
+
+    tbl = pa.concat_tables([_pq.read_table(p) for p in parts], promote_options="default")
+    tbl = tbl.combine_chunks()
+    _pq.write_table(tbl, base, compression="zstd")
+    for p in parts:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    print(f"[imf_direct] {flow}: {len(parts)} slice(s) merged, {empty} empty, "
+          f"{tbl.num_rows:,} rows -> {base}", flush=True)
+    return tbl.num_rows
 
 
 def _pull_streamed(url: str, flow: str, agency: str, source_id: str,
