@@ -1,0 +1,406 @@
+{
+ "fao_ae": [
+  "FAO",
+  "AE"
+ ],
+ "fao_af": [
+  "FAO",
+  "AF"
+ ],
+ "fao_ec": [
+  "FAO",
+  "EC"
+ ],
+ "fao_ep": [
+  "FAO",
+  "EP"
+ ],
+ "fao_es": [
+  "FAO",
+  "ES"
+ ],
+ "fao_ew": [
+  "FAO",
+  "EW"
+ ],
+ "fao_ga": [
+  "FAO",
+  "GA"
+ ],
+ "fao_gb": [
+  "FAO",
+  "GB"
+ ],
+ "fao_ge": [
+  "FAO",
+  "GE"
+ ],
+ "fao_gf": [
+  "FAO",
+  "GF"
+ ],
+ "fao_gl": [
+  "FAO",
+  "GL"
+ ],
+ "fao_gn": [
+  "FAO",
+  "GN"
+ ],
+ "fao_gr": [
+  "FAO",
+  "GR"
+ ],
+ "fao_gt": [
+  "FAO",
+  "GT"
+ ],
+ "fao_gy": [
+  "FAO",
+  "GY"
+ ],
+ "fao_ic": [
+  "FAO",
+  "IC"
+ ],
+ "fao_ql": [
+  "FAO",
+  "QL"
+ ],
+ "fao_rp": [
+  "FAO",
+  "RP"
+ ],
+ "fao_tp": [
+  "FAO",
+  "TP"
+ ],
+ "imf_bop": [
+  "IMF",
+  "BOP"
+ ],
+ "imf_bopagg": [
+  "IMF",
+  "BOPAGG"
+ ],
+ "imf_cdis": [
+  "IMF",
+  "CDIS"
+ ],
+ "imf_cpi": [
+  "IMF",
+  "CPI"
+ ],
+ "imf_cpis": [
+  "IMF",
+  "CPIS"
+ ],
+ "imf_dot": [
+  "IMF",
+  "DOT"
+ ],
+ "imf_fm": [
+  "IMF",
+  "FM"
+ ],
+ "imf_fsi": [
+  "IMF",
+  "FSI"
+ ],
+ "imf_fsire": [
+  "IMF",
+  "FSIRE"
+ ],
+ "imf_gender_budgeting": [
+  "IMF",
+  "GENDER_BUDGETING"
+ ],
+ "imf_gender_equality": [
+  "IMF",
+  "GENDER_EQUALITY"
+ ],
+ "imf_gfse": [
+  "IMF",
+  "GFSE"
+ ],
+ "imf_gfsfalcs": [
+  "IMF",
+  "GFSFALCS"
+ ],
+ "imf_gfsibs": [
+  "IMF",
+  "GFSIBS"
+ ],
+ "imf_gfsmab": [
+  "IMF",
+  "GFSMAB"
+ ],
+ "imf_gfsr": [
+  "IMF",
+  "GFSR"
+ ],
+ "imf_ifs": [
+  "IMF",
+  "IFS"
+ ],
+ "imf_irfcl": [
+  "IMF",
+  "IRFCL"
+ ],
+ "imf_mcdreo": [
+  "IMF",
+  "MCDREO"
+ ],
+ "imf_mfs": [
+  "IMF",
+  "MFS"
+ ],
+ "imf_namain_idc_n": [
+  "IMF",
+  "NAMAIN_IDC_N"
+ ],
+ "imf_pctot": [
+  "IMF",
+  "PCTOT"
+ ],
+ "imf_pgcs": [
+  "IMF",
+  "PGCS"
+ ],
+ "imf_pgi": [
+  "IMF",
+  "PGI"
+ ],
+ "imf_psbsfad": [
+  "IMF",
+  "PSBSFAD"
+ ],
+ "imf_unsdg_imf_inputs": [
+  "IMF",
+  "UNSDG_IMF_INPUTS"
+ ],
+ "unctad_bopcaba": [
+  "UNCTAD",
+  "BOPCABA"
+ ],
+ "unctad_ciocgeaia": [
+  "UNCTAD",
+  "CIOCGEAIA"
+ ],
+ "unctad_cioiuibbicoeair4a": [
+  "UNCTAD",
+  "CIOIUIBBICOEAIR4A"
+ ],
+ "unctad_cpa": [
+  "UNCTAD",
+  "CPA"
+ ],
+ "unctad_cpia": [
+  "UNCTAD",
+  "CPIA"
+ ],
+ "unctad_cpta": [
+  "UNCTAD",
+  "CPTA"
+ ],
+ "unctad_fdiiaofasa": [
+  "UNCTAD",
+  "FDIIAOFASA"
+ ],
+ "unctad_fmcpa": [
+  "UNCTAD",
+  "FMCPA"
+ ],
+ "unctad_fmcpia21": [
+  "UNCTAD",
+  "FMCPIA21"
+ ],
+ "unctad_gasbeaiogasa": [
+  "UNCTAD",
+  "GASBEAIOGASA"
+ ],
+ "unctad_gasbtbia": [
+  "UNCTAD",
+  "GASBTBIA"
+ ],
+ "unctad_gasbtoia": [
+  "UNCTAD",
+  "GASBTOIA"
+ ],
+ "unctad_gdpgbtoevbkoeatasa": [
+  "UNCTAD",
+  "GDPGBTOEVBKOEATASA"
+ ],
+ "unctad_gdptapccac2pa": [
+  "UNCTAD",
+  "GDPTAPCCAC2PA"
+ ],
+ "unctad_iopa": [
+  "UNCTAD",
+  "IOPA"
+ ],
+ "unctad_itiddsvsaga": [
+  "UNCTAD",
+  "ITIDDSVSAGA"
+ ],
+ "unctad_itiisvsaga": [
+  "UNCTAD",
+  "ITIISVSAGA"
+ ],
+ "unctad_lscia": [
+  "UNCTAD",
+  "LSCIA"
+ ],
+ "unctad_lsciq": [
+  "UNCTAD",
+  "LSCIQ"
+ ],
+ "unctad_mfbcoboa": [
+  "UNCTAD",
+  "MFBCOBOA"
+ ],
+ "unctad_mfbforabtosa": [
+  "UNCTAD",
+  "MFBFORABTOSA"
+ ],
+ "unctad_mmcascioeaiopa": [
+  "UNCTAD",
+  "MMCASCIOEAIOPA"
+ ],
+ "unctad_mpcadioeaia": [
+  "UNCTAD",
+  "MPCADIOEAIA"
+ ],
+ "unctad_mtba": [
+  "UNCTAD",
+  "MTBA"
+ ],
+ "unctad_mttasa": [
+  "UNCTAD",
+  "MTTASA"
+ ],
+ "unctad_mttgra": [
+  "UNCTAD",
+  "MTTGRA"
+ ],
+ "unctad_mtvvuvtotiappioea": [
+  "UNCTAD",
+  "MTVVUVTOTIAPPIOEA"
+ ],
+ "unctad_neera": [
+  "UNCTAD",
+  "NEERA"
+ ],
+ "unctad_pcapsnopca": [
+  "UNCTAD",
+  "PCAPSNOPCA"
+ ],
+ "unctad_pcapsnopcsa": [
+  "UNCTAD",
+  "PCAPSNOPCSA"
+ ],
+ "unctad_reericba": [
+  "UNCTAD",
+  "REERICBA"
+ ],
+ "unctad_reerigdba": [
+  "UNCTAD",
+  "REERIGDBA"
+ ],
+ "unctad_rfia": [
+  "UNCTAD",
+  "RFIA"
+ ],
+ "unctad_rgdptapcgra": [
+  "UNCTAD",
+  "RGDPTAPCGRA"
+ ],
+ "unctad_sbeaiotsvsaga": [
+  "UNCTAD",
+  "SBEAIOTSVSAGA"
+ ],
+ "unctad_sbtisvsaga": [
+  "UNCTAD",
+  "SBTISVSAGA"
+ ],
+ "unctad_soigapotta": [
+  "UNCTAD",
+  "SOIGAPOTTA"
+ ],
+ "unctad_sotwmfvbcoboa": [
+  "UNCTAD",
+  "SOTWMFVBCOBOA"
+ ],
+ "unctad_srbca": [
+  "UNCTAD",
+  "SRBCA"
+ ],
+ "unctad_tabbapotta": [
+  "UNCTAD",
+  "TABBAPOTTA"
+ ],
+ "unctad_tabmcioeaiopa": [
+  "UNCTAD",
+  "TABMCIOEAIOPA"
+ ],
+ "unctad_tabmscioeaiopa": [
+  "UNCTAD",
+  "TABMSCIOEAIOPA"
+ ],
+ "unctad_tabpcioeaia": [
+  "UNCTAD",
+  "TABPCIOEAIA"
+ ],
+ "unctad_taupa": [
+  "UNCTAD",
+  "TAUPA"
+ ],
+ "unctad_wstbtocabgoea": [
+  "UNCTAD",
+  "WSTBTOCABGOEA"
+ ],
+ "undp_hdr": [
+  "UNDP",
+  "HDR"
+ ],
+ "unesco_clte": [
+  "UNESCO",
+  "CLTE"
+ ],
+ "unesco_cltt": [
+  "UNESCO",
+  "CLTT"
+ ],
+ "unesco_film": [
+  "UNESCO",
+  "FILM"
+ ],
+ "unesco_inno": [
+  "UNESCO",
+  "INNO"
+ ],
+ "unesco_natmon": [
+  "UNESCO",
+  "NATMON"
+ ],
+ "unesco_sci": [
+  "UNESCO",
+  "SCI"
+ ],
+ "unesco_sdg": [
+  "UNESCO",
+  "SDG"
+ ],
+ "who_hwf": [
+  "WHO",
+  "HWF"
+ ],
+ "who_rs": [
+  "WHO",
+  "RS"
+ ],
+ "who_sdg": [
+  "WHO",
+  "SDG"
+ ]
+}

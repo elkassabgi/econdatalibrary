@@ -276,10 +276,25 @@ jobs:
         #
         # REPORTS ONLY, deliberately. Migrating a source off the relay re-keys its series (the
         # flow id is embedded in every key), so the call belongs to a human; this makes the
-        # number impossible to miss and changes nothing on its own. `|| true` keeps a DBnomics
-        # probe outage from reddening a run whose actual updating was fine.
+        # number impossible to miss and changes nothing on its own.
+        #
+        # NO BLANKET `|| true`. The audit reads crawl checkpoints from data/raw/dbnomics/
+        # which is gitignored and therefore ABSENT on a runner — and it used to return an
+        # empty set for a missing directory silently. With `|| true` that combination would
+        # have printed "0 datasets / 0 stale" and passed on every run: a green produced by
+        # examining nothing, over 1,481,345 frozen series. The tool now exits 2 for "could
+        # not audit" and 0 for a probe outage, so we swallow only the latter.
         if: ${{ always() }}
-        run: python tools/audit_dbnomics_staleness.py --days 180 || true
+        run: |
+          # `|| rc=$?` — Actions runs this with `bash -e`, so an unguarded non-zero
+          # exit would abort the step before rc could ever be inspected.
+          rc=0
+          python tools/audit_dbnomics_staleness.py --days 180 || rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::relay-staleness audit could not run (no crawl checkpoints on the runner) — it is reporting on NOTHING"
+            exit 1
+          fi
+          exit 0
 
       - name: Health gate (fail past 2x SLA)
         # Exit 1 -> red run -> GH notification. D1 keeps serving the true stale
