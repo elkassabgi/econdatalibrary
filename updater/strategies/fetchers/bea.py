@@ -211,9 +211,17 @@ def update(unit, since) -> Result:
     frontier = _tree_frontier(out_dir) or _stored_frontier(path)
     start_year = (frontier.year - LOOKBACK_YEARS) if frontier else 1929
     end_year = dt.date.today().year + 1
-    years = f"{start_year},{end_year}" if start_year != end_year else str(start_year)
+    # BEA's `Year` is a LIST, NOT A RANGE. "2023,2027" does not mean 2023 through 2027 — it
+    # means exactly those two years. Measured live on NIPA/T20600 Frequency=M:
+    #     Year=2023,2027                 ->   516 rows, years returned: ['2023']
+    #     Year=2023,2024,2025,2026,2027  -> 1,806 rows, years returned: 2023..2026
+    # So this fetcher was asking for the start year and a year that does not exist yet, and
+    # could never see anything recent — while reporting `ok`. bea's store sat at 2026-04-01
+    # with BEA publishing monthly data through 2026M06.
+    years = ",".join(str(y) for y in range(start_year, end_year + 1))
     print(f"[{SOURCE}] stored frontier {frontier or 'none'}; requesting years "
-          f"{start_year}-{end_year}", flush=True)
+          f"{start_year}-{end_year} ({end_year - start_year + 1} years, enumerated)",
+          flush=True)
 
     keys: list[str] = []
     dates: list[dt.date] = []
@@ -273,5 +281,19 @@ def update(unit, since) -> Result:
 
     print(f"[{SOURCE}] {len(keys):,} obs across {len(set(keys)):,} series; "
           f"store {before:,} -> {total:,}", flush=True)
-    return finalize(tally, total, maxd or (since or None), source=SOURCE,
+
+    # REPORT THE FRONTIER OF THE STORE THAT SERVES, for the same reason the WINDOW is taken
+    # from it. merge_and_write returns the max of what WE just merged into bea.parquet, and
+    # that file holds under 2% of the source's series. Reporting it made the health gate read
+    # bea's newest observation as 2026-01-01 when the served tree is at 2026-04-01 — a
+    # 90-day under-report, and enough to fire a FALSE RED-DATA against a 84-day lateness
+    # clock on a source that is in fact current.
+    # Compared as ISO STRINGS on purpose: merge_and_write returns a str (see
+    # merge._max_obs_date) while _tree_frontier returns a date, and max() over the two raises
+    # TypeError. That is the identical str/date confusion that kept this source from ever
+    # completing a run — it does not get to happen twice in one file.
+    cands = [d.isoformat() if isinstance(d, dt.date) else str(d)
+             for d in (_tree_frontier(out_dir), maxd) if d]
+    last_obs = max(cands) if cands else None
+    return finalize(tally, total, last_obs or (since or None), source=SOURCE,
                     series_cursors=cursors or None)
