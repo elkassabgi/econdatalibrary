@@ -176,6 +176,23 @@ jobs:
           PY
 
       - name: Run updater
+        # STEP TIMEOUT BELOW THE JOB'S, so a slow run is TRUNCATED rather than LOST.
+        #
+        # `Push state to R2` already carries always(), which survives a non-zero exit from
+        # this step — but always() does NOT survive a JOB-level timeout: GitHub cancels the
+        # whole job and no later step runs at all. Without a step bound, overrunning 300
+        # minutes therefore discards every source's advanced state, which is exactly the
+        # loss the always() above was added to prevent, arriving by a different door.
+        #
+        # Measured 2026-08-02 (run 30738981790): this step took 261.8 min of a 300-minute
+        # job — 87% — with statfin and worldbank_wdi each pinned at the 45-minute per-source
+        # cap. There is no comfortable margin to rely on.
+        #
+        # 250 leaves ~50 minutes for the push, both D1 syncs, the health gate and the
+        # digest, which together took about 5 minutes on that run. When this fires the
+        # updater loses its tail; every source it already completed keeps its state, and the
+        # unreached ones are simply not-yet-due next run. That is a normal partial pass.
+        timeout-minutes: 250
         # Inputs are passed via env (not inlined into the command) so a crafted
         # 'source' value cannot inject shell syntax, and so the boolean dry_run
         # never renders as a literal "false" argument (GH expression pitfall).
