@@ -2,9 +2,17 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>U.S. SEC EDGAR — Econ Data Library</title>
-<meta name="description" content="Phase-0 bootstrap: download the SEC EDGAR bulk archives for the initial backfill. companyfacts.zip (~1.39 GB) -- every company&#x27;s XBRL financial-statement facts (the NUMBERS we host) submissions.zip (~1.54 GB) -- every filing&#x27;s metadata (the POINTERS we index; documents stay on sec.gov) Pol">
-<link rel="canonical" href="https://econdatalibrary.com/sec_edgar.html">
+<title>Company financial fundamentals extracted from SEC EDGAR filings — U.S. SEC EDGAR | Econ Data Library</title>
+<meta name="description" content="Company financial fundamentals extracted from SEC EDGAR filings. U.S. SEC EDGAR. 17,276 series, from 1927. Free download under public domain.">
+<link rel="canonical" href="https://econdatalibrary.com/sec_edgar">
+<meta property="og:title" content="Company financial fundamentals extracted from SEC EDGAR filings — U.S. SEC EDGAR">
+<meta property="og:description" content="Company financial fundamentals extracted from SEC EDGAR filings. U.S. SEC EDGAR. 17,276 series, from 1927. Free download under public domain.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://econdatalibrary.com/sec_edgar">
+<meta property="og:site_name" content="Econ Data Library">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Company financial fundamentals extracted from SEC EDGAR filings — U.S. SEC EDGAR">
+<meta name="twitter:description" content="Company financial fundamentals extracted from SEC EDGAR filings. U.S. SEC EDGAR. 17,276 series, from 1927. Free download under public domain.">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -98,14 +106,20 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@context": "https://schema.org/",
   "@type": "Dataset",
   "name": "U.S. SEC EDGAR",
-  "description": "Phase-0 bootstrap: download the SEC EDGAR bulk archives for the initial backfill. companyfacts.zip (~1.39 GB) -- every company's XBRL financial-statement facts (the NUMBERS we host) submissions.zip (~1.54 GB) -- every filing's metadata (the POINTERS we index; documents stay on sec.gov) Polite by…",
-  "url": "https://econdatalibrary.com/sec_edgar.html",
+  "description": "Company financial fundamentals extracted from SEC EDGAR filings. U.S. SEC EDGAR. 17,276 series, from 1927. Free download under public domain.",
+  "url": "https://econdatalibrary.com/sec_edgar",
   "identifier": "sec_edgar",
   "isAccessibleForFree": true,
   "publisher": {
     "@type": "Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
+  },
+  "includedInDataCatalog": {
+    "@type": "DataCatalog",
+    "@id": "https://econdatalibrary.com/#catalog",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com/catalog"
   },
   "creator": {
     "@type": "Organization",
@@ -128,6 +142,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "distribution": [
     {
       "@type": "DataDownload",
+      "name": "sec_edgar — CSV",
       "encodingFormat": "text/csv",
       "contentUrl": "https://econdatalibrary.com/download.html?source=sec_edgar",
       "license": "https://www.usa.gov/government-works"
@@ -156,11 +171,12 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "name": "sec_edgar",
-  "description": "Phase-0 bootstrap: download the SEC EDGAR bulk archives for the initial backfill. companyfacts.zip (~1.39 GB) -- every company's XBRL financial-statement facts (the NUMBERS we host) submissions.zip (~1.54 GB) -- every filing's metadata (the POINTERS we index; documents stay on sec.gov) Polite by…",
-  "url": "https://econdatalibrary.com/sec_edgar.html",
+  "description": "Company financial fundamentals extracted from SEC EDGAR filings. U.S. SEC EDGAR. 17,276 series, from 1927. Free download under public domain.",
+  "url": "https://econdatalibrary.com/sec_edgar",
   "creator": {
     "@type": "sc:Organization",
-    "name": "U.S. SEC EDGAR"
+    "name": "U.S. SEC EDGAR",
+    "url": "https://www.sec.gov/edgar"
   },
   "publisher": {
     "@type": "sc:Organization",
@@ -185,7 +201,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   ]
 }
 </script>
-<script src="assets/sso.js?v=20260801f"></script>
+<script src="assets/sso.js?v=20260802a"></script>
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
@@ -204,7 +220,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-31');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-01');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -241,7 +257,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>Access &amp; mirrors</h2>
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=sec_edgar">Select &amp; download sec_edgar series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
-<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/sec_edgar.html">https://econdatalibrary.com/sec_edgar.html</a></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/sec_edgar">https://econdatalibrary.com/sec_edgar</a></dd>
 <dt>Update cadence</dt><dd>daily</dd>
 <dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
@@ -261,14 +277,20 @@ Run:  python jobs/fetch_sec_edgar_bulk.py</p>
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
   &quot;name&quot;: &quot;U.S. SEC EDGAR&quot;,
-  &quot;description&quot;: &quot;Phase-0 bootstrap: download the SEC EDGAR bulk archives for the initial backfill. companyfacts.zip (~1.39 GB) -- every company&#x27;s XBRL financial-statement facts (the NUMBERS we host) submissions.zip (~1.54 GB) -- every filing&#x27;s metadata (the POINTERS we index; documents stay on sec.gov) Polite by…&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/sec_edgar.html&quot;,
+  &quot;description&quot;: &quot;Company financial fundamentals extracted from SEC EDGAR filings. U.S. SEC EDGAR. 17,276 series, from 1927. Free download under public domain.&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/sec_edgar&quot;,
   &quot;identifier&quot;: &quot;sec_edgar&quot;,
   &quot;isAccessibleForFree&quot;: true,
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;includedInDataCatalog&quot;: {
+    &quot;@type&quot;: &quot;DataCatalog&quot;,
+    &quot;@id&quot;: &quot;https://econdatalibrary.com/#catalog&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com/catalog&quot;
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
@@ -291,6 +313,7 @@ Run:  python jobs/fetch_sec_edgar_bulk.py</p>
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;name&quot;: &quot;sec_edgar — CSV&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
       &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=sec_edgar&quot;,
       &quot;license&quot;: &quot;https://www.usa.gov/government-works&quot;
@@ -317,11 +340,12 @@ Run:  python jobs/fetch_sec_edgar_bulk.py</p>
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
   &quot;name&quot;: &quot;sec_edgar&quot;,
-  &quot;description&quot;: &quot;Phase-0 bootstrap: download the SEC EDGAR bulk archives for the initial backfill. companyfacts.zip (~1.39 GB) -- every company&#x27;s XBRL financial-statement facts (the NUMBERS we host) submissions.zip (~1.54 GB) -- every filing&#x27;s metadata (the POINTERS we index; documents stay on sec.gov) Polite by…&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/sec_edgar.html&quot;,
+  &quot;description&quot;: &quot;Company financial fundamentals extracted from SEC EDGAR filings. U.S. SEC EDGAR. 17,276 series, from 1927. Free download under public domain.&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/sec_edgar&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;U.S. SEC EDGAR&quot;
+    &quot;name&quot;: &quot;U.S. SEC EDGAR&quot;,
+    &quot;url&quot;: &quot;https://www.sec.gov/edgar&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
@@ -345,7 +369,7 @@ Run:  python jobs/fetch_sec_edgar_bulk.py</p>
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-31 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-08-01 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

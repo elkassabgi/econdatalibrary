@@ -4,7 +4,15 @@
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
 <title>Documentation — Econ Data Library</title>
 <meta name="description" content="How Econ Data Library works: namespace, licensing tiers, reproducible bundles, update pipeline.">
-<link rel="canonical" href="https://econdatalibrary.com/docs.html">
+<link rel="canonical" href="https://econdatalibrary.com/docs">
+<meta property="og:title" content="Documentation">
+<meta property="og:description" content="How Econ Data Library works: namespace, licensing tiers, reproducible bundles, update pipeline.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://econdatalibrary.com/docs">
+<meta property="og:site_name" content="Econ Data Library">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Documentation">
+<meta name="twitter:description" content="How Econ Data Library works: namespace, licensing tiers, reproducible bundles, update pipeline.">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -102,7 +110,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 @media (max-width:680px){.nav .fam-tag{display:none}}
 </style>
 
-<script src="assets/sso.js?v=20260801f"></script>
+<script src="assets/sso.js?v=20260802a"></script>
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
@@ -121,7 +129,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-31');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-01');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -145,7 +153,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>One account, one family</h2>
 <p>The free ElkassabgiData key works across the family — this library and <a href="https://hfdatalibrary.com/">HF Data Library</a> (1-minute U.S. equity data). Get a key from the <a href="download.html">Download page</a>.</p>
 
-<div class="foot">Generated 2026-07-31 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div>
+<div class="foot">Generated 2026-08-01 &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
     <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="300" height="80" style="max-width:78%;height:auto">

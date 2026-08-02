@@ -2,9 +2,17 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>Statistics Canada — Econ Data Library</title>
-<meta name="description" content="Full-coverage grouped ingest of Statistics Canada (WDS). Enumerates the ENTIRE cube catalog via getAllCubesListLite (~8,200 cubes), then for each cube pulls the full-table CSV bulk download (getFullTableDownloadCSV -&gt; zip URL on www150), streams the data CSV, and writes ONE Parquet per cube.…">
-<link rel="canonical" href="https://econdatalibrary.com/statcan.html">
+<title>Average hourly wage rate, all industries, 15+, Canada — Statistics Canada | Econ Data Library</title>
+<meta name="description" content="Average hourly wage rate, all industries, 15+, Canada; Population, 15+, Canada (SA, LFS). Statistics Canada. 20 series, 1946–2026. Free download.">
+<link rel="canonical" href="https://econdatalibrary.com/statcan">
+<meta property="og:title" content="Average hourly wage rate, all industries, 15+, Canada — Statistics Canada">
+<meta property="og:description" content="Average hourly wage rate, all industries, 15+, Canada; Population, 15+, Canada (SA, LFS). Statistics Canada. 20 series, 1946–2026. Free download.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://econdatalibrary.com/statcan">
+<meta property="og:site_name" content="Econ Data Library">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Average hourly wage rate, all industries, 15+, Canada — Statistics Canada">
+<meta name="twitter:description" content="Average hourly wage rate, all industries, 15+, Canada; Population, 15+, Canada (SA, LFS). Statistics Canada. 20 series, 1946–2026. Free download.">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -98,14 +106,20 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@context": "https://schema.org/",
   "@type": "Dataset",
   "name": "Statistics Canada",
-  "description": "Full-coverage grouped ingest of Statistics Canada (WDS). Enumerates the ENTIRE cube catalog via getAllCubesListLite (~8,200 cubes), then for each cube pulls the full-table CSV bulk download (getFullTableDownloadCSV -> zip URL on www150), streams the data CSV, and writes ONE Parquet per cube.…",
-  "url": "https://econdatalibrary.com/statcan.html",
+  "description": "Average hourly wage rate, all industries, 15+, Canada; Population, 15+, Canada (SA, LFS). Statistics Canada. 20 series, 1946–2026. Free download.",
+  "url": "https://econdatalibrary.com/statcan",
   "identifier": "statcan",
   "isAccessibleForFree": true,
   "publisher": {
     "@type": "Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
+  },
+  "includedInDataCatalog": {
+    "@type": "DataCatalog",
+    "@id": "https://econdatalibrary.com/#catalog",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com/catalog"
   },
   "creator": {
     "@type": "Organization",
@@ -135,6 +149,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "distribution": [
     {
       "@type": "DataDownload",
+      "name": "statcan — CSV",
       "encodingFormat": "text/csv",
       "contentUrl": "https://econdatalibrary.com/download.html?source=statcan"
     }
@@ -162,8 +177,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "name": "statcan",
-  "description": "Full-coverage grouped ingest of Statistics Canada (WDS). Enumerates the ENTIRE cube catalog via getAllCubesListLite (~8,200 cubes), then for each cube pulls the full-table CSV bulk download (getFullTableDownloadCSV -> zip URL on www150), streams the data CSV, and writes ONE Parquet per cube.…",
-  "url": "https://econdatalibrary.com/statcan.html",
+  "description": "Average hourly wage rate, all industries, 15+, Canada; Population, 15+, Canada (SA, LFS). Statistics Canada. 20 series, 1946–2026. Free download.",
+  "url": "https://econdatalibrary.com/statcan",
   "creator": {
     "@type": "sc:Organization",
     "name": "Statistics Canada"
@@ -195,7 +210,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   ]
 }
 </script>
-<script src="assets/sso.js?v=20260801f"></script>
+<script src="assets/sso.js?v=20260802a"></script>
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
@@ -214,7 +229,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-31');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-01');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -246,7 +261,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>Access &amp; mirrors</h2>
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=statcan">Select &amp; download statcan series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
-<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/statcan.html">https://econdatalibrary.com/statcan.html</a></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/statcan">https://econdatalibrary.com/statcan</a></dd>
 <dt>Update cadence</dt><dd>weekly <em>(target &mdash; not yet automated)</em></dd>
 <dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd>
 <dt>Update strategy</dt><dd>giant changed units</dd>
@@ -282,14 +297,20 @@ Usage:
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
   &quot;name&quot;: &quot;Statistics Canada&quot;,
-  &quot;description&quot;: &quot;Full-coverage grouped ingest of Statistics Canada (WDS). Enumerates the ENTIRE cube catalog via getAllCubesListLite (~8,200 cubes), then for each cube pulls the full-table CSV bulk download (getFullTableDownloadCSV -&gt; zip URL on www150), streams the data CSV, and writes ONE Parquet per cube.…&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/statcan.html&quot;,
+  &quot;description&quot;: &quot;Average hourly wage rate, all industries, 15+, Canada; Population, 15+, Canada (SA, LFS). Statistics Canada. 20 series, 1946–2026. Free download.&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/statcan&quot;,
   &quot;identifier&quot;: &quot;statcan&quot;,
   &quot;isAccessibleForFree&quot;: true,
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;includedInDataCatalog&quot;: {
+    &quot;@type&quot;: &quot;DataCatalog&quot;,
+    &quot;@id&quot;: &quot;https://econdatalibrary.com/#catalog&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com/catalog&quot;
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
@@ -319,6 +340,7 @@ Usage:
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;name&quot;: &quot;statcan — CSV&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
       &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=statcan&quot;
     }
@@ -344,8 +366,8 @@ Usage:
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
   &quot;name&quot;: &quot;statcan&quot;,
-  &quot;description&quot;: &quot;Full-coverage grouped ingest of Statistics Canada (WDS). Enumerates the ENTIRE cube catalog via getAllCubesListLite (~8,200 cubes), then for each cube pulls the full-table CSV bulk download (getFullTableDownloadCSV -&gt; zip URL on www150), streams the data CSV, and writes ONE Parquet per cube.…&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/statcan.html&quot;,
+  &quot;description&quot;: &quot;Average hourly wage rate, all industries, 15+, Canada; Population, 15+, Canada (SA, LFS). Statistics Canada. 20 series, 1946–2026. Free download.&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/statcan&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Statistics Canada&quot;
@@ -376,7 +398,7 @@ Usage:
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-31 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-08-01 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

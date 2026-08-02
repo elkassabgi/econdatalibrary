@@ -278,6 +278,10 @@
   // An explicit sign-out this browser session means "stay out" — never auto-resume over it.
   if (!hasKey() && !localStorage.getItem(F)
       && !sessionStorage.getItem('ekd_signed_out')
+      && !localStorage.getItem('ekd_signed_out')   // sessionStorage is per-TAB: without the
+      // durable copy, signing out in one tab left every other tab - and any tab opened later -
+      // free to resume, which signed the visitor straight back in whenever server-side
+      // revocation had not landed. That is exactly the case this marker exists to cover.
       && !sessionStorage.getItem('ekd_silent_done')
       && /^(www\.)?econdatalibrary\.com$/.test(location.hostname)) {
     try { sessionStorage.setItem(RESUME_TRIES_K, String((parseInt(sessionStorage.getItem(RESUME_TRIES_K) || '0', 10) || 0) + 1)); } catch (e) {}
