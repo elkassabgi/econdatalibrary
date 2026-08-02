@@ -106,7 +106,13 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // retired (not re-crawlable) and 184 that KSH still publishes but ksh_stadat's parser
   // skips with "no parseable time dimension". Verified before removal: 0 ksh tables absent
   // from ksh_stadat. The parquets under clean_full/ksh/ are KEPT, so this is reversible.
-  "kof_globalization", "ksh_stadat", "maddison", "nasa_giss", "noaa", "nyfed", "oecd", "ofr", "owid", "oxcgrt",
+  // ksh added 2026-08-01 — 25,057 series / 512,995 observations (20.5 obs each), per-series
+  // grain via core/broaden_catalog.py. DISTINCT from the already-served ksh_stadat: 0 of 109
+  // sampled ksh keys appear in it. Licence CONFIRMED CLEARED, cc-by-4.0, and it passed
+  // broaden_catalog's own hostability gate — which is the check that matters, since that gate
+  // unions the hand-curated denylist and deliberately overrides the DB's reservable flag so a
+  // new licence row can never silently un-gate a source.
+  "kof_globalization", "ksh", "ksh_stadat", "maddison", "nasa_giss", "noaa", "nyfed", "oecd", "ofr", "owid", "oxcgrt",
   "penn_world_table", "pip", "pwt", "rba", "riksbank",
   "sec_edgar", "snb", "statcan", "stats_nz",
   "swiid", "transparency_ti", "treasury", "ucdp", "unctad_bopcaba",
