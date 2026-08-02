@@ -312,7 +312,18 @@ sources:
   strategy_reason: BFS is PxWeb and the query already enumerates each table's time dimension via filter:item, so only the
     last N periods can be requested per table - matches the PxWeb/startPeriod delta pattern rather than the current full ~673-table
     rebuild.
-  cadence: monthly
+  # monthly -> irregular (2026-08-02). NOT a scheduling change in spirit: irregular
+  # polls MORE often (weekly, CADENCE_DAYS 7). It changes the LATENESS clock, which is
+  # what health.py's own note says a check cadence must not be confused with. bfs data
+  # is 96.3% annual (Dec-31 stamped, 5,151,530 of 5,337,621 obs) and its real frontier
+  # is 2025-12-31 with 113,785 series — the current annual figure for a publisher
+  # releasing 2025 during 2026. Judged on a monthly clock that reads as 213 days late
+  # and fired RED-DATA; on the annual clock it is simply current. Same false red the
+  # note already records for un_wpp, yale_epi, gapminder and imf_weo, and the same
+  # remedy they use. Checked upstream table-by-table: of the 29 of 582 whose time
+  # dimension could be read (BFS PxWeb returns positional codes, real years live in
+  # valueTexts), ZERO were behind.
+  cadence: irregular
   refresh_cost: large
   out_dir: bfs
   review: true
