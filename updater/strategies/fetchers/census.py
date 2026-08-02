@@ -152,16 +152,40 @@ def _dims_from_store(path: str) -> tuple[list[str], list[str]]:
     # Order is first-seen so keys stay byte-identical to what the ingester wrote.
     dims: list[str] = []
     seen: set = set()
+    shapes: dict = {}
     for k in tbl.column("series_key").to_pylist():
         if not k:
             continue
-        for seg in k.split("|")[1:]:                         # [0] is the flow path
-            if "=" in seg:
-                name = seg.split("=", 1)[0]
-                if name not in seen:
-                    seen.add(name)
-                    dims.append(name)
-    return dims, cols
+        order = [seg.split("=", 1)[0] for seg in k.split("|")[1:] if "=" in seg]
+        shapes.setdefault(frozenset(order), order)           # one ORDER per dimension SET
+        for name in order:
+            if name not in seen:
+                seen.add(name)
+                dims.append(name)
+    return dims, cols, list(shapes.items())
+
+
+def _key_for(J, row, hidx, dims, shapes, path):
+    """Rebuild a row's series_key using the ORDER of the stored shape it belongs to.
+
+    A flat dimension list is not enough. series_key_of joins in the order it is given, so a
+    row whose dimensions are correct but ORDERED differently yields a permuted key — which
+    merge treats as a brand-new series, not an update. eits/qtax stores STATE fourth in its
+    state keys while a union built over its US-majority rows appends STATE last; feeding that
+    union to series_key_of produced 1,209 keys the store had never held.
+
+    So: work out which dimensions this row actually populates, find the stored shape with
+    exactly that dimension SET, and join in THAT shape's order. Returns None when no stored
+    shape matches — a genuinely new shape, which the caller refuses rather than invents.
+    """
+    present = frozenset(
+        c for c in dims
+        if (i := hidx.get(c)) is not None and i < len(row)
+        and row[i] is not None and row[i] != "")
+    for keyset, order in shapes:
+        if keyset == present:
+            return J.series_key_of(row, hidx, order, path)
+    return None
 
 
 def _stored_max(path: str):
@@ -218,12 +242,17 @@ def _predicates(levels: set) -> list[str]:
         rebuilt key is a permutation of the stored one — a DIFFERENT key. Re-enabling
         state:* with the union still produced 1,209 unknown shapes; the guard refused all of
         them, which is the guard working.
-    Closing this needs PER-SHAPE dimension order — group the stored keys by shape and build
-    each row with the order of the shape whose dimension set it matches — not a flat union.
-    Until then qtax's 1,344 state series stay un-refreshed and are NAMED in the run's output,
-    because an honest gap beats a permuted key that silently invents series.
+    Both are fixed: dimensions come from the union across stored keys, and each row is keyed
+    with the ORDER of the stored shape whose dimension set it matches (see _key_for). A row
+    matching no stored shape is dropped rather than invented, and the shape guard remains as
+    the backstop.
     """
-    return ["us:*"]
+    preds = []
+    if not levels or "US" in levels:
+        preds.append("us:*")
+    if levels - {"US"}:
+        preds.append("state:*")
+    return preds or ["us:*"]
 
 
 _SHAPE = re.compile(r"=[^|]*")
@@ -234,9 +263,10 @@ def _shape(key: str) -> str:
     return _SHAPE.sub("=*", key)
 
 
-def _store_shapes(path: str) -> set:
+def _store_keys(path: str) -> set:
+    """Every series_key the flow already publishes."""
     try:
-        return {_shape(k) for k in
+        return {k for k in
                 blob.read_table(path, columns=["series_key"]).column("series_key").to_pylist()
                 if k}
     except Exception:                                        # noqa: BLE001
@@ -332,7 +362,7 @@ def update(unit, since) -> Result:
         if mx is None:
             tally.empty_unit(flow)
             continue
-        dim_cols, data_cols = _dims_from_store(path)
+        dim_cols, data_cols, shapes = _dims_from_store(path)
         if not dim_cols:
             tally.structural_unit(f"{flow}: no dimensions recoverable from stored series_key")
             continue
@@ -340,7 +370,13 @@ def update(unit, since) -> Result:
         gcol = _geo_col(data_cols)
         levels = _store_geo_levels(path, gcol) if gcol else set()
 
-        rows = []
+        # EACH PREDICATE KEEPS ITS OWN HEADER. They are not the same shape: `for=us:*`
+        # answers qtax with 16 columns ending in `us`, `for=state:*` with 17 ending in
+        # `state`. Concatenating the bodies under the first header — which is what this did
+        # first — shifts every column of the second response, so the dimensions read as
+        # garbage, no stored shape matches, and the rows are dropped. Silently, because the
+        # drop counter was not reported either. Parse each response against its own header.
+        parts = []
         failed = False
         for pred in _predicates(levels):
             try:
@@ -354,20 +390,18 @@ def update(unit, since) -> Result:
                 failed = True
                 break
             time.sleep(RATE)
-            if not part or len(part) < 2:
-                continue
-            rows = part if not rows else rows + part[1:]     # one header, then bodies
+            if part and len(part) >= 2:
+                parts.append(part)
         if failed:
             continue
+        rows = parts[0] if parts else []
 
-        if not rows or len(rows) < 2:
+        if not parts:
             # A BOUNDARY re-fetch must re-return at least the boundary period. Nothing at all
             # means the shape we ask for is gone, not that the flow is quiet.
             tally.structural_unit(f"{flow}: boundary re-fetch returned no rows")
             continue
 
-        header = rows[0]
-        hidx = {c: i for i, c in enumerate(header)}
         # CASE-INSENSITIVE for the two well-known columns. eits/qtax names its variables in
         # UPPERCASE both in our store and upstream (CELL_VALUE, TIME_SLOT_ID, ...) while the
         # other 20 flows are lowercase — and it is not cosmetic: asking qtax for `cell_value`
@@ -376,59 +410,92 @@ def update(unit, since) -> Result:
         # oddly-cased flow failed the entire source every run. dim_cols and the get= list are
         # both read from the store, so they already carry each flow's own casing; only these
         # two fixed names needed it.
-        lidx = {c.lower(): i for i, c in enumerate(header)}
-        ti = lidx.get("time")
-        vi = lidx.get("cell_value")
-        if ti is None or vi is None:
-            tally.structural_unit(f"{flow}: response lacks time/cell_value")
-            continue
-
         cols: dict[str, list] = {c: [] for c in data_cols}
+        unknown_shape = 0
         keys: list[str] = []
         dates: list[dt.date] = []
         seen_series: set = set()
-        for row in rows[1:]:
-            d = J.parse_obs_date(row[ti])
-            if d is None or d < mx:
-                continue                                     # strictly the tail (boundary incl.)
-            if row[vi] in (None, ""):
-                continue
-            sk = J.series_key_of(row, hidx, dim_cols, f"timeseries/eits/{flow}")
-            keys.append(sk)
-            dates.append(d)
-            seen_series.add(sk)
-            for c in data_cols:
-                i = hidx.get(c)
-                cols[c].append(row[i] if i is not None and i < len(row) else None)
-            iso = d.isoformat()
-            if cursors.get(sk, "") < iso:
-                cursors[sk] = iso
+        got_levels: set = set()
+        broke = False
+        for part in parts:
+            header = part[0]
+            hidx = {c: i for i, c in enumerate(header)}
+            lidx = {c.lower(): i for i, c in enumerate(header)}
+            ti = lidx.get("time")
+            vi = lidx.get("cell_value")
+            if ti is None or vi is None:
+                tally.structural_unit(f"{flow}: response lacks time/cell_value")
+                broke = True
+                break
+            gi = lidx.get("geo_level_code")
+            for row in part[1:]:
+                d = J.parse_obs_date(row[ti])
+                if d is None or d < mx:
+                    continue                                 # strictly the tail (boundary incl.)
+                if row[vi] in (None, ""):
+                    continue
+                sk = _key_for(J, row, hidx, dim_cols, shapes, f"timeseries/eits/{flow}")
+                if sk is None:
+                    unknown_shape += 1
+                    continue
+                keys.append(sk)
+                dates.append(d)
+                seen_series.add(sk)
+                if gi is not None and gi < len(row) and row[gi]:
+                    got_levels.add(row[gi])
+                for c in data_cols:
+                    i = hidx.get(c)
+                    cols[c].append(row[i] if i is not None and i < len(row) else None)
+                iso = d.isoformat()
+                if cursors.get(sk, "") < iso:
+                    cursors[sk] = iso
+        if broke:
+            continue
+
+        # A DROP MUST NEVER BE SILENT. Rows whose dimension set matches no stored shape are
+        # skipped rather than invented — correct — but skipping thousands of rows without
+        # saying so is how a fetcher looks healthy while covering a fraction of its source.
+        if unknown_shape:
+            print(f"[{SOURCE}] {flow}: DROPPED {unknown_shape:,} row(s) whose dimension set "
+                  f"matches no stored key shape", flush=True)
+            under.append(f"{flow} unknown-shape x{unknown_shape}")
 
         if not keys:
             tally.empty_unit(flow)                           # already at the publisher's frontier
             continue
 
-        # KEY-SHAPE GUARD — refuse to merge keys whose STRUCTURE the store has never held.
+        # THIS IS A TAIL, NOT A BACKFILL — merge only series the flow ALREADY publishes.
         #
-        # merge dedups on (series_key, obs_date). A key built from a different dimension set
-        # therefore does not update an existing series, it CREATES one — silently, and with
-        # real values, so nothing downstream looks broken. That is exactly what a `state:*`
-        # request did here in testing: its rows lack STATE and carry an extra `us`, and qtax
-        # jumped from 1,421 to 2,630 distinct series.
+        # merge dedups on (series_key, obs_date), so an unrecognised key does not update a
+        # series, it CREATES one: silently, with real values, and nothing downstream looks
+        # broken. Two distinct ways that happened here, both caught by diffing distinct
+        # series counts against production rather than by any error:
+        #   * a permuted key (dimensions right, ORDER wrong) — qtax 1,421 -> 2,630
+        #   * genuinely NEW coverage — `for=state:*` returns GEO_LEVEL_CODE=DC, which this
+        #     store has never held, adding 23 real series that no catalogue row describes
+        # The first is corruption; the second is legitimate data that still must not arrive
+        # this way, because a date tail that widens the published id space produces series
+        # users cannot find (same rule the boc fetcher states for its extra 3,044 series).
         #
-        # A shape check catches the whole class rather than that one instance, and it cannot
-        # be fooled by values (only the dimension NAMES and their order matter). If a flow
-        # legitimately gains a dimension upstream, this fires and a human decides — which is
-        # the right outcome, because that is a schema change, not a date tail.
-        known = _store_shapes(path)
+        # So: keep what we publish, count what we skip, and let a deliberate backfill decide
+        # about the rest. The shape check is subsumed — an unknown shape cannot be a known key.
+        known = _store_keys(path)
         if known:
-            bad = {k for k in set(keys) if _shape(k) not in known}
-            if bad:
-                tally.structural_unit(
-                    f"{flow}: {len(bad)} key shape(s) absent from the store — refusing to "
-                    f"merge (would create new series, not extend existing ones); e.g. "
-                    f"{_shape(sorted(bad)[0])[:110]}")
+            keep = [i for i, k in enumerate(keys) if k in known]
+            skipped_new = len(keys) - len(keep)
+            if skipped_new:
+                print(f"[{SOURCE}] {flow}: skipped {skipped_new:,} row(s) for "
+                      f"{len({keys[i] for i in range(len(keys)) if keys[i] not in known}):,} "
+                      f"series this flow does not yet publish (new coverage needs a backfill "
+                      f"and a catalogue row, not a tail)", flush=True)
+            if not keep:
+                tally.empty_unit(flow)
                 continue
+            keys = [keys[i] for i in keep]
+            dates = [dates[i] for i in keep]
+            for c in data_cols:
+                cols[c] = [cols[c][i] for i in keep]
+            seen_series = set(keys)
 
         held = _stored_series(path)
         arrays = {"series_key": pa.array(keys, pa.string()),
@@ -456,9 +523,7 @@ def update(unit, since) -> Result:
         # flows — the same cry-wolf that eits/mhs already caused once. What actually matters
         # is whether a geography we STORE was one we never REQUESTED, which is exact.
         if gcol:
-            gi = lidx.get("geo_level_code")
-            got_levels = {r[gi] for r in rows[1:] if gi is not None and gi < len(r) and r[gi]}
-            missed = levels - got_levels
+            missed = levels - got_levels                     # accumulated across ALL predicates
             if missed:
                 under.append(f"{flow} geo {','.join(sorted(missed)[:4])}"
                              f"{'...' if len(missed) > 4 else ''}")
