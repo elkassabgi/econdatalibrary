@@ -47,13 +47,16 @@ import pyarrow as pa
 from ... import blob, config, merge
 from ...errors import TransientError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after, save_rotation)
 
 BASE = "https://api.uis.unesco.org/api/public"
 UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com"}
 DEDUP = ("series_key", "obs_date")
 GRAMMAR_FLOOR = 0.95
 WORKERS = int(os.environ.get("AQUEDUCT_UIS_WORKERS", "6"))
+# Indicators submitted to the pool per deadline check. ex.map() queues everything it is
+# given at once, so the chunk size — not the loop — is what actually bounds the run.
+_UIS_CHUNK = int(os.environ.get("AQUEDUCT_UIS_CHUNK", "24"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -121,42 +124,84 @@ def update(source_id: str, unit, since) -> Result:
 
     keys, dates, vals = [], [], []
     failed, unclassified, n_bad = [], set(), 0
+
+    # BOUND THIS BELOW THE ORCHESTRATOR'S 45-MINUTE CAP, AND ROTATE.
+    # Measured in cloud state: unesco_natmon took 50.0 min and unesco_sdg 48.5 min — both
+    # OVER the cap. They happened to complete, but there is exactly one merge_and_write in
+    # this module and it is AFTER the loop, so a kill one slow day later does not truncate
+    # the run, it DISCARDS it: every indicator fetched, nothing stored, and the log looks
+    # identical to a busy healthy run (R243, which is precisely how worldbank_wdi stored
+    # nothing for its entire existence).
+    #
+    # Submissions are CHUNKED because ex.map(fetch, inds) queues every indicator up front —
+    # breaking out of that loop stops consuming results but not the work, and the executor's
+    # shutdown then waits for all of it anyway. Chunking is what makes the budget real.
+    #
+    # The order rotates, because a bound over a fixed order is a truncation, not a budget
+    # (R190): without a bookmark the same leading indicators would be re-fetched every run
+    # and the tail would never be reached at all.
+    budget_min = float(os.environ.get("UIS_BUDGET_MIN", "35"))
+    dl = Deadline(minutes=budget_min)
+    order = rotate_after(list(inds), load_rotation(out_dir))
+    stopped_early = False
+    done_inds = 0
+    last_ind = ""
     with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as ex:
-        for ind, recs, err in ex.map(fetch, inds):
-            if err:
-                failed.append(f"{ind}:{err}")
-                continue
-            for r in recs:
-                v, y = r.get("value"), r.get("year")
-                gu, iid = r.get("geoUnit"), r.get("indicatorId")
-                if v is None or y is None or not gu or not iid:
+        for start in range(0, len(order), _UIS_CHUNK):
+            if dl.spent():
+                stopped_early = True
+                print(f"[{source_id}] budget of {budget_min:.0f} min spent after "
+                      f"{dl.elapsed_min():.1f} min — {done_inds:,}/{len(order):,} "
+                      f"indicators done, {len(order) - done_inds:,} deferred to the next "
+                      f"tick (resuming after {last_ind!r})", flush=True)
+                break
+            chunk = order[start:start + _UIS_CHUNK]
+            for ind, recs, err in ex.map(fetch, chunk):
+                done_inds += 1
+                last_ind = ind
+                if err:
+                    failed.append(f"{ind}:{err}")
                     continue
-                gtype, gname = geo.get(gu, (None, None))
-                if gtype == "NATIONAL":
-                    k = f"{prefix}:{iid}.NA.{gu}.A"
-                elif gtype == "REGIONAL":
-                    k = f"{prefix}:{iid}.{_slug(gname or gu)}.NA.A"
-                else:
-                    # A geoUnit /definitions/geounits does not classify. COUNTED,
-                    # never guessed — picking a form here is how part of a source
-                    # silently forks into ids that resolve to nothing.
-                    unclassified.add(gu)
-                    continue
-                try:
-                    fv, yr = float(v), int(y)
-                except (TypeError, ValueError):
-                    n_bad += 1
-                    continue
-                keys.append(k)
-                dates.append(dt.date(yr, 1, 1))               # period-START
-                vals.append(fv)
+                for r in recs:
+                    v, y = r.get("value"), r.get("year")
+                    gu, iid = r.get("geoUnit"), r.get("indicatorId")
+                    if v is None or y is None or not gu or not iid:
+                        continue
+                    gtype, gname = geo.get(gu, (None, None))
+                    if gtype == "NATIONAL":
+                        k = f"{prefix}:{iid}.NA.{gu}.A"
+                    elif gtype == "REGIONAL":
+                        k = f"{prefix}:{iid}.{_slug(gname or gu)}.NA.A"
+                    else:
+                        # A geoUnit /definitions/geounits does not classify. COUNTED,
+                        # never guessed — picking a form here is how part of a source
+                        # silently forks into ids that resolve to nothing.
+                        unclassified.add(gu)
+                        continue
+                    try:
+                        fv, yr = float(v), int(y)
+                    except (TypeError, ValueError):
+                        n_bad += 1
+                        continue
+                    keys.append(k)
+                    dates.append(dt.date(yr, 1, 1))           # period-START
+                    vals.append(fv)
+
+    # Bookmark BEFORE the gates below, which can return early: the indicators fetched this
+    # tick were fetched whatever the grammar check then decides, and re-walking the same
+    # prefix tomorrow is the pathology rotation exists to prevent.
+    if last_ind:
+        save_rotation(out_dir, last_ind)
 
     if failed:
         print(f"[{source_id}] {len(failed)} indicator(s) failed: {failed[:5]}",
               flush=True)
-        if len(failed) > len(inds) // 2:
+        # Ratio measured against what this tick ATTEMPTED, not the whole indicator list.
+        # Against len(inds) a budget-stopped pass could never reach the majority threshold
+        # however badly upstream was failing — the check would quietly stop existing.
+        if len(failed) > max(done_inds, 1) // 2:
             raise TransientError(
-                f"{source_id}: {len(failed)}/{len(inds)} indicators unreachable")
+                f"{source_id}: {len(failed)}/{done_inds} attempted indicators unreachable")
     if unclassified:
         print(f"[{source_id}] {len(unclassified)} geoUnit(s) unclassified by "
               f"/definitions/geounits, SKIPPED (not guessed): "
@@ -199,6 +244,12 @@ def update(source_id: str, unit, since) -> Result:
     tbl = pa.table({"series_key": pa.array(keys, pa.string()),
                     "obs_date": pa.array(dates, pa.date32()),
                     "value": pa.array(vals, pa.float64())})
+    # State the coverage of the pass being merged. A partial sweep merging cleanly and a
+    # full sweep merging cleanly produce identical row counts when upstream is quiet, so
+    # without this line there is nothing in the log that distinguishes them.
+    print(f"[{source_id}] merging {len(keys):,} obs from {done_inds:,}/{len(order):,} "
+          f"indicators ({'PARTIAL sweep, rest next tick' if stopped_early else 'full sweep'})",
+          flush=True)
     n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
     tally.added_unit(max(0, n - before), source_id)
     cursors = {}
