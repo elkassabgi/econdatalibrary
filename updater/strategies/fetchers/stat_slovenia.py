@@ -61,7 +61,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, sane_since
+from ._common import Deadline, Tally, finalize, sane_since
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -571,7 +571,27 @@ def update(unit, since) -> Result:
           f"table(s) to consider; starting at offset {_start} "
           f"({_groups[0] if _groups else '-'})", flush=True)
 
+    # YIELD BEFORE THE CAP KILLS US. The rotation above already makes the tail reachable, and
+    # it survives a kill by design (the offset is written after every group, beside the data,
+    # because finalize() never runs when the unit is interrupted). What it does NOT survive is
+    # the STATUS: cloud run 2026-08-01 was `transient_fail` at exactly 45.0 min — "exceeded its
+    # 45-minute hard limit and was interrupted" — and a killed unit records no success, so this
+    # source can never set last_success_utc and is invisible to the SLA gate no matter how well
+    # the sweep is actually going (R231).
+    #
+    # Stopping at 40 min instead of being killed at 45 costs one group and buys an honest
+    # finalize: real status, real cursors, and the same offset write that already happens.
+    budget_min = float(os.environ.get("STAT_SLOVENIA_BUDGET_MIN", "40"))
+    _dl = Deadline(minutes=budget_min)
+
     for _gi, grp in enumerate(_groups, 1):
+        if _dl.spent():
+            print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
+                  f"{_dl.elapsed_min():.1f} min — stopping cleanly after {_gi - 1} of "
+                  f"{len(_groups)} group(s); the sweep offset is already saved, so the next "
+                  f"tick resumes here instead of being killed and reported as a failure",
+                  flush=True)
+            break
         path = _group_path(out_dir, grp)
         before = blob.row_count(path)
         total_rows += before
