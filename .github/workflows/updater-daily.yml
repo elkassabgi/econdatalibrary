@@ -98,6 +98,21 @@ jobs:
       # Measured 2026-08-02: an unauthenticated request returns HTTP *200* with an HTML
       # "Missing Key" page, so nothing here may infer success from a status code.
       CENSUS_API_KEY: ${{ secrets.CENSUS_API_KEY }}
+      # dst went monthly -> daily so it could converge on Statistics Denmark (~10 tables/day
+      # against 40 per run; it was 472 tables behind while reporting "no new rows"). That adds
+      # a source to a job with very little room: the 2026-08-02 run used 267 of these 300
+      # minutes — the updater step alone was 261.8 — and statfin and worldbank_wdi each hit
+      # the 45-minute per-source cap, so they already defer work every run.
+      #
+      # Overrunning is not a slow day, it is a LOST one: `Push state to R2` runs AFTER the
+      # updater, so a timeout mid-updater discards the whole run's state.
+      #
+      # dst's own default is 20 min and it measured 24.8 min draining 200 tables (~8/min).
+      # 12 min here keeps its worst case inside the headroom and still drains ~97 tables a
+      # run, which clears the ~623 backlog in about a week and then costs a minute or two a
+      # day in steady state. The manifest checkpoints per chunk, so a shorter budget defers
+      # work rather than losing it.
+      DST_BUDGET_MIN: "12"
       AQUEDUCT_BACKEND: r2
       # Rollout perimeter: scheduled runs execute ONLY live: true sources.
       # (Learned from run 28682266857: without this, every due source with an
