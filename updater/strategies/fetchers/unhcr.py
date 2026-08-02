@@ -25,7 +25,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+                      save_rotation)
 
 SOURCE = "unhcr"
 BASE = "https://api.unhcr.org/population/v1"
@@ -146,19 +147,49 @@ def update(unit, since) -> Result:
 
     tally = Tally()
     keys, dates, vals = [], [], []
-    for endpoint in ENDPOINTS:
-        for yr in years:
-            try:
-                n = _fetch_endpoint_year(sess, endpoint, yr, keys, dates, vals)
-            except TransientError:
-                tally.transient_unit()
-                time.sleep(RATE)
-                continue
-            if n > 0:
-                tally.added_unit(n)
-            else:
-                tally.empty_unit()
+
+    # BOUND BELOW THE ORCHESTRATOR'S 45-MINUTE CAP, AND ROTATE.
+    # unhcr's measured cloud runs are 62.5 and 72.3 minutes — over the cap every time. The
+    # cap landed 2026-08-01 (36130d02), after unhcr's last run, and there is exactly ONE
+    # merge_and_write here, after both loops. So the next run gets killed mid-sweep and
+    # stores NOTHING: a discard, not a truncation (R243).
+    #
+    # The sweep is ENDPOINTS x years, both fixed orders, so a bound alone would re-walk the
+    # same head forever and never reach the later endpoints (R190). Flattening the nested
+    # loop into one ordered task list makes the rotation cover the whole grid rather than
+    # just the inner axis — rotating years within endpoint 1 would still starve endpoint N.
+    budget_min = float(os.environ.get("UNHCR_BUDGET_MIN", "30"))
+    dl = Deadline(minutes=budget_min)
+    grid = [(e, y) for e in ENDPOINTS for y in years]
+    order = rotate_after(grid, load_rotation(out_dir), key=lambda t: f"{t[0]}:{t[1]}")
+    stopped_early = False
+    last_task = ""
+    done_tasks = 0
+
+    for endpoint, yr in order:
+        if dl.spent():
+            stopped_early = True
+            print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
+                  f"{dl.elapsed_min():.1f} min — {done_tasks}/{len(order)} endpoint-years "
+                  f"done, {len(order) - done_tasks} deferred to the next tick "
+                  f"(resuming after {last_task!r})", flush=True)
+            break
+        done_tasks += 1
+        last_task = f"{endpoint}:{yr}"
+        try:
+            n = _fetch_endpoint_year(sess, endpoint, yr, keys, dates, vals)
+        except TransientError:
+            tally.transient_unit()
             time.sleep(RATE)
+            continue
+        if n > 0:
+            tally.added_unit(n)
+        else:
+            tally.empty_unit()
+        time.sleep(RATE)
+
+    if last_task:
+        save_rotation(out_dir, last_task)
 
     if keys:
         tbl = pa.table({
@@ -175,8 +206,11 @@ def update(unit, since) -> Result:
         cursors = {}
         last_obs = since or None
 
+    # The floor must be measured against the endpoint-years this tick ATTEMPTED; against the
+    # whole grid a bounded pass would read as a wholesale outage every time.
+    floor = (done_tasks + 1) if stopped_early else (len(ENDPOINTS) * max(1, len(years)) + 1)
     return finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
-                    empty_window_floor=len(ENDPOINTS) * max(1, len(years)) + 1)
+                    empty_window_floor=max(floor, 1))
 
 
 def _series_maxes(tbl):
