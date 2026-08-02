@@ -114,8 +114,46 @@ def _migrate_legacy(path: str) -> int:
     return n
 
 
+def _tree_frontier(out_dir: str) -> dt.date | None:
+    """Newest obs_date across the WHOLE bea tree — which is the store that actually serves.
+
+    _resolve_bea opens `clean_full/bea/` as ONE dataset and exact-matches series_key, so the
+    served store is every parquet under that directory: 591 per-dataset files from an earlier
+    full ingest (67,445,770 rows / 913,230 series) PLUS the bea.parquet this fetcher writes
+    (106,074 rows / 17,699 series). Taking the frontier from bea.parquet alone read
+    2026-01-01 while the tree was already at 2026-04-01 — three months stale, from a file
+    holding under 2% of the series.
+
+    Too-early a start is only wasteful (merge dedups the overlap), so this was not losing
+    data. But it is the wrong store: if the grouped file were ever AHEAD of the tree the
+    window would begin after data the tree still lacks, and the gap would be silent.
+
+    Uses per-file column STATISTICS, not a read: pulling 67.4M obs_date values to compute one
+    max would cost more than the fetch it is sizing.
+    """
+    import pyarrow.parquet as pq
+    best = None
+    for f in glob.glob(os.path.join(out_dir, "**", "*.parquet"), recursive=True):
+        try:
+            md = pq.ParquetFile(f).metadata
+            idx = md.schema.names.index("obs_date") if "obs_date" in md.schema.names else None
+            if idx is None:
+                continue
+            for rg in range(md.num_row_groups):
+                st = md.row_group(rg).column(idx).statistics
+                if st is None or st.max is None:
+                    continue
+                v = st.max
+                v = v if isinstance(v, dt.date) else dt.date.fromisoformat(str(v)[:10])
+                if best is None or v > best:
+                    best = v
+        except Exception:                                    # noqa: BLE001
+            continue                                         # one unreadable file must not blind the rest
+    return best
+
+
 def _stored_frontier(path: str) -> dt.date | None:
-    """Newest stored obs_date as a DATE.
+    """Newest obs_date in the fetcher's own grouped file, as a DATE.
 
     merge._max_obs_date is annotated `-> str | None` and returns `str(m)`, so returning it
     straight from a function typed `-> dt.date | None` was a lie the type hint did not catch.
@@ -168,7 +206,9 @@ def update(unit, since) -> Result:
 
     tally = Tally()
     dl = Deadline(minutes=BUDGET_MIN)
-    frontier = _stored_frontier(path)
+    # The frontier comes from the WHOLE tree, not just our grouped file — see _tree_frontier.
+    # Fall back to the grouped file if the tree scan finds nothing (a cold store).
+    frontier = _tree_frontier(out_dir) or _stored_frontier(path)
     start_year = (frontier.year - LOOKBACK_YEARS) if frontier else 1929
     end_year = dt.date.today().year + 1
     years = f"{start_year},{end_year}" if start_year != end_year else str(start_year)
