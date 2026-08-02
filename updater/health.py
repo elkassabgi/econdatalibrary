@@ -172,6 +172,27 @@ def assess(store=None) -> dict:
         last_success = src.get("last_success_utc") if src else None
         succ_age = _age_days(last_success, now)
 
+        # HOW OLD IS THIS VERDICT? A `partial` never sets last_success_utc (R231), so the whole
+        # ATTENTION column is a snapshot of whenever the source last RAN — which for many of
+        # them is not recent. Measured 2026-08-02 on production state: of 54 partial sources,
+        # 24 (44%) had not been attempted for 2+ days, the oldest 39 and 24 days, because the
+        # daily run reaches ~20 of ~106 cloud sources within its budget (R246).
+        #
+        # Without this column a reader cannot tell "degraded now" from "last seen degraded
+        # three weeks ago", and three sources I chased today — cso, insee_melodi and the
+        # imf_*_direct family — turned out to be healthy upstream with a stale verdict. The
+        # gate's severity ordering is unchanged; this only makes the age visible.
+        # FALL BACK TO THE UNITS. The source-level row is written on SUCCESS, so a
+        # permanently-partial source has no source_state row at all (R231) — which is exactly
+        # the population this column exists to describe, and taking the source-level value
+        # alone left it blank on every ATTENTION row. unit_state carries last_attempt_utc per
+        # unit whether or not the unit succeeded, so the newest of those is when the source
+        # was really last touched.
+        _attempts = [u.get("last_attempt_utc") for u in units if u.get("last_attempt_utc")]
+        last_attempt = (max(_attempts) if _attempts else None) \
+            or (src.get("last_attempt_utc") if src else None) or last_success
+        attempt_age = _age_days(last_attempt, now)
+
         attention = [f"{u['unit_id']}:{u['status']}" for u in units
                      if u.get("status") in ATTENTION_STATUSES]
 
@@ -288,6 +309,8 @@ def assess(store=None) -> dict:
             "run_location": e.get("run_location") or "cloud",
             "health": health,
             "last_success_age_d": round(succ_age, 1) if succ_age is not None else None,
+            # Age of the RUN this verdict came from — see the comment where it is computed.
+            "last_attempt_age_d": round(attempt_age, 1) if attempt_age is not None else None,
             "newest_obs": newest_obs,
             # The furthest period the store holds, projections included. Distinct from
             # newest_obs on purpose: one answers "how current is this", the other "how far
@@ -395,7 +418,7 @@ def main():
     bad = ("RED-SLA", "RED-DATA", "RED-UNRUN", "ATTENTION")
     print(f"=== Aqueduct health  {report['generated_utc']}  ===")
     print("summary:", json.dumps(report["summary"]))
-    print(f"{'HEALTH':<13} {'SOURCE':<18} {'CAD':<9} {'succ_age':>8} {'obs_age':>8}  newest_obs  notes")
+    print(f"{'HEALTH':<13} {'SOURCE':<18} {'CAD':<9} {'succ_age':>8} {'ran':>6} {'obs_age':>8}  newest_obs  notes")
     for r in report["sources"]:
         if red_only and r["health"] not in bad:
             continue
@@ -406,7 +429,8 @@ def main():
             note = f"{r['n_discontinued']} discontinued series (info)"
         sa = "" if r["last_success_age_d"] is None else f"{r['last_success_age_d']:.0f}d"
         oa = "" if r["newest_obs_age_d"] is None else f"{r['newest_obs_age_d']:.0f}d"
-        print(f"{r['health']:<13} {r['source']:<18} {r['cadence'][:8]:<9} {sa:>8} {oa:>8}  "
+        ra = "" if r.get("last_attempt_age_d") is None else f"{r['last_attempt_age_d']:.0f}d"
+        print(f"{r['health']:<13} {r['source']:<18} {r['cadence'][:8]:<9} {sa:>8} {ra:>6} {oa:>8}  "
               f"{str(r['newest_obs'] or '-'):<11} {note}")
 
     if "--red" in sys.argv:
