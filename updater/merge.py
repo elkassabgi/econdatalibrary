@@ -92,10 +92,27 @@ def _dedup(table, keys):
     if n == 1:
         return t.drop_columns(["__i"])
 
+    # NULL == NULL MUST MEAN "SAME KEY" HERE. Arrow's equal() returns NULL when either side
+    # is null; that NULL survives and_(), invert() turns it into NULL, and filter() DROPS
+    # null-mask rows. So a dedup key that is null silently discarded every row but the last:
+    # measured on treasury's four DATELESS endpoints, where obs_date is null BY DESIGN and
+    # identity is the dimension columns — fbp_dpai_account_summary deduped 185 distinct rows
+    # down to 1, every run since 2026-07-23.
+    #
+    # It only surfaced because the never-shrink ratio refused the write (185 -> 1 is far
+    # under 97%), and that is the dangerous part: a source with SOME null keys would lose
+    # only those rows, stay above the ratio, and publish as a clean merge. Silent data loss
+    # that happened to be caught by a different guard.
+    #
+    # These are GROUPING semantics, not SQL comparison semantics: two rows whose key is null
+    # in the same position ARE the same key. fill_null(False) makes a null comparison "not
+    # equal", then both-null is added back explicitly.
     same_as_next = None
     for k in keys:
         col = t.column(k).combine_chunks()
-        eq = pc.equal(col.slice(0, n - 1), col.slice(1, n - 1))
+        lhs, rhs = col.slice(0, n - 1), col.slice(1, n - 1)
+        eq = pc.or_(pc.fill_null(pc.equal(lhs, rhs), False),
+                    pc.and_(pc.is_null(lhs), pc.is_null(rhs)))
         same_as_next = eq if same_as_next is None else pc.and_(same_as_next, eq)
 
     # keep a row when the NEXT row begins a different key-combo; the final row always ends
