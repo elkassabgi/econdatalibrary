@@ -136,16 +136,70 @@ def _list_data_files(sess: requests.Session, survey: str) -> list[str]:
     return _DATA_RE.findall(r.text)
 
 
-def _choose_tail_files(data_files: list[str]) -> list[str]:
-    """Pick the cheap tail cut for a survey.
+COVERAGE_SIDECAR = "_tail_coverage.json"
+COVERAGE_MIN = 0.90
+"""Fraction of a survey's STORED series the chosen tail must reach before the survey
+is allowed to report a clean result. Measured, never assumed — see _measure_coverage."""
+SPAN_BUDGET_BYTES = 1_200_000_000
+"""Ceiling on an escalated (spanning) file set. la already pulls 856 MB of Current
+files each publish, so this is in-band; it exists so escalation can never turn into
+the multi-GB download that OOM'd the runner on abs and bis."""
+COVERAGE_MAX_ROWS = 50_000_000
+"""Skip (and disclose) coverage measurement above this store size: counting distinct
+series_id on ca/cb (52M+ series each) would read many GB every tick to answer a
+question those surveys cannot have — they ship no Current cut to under-cover with."""
+MEASURE_PER_TICK = 6
+"""Surveys force-measured per tick when they have no coverage record yet. Bounded so
+the first pass after this lands cannot blow the per-source wall-clock cap; the set
+that CAN under-cover is small (>=2 data files AND a Current cut), so it converges in
+a few ticks. Same rotating-sweep idiom as the stat_slovenia fix."""
 
-    Prefer every `*Current*` data file (the active-series latest-periods cut). If a
-    survey ships none (small/discontinued surveys: bg, bp, eb, cx, ep), fall back to
-    its single `AllData` file (tiny, idempotent to re-merge). If there is neither a
-    Current nor an AllData file, return [] (caller treats as no-tail -> empty).
-    We deliberately do NOT return the multi-part AllData history of large surveys."""
+
+def _spanning_files(data_files: list[str]) -> list[str]:
+    """The cheapest file set that spans a survey's whole series list.
+
+    Prefer ONE spanning file when the survey publishes one (ce.data.0.AllCESSeries is
+    349 MB and covers 100% of stored CES series; taking all 54 non-Current files would
+    cost 774 MB for the same coverage). Otherwise the full non-Current set."""
+    non_current = [f for f in data_files if "Current" not in f]
+    if not non_current:
+        return []
+    single = sorted(f for f in non_current
+                    if f.endswith(".AllData") or ".data.0.All" in f)
+    if single:
+        return [single[0]]
+    return sorted(non_current)
+
+
+def _can_undercover(data_files: list[str]) -> bool:
+    """Could this survey's Current cut miss stored series? Only if it HAS a Current cut
+    and ships other data files beside it. A single-file survey is trivially complete,
+    so it never needs a (costly) coverage measurement."""
+    return bool([f for f in data_files if "Current" in f]) and len(data_files) >= 2
+
+
+def _choose_tail_files(data_files: list[str], ratio: float | None = None) -> list[str]:
+    """Pick the tail cut for a survey.
+
+    Prefer every `*Current*` data file (the active-series latest-periods cut) — but
+    ONLY while it is known to span the stored series. `ratio` is the last MEASURED
+    coverage of the Current cut (None = never measured). Below COVERAGE_MIN we escalate
+    to the spanning set, because the Current cut of some surveys covers a small
+    fraction of their series: measured 2026-08-02, ce 3.8% (842 of 22,049 series — the
+    other 96.2% had been frozen ~3 months while the source reported 'no new rows'),
+    wd 47.8%, ap 71.6%, ci 81.6%. Escalation is bounded by SPAN_BUDGET_BYTES.
+
+    If a survey ships no Current file (small/discontinued surveys: bg, bp, eb, cx, ep,
+    and also ln/mp/nb/is/nw), fall back to its single `AllData` file (idempotent to
+    re-merge) — those already span, which is why they are not in the list above. If
+    there is neither a Current nor a single AllData file, return [] (caller treats as
+    no-tail -> empty)."""
     current = [f for f in data_files if "Current" in f]
     if current:
+        if ratio is not None and ratio < COVERAGE_MIN:
+            span = _spanning_files(data_files)
+            if span:
+                return span
         return sorted(current)
     alldata = [f for f in data_files if f.endswith(".AllData")]
     if len(alldata) == 1:
@@ -154,10 +208,11 @@ def _choose_tail_files(data_files: list[str]) -> list[str]:
     return []
 
 
-def _last_modified(sess: requests.Session, survey: str, fname: str) -> str | None:
-    """HEAD a data file for its Last-Modified (the per-file vintage). Returns None
-    if undeterminable (then the survey is treated as 'changed' and re-fetched).
-    Raises TransientError on timeout/5xx/network so a flaky probe re-runs."""
+def _head(sess: requests.Session, survey: str, fname: str) -> tuple[str | None, int]:
+    """HEAD a data file -> (Last-Modified, Content-Length). Last-Modified None if
+    undeterminable (then the survey is treated as 'changed' and re-fetched); size 0
+    when the header is absent. Raises TransientError on timeout/5xx/network so a
+    flaky probe re-runs."""
     url = f"{BASE}/{survey}/{fname}"
     try:
         r = sess.head(url, timeout=60, allow_redirects=True)
@@ -166,26 +221,58 @@ def _last_modified(sess: requests.Session, survey: str, fname: str) -> str | Non
     if r.status_code in _TRANSIENT_HTTP:
         raise TransientError(f"BLS head {survey}/{fname} HTTP {r.status_code}")
     if r.status_code != 200:
-        return None
-    return r.headers.get("Last-Modified")
+        return None, 0
+    try:
+        size = int(r.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    return r.headers.get("Last-Modified"), size
 
 
-def _survey_vintage(sess: requests.Session, survey: str) -> tuple[str | None, list[str]]:
-    """Return (vintage_token, tail_files) for a survey: the Last-Modified of each
-    chosen tail file joined into one token, plus the file list. vintage None means
-    'could not determine' -> caller re-fetches (never silently skip on probe gap)."""
+def _last_modified(sess: requests.Session, survey: str, fname: str) -> str | None:
+    """Back-compat shim: just the Last-Modified half of _head."""
+    return _head(sess, survey, fname)[0]
+
+
+def _survey_vintage(sess: requests.Session, survey: str,
+                    ratio: float | None = None) -> tuple[str | None, list[str], bool, bool]:
+    """Return (vintage_token, tail_files, escalated) for a survey: the Last-Modified of
+    each chosen tail file joined into one token, plus the file list. vintage None means
+    'could not determine' -> caller re-fetches (never silently skip on probe gap).
+
+    `ratio` is the last measured coverage of the Current cut; below COVERAGE_MIN the
+    tail escalates to the spanning set. The token is built from the CHOSEN filenames,
+    so an escalation necessarily changes the token and cannot be swallowed by the
+    unchanged-vintage skip — without that, a frozen survey would keep skipping before
+    it ever downloaded enough to notice it was frozen.
+
+    Escalation is reverted (and reported as not-escalated) when the spanning set
+    exceeds SPAN_BUDGET_BYTES, so a huge survey degrades to the old cheap cut rather
+    than OOMing the runner."""
     data_files = _list_data_files(sess, survey)
-    tail = _choose_tail_files(data_files)
+    can_uc = _can_undercover(data_files)
+    tail = _choose_tail_files(data_files, ratio)
     if not tail:
-        return None, []
-    parts = []
-    for f in tail:
-        lm = _last_modified(sess, survey, f)
-        parts.append(f"{f}={lm or '?'}")
+        return None, [], False, can_uc
+    current = sorted(f for f in data_files if "Current" in f)
+    escalated = bool(current) and tail != current
+
+    heads = [(f, *_head(sess, survey, f)) for f in tail]
+    if escalated:
+        total = sum(sz for _, _lm, sz in heads)
+        if total > SPAN_BUDGET_BYTES:
+            print(f"[{SOURCE}] {survey}: spanning set is {total/1e6:.0f} MB "
+                  f"(> {SPAN_BUDGET_BYTES/1e6:.0f} MB budget); keeping the Current cut — "
+                  f"this survey stays UNDER-COVERED and is reported, not silently passed",
+                  flush=True)
+            tail, escalated = current, False
+            heads = [(f, *_head(sess, survey, f)) for f in tail]
+
+    parts = [f"{f}={lm or '?'}" for f, lm, _sz in heads]
     # If EVERY part is unknown ('?'), treat vintage as None (force re-fetch).
     if all(p.endswith("=?") for p in parts):
-        return None, tail
-    return "|".join(parts), tail
+        return None, tail, escalated, can_uc
+    return "|".join(parts), tail, escalated, can_uc
 
 
 # --------------------------------------------------------------------------- #
@@ -212,6 +299,85 @@ def _save_vintages(out_dir: str, vintages: dict) -> None:
     blob.write_bytes_atomic(
         _sidecar_path(out_dir),
         json.dumps(vintages, separators=(",", ":")).encode("utf-8"))
+
+
+# --------------------------------------------------------------------------- #
+# tail coverage: does the cut we fetch actually reach the series we store?
+#
+# Exists because a fetcher that looks at 3.8% of a survey and merges "no new rows"
+# reports the same clean green as one that looks at all of it. Every probe of the
+# covered sliver agrees with upstream, so sampling cannot detect the freeze — only
+# the population ratio can.
+# --------------------------------------------------------------------------- #
+def _coverage_path(out_dir: str) -> str:
+    return os.path.join(out_dir, COVERAGE_SIDECAR)
+
+
+def _load_coverage(out_dir: str) -> dict:
+    data = blob.read_bytes(_coverage_path(out_dir))
+    if data is None:
+        return {}
+    try:
+        return json.loads(data.decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_coverage(out_dir: str, cov: dict) -> None:
+    blob.write_bytes_atomic(_coverage_path(out_dir),
+                            json.dumps(cov, indent=2, sort_keys=True).encode("utf-8"))
+
+
+def _store_series(path: str, rows: int) -> int | None:
+    """Distinct series_id in the stored parquet, or None when it is too big to be
+    worth counting (see COVERAGE_MAX_ROWS). Read-only."""
+    if rows > COVERAGE_MAX_ROWS:
+        return None
+    try:
+        import pyarrow.compute as pc
+        t = blob.read_table(path, columns=["series_id"])
+        return pc.count_distinct(t.column("series_id")).as_py()
+    except Exception:
+        return None
+
+
+def _measure_coverage(cov: dict, survey: str, tbl, path: str, escalated: bool) -> float | None:
+    """Record what fraction of the STORED series the tail we just parsed reaches, and
+    return that ratio.
+
+    The ratio is an UPPER BOUND on the share of stored series refreshed (a tail series
+    absent from the store inflates it), which is exactly what a refuse-to-pass gate
+    wants: if the bound is low, coverage is certainly low."""
+    try:
+        import pyarrow.compute as pc
+        tail_n = pc.count_distinct(tbl.column("series_id")).as_py()
+    except Exception:
+        return None
+    rows = blob.row_count(path)
+    prev = cov.get(survey) or {}
+    store_n = prev.get("store_series") if prev.get("store_rows") == rows else None
+    if store_n is None:
+        store_n = _store_series(path, rows)
+    if not store_n:
+        return None
+    ratio = tail_n / store_n
+    rec = {
+        "store_rows": rows,
+        "store_series": store_n,
+        "tail_series": tail_n,
+        "ratio": round(ratio, 4),
+        "escalated": escalated,
+        "measured_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+    }
+    # `current_ratio` is the escalation input and records the coverage of the CURRENT
+    # CUT only. Writing an escalated measurement into it would flip-flop the survey:
+    # escalate -> measure 100% -> de-escalate -> refreeze -> escalate. So an escalated
+    # run preserves the prior value instead of overwriting it. The decision is
+    # therefore sticky; if BLS ever widens a Current cut the only cost is that we keep
+    # taking the (already budget-capped) spanning set.
+    rec["current_ratio"] = prev.get("current_ratio") if escalated else round(ratio, 4)
+    cov[survey] = rec
+    return ratio
 
 
 # --------------------------------------------------------------------------- #
@@ -430,9 +596,12 @@ def update(unit, since) -> Result:
 
     sess = _session()
     vintages = _load_vintages(out_dir)
+    cov = _load_coverage(out_dir)
     tally = Tally()
     total_rows = 0
     max_last: str | None = None
+    forced = 0                      # coverage measurements taken this tick
+    under: list[str] = []           # surveys whose tail does not span their series
     tmpdir = tempfile.mkdtemp(prefix="bls_tail_")
 
     try:
@@ -442,7 +611,8 @@ def update(unit, since) -> Result:
 
             # 1) cheap vintage gate (Last-Modified of the chosen tail file[s]).
             try:
-                vintage, tail = _survey_vintage(sess, sv)
+                vintage, tail, escalated, can_uc = _survey_vintage(
+                    sess, sv, (cov.get(sv) or {}).get("current_ratio"))
             except TransientError:
                 tally.transient_unit()  # probe failed -> partial, re-run next tick
                 continue
@@ -456,8 +626,20 @@ def update(unit, since) -> Result:
 
             stored = vintages.get(sv)
             if vintage is not None and stored is not None and vintage == stored:
-                # Upstream tail file(s) unmoved since last publish -> skip entirely.
-                continue  # NOT counted as a sub-unit attempt (it is up to date)
+                # Upstream tail file(s) unmoved since last publish -> normally skip.
+                #
+                # EXCEPT when this survey could under-cover and has never been measured.
+                # The skip happens BEFORE any download, so an under-covered survey would
+                # keep skipping on a Current file that never moves and never accumulate
+                # the evidence that it is frozen — which is exactly how ce sat 3 months
+                # stale on 96.2% of its series while reporting "no new rows". Force one
+                # measuring download, rotated across ticks so the bill stays bounded.
+                if not (can_uc and sv not in cov and forced < MEASURE_PER_TICK):
+                    continue  # NOT counted as a sub-unit attempt (it is up to date)
+                forced += 1
+                print(f"[{SOURCE}] {sv}: vintage unchanged but tail coverage has never "
+                      f"been measured — fetching once to measure "
+                      f"({forced}/{MEASURE_PER_TICK} this tick)", flush=True)
 
             # 2) download the tail file(s) to temp.
             raw_paths = []
@@ -490,6 +672,20 @@ def update(unit, since) -> Result:
                 if n_body == 0 and vintage is not None:
                     vintages[sv] = vintage
                 continue
+
+            # 3b) how much of this survey did we actually look at? Measured BEFORE the
+            # merge, so the denominator is the series we already store rather than the
+            # union we are about to write (which would read back as trivially complete).
+            ratio = _measure_coverage(cov, sv, tbl, path, escalated)
+            if ratio is not None and ratio < COVERAGE_MIN:
+                under.append(f"{sv}={ratio:.1%}")
+                print(f"[{SOURCE}] {sv}: tail reaches only {ratio:.1%} of stored series"
+                      + (" even after escalating to the spanning set"
+                         if escalated else " — escalating on the next tick"), flush=True)
+            elif escalated:
+                print(f"[{SOURCE}] {sv}: spanning set reaches {ratio:.1%} of stored "
+                      f"series (Current cut was "
+                      f"{(cov.get(sv) or {}).get('current_ratio', 0):.1%})", flush=True)
 
             # 4) merge (dedup on the 3-col identity, never-shrink, atomic). A
             # would-shrink / column-drop / 0-row merge keeps old data and surfaces
@@ -537,6 +733,7 @@ def update(unit, since) -> Result:
                 vintages[sv] = vintage  # advance only on a clean publish
 
         _save_vintages(out_dir, vintages)
+        _save_coverage(out_dir, cov)
     finally:
         import shutil
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -544,6 +741,23 @@ def update(unit, since) -> Result:
     # finalize: any structural -> DefinitiveError; any transient -> partial; else
     # ok (added>0) / no_change. empty_window_floor scales with survey count so a few
     # no-tail/quiet surveys don't trip the all-empty structural floor.
-    return finalize(tally, total_rows, max_last, source=SOURCE,
-                    series_cursors=cursors or None,
-                    empty_window_floor=max(10, len(surveys)))
+    res = finalize(tally, total_rows, max_last, source=SOURCE,
+                   series_cursors=cursors or None,
+                   empty_window_floor=max(10, len(surveys)))
+
+    # A source must never report a clean result over data it did not look at. If any
+    # survey's tail still under-covers after escalation (only possible when the
+    # spanning set blew SPAN_BUDGET_BYTES), downgrade no_change/ok to partial: partial
+    # does not set last_success_utc, so the source stops reading as healthy while a
+    # fraction of its series go unrefreshed. This is the invariant whose absence let
+    # ce report green for three months.
+    if under:
+        note = (f"tail UNDER-COVERS {len(under)} survey(s) (<{COVERAGE_MIN:.0%} of stored "
+                f"series fetched): " + ", ".join(sorted(under)[:6])
+                + (f", +{len(under) - 6} more" if len(under) > 6 else ""))
+        print(f"[{SOURCE}] {note}", flush=True)
+        if res.status in ("ok", "no_change"):
+            res = Result(status="partial", obs=res.obs, last_obs_date=res.last_obs_date,
+                         new_vintage=res.new_vintage, series_cursors=res.series_cursors,
+                         error=note)
+    return res
