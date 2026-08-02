@@ -103,22 +103,43 @@ def update(unit, since) -> Result:
             cursors[k] = iso
 
     # ---- Phase 1: totals, every reporter re-fetched (no done_combos skip) --------
+    # SAY WHY IT FAILED. This fetcher aborts the whole run with "no usable observations from any
+    # phase", which names the SYMPTOM and nothing else — and every branch that could explain it
+    # (exception, None-response, budget) was silent. It has been failing on CI while the very
+    # same call succeeds from the workstation: probed 2026-08-01, ig.fetch_totals returned 208
+    # records on the first try, and the COMTRADE_API_KEY secret IS set in CI (since 2026-07-05),
+    # so a missing key is ruled out. The live hypotheses are an expired/invalid subscription or
+    # 429 throttling of shared CI egress — and they are indistinguishable from the log as it
+    # stands. These lines make the next CI run answer the question instead of restating it.
+    n_none = n_exc = 0
     for flow, label in {"M": "import_total", "X": "export_total"}.items():
         reporters = list(ig.REPORTERS)
         batches = [reporters[i:i + ig.BATCH] for i in range(0, len(reporters), ig.BATCH)]
+        print(f"[{SOURCE}] {label}: {len(reporters)} reporter(s) in {len(batches)} batch(es), "
+              f"rate {ig.RATE}s", flush=True)
         for batch in batches:
             if dl.spent():
                 tally.transient_unit(f"{label}: budget — {len(batch)} reporters deferred")
+                print(f"[{SOURCE}] {label}: BUDGET SPENT, {len(batch)} reporter(s) deferred",
+                      flush=True)
                 continue
             try:
                 recs = ig.fetch_totals(batch, flow)
-            except Exception:                                # noqa: BLE001
+            except Exception as e:                           # noqa: BLE001
                 tally.transient_unit(f"{label}:batch")
+                n_exc += 1
+                if n_exc <= 5:
+                    print(f"[{SOURCE}] {label}: batch RAISED {type(e).__name__}: {str(e)[:110]}",
+                          flush=True)
                 continue
             if recs is None:
                 # None means throttled, errored, or CAP-TRUNCATED - never "no data".
                 # Treating it as [] would silently publish a short run as a success.
                 tally.transient_unit(f"{label}:batch (no usable response)")
+                n_none += 1
+                if n_none <= 5:
+                    print(f"[{SOURCE}] {label}: batch returned None (throttled, errored or "
+                          f"cap-truncated) — reporters {batch[0]}..{batch[-1]}", flush=True)
                 time.sleep(ig.RATE)
                 continue
             for rec in recs:
@@ -150,8 +171,13 @@ def update(unit, since) -> Result:
 
     if not keys:
         # Nothing usable from the ENTIRE run. Keep what we have and report partial rather
-        # than writing an empty table or claiming no_change.
-        raise TransientError("comtrade: no usable observations from any phase this run")
+        # than writing an empty table or claiming no_change. The counts go IN THE MESSAGE:
+        # "no usable observations" states the symptom, and the next reader needs the cause.
+        raise TransientError(
+            f"comtrade: no usable observations from any phase this run — "
+            f"{n_none} batch(es) returned None (throttled/errored/cap-truncated), "
+            f"{n_exc} raised. The same call succeeds from the workstation, so suspect the "
+            f"subscription key's validity or 429s against shared CI egress, not the code.")
 
     tbl = pa.table({
         "series_key": pa.array(keys, pa.string()),
