@@ -31,7 +31,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+                      save_rotation)
 
 SOURCE = "boe"
 CSV_URL = "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
@@ -190,6 +191,10 @@ def _chunk_by_len(codes, max_chars=MAX_CODES_CHARS):
 
 
 MAX_WORKERS = 5   # BoE tolerates ~6 concurrent (the ingester's proven level); stay under
+# Prefixes fetched+merged per deadline check. The wave is what bounds the run: every
+# task in a wave is submitted at once, so a smaller wave means a tighter budget and
+# more merges, a larger one means fewer merges but a coarser stop.
+PREFIX_WAVE = int(os.environ.get("BOE_PREFIX_WAVE", "6"))
 
 
 def _fetch_batch_task(batch, datefrom, dateto):
@@ -217,61 +222,108 @@ def update(unit, since) -> Result:
     grand_max: dt.date | None = None
     cursors: dict[str, str] = {}
 
-    # Build the batch task list (cheap serial reads); the 613-ish CSV fetches are the parallel part.
-    prefix_obs: dict[str, list] = {}     # prefix -> collected obs (only prefixes with codes)
-    tasks = []                            # (prefix, batch_codes, datefrom)
-    for pf in prefixes:
-        path = os.path.join(out_dir, pf)
-        codes, smax = _codes_and_max(path)
-        if not codes:
-            grand_total += blob.row_count(path)
-            tally.empty_unit()
-            continue
-        start = max(EPOCH, (smax - dt.timedelta(days=LOOKBACK_DAYS)) if smax else EPOCH)
-        datefrom = _fmt(start)
-        prefix_obs[pf] = []
-        for batch in _chunk_by_len(codes):
-            tasks.append((pf, batch, datefrom))
+    # FETCH IN BOUNDED, ROTATING WAVES OF PREFIXES.
+    #
+    # This used to submit all ~613 CSV fetches at once, collect every result, and only then
+    # merge. boe takes 105 MINUTES (measured, cloud state 2026-07-24) against the
+    # orchestrator's 45-minute per-unit cap, which landed 2026-08-01 — after boe's last run.
+    # So on its next run it would be killed during the fetch phase, before the first merge,
+    # and store NOTHING: not a truncated run but a discarded one, on 3,860,998 obs, looking
+    # exactly like a busy healthy run in the log (R243).
+    #
+    # It cannot finish inside the cap at any submission order — it needs ~3 ticks — so the
+    # fix has to be a budget AND a bookmark. Prefixes are the natural unit: merges, cursors
+    # and the empty-window floor are all per-prefix, so a wave that completes is coherent on
+    # its own and a wave that never starts costs nothing but a deferral.
+    budget_min = float(os.environ.get("BOE_BUDGET_MIN", "35"))
+    dl = Deadline(minutes=budget_min)
+    ordered = rotate_after(list(prefixes), load_rotation(out_dir))
+    stopped_early = False
+    last_pf = ""
+    done_pf = 0
+    today = dt.date.today()
 
-    # Fetch+parse every batch concurrently; tag each result with its prefix.
-    if tasks:
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            futs = {ex.submit(_fetch_batch_task, b, df, dateto): pf for (pf, b, df) in tasks}
-            for fut in as_completed(futs):
-                pf = futs[fut]
-                outcome, obs = fut.result()
-                if outcome == "transient":
-                    tally.transient_unit()
-                elif outcome == "empty":
-                    tally.empty_unit()
-                else:
-                    tally.added_unit(len(obs))
-                    prefix_obs[pf].extend(obs)
+    for wave_start in range(0, len(ordered), PREFIX_WAVE):
+        if dl.spent():
+            stopped_early = True
+            print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
+                  f"{dl.elapsed_min():.1f} min — {done_pf}/{len(ordered)} prefixes done, "
+                  f"{len(ordered) - done_pf} deferred to the next tick "
+                  f"(resuming after {last_pf!r})", flush=True)
+            break
+        wave = ordered[wave_start:wave_start + PREFIX_WAVE]
 
-    # Merge per prefix (serial — atomic, one file at a time).
-    for pf, obs in prefix_obs.items():
-        path = os.path.join(out_dir, pf)
-        if not obs:
-            grand_total += blob.row_count(path)
-            continue
-        keys = [o[0] for o in obs]
-        dates = [o[1] for o in obs]
-        vals = [o[2] for o in obs]
-        tbl = pa.table({
-            "series_key": pa.array(keys, pa.string()),
-            "obs_date": pa.array(dates, pa.date32()),
-            "value": pa.array(vals, pa.float64()),
-        })
-        n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-        grand_total += n
-        today = dt.date.today()
-        for k, d in zip(keys, dates):
-            iso = d.isoformat()
-            if k not in cursors or iso > cursors[k]:
-                cursors[k] = iso
-            if isinstance(d, dt.date) and d <= today and (grand_max is None or d > grand_max):
-                grand_max = d
+        # Build this wave's tasks (cheap serial reads); the CSV fetches are the parallel part.
+        prefix_obs: dict[str, list] = {}
+        tasks = []                        # (prefix, batch_codes, datefrom)
+        for pf in wave:
+            path = os.path.join(out_dir, pf)
+            codes, smax = _codes_and_max(path)
+            if not codes:
+                grand_total += blob.row_count(path)
+                tally.empty_unit()
+                continue
+            start = max(EPOCH, (smax - dt.timedelta(days=LOOKBACK_DAYS)) if smax else EPOCH)
+            prefix_obs[pf] = []
+            for batch in _chunk_by_len(codes):
+                tasks.append((pf, batch, _fmt(start)))
+
+        if tasks:
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+                futs = {ex.submit(_fetch_batch_task, b, df, dateto): pf
+                        for (pf, b, df) in tasks}
+                for fut in as_completed(futs):
+                    pf = futs[fut]
+                    outcome, obs = fut.result()
+                    if outcome == "transient":
+                        tally.transient_unit()
+                    elif outcome == "empty":
+                        tally.empty_unit()
+                    else:
+                        tally.added_unit(len(obs))
+                        prefix_obs[pf].extend(obs)
+
+        # Merge this wave before starting the next one (serial — atomic, one file at a time).
+        # Merging per wave rather than once at the end is the whole point: an interruption
+        # after this line has already published everything the wave fetched.
+        for pf, obs in prefix_obs.items():
+            path = os.path.join(out_dir, pf)
+            if not obs:
+                grand_total += blob.row_count(path)
+                continue
+            keys = [o[0] for o in obs]
+            dates = [o[1] for o in obs]
+            vals = [o[2] for o in obs]
+            tbl = pa.table({
+                "series_key": pa.array(keys, pa.string()),
+                "obs_date": pa.array(dates, pa.date32()),
+                "value": pa.array(vals, pa.float64()),
+            })
+            n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+            grand_total += n
+            for k, d in zip(keys, dates):
+                iso = d.isoformat()
+                if k not in cursors or iso > cursors[k]:
+                    cursors[k] = iso
+                if isinstance(d, dt.date) and d <= today and (grand_max is None or d > grand_max):
+                    grand_max = d
+
+        done_pf += len(wave)
+        last_pf = wave[-1]
+
+    # Deferred prefixes were not touched, but their rows are still IN the store. Counting
+    # only what this tick walked would report the source as having shrunk to a fraction of
+    # its size, and merge's never-shrink guard exists precisely because that reads as data
+    # loss.
+    for pf in ordered[done_pf:]:
+        grand_total += blob.row_count(os.path.join(out_dir, pf))
+
+    if last_pf:
+        save_rotation(out_dir, last_pf)
 
     last_obs = grand_max.isoformat() if grand_max else (since or None)
+    # The floor must be measured against the prefixes this tick actually ATTEMPTED; against
+    # the full list a bounded pass would look like a wholesale outage every time.
+    floor = (done_pf + 1) if stopped_early else (len(prefixes) + 1)
     return finalize(tally, grand_total, last_obs, source=SOURCE, series_cursors=cursors,
-                    empty_window_floor=len(prefixes) + 1)
+                    empty_window_floor=max(floor, 1))
