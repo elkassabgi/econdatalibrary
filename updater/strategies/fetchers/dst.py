@@ -46,7 +46,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Deadline, Tally, finalize
 from ._vintage import content_hash
 
 # Reuse the ingester's URLs + parse logic VERBATIM (do not re-implement).
@@ -61,6 +61,10 @@ MANIFEST_NAME = "_vintage_manifest.json"
 # Per-run table budget so one tick is bounded (steady-state monthly runs touch only
 # the handful of tables whose 'updated' moved; the budget mainly bounds cold-catchup).
 MAX_TABLES = int(os.environ.get("DST_MAX_TABLES_PER_RUN", "40"))
+# Wall-clock budget for one dst run. The CHUNK size above bounds memory per merge; this
+# bounds the run. Before they were the same knob, so draining more tables meant holding
+# more rows before a single end-of-run manifest write — see the drain loop in update().
+BUDGET_MIN = float(os.environ.get("DST_BUDGET_MIN", "20"))
 
 
 def _subj(tid: str) -> str:
@@ -251,70 +255,116 @@ def update(unit, since) -> Result:
         return finalize(tally, before, _global_max_date(), source=SOURCE,
                         series_cursors=cursors, empty_window_floor=10 ** 9)
 
-    batch = due[:MAX_TABLES]
+    # DRAIN IN CHECKPOINTED CHUNKS, bounded by wall clock rather than a table count.
+    #
+    # This used to fetch exactly MAX_TABLES tables and write the manifest ONCE, at the
+    # very end. Two consequences, both measured 2026-08-02: (1) with 623 tables due
+    # (445 behind upstream + 178 never tracked) against 40 per run, dst could not catch
+    # up with a publisher that moves ~10 tables a day; (2) a run stopped by the
+    # orchestrator's per-source wall-clock cap persisted NOTHING, so the next run
+    # re-fetched the same prefix — raising the count alone would have made that worse.
+    #
+    # Each chunk now fetches, merges AND checkpoints, so partial progress always
+    # survives, and the deadline (not the count) is what ends the run. MAX_TABLES stays
+    # as the CHUNK size: it bounds how many tables' rows are held in memory before a
+    # merge, which is a real constraint and a different one from the time budget.
+    #
+    # Deadline's contract requires a budgeted fetcher to skip already-fresh sub-units so
+    # a bound is a budget and not a truncation. dst satisfies that via the per-table
+    # manifest: `due` is recomputed from it every run, so each run starts somewhere new.
+    dl = Deadline(minutes=BUDGET_MIN)
+    drained = 0
+    capped = False
 
-    # Accumulate per-subject so each subject parquet is merged once (read+append+dedup
-    # then atomic publish), matching the ingester's per-subject file layout.
-    by_subject: dict[str, list[tuple[str, dt.date, float]]] = {}
-    processed_ok: dict[str, str] = {}  # table_id -> updated, only for clean fetches
+    for start in range(0, len(due), MAX_TABLES):
+        if dl.spent():
+            capped = True
+            break
+        batch = due[start:start + MAX_TABLES]
 
-    for tid in batch:
-        rows, transient = _fetch_table_rows(tid)
-        if transient:
-            tally.transient_unit()  # -> partial; table NOT marked processed; requeued
-            continue
-        if not rows:
-            tally.empty_unit()  # 200 parsed 0 rows (legitimately empty DST table)
-            processed_ok[tid] = str(by_id[tid].get("updated", ""))
-            continue
-        by_subject.setdefault(_subj(tid), []).extend(rows)
-        processed_ok[tid] = str(by_id[tid].get("updated", ""))
+        # Accumulate per-subject so each subject parquet is merged once (read+append+dedup
+        # then atomic publish), matching the ingester's per-subject file layout.
+        by_subject: dict[str, list[tuple[str, dt.date, float]]] = {}
+        processed_ok: dict[str, str] = {}  # table_id -> updated, only for clean fetches
 
-    # Merge each affected subject parquet via merge_and_write (atomic/dedup/never-shrink).
-    for subj, rows in by_subject.items():
-        path = _subj_path(subj)
-        # In-memory dedup on (key,date) before merge (the ingester did this too).
-        seen_kd: set = set()
-        keys, dates, vals = [], [], []
-        for k, d, v in rows:
-            kd = (k, d)
-            if kd in seen_kd:
+        for tid in batch:
+            rows, transient = _fetch_table_rows(tid)
+            if transient:
+                tally.transient_unit()  # -> partial; table NOT marked processed; requeued
                 continue
-            seen_kd.add(kd)
-            keys.append(k); dates.append(d); vals.append(v)
-        tbl = pa.table({
-            "series_key": pa.array(keys, pa.string()),
-            "obs_date":   pa.array(dates, pa.date32()),
-            "value":      pa.array(vals, pa.float64()),
-        })
-        if tbl.num_rows == 0:
-            continue
-        sbefore = blob.row_count(path)
-        try:
-            n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-        except DefinitiveError:
-            # A never-shrink / column-drop refusal for ONE subject must not abort the
-            # whole run or fake success: count it transient so status is 'partial' and
-            # the affected tables are retried (their manifest entries are NOT advanced).
-            tally.transient_unit()
-            for tid in batch:
-                if _subj(tid) == subj:
-                    processed_ok.pop(tid, None)
-            continue
-        tally.added_unit(max(0, n - sbefore))
-        if md:
-            cursors[f"DST:{subj}"] = md
+            if not rows:
+                tally.empty_unit()  # 200 parsed 0 rows (legitimately empty DST table)
+                processed_ok[tid] = str(by_id[tid].get("updated", ""))
+                continue
+            by_subject.setdefault(_subj(tid), []).extend(rows)
+            processed_ok[tid] = str(by_id[tid].get("updated", ""))
 
-    # Advance the manifest only for cleanly-fetched tables (and seeded baseline).
-    seen.update(processed_ok)
-    man["tables"] = seen
-    man["catalog_token"] = _catalog_token(tables)
-    _save_manifest(man)
+        # Merge each affected subject parquet via merge_and_write (atomic/dedup/never-shrink).
+        for subj, rows in by_subject.items():
+            path = _subj_path(subj)
+            # In-memory dedup on (key,date) before merge (the ingester did this too).
+            seen_kd: set = set()
+            keys, dates, vals = [], [], []
+            for k, d, v in rows:
+                kd = (k, d)
+                if kd in seen_kd:
+                    continue
+                seen_kd.add(kd)
+                keys.append(k); dates.append(d); vals.append(v)
+            tbl = pa.table({
+                "series_key": pa.array(keys, pa.string()),
+                "obs_date":   pa.array(dates, pa.date32()),
+                "value":      pa.array(vals, pa.float64()),
+            })
+            if tbl.num_rows == 0:
+                continue
+            sbefore = blob.row_count(path)
+            try:
+                n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+            except DefinitiveError:
+                # A never-shrink / column-drop refusal for ONE subject must not abort the
+                # whole run or fake success: count it transient so status is 'partial' and
+                # the affected tables are retried (their manifest entries are NOT advanced).
+                tally.transient_unit()
+                for tid in batch:
+                    if _subj(tid) == subj:
+                        processed_ok.pop(tid, None)
+                continue
+            tally.added_unit(max(0, n - sbefore))
+            if md:
+                cursors[f"DST:{subj}"] = md
+
+        # CHECKPOINT: advance the manifest only for cleanly-fetched tables. Written per
+        # chunk so a cap kill cannot throw away everything this run fetched.
+        seen.update(processed_ok)
+        man["tables"] = seen
+        man["catalog_token"] = _catalog_token(tables)
+        _save_manifest(man)
+        drained += len(batch)
+
+    remaining = max(0, len(due) - drained)
+    print(f"[{SOURCE}] {drained}/{len(due)} due table(s) drained in "
+          f"{dl.elapsed_min():.1f} min"
+          + (f"; BUDGET SPENT with {remaining} still due — they drain next run "
+             f"(manifest checkpointed)" if capped else "; backlog clear"), flush=True)
 
     total = _total_rows()
     last = _global_max_date()
     # empty_window_floor huge: a budget batch that legitimately hits only empty DST
     # tables (e.g. AKU100K) is NOT a wholesale outage — real outages surface as
     # transient at the catalog/table HTTP layer, not as "200 parsed 0 rows".
-    return finalize(tally, total, last, source=SOURCE,
-                    series_cursors=cursors, empty_window_floor=10 ** 9)
+    res = finalize(tally, total, last, source=SOURCE,
+                   series_cursors=cursors, empty_window_floor=10 ** 9)
+
+    # A run that stopped on its budget with tables still due has NOT finished the work.
+    # Reporting `ok` there would set last_success_utc and read as healthy while our copy
+    # is knowingly behind the publisher — the same false green that let this source sit
+    # 472 tables behind Statistics Denmark while reporting "no new rows". `partial` does
+    # not set last_success_utc, which is exactly the honest signal, and it matches the
+    # convention Deadline documents for a budgeted fetcher.
+    if capped and res.status in ("ok", "no_change"):
+        res = Result(status="partial", obs=res.obs, last_obs_date=res.last_obs_date,
+                     new_vintage=res.new_vintage, series_cursors=res.series_cursors,
+                     error=f"budget spent with {remaining} of {len(due)} due table(s) "
+                           f"still behind upstream; manifest checkpointed, drains next run")
+    return res
