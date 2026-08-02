@@ -19,6 +19,7 @@ reaching anyone whatever its update status.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -26,6 +27,38 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+
+
+def extra_scheduled() -> dict:
+    """Sources scheduled by a WORKFLOW rather than by `live: true`, and why.
+
+    `live` is not the whole schedule and treating it as such under-reports. Two workflows
+    dispatch sources explicitly and BYPASS the live gate:
+
+      updater-heavy.yml  — one runner per heavy source. imf_gfssoo_direct's registry entry
+                           spells the reason out: _imf_direct.run() makes ONE blocking pull
+                           with no sub-units, so the between-units Deadline cannot bound it;
+                           `live:false` keeps it out of the DAILY run and the matrix dispatches
+                           it anyway. Reading that as "not scheduled" inverts the meaning.
+      sec-edgar-daily.yml — sec_edgar is served from clean_grouped in its own shape and has its
+                           own workflow rather than a slot in the orchestrator.
+
+    Parsed from the workflow files, not hardcoded here, so this cannot drift away from what CI
+    actually runs.
+    """
+    out = {}
+    wf = os.path.join(ROOT, ".github", "workflows")
+    try:
+        txt = open(os.path.join(wf, "updater-heavy.yml"), encoding="utf-8").read()
+        m = re.search(r"ALL='(\[[^']*\])'", txt)
+        if m:
+            for s in json.loads(m.group(1)):
+                out[s] = "updater-heavy"
+    except Exception:                                          # noqa: BLE001
+        pass
+    if os.path.exists(os.path.join(wf, "sec-edgar-daily.yml")):
+        out.setdefault("sec_edgar", "sec-edgar-daily")
+    return out
 
 
 def supported() -> set:
@@ -52,9 +85,15 @@ def main() -> int:
     STATES = ("ok", "partial", "failed", "never")
     buckets: dict = {f"{w}_{k}": [] for w in ("cloud", "local") for k in STATES}
     buckets["pending"] = []
+    extra = extra_scheduled()
+    if extra:
+        print(f"scheduled by workflow rather than `live` ({len(extra)}): "
+              f"{', '.join(sorted(extra))}\n")
     for s, n in served.items():
         entry = reg.get(s)
-        live = bool(entry and entry.get("live") is True)
+        # SCHEDULED, not LIVE. A source the heavy matrix or sec-edgar-daily dispatches IS
+        # scheduled even with live:false — that flag only governs the daily orchestrator run.
+        live = bool(entry and entry.get("live") is True) or s in extra
         if not live:
             buckets["pending"].append((s, n))
             continue
