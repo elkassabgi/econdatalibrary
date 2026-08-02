@@ -79,7 +79,22 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
-  "imf_gfse", "imf_gfsfalcs", "imf_gfsibs", "imf_gfsmab", "imf_gfsssuc", "imf_hpdd",
+  "imf_gfse", "imf_gfsfalcs", "imf_gfsibs", "imf_gfsmab", "imf_gfsssuc",
+  // Four GFS *_direct sources added 2026-08-02 — 549,843 series / 8,853,880 observations that
+  // did not exist before today. All four had held ZERO rows and failed every run with
+  // OverflowError('size does not fit in an int') or ParseError('out of memory'), which I first
+  // read as pyexpat's 2 GiB document ceiling. It was not: GFS_BS parses at 2,293,565,648 bytes
+  // on a workstation. The cause was a retained-node leak in the ingest's iterparse loop —
+  // el.clear() empties an element but its PARENT keeps holding it, so the tree grew by one node
+  // per series (297,673 for GFS_BS) and never freed. Invisible on 383 GB, fatal on a 16 GB
+  // runner. Detaching from the parent took the same pull to a 137 MB peak with byte-identical
+  // output (R223).
+  //   imf_gfssoo_direct 319,571 · imf_gfscofog_direct 124,237 · imf_gfsbs_direct 64,284 ·
+  //   imf_gfssfcp_direct 41,751
+  // Each derived with put == streamed and errors 0, and titles DECODED (fallback count 0) —
+  // the GFS flows still resolve their SDMX structures, unlike the retired IFS/DOT/CDIS/CPIS.
+  "imf_gfsbs_direct", "imf_gfscofog_direct", "imf_gfssfcp_direct", "imf_gfssoo_direct",
+  "imf_hpdd",
   "imf_mcdreo", "imf_namain_idc_n", "imf_pctot", "imf_pgcs", "imf_pgi", "imf_psbsfad",
   "imf_unsdg_imf_inputs", "imf_weo", "imf_whdreo", "imf_world",
   // Eight IMF datasets added 2026-08-01, 694,300 series over 37,971,568 observations. They held
