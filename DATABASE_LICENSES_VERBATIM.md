@@ -3500,3 +3500,52 @@ EntityLegalFormCode, EntityStatus, RegistrationStatus, ManagingLOU — no series
 no value. It cannot be catalogued in the current series model at any grain, so clearing the
 licence does not by itself make it servable. Serving it needs an entity-lookup surface, which is
 a product decision rather than a compliance one.
+
+### fred
+
+- **Databases (1):** `fred`
+- **Official terms URL:** https://fred.stlouisfed.org/legal/
+- **License:** FRED® Services Terms of Use (proprietary; not an open licence)
+- **Classification:** non_redistributable — mirroring and re-serving are named prohibitions
+- **Commercial OK:** False (for redistribution) · **Attribution required:** True · **ShareAlike:** False · **Fetch:** fetched_ok (in-app browser; WebFetch and a direct HTTPS GET both blocked — 403 / connection reset)
+- **Adversarial verdict:** RESEARCHER-ASSESSED, single pass — NOT independently re-verified
+- **Decision tier:** RESTRICTED (keep gated)
+
+**Verbatim quote:**
+> You can’t take all the data on FRED and claim it’s a unique product or service. Don’t try to pass off FRED or its related services (Excel Add-In, Widget, or mobile apps) as your own product or try to sell them to anyone. Don’t do any data mining, scraping or extraction of FRED data.
+> Take all the data on FRED or related services and claim it is a unique product or service or otherwise provide the essential experience of the FRED website, data, or service.
+> Engage, or otherwise participate, in the use of any data mining, mirroring, robots, scraping, or similar data-gathering or extraction methods except as expressly allowed by the terms of use applicable to the FRED API.
+> Redistribute any third party’s proprietary content, including any graphs, maps, images, logos, data, or datasets, for commercial use without first obtaining express written permission from the data provider.
+> FRED provides data and data services to the public for non-commercial, educational, and personal uses subject to a few prohibitions.
+> BEFORE USING DATA SERIES OWNED BY THIRD PARTIES FOR ANYTHING OTHER THAN YOUR OWN PERSONAL USE, YOU MUST CONTACT THE DATA OWNER TO OBTAIN PERMISSION.
+> Series with a copyright notice are owned by third parties and have special restrictions. Before using data with a copyright notice for anything other than your own personal use, you must contact the data owner to obtain permission. Unfortunately, the Federal Reserve Bank of St. Louis cannot give you such permission.
+> Use the FRED® Services or FRED® Content in connection with the development or training of any software program or system or machine learning, including, but not limited to, large language models, deep learning, generative artificial intelligence, or any other program or process commonly known as artificial intelligence.
+
+*Researcher reasoning:* This is not a close call and it is not a per-series carve-out problem like
+worldbank's. The prohibitions section names the two things a re-hosting library actually does and
+forbids both by name: "mirroring" appears in the prohibited data-gathering list, and taking the
+data so as to "otherwise provide the essential experience of the FRED website, data, or service"
+is prohibited outright — which is a fair description of serving FRED's series for public download
+from another site. The permission grant is scoped to "non-commercial, educational, and personal
+uses," and the third-party clause requires contacting each data owner before ANY use beyond
+personal use, with the Bank stating in terms that it cannot grant that permission and will not
+seek it on a user's behalf.
+
+FRED's three copyright tiers ("Copyrighted: Pre-approval required", "Copyrighted: Citation
+required", "Public Domain: Citation requested") are machine-identifiable, so a tempting design is
+to serve only the public-domain tier. That does NOT rescue re-hosting: the mirroring and
+essential-experience prohibitions are stated in section II as applying to "All use of FRED
+data—including non-commercial, educational, and personal use," not only to the copyrighted
+tiers. The right route to the public-domain series is their ORIGINAL publishers (BLS, BEA,
+Census, the Board), most of which this library already serves directly and under their own terms.
+
+Note also the ML clause: FRED content may not be used in connection with developing or training
+software, machine-learning systems or LLMs. That is independent of redistribution and would bind
+even internal use.
+
+CONSEQUENCE FOR THE LIBRARY: `fred` holds 48,188,443 observations across 165 files in
+data/clean_full/fred and is currently unreachable — 0 catalogue rows, absent from
+SUPPORTED_SOURCES, so requests answer 501. It must STAY that way. Do not catalogue, do not
+derive CSVs, do not add a fetcher or a registry entry. Whether to delete the local copy is
+Ahmed's call, not a serving question; the data is re-crawlable from the FRED API if it is ever
+needed under a different arrangement.
