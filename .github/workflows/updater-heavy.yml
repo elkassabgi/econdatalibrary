@@ -161,14 +161,22 @@ jobs:
       - name: Pull catalog.db (CSV-derive dependency)
         run: |
           python - <<'PY'
+          # STREAM IT. This used to .read() the object and decompress it into one bytes
+          # object with max_output_size=8<<30 — i.e. it needed the ENTIRE catalogue resident
+          # while a GitHub runner has ~7 GB of RAM, and it hard-failed above 8 GiB. The
+          # catalogue reaches 7.95 GiB the moment the coherence reference is refreshed to
+          # match local (10,853,209 series), leaving 54 MB of headroom — so both limits were
+          # about to fire on the workflow that runs the very imf_gfs*_direct sources the
+          # refresh exists to fix. updater-daily.yml already streams; this is the same shape,
+          # and its cost is flat in catalogue size rather than linear.
           import os, zstandard, boto3
           s3 = boto3.client("s3", endpoint_url=os.environ["R2_WRITE_ENDPOINT"],
                             aws_access_key_id=os.environ["R2_WRITE_ACCESS_KEY_ID"],
                             aws_secret_access_key=os.environ["R2_WRITE_SECRET_ACCESS_KEY"])
           os.makedirs("data", exist_ok=True)
-          body = s3.get_object(Bucket="econ-data", Key="_aqueduct/catalog.db.zst")["Body"].read()
+          body = s3.get_object(Bucket="econ-data", Key="_aqueduct/catalog.db.zst")["Body"]
           with open("data/catalog.db", "wb") as fh:
-              fh.write(zstandard.ZstdDecompressor().decompress(body, max_output_size=8 << 30))
+              zstandard.ZstdDecompressor().copy_stream(body, fh)
           print("catalog.db bytes:", os.path.getsize("data/catalog.db"))
           PY
 
