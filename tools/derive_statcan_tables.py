@@ -81,6 +81,30 @@ def choose_split(con, path: str, n_rows: int, max_rows: int):
                 return d, c
         except Exception:                                       # noqa: BLE001
             continue
+    # HIERARCHICAL TRUNCATION OF `coordinate`, which is where statcan's giants actually divide.
+    # Measured on 12100152 (427,009,412 rows): uom has ONE distinct value, status ONE, geo 14
+    # (largest group 135,795,854 — far too coarse), and coordinate 17,732,442 (largest group 429
+    # — far too fine to be a unit). There is nothing in between, which is why single columns and
+    # pairs both refused it.
+    #
+    # But a coordinate is a dot-separated dimension tuple — '59.9.37.1.85.3.100.1400' — so
+    # truncating it to k segments walks the publisher's own hierarchy from coarse to fine. Same
+    # technique the istat derive uses for nested ISTAT territory codes and derive_census_tables
+    # uses for HS commodity codes, applied to the column statcan actually nests.
+    if "coordinate" in card:
+        for k in range(1, 8):
+            expr = ("array_to_string(array_slice(string_split(\"coordinate\", '.'), 1, "
+                    f"{k}), '.')")
+            try:
+                c = con.execute(f"select count(distinct {expr}) "
+                                f"from read_parquet('{path}')").fetchone()[0]
+                if not 2 <= c <= 20_000:
+                    continue
+                if largest(expr) <= max_rows:
+                    return f"coordinate:{k}", c
+            except Exception:                                   # noqa: BLE001
+                continue
+
     usable = sorted((c, d) for d, c in card.items() if c >= 2)
     for prod, d1, d2 in sorted(
             (c1 * c2, n1, n2) for i, (c1, n1) in enumerate(usable)
@@ -100,7 +124,17 @@ def choose_split(con, path: str, n_rows: int, max_rows: int):
 
 
 def part_expr(dim: str) -> str:
-    """ONE definition of the part label, imported by the catalogue and the resolver."""
+    """ONE definition of the part label, imported by the catalogue and the resolver.
+
+    Three shapes, and the catalogue MUST use this function rather than reimplement any of them —
+    a split expression rebuilt elsewhere drifts into ids no object answers to:
+        "geo"              a single column
+        "uom+geo"          a pair, joined with '~' (verified absent from both vocabularies)
+        "coordinate:3"     the first 3 dot-segments of the coordinate hierarchy
+    """
+    if dim.startswith("coordinate:"):
+        k = int(dim.split(":", 1)[1])
+        return (f"array_to_string(array_slice(string_split(\"coordinate\", '.'), 1, {k}), '.')")
     if "+" in dim:
         d1, d2 = dim.split("+", 1)
         return f"\"{d1}\" || '~' || \"{d2}\""
@@ -155,8 +189,13 @@ def main() -> int:
     if not files:
         raise SystemExit(f"no parquet under {STORE} — refusing to report an empty derive")
     if a.largest_first:
-        files = [f for _n, f in sorted(
-            ((pq.ParquetFile(f).metadata.num_rows, f) for f in files), reverse=True)]
+        # SORT BY BYTES, NOT ROWS. Row count means opening 8,207 parquet footers, and a
+        # 962M-row file's footer carries thousands of row-group entries — that sort alone burned
+        # 40 CPU-MINUTES here without finishing. File size is free from the directory entry and
+        # ranks the giants identically for this purpose. The distribution makes the point: the
+        # largest table is 4,075 MB and the MEDIAN is 0.03 MB, so a handful of tables dominate
+        # and everything else is trivial.
+        files = [f for _n, f in sorted(((os.path.getsize(f), f) for f in files), reverse=True)]
     print(f"{len(files):,} table(s); splitting any over {a.max_rows:,} rows"
           f"{' — LARGEST FIRST' if a.largest_first else ''}", flush=True)
 
