@@ -303,6 +303,19 @@ def main() -> int:
         dim, n_parts = choose_split(con, f, n_rows, a.max_rows)
         if dim:
             split_map[pid] = {"dim": dim, "parts": n_parts, "rows": n_rows}
+            # PERSIST THE DECISION IMMEDIATELY, not at the end of an 8,207-table run. Choosing a
+            # split is the expensive half — ~7 minutes on a 427M-row cube — and a map written
+            # only on a clean finish is lost entirely if the run is interrupted, which for a
+            # multi-day job is the likely case, not the unlikely one. Same reasoning as
+            # stat_slovenia's sweep offset: state that exists to survive a kill must be written
+            # before the kill. --skip-existing then makes a restart cheap in BOTH halves.
+            if not a.dry_run:
+                try:
+                    with open(os.path.join(STORE, "_split_map.json"), "w",
+                              encoding="utf-8") as fh:
+                        json.dump(split_map, fh, indent=1, sort_keys=True)
+                except OSError:
+                    pass    # a lost map costs re-deciding, never correctness
         if dim == "":
             refused.append((pid, n_rows))
             print(f"  [{i}/{len(files)}] {pid}: REFUSED — {n_rows:,} rows and no column pair "
