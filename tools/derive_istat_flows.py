@@ -130,7 +130,47 @@ def choose_split(con, path: str, n_rows: int, max_rows: int):
                     return widest, t, c
             except Exception:                        # noqa: BLE001
                 continue
+
+    # PAIRS. A flow of 52.9M rows needs >=106 balanced parts, and no single ISTAT dimension has
+    # to be that wide -- 183_277 has none, which is why the first version of this refused it and
+    # dropped 96.7M rows across three flows (R219). derive_census_tables solves the same problem
+    # the same way: cross two dimensions and the part count multiplies while each part shrinks.
+    # Ordered by the PRODUCT of cardinalities so the coarsest workable cross wins, and capped at
+    # 20,000 parts because past that the objects are too small to be worth fetching one at a time.
+    if len(card) >= 2:
+        usable = sorted((c, d) for d, c in card.items() if c >= 2)
+        pairs = sorted(
+            ((c1 * c2, d1, d2) for i, (c1, d1) in enumerate(usable)
+             for c2, d2 in usable[i + 1:] if 2 <= c1 * c2 <= 20_000))
+        for prod, d1, d2 in pairs:
+            e1 = f"regexp_extract(series_key, '{d1}=([^:]*)', 1)"
+            e2 = f"regexp_extract(series_key, '{d2}=([^:]*)', 1)"
+            expr = f"{e1} || '~' || {e2}"
+            try:
+                if largest_part(expr) > max_rows:
+                    continue
+                # '~' MUST BE ABSENT FROM BOTH VOCABULARIES OR THE LABEL IS AMBIGUOUS: the
+                # resolver splits the part id on the first '~' to recover (v1, v2), so a value
+                # containing one would silently resolve to the wrong slice. Checked, not assumed.
+                if con.execute(f"select count(*) from read_parquet('{path}') "
+                               f"where {e1} like '%~%' or {e2} like '%~%'").fetchone()[0]:
+                    continue
+                return f"{d1}+{d2}", 0, prod
+            except Exception:                        # noqa: BLE001
+                continue
     return "", 0, 0                                  # refused; the caller names it
+
+
+def part_expr(dim: str, trunc: int) -> str:
+    """SQL for the part label of a chosen split. ONE definition, imported by the catalogue and
+    the resolver, because a split id whose expression is reimplemented elsewhere is a 404
+    waiting for the first drifted character."""
+    if "+" in dim:
+        d1, d2 = dim.split("+", 1)
+        return (f"regexp_extract(series_key, '{d1}=([^:]*)', 1) || '~' || "
+                f"regexp_extract(series_key, '{d2}=([^:]*)', 1)")
+    e = f"regexp_extract(series_key, '{dim}=([^:]*)', 1)"
+    return f"substr({e}, 1, {trunc})" if trunc else e
 
 
 def flow_id(stem: str, part: str | None = None) -> str:
@@ -166,12 +206,25 @@ def main() -> int:
     ap.add_argument("--memory-limit", default="10GB")
     ap.add_argument("--max-rows", type=int, default=MAX_ROWS_DEFAULT,
                     help="split any flow larger than this many rows")
+    ap.add_argument("--only", default="",
+                    help="comma-separated flow stems to derive; the split map is MERGED, not "
+                         "replaced, so a targeted re-run cannot orphan the other flows' parts")
     a = ap.parse_args()
     if not a.dry_run and not a.bucket:
         ap.error("--bucket is required unless --dry-run")
 
     files = sorted(f.replace("\\", "/") for f in glob.glob(os.path.join(STORE, "*.parquet"))
                    if not f.endswith("__series.parquet"))
+    if a.only:
+        want = {s.strip() for s in a.only.split(",") if s.strip()}
+        files = [f for f in files
+                 if os.path.splitext(os.path.basename(f))[0] in want]
+        got = {os.path.splitext(os.path.basename(f))[0] for f in files}
+        if got != want:
+            # Fail fast rather than silently deriving a subset of what was named: a typo'd flow
+            # would otherwise look like a clean run that just happened to emit less.
+            raise SystemExit(f"--only names {len(want)} flow(s); {len(got)} exist under {STORE}. "
+                             f"Missing: {', '.join(sorted(want - got))}")
     if not files:
         raise SystemExit(f"no parquet under {STORE} — refusing to report an empty derive")
     print(f"{len(files)} dataflow file(s); splitting any over {a.max_rows:,} rows",
@@ -258,9 +311,7 @@ def main() -> int:
             continue
         # `value` LAST in the ORDER BY so a collapsed duplicate is the MAXIMUM, deterministically.
         if dim:
-            expr = f"regexp_extract(series_key, '{dim}=([^:]*)', 1)"
-            if trunc:
-                expr = f"substr({expr}, 1, {trunc})"
+            expr = part_expr(dim, trunc)
             sel = f"{expr} AS part, series_key, obs_date, value"
             order = "part, series_key, obs_date, value"
         else:
@@ -336,14 +387,40 @@ def main() -> int:
     # Written next to the STORE, not into logs/, because it is part of the published layout:
     # the resolver needs it to turn `istat:<flow>#<part>` back into a predicate.
     smap = os.path.join(STORE, "_split_map.json")
-    if not a.dry_run or a.limit:
+    if a.dry_run:
+        # A DRY RUN MUST NOT TOUCH THE STORE. Writing here would replace a complete map with one
+        # describing whatever subset the rehearsal looked at -- a rehearsal that breaks the real
+        # thing. (`--limit` alone still writes, which is what a resumable partial run needs.)
+        print(f"(dry run: split map NOT written; this run chose {len(split_map)} split(s))")
+    else:
+        out_map = split_map
+        if a.only:
+            # MERGE. A targeted run sees only the named flows, so writing its map wholesale would
+            # delete every other flow's split entry -- and a part id whose entry is gone is a
+            # 404 the resolver cannot even explain. Entries for the named flows are dropped
+            # first, so a flow that no longer needs splitting loses its stale entry too.
+            try:
+                out_map = json.load(open(smap, encoding="utf-8"))
+            except (OSError, ValueError):
+                out_map = {}
+            for stem in {os.path.splitext(os.path.basename(f))[0] for f in files}:
+                out_map.pop(stem, None)
+            out_map.update(split_map)
         with open(smap, "w", encoding="utf-8") as fh:
-            json.dump(split_map, fh, indent=1, sort_keys=True)
-        print(f"split map ({len(split_map):,} flow(s)) -> {smap}")
+            json.dump(out_map, fh, indent=1, sort_keys=True)
+        print(f"split map ({len(out_map):,} flow(s)"
+              f"{f', {len(split_map)} from this run' if a.only else ''}) -> {smap}")
 
     summary = os.path.join(ROOT, "logs", "istat_flows_summary.json")
-    json.dump({"units": n_units, "put": counts["put"], "skipped": counts["skip"],
-               "errors": counts["err"], "duplicates_collapsed": dropped_total,
+    # `refused` IS IN THE SUMMARY (R219). A run that emits nothing for a flow because no splitter
+    # divides it is neither an error nor a skip, so a summary carrying only those two keys reads
+    # as complete while whole flows are on the floor. Every terminal disposition gets a key, and
+    # `considered` lets a consumer check that they add up.
+    json.dump({"considered": len(files), "units": n_units, "put": counts["put"],
+               "skipped": counts["skip"], "errors": counts["err"],
+               "refused": [{"flow": st, "rows": nr} for st, nr in refused],
+               "refused_rows": sum(nr for _st, nr in refused),
+               "duplicates_collapsed": dropped_total,
                "seconds": round(dt)}, open(summary, "w"), indent=1)
     print(f"summary -> {summary}")
     return 1 if counts["err"] else 0

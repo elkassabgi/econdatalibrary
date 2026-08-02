@@ -36,7 +36,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from derive_istat_flows import SOURCE, STORE, flow_id          # noqa: E402
+from derive_istat_flows import SOURCE, STORE, flow_id, part_expr   # noqa: E402
 
 LICENSE_ID = "cc-by-4.0-istat"
 BATCH = 10_000
@@ -137,12 +137,31 @@ def main() -> int:
     # invisible. Compare against the flows that are large enough to need splitting and refuse
     # if the map is plainly short.
     import pyarrow.parquet as _pq
-    big = [f for f in files_all
-           if _pq.ParquetFile(f).metadata.num_rows > MAX_ROWS_HINT]
-    if len(smap) < len(big):
-        print(f"REFUSING: {len(big):,} flow(s) exceed {MAX_ROWS_HINT:,} rows but the split map "
-              f"has only {len(smap):,} entries — it was written by a partial derive run. "
-              f"Run tools/derive_istat_flows.py to completion first.")
+    big = {os.path.splitext(os.path.basename(f))[0]: _pq.ParquetFile(f).metadata.num_rows
+           for f in files_all}
+    big = {k: v for k, v in big.items() if v > MAX_ROWS_HINT}
+    absent = {k: v for k, v in big.items() if k not in smap}
+    if absent:
+        # STATE THE DISCREPANCY, LIST THE CAUSES (R219). The first version of this asserted one
+        # cause — "written by a partial derive run" — which was wrong: the derive had run to
+        # completion and REFUSED three flows it could not split. A guard that names a single
+        # confident cause sends the reader past the real one.
+        try:
+            ref = {r["flow"]: r["rows"] for r in json.load(
+                open(os.path.join(ROOT, "logs", "istat_flows_summary.json"),
+                     encoding="utf-8")).get("refused", [])}
+        except (OSError, ValueError, TypeError):
+            ref = {}
+        print(f"REFUSING: {len(big):,} flow(s) exceed {MAX_ROWS_HINT:,} rows but {len(absent):,} "
+              f"of them have no split-map entry, so cataloguing now would emit ONE id for a flow "
+              f"whose objects were written as N parts — the whole-flow id 404s and every part "
+              f"stays invisible. Missing:")
+        for k, v in sorted(absent.items(), key=lambda kv: -kv[1]):
+            why = ("REFUSED by the derive — no splitter found" if k in ref
+                   else "not seen by the derive — new or grown since that run")
+            print(f"   {k:44s} {v:>12,} rows   {why}")
+        print(f"\nRe-run:  python tools/derive_istat_flows.py --bucket <b> "
+              f"--only {','.join(sorted(absent))}")
         return 1
 
     spill = os.path.join(ROOT, "logs", "_duckspill")
@@ -172,10 +191,10 @@ def main() -> int:
         q.execute("SET preserve_insertion_order=false")
         try:
             if entry:
+                # ONE definition of the part expression, imported from the derive — a catalogue
+                # that reimplements it drifts into ids no object answers to.
                 dim, tr = entry["dim"], entry.get("trunc") or 0
-                e = f"regexp_extract(series_key, '{dim}=([^:]*)', 1)"
-                if tr:
-                    e = f"substr({e}, 1, {tr})"
+                e = part_expr(dim, tr)
                 got = q.execute(f"""
                     select {e} p, min(obs_date)::VARCHAR, max(obs_date)::VARCHAR
                     from read_parquet('{f}') where value is not null and obs_date is not null

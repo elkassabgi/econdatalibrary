@@ -361,6 +361,64 @@ def _resolve_imf(series_id: str, root: str) -> Resolution:
 
 
 # --- ilostat ---------------------------------------------------------------
+def _resolve_ilostat_indicator(series_id: str, root: str) -> Resolution:
+    """INDICATOR GRAIN. catalog: `ilostat:<stem>` or `ilostat:<stem>#<part>`.
+
+    ilostat is 388,161,420 observations averaging 10.0 per series (~38.7M series), so the unit is
+    the indicator-frequency file, not the series -- the same call made for istat (9.2), cso, usda
+    and the PxWeb family. 192 of the 1,947 files exceed the size bound and are split on one of
+    their own DIMENSION COLUMNS (ref_area, sex, classif1, classif2, source), or on a pair of them
+    when no single column divides the file; the choice is made at derive time from that file's
+    own data and read back from `_split_map.json`.
+    """
+    rest = series_id.split(":", 1)[1]
+    stem, _, part = rest.partition("#")
+    src_dir = os.path.join(root, "ilostat")
+    path = os.path.join(src_dir, f"{stem}.parquet")
+    if not os.path.exists(path):
+        raise ResolveError(f"{series_id}: no ilostat indicator file at {path!r}")
+
+    # Match the derive's WHERE clause exactly or byte-parity fails and a suppressed cell is
+    # served as `nan`.
+    pred = ds.field("value").is_valid() & ds.field("obs_date").is_valid()
+    if part:
+        smap_path = os.path.join(src_dir, "_split_map.json")
+        try:
+            with open(smap_path, encoding="utf-8") as fh:
+                smap = json.load(fh)
+        except (OSError, ValueError) as e:
+            raise ResolveError(
+                f"{series_id}: names a split part but {smap_path!r} is unreadable ({e!r}); "
+                f"the split column is chosen at derive time and cannot be inferred") from e
+        entry = smap.get(stem)
+        if not entry:
+            raise ResolveError(
+                f"{series_id}: indicator {stem!r} is not in the split map, so it was never "
+                f"split — a '#' part cannot be resolved for it")
+        dim = entry["dim"]
+        if "+" in dim:
+            # Matched as two equalities rather than by rebuilding the '~' concatenation: same
+            # predicate, no string-join kernel, and the derive has already verified that neither
+            # column's values contain '~'.
+            d1, d2 = dim.split("+", 1)
+            p1, _, p2 = part.partition("~")
+            pred = pred & (ds.field(d1) == p1) & (ds.field(d2) == p2)
+        else:
+            pred = pred & (ds.field(dim) == part)
+    return Resolution(series_id, "ilostat", path, "series_key", pred)
+
+
+def _resolve_ilostat_any(series_id: str, root: str) -> Resolution:
+    """Route between the two id shapes by SEGMENT COUNT, which is a rule here rather than a
+    coincidence: every one of the 1,947 file stems matches [A-Za-z0-9_]+ (verified), so a stem
+    can never introduce a third colon. 4 segments is the legacy per-country form; 2 is the
+    indicator grain.
+    """
+    if len(series_id.split(":")) == 4:
+        return _resolve_ilostat(series_id, root)
+    return _resolve_ilostat_indicator(series_id, root)
+
+
 def _resolve_ilostat(series_id: str, root: str) -> Resolution:
     # catalog:  ilostat:<flow>:<classif1>:<geo>
     #   e.g.    ilostat:UNE_DEAP_SEX_AGE_RT:AGE_YTHADULT_YGE15:USA
@@ -1074,13 +1132,28 @@ def _resolve_istat(series_id: str, root: str) -> Resolution:
                 f"{series_id}: flow {flow!r} is not in the split map, so it was never split — "
                 f"a '#' part cannot be resolved for it")
         dim, trunc = entry["dim"], entry.get("trunc") or 0
-        expr = pc.extract_regex(ds.field("series_key"), pattern=f"{dim}=(?P<v>[^:]*)")
-        # extract_regex yields a struct; compare its field. utf8_slice_codeunits applies the
-        # same truncation the derive used, so a truncated part id round-trips exactly.
-        got = pc.struct_field(expr, "v")
-        if trunc:
-            got = pc.utf8_slice_codeunits(got, 0, trunc)
-        pred = pred & (got == part)
+
+        def _dim_value(d: str):
+            # extract_regex yields a struct; compare its field.
+            return pc.struct_field(
+                pc.extract_regex(ds.field("series_key"), pattern=f"{d}=(?P<v>[^:]*)"), "v")
+
+        if "+" in dim:
+            # PAIRED SPLIT. Three flows (183_277 at 52.9M rows among them) have no single
+            # dimension wide enough to divide them, so the derive crosses two and labels the part
+            # `<v1>~<v2>`. Matched as two separate equalities rather than by rebuilding the
+            # concatenation: it is the same predicate, needs no string-join kernel, and the
+            # derive has already verified that neither dimension's values contain '~'.
+            d1, d2 = dim.split("+", 1)
+            p1, _, p2 = part.partition("~")
+            pred = pred & (_dim_value(d1) == p1) & (_dim_value(d2) == p2)
+        else:
+            # utf8_slice_codeunits applies the same truncation the derive used, so a truncated
+            # part id round-trips exactly.
+            got = _dim_value(dim)
+            if trunc:
+                got = pc.utf8_slice_codeunits(got, 0, trunc)
+            pred = pred & (got == part)
     return Resolution(series_id, "istat", path, "series_key", pred)
 
 
@@ -1185,7 +1258,7 @@ _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "wikidata": _resolve_wikidata,
     "bea": _resolve_bea,
     "imf": _resolve_imf,
-    "ilostat": _resolve_ilostat,
+    "ilostat": _resolve_ilostat_any,
     "owid": _resolve_owid,
     "fhfa": _resolve_fhfa,
     "ember": _resolve_ember,
