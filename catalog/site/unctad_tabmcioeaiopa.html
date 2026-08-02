@@ -2,9 +2,17 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>UN Trade and Development (UNCTAD) — UNCTAD Data Hub / UNCTADstat — Econ Data Library</title>
-<meta name="description" content="Source: United Nations Trade and Development (UNCTAD), UNCTAD Data Hub (UNCTADstat). Licensed under CC BY 3.0 IGO.">
-<link rel="canonical" href="https://econdatalibrary.com/unctad_tabmcioeaiopa.html">
+<title>Merchandise trade market concentration indices — exports and imports — UN Trade and Development (UNCTAD) | Econ Data Library</title>
+<meta name="description" content="Merchandise trade market concentration indices — exports and imports. UN Trade and Development (UNCTAD). 4,250 series, 2010–2020. Free download.">
+<link rel="canonical" href="https://econdatalibrary.com/unctad_tabmcioeaiopa">
+<meta property="og:title" content="Merchandise trade market concentration indices — exports and imports — UN Trade and Development (UNCTAD)">
+<meta property="og:description" content="Merchandise trade market concentration indices — exports and imports. UN Trade and Development (UNCTAD). 4,250 series, 2010–2020. Free download.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://econdatalibrary.com/unctad_tabmcioeaiopa">
+<meta property="og:site_name" content="Econ Data Library">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Merchandise trade market concentration indices — exports and imports — UN Trade and Development (UNCTAD)">
+<meta name="twitter:description" content="Merchandise trade market concentration indices — exports and imports. UN Trade and Development (UNCTAD). 4,250 series, 2010–2020. Free download.">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -98,8 +106,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@context": "https://schema.org/",
   "@type": "Dataset",
   "name": "UN Trade and Development (UNCTAD) — UNCTAD Data Hub / UNCTADstat",
-  "description": "Source: United Nations Trade and Development (UNCTAD), UNCTAD Data Hub (UNCTADstat). Licensed under CC BY 3.0 IGO.",
-  "url": "https://econdatalibrary.com/unctad_tabmcioeaiopa.html",
+  "description": "Merchandise trade market concentration indices — exports and imports. UN Trade and Development (UNCTAD). 4,250 series, 2010–2020. Free download.",
+  "url": "https://econdatalibrary.com/unctad_tabmcioeaiopa",
   "identifier": "unctad_tabmcioeaiopa",
   "isAccessibleForFree": true,
   "publisher": {
@@ -107,15 +115,24 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
+  "includedInDataCatalog": {
+    "@type": "DataCatalog",
+    "@id": "https://econdatalibrary.com/#catalog",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com/catalog"
+  },
   "creator": {
     "@type": "Organization",
-    "name": "UN Trade and Development (UNCTAD) — UNCTAD Data Hub / UNCTADstat",
+    "name": "UN Trade and Development (UNCTAD)",
     "url": "https://unctadstat.unctad.org/"
   },
   "license": "https://creativecommons.org/licenses/by/3.0/igo/",
   "keywords": [
     "International Trade",
     "unctad_tabmcioeaiopa"
+  ],
+  "variableMeasured": [
+    "Market concentration index"
   ],
   "temporalCoverage": "2010-01-01/2020-01-01",
   "creditText": "Source: United Nations Trade and Development (UNCTAD), UNCTAD Data Hub (UNCTADstat). Licensed under CC BY 3.0 IGO.",
@@ -127,6 +144,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "distribution": [
     {
       "@type": "DataDownload",
+      "name": "unctad_tabmcioeaiopa — CSV",
       "encodingFormat": "text/csv",
       "contentUrl": "https://econdatalibrary.com/download.html?source=unctad_tabmcioeaiopa",
       "license": "https://creativecommons.org/licenses/by/3.0/igo/"
@@ -155,11 +173,12 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "name": "unctad_tabmcioeaiopa",
-  "description": "Source: United Nations Trade and Development (UNCTAD), UNCTAD Data Hub (UNCTADstat). Licensed under CC BY 3.0 IGO.",
-  "url": "https://econdatalibrary.com/unctad_tabmcioeaiopa.html",
+  "description": "Merchandise trade market concentration indices — exports and imports. UN Trade and Development (UNCTAD). 4,250 series, 2010–2020. Free download.",
+  "url": "https://econdatalibrary.com/unctad_tabmcioeaiopa",
   "creator": {
     "@type": "sc:Organization",
-    "name": "UN Trade and Development (UNCTAD) — UNCTAD Data Hub / UNCTADstat"
+    "name": "UN Trade and Development (UNCTAD)",
+    "url": "https://unctadstat.unctad.org/"
   },
   "publisher": {
     "@type": "sc:Organization",
@@ -184,7 +203,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   ]
 }
 </script>
-<script src="assets/sso.js?v=20260801f"></script>
+<script src="assets/sso.js?v=20260802a"></script>
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
@@ -203,7 +222,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-31');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-01');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -238,15 +257,15 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>Access &amp; mirrors</h2>
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=unctad_tabmcioeaiopa">Select &amp; download unctad_tabmcioeaiopa series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
-<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/unctad_tabmcioeaiopa.html">https://econdatalibrary.com/unctad_tabmcioeaiopa.html</a></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/unctad_tabmcioeaiopa">https://econdatalibrary.com/unctad_tabmcioeaiopa</a></dd>
 <dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
   &quot;name&quot;: &quot;UN Trade and Development (UNCTAD) — UNCTAD Data Hub / UNCTADstat&quot;,
-  &quot;description&quot;: &quot;Source: United Nations Trade and Development (UNCTAD), UNCTAD Data Hub (UNCTADstat). Licensed under CC BY 3.0 IGO.&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/unctad_tabmcioeaiopa.html&quot;,
+  &quot;description&quot;: &quot;Merchandise trade market concentration indices — exports and imports. UN Trade and Development (UNCTAD). 4,250 series, 2010–2020. Free download.&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/unctad_tabmcioeaiopa&quot;,
   &quot;identifier&quot;: &quot;unctad_tabmcioeaiopa&quot;,
   &quot;isAccessibleForFree&quot;: true,
   &quot;publisher&quot;: {
@@ -254,15 +273,24 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
+  &quot;includedInDataCatalog&quot;: {
+    &quot;@type&quot;: &quot;DataCatalog&quot;,
+    &quot;@id&quot;: &quot;https://econdatalibrary.com/#catalog&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com/catalog&quot;
+  },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
-    &quot;name&quot;: &quot;UN Trade and Development (UNCTAD) — UNCTAD Data Hub / UNCTADstat&quot;,
+    &quot;name&quot;: &quot;UN Trade and Development (UNCTAD)&quot;,
     &quot;url&quot;: &quot;https://unctadstat.unctad.org/&quot;
   },
   &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;,
   &quot;keywords&quot;: [
     &quot;International Trade&quot;,
     &quot;unctad_tabmcioeaiopa&quot;
+  ],
+  &quot;variableMeasured&quot;: [
+    &quot;Market concentration index&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;2010-01-01/2020-01-01&quot;,
   &quot;creditText&quot;: &quot;Source: United Nations Trade and Development (UNCTAD), UNCTAD Data Hub (UNCTADstat). Licensed under CC BY 3.0 IGO.&quot;,
@@ -274,6 +302,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;name&quot;: &quot;unctad_tabmcioeaiopa — CSV&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
       &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=unctad_tabmcioeaiopa&quot;,
       &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/3.0/igo/&quot;
@@ -300,11 +329,12 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
   &quot;name&quot;: &quot;unctad_tabmcioeaiopa&quot;,
-  &quot;description&quot;: &quot;Source: United Nations Trade and Development (UNCTAD), UNCTAD Data Hub (UNCTADstat). Licensed under CC BY 3.0 IGO.&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/unctad_tabmcioeaiopa.html&quot;,
+  &quot;description&quot;: &quot;Merchandise trade market concentration indices — exports and imports. UN Trade and Development (UNCTAD). 4,250 series, 2010–2020. Free download.&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/unctad_tabmcioeaiopa&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
-    &quot;name&quot;: &quot;UN Trade and Development (UNCTAD) — UNCTAD Data Hub / UNCTADstat&quot;
+    &quot;name&quot;: &quot;UN Trade and Development (UNCTAD)&quot;,
+    &quot;url&quot;: &quot;https://unctadstat.unctad.org/&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
@@ -328,7 +358,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-31 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-08-01 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

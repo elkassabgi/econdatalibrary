@@ -2,9 +2,17 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>Bureau of Labor Statistics — Econ Data Library</title>
-<meta name="description" content="FULL-COVERAGE ingest of the U.S. BLS flat files (time.series database). Source: https://download.bls.gov/pub/time.series/ -- one folder per survey (ap, ce, cu, ln, jt, wp, pr, la, ...). For each survey we download every `&lt;survey&gt;.data.N.*` file (the observations) plus `&lt;survey&gt;.series` (">
-<link rel="canonical" href="https://econdatalibrary.com/bls.html">
+<title>CPI-U: All items, US city avg (NSA); CPI-U: All items less food &amp; energy (NSA) — Bureau of Labor Statistics | Econ Data Library</title>
+<meta name="description" content="CPI-U: All items, US city avg (NSA); CPI-U: All items less food &amp; energy (NSA). Bureau of Labor Statistics. 9 series, 2007–2026. Free download.">
+<link rel="canonical" href="https://econdatalibrary.com/bls">
+<meta property="og:title" content="CPI-U: All items, US city avg (NSA); CPI-U: All items less food &amp; energy (NSA) — Bureau of Labor Statistics">
+<meta property="og:description" content="CPI-U: All items, US city avg (NSA); CPI-U: All items less food &amp; energy (NSA). Bureau of Labor Statistics. 9 series, 2007–2026. Free download.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://econdatalibrary.com/bls">
+<meta property="og:site_name" content="Econ Data Library">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="CPI-U: All items, US city avg (NSA); CPI-U: All items less food &amp; energy (NSA) — Bureau of Labor Statistics">
+<meta name="twitter:description" content="CPI-U: All items, US city avg (NSA); CPI-U: All items less food &amp; energy (NSA). Bureau of Labor Statistics. 9 series, 2007–2026. Free download.">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -98,14 +106,20 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@context": "https://schema.org/",
   "@type": "Dataset",
   "name": "Bureau of Labor Statistics",
-  "description": "FULL-COVERAGE ingest of the U.S. BLS flat files (time.series database). Source: https://download.bls.gov/pub/time.series/ -- one folder per survey (ap, ce, cu, ln, jt, wp, pr, la, ...). For each survey we download every `<survey>.data.N.*` file (the observations) plus `<survey>.series` (series…",
-  "url": "https://econdatalibrary.com/bls.html",
+  "description": "CPI-U: All items, US city avg (NSA); CPI-U: All items less food & energy (NSA). Bureau of Labor Statistics. 9 series, 2007–2026. Free download.",
+  "url": "https://econdatalibrary.com/bls",
   "identifier": "bls",
   "isAccessibleForFree": true,
   "publisher": {
     "@type": "Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
+  },
+  "includedInDataCatalog": {
+    "@type": "DataCatalog",
+    "@id": "https://econdatalibrary.com/#catalog",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com/catalog"
   },
   "creator": {
     "@type": "Organization",
@@ -115,6 +129,17 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "keywords": [
     "Macroeconomics",
     "bls"
+  ],
+  "variableMeasured": [
+    "CPI-U: All items, US city avg (NSA)",
+    "CPI-U: All items less food & energy (NSA)",
+    "Unemployment rate, 16+ (SA, %)",
+    "Labor force participation rate (SA, %)",
+    "Civilian employment level (SA, thousands)",
+    "Unemployment level (SA, thousands)",
+    "Total nonfarm employment (SA, thousands)",
+    "Avg hourly earnings, total private (SA, $)",
+    "Avg weekly hours, total private (SA)"
   ],
   "temporalCoverage": "2007-01-01/2026-04-01",
   "repeatFrequency": "P1M",
@@ -126,6 +151,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "distribution": [
     {
       "@type": "DataDownload",
+      "name": "bls — CSV",
       "encodingFormat": "text/csv",
       "contentUrl": "https://econdatalibrary.com/download.html?source=bls",
       "license": "https://www.usa.gov/government-works"
@@ -154,8 +180,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "name": "bls",
-  "description": "FULL-COVERAGE ingest of the U.S. BLS flat files (time.series database). Source: https://download.bls.gov/pub/time.series/ -- one folder per survey (ap, ce, cu, ln, jt, wp, pr, la, ...). For each survey we download every `<survey>.data.N.*` file (the observations) plus `<survey>.series` (series…",
-  "url": "https://econdatalibrary.com/bls.html",
+  "description": "CPI-U: All items, US city avg (NSA); CPI-U: All items less food & energy (NSA). Bureau of Labor Statistics. 9 series, 2007–2026. Free download.",
+  "url": "https://econdatalibrary.com/bls",
   "creator": {
     "@type": "sc:Organization",
     "name": "Bureau of Labor Statistics"
@@ -183,7 +209,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   ]
 }
 </script>
-<script src="assets/sso.js?v=20260801f"></script>
+<script src="assets/sso.js?v=20260802a"></script>
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
@@ -202,7 +228,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-31');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-01');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -237,7 +263,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>Access &amp; mirrors</h2>
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=bls">Select &amp; download bls series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
-<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/bls.html">https://econdatalibrary.com/bls.html</a></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/bls">https://econdatalibrary.com/bls</a></dd>
 <dt>Update cadence</dt><dd>weekly <em>(target &mdash; not yet automated)</em></dd>
 <dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
@@ -273,14 +299,20 @@ Usage:
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
   &quot;name&quot;: &quot;Bureau of Labor Statistics&quot;,
-  &quot;description&quot;: &quot;FULL-COVERAGE ingest of the U.S. BLS flat files (time.series database). Source: https://download.bls.gov/pub/time.series/ -- one folder per survey (ap, ce, cu, ln, jt, wp, pr, la, ...). For each survey we download every `&lt;survey&gt;.data.N.*` file (the observations) plus `&lt;survey&gt;.series` (series…&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/bls.html&quot;,
+  &quot;description&quot;: &quot;CPI-U: All items, US city avg (NSA); CPI-U: All items less food &amp; energy (NSA). Bureau of Labor Statistics. 9 series, 2007–2026. Free download.&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/bls&quot;,
   &quot;identifier&quot;: &quot;bls&quot;,
   &quot;isAccessibleForFree&quot;: true,
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;includedInDataCatalog&quot;: {
+    &quot;@type&quot;: &quot;DataCatalog&quot;,
+    &quot;@id&quot;: &quot;https://econdatalibrary.com/#catalog&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com/catalog&quot;
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
@@ -290,6 +322,17 @@ Usage:
   &quot;keywords&quot;: [
     &quot;Macroeconomics&quot;,
     &quot;bls&quot;
+  ],
+  &quot;variableMeasured&quot;: [
+    &quot;CPI-U: All items, US city avg (NSA)&quot;,
+    &quot;CPI-U: All items less food &amp; energy (NSA)&quot;,
+    &quot;Unemployment rate, 16+ (SA, %)&quot;,
+    &quot;Labor force participation rate (SA, %)&quot;,
+    &quot;Civilian employment level (SA, thousands)&quot;,
+    &quot;Unemployment level (SA, thousands)&quot;,
+    &quot;Total nonfarm employment (SA, thousands)&quot;,
+    &quot;Avg hourly earnings, total private (SA, $)&quot;,
+    &quot;Avg weekly hours, total private (SA)&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;2007-01-01/2026-04-01&quot;,
   &quot;repeatFrequency&quot;: &quot;P1M&quot;,
@@ -301,6 +344,7 @@ Usage:
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;name&quot;: &quot;bls — CSV&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
       &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=bls&quot;,
       &quot;license&quot;: &quot;https://www.usa.gov/government-works&quot;
@@ -327,8 +371,8 @@ Usage:
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
   &quot;name&quot;: &quot;bls&quot;,
-  &quot;description&quot;: &quot;FULL-COVERAGE ingest of the U.S. BLS flat files (time.series database). Source: https://download.bls.gov/pub/time.series/ -- one folder per survey (ap, ce, cu, ln, jt, wp, pr, la, ...). For each survey we download every `&lt;survey&gt;.data.N.*` file (the observations) plus `&lt;survey&gt;.series` (series…&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/bls.html&quot;,
+  &quot;description&quot;: &quot;CPI-U: All items, US city avg (NSA); CPI-U: All items less food &amp; energy (NSA). Bureau of Labor Statistics. 9 series, 2007–2026. Free download.&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/bls&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Bureau of Labor Statistics&quot;
@@ -355,7 +399,7 @@ Usage:
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-31 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-08-01 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

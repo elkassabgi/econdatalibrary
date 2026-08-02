@@ -2,9 +2,17 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>ILOSTAT — Econ Data Library</title>
-<meta name="description" content="Full-coverage grouped ingest of ILOSTAT (International Labour Organization). ILOSTAT exposes every indicator through the rplumber bulk API: - TOC of ALL indicators: /metadata/toc/indicator (1,947 indicator-frequency datasets) - bulk data per indicator: /data/indicator?id=&lt;ID&gt;&amp;format=.parqu">
-<link rel="canonical" href="https://econdatalibrary.com/ilostat.html">
+<title>Unemployment rate, aged 15+ (Total) - Australia — ILOSTAT | Econ Data Library</title>
+<meta name="description" content="Unemployment rate, aged 15+ (Total) - Australia; Unemployment rate, aged 15+ (Total) - Brazil. ILOSTAT. 80 series, 1947–2025. Free download.">
+<link rel="canonical" href="https://econdatalibrary.com/ilostat">
+<meta property="og:title" content="Unemployment rate, aged 15+ (Total) - Australia — ILOSTAT">
+<meta property="og:description" content="Unemployment rate, aged 15+ (Total) - Australia; Unemployment rate, aged 15+ (Total) - Brazil. ILOSTAT. 80 series, 1947–2025. Free download.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://econdatalibrary.com/ilostat">
+<meta property="og:site_name" content="Econ Data Library">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Unemployment rate, aged 15+ (Total) - Australia — ILOSTAT">
+<meta name="twitter:description" content="Unemployment rate, aged 15+ (Total) - Australia; Unemployment rate, aged 15+ (Total) - Brazil. ILOSTAT. 80 series, 1947–2025. Free download.">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -98,14 +106,20 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@context": "https://schema.org/",
   "@type": "Dataset",
   "name": "ILOSTAT",
-  "description": "Full-coverage grouped ingest of ILOSTAT (International Labour Organization). ILOSTAT exposes every indicator through the rplumber bulk API: - TOC of ALL indicators: /metadata/toc/indicator (1,947 indicator-frequency datasets) - bulk data per indicator: /data/indicator?id=<ID>&format=.parquet Each…",
-  "url": "https://econdatalibrary.com/ilostat.html",
+  "description": "Unemployment rate, aged 15+ (Total) - Australia; Unemployment rate, aged 15+ (Total) - Brazil. ILOSTAT. 80 series, 1947–2025. Free download.",
+  "url": "https://econdatalibrary.com/ilostat",
   "identifier": "ilostat",
   "isAccessibleForFree": true,
   "publisher": {
     "@type": "Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
+  },
+  "includedInDataCatalog": {
+    "@type": "DataCatalog",
+    "@id": "https://econdatalibrary.com/#catalog",
+    "name": "Econ Data Library",
+    "url": "https://econdatalibrary.com/catalog"
   },
   "creator": {
     "@type": "Organization",
@@ -115,6 +129,13 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "keywords": [
     "Labour Markets",
     "ilostat"
+  ],
+  "variableMeasured": [
+    "Unemployment rate, aged 15+ (Total)",
+    "Youth unemployment rate, aged 15-24 (Total)",
+    "Employment-to-population ratio, aged 15+ (Total)",
+    "Labour force participation rate, aged 15+ (Total)",
+    "Employment, aged 15+ (Total, thousands)"
   ],
   "temporalCoverage": "1947-12-31/2025-12-31",
   "repeatFrequency": "P1Y",
@@ -127,6 +148,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "distribution": [
     {
       "@type": "DataDownload",
+      "name": "ilostat — CSV",
       "encodingFormat": "text/csv",
       "contentUrl": "https://econdatalibrary.com/download.html?source=ilostat",
       "license": "https://creativecommons.org/licenses/by/4.0/"
@@ -155,8 +177,8 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "name": "ilostat",
-  "description": "Full-coverage grouped ingest of ILOSTAT (International Labour Organization). ILOSTAT exposes every indicator through the rplumber bulk API: - TOC of ALL indicators: /metadata/toc/indicator (1,947 indicator-frequency datasets) - bulk data per indicator: /data/indicator?id=<ID>&format=.parquet Each…",
-  "url": "https://econdatalibrary.com/ilostat.html",
+  "description": "Unemployment rate, aged 15+ (Total) - Australia; Unemployment rate, aged 15+ (Total) - Brazil. ILOSTAT. 80 series, 1947–2025. Free download.",
+  "url": "https://econdatalibrary.com/ilostat",
   "creator": {
     "@type": "sc:Organization",
     "name": "ILOSTAT"
@@ -184,7 +206,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   ]
 }
 </script>
-<script src="assets/sso.js?v=20260801f"></script>
+<script src="assets/sso.js?v=20260802a"></script>
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
@@ -203,7 +225,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-07-31');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-01');
     if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
@@ -236,7 +258,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <h2>Access &amp; mirrors</h2>
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=ilostat">Select &amp; download ilostat series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
-<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/ilostat.html">https://econdatalibrary.com/ilostat.html</a></dd>
+<dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/ilostat">https://econdatalibrary.com/ilostat</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
 <dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
 <dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
@@ -274,14 +296,20 @@ Usage:
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
   &quot;name&quot;: &quot;ILOSTAT&quot;,
-  &quot;description&quot;: &quot;Full-coverage grouped ingest of ILOSTAT (International Labour Organization). ILOSTAT exposes every indicator through the rplumber bulk API: - TOC of ALL indicators: /metadata/toc/indicator (1,947 indicator-frequency datasets) - bulk data per indicator: /data/indicator?id=&lt;ID&gt;&amp;format=.parquet Each…&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/ilostat.html&quot;,
+  &quot;description&quot;: &quot;Unemployment rate, aged 15+ (Total) - Australia; Unemployment rate, aged 15+ (Total) - Brazil. ILOSTAT. 80 series, 1947–2025. Free download.&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/ilostat&quot;,
   &quot;identifier&quot;: &quot;ilostat&quot;,
   &quot;isAccessibleForFree&quot;: true,
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
+  },
+  &quot;includedInDataCatalog&quot;: {
+    &quot;@type&quot;: &quot;DataCatalog&quot;,
+    &quot;@id&quot;: &quot;https://econdatalibrary.com/#catalog&quot;,
+    &quot;name&quot;: &quot;Econ Data Library&quot;,
+    &quot;url&quot;: &quot;https://econdatalibrary.com/catalog&quot;
   },
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
@@ -291,6 +319,13 @@ Usage:
   &quot;keywords&quot;: [
     &quot;Labour Markets&quot;,
     &quot;ilostat&quot;
+  ],
+  &quot;variableMeasured&quot;: [
+    &quot;Unemployment rate, aged 15+ (Total)&quot;,
+    &quot;Youth unemployment rate, aged 15-24 (Total)&quot;,
+    &quot;Employment-to-population ratio, aged 15+ (Total)&quot;,
+    &quot;Labour force participation rate, aged 15+ (Total)&quot;,
+    &quot;Employment, aged 15+ (Total, thousands)&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1947-12-31/2025-12-31&quot;,
   &quot;repeatFrequency&quot;: &quot;P1Y&quot;,
@@ -303,6 +338,7 @@ Usage:
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;DataDownload&quot;,
+      &quot;name&quot;: &quot;ilostat — CSV&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
       &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=ilostat&quot;,
       &quot;license&quot;: &quot;https://creativecommons.org/licenses/by/4.0/&quot;
@@ -329,8 +365,8 @@ Usage:
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
   &quot;name&quot;: &quot;ilostat&quot;,
-  &quot;description&quot;: &quot;Full-coverage grouped ingest of ILOSTAT (International Labour Organization). ILOSTAT exposes every indicator through the rplumber bulk API: - TOC of ALL indicators: /metadata/toc/indicator (1,947 indicator-frequency datasets) - bulk data per indicator: /data/indicator?id=&lt;ID&gt;&amp;format=.parquet Each…&quot;,
-  &quot;url&quot;: &quot;https://econdatalibrary.com/ilostat.html&quot;,
+  &quot;description&quot;: &quot;Unemployment rate, aged 15+ (Total) - Australia; Unemployment rate, aged 15+ (Total) - Brazil. ILOSTAT. 80 series, 1947–2025. Free download.&quot;,
+  &quot;url&quot;: &quot;https://econdatalibrary.com/ilostat&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;ILOSTAT&quot;
@@ -357,7 +393,7 @@ Usage:
     }
   ]
 }</pre></details>
-<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-07-31 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
+<div class="foot">Part of the Econ Data Library catalog &middot; metadata generated 2026-08-01 from the central registry &middot; <a href="index.html">browse all datasets</a></div>
 </div>
 <div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
   <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">

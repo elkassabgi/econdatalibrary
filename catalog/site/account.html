@@ -62,7 +62,7 @@ border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-sp
 .fallback[open]{padding-bottom:1.15rem}
 .who{font-size:.95rem;color:var(--g600);line-height:1.6;margin-top:.15rem}
 .who b{color:#111827}
-</style><script src="assets/sso.js?v=20260801k"></script>
+</style><script src="assets/sso.js?v=20260802a"></script>
 <!-- REMOVED 2026-07-31: the inline "clicking Sign in is explicit intent" block that
      ran location.replace() to api.hfdatalibrary.com/v1/auth/sso on page load.
      It was a FULL-PAGE redirect off econdatalibrary.com, which is exactly what the
@@ -498,6 +498,8 @@ async function onFamilyLogin(detail) {
   // now says which kind of login this was.
   if (detail && detail.deliberate) {
     try { sessionStorage.removeItem('ekd_signed_out'); } catch (e) {}
+    try { localStorage.removeItem('ekd_signed_out'); } catch (e) {}   // BOTH, or the durable
+    // copy outlives the sign-in and suppresses the resume from then on.
   }
   clearSigninPending();   // the account server honoured this session, so the attempt is
                           // over: download.html must stop saying it was never finished
@@ -792,6 +794,7 @@ bind('signout', 'click', async function (e) {
   // can be slow or fail (note the 2.5s race below), and whether a logout held must not depend on
   // winning that race. A deliberate sign-in clears the flag again.
   try { sessionStorage.setItem('ekd_signed_out', '1'); } catch (err) {}
+  try { localStorage.setItem('ekd_signed_out', '1'); } catch (err) {}   // survives into OTHER tabs
   // Bounded wait. The SDK's logout() is a plain fetch with no timeout, and try/catch only
   // covers a request that FAILS — a connection that is accepted and never answered (captive
   // portal, hung origin) leaves the await pending forever, so location.reload() never runs
