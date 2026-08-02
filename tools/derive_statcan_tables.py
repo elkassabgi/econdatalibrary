@@ -105,14 +105,31 @@ def choose_split(con, path: str, n_rows: int, max_rows: int):
                 FROM read_parquet('{path}')
                 WHERE value IS NOT NULL AND obs_date IS NOT NULL
                 GROUP BY 1""")
-            for k in range(1, 8):
+            ladder = []
+            for k in range(1, 9):
                 trunc = ("array_to_string(array_slice(string_split(c, '.'), 1, "
                          f"{k}), '.')")
                 parts, biggest = con.execute(f"""
                     SELECT count(*), max(s) FROM (
                       SELECT {trunc} AS p, sum(n) AS s FROM _coord GROUP BY 1)""").fetchone()
+                ladder.append((k, parts or 0, biggest or 0))
                 if parts and 2 <= parts <= 20_000 and biggest and biggest <= max_rows:
                     return f"coordinate:{k}", parts
+            # NO LEVEL SATISFIED BOTH BOUNDS — say so WITH the ladder, because "refused" alone
+            # hides that this is a parameter choice and not a property of the data. Measured on
+            # 12100152 (427,009,412 rows):
+            #     k=4   6,514 parts   largest 2,172,577   <- fits the part cap, over the row bound
+            #     k=5 317,350 parts   largest   339,545   <- fits the row bound, absurd part count
+            # There is no k that fits both at max_rows=500,000, and the honest resolution is to
+            # raise --max-rows for this source (k=4 becomes legal at 3,000,000, giving 6,514
+            # parts of ~65 MB) rather than emit a third of a million objects for one table.
+            print(f"      coordinate ladder (no level fits parts<=20,000 AND rows<={max_rows:,}):",
+                  flush=True)
+            for k, parts, biggest in ladder:
+                fits = ("parts ok" if 2 <= parts <= 20_000 else "parts too many") + ", " + \
+                       ("rows ok" if biggest <= max_rows else "rows too big")
+                print(f"        k={k}  {parts:>12,} parts  largest {biggest:>14,}   {fits}",
+                      flush=True)
         except Exception:                                       # noqa: BLE001
             pass
 
