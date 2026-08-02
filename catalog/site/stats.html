@@ -250,6 +250,30 @@ var INST_PRESTIGE={'Stanford University':10,'Stanford':10,'National University o
 function instIcon(name){var val=INST_DOMAINS[name]; var inner=''; if(val){var url=val.indexOf('CUSTOM:')===0?val.substring(7):'https://www.google.com/s2/favicons?sz=32&domain='+val; inner='<img src="'+url+'" width="20" height="20" style="vertical-align:middle;border-radius:3px;object-fit:contain" onerror="this.style.display=\'none\'" alt="">';} return '<span class="inst-ic">'+inner+'</span>';}
 async function load(){
   try{ var r=await fetch(ECON+'/v1/public-stats'); if(r.ok){var d=await r.json();
+    // Family-wide figures come from the shared endpoint; this site's own values are the fallback,
+    // so a transient failure degrades to slightly-stale data rather than an empty section.
+    //
+    // WHICH FIGURES ARE SHARED IS NOT A GUESS - it was measured on 2026-08-01:
+    //
+    //   total_users            hf 603     econ 603     -> SAME: one users table, family-wide
+    //   country_count          hf 69      econ 69      -> SAME: countries of registered users
+    //   total_visitors         hf 21,707  econ 2,391   -> DIFFERENT: per-site traffic
+    //   visitor_country_count  hf 130     econ 74      -> DIFFERENT: per-site traffic
+    //   total_page_views       hf 46,943  econ 14,258  -> DIFFERENT: per-site traffic
+    //
+    // So institutions, countries and total_users are taken from the family endpoint, and every
+    // visitor_* figure is deliberately left local. Pulling visitor numbers from the family
+    // endpoint would tell econ it had 21,707 visitors it never had - a wrong number on a public
+    // page, which is worse than an inconsistent one.
+    try{
+      var fr=await fetch(FAMILY_STATS);
+      if(fr.ok){ var fd=await fr.json(); if(fd){
+        if(fd.institutions&&fd.institutions.length) d.institutions=fd.institutions;
+        if(fd.countries&&Object.keys(fd.countries).length){ d.countries=fd.countries; d.country_count=fd.country_count||Object.keys(fd.countries).length; }
+        if(fd.total_users!=null) d.total_users=fd.total_users;
+      } }
+    }catch(e){ /* keep this site's own values */ }
+
     set('s-users',(d.total_users||0).toLocaleString());
     if(d.total_visitors!=null)set('s-visitors',Number(d.total_visitors).toLocaleString());
     if(d.total_downloads!=null)set('s-downloads',Number(d.total_downloads).toLocaleString());
@@ -272,12 +296,7 @@ async function load(){
       }).join('');
     } else { document.getElementById('dl-chart').innerHTML='<p style="color:var(--g500)">No downloads yet.</p>'; }
     // Institutions — prestige-ordered, with verified icons (mirrors hf)
-    // Institutions come from the family endpoint, with this site's own list as a fallback so a
-    // transient failure degrades to the old behaviour rather than an empty section.
-    try{
-      var fr=await fetch(FAMILY_STATS);
-      if(fr.ok){ var fd=await fr.json(); if(fd&&fd.institutions&&fd.institutions.length) d.institutions=fd.institutions; }
-    }catch(e){ /* keep this site's own institutions */ }
+
     if(d.institutions&&d.institutions.length){
       var sorted=d.institutions.slice().sort(function(a,b){var ar=INST_PRESTIGE[a.institution]||9999, br=INST_PRESTIGE[b.institution]||9999; if(ar!==br)return ar-br; return a.institution.localeCompare(b.institution);});
       var TOP=20, top=sorted.slice(0,TOP), rest=sorted.slice(TOP);
