@@ -92,13 +92,33 @@ def main() -> int:
     print(f"series: {len(span):,}")
 
     # --- titles ------------------------------------------------------------------------
-    dsd_dims, dim_codes = T.load_structure(a.flow, a.agency)
-    order = T.load_dims(a.source, store) or T.infer_dims(
-        list(span)[:12], dsd_dims, dim_codes)
+    # DEGRADE, DON'T DIE, WHEN THE PUBLISHER'S STRUCTURE IS GONE. IMF restructured its SDMX
+    # catalogue into VERSIONED PER-TABLE dataflows: there is no `IFS` or `FSI` dataflow any
+    # more, only MFS_DC v8.0.0, MFS_CBS v24.0.0, FSIC v13.0.1, BOP v21.0.0 and ~220 others. So
+    # /dataflow/IMF.STA/<legacy flow> answers 204 No Content for EVERY legacy code — including
+    # the FSI one that used to work, which is how I know this is the endpoint and not a bad
+    # argument. Refusing to catalogue would leave 38 million observations unreachable in order
+    # to protect a nicety, so the rows are written with the RAW KEY as title — exactly what the
+    # 73,288 existing imf_fsi rows already carry — and the degradation is ANNOUNCED and COUNTED
+    # rather than silent. --require-titles restores the old refuse-if-undecodable behaviour.
+    dsd_dims, dim_codes, order = {}, {}, None
+    try:
+        dsd_dims, dim_codes = T.load_structure(a.flow, a.agency)
+        order = T.load_dims(a.source, store) or T.infer_dims(
+            list(span)[:12], dsd_dims, dim_codes)
+    except Exception as e:                                      # noqa: BLE001
+        print(f"STRUCTURE UNAVAILABLE {a.agency}/{a.flow}: {type(e).__name__} {str(e)[:60]}")
     if not order:
-        print("could not establish the key order - refusing to write titles that may be wrong")
-        return 1
-    print(f"key order: {order}")
+        if a.require_titles:
+            print("could not establish the key order - refusing to write titles that may be "
+                  "wrong (--require-titles)")
+            return 1
+        print(f"TITLES DEGRADED: {a.source} rows get their RAW KEY as title. They are "
+              f"downloadable by id and poor to search. Re-run with a --flow that resolves "
+              f"against the current IMF dataflow list to fill them in.")
+        dim_codes, order = {}, []
+    else:
+        print(f"key order: {order}")
 
     meta = json.dumps({
         "citation_short": CITATION_SHORT,

@@ -138,6 +138,16 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // date-in-the-key defect ons_uk has. Licence audited 2026-07-29 (etalab-2.0, same
   // publisher and API host as the already-confirmed insee_bdm).
   "insee_melodi",
+  // istat added 2026-08-01 — FLOW grain, 14,267 catalogue rows over 14,258 R2 objects.
+  // 398,619,720 observations across 43,564,079 series is 9.2 obs per series, so series grain
+  // would have meant 43.5M CSVs averaging nine rows each; the unit is the dataflow. The 123
+  // flows over 500,000 rows are split on one of their own dimensions — or on a PAIR of them:
+  // three flows holding 96,725,407 rows had no single dimension that divided them and were
+  // refused by the first derive, under a summary that said "errors 0, skipped 0" (R219).
+  // The split choice per flow lives in _split_map.json beside the store and the resolver
+  // reads it; without it a part id like `istat:101_1015#ART` means nothing. Licence CC BY 4.0,
+  // CLEARED, quoted verbatim from ISTAT's own legal notice.
+  "istat",
   // ons_uk — dataset-grain publish, 42 datasets / 25,408,157 rows / 3,897,884 series
   // (2026-07-29), after the approved re-key. The stored ids used to embed the observation
   // date AND `CV` (a coefficient of variation — a property of one measurement), so every
