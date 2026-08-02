@@ -257,22 +257,37 @@ def _resolve_worldbank(series_id: str, root: str) -> Resolution:
     # catalog: worldbank:NY.GDP.MKTP.CD:AFE  (legacy connector source; 3 indicators
     # FP.CPI.TOTL.ZG / NY.GDP.MKTP.CD / SL.UEM.TOTL.ZS x 263 geos = 692 series).
     #
-    # ON-DISK: ONE parquet PER SERIES; the catalog id is encoded in the FILENAME,
-    # not in any column. core/storage.py writes
+    # CONSOLIDATED STORE FIRST. The fetcher was migrated off the one-file-per-series
+    # layout and now writes a single clean_full/worldbank/worldbank.parquet keyed by
+    # `series_key` = the catalog id minus the `worldbank:` prefix. This READER was not
+    # migrated with it, so on a runner — where the legacy clean/ tier does not exist —
+    # every derive failed ("csv_derive failed 684/684 series") in the same run whose
+    # fetcher reported +31,445 new rows. It passed locally only because 692 legacy
+    # files still sit on this disk, which is what hid it. The store is what the
+    # RESOLVER opens, not what the fetcher writes (ledger R241).
+    consolidated = os.path.join(root, "worldbank", "worldbank.parquet")
+    if os.path.exists(consolidated):
+        return Resolution(
+            series_id, "worldbank", consolidated, "series_key",
+            pc.equal(ds.field("series_key"), series_id.split(":", 1)[1]),
+        )
+    # LEGACY FALLBACK: ONE parquet PER SERIES, the catalog id encoded in the FILENAME
+    # and in no column — core/storage.py wrote
     #   data/clean/<source>/<series_id with ':' -> '__', '/' -> '_'>.parquet
-    # body cols are [obs_date, value, version] only -- there is NO native key column.
-    # This source is pre-migration, so it still lives under clean/ (sibling of the
-    # clean_full root passed in). The file IS the series: no in-file key to filter,
-    # so the predicate selects every row and the caller stamps the catalog id.
+    # with body cols [obs_date, value, version] only. The file IS the series, so the
+    # predicate selects every row and the caller stamps the catalog id. Kept because a
+    # machine holding only the old tier must still resolve rather than hard-fail.
     safe = series_id.replace(":", "__").replace("/", "_")
     fname = f"{safe}.parquet"
     candidates = [
-        os.path.join(root, "worldbank", fname),                              # if ever migrated under root
-        os.path.join(os.path.dirname(root), "clean", "worldbank", fname),    # legacy clean/ sibling (current home)
+        os.path.join(root, "worldbank", fname),
+        os.path.join(os.path.dirname(root), "clean", "worldbank", fname),    # legacy clean/ sibling
     ]
     path = next((p for p in candidates if os.path.exists(p)), candidates[0])
     if not os.path.exists(path):
-        raise ResolveError(f"{series_id}: expected World Bank file {path!r} not found")
+        raise ResolveError(
+            f"{series_id}: no World Bank data — neither the consolidated store "
+            f"{consolidated!r} nor the legacy per-series file {path!r} exists")
     # key_col 'series_id' is virtual (identity is the filename); predicate = select-all.
     return Resolution(series_id, "worldbank", path, "series_id", pc.scalar(True))
 
