@@ -65,7 +65,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, retry_after_seconds, sane_since
+from ._common import (Deadline, Tally, finalize, load_rotation, retry_after_seconds,
+                      rotate_after, sane_since, save_rotation)
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -620,7 +621,35 @@ def update(unit, since) -> Result:
     global_max: dt.date | None = None
     cursors: dict[str, str] = {}   # table prefix '<subj>:<table_id>' -> max obs_date written
 
-    for subj in sorted(by_subject.keys()):
+    # BOUND ITSELF BELOW THE ORCHESTRATOR'S CAP, AND ROTATE.
+    # Measured in the 2026-08-02 cloud run: statfin was killed by the 45-minute hard
+    # timeout, as were stat_estonia and worldbank_wdi — three sources burning ~135 of the
+    # run's ~262 minutes and then being interrupted. Only 20 sources were attempted all
+    # day, so a "daily" source is really touched about every fifth day (dst had gone 8).
+    #
+    # Being killed and yielding are different events: the kill runs no cleanup and, worse,
+    # the subject list is `sorted(...)` — a FIXED order. A bound over a fixed order is a
+    # truncation, not a budget (R190): every run re-walked the same prefix and the tail
+    # subjects were never reached at all, no matter how many runs went by.
+    #
+    # So: stop at 30 minutes, under the 45-minute cap, and resume after the subject the
+    # last run finished. Per-subject merges already land inside the loop, so a stop keeps
+    # everything done so far; rotation is what makes the remainder actually arrive.
+    budget_min = float(os.environ.get("STATFIN_BUDGET_MIN", "30"))
+    dl = Deadline(minutes=budget_min)
+    subjects = rotate_after(sorted(by_subject.keys()), load_rotation(out_dir))
+    stopped_early = False
+    last_subj = ""
+
+    for subj in subjects:
+        if dl.spent():
+            stopped_early = True
+            print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
+                  f"{dl.elapsed_min():.1f} min — stopped after subject {last_subj!r}, "
+                  f"{len(subjects) - subjects.index(subj)} of {len(subjects)} subject(s) "
+                  f"deferred to the next tick", flush=True)
+            break
+        last_subj = subj
         subj_tables = by_subject[subj]
         path = os.path.join(out_dir, f"{subj}.parquet")
         before = blob.row_count(path)
@@ -703,10 +732,24 @@ def update(unit, since) -> Result:
         else:
             total_rows += before
 
+    # Save the bookmark even after a COMPLETE pass: it is then the last subject in order
+    # and the next run wraps to the top through this same path, so there is no branch that
+    # could quietly stop rotating.
+    if last_subj:
+        save_rotation(out_dir, last_subj)
+
     last_obs = global_max.isoformat() if global_max else (since or None)
     # Sub-units == tables; contract floor is (#subunits - 1). Active-but-quiet tables are
     # counted added_unit (data flowed), so the floor only trips on a true wholesale outage
     # where EVERY table returned empty AND none added.
-    n_subunits = sum(len(v) for v in by_subject.values())
+    #
+    # A budget stop only walked PART of the subject list, so the floor must be scaled to
+    # what was actually visited — otherwise a clean partial pass trips a "wholesale
+    # outage" that did not happen.
+    if stopped_early:
+        visited = set(subjects[:subjects.index(last_subj) + 1])
+        n_subunits = sum(len(by_subject[s]) for s in visited if s in by_subject)
+    else:
+        n_subunits = sum(len(v) for v in by_subject.values())
     return finalize(tally, total_rows, last_obs, source=SOURCE,
                     series_cursors=cursors, empty_window_floor=max(n_subunits - 1, 1))
