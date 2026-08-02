@@ -1155,6 +1155,10 @@ sources:
   # reporting "no new rows". Daily matches the publisher; when nothing is due the run is
   # a single GET /v1/tables and an early return.
   cadence: daily
+  # data_cadence MEASURED 2026-08-02: 37 distinct obs_date(s) in the trailing
+  # 3 years => the publisher releases monthly. Sets the LATENESS clock only; the
+  # check cadence above is unchanged. See health.py and task #58.
+  data_cadence: monthly
   refresh_cost: medium
   out_dir: dst
   review: true
@@ -5135,6 +5139,10 @@ sources:
   strategy_reason: World Bank v2 API (source=75) honors a server-side date filter (sibling connector already wires since->date=YYYY:thisyear)
     AND exposes per-indicator lastupdated vintage; fetch only recent years and merge per indicator.
   cadence: weekly
+  # data_cadence MEASURED 2026-08-02: 3 distinct obs_date(s) in the trailing
+  # 3 years => the publisher releases annual. Sets the LATENESS clock only; the
+  # check cadence above is unchanged. See health.py and task #58.
+  data_cadence: annual
   refresh_cost: fast
   out_dir: worldbank_esg
   review: true
@@ -5279,6 +5287,10 @@ sources:
     Income-group/region aggregates come back with a blank countryiso3code, so the 2-char country.id is mapped
     to the 3-char on-disk code via the /v2/country reference list, keeping series_key WDI:{ind}:{ctry} identical.'
   cadence: quarterly
+  # data_cadence MEASURED 2026-08-02: 3 distinct obs_date(s) in the trailing
+  # 3 years => the publisher releases annual. Sets the LATENESS clock only; the
+  # check cadence above is unchanged. See health.py and task #58.
+  data_cadence: annual
   refresh_cost: medium
   out_dir: worldbank_wdi
   review: true
@@ -5702,6 +5714,10 @@ sources:
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
+  # data_cadence MEASURED 2026-08-02: 3 distinct obs_date(s) in the trailing
+  # 3 years => the publisher releases annual. Sets the LATENESS clock only; the
+  # check cadence above is unchanged. See health.py and task #58.
+  data_cadence: annual
   refresh_cost: fast
   out_dir: imf_gfsssuc_direct
   review: true
@@ -5788,6 +5804,10 @@ sources:
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
+  # data_cadence MEASURED 2026-08-02: 3 distinct obs_date(s) in the trailing
+  # 3 years => the publisher releases annual. Sets the LATENESS clock only; the
+  # check cadence above is unchanged. See health.py and task #58.
+  data_cadence: annual
   refresh_cost: fast
   out_dir: imf_gfssoef_direct
   review: true
@@ -6150,6 +6170,10 @@ sources:
     simply be re-pulled whole when DBnomics re-indexes it. Gating is on the dataset's own indexed_at rather than any HTTP
     validator.
   cadence: monthly
+  # data_cadence MEASURED 2026-08-02: 1 distinct obs_date(s) in the trailing
+  # 3 years => the publisher releases annual. Sets the LATENESS clock only; the
+  # check cadence above is unchanged. See health.py and task #58.
+  data_cadence: annual
   refresh_cost: fast
   out_dir: who_hwf
   review: true
@@ -6165,6 +6189,10 @@ sources:
   strategy_reason: Ids ARE DBnomics series codes (series_key WHO_RS:<code>); re-pull the whole dataset when DBnomics
     re-indexes it, gating on the dataset's indexed_at.
   cadence: monthly
+  # data_cadence MEASURED 2026-08-02: 0 distinct obs_date(s) in the trailing
+  # 3 years => the publisher releases annual. Sets the LATENESS clock only; the
+  # check cadence above is unchanged. See health.py and task #58.
+  data_cadence: annual
   refresh_cost: fast
   out_dir: who_rs
   review: true
@@ -6179,6 +6207,10 @@ sources:
   strategy_reason: Ids ARE DBnomics series codes (series_key WHO_SDG:<code>); re-pull the whole dataset when DBnomics
     re-indexes it, gating on the dataset's indexed_at.
   cadence: monthly
+  # data_cadence MEASURED 2026-08-02: 2 distinct obs_date(s) in the trailing
+  # 3 years => the publisher releases annual. Sets the LATENESS clock only; the
+  # check cadence above is unchanged. See health.py and task #58.
+  data_cadence: annual
   refresh_cost: medium
   out_dir: who_sdg
   review: true

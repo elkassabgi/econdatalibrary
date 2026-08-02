@@ -142,8 +142,27 @@ def assess(store=None) -> dict:
         # So the LATENESS clock for an irregular publisher is a year: a genuine multi-year
         # freeze still turns red (365 * 3 = 1,095 days), while a normal annual or biennial
         # release cycle does not. Scheduling is untouched - CADENCE_DAYS still says 7.
+        #
+        # A source may also declare `data_cadence` — how often the PUBLISHER releases,
+        # a different fact from `cadence` (how often WE poll). It affects ONLY the
+        # lateness clock here; scheduling stays on CADENCE_DAYS[cadence].
+        #
+        # Forced by dst on 2026-08-02: its CHECK cadence had to go monthly -> daily so it
+        # could converge on a publisher moving ~10 tables a day, but its DATA is monthly
+        # (37 distinct obs_dates in the trailing 3 years). Judged on the check clock that
+        # is a 3-day tolerance against a 62-day-old newest observation — a permanent false
+        # red, and one that would have surfaced only once dst became HEALTHY, because
+        # ATTENTION outranks the data check and was masking it.
+        #
+        # Every data_cadence in the registry is MEASURED (distinct obs_date over the
+        # trailing 3 years, the number recorded in that entry's comment), never guessed.
+        # This field CAN hide staleness, so declaring one without evidence is the abuse
+        # case. It cuts both ways: a source polled annually that publishes monthly gets a
+        # TIGHTER clock, not a looser one.
         LATENESS_PERIOD = {"irregular": 365}
-        data_days = (LATENESS_PERIOD.get(cadence, period)
+        lat_cadence = e.get("data_cadence") or cadence
+        data_days = (LATENESS_PERIOD.get(lat_cadence,
+                                         CADENCE_DAYS.get(lat_cadence, period))
                      * (SLA_TOLERANCE + DATA_SLACK_PERIODS))
 
         src = store.get_source(sid)
