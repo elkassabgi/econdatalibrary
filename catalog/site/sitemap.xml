@@ -1,1028 +1,1123 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://econdatalibrary.com/index.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>daily</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/catalog.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/catalog</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>daily</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/abs.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/docs</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>monthly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/api</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>monthly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/cite</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>monthly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/stats</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>monthly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/contact</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>yearly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/abs</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/adb</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/barro_lee</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/bcb</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/bcrp</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/bea</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/bfs</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/bis</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/bls</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/boc</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/boe</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/bundesbank</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/census</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/cepii_gravity</loc>
+    <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/cnb</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/adb.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/comtrade</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/barro_lee.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/cso</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/bcb.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/damodaran</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/bcrp.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/defillama</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/bea.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/dst</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/bfs.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ecb</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/bis.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/edgar_jrc</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/bls.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ei_statreview</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/boc.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/eia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/boe.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ember</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/bundesbank.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/epu</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/census.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/etr</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/cepii_gravity.html</loc>
-    <lastmod>2024-04-15</lastmod>
+    <loc>https://econdatalibrary.com/eurostat</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/cnb.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_ae</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/comtrade.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_af</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/cso.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_ec</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/damodaran.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_ep</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/defillama.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_es</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/dst.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_et</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ecb.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_ew</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/edgar_jrc.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_fo</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ei_statreview.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_ga</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/eia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_gb</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ember.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_ge</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/epu.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_gf</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/etr.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_gl</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/eurostat.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_gn</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_ae.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_gr</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_af.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_gt</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_ec.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_gy</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_ep.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_ic</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_es.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_oa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_et.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_pp</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_ew.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_qa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_fo.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_qcl</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_ga.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_ql</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_gb.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_qp</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_ge.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fao_rp</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_gf.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/faostat</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_gl.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fed_board</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_gn.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fhfa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_gr.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/frankfurter</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_gt.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/fsi_fundforpeace</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_gy.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/gapminder</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_ic.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/gcb</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_oa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ggdc</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_pp.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/gpi</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_qa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/gppd</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_qcl.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/gti</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_ql.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/hagstofa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_qp.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/harvard_atlas</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fao_rp.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/hf_equities</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/faostat.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/idb</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fed_board.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ilostat</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fhfa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/frankfurter.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_afrreo</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/fsi_fundforpeace.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_afrreo_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/gapminder.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_apdreo</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/gcb.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_apdreo_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ggdc.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_bop</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/gpi.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_bopagg</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/gppd.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_cdis</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/gti.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_cofer</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/hagstofa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_cofer_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/harvard_atlas.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_commodity</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/hf_equities.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_cpi</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/idb.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_cpis</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ilostat.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_dot</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_fas</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_afrreo.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_fas_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_afrreo_direct.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_fdi</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_apdreo.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_fdi_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_apdreo_direct.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_fiscaldecentralization</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_bopagg.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_fm</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_cofer.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_fsi</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_cofer_direct.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_fsire</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_commodity.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gender_budgeting</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_cpi.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gender_equality</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_fas.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfsbs_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_fas_direct.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfscofog</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_fdi.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfscofog_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_fdi_direct.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfse</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_fiscaldecentralization.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfsfalcs</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_fm.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfsibs</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_fsi.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfsmab</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_fsire.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfsr</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_gender_budgeting.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfssfcp_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_gender_equality.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfssoef_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_gfscofog.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfssoo_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_gfse.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfsssuc</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_gfsfalcs.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_gfsssuc_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_gfsibs.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_hpdd</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_gfsmab.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_ifs</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_gfsssuc.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_irfcl</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_hpdd.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_mcdreo</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_mcdreo.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_mfs</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_namain_idc_n.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_namain_idc_n</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_pctot.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_pctot</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_pgcs.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_pgcs</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_pgi.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_pgi</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_psbsfad.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_psbsfad</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_unsdg_imf_inputs.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_unsdg_imf_inputs</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_weo.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_weo</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_whdreo.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_whdreo</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_whdreo_direct.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_whdreo_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_world.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_world</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/imf_world_direct.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/imf_world_direct</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/insee_bdm.html</loc>
-    <lastmod>2026-07-28</lastmod>
+    <loc>https://econdatalibrary.com/insee_bdm</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/insee_melodi.html</loc>
-    <lastmod>2026-07-28</lastmod>
+    <loc>https://econdatalibrary.com/insee_melodi</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ipea.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ipea</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/kof_globalization.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/istat</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ksh_stadat.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/kof_globalization</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/maddison.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ksh_stadat</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/nasa_giss.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/maddison</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/noaa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/nasa_giss</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/nyfed.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/noaa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/oecd.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/nyfed</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ofr.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/oecd</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ons_uk.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ofr</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/owid.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ons_uk</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/oxcgrt.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/owid</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/penn_world_table.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/oxcgrt</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/pip.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/penn_world_table</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ppi.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/pip</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/pwt.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ppi</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/rba.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/pwt</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/riksbank.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/rba</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/scb.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/riksbank</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/sec_edgar.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/scb</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/snb.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/sec_edgar</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ssb.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/snb</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/stat_estonia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ssb</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/stat_latvia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/stat_estonia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/stat_slovenia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/stat_latvia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/statcan.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/stat_slovenia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/statfin.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/statcan</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/stats_nz.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/statfin</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/swiid.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/stats_nz</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/transparency_ti.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/swiid</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/treasury.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/transparency_ti</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/ucdp.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/treasury</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/un_wpp.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/ucdp</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_bopcaba.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/un_wpp</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_ciocgeaia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_bopcaba</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_cioiuibbicoeair4a.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_ciocgeaia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_cpa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_cioiuibbicoeair4a</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_cpia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_cpa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_cpta.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_cpia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_fdiiaofasa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_cpta</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_fmcpa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_fdiiaofasa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_fmcpia21.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_fmcpa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_gasbeaiogasa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_fmcpia21</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_gasbtbia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_gasbeaiogasa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_gasbtoia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_gasbtbia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_gdpgbtoevbkoeatasa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_gasbtoia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_gdptapccac2pa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_gdpgbtoevbkoeatasa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_lscia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_gdptapccac2pa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_lsciq.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_lscia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_mfbcoboa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_lsciq</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_mmcascioeaiopa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_mfbcoboa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_mpcadioeaia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_mmcascioeaiopa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_mtba.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_mpcadioeaia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_mttasa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_mtba</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_mttgra.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_mttasa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_neera.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_mttgra</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_reericba.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_neera</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_reerigdba.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_reericba</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_rfia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_reerigdba</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_rgdptapcgra.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_rfia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_sbeaiotsvsaga.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_rgdptapcgra</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_sbtisvsaga.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_sbeaiotsvsaga</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_soigapotta.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_sbtisvsaga</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_sotwmfvbcoboa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_soigapotta</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_srbca.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_sotwmfvbcoboa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_tabbapotta.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_srbca</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_tabmcioeaiopa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_tabbapotta</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_tabmscioeaiopa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_tabmcioeaiopa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_tabpcioeaia.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_tabmscioeaiopa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_taupa.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_tabpcioeaia</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unctad_wstbtocabgoea.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_taupa</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/undp_hdr.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unctad_wstbtocabgoea</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unesco_clte.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/undp_hdr</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unesco_cltt.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unesco_clte</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unesco_dem.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unesco_cltt</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unesco_film.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unesco_dem</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unesco_inno.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unesco_film</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unesco_natmon.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unesco_inno</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unesco_sdg.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unesco_natmon</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/unhcr.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unesco_sdg</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/usda.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/unhcr</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/wgi.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/usda</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/who_hwf.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/wgi</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/who_rs.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/who_hwf</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/who_sdg.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/who_rs</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/wid.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/who_sdg</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/wikidata.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/wid</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/worldbank.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/wikidata</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/worldbank_esg.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/worldbank</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/worldbank_pink.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/worldbank_esg</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/worldbank_wdi.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/worldbank_pink</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/yale_epi.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/worldbank_wdi</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://econdatalibrary.com/zillow.html</loc>
-    <lastmod>2026-07-30</lastmod>
+    <loc>https://econdatalibrary.com/yale_epi</loc>
+    <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
   </url>
 </urlset>
