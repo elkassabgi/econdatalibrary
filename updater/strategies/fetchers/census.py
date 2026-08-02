@@ -137,11 +137,30 @@ def _dims_from_store(path: str) -> tuple[list[str], list[str]]:
     tbl = blob.read_table(path, columns=["series_key"])
     if tbl.num_rows == 0:
         return [], cols
-    sample = tbl.column("series_key")[0].as_py() or ""
-    dims = []
-    for seg in sample.split("|")[1:]:                        # [0] is the flow path
-        if "=" in seg:
-            dims.append(seg.split("=", 1)[0])
+
+    # THE UNION ACROSS EVERY KEY SHAPE, NOT ONE SAMPLE.
+    #
+    # series_key_of omits a dimension whose value is empty, so a flow with heterogeneous
+    # geography has MORE THAN ONE key shape and no single key lists them all. eits/qtax is
+    # the case: its US rows carry `us` and no STATE (STATE is null at national level), its
+    # state rows carry STATE and no `us`. Sampling key[0] — a US row — produced a dimension
+    # list with `us` and without STATE, so every state row got built with the wrong shape.
+    # That is what created 1,209 duplicate series before the shape guard existed.
+    #
+    # Taking the union restores both: on a US row STATE is empty and drops out, on a state
+    # row `us` is absent and drops out, and each reproduces its own stored shape exactly.
+    # Order is first-seen so keys stay byte-identical to what the ingester wrote.
+    dims: list[str] = []
+    seen: set = set()
+    for k in tbl.column("series_key").to_pylist():
+        if not k:
+            continue
+        for seg in k.split("|")[1:]:                         # [0] is the flow path
+            if "=" in seg:
+                name = seg.split("=", 1)[0]
+                if name not in seen:
+                    seen.add(name)
+                    dims.append(name)
     return dims, cols
 
 
@@ -188,10 +207,21 @@ def _predicates(levels: set) -> list[str]:
     Measured in a sandbox: qtax went 1,421 -> 2,630 distinct series. That is silent
     duplication of real data, which is far worse than the gap it was meant to close.
 
-    Under-coverage is honest and is reported; corruption is neither. So qtax's state series
-    stay un-refreshed and NAMED until the state response is mapped onto the stored dimensions
-    properly, and _shape_guard below makes this whole class of mistake impossible to ship
-    again rather than relying on someone re-running my sandbox comparison.
+    Two causes, one fixed and one not:
+      * _dims_from_store sampled ONE key. qtax's US rows carry `us` and no STATE (null at
+        national level); its state rows carry STATE and no `us`. A single sampled US key
+        produced a dimension list with no STATE at all. FIXED — the dimension list is now
+        the union across every stored key.
+      * ORDER still differs. The stored state key places STATE fourth
+        (GEO_ID|CATEGORY_CODE|SEASONALLY_ADJ|STATE|ERROR_DATA|...), while a first-seen union
+        over US-majority rows appends it last. series_key_of joins in dim order, so the
+        rebuilt key is a permutation of the stored one — a DIFFERENT key. Re-enabling
+        state:* with the union still produced 1,209 unknown shapes; the guard refused all of
+        them, which is the guard working.
+    Closing this needs PER-SHAPE dimension order — group the stored keys by shape and build
+    each row with the order of the shape whose dimension set it matches — not a flat union.
+    Until then qtax's 1,344 state series stay un-refreshed and are NAMED in the run's output,
+    because an honest gap beats a permuted key that silently invents series.
     """
     return ["us:*"]
 
