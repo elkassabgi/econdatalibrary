@@ -230,7 +230,7 @@ def main() -> int:
     print(f"{len(files)} dataflow file(s); splitting any over {a.max_rows:,} rows",
           flush=True)
 
-    spill = os.path.join(ROOT, "logs", "_duckspill")
+    spill = os.path.join(ROOT, "logs", "_duckspill", f"pid{os.getpid()}")
     os.makedirs(spill, exist_ok=True)
 
     existing = set()

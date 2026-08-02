@@ -91,19 +91,30 @@ def choose_split(con, path: str, n_rows: int, max_rows: int):
     # truncating it to k segments walks the publisher's own hierarchy from coarse to fine. Same
     # technique the istat derive uses for nested ISTAT territory codes and derive_census_tables
     # uses for HS commodity codes, applied to the column statcan actually nests.
+    # ONE SCAN, THEN ROLL UP — not one scan per truncation level. The obvious loop issues a
+    # count(distinct) and a group-by for each k, so seven levels is ~14 full passes over the
+    # table; on 12100152 (427M rows) that ran 78 CPU-MINUTES without finishing, and the derive
+    # has 8,207 tables to get through. Counting each FULL coordinate once gives a 17.7M-row
+    # summary, and every truncation level is then a cheap group-by over that summary rather than
+    # over the raw rows. Same answers, one pass.
     if "coordinate" in card:
-        for k in range(1, 8):
-            expr = ("array_to_string(array_slice(string_split(\"coordinate\", '.'), 1, "
-                    f"{k}), '.')")
-            try:
-                c = con.execute(f"select count(distinct {expr}) "
-                                f"from read_parquet('{path}')").fetchone()[0]
-                if not 2 <= c <= 20_000:
-                    continue
-                if largest(expr) <= max_rows:
-                    return f"coordinate:{k}", c
-            except Exception:                                   # noqa: BLE001
-                continue
+        try:
+            con.execute(f"""
+                CREATE OR REPLACE TEMP TABLE _coord AS
+                SELECT "coordinate" AS c, count(*) AS n
+                FROM read_parquet('{path}')
+                WHERE value IS NOT NULL AND obs_date IS NOT NULL
+                GROUP BY 1""")
+            for k in range(1, 8):
+                trunc = ("array_to_string(array_slice(string_split(c, '.'), 1, "
+                         f"{k}), '.')")
+                parts, biggest = con.execute(f"""
+                    SELECT count(*), max(s) FROM (
+                      SELECT {trunc} AS p, sum(n) AS s FROM _coord GROUP BY 1)""").fetchone()
+                if parts and 2 <= parts <= 20_000 and biggest and biggest <= max_rows:
+                    return f"coordinate:{k}", parts
+        except Exception:                                       # noqa: BLE001
+            pass
 
     usable = sorted((c, d) for d, c in card.items() if c >= 2)
     for prod, d1, d2 in sorted(
@@ -199,7 +210,13 @@ def main() -> int:
     print(f"{len(files):,} table(s); splitting any over {a.max_rows:,} rows"
           f"{' — LARGEST FIRST' if a.largest_first else ''}", flush=True)
 
-    spill = os.path.join(ROOT, "logs", "_duckspill")
+    # PER-PROCESS SPILL DIRECTORY. Every tool here used a shared logs/_duckspill, which is fine
+    # until two of them spill at the same moment — then one deletes the other's temp storage and
+    # both die: "IO Error: Failed to delete file duckdb_temp_storage_DEFAULT-0.tmp: The system
+    # cannot find the file specified", and the sibling exits 139. Observed exactly that running
+    # this probe alongside a measurement on the same table. DuckDB names its temp file after the
+    # DATABASE, not the process, so the collision is silent until it isn't.
+    spill = os.path.join(ROOT, "logs", "_duckspill", f"pid{os.getpid()}")
     os.makedirs(spill, exist_ok=True)
 
     existing = set()

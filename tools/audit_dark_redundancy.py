@@ -105,7 +105,7 @@ def main() -> int:
         dark = [(s, fs) for s, fs in dark if s in want]
     print(f"{len(dark)} dark series-shaped source(s); {len(served)} served source(s)\n")
 
-    spill = os.path.join(ROOT, "logs", "_duckspill")
+    spill = os.path.join(ROOT, "logs", "_duckspill", f"pid{os.getpid()}")
     os.makedirs(spill, exist_ok=True)
     verdicts = {"REDUNDANT": [], "NO KEY OVERLAP": [], "MIXED": [], "NO CANDIDATE": []}
 

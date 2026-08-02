@@ -108,7 +108,7 @@ def main() -> int:
     toc = toc_rows()
     print(f"{len(files):,} indicator file(s); split map {len(smap):,}; TOC {len(toc):,} rows")
 
-    spill = os.path.join(ROOT, "logs", "_duckspill")
+    spill = os.path.join(ROOT, "logs", "_duckspill", f"pid{os.getpid()}")
     os.makedirs(spill, exist_ok=True)
     meta_base = {
         "citation_short": "ILOSTAT, International Labour Organization.",

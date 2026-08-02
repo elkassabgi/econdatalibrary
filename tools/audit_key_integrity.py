@@ -97,7 +97,7 @@ def main() -> int:
         t0 = time.time()
         try:
             con.execute(f"SET memory_limit='{a.memory_limit}'")
-            spill = os.path.join(ROOT, "logs", "_duckspill")
+            spill = os.path.join(ROOT, "logs", "_duckspill", f"pid{os.getpid()}")
             os.makedirs(spill, exist_ok=True)   # DuckDB will not create it and errors if absent
             con.execute(f"SET temp_directory='{spill}'")
             con.execute("SET preserve_insertion_order=false")
