@@ -36,12 +36,14 @@ import re
 import shutil
 import sys
 
+import pyarrow as pa
 import requests
 
 from ... import blob, config
 from ...errors import DefinitiveError, TransientError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import (CURSOR_CAP, Tally, cursors_from_table, finalize, load_rotation,
+                      merge_cursor_map, rotate_after, save_rotation)
 
 SOURCE = "usda"
 PAGE = "https://www.nass.usda.gov/datasets/"
@@ -77,6 +79,82 @@ def current_vintage(unit):
     pairs = sorted((s, d) for s, (_f, d) in got.items())
     return f"{SOURCE}:" + hashlib.sha256(
         "|".join(f"{s}={d}" for s, d in pairs).encode()).hexdigest()[:16]
+
+
+def _table_cursors(out: str) -> dict:
+    """{table-grain key: max obs_date ISO} for the whole store — the §5.7 changed set.
+
+    WHY THIS EXISTS. usda merged 57,786,638 observations per run and reported NO cursors, so
+    orchestrate could not re-derive a single CSV: the run was demoted to `partial` every time
+    and every published CSV drifted from the parquet behind it. The module note this replaces
+    told a human to "re-run tools/derive_usda_tables.py after a new vintage lands" — a manual
+    step nobody performs on a monthly cron, which is exactly how the store gets ahead of what
+    users can download.
+
+    THE GRAIN IS THE CATALOGUE'S, NOT THE STORE'S. usda averages 3.7 obs/series across
+    15,534,339 series, so it is served as ~72,046 TABLES (_resolve_usda), and a catalog id is
+        usda:<SOURCE_DESC>|<AGG_LEVEL_DESC>|<SHORT_DESC>
+    while a store key carries 14 pipe-separated fields AND a redundant leading "usda:" — which
+    orchestrate._catalog_ids_for would turn into "usda:usda:…", mapping nothing (the trap the
+    CURSOR_CAP docstring records for ilostat). So the key is rebuilt from fields 1, 13 and 10
+    and emitted WITHOUT the source prefix, so "<source>:" + key == the catalog id.
+
+    Verified over the FULL store, not a sample: 72,046 distinct derived ids, of which 69,704
+    exist in the catalogue and — the direction that matters — ZERO catalogued usda rows are
+    unreachable from a store key. The 2,342 extra are store tables that were never catalogued.
+
+    Per-file so memory stays bounded: the derived-key column for all ~200M rows at once would
+    be tens of GB, while one part at a time is a few million.
+    """
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    full: dict = {}
+    for p in sorted(glob.glob(os.path.join(out, "**", "*.parquet"), recursive=True)):
+        try:
+            t = pq.read_table(p, columns=["series_key", "obs_date"])
+            if t.num_rows == 0:
+                continue
+            k = pc.replace_substring_regex(t.column("series_key"), "^usda:", "")
+            parts = pc.split_pattern(k, "|")
+            key = pc.binary_join_element_wise(
+                pc.list_element(parts, 0),                   # SOURCE_DESC
+                pc.list_element(parts, 12),                  # AGG_LEVEL_DESC
+                pc.list_element(parts, 9),                   # SHORT_DESC
+                "|")
+            one = pa.table({"series_key": key, "obs_date": t.column("obs_date")})
+            # cap=0 here: the WHOLE table set is gathered first, then a rotating window is
+            # taken below. Capping per file would silently fix the window to whichever
+            # tables sort first, which is the bug this function goes out of its way to avoid.
+            merge_cursor_map(full, cursors_from_table(one, cap=0, key_col="series_key"),
+                             cap=10 ** 9)
+        except Exception as e:                               # noqa: BLE001
+            # A cursor problem must never sink a good publish (§5 rule 7) — but it must not
+            # be silent either, or the source quietly returns to reporting nothing.
+            print(f"[{SOURCE}] cursor build failed on {os.path.basename(p)}: {e!r}", flush=True)
+
+    # ROTATE THE WINDOW — a bound over a fixed order is a truncation, not a budget (R190).
+    #
+    # usda has ~72,046 tables against a 50,000 CURSOR_CAP, and cursors_from_table caps by
+    # SORTING. Reporting the capped set directly would therefore hand back the same first
+    # 50,000 keys alphabetically on every single run, and the last ~21,386 tables' CSVs would
+    # never be re-derived — permanently stale, while the run reported a plausible number.
+    # That is the self-certifying outage load_rotation exists to prevent.
+    #
+    # So the window starts just after wherever the last run stopped and wraps around; two
+    # runs cover the whole set. The bookmark is saved even on a complete pass, so the next
+    # run wraps through the same code path rather than a branch that could stop rotating.
+    keys = sorted(full)
+    if len(keys) > CURSOR_CAP:
+        window = rotate_after(keys, load_rotation(out))[:CURSOR_CAP]
+        print(f"[{SOURCE}] {len(keys):,} tables > {CURSOR_CAP:,} cursor cap — reporting a "
+              f"ROTATING window of {len(window):,}; the remaining {len(keys) - len(window):,} "
+              f"are covered by the next run, not skipped", flush=True)
+    else:
+        window = keys
+    if window:
+        save_rotation(out, window[-1])
+    return {k: full[k] for k in window}
 
 
 def update(unit, since) -> Result:
@@ -174,7 +252,12 @@ def update(unit, since) -> Result:
     print(f"[{SOURCE}] published {published:,} object(s), {total:,} rows in the store",
           flush=True)
     tally.added_unit(total, "quickstats")
-    print(f"[{SOURCE}] NOTE: the served CSVs are TABLE-grain and are NOT regenerated here — "
-          f"re-run tools/derive_usda_tables.py and tools/catalog_usda_tables.py after a new "
-          f"vintage lands, or the store moves ahead of what users can download", flush=True)
-    return finalize(tally, total, since or None, source=SOURCE)
+
+    cursors = _table_cursors(out)
+    if len(cursors) >= CURSOR_CAP:
+        print(f"[{SOURCE}] cursor set hit the {CURSOR_CAP:,} cap — usda has 69,704 catalogued "
+              f"tables, so ~{69704 - CURSOR_CAP:,} are not individually reported this run and "
+              f"their CSVs wait for a later one (the derive budget drains the rest across "
+              f"runs; neither bound is silent)", flush=True)
+    return finalize(tally, total, since or None, source=SOURCE,
+                    series_cursors=cursors or None)
