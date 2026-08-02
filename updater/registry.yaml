@@ -917,6 +917,19 @@ sources:
     - single-file — data/clean_full/cnb/cnb.parquet, one pa.table written once. series_key = CNB_FX:{CCY}_CZK, rates normalized
       to per-1-unit (raw value / amount multiplier).
 - source_id: comtrade
+  # ROUTED LOCAL 2026-08-01, on a measured cloud/workstation split rather than a hunch.
+  # On CI it failed every run with "no usable observations from any phase" — every batch of
+  # both phases returning None (throttled, errored or cap-truncated). From this workstation the
+  # identical code path succeeded outright: `ok`, 8,793 observations across 791 series, 500 CSVs
+  # derived and put, 0 failures, 566s. A single ig.fetch_totals probe returned 208 records on
+  # the first try.
+  # Ruled out first: COMTRADE_API_KEY is NOT missing in CI — the secret exists (set 2026-07-05)
+  # and updater-daily.yml passes it. What is left is the subscription tier's throttling, which
+  # the ingest documents as returning 429 "well inside" the limits, against shared GitHub egress
+  # that many other callers hit too. The workstation has its own IP and its own quota.
+  # Same principle as istat: a source the cloud cannot process is processed locally — here it is
+  # a source the cloud cannot FETCH.
+  run_location: local
   scripts:
   - jobs/ingest_comtrade.py
   strategy: extend_by_date
