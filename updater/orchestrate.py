@@ -282,9 +282,42 @@ def _derive_changed_csvs(unit, res, blob):
         #      (never a silent §5.7 violation).
         ids, unmapped = _catalog_ids_for(unit.source_id, changed)
         if not ids:
+            # NAME THE CAUSE YOU MEASURED, NOT THE ONE THAT SOUNDS RIGHT. This note used to
+            # end "and the source exceeds the derive-all cap" unconditionally — the same
+            # hardcoded-cause defect already fixed in the sibling branch below (R152), but
+            # here it was worse than unverified: under the r2 backend `_catalog_ids_for`
+            # returns before the cap is ever consulted, so the note named a condition the
+            # code CANNOT have evaluated. On 2026-08-02 it was the note on 28 of 54 partial
+            # sources, and it sent every reader — the digest email and me — after a cap that
+            # was irrelevant. The real cause was that R2's coherence catalog held 4,605,291
+            # of 10,853,209 series: noaa had 10 rows there against 3,135,873 locally, so of
+            # course nothing mapped.
+            #
+            # Zero mapped ids has exactly two causes and they need opposite fixes, so the
+            # note distinguishes them by MEASURING the catalogue rather than guessing:
+            # no rows at all (not catalogued / purged / the reference is stale) versus rows
+            # present but none matched (a grain or key-form mismatch).
+            n_ids = None
+            try:
+                import sqlite3 as _sq
+                _cat = (os.environ.get("ECONDL_CATALOG")
+                        or os.path.join(config.ROOT, "data", "catalog.db"))
+                with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
+                    n_ids = _c.execute(
+                        "SELECT COUNT(*) FROM series WHERE source_id=?",
+                        (unit.source_id,)).fetchone()[0]
+            except Exception:                       # noqa: BLE001 — a note must never raise
+                n_ids = None
+            if n_ids is None:
+                why = "catalog id count unavailable"
+            elif n_ids == 0:
+                why = ("the catalog this run read has NO rows for it — not catalogued, "
+                       "purged, or the coherence catalog is stale")
+            else:
+                why = (f"the catalog this run read has {n_ids:,} rows for it but none "
+                       f"matched — grain/key-form mismatch")
             return [], (f"csv coherence unmet: {len(unmapped)} changed series_keys "
-                        f"have no catalog mapping for {unit.source_id} and the "
-                        f"source exceeds the derive-all cap (§5.7)")
+                        f"have no catalog mapping for {unit.source_id}: {why} (§5.7)")
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob()) or {}
         failed = [str(s) for s in (out.get("failed") or [])]
