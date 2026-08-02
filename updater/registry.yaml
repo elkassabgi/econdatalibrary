@@ -1137,7 +1137,13 @@ sources:
   strategy: overwrite_if_changed
   strategy_reason: DST /v1/data has NO startPeriod param (always send full time selection), so per-table re-pull whole history
     and overwrite the per-subject parquet only when the catalog's 'updated' timestamp moved.
-  cadence: monthly
+  # monthly -> daily (2026-08-02). Measured against api.statbank.dk: Statistics Denmark
+  # advertises 2,317 tables and updated 308 of them in the last 30 days (~10/day), while
+  # this ran ONCE A MONTH draining at most 40 tables. It could not converge — it fell
+  # further behind every month by construction, and was measured 472 tables behind while
+  # reporting "no new rows". Daily matches the publisher; when nothing is due the run is
+  # a single GET /v1/tables and an early return.
+  cadence: daily
   refresh_cost: medium
   out_dir: dst
   review: true
