@@ -42,6 +42,9 @@ def main() -> int:
     ap.add_argument("--agency", default="IMF.STA")
     ap.add_argument("--name", required=True, help="human name for the source row")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--require-titles", action="store_true",
+                    help="refuse to write rows unless the publisher's codelists decode; without "
+                         "it, undecodable keys become raw-key titles and the fact is announced")
     a = ap.parse_args()
 
     from updater import blob, config
@@ -92,15 +95,26 @@ def main() -> int:
     print(f"series: {len(span):,}")
 
     # --- titles ------------------------------------------------------------------------
-    # DEGRADE, DON'T DIE, WHEN THE PUBLISHER'S STRUCTURE IS GONE. IMF restructured its SDMX
-    # catalogue into VERSIONED PER-TABLE dataflows: there is no `IFS` or `FSI` dataflow any
-    # more, only MFS_DC v8.0.0, MFS_CBS v24.0.0, FSIC v13.0.1, BOP v21.0.0 and ~220 others. So
-    # /dataflow/IMF.STA/<legacy flow> answers 204 No Content for EVERY legacy code — including
-    # the FSI one that used to work, which is how I know this is the endpoint and not a bad
-    # argument. Refusing to catalogue would leave 38 million observations unreachable in order
-    # to protect a nicety, so the rows are written with the RAW KEY as title — exactly what the
-    # 73,288 existing imf_fsi rows already carry — and the degradation is ANNOUNCED and COUNTED
-    # rather than silent. --require-titles restores the old refuse-if-undecodable behaviour.
+    # DEGRADE, DON'T DIE, WHEN THE PUBLISHER'S VOCABULARY HAS MOVED ON. Two separate things are
+    # broken here and only measuring both tells them apart:
+    #
+    #   1. RETIRED DATAFLOW IDS. IMF restructured into versioned per-table dataflows — MFS_CBS
+    #      v24.0.0, FSIC v13.0.1, BOP v21.0.0, ~220 in all. /dataflow/IMF.STA/<code> answers 204
+    #      No Content for IFS, DOT, CDIS, CPIS and for the legacy FSI code that used to work.
+    #      Testing that known-good one is how I knew it was not my argument. BOP and IRFCL are
+    #      still live and return 4 MB structures, so the ENDPOINT is fine.
+    #   2. RETIRED CODE VOCABULARY, which those live structures then exposed. The stored IRFCL
+    #      key `IMF_IRFCL:A.4F.RACFACBABIS_1M_3M_USD.S121` decodes 3 of its 4 parts against
+    #      today's codelists — A -> Annual, S121 -> Central bank — but `4F` is not in COUNTRY,
+    #      because COUNTRY is now ISO-3 (AFG, ALB, DZA) while the store holds IMF area codes.
+    #      Zero of the 24 dimension permutations resolve all four parts.
+    #
+    # infer_dims REFUSES a partial resolution on purpose — a partial match is how a SECTOR code
+    # ends up labelled as a TYPE_OF_TRANSFORMATION — and that guard is right; do not weaken it
+    # to manufacture titles. But refusing to CATALOGUE would leave 38 million observations
+    # unreachable to protect a nicety. So rows are written with the RAW KEY as title, exactly
+    # what the 73,288 existing imf_fsi rows already carry, and the degradation is ANNOUNCED and
+    # COUNTED rather than silent. --require-titles restores refuse-if-undecodable.
     dsd_dims, dim_codes, order = {}, {}, None
     try:
         dsd_dims, dim_codes = T.load_structure(a.flow, a.agency)
@@ -113,9 +127,11 @@ def main() -> int:
             print("could not establish the key order - refusing to write titles that may be "
                   "wrong (--require-titles)")
             return 1
-        print(f"TITLES DEGRADED: {a.source} rows get their RAW KEY as title. They are "
-              f"downloadable by id and poor to search. Re-run with a --flow that resolves "
-              f"against the current IMF dataflow list to fill them in.")
+        print(f"TITLES DEGRADED: {a.source} rows get their RAW KEY as title — downloadable by "
+              f"id, poor to search. This is NOT fixed by finding a better --flow: the stored "
+              f"keys use IMF's retired area-code vocabulary (e.g. `4F`, `1C_355`) and today's "
+              f"COUNTRY codelist is ISO-3, so no dimension ordering resolves them. It needs an "
+              f"area-code -> ISO-3 crosswalk.")
         dim_codes, order = {}, []
     else:
         print(f"key order: {order}")
@@ -130,15 +146,24 @@ def main() -> int:
                                    "de-duplicated, and stored as zstd Parquet."),
     }, ensure_ascii=False)
 
-    rows, unresolved = [], 0
+    rows, unresolved, blank = [], 0, 0
     for key, (start, end) in span.items():
         title, hit, tot = T.title_for(key, order, dim_codes)
         if tot and hit < tot:
             unresolved += 1
+        # A BLANK TITLE IS WORSE THAN AN UGLY ONE. With no key order, title_for returns "" —
+        # so the degrade path I announced as "rows get their RAW KEY as title" actually wrote
+        # 694,300 rows with NO title at all: invisible to search AND uninformative to anyone
+        # who found them. Fall back to the native key, which is at least the thing the user
+        # types to fetch it.
+        if not (title or "").strip():
+            title = key
+            blank += 1
         rows.append((f"{a.source}:{key}", a.source, title, None, None, None, None,
                      "imf-terms", start, end, meta))
 
-    print(f"rows to write: {len(rows):,}   with an unresolved part: {unresolved:,}")
+    print(f"rows to write: {len(rows):,}   with an unresolved part: {unresolved:,}   "
+          f"fell back to the raw key: {blank:,}")
     for r in rows[:3]:
         print(f"   {r[0]}")
         print(f"      {r[2][:120]}   {r[8]}..{r[9]}")

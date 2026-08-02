@@ -144,7 +144,12 @@ def main(argv: list[str] | None = None) -> None:
                     help="do not truncate the pending file after a successful sync")
     a = ap.parse_args(argv)
 
-    conn = sqlite3.connect(f"file:{CATALOG_DB}?mode=ro", uri=True)
+    # WAIT FOR A WRITER INSTEAD OF DYING ON IT. Every other tool here opens catalog.db with a
+    # busy timeout; this one did not, so a concurrent catalogue build -- an ordinary thing, since
+    # cataloguing a source and syncing another are independent jobs -- aborted the sync outright
+    # with "database is locked". A read-only connection still has to wait out a writer's lock.
+    conn = sqlite3.connect(f"file:{CATALOG_DB}?mode=ro", uri=True, timeout=300.0)
+    conn.execute("PRAGMA busy_timeout = 300000")
     if a.source:
         ids = [r[0] for r in conn.execute(
             "SELECT series_id FROM series WHERE source_id=?", (a.source,))]
