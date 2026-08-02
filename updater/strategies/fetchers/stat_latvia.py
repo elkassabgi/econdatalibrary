@@ -61,7 +61,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, sane_since
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+                      sane_since, save_rotation)
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -416,7 +417,27 @@ def update(unit, since) -> Result:
     only = os.environ.get("STAT_LATVIA_ONLY_GROUPS")
     only_set = set(only.split(",")) if only else None
 
-    for fname in sorted(by_group.keys()):
+    # BOUND BELOW THE ORCHESTRATOR'S 45-MINUTE CAP, AND ROTATE.
+    # Measured cloud runs: 53.3 min median, 62.0 max — over the cap on every run, and the cap
+    # landed 2026-08-01 (36130d02) after stat_latvia's last run. The merge is INSIDE this
+    # loop so a kill truncates rather than discards, but `sorted(by_group)` is a FIXED order:
+    # the kill lands in the same place every run and the tail groups are never reached at
+    # all, however many runs pass (R190 — a bound over a fixed order is a truncation, not a
+    # budget). Stopping at 30 min also returns time to the shared daily run, which attempted
+    # only 20 of ~106 live cloud sources on 2026-08-02.
+    budget_min = float(os.environ.get("STAT_LATVIA_BUDGET_MIN", "30"))
+    dl = Deadline(minutes=budget_min)
+    groups = rotate_after(sorted(by_group.keys()), load_rotation(out_dir))
+    last_group = ""
+
+    for fname in groups:
+        if dl.spent():
+            print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
+                  f"{dl.elapsed_min():.1f} min — stopped after group {last_group!r}, "
+                  f"{len(groups) - groups.index(fname)} of {len(groups)} group(s) deferred "
+                  f"to the next tick", flush=True)
+            break
+        last_group = fname
         path = os.path.join(out_dir, fname)
         before = blob.row_count(path)
         # Only maintain groups that already exist on disk (the ingester decided which
@@ -521,6 +542,11 @@ def update(unit, since) -> Result:
     last_obs = maxd.isoformat() if maxd is not None else (since or None)
     # Floor above the table count so a healthy "everything current" run is honest
     # no_change (not a false all-empty structural break); real breaks are per-table.
+    # Bookmark after a complete pass too, so the wrap goes through this same path and no
+    # branch can silently stop the rotation.
+    if last_group:
+        save_rotation(out_dir, last_group)
+
     floor = max(tally.attempted, 10) + 1
     return finalize(tally, total, last_obs, source=SOURCE,
                     series_cursors=cursors, empty_window_floor=floor)
