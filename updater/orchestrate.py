@@ -242,6 +242,22 @@ def _derive_changed_csvs(unit, res, blob):
     caller demotes the run to `partial` and queues the ids in csv_retry_queue."""
     changed = sorted((res.series_cursors or {}).keys())
     if not changed:
+        if res.obs and _catalog_series_count(unit.source_id) == 0:
+            # VACUOUS COHERENCE. A source with ZERO catalogued series has no per-series
+            # CSVs, so there is nothing that can go stale and §5.7 is satisfied rather
+            # than violated. gleif is the case: a REFERENCE TABLE (LEI golden copy) with
+            # no series_key/obs_date at all, whose module docstring says plainly that
+            # cursors "would be meaningless, not missing" and asks the sweep not to
+            # "fix" it. Without this it merged 3,391,691 obs and demoted to `partial`
+            # EVERY run — and because partial never sets last_success_utc, it could
+            # never report success and sat permanently in the health gate's attention
+            # list, crowding out real failures.
+            #
+            # This is deliberately a MEASURED fact, not a fetcher-declared opt-out: a
+            # source cannot exempt itself by asserting anything, it only passes when the
+            # catalogue provably holds nothing to re-derive. Any source with catalogued
+            # series still gets the full check below.
+            return [], None
         if res.obs:
             # Coherence is UNMET, not merely unlogged: parquet changed but the
             # changed series are unknown, so their CSVs go stale. The caller
@@ -353,6 +369,33 @@ def _norm_id(s: str) -> str:
     module anything about FX pairs.
     """
     return "".join(ch for ch in s if ch.isalnum()).lower()
+
+
+def _catalog_series_count(source_id: str) -> int:
+    """How many series the CATALOGUE holds for a source. Read-only, same DB as
+    _catalog_ids_for.
+
+    Used only to recognise vacuous CSV coherence: zero catalogued series means no
+    per-series CSVs exist, so a cursorless publish cannot make anything stale.
+
+    Returns -1 when the catalogue cannot be read. That is deliberately NOT zero: an
+    unreadable catalogue must not be mistaken for "nothing to derive" and hand out a
+    free pass to every source. -1 fails the `== 0` test, so an unreadable catalogue
+    leaves the strict §5.7 path exactly as it was.
+    """
+    import sqlite3
+    cat = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
+    try:
+        con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
+        try:
+            row = con.execute(
+                "SELECT count(*) FROM series WHERE series_id LIKE ?", (f"{source_id}:%",)
+            ).fetchone()
+            return int(row[0]) if row else -1
+        finally:
+            con.close()
+    except Exception:                                        # noqa: BLE001
+        return -1
 
 
 def _catalog_ids_for(source_id: str, changed_keys):
