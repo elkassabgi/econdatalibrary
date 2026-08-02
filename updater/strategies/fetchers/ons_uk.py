@@ -52,7 +52,7 @@ import pyarrow as pa
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, _max_by_key, finalize
+from ._common import Tally, finalize
 from jobs import ingest_ons_uk as ig   # reuse catalog walk + THE key builder
 
 SOURCE = "ons_uk"
@@ -231,20 +231,35 @@ def update(unit, since) -> Result:
                     continue
                 published += n
                 tally.added_unit(max(0, n - before))
-                # Per-series cursors via Arrow rather than a Python zip over every row: the
-                # old loop called d.isoformat() once PER OBSERVATION, minting millions of
-                # throwaway str objects per dataset to compute what is only a max-per-key.
-                # NOTE this dict is still the memory ceiling for this source, and it cannot
-                # be fixed here — see the QUARANTINE note in the module docstring.
-                # _max_by_key, NOT group_by. Arrow indexes string data with int32 offsets; past 2 GiB in
-                # one column group_by dereferences past the overflowed offsets and KILLS THE PROCESS
-                # (0xC0000005 / SIGABRT) - it does not raise, so no try/except can catch it. That is
-                # exactly how the 2026-08-01 workstation pass died: ons_uk crashed at wave 3 of 12
-                # after 8h56m, taking six completed sources' state with it. merge.py has documented
-                # this since the _dedup rewrite; the fetchers were simply never updated.
-                for k, iso in _max_by_key(tbl).items():
-                    if k not in cursors or iso > cursors[k]:
-                        cursors[k] = iso
+                # CURSORS AT THE CATALOGUE'S GRAIN — ONE PER DATASET, not one per series.
+                #
+                # This used to fold a cursor for every distinct store key, and the store key
+                # is observation-level (`CV=19.0:calendar-years=2019:...` — a coefficient of
+                # variation and the time axis are both inside it, defect 1 in the docstring).
+                # The result: 10,099,151 cursor rows for ons_uk in state.db, 74% of a file
+                # that had grown from 217 MB to 9.44 GB and is pulled and pushed every CI run.
+                #
+                # And not one of them was USABLE. orchestrate._catalog_ids_for rebuilds a
+                # catalog id as "<source>:" + key, and ons_uk's catalogue is DATASET-grain —
+                # 42 rows like `ons_uk:ageing-population-estimates`. Ten million
+                # observation-level keys mapped to exactly nothing, so the coherence gate
+                # could never be satisfied and the source could never report success.
+                # Verified: all 42 catalogue slugs are exactly the parquet names, so
+                # "ons_uk:" + ds_id IS the catalog id.
+                #
+                # This also removes what the old comment called "the memory ceiling for this
+                # source": _max_by_key over a multi-million-key column is precisely the
+                # allocation that killed the 2026-08-01 workstation pass at wave 3 of 12
+                # after 8h56m, taking six completed sources' state with it. A per-dataset max
+                # is one value.
+                #
+                # NOTE this does NOT fix defect 1 — the on-disk keys are still wrong and that
+                # remains a re-ingest, not a fetcher patch. It fixes the cursor GRAIN, which
+                # is a separate contract and was independently broken.
+                if md:
+                    iso = str(md)
+                    if cursors.get(ds_id, "") < iso:
+                        cursors[ds_id] = iso
                 if md and (maxd is None or str(md) > str(maxd)):
                     maxd = md
                 sidecar[ds_id] = cur_v           # advance ONLY after a clean publish
