@@ -222,7 +222,26 @@ def assess(store=None) -> dict:
             # once stale so somebody re-probes instead of trusting a claim made years
             # ago. If our data ever falls BEHIND the declared upstream end, the
             # declaration stops applying and RED-DATA stands.
-            uv = e.get("upstream_verified") or {}
+            # ONE MALFORMED ENTRY MUST NOT KILL THE ASSESSMENT FOR ALL 217 SOURCES. This read
+            # was `.get()` on whatever the registry held, and ten entries carry
+            # `upstream_verified` as a free-text NOTE rather than the structured claim, so the
+            # gate died on the first one it met:
+            #     AttributeError: 'str' object has no attribute 'get'   (health.py:226)
+            # It had been reddening the 06:00 UTC run daily WITHOUT ASSESSING ANYTHING — and a
+            # gate that crashes is worse than one that fails, because a red run reads as a
+            # verdict about the data rather than about the gate.
+            #
+            # A non-dict cannot carry latest_obs/checked, so it cannot suppress RED-DATA. That
+            # is the safe direction: suppression is the privileged outcome and must never be
+            # granted by accident. It is SURFACED rather than swallowed, because a field in the
+            # wrong shape is a defect someone should fix, not one to route around in silence.
+            uv = e.get("upstream_verified")
+            if uv is not None and not isinstance(uv, dict):
+                attention = list(attention) + [
+                    f"upstream_verified is {type(uv).__name__}, not a mapping with "
+                    f"latest_obs/checked — cannot support a completeness claim, ignored"]
+                uv = {}
+            uv = uv or {}
             u_latest, u_checked = uv.get("latest_obs"), uv.get("checked")
             check_age = _age_days(u_checked, now) if u_checked else None
             if (u_latest and newest_obs and str(newest_obs) >= str(u_latest)
