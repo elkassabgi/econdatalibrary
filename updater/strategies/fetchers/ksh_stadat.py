@@ -34,7 +34,7 @@ import pyarrow as pa
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Deadline, Tally, finalize
 from jobs import ingest_ksh_stadat as ig   # reuse catalog + THE table parser / key builder
 
 SOURCE = "ksh_stadat"
@@ -46,6 +46,9 @@ SIDECAR = "_bulk_vintages.json"       # {table_id: "updatedAt|correctedAt"}
 # ticks, which is fine for a source whose tables update on a monthly-ish cadence. (R40b)
 MAX_WORKERS = 2
 MAX_PER_RUN = 60
+# Tables submitted per deadline check. The pool is given a whole wave at once, so
+# the wave size — not the loop — is what actually bounds the fetch.
+TABLE_WAVE = int(os.environ.get("KSH_TABLE_WAVE", "10"))
 
 
 def _vintage(entry) -> str:
@@ -144,24 +147,47 @@ def update(unit, since) -> Result:
     # fetch+parse concurrently, accumulating rows per THEME (many tables -> one parquet)
     by_theme = defaultdict(list)           # theme -> [(key, date, val), ...]
     theme_tables = defaultdict(list)       # theme -> [(tid, vintage), ...] pending vintage bump
+    # FETCH IN WAVES UNDER A SELF-IMPOSED BUDGET.
+    # Runs are usually ~5 min but reach 50.2 — over the orchestrator's 45-minute per-unit
+    # cap. Every table in `batch` used to be submitted at once and nothing merged until all
+    # of them came back, so a kill during the fetch threw the whole batch away.
+    #
+    # Unlike boe/bcb that is not a permanent loss: the sidecar only advances after a theme
+    # MERGES, so discarded tables stay in `todo` and are retried. The risk here is a STALL —
+    # if a batch never fits inside the cap, the same tables are fetched and thrown away
+    # every run forever, and the log shows work each time. Waves bound the fetch so whatever
+    # came back is merged and its vintages recorded, which is what lets a backlog drain
+    # instead of resetting.
+    budget_min = float(os.environ.get("KSH_BUDGET_MIN", "30"))
+    dl = Deadline(minutes=budget_min)
+    fetched = 0
     if batch:
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            futs = {ex.submit(_fetch_table, tid): (tid, v) for tid, v in batch}
-            for fut in as_completed(futs):
-                tid, cur_v = futs[fut]
-                _t, rows = fut.result()
-                if rows is None:
-                    tally.transient_unit()
-                    continue
-                theme = tid[:3].lower()
-                if not rows:
-                    # genuinely empty table: advance its vintage so we don't refetch every tick
-                    tally.empty_unit()
-                    sidecar[tid] = cur_v
-                    continue
-                by_theme[theme].extend(rows)
-                theme_tables[theme].append((tid, cur_v))
-                tally.added_unit(len(rows))
+            for wave_start in range(0, len(batch), TABLE_WAVE):
+                if dl.spent():
+                    print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
+                          f"{dl.elapsed_min():.1f} min — {fetched}/{len(batch)} tables "
+                          f"fetched, {len(batch) - fetched} left for the next tick (their "
+                          f"vintages stay unbumped, so they are retried)", flush=True)
+                    break
+                wave = batch[wave_start:wave_start + TABLE_WAVE]
+                futs = {ex.submit(_fetch_table, tid): (tid, v) for tid, v in wave}
+                for fut in as_completed(futs):
+                    tid, cur_v = futs[fut]
+                    _t, rows = fut.result()
+                    if rows is None:
+                        tally.transient_unit()
+                        continue
+                    theme = tid[:3].lower()
+                    if not rows:
+                        # genuinely empty table: advance its vintage so we don't refetch every tick
+                        tally.empty_unit()
+                        sidecar[tid] = cur_v
+                        continue
+                    by_theme[theme].extend(rows)
+                    theme_tables[theme].append((tid, cur_v))
+                    tally.added_unit(len(rows))
+                fetched += len(wave)
 
     cursors: dict[str, str] = {}
     maxd = None
