@@ -282,6 +282,10 @@ def assess(store=None) -> dict:
             # rollout perimeter flag (registry `live: true`) — the --fail-past-2x-sla
             # CI gate judges ONLY live-tier sources (§5.3)
             "live": bool(e.get("live", False)),
+            # WHERE this source is supposed to run. The gate reads ONE state store, so a
+            # source that runs somewhere else can only ever look unrun here (see
+            # gate_failures).
+            "run_location": e.get("run_location") or "cloud",
             "health": health,
             "last_success_age_d": round(succ_age, 1) if succ_age is not None else None,
             "newest_obs": newest_obs,
@@ -316,10 +320,51 @@ def gate_failures(report: dict) -> list[str]:
     no adapter (mirrors the orchestrator's run-failure rule). Sources outside
     the rollout perimeter (`live: true` in registry.yaml) never fail the gate —
     they surface in the table but the rollout is judged only on what we have
-    actually committed to keep fresh."""
+    actually committed to keep fresh.
+
+    A GATE MUST NOT JUDGE WHAT IT CANNOT SEE. There is one state store per location,
+    and 6 live sources declare `run_location: local` (bea, cepii_gravity, comtrade,
+    noaa, ons_uk, wid). The cloud never runs them, so their rows in the cloud state
+    are absent or frozen by construction and the CI gate red-flagged them EVERY day
+    no matter how healthy they actually were — noaa sat in the failure list purely
+    for this. That is how a gate stops being read: on 2026-08-02 it had been failing
+    for three days straight while not assessing anything at all (R244), and nobody
+    looked, because it was always red anyway.
+
+    So the CLOUD gate declines to judge sources that run elsewhere. The narrowing is
+    one-directional on purpose: a LOCAL invocation still judges everything, because a
+    human running this by hand wants the full picture and a rule that hides rows from
+    them would be the same mistake in a new place. Only the automated cloud gate — the
+    one whose crying wolf is what stops getting read — is narrowed.
+
+    This is deliberately NOT silence: main() prints every source it declined to judge
+    under a heading saying so, because "we cannot see this from here" is a different
+    statement from "this is fine", and only one of them is true."""
     bad = ("RED-SLA", "RED-DATA", "RED-UNRUN", "ATTENTION", "PENDING")
     return [f"{r['health']:<10} {r['source']}" for r in report["sources"]
-            if r.get("live") and r["health"] in bad]
+            if r.get("live") and r["health"] in bad and _judged_here(r)]
+
+
+def _judged_here(row: dict) -> bool:
+    """False only when the CLOUD gate meets a source that runs somewhere else."""
+    if execution_location() != "cloud":
+        return True                      # local invocation judges everything
+    return (row.get("run_location") or "cloud") == "cloud"
+
+
+def execution_location() -> str:
+    """Where this process runs: 'cloud' under the r2 backend (that IS the CI runner's
+    configuration, AQUEDUCT_BACKEND=r2), 'local' otherwise. Used to decide which
+    sources this gate is entitled to judge."""
+    return "cloud" if getattr(config, "BACKEND", None) == "r2" else "local"
+
+
+def unjudged_live(report: dict) -> list[str]:
+    """Live sources this gate deliberately did NOT judge because they run elsewhere.
+    Printed, never swallowed — see gate_failures."""
+    return [f"{r['health']:<10} {r['source']:<18} runs={r.get('run_location') or 'cloud'}"
+            for r in report["sources"]
+            if r.get("live") and not _judged_here(r)]
 
 
 _KNOWN_ARGS = {"--json", "--red", "--fail-past-2x-sla"}
@@ -369,6 +414,18 @@ def main():
         sys.exit(1 if n else 0)
 
     if "--fail-past-2x-sla" in sys.argv:
+        here = execution_location()
+        # Print what this gate is NOT entitled to judge BEFORE its verdict, so the
+        # verdict is never mistaken for a statement about those sources.
+        skipped = unjudged_live(report)
+        if skipped:
+            print(f"\nNOT JUDGED HERE ({len(skipped)} live source(s) run elsewhere; this "
+                  f"gate runs '{here}' and reads only the '{here}' state store).")
+            print("  Their health below is what THIS store shows, which for a source that "
+                  "runs elsewhere is stale or absent by construction —")
+            print("  it is not evidence about them. They must be judged where they run.")
+            for line in skipped:
+                print(f"  {line}")
         fails = gate_failures(report)
         if fails:
             print(f"\nHEALTH GATE FAILED: {len(fails)} live-tier source(s) "
@@ -376,7 +433,7 @@ def main():
             for line in fails:
                 print(f"  {line}")
         else:
-            print("\nhealth gate OK: no live-tier source past its SLA")
+            print(f"\nhealth gate OK: no live-tier '{here}' source past its SLA")
         sys.exit(1 if fails else 0)
 
 
