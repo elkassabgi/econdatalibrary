@@ -223,7 +223,12 @@ def update(unit, since) -> Result:
             continue
 
         published += _publish(out_dir, rel)
-        merge_cursors(cursors, os.path.join(out_dir, f"{rel}.parquet"))
+        # key_prefix=f"{rel}:" — catalog ids are fed_board:<RELEASE>:<series_key> but the
+        # parquet stores only the bare series_key, so an unprefixed read-back maps to
+        # nothing and the source reports `partial` forever while its CSVs go stale.
+        # Verified against catalog.db: fed_board:CHGDEL:<key> matches.
+        merge_cursors(cursors, os.path.join(out_dir, f"{rel}.parquet"),
+                      key_prefix=f"{rel}:")
         tally.added_unit(n_obs, rel)
         sidecar[rel] = digest                                # record ONLY after publishing
 
