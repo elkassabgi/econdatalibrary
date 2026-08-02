@@ -79,6 +79,9 @@ SOURCE = "stat_slovenia"
 BASE = "https://pxweb.stat.si/SiStatData/api/v1/en/Data"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 DEDUP = ("series_key", "obs_date")
+# Where the rotating sweep offset lives. Beside the DATA, not in the state store, because it has
+# to survive the interruption that state-writing does not: finalize() never runs on a killed unit.
+_SWEEP_FILE = "_sweep_offset.json"
 RATE = 0.3
 MAX_CELLS = 100_000          # same cap the ingester used to pick the dim-selection branch
 TIMEOUT = 90
@@ -535,16 +538,47 @@ def update(unit, since) -> Result:
     # symptom observed.
     _t0 = time.time()
     _groups = sorted(by_group.keys())
+
+    # ROTATE THE STARTING POINT so the tail is not permanently unreachable.
+    #
+    # A full sweep is 145 groups / 4,696 tables and MEASURED 3,916s = 65.3 minutes on the
+    # workstation, which is faster than CI; the unit cap is 45 minutes and CI measured exactly
+    # 2,700s, i.e. killed. Group order was fixed and sorted, so every run died around the same
+    # 60% mark and the SAME later groups were never visited — and they are the biggest (group 39
+    # alone has 279 tables). Letting one pass run to completion modified 71 of 146 group files
+    # and created 2 more, so that tail was holding real, unfetched updates.
+    #
+    # Starting where the last run stopped makes the whole list reachable inside the existing
+    # budget: two ticks cover all 145 groups. It is safe precisely because this fetcher commits
+    # per group and re-seeds its cursors from the ON-DISK frontier rather than from saved state,
+    # so a partial sweep leaves nothing inconsistent behind.
+    #
+    # The offset lives beside the data, not in the state store, because it must survive the
+    # interruption that state-writing does not: finalize() never runs when the unit is killed.
+    # Written after EVERY group for the same reason.
+    _cur = os.path.join(out_dir, _SWEEP_FILE)
+    _start = 0
+    try:
+        _start = int(json.loads(blob.read_bytes(_cur) or b"{}").get("next_group", 0))
+    except Exception:                                          # noqa: BLE001
+        _start = 0
+    if not 0 <= _start < len(_groups):
+        _start = 0
+    if _start:
+        _groups = _groups[_start:] + _groups[:_start]
+
     print(f"[{SOURCE}] {len(_groups)} group(s), {sum(len(v) for v in by_group.values()):,} "
-          f"table(s) to consider", flush=True)
+          f"table(s) to consider; starting at offset {_start} "
+          f"({_groups[0] if _groups else '-'})", flush=True)
 
     for _gi, grp in enumerate(_groups, 1):
         path = _group_path(out_dir, grp)
         before = blob.row_count(path)
         total_rows += before
         tbl_max = _table_max_by_group(path)   # one read per group file
-        print(f"[{SOURCE}] group {_gi}/{len(_groups)} {grp}: {len(by_group[grp]):,} table(s), "
-              f"{before:,} row(s) on disk, {time.time()-_t0:,.0f}s elapsed", flush=True)
+        print(f"[{SOURCE}] group {_gi}/{len(_groups)} (offset {_start}) {grp}: "
+              f"{len(by_group[grp]):,} table(s), {before:,} row(s) on disk, "
+              f"{time.time()-_t0:,.0f}s elapsed", flush=True)
 
         # seed cursors from the on-disk frontier so untouched tables still report real
         # freshness (clamped past the projection horizon — see _FRESH_HORIZON).
@@ -721,6 +755,15 @@ def update(unit, since) -> Result:
                 # sane date advance the REPORTED watermark (on-disk rows are all kept).
                 if _sane(md_d) and (overall_max is None or md_d > overall_max):
                     overall_max = md_d
+
+        # Advance the sweep offset AFTER each group, not at the end of the run: the whole point
+        # is to survive being killed mid-sweep, and an offset written only on a clean finish
+        # would never be written at all on the runs that need it.
+        try:
+            blob.write_bytes_atomic(
+                _cur, json.dumps({"next_group": (_start + _gi) % len(_groups)}).encode())
+        except Exception:                                      # noqa: BLE001
+            pass    # a lost offset costs one repeated sweep, never correctness
 
     last_obs = overall_max.isoformat() if overall_max else (since or None)
     # empty_window_floor = (#sub-units) - 1 per the S3 contract, where #sub-units is the
