@@ -271,10 +271,29 @@ def update(unit, since) -> Result:
     start, end = _window(path, since)
     date_param = f"{start}:{end}"
 
+    # INSTRUMENTED, because this source consumes its ENTIRE per-source cap and nothing said
+    # where the time went or whether the pass finished. Measured 2026-08-02 (CI run
+    # 30738981790): worldbank_wdi ran exactly 2,700s — the 45-minute orchestrator cap — and
+    # reported `ok`. Separately, NY.GDP.MKTP.CD is missing 2025 entirely (233 entities
+    # upstream, 0 stored) while 189 indicators ranked LATER than it do have 2025, so the gap
+    # is not prefix starvation and not the date window. Without per-indicator progress there
+    # is no way to tell a completed pass from one the cap truncated — and a truncated pass
+    # that reports `ok` is the same false green this codebase keeps finding (#64).
+    #
+    # A hard kill leaves no summary line, so progress is printed AS IT GOES; the absence of
+    # the final "pass COMPLETE" line is then itself the signal that the cap fired.
     keys, dates, vals = [], [], []
-    for code in indicators:
+    t0 = time.monotonic()
+    for n, code in enumerate(indicators, 1):
         _fetch_indicator(code, date_param, iso2to3, tally, keys, dates, vals)
         time.sleep(RATE)
+        if n % 200 == 0 or n == len(indicators):
+            el = time.monotonic() - t0
+            print(f"[{SOURCE}] {n:,}/{len(indicators):,} indicators in {el/60:.1f} min "
+                  f"({n/max(el, 1):.1f}/s), {len(keys):,} obs so far", flush=True)
+    print(f"[{SOURCE}] pass COMPLETE: {len(indicators):,} indicators in "
+          f"{(time.monotonic()-t0)/60:.1f} min — if this line is missing from a run, the "
+          f"per-source cap truncated the pass and the tail was never requested", flush=True)
 
     tbl = pa.table({
         "series_key": pa.array(keys, pa.string()),
