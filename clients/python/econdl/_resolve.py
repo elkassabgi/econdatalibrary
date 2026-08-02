@@ -907,6 +907,74 @@ def _resolve_boe(series_id: str, root: str) -> Resolution:
 
 
 # --- statcan ---------------------------------------------------------------
+def _resolve_statcan_table(series_id: str, root: str) -> Resolution:
+    """TABLE GRAIN. catalog: `statcan:<productId>` or `statcan:<productId>#<part>`.
+
+    statcan is 56,845,453,642 observations across ~5,258,059,229 series — 10.81 each — so the
+    unit is the StatCan Product ID, which is what Statistics Canada itself names, cites and
+    versions. One parquet per cube, so the file IS the table.
+
+    Large cubes are split on one of their own dimension columns (uom, geo, coordinate) or, when
+    no single column and no pair divides them, on the COORDINATE HIERARCHY: a statcan coordinate
+    is a dot-separated dimension tuple like '59.9.37.1.85.3.100.1400', so truncating it to k
+    segments walks the publisher's own nesting. 12100152 (427,009,412 rows) has one distinct uom,
+    one status, 14 geos and 17,732,442 coordinates — nothing in between — and divides only that
+    way, into 6,514 parts at k=4. The choice per cube lives in _split_map.json beside the store.
+    """
+    rest = series_id.split(":", 1)[1]
+    pid, _, part = rest.partition("#")
+    src_dir = os.path.join(root, "statcan")
+    path = os.path.join(src_dir, f"{pid}.parquet")
+    if not os.path.exists(path):
+        raise ResolveError(f"{series_id}: no statcan cube at {path!r}")
+
+    # Match the derive's WHERE exactly or byte-parity fails and a suppressed cell serves as nan.
+    pred = ds.field("value").is_valid() & ds.field("obs_date").is_valid()
+    if part:
+        smap_path = os.path.join(src_dir, "_split_map.json")
+        try:
+            with open(smap_path, encoding="utf-8") as fh:
+                smap = json.load(fh)
+        except (OSError, ValueError) as e:
+            raise ResolveError(
+                f"{series_id}: names a split part but {smap_path!r} is unreadable ({e!r}); "
+                f"the split column is chosen at derive time and cannot be inferred") from e
+        entry = smap.get(pid)
+        if not entry:
+            raise ResolveError(
+                f"{series_id}: cube {pid!r} is not in the split map, so it was never split — "
+                f"a '#' part cannot be resolved for it")
+        dim = entry["dim"]
+        if dim.startswith("coordinate:"):
+            # The derive groups on the first k dot-segments joined back with '.', so a row
+            # belongs to part `p` iff its coordinate either IS p (the coordinate has k segments
+            # or fewer) or begins with p + '.' (it has more). Anchoring on the separator is what
+            # stops '59.9' from swallowing '59.91'.
+            pred = pred & (pc.starts_with(ds.field("coordinate"), part + ".")
+                           | (ds.field("coordinate") == part))
+        elif "+" in dim:
+            d1, d2 = dim.split("+", 1)
+            p1, _, p2 = part.partition("~")
+            pred = pred & (ds.field(d1) == p1) & (ds.field(d2) == p2)
+        else:
+            pred = pred & (ds.field(dim) == part)
+    return Resolution(series_id, "statcan", path, "series_key", pred)
+
+
+def _resolve_statcan_any(series_id: str, root: str) -> Resolution:
+    """Route between statcan's two id shapes.
+
+    The legacy form is a bare VECTOR — `statcan:V2132579` — and the table form is a Product ID,
+    `statcan:10100001` or `statcan:10100001#<part>`. StatCan vectors always begin with 'V' and
+    Product IDs are pure digits, so the first character decides it. That is the publisher's own
+    convention, not a coincidence of our ids.
+    """
+    rest = series_id.split(":", 1)[1] if ":" in series_id else ""
+    if rest[:1] in ("v", "V"):
+        return _resolve_statcan(series_id, root)
+    return _resolve_statcan_table(series_id, root)
+
+
 def _resolve_statcan(series_id: str, root: str) -> Resolution:
     # catalog: statcan:V2132579   native file: <product_id>.parquet   key_col: series_key
     # native value: 'v2132579' (LOWERCASE 'v').  Store = one Parquet per StatCan cube
@@ -1275,7 +1343,7 @@ _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "fed_board": _resolve_fed_board,
     "dbnomics": _resolve_dbnomics,
     "boe": _resolve_boe,
-    "statcan": _resolve_statcan,
+    "statcan": _resolve_statcan_any,
     "abs": _resolve_abs,
     "treasury": _resolve_treasury,
     "noaa": _resolve_noaa,
