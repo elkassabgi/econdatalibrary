@@ -81,7 +81,24 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
   "imf_gfse", "imf_gfsfalcs", "imf_gfsibs", "imf_gfsmab", "imf_gfsssuc", "imf_hpdd",
   "imf_mcdreo", "imf_namain_idc_n", "imf_pctot", "imf_pgcs", "imf_pgi", "imf_psbsfad",
-  "imf_unsdg_imf_inputs", "imf_weo", "imf_whdreo", "imf_world", "insee_bdm", "ipea",
+  "imf_unsdg_imf_inputs", "imf_weo", "imf_whdreo", "imf_world",
+  // Eight IMF datasets added 2026-08-01, 694,300 series over 37,971,568 observations. They held
+  // real data and ZERO catalogue rows, while the correspondingly-named imf_*_direct sources the
+  // registry schedules hold nothing at all: the serving pipeline was built against the _direct
+  // names and the crawler filled these. imf_fsi already served from exactly this layout, so it
+  // was a template rather than a new design, and _resolve_generic_long needed no change.
+  // Each verified both directions before being listed here: MISSING 0, ORPHANED 0, and the
+  // derive self-checked 300/300 byte-identical against core.derive_csv before writing an object.
+  //   imf_ifs 100,706 · imf_dot 101,000 · imf_cpis 100,783 · imf_bop 99,636
+  //   imf_cdis 97,723 · imf_mfs 88,271 · imf_irfcl 54,126 · imf_gfsr 52,055
+  // Titles are RAW KEYS, deliberately and not for want of trying: IMF retired both the dataflow
+  // ids (IFS/DOT/CDIS/CPIS answer 204, while BOP and IRFCL still return 4 MB structures) and the
+  // code vocabulary (the stored IRFCL key decodes A->Annual and S121->Central bank, but '4F' is
+  // absent from COUNTRY because COUNTRY is now ISO-3). Fixing them needs an area-code -> ISO-3
+  // crosswalk, not a flow rename. Downloadable now; searchable when that lands.
+  "imf_bop", "imf_cdis", "imf_cpis", "imf_dot",
+  "imf_gfsr", "imf_ifs", "imf_irfcl", "imf_mfs",
+  "insee_bdm", "ipea",
   // "ksh" RETIRED 2026-07-29 (Ahmed-approved). 394 of its 415 tables were already in
   // ksh_stadat, which carries MORE series for them; its fetcher could not even import
   // (jobs/ingest_ksh_hungary.py does not exist). Its 21 unique tables — 903 series — were
