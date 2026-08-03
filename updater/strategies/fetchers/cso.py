@@ -295,7 +295,8 @@ def update(unit, since) -> Result:
         # so the routing decision had no evidence to stand on. Tally.transient_unit already
         # takes an id (the branch above uses it); these simply never passed one.
         try:
-            rows = ing.fetch_table(mtr)   # reuse ReadDataset URL + JSON-stat2 parse + RATE throttle
+            # _detailed, so an unreadable body is not reported as the publisher's bad hour.
+            rows, outcome = ing.fetch_table_detailed(mtr)
         except (requests.Timeout, requests.ConnectionError) as e:
             print(f"[cso] {mtr}: network {type(e).__name__}: {str(e)[:120]}", flush=True)
             tally.transient_unit(f"{mtr}: {type(e).__name__}")
@@ -316,9 +317,21 @@ def update(unit, since) -> Result:
             # but "which matrices came back empty" is the evidence that tells a persistent
             # schema break apart from a flaky hour, and discarding the id threw exactly that
             # away. An unnamed failure is one nobody can act on.
-            print(f"[cso] {mtr}: fetch_table returned no rows "
-                  f"(network failure after retries, or a 200 that parsed 0 obs)", flush=True)
-            tally.transient_unit(f"{mtr}: empty")
+            # NO LONGER ONE SENTENCE FOR TWO OPPOSITE CAUSES. Saying "network failure after
+            # retries, or a 200 that parsed 0 obs" made a permanent parser gap read as the
+            # publisher's bad hour, and nine matrices sat that way holding ~6M rows (R299).
+            if outcome == "unparsed":
+                print(f"[cso] {mtr}: HTTP 200 with a real body that parsed 0 observations — "
+                      f"this is OURS, not the publisher's, and retrying will not fix it "
+                      f"(unhandled period grammar or dimension shape)", flush=True)
+            else:
+                print(f"[cso] {mtr}: no body after retries (network/5xx) — publisher-side, "
+                      f"retried next tick", flush=True)
+            # Classification stays TRANSIENT for both: the cursor must not advance over a matrix
+            # we failed to read, and a structural break recurs and is re-pulled every tick rather
+            # than frozen. What changed is that the two are now distinguishable in the log, which
+            # is the only thing that would have surfaced the parser gap.
+            tally.transient_unit(f"{mtr}: {outcome}")
             continue
         buf = by_subject.setdefault(sbj, {"keys": [], "dates": [], "vals": []})
         for key, d, v in rows:

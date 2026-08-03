@@ -327,14 +327,35 @@ def parse_jsonstat2(data: dict, prefix: str) -> list[tuple[str, dt.date, float]]
     return results
 
 
-def fetch_table(mtr_code: str) -> list[tuple[str, dt.date, float]]:
+def fetch_table_detailed(mtr_code: str) -> "tuple[list[tuple[str, dt.date, float]], str]":
+    """(rows, outcome) where outcome is 'ok' | 'no_body' | 'unparsed'.
+
+    WHY THE OUTCOME EXISTS. fetch_table() returns [] for two opposite conditions and the caller
+    could not tell them apart, so cso's fetcher logged one sentence — "network failure after
+    retries, or a 200 that parsed 0 obs" — and filed both as TRANSIENT. Transient is a promise
+    that retrying helps. It does for a flaky hour; it never does for a body we cannot read.
+
+    That ambiguity hid ~6M rows: all nine matrices cso reported as `60/60 sub-unit(s)
+    transient-failed` were returning HTTP 200 with real bodies (MTD05 is 557,685 bytes) and
+    parsing to zero, because the period grammar had no daily or academic-year case (R299).
+
+        no_body   get_json exhausted its retries — the publisher's problem, self-heals
+        unparsed  a real body that yielded no observations — OUR problem, never self-heals
+
+    Callers keep classifying as they like; what they can no longer do is confuse the two.
+    """
     url = f"{REST_BASE}/PxStat.Data.Cube_API.ReadDataset/{mtr_code}/JSON-stat/2.0/en"
     data = get_json(url)
     time.sleep(RATE)
     if not data:
-        return []
-    prefix = f"CSO:{mtr_code}"
-    return parse_jsonstat2(data, prefix)
+        return [], "no_body"
+    rows = parse_jsonstat2(data, f"CSO:{mtr_code}")
+    return (rows, "ok") if rows else ([], "unparsed")
+
+
+def fetch_table(mtr_code: str) -> list[tuple[str, dt.date, float]]:
+    """Rows only. Kept for the bulk ingest path, which has no use for the outcome."""
+    return fetch_table_detailed(mtr_code)[0]
 
 
 def main():
