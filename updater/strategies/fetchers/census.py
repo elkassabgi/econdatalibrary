@@ -75,14 +75,43 @@ SOURCE = "census"
 BASE = "https://api.census.gov/data/timeseries"
 DEDUP = ("series_key", "obs_date")
 PREFIX = "eits__"
+
+# Store-file families this fetcher will tail. A family is added ONLY after its tail has been
+# probed against the live API, because "looks stale" and "is behind" are different facts:
+# asm/industry sits at 2016 and is exactly current (2017 and 2018 both 204), while intltrade sat
+# at 2026-03 with 2026-04 and 2026-05 published. Unprobed families are tracked in task #62.
+FAMILIES = ("eits", "intltrade")
+
+# Flows whose `for=` predicate is NOT the us/state pair. Census answers us:* and state:* with
+# 400 "unknown/unsupported geography hierarchy" for these; their geography.json lists
+# world / usitc standard international regions / ... instead. Discovered by asking the API
+# rather than guessing, and the 16 intltrade flows NOT listed here need no `for` at all.
+_WORLD_GEO_SUFFIXES = ("export", "import")
+
+# Most month-grained periods one flow will walk in a single run. A DISCLOSED bound: a file that
+# has fallen a long way behind converges over ticks rather than spending the whole budget in one
+# flow, and the caller says how many it deferred instead of pretending it caught up.
+_MAX_TAIL_MONTHS = int(os.environ.get("CENSUS_MAX_TAIL_MONTHS", "6"))
+
+
+def _store_name(flow: str) -> str:
+    """flow path -> store file stem. The inverse of _flows()'s '__' -> '/'."""
+    return flow.replace("/", "__")
 BUDGET_MIN = float(os.environ.get("CENSUS_BUDGET_MIN", "20"))
 RATE = 0.3
 TIMEOUT = 120
+TIMEOUT_LARGE = int(os.environ.get("CENSUS_TIMEOUT_LARGE", "420"))   # month-grained bulk flows
 MAX_ATTEMPTS = 3
 _TRANSIENT_HTTP = (429, 500, 502, 503, 504)
 
 # Columns the API returns without being listed in get= (they are the predicates).
-_IMPLICIT = ("time", "us")
+_IMPLICIT = ("time", "us", "world")
+# `world` joined this list for the same reason `us` is in it: Census returns the GEOGRAPHY as a
+# column named after the hierarchy you asked for, without being asked. The 8 intltrade
+# *export/*import flows use for=world:*, so their stored schema carries a `world` column, and
+# sending it in get= earns 400 "unknown variable 'world'" — the geography is a response column,
+# never a request variable. Found by running the real get list: an earlier hand-probe with three
+# hand-picked columns worked precisely because it happened not to include it.
 # Never requested in get=: derived here, not served by the API.
 _DERIVED = ("series_key", "obs_date")
 
@@ -110,11 +139,34 @@ def _ingest():
 
 
 def _flows(out_dir: str) -> list[str]:
-    """EITS flow names that already exist on disk. We never mint a new flow here — a flow
-    that has never been ingested is backfill, not a date tail."""
-    return sorted(f[len(PREFIX):-len(".parquet")]
-                  for f in blob.list_parquets(out_dir)
-                  if f.startswith(PREFIX) and not f.endswith("__series.parquet"))
+    """Full flow PATHS that already exist on disk, e.g. "eits/marts", "intltrade/exports/hs".
+    We never mint a new flow here — a flow that has never been ingested is backfill, not a
+    date tail.
+
+    WAS EITS-ONLY, AND THAT WAS A MEASUREMENT ERROR, NOT A DESIGN. The module docstring called
+    the other files "periodic snapshots ... they do not gain periods, they gain a whole new
+    reference year". Census's own catalogue disagrees: api.census.gov/data.json lists every one
+    of them as a `timeseries/` dataset with c_vintage null — intltrade, qwi, asm, aies, bds,
+    govs*, poverty/saipe, healthins/sahie, idb, soma, hhpulse, pseo, hps. They gain PERIODS, so
+    the same date tail applies, and 17 were measured behind on 2026-08-03: the 16 intltrade
+    flows sat at 2026-03 while upstream served 2026-04 and 2026-05 (exports/hs alone had 45,659
+    rows waiting), and bds sat at 2022 against an available 2023.
+
+    FAMILIES ARE OPT-IN, deliberately. Only families whose tail has actually been probed are
+    listed: asm/industry looks ten years stale at 2016 and is EXACTLY current (2017 and 2018
+    both return 204), so adding a family before measuring it invents work and then reports
+    failure at it. The rest stay out until probed — see task #62 for what is still unmeasured.
+    """
+    names = [f for f in blob.list_parquets(out_dir) if not f.endswith("__series.parquet")]
+    out = []
+    for f in names:
+        if not f.endswith(".parquet"):
+            continue
+        stem = f[:-len(".parquet")]
+        if stem.split("__", 1)[0] not in FAMILIES:
+            continue
+        out.append(stem.replace("__", "/"))
+    return sorted(out)
 
 
 def _dims_from_store(path: str) -> tuple[list[str], list[str]]:
@@ -247,6 +299,28 @@ def _predicates(levels: set) -> list[str]:
     return preds or ["us:*"]
 
 
+def _predicates_for(flow: str, levels: set) -> list:
+    """`for=` predicates for THIS flow. A list entry of None means send no `for` at all.
+
+    The us/state reasoning above is EITS-specific and stays exactly as it was. The other
+    families were probed on 2026-08-03 and answer differently:
+      * 16 intltrade flows accept get= + time= with NO `for` — sending one is not required and
+        the request succeeds without it (exports/hs returned 44,997 rows for 2026-03 that way).
+      * the 8 *export/*import variants REQUIRE one, and it is not us/state: both return
+        400 "unknown/unsupported geography hierarchy". Their geography.json lists
+        world / usitc standard international regions / usitc standard countries and areas, and
+        `for=world:*` is accepted (enduseexport 16,137 rows at 2025-12, sitcimport 85,288).
+    Determined by asking <flow>/geography.json, not by guessing — the two wrong guesses cost a
+    round of 400s each.
+    """
+    if flow.startswith("eits/"):
+        return _predicates(levels)
+    if flow.startswith("intltrade/"):
+        leaf = flow.rsplit("/", 1)[-1]
+        return ["world:*"] if leaf.endswith(_WORLD_GEO_SUFFIXES) else [None]
+    return _predicates(levels)
+
+
 _SHAPE = re.compile(r"=[^|]*")
 
 
@@ -274,18 +348,65 @@ def _stored_series(path: str) -> int:
         return 0
 
 
-def _fetch(sess: requests.Session, flow: str, get_cols: list[str], year: int, key: str | None,
-           pred: str = "us:*"):
+def _time_windows(flow: str, mx) -> list[str]:
+    """The `time=` values to request for this flow, from its stored frontier forward.
+
+    EITS ASKS FOR A WHOLE YEAR AND THAT IS CORRECT FOR IT — `time=from YYYY` in one request,
+    because a flow like eits/marts answers ~1,000 rows for a year over ~10 columns.
+
+    intltrade CANNOT be fetched that way, and this was found by running it, not by reading it:
+    `time=from 2026` on intltrade/imports/naics (47 stored columns, ~69k rows in a SINGLE
+    month) read-timed-out at 120s. exports/hs is ~45k rows/month. A whole-year pull there is
+    hundreds of thousands of rows over 47 columns in one response — the request is not slow,
+    it is the wrong shape.
+
+    So month-grained families walk forward one period at a time from the stored max. The
+    boundary month is re-requested (merge dedups it) so a same-month revision is not missed,
+    and the walk stops at today because a future month is a 204 and costs a round trip to
+    learn. Bounded: at most _MAX_TAIL_MONTHS, so a long-frozen file cannot spend the whole
+    budget in one flow — it converges over ticks instead, like every other bounded sweep here.
+    """
+    if not flow.startswith("intltrade/"):
+        return [f"from {mx.year}"]
+    today = dt.date.today()
+    out, y, m = [], mx.year, mx.month
+    while len(out) < _MAX_TAIL_MONTHS:
+        out.append(f"{y:04d}-{m:02d}")
+        if (y, m) >= (today.year, today.month):
+            break
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return out
+
+
+def _fetch(sess: requests.Session, flow: str, get_cols: list[str], time_value: str,
+           key: str | None, pred: str = "us:*"):
     """One flow's date tail -> the raw JSON matrix. Raises TransientError on flaky failures,
     DefinitiveError on a hard 4xx that is not a rate limit (a broken request, not a bad day)."""
-    params = {"get": ",".join(get_cols), "time": f"from {year}", "for": pred}
+    params = {"get": ",".join(get_cols), "time": time_value}
+    # pred None means "send no `for` at all" — the 16 intltrade flows require its ABSENCE, and
+    # a `for=` they do not recognise is a 400, not a harmless extra.
+    if pred is not None:
+        params["for"] = pred
     if key:
         params["key"] = key
-    url = f"{BASE}/eits/{flow}"
+    # `flow` is a FULL path now ("eits/marts", "intltrade/exports/hs"), so the family is no
+    # longer hardcoded here. It used to read f"{BASE}/eits/{flow}", which is why this module
+    # could only ever see EITS.
+    url = f"{BASE}/{flow}"
+    # 120s fits EITS, whose biggest flow answers ~1,000 rows over ~10 columns. It does not fit
+    # intltrade: exports/statehs is 24 stored columns and ~10k rows for ONE month, imports/hs
+    # ~25k, exports/hs ~45k, and those read-timed-out at 120s even after the switch to
+    # month-grained windows. The request is correct and the server is working — it is simply a
+    # much larger body, so the ceiling is raised for that family rather than the flow being
+    # reported as a transient failure it is not.
+    timeout = TIMEOUT_LARGE if flow.startswith("intltrade/") else TIMEOUT
     last = None
     for attempt in range(MAX_ATTEMPTS):
         try:
-            r = sess.get(url, params=params, timeout=TIMEOUT)
+            r = sess.get(url, params=params, timeout=timeout)
         except (requests.Timeout, requests.ConnectionError) as e:
             last = str(e)
             time.sleep(2 ** attempt)
@@ -326,7 +447,7 @@ def update(unit, since) -> Result:
     flows = _flows(out_dir)
     if not flows:
         raise DefinitiveError(
-            f"{SOURCE}: no eits__*.parquet in {out_dir}; run the first-pass ingest "
+            f"{SOURCE}: no {'/'.join(FAMILIES)} parquet in {out_dir}; run the first-pass ingest "
             f"(jobs/ingest_census.py) before incremental updates")
 
     J = _ingest()
@@ -343,7 +464,7 @@ def update(unit, since) -> Result:
     deferred = 0
 
     for flow in flows:
-        path = os.path.join(out_dir, f"{PREFIX}{flow}.parquet")
+        path = os.path.join(out_dir, f"{_store_name(flow)}.parquet")
         before_rows = blob.row_count(path)
         total += before_rows
         if dl.spent():
@@ -368,22 +489,31 @@ def update(unit, since) -> Result:
         # first — shifts every column of the second response, so the dimensions read as
         # garbage, no stored shape matches, and the rows are dropped. Silently, because the
         # drop counter was not reported either. Parse each response against its own header.
+        #
+        # AND EACH TIME WINDOW IS ITS OWN REQUEST for month-grained families. EITS still asks
+        # for a whole year in one call; intltrade cannot (see _time_windows — a year of
+        # imports/naics over 47 columns read-timed-out at 120s). Every response is still parsed
+        # against its OWN header, which is what the paragraph above is about, so adding a second
+        # loop changes nothing about that invariant.
         parts = []
         failed = False
-        for pred in _predicates(levels):
-            try:
-                part = _fetch(sess, flow, get_cols, mx.year, key, pred)
-            except TransientError:
-                tally.transient_unit(f"{flow} for={pred}")
-                failed = True
+        for tv in _time_windows(flow, mx):
+            for pred in _predicates_for(flow, levels):
+                try:
+                    part = _fetch(sess, flow, get_cols, tv, key, pred)
+                except TransientError:
+                    tally.transient_unit(f"{flow} time={tv} for={pred}")
+                    failed = True
+                    break
+                except DefinitiveError:
+                    tally.structural_unit(f"{flow} time={tv} for={pred}")
+                    failed = True
+                    break
+                time.sleep(RATE)
+                if part and len(part) >= 2:
+                    parts.append(part)
+            if failed or dl.spent():
                 break
-            except DefinitiveError:
-                tally.structural_unit(f"{flow} for={pred}")
-                failed = True
-                break
-            time.sleep(RATE)
-            if part and len(part) >= 2:
-                parts.append(part)
         if failed:
             continue
         rows = parts[0] if parts else []
@@ -415,8 +545,17 @@ def update(unit, since) -> Result:
             lidx = {c.lower(): i for i, c in enumerate(header)}
             ti = lidx.get("time")
             vi = lidx.get("cell_value")
-            if ti is None or vi is None:
-                tally.structural_unit(f"{flow}: response lacks time/cell_value")
+            # `cell_value` IS EITS'S SHAPE, NOT CENSUS'S. Every EITS flow returns one measure in
+            # a column of that name, so requiring it was right while this module only saw EITS.
+            # intltrade does not have it at all — it carries many measures per row (ALL_VAL_MO,
+            # ALL_VAL_YR, GEN_VAL_MO, CNT_WGT_YR, ...) and the loop below already copies every
+            # data_col generically. Left as-is, the check would record a structural break for
+            # all 24 intltrade flows on their first tick and never fetch a row.
+            # `time` is still required of everyone: without it there is no obs_date.
+            needs_value_col = flow.startswith("eits/")
+            if ti is None or (needs_value_col and vi is None):
+                tally.structural_unit(f"{flow}: response lacks time"
+                                      + ("/cell_value" if needs_value_col else ""))
                 broke = True
                 break
             gi = lidx.get("geo_level_code")
@@ -424,9 +563,13 @@ def update(unit, since) -> Result:
                 d = J.parse_obs_date(row[ti])
                 if d is None or d < mx:
                     continue                                 # strictly the tail (boundary incl.)
-                if row[vi] in (None, ""):
+                # Skip the empty-measure row only where there IS a single measure column to
+                # judge. A flow with many measures (intltrade) has no one cell to call empty,
+                # and dropping on any single one would silently discard rows that carry the
+                # others.
+                if vi is not None and row[vi] in (None, ""):
                     continue
-                sk = _key_for(J, row, hidx, dim_cols, shapes, f"timeseries/eits/{flow}")
+                sk = _key_for(J, row, hidx, dim_cols, shapes, f"timeseries/{flow}")
                 if sk is None:
                     unknown_shape += 1
                     continue
