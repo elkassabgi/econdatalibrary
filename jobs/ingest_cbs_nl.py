@@ -68,6 +68,16 @@ def get_catalog() -> list[dict]:
     return result
 
 
+# A year outside this range is not a period anyone published — see the 4-digit branch below for
+# the measured case. Wide on purpose: genuine long history and real projections (un_wpp 2101,
+# bfs scenarios to 2150) must be untouched by a guard aimed at classification codes.
+_YEAR_LO, _YEAR_HI = 1500, 2100
+
+
+def _year_ok(y: int) -> bool:
+    return _YEAR_LO <= y <= _YEAR_HI
+
+
 def parse_cbs_period(s: str) -> dt.date | None:
     """Parse CBS period codes.
     Annual:      '2022JJ00' or '2022'
@@ -88,13 +98,33 @@ def parse_cbs_period(s: str) -> dt.date | None:
     s = (s or "").strip()
     try:
         if len(s) == 4 and s.isdigit():
-            return dt.date(int(s), 12, 31)
+            # A BARE 4-DIGIT CODE IS NOT AUTOMATICALLY A YEAR. Table 70170NED has no Perioden
+            # dimension at all; its axes are GeboorteperiodeEersteKind and Opleidingsniveau, and
+            # the first is PERIOD-NAMED but is a birth-cohort classification whose keys are
+            # COMPRESSED YEAR RANGES — read live from CBS on 2026-08-03:
+            #     '8589' = "Geboorteperiode: 1985-1989"
+            #     '9094' = "Geboorteperiode: 1990-1994"
+            #     '9597' = "Geboorteperiode: 1995-1997"
+            # Unbounded, '9597' became the year 9597 — exactly the worst obs_date in cbs_nl's
+            # store, across four files.
+            #
+            # Out of range yields None, which discards the row, and for a table like this that
+            # is the correct outcome rather than a loss: it is a cross-tabulation with no time
+            # axis, so it has no time-series observations to contribute. Note the docstring
+            # above warns that None discards the whole row — that warning is about MISSING
+            # formats, where real periods were being thrown away. This is the opposite case:
+            # refusing to invent a period that was never published.
+            y = int(s)
+            return dt.date(y, 12, 31) if _year_ok(y) else None
         # Exact date, YYYYMMDD. MUST precede the generic <year><code> branch, which
         # would read '19990924' as year 1999 + code '09' and fall through to None.
         if len(s) == 8 and s.isdigit():
-            return dt.date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+            y = int(s[:4])
+            return dt.date(y, int(s[4:6]), int(s[6:8])) if _year_ok(y) else None
         if len(s) >= 6 and s[:4].isdigit():
             yr = int(s[:4]); rest = s[4:].upper()
+            if not _year_ok(yr):
+                return None
             if rest[:2] == "JJ":          # annual
                 return dt.date(yr, 12, 31)
             # Dutch academic year yr/yr+1, dated to its END — consistent with JJ

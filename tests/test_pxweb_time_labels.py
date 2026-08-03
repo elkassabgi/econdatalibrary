@@ -121,3 +121,41 @@ def test_hagstofa_rejects_out_of_range_years_in_every_branch(code):
 def test_hagstofa_still_parses_real_periods(code, year):
     d = _hagstofa().parse_date(code)
     assert d is not None and d.year == year, f"{code} -> {d}"
+
+
+# --- cbs_nl: a PERIOD-NAMED classification whose codes are compressed year RANGES -----------
+# Table 70170NED has no Perioden dimension at all. Its axes are GeboorteperiodeEersteKind and
+# Opleidingsniveau, and the first is period-NAMED but is a birth-cohort classification. Read
+# live from CBS on 2026-08-03, its keys are compressed ranges:
+#     '8589' = "Geboorteperiode: 1985-1989"
+#     '9094' = "Geboorteperiode: 1990-1994"
+#     '9597' = "Geboorteperiode: 1995-1997"
+# Unbounded, '9597' became the year 9597 — exactly the worst obs_date in cbs_nl's store.
+
+def _cbs():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_cbs_pd", os.path.join(ROOT, "jobs", "ingest_cbs_nl.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+@pytest.mark.parametrize("code", ["8589", "9094", "9597", "9597JJ00", "85890101",
+                                  "2101", "1499"])
+def test_cbs_rejects_cohort_ranges_and_out_of_range_years(code):
+    assert _cbs().parse_cbs_period(code) is None, f"{code} produced a date"
+
+
+@pytest.mark.parametrize("code,year", [
+    ("2022", 2022), ("1985", 1985), ("2100", 2100),
+    ("2022JJ00", 2022), ("2022MM03", 2022), ("2022KW01", 2022), ("2022HJ01", 2022),
+    ("2000SJ00", 2001),          # Dutch school year, dated to its END
+    ("19990924", 1999),
+])
+def test_cbs_still_parses_every_real_period_format(code, year):
+    """The docstring in ingest_cbs_nl warns that returning None DISCARDS THE WHOLE ROW, and
+    that missing formats once silently emptied 23 tables (71493ned fetched 144,000,000 rows and
+    wrote zero). So the bound must not cost a single real format."""
+    d = _cbs().parse_cbs_period(code)
+    assert d is not None and d.year == year, f"{code} -> {d}"
