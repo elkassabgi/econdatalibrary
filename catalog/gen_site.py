@@ -264,9 +264,23 @@ FREQ_ISO = {
 
 TODAY = date.today().isoformat()
 
-# Dates beyond this are treated as data sentinels (9999-12-31, year 6016, ...)
-# and excluded from temporalCoverage so we never publish corrupt coverage.
-MAX_SANE_YEAR = date.today().year + 2
+# Dates beyond this are treated as data sentinels (9999-12-31, year 6016, ...) and excluded
+# from temporalCoverage so we never publish corrupt coverage.
+#
+# The ceiling used to be `date.today().year + 2`, which is right for an OBSERVATIONS catalogue
+# and wrong for this one: a good part of it is PROJECTIONS, and a forecast horizon is not a
+# corrupt date. Measured across catalog.db on 2026-08-02, the two populations separate cleanly
+# with nothing in between:
+#
+#   real forecast horizons   26 sources,  636,021 series -- un_wpp 2101, gapminder 2100,
+#                            ksh_stadat 2100, boc 2095, fao_* 2050, imf_weo 2031
+#   sentinels                 7 sources,   40,132 series -- 9999, 6152, 6016, 3005, 2150
+#
+# At `year + 2` every one of those 636,021 series lost its real end date, and whole pages lost
+# their coverage row entirely (gapminder rendered none at all, despite holding 86,684 series
+# spanning year 730 to 2100). 2126 sits in the empty gap: a century of headroom for genuine
+# projections, still far below the lowest sentinel.
+MAX_SANE_YEAR = 2126
 
 
 # ---------------------------------------------------------------------------- #
