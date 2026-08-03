@@ -20,6 +20,7 @@ switches — so local and cloud publishes can never drift apart.
 """
 from __future__ import annotations
 
+import datetime as dt
 import io
 
 import pyarrow as pa
@@ -192,6 +193,58 @@ def _table_to_bytes(table, compression: str = "zstd") -> bytes:
     return buf.getvalue()
 
 
+# No published statistical series reaches this far. The longest real horizon in this fleet is
+# UN WPP at 2101, and health.py documents the other genuine projections (ABS to 2046 and 2071,
+# IMF WEO to 2031). 2200 sits far above all of them, so anything past it is a parse artifact,
+# not data — the point is to be unarguable, not tight.
+_IMPOSSIBLE_AFTER = dt.date(2200, 1, 1)
+
+
+def _report_impossible_dates(table, out_path) -> int:
+    """Count and ANNOUNCE observations dated beyond any possible publication horizon.
+
+    WHY THIS EXISTS. Every instrument in this system measures RECENCY — is the newest
+    observation old? A fabricated FUTURE date passes that trivially; it makes a source look
+    maximally fresh. The health gate even filters forward-dated periods out of its recency
+    signal, correctly, so that real projections do not cry wolf — which means the same
+    mechanism hides fabricated dates. Nothing anywhere asked whether a value was POSSIBLE.
+
+    Measured 2026-08-03: cso had been serving 434,408 rows (0.887% of 48,960,271, across 11
+    files) dated beyond 2100 — 272,445 in Census 2016 at 9998-12-31, because a classification
+    dimension whose codes are CSO sentinels (3001, 9998, 9999) was being read as the time axis.
+    It reached users. No check in the fleet could see it, and it was found only by reading the
+    store by hand.
+
+    REPORTS, NEVER DROPS. Silently discarding rows would be data loss decided by a heuristic,
+    and this runs on the path EVERY fetcher takes — the blast radius of a wrong bound is the
+    whole fleet. Refusing the publish would be worse still: it would reject a good pull over a
+    handful of bad cells. So it prints, loudly, into the run log that is already read daily,
+    and the humans decide.
+
+    Cheap by construction: one Arrow comparison over a column already materialised, next to a
+    sort and a serialise that dominate this function's cost.
+    """
+    try:
+        if "obs_date" not in table.column_names:
+            return 0
+        col = table.column("obs_date").combine_chunks()
+        bad = pc.greater(col, _IMPOSSIBLE_AFTER)
+        n_bad = pc.sum(pc.cast(bad, "int64")).as_py() or 0
+        if not n_bad:
+            return 0
+        sample = table.filter(bad).slice(0, 1)
+        key = (sample.column("series_key")[0].as_py()
+               if "series_key" in sample.column_names else "?")
+        when = sample.column("obs_date")[0].as_py()
+        print(f"[merge] IMPOSSIBLE DATES: {n_bad:,} of {table.num_rows:,} row(s) at {out_path} "
+              f"are dated after {_IMPOSSIBLE_AFTER.year} — e.g. {str(key)[:80]} -> {when}. "
+              f"Published anyway (dropping would be data loss decided by a heuristic), but a "
+              f"time axis is almost certainly being read off a non-time dimension.", flush=True)
+        return n_bad
+    except Exception:                                        # noqa: BLE001
+        return 0                                             # never fail a good publish
+
+
 def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
                     min_ratio=0.97, allow_empty=False, blob=None):
     """Publish new_table to out_path under the never-shrink invariant.
@@ -241,6 +294,8 @@ def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
     if old_rows and n < old_rows * min_ratio:
         raise DefinitiveError(
             f"refusing shrink {old_rows}->{n} at {out_path} (< {min_ratio:.0%} of existing)")
+
+    _report_impossible_dates(final, out_path)
 
     final = _sort(final, dedup_keys)
     if blob is None:
