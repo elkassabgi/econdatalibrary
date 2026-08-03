@@ -33,7 +33,8 @@ import pyarrow.compute as pc
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Deadline, Tally, finalize, sane_since
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after, sane_since,
+                      save_rotation)
 from jobs import ingest_worldbank_esg as ig   # reuse code map + json client + year parsing
 
 # Minutes this source may spend before deferring the rest to the next tick.
@@ -115,6 +116,19 @@ def update(unit, since) -> Result:
     if not files:
         raise DefinitiveError("worldbank_esg: no indicator parquets on the store")
 
+    # R190. THE DEFERRAL BELOW SAYS "the rest drain next tick" AND THEY DID NOT. blob.list_parquets
+    # sorts, so every run started at AG.* and stopped at the same place, and the indicators past
+    # that point were deferred FOREVER while the run honestly reported `partial`. Measured on the
+    # store 2026-08-03: 39 of 71 files carried recent write times and the other 32 — CC.EST,
+    # EN.ATM.CO2E.PC, EN.ATM.METH.PC, EN.ATM.NOXE.PC, EN.CLC.GHGR.MT.CE, EN.POP.DNST, GE.EST,
+    # IC.LGL.CRED.XQ and the rest of the alphabet — still sat at 2026-06-30, their first-pass
+    # ingest date. Never updated once. The tail is contiguous and alphabetical, which is the
+    # signature.
+    #
+    # Resuming past the last one worked on makes the deferral true. An unknown or empty bookmark
+    # degrades to "start at the top", so a first run or a renamed indicator skips nothing.
+    files = rotate_after(files, load_rotation(out_dir))
+
     cursors: dict[str, str] = {}
     maxd = None
     total = 0
@@ -141,8 +155,20 @@ def update(unit, since) -> Result:
             total += sum(blob.row_count(os.path.join(out_dir, f)) for f in deferred)
             print(f"[worldbank_esg] budget of {BUDGET_MIN} min spent after "
                   f"{deadline.elapsed_min():.1f} min; deferring {len(deferred)} "
-                  f"of {len(files)} indicators to the next tick", flush=True)
+                  f"of {len(files)} indicators to the next tick (resuming after "
+                  f"{files[i - 1] if i else '(none)'})", flush=True)
             break
+        # AFTER the deferral check, never before: the bookmark means "the last indicator this run
+        # actually WORKED ON". Stamped above the check it would record one that was deferred, and
+        # the next run — starting just past it — would skip the very indicator the deferral
+        # promised to return to.
+        #
+        # Written per indicator rather than once at the end, because the end is not guaranteed to
+        # be reached: the orchestrator's 45-minute cap KILLS a source rather than breaking its
+        # loop, and a kill before an end-of-function save loses the bookmark entirely — which is
+        # why twelve of fourteen rotating sources have never persisted one (R273). One small
+        # write per indicator, against ~71 of them, buys immunity from that.
+        save_rotation(out_dir, fn)
         ind_id = fn[:-len(".parquet")]
         path = os.path.join(out_dir, fn)
         date_param = _window(path, since)
