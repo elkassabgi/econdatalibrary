@@ -69,7 +69,7 @@ from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import (CURSOR_CAP, Deadline, Tally, cursors_from_table, finalize,
-                      merge_cursor_map)
+                      load_rotation, merge_cursor_map, rotate_after, save_rotation)
 
 # Minutes adb may spend before deferring the remaining flows to the next tick.
 BUDGET_MIN = 25
@@ -346,6 +346,15 @@ def update(unit, since) -> Result:
     deadline = Deadline(minutes=BUDGET_MIN)
     capped = False
 
+    # R190 — AND THE COMMENT ABOVE SAYS "the same as worldbank_esg", WHICH WAS TRUE INCLUDING
+    # THE BUG. blob.list_parquets sorts, so every run began at the same flow and stopped in the
+    # same place; the flows past that point were deferred for ever while the run reported
+    # `partial` with a reassuring reason. Measured on the store 2026-08-03: exactly two blocks —
+    # 10 files written 2026-07-30 from EGELC.parquet, then 44 untouched since 2026-07-15
+    # starting at EO_NA_CONST.parquet. A clean contiguous tail is the signature; scattered
+    # staleness would have meant selection by change, which this does not do.
+    pfiles = rotate_after(pfiles, load_rotation(out_dir))
+
     for i, fn in enumerate(pfiles):
         if deadline.spent():
             capped = True
@@ -353,8 +362,15 @@ def update(unit, since) -> Result:
             total += sum(blob.row_count(os.path.join(out_dir, f)) for f in deferred)
             print(f"[adb] budget of {BUDGET_MIN} min spent after "
                   f"{deadline.elapsed_min():.1f} min; deferring {len(deferred)} "
-                  f"of {len(pfiles)} flows to the next tick", flush=True)
+                  f"of {len(pfiles)} flows to the next tick (resuming after "
+                  f"{pfiles[i - 1] if i else '(none)'})", flush=True)
             break
+        # AFTER the deferral check: the bookmark records what was WORKED ON, never something
+        # deferred — otherwise the next run skips the very flow the deferral promised to return
+        # to. Written per flow, not once at the end, because the orchestrator's 45-minute cap
+        # KILLS a source rather than breaking its loop, and a kill before an end-of-function
+        # save loses the bookmark (R273).
+        save_rotation(out_dir, fn)
         flow = fn[:-len(".parquet")]
         path = os.path.join(out_dir, fn)
         before = blob.row_count(path)
