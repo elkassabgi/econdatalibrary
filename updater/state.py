@@ -174,3 +174,23 @@ class StateStore:
     def recent_runs(self, limit=50):
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))]
+
+    def run_cost_estimate(self, sample=5) -> dict:
+        """{source_id: seconds} — what a run of this source COSTS, for scheduling.
+
+        MAX over the last `sample` runs, not mean or latest: the estimate decides whether a
+        source is cheap enough to be guaranteed a nightly turn, so it must not be fooled by
+        one fast `no_change` on a source that takes 40 minutes whenever there IS a change.
+        Over-estimating costs a source its place in the fast lane, which is recoverable;
+        under-estimating lets an expensive source into a lane sized for cheap ones, which is
+        the failure the lane exists to prevent.
+
+        A source with no runs on record is absent from the mapping — the caller decides what
+        never-run means, rather than having a 0 here quietly assert "free".
+        """
+        rows = self.db.execute(
+            "SELECT source_id, MAX(dur_s) FROM ("
+            "  SELECT source_id, dur_s,"
+            "         ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY id DESC) AS rn"
+            "  FROM runs) WHERE rn <= ? GROUP BY source_id", (sample,))
+        return {sid: (d or 0.0) for sid, d in rows}
