@@ -46,6 +46,30 @@ on:
     # and only eia does real work. Let the due-check do its job rather than
     # encoding a second, coarser schedule here that disagrees with the registry.
     - cron: '0 3 * * *'
+    # SECOND ATTEMPT at 15:00 UTC, because one attempt a day is not one run a day.
+    #
+    # MEASURED 2026-08-03. This workflow shares the `aqueduct-updater` concurrency group
+    # with updater-daily (deliberately — R5, the state store is single-writer). That group
+    # is `cancel-in-progress: false`, which does NOT mean "everything eventually runs": it
+    # means GitHub holds at most ONE pending run per group, and a newer arrival EVICTS the
+    # one already waiting. A queued run is not a reservation.
+    #
+    # What that cost, in full: run 30790451118 was created 06:30, started ZERO jobs, and was
+    # cancelled at 08:19 — the exact minute the next updater-daily run was created. It had
+    # been waiting behind a daily run that occupied the group 04:37-08:22. So all nine heavy
+    # sources got no run at all that day, and cepii_baci — restored to this matrix on
+    # 2026-08-02 specifically to clear RED-UNRUN — stayed RED-UNRUN for a reason that has
+    # nothing to do with cepii_baci.
+    #
+    # The "well clear of the 06:00 daily run" reasoning above is sound and was still not
+    # enough, because it assumes cron fires on time. GitHub delays scheduled runs under load:
+    # this 03:00 cron actually fired at 06:30. A fixed offset cannot dodge a variable delay.
+    #
+    # A second attempt is the cheap fix, and it is cheap for the reason the comment above
+    # already gives: the orchestrator's TTL due-check decides what actually runs, so a second
+    # daily pass costs one no-op probe per not-due source. It does not make eviction
+    # impossible — nothing here can — it makes a single eviction cost hours instead of a day.
+    - cron: '0 15 * * *'
   workflow_dispatch:
     inputs:
       source:
