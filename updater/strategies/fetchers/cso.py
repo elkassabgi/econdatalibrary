@@ -329,8 +329,10 @@ def _write_cursor(path, mapping):
 
 
 def _total_rows(out_dir) -> int:
-    import glob
+    # R36: the read (blob.row_count) was routed but the LISTING was a raw local glob, so under
+    # AQUEDUCT_BACKEND=r2 there is no such directory on the runner, the loop iterates nothing,
+    # and this reports 0 rows — a number rather than an error, so nothing downstream objects.
     total = 0
-    for p in glob.glob(os.path.join(out_dir, "*.parquet")):
-        total += blob.row_count(p)
+    for name in blob.list_parquets(out_dir):
+        total += blob.row_count(os.path.join(out_dir, name))
     return total
