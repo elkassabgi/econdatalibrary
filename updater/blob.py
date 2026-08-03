@@ -135,6 +135,27 @@ def read_schema(path: str):
     return pq.read_schema(path)
 
 
+def read_metadata(path: str):
+    """The parquet FileMetaData of a stored parquet, R2-routed like read_schema.
+
+    Exists so an aggregate that parquet already knows (a column min/max held in the
+    row-group statistics) can be answered from the FOOTER instead of decoding data.
+    Locally that is a couple of seeks; there is no decode at any file size.
+
+    NOTE the honest limit under the R2 backend: the object still has to come over the
+    wire in full before its footer can be read, so this saves the DECODE, not the GET.
+    That is the difference between "expensive" and "impossible" — oecd's largest flow
+    file is 1,792,000,000 rows and cannot be decoded on any runner we own.
+    """
+    r2 = _r2_routed()
+    if r2 is not None:
+        data = r2.get(_path_to_key(path))
+        if data is None:
+            raise FileNotFoundError(f"R2 object absent for {path!r}")
+        return pq.read_metadata(io.BytesIO(data))
+    return pq.read_metadata(path)
+
+
 def write_table_atomic(path: str, table, compression: str = "zstd") -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     # Per-process+per-call unique temp name so two concurrent writers (different
@@ -178,15 +199,25 @@ def write_table_atomic(path: str, table, compression: str = "zstd") -> None:
             r2.put_atomic(_path_to_key(path), fh.read())
 
 
-def list_parquets(dir_path: str) -> list[str]:
-    """Sorted parquet filenames directly inside a store dir, R2-routed.
+def list_parquets(dir_path: str, recursive: bool = False) -> list[str]:
+    """Sorted parquet names inside a store dir, R2-routed.
 
     Replaces ``os.listdir(out_dir)`` / ``glob.glob(out_dir/*.parquet)`` in fetchers:
     the local store dir is absent on a CI runner (AQUEDUCT_BACKEND=r2) — a raw
     listdir either trips the fetcher's "source dir missing" DefinitiveError or,
     worse, silently yields zero flows (ledger R36, same class as raw reads).
-    Returns basenames only (nested keys are never returned), so existing callers
-    keep their ``os.path.join(out_dir, fn)`` shape."""
+
+    Default (``recursive=False``) returns BASENAMES ONLY, so existing callers keep their
+    ``os.path.join(out_dir, fn)`` shape and a nested key can never masquerade as a top-level
+    flow. That default is deliberate and unchanged.
+
+    ``recursive=True`` returns names RELATIVE to dir_path, so nested layouts come back as
+    ``"Regional/CAINC5S.parquet"``. Needed because not every store is flat: bea's 591 files
+    live at ``clean_full/bea/<Dataset>/<Table>.parquet``, and a non-recursive listing of that
+    directory returns an empty list — indistinguishable from an empty store. The caller still
+    joins onto dir_path, and the separator is normalised so a Windows join produces the same
+    key an R2 listing did.
+    """
     r2 = _r2_routed()
     if r2 is not None:
         prefix = _path_to_key(dir_path).rstrip("/") + "/"
@@ -195,14 +226,24 @@ def list_parquets(dir_path: str) -> list[str]:
         for page in paginator.paginate(Bucket=r2.bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 name = obj["Key"][len(prefix):]
-                if name and "/" not in name and name.endswith(".parquet"):
+                if not name or not name.endswith(".parquet"):
+                    continue
+                if recursive or "/" not in name:
                     names.append(name)
         return sorted(names)
     if not os.path.isdir(dir_path):
         return []
-    return sorted(f for f in os.listdir(dir_path)
-                  if f.endswith(".parquet")
-                  and os.path.isfile(os.path.join(dir_path, f)))
+    if not recursive:
+        return sorted(f for f in os.listdir(dir_path)
+                      if f.endswith(".parquet")
+                      and os.path.isfile(os.path.join(dir_path, f)))
+    out = []
+    for root, _dirs, files in os.walk(dir_path):
+        for f in files:
+            if f.endswith(".parquet"):
+                rel = os.path.relpath(os.path.join(root, f), dir_path)
+                out.append(rel.replace(os.sep, "/"))   # match the R2 key spelling
+    return sorted(out)
 
 
 def read_bytes(path: str) -> bytes | None:

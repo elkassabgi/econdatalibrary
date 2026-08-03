@@ -107,12 +107,18 @@ def _table_cursors(out: str) -> dict:
     be tens of GB, while one part at a time is a few million.
     """
     import pyarrow.compute as pc
-    import pyarrow.parquet as pq
 
+    # R36: this READS the store to learn which keys we hold, and it listed with a raw
+    # recursive glob and read with a raw pq.read_table — both addressing the local disk. Under
+    # AQUEDUCT_BACKEND=r2 the loop had nothing to iterate and this returned an EMPTY mapping,
+    # which downstream reads as "the store holds no keys" rather than "I could not look".
+    # usda's store is nested (out/<sector>/<file>.parquet), so the listing must be recursive —
+    # the default basenames-only form returns [] here, the same answer as an empty store.
     full: dict = {}
-    for p in sorted(glob.glob(os.path.join(out, "**", "*.parquet"), recursive=True)):
+    for rel in blob.list_parquets(out, recursive=True):
+        p = os.path.join(out, rel)
         try:
-            t = pq.read_table(p, columns=["series_key", "obs_date"])
+            t = blob.read_table(p, columns=["series_key", "obs_date"])
             if t.num_rows == 0:
                 continue
             k = pc.replace_substring_regex(t.column("series_key"), "^usda:", "")

@@ -146,30 +146,35 @@ def _save_manifest(man: dict) -> None:
     os.replace(tmp, path)
 
 
+# THE READS BELOW WERE BLOB-ROUTED; THE LISTINGS WERE NOT (R36).
+#
+# All three of these ask the store a question that decides what the run does: which subjects do
+# we already hold, how many rows, how far does the data reach. Each listed the store with
+# os.listdir behind an `os.path.isdir` guard — so under AQUEDUCT_BACKEND=r2, which is EVERY CI
+# run, the local directory is absent, the guard returns the empty answer, and dst concludes it
+# holds nothing at all: no subjects, zero rows, no frontier. Not a crash; an empty set that
+# reads as a fact. blob.row_count and blob.read_table underneath were already routed, so the
+# listing was the only half still addressing the wrong machine.
+#
+# `_`-prefixed sidecars stay excluded exactly as before.
+def _store_names() -> list[str]:
+    return [f for f in blob.list_parquets(config.source_dir(SOURCE))
+            if not f.startswith("_")]
+
+
 def _existing_subjects() -> set[str]:
-    d = config.source_dir(SOURCE)
-    if not os.path.isdir(d):
-        return set()
-    return {os.path.splitext(f)[0] for f in os.listdir(d)
-            if f.endswith(".parquet") and not f.startswith("_")}
+    return {os.path.splitext(f)[0] for f in _store_names()}
 
 
 def _total_rows() -> int:
     d = config.source_dir(SOURCE)
-    if not os.path.isdir(d):
-        return 0
-    return sum(blob.row_count(os.path.join(d, f)) for f in os.listdir(d)
-               if f.endswith(".parquet") and not f.startswith("_"))
+    return sum(blob.row_count(os.path.join(d, f)) for f in _store_names())
 
 
 def _global_max_date() -> str | None:
     d = config.source_dir(SOURCE)
-    if not os.path.isdir(d):
-        return None
     best = None
-    for f in os.listdir(d):
-        if not f.endswith(".parquet") or f.startswith("_"):
-            continue
+    for f in _store_names():
         p = os.path.join(d, f)
         try:
             t = blob.read_table(p)
