@@ -90,6 +90,7 @@ def main() -> int:
     tot_rows = tot_out = touched = clean = 0
     tot_keys_before = tot_keys_after = 0
     tot_conflicts = 0        # (key, obs_date) groups holding MORE THAN ONE distinct value
+    unreadable = 0           # files R2 would not serve this pass — NOT clean, NOT re-keyed
     for i, fn in enumerate(files, 1):
         path = os.path.join(out_dir, fn)
         # CHEAP SKIP FIRST: one column, one value. A key scheme is uniform within a file (one
@@ -105,7 +106,23 @@ def main() -> int:
         if not head or "LAST UPDATE" not in head:
             clean += 1
         else:
-            t = blob.read_table(path)
+            # GUARDED LIKE THE PROBE ABOVE. The probe read has a try/except and this one did not,
+            # so a transient R2 ReadTimeoutError on ONE file killed the whole pass — measured:
+            # the run died at file 4,403 of 7,754 after ~4 hours, having already skipped
+            # LFSA_EWHAIS.parquet cleanly through the guarded path moments earlier. Two reads of
+            # the same store, one survivable and one fatal, is not a policy; it is an oversight
+            # that only shows up on a long pass, which is exactly when it costs the most.
+            #
+            # Counted separately from `clean`: an unreadable file is NOT known to be re-keyed, and
+            # folding it into the clean count would quietly overstate how much of the store is
+            # already done.
+            try:
+                t = blob.read_table(path)
+            except Exception as e:                              # noqa: BLE001
+                unreadable += 1
+                print(f"  [{i}/{len(files)}] {fn}: UNREADABLE on full read "
+                      f"({type(e).__name__}) — skipped, NOT counted clean", flush=True)
+                continue
             before_rows = t.num_rows
             # TRANSFORM DISTINCT KEYS, NOT ROWS. AACT_ALI01 holds 3,945 rows across 219
             # distinct keys — running the regex per row is 18x redundant, and over 7,754 files
@@ -159,6 +176,9 @@ def main() -> int:
 
     print(f"\nfiles needing re-key : {touched:,}")
     print(f"files already clean  : {clean:,}")
+    if unreadable:
+        print(f"files UNREADABLE     : {unreadable:,}  (transient R2 reads; re-run to cover them — "
+              f"they are NOT counted clean and NOT known to be re-keyed)")
     print(f"rows                 : {tot_rows:,} -> {tot_out:,}  (collapsed {tot_rows - tot_out:,})")
     print(f"distinct series_key  : {tot_keys_before:,} -> {tot_keys_after:,}")
     # The number the "keep LAST" policy actually rests on. Zero means every collapse was the
