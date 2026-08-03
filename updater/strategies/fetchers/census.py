@@ -88,6 +88,37 @@ FAMILIES = ("eits", "intltrade")
 # rather than guessing, and the 16 intltrade flows NOT listed here need no `for` at all.
 _WORLD_GEO_SUFFIXES = ("export", "import")
 
+# FLOWS WHOSE STORE IS NOT UNIQUELY KEYED BY (series_key, obs_date), SO THEY CANNOT BE TAILED.
+#
+# merge_and_write dedups on that pair. Where the store already holds many rows sharing one, the
+# first incremental merge does not add a tail — it collapses the file. never-shrink refuses the
+# write so nothing is lost, but the flow then fails every run with a baffling "refusing shrink
+# 3,356,888->4,400" that looks like a fetcher bug and is not one: the STORE was never uniquely
+# keyed (same class as comtrade, task #16).
+#
+# Measured 2026-08-03 with tools/audit_dedup_uniqueness.py, rows -> distinct (series_key,
+# obs_date). I enabled the intltrade family BEFORE running that check and 11 of its 24 flows are
+# in this state; the audit caught my own change. The other 13 are clean and are tailed — which
+# includes the two that matter most, exports/hs (8,718,542 rows / 55,233 keys) and imports/hs
+# (4,623,339 / 31,229).
+#
+# These are not broken forever: re-key the store and delete the entry. Deliberately a literal
+# list rather than a runtime group_by, because that check costs a full read of an 8.7M-row file
+# per flow per run to re-learn something that only changes when someone re-keys it.
+_UNDER_KEYED = {
+    "intltrade/exports/enduse":      (2_998_110, 167_370),
+    "intltrade/exports/hitech":      (286_836, 14_040),
+    "intltrade/exports/naics":       (2_356_501, 139_414),
+    "intltrade/exports/sitc":        (3_265_447, 4_940),
+    "intltrade/exports/statehs":     (3_356_888, 4_400),
+    "intltrade/exports/statenaics":  (1_534_235, 53_673),
+    "intltrade/exports/usda":        (79_151, 3_510),
+    "intltrade/imports/enduse":      (1_108_155, 58_106),
+    "intltrade/imports/hitech":      (94_449, 4_680),
+    "intltrade/imports/naics":       (2_430_142, 132_982),
+    "intltrade/imports/usda":        (8_773, 390),
+}
+
 # Most month-grained periods one flow will walk in a single run. A DISCLOSED bound: a file that
 # has fallen a long way behind converges over ticks rather than spending the whole budget in one
 # flow, and the caller says how many it deferred instead of pretending it caught up.
@@ -165,7 +196,17 @@ def _flows(out_dir: str) -> list[str]:
         stem = f[:-len(".parquet")]
         if stem.split("__", 1)[0] not in FAMILIES:
             continue
-        out.append(stem.replace("__", "/"))
+        flow = stem.replace("__", "/")
+        if flow in _UNDER_KEYED:
+            # Excluded LOUDLY, not silently: a flow quietly missing from the tail is
+            # indistinguishable from one that is up to date, and that is how a source reports
+            # health it does not have.
+            rows, pairs = _UNDER_KEYED[flow]
+            print(f"[{SOURCE}] {flow}: NOT tailed — store holds {rows:,} rows under only "
+                  f"{pairs:,} distinct (series_key, obs_date); a merge would collapse it. "
+                  f"Re-key first (tools/audit_dedup_uniqueness.py).", flush=True)
+            continue
+        out.append(flow)
     return sorted(out)
 
 
