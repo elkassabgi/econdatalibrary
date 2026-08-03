@@ -141,15 +141,17 @@ def main() -> int:
     # let the source complete one run, which writes the current cursors, and prune after that —
     # then the delete-set is genuinely the stale remainder and the source is never blind.
     if not kept:
-        print(f"\nREFUSING — this would delete ALL {len(doomed):,} of {a.source}'s cursors and "
-              f"leave it with none.")
+        verb = "PROCEEDING WITH" if a.allow_delete_all else "REFUSING"
+        print(f"\n{verb} — this deletes ALL {len(doomed):,} of {a.source}'s cursors, leaving "
+              f"it with none.")
         print(f"  The sidecar lists {len(keep):,} current key(s), but NOT ONE has a cursor row "
               f"yet, which means the source has not completed a run since its grain changed.")
         print(f"  Let it run once, then prune: the delete-set becomes the stale remainder "
               f"rather than everything, and the source is never left without freshness data.")
-        print(f"  Override with --allow-delete-all only if a cursor-less state is intended.")
-        if not getattr(a, "allow_delete_all", False):
+        if not a.allow_delete_all:
+            print("  Override with --allow-delete-all only if a cursor-less state is intended.")
             return 2
+        print("  --allow-delete-all given; continuing.")
 
     kl = [len(k) for k in doomed]
     print(f"\n  delete-set key length min/avg/max: {min(kl)}/{sum(kl)//len(kl)}/{max(kl)}")
