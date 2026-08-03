@@ -262,7 +262,18 @@ def update(unit, since) -> Result:
     cursors: dict[str, str] = {}
     for skey, d in last_by_series.items():
         if d is not None:
-            cursors[skey] = d.isoformat()
+            # _per_series_last passes through whatever _max_by_key returned, and _max_by_key
+            # returns ISO STRINGS. `d.isoformat()` therefore raised
+            #     'str' object has no attribute 'isoformat'
+            # and left bcrp in transient_fail on every run. a1c42881 fixed exactly this for boc
+            # and tcmb, and recorded that "bcrp and scb work only because ISO strings sort and
+            # compare exactly like dates" — true of the _max_by_key CALL SITE, which is what was
+            # checked, and false here, 120 lines downstream. bcrp attempted at 2026-08-03 09:33Z,
+            # six hours AFTER that fix, and crashed with the identical message.
+            #
+            # Accepts either type rather than asserting which arrives: cursors are stored as ISO
+            # strings, so a string passes straight through and a date is normalised.
+            cursors[skey] = d if isinstance(d, str) else d.isoformat()
 
     all_keys, all_dates, all_vals = [], [], []
     for code, label in SERIES:
@@ -323,8 +334,15 @@ def update(unit, since) -> Result:
             tally.empty_unit()
         time.sleep(0.5)
 
-    last_db = max(last_by_series.values()).isoformat() if last_by_series else (
-        since_global.isoformat() if since_global else None)
+    # Second site of the same defect. last_by_series holds ISO STRINGS (see the cursor loop
+    # above), so max() returns a string and .isoformat() on it raises. This one is never reached
+    # today only because the loop above crashes first — fixing one without the other would move
+    # the same failure 70 lines down and look like a new bug.
+    # since_global IS a real date (dt.date.fromisoformat above), so its .isoformat() is correct.
+    _last_seen = max(last_by_series.values()) if last_by_series else None
+    last_db = (_last_seen if isinstance(_last_seen, str) else
+               _last_seen.isoformat() if _last_seen is not None else
+               (since_global.isoformat() if since_global else None))
 
     if not all_keys:
         # Nothing new merged; existing file untouched. finalize() decides whether

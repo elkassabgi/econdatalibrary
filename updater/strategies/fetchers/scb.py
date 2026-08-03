@@ -388,6 +388,25 @@ def _table_frontiers(path: str) -> dict[str, dt.date]:
             continue
         if isinstance(d, dt.datetime):
             d = d.date()
+        elif isinstance(d, str):
+            # _max_by_key returns ISO STRINGS, and this function's own annotation promises
+            # dict[str, dt.date]. Normalised HERE rather than at the call sites, because the two
+            # callers break differently and fixing one would only move the crash:
+            #   ~line 538  cursors[tpath] = stored_max.isoformat()
+            #                -> 'str' object has no attribute 'isoformat'
+            #   ~line 445  _parse_date(c) > stored_max
+            #                -> TypeError comparing datetime.date with str, silently breaking
+            #                   the date-tail window that decides what gets fetched at all
+            #
+            # _common._max_by_key's docstring asserts "bcrp and scb work only because ISO strings
+            # sort and compare exactly like dates". True where a string meets a string; false the
+            # moment one meets a real date, which is what happens here. bcrp was already crashing
+            # on it in production; scb's copy is latent only because it has not run since
+            # 2026-07-23 — before _max_by_key existed.
+            try:
+                d = dt.date.fromisoformat(d[:10])
+            except ValueError:
+                continue
         tp = _table_path_of(k)
         prev = out.get(tp)
         if prev is None or d > prev:
