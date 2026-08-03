@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime as dt
 import io
 import os
 import sqlite3
@@ -90,6 +91,10 @@ def main() -> None:
     ap.add_argument("--limit", type=int)
     ap.add_argument("--source", action="append")
     ap.add_argument("--verify-shim", help="base URL of a running dev shim to byte-diff against")
+    ap.add_argument("--skip-newer-than", default=None,
+                    help="ISO8601 UTC; skip series whose R2 object was last modified at or after "
+                         "this instant. Makes a RE-derive resumable, where --skip-existing cannot "
+                         "be (every key already exists, so it would skip everything).")
     ap.add_argument("--skip-existing", action="store_true",
                     help="list existing <prefix>/ keys once and skip them (resumable multi-day run)")
     ap.add_argument("--smallest-first", action="store_true",
@@ -141,7 +146,37 @@ def main() -> None:
                 for r in by_src[src]]
 
     existing: set = set()
-    if a.skip_existing:
+    if a.skip_newer_than:
+        # RESUMABLE RE-DERIVE. --skip-existing is useless for a re-derive: the keys all exist
+        # from the ORIGINAL derive, so it would skip everything and do nothing. But a re-derive
+        # still has to survive an interruption — noaa's is ~14 hours over 3,135,873 series, and
+        # the 2026-08-03 reboot threw away a third of one because there was no way to resume.
+        #
+        # The distinguishing fact is already on every object: LastModified. Anything rewritten
+        # SINCE the campaign started is done; anything older still carries pre-restatement data.
+        # Same single listing pass as --skip-existing, one extra comparison.
+        cutoff = dt.datetime.fromisoformat(a.skip_newer_than.replace("Z", "+00:00"))
+        listing_prefix = f"{a.prefix}/"
+        if a.source and len(a.source) == 1:
+            listing_prefix = f"{a.prefix}/{urllib.parse.quote(a.source[0] + ':', safe='')}"
+        print(f"skip-newer-than {cutoff.isoformat()} scoped to {listing_prefix}", flush=True)
+        tok = None
+        seen = 0
+        while True:
+            kw = {"Bucket": a.bucket, "Prefix": listing_prefix, "MaxKeys": 1000}
+            if tok:
+                kw["ContinuationToken"] = tok
+            resp = s3.list_objects_v2(**kw)
+            for o in resp.get("Contents", []):
+                seen += 1
+                if o["LastModified"] >= cutoff:
+                    existing.add(o["Key"])
+            if not resp.get("IsTruncated"):
+                break
+            tok = resp.get("NextContinuationToken")
+        print(f"skip-newer-than: {len(existing):,} of {seen:,} objects already re-derived "
+              f"this campaign; the rest will be rewritten", flush=True)
+    elif a.skip_existing:
         # Scope the listing to the source when exactly one is named. The unscoped
         # `series/` prefix spans every source (millions of objects), so a resume of one
         # source would spend its first many minutes paging through other sources' keys.
