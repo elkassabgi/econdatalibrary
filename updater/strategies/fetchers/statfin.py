@@ -650,6 +650,13 @@ def update(unit, since) -> Result:
                   f"deferred to the next tick", flush=True)
             break
         last_subj = subj
+        # Written per sub-unit, not once at the end. The orchestrator's 45-minute cap
+        # KILLS a source rather than breaking its loop, so an end-of-function save is
+        # exactly what a kill destroys — which is why stat_estonia had never written a
+        # _rotation.json at all while worldbank_wdi and hagstofa each wrote their first
+        # one the moment they stopped being killed (R273). Relying on not being killed
+        # to persist the state whose purpose is surviving a kill is circular.
+        save_rotation(out_dir, subj)
         subj_tables = by_subject[subj]
         path = os.path.join(out_dir, f"{subj}.parquet")
         before = blob.row_count(path)
