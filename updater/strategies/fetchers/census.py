@@ -81,6 +81,15 @@ PREFIX = "eits__"
 # asm/industry sits at 2016 and is exactly current (2017 and 2018 both 204), while intltrade sat
 # at 2026-03 with 2026-04 and 2026-05 published. Unprobed families are tracked in task #62.
 FAMILIES = ("eits", "intltrade")
+# bds IS NOT HERE, AND THE REASON IS NOT THE OBVIOUS ONE. It is genuinely behind (stored 2022,
+# upstream publishing 2023) and its under-keying is solvable — (series_key, obs_date, NAICS) is
+# unique at 5,910 = 5,910, which is why _EXTRA_DIMS still carries it. What stops it is the
+# COLUMN SET: asking for the 21 columns the store holds returns 5,910 rows for 2022 and ZERO
+# for 2023, while asking for just three required variables returns 5,516 rows for 2023. Every
+# one of the 21 is known to the API, so this is not an unknown-variable rejection — the 2023
+# vintage simply does not populate them all, and Census answers an empty result rather than
+# nulls. `time=from 2022` also returns 2022 ONLY, so the annual from-tail cannot reach it either.
+# Tailing bds needs a PER-VINTAGE column set, which is a different mechanism from a date tail.
 
 # Flows whose `for=` predicate is NOT the us/state pair. Census answers us:* and state:* with
 # 400 "unknown/unsupported geography hierarchy" for these; their geography.json lists
@@ -127,6 +136,26 @@ def _store_name(flow: str) -> str:
 # (ALL_VAL_MO, GEN_CIF_YR, VES_WGT_MO, CAL_DUT_YR, CC_MO, ...); everything else is a dimension.
 _MEASURE_SUFFIXES = ("_MO", "_YR")
 
+# DIMENSIONS THE series_key OMITS, per flow, where the period-suffix rule does not apply.
+#
+# The _MO/_YR split works for intltrade because every measure there is period-suffixed. It does
+# NOT generalise: bds's measures are FIRM, ESTAB, EMP, JOB_CREATION, ... — no suffix at all — so
+# the same rule would sweep the measures INTO the key and a revised value would duplicate
+# instead of overwriting, which is exactly the failure treasury's identity rule exists to avoid.
+#
+# bds measured: 5,910 rows under 15 distinct (series_key, obs_date); one collapsed group of 394
+# rows differs only by NAICS ('00', '11', '113', '1131' — hierarchical industry codes), the
+# dimension the ingester left out. (series_key, obs_date, NAICS) is UNIQUE at 5,910 = 5,910,
+# with all 18 measure columns excluded.
+#
+# An explicit list rather than another heuristic, because a heuristic that is right for one
+# family and silently wrong for the next is worse than no heuristic. The principled source when
+# this grows is the API's own <flow>/variables.json `required` list — those are the predicate
+# (dimension) variables — but one entry does not justify a cached fetch per flow.
+_EXTRA_DIMS = {
+    "bds": ("NAICS",),
+}
+
 
 def _dedup_for(flow: str, data_cols: list) -> tuple:
     """The dedup key for THIS flow.
@@ -155,12 +184,13 @@ def _dedup_for(flow: str, data_cols: list) -> tuple:
     would duplicate instead of overwriting. Its own key is already unique (eits__marts: 58,562
     rows, 58,562 distinct pairs), so it keeps DEDUP.
     """
-    if not flow.startswith("intltrade/"):
-        return DEDUP
-    dims = [c for c in data_cols
-            if c not in ("series_key", "obs_date", "time")
-            and not c.upper().endswith(_MEASURE_SUFFIXES)]
-    return tuple(["series_key", "obs_date"] + dims)
+    if flow.startswith("intltrade/"):
+        dims = [c for c in data_cols
+                if c not in ("series_key", "obs_date", "time")
+                and not c.upper().endswith(_MEASURE_SUFFIXES)]
+        return tuple(["series_key", "obs_date"] + dims)
+    extra = [c for c in _EXTRA_DIMS.get(flow, ()) if c in data_cols]
+    return tuple(list(DEDUP) + extra) if extra else DEDUP
 BUDGET_MIN = float(os.environ.get("CENSUS_BUDGET_MIN", "20"))
 RATE = 0.3
 TIMEOUT = 120
