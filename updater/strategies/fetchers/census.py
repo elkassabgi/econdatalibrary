@@ -69,7 +69,7 @@ from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import (CURSOR_CAP, Deadline, Tally, api_key, cursors_from_table, finalize,
-                      merge_cursor_map)
+                      load_rotation, merge_cursor_map, rotate_after, save_rotation)
 
 SOURCE = "census"
 BASE = "https://api.census.gov/data/timeseries"
@@ -463,6 +463,12 @@ def update(unit, since) -> Result:
     under: list[str] = []
     deferred = 0
 
+    # Resume just after wherever the last run stopped, wrapping around (R190). An unknown or
+    # empty bookmark degrades to "start at the top", so a first run or a renamed flow never
+    # skips anything.
+    flows = rotate_after(flows, load_rotation(out_dir))
+    last_flow = ""
+
     for flow in flows:
         path = os.path.join(out_dir, f"{_store_name(flow)}.parquet")
         before_rows = blob.row_count(path)
@@ -470,6 +476,12 @@ def update(unit, since) -> Result:
         if dl.spent():
             deferred += 1
             continue
+        # AFTER the deferral check, never before. The bookmark means "the last flow this run
+        # actually WORKED ON"; setting it at the top of the loop would stamp a flow that was
+        # deferred on budget, and the next run — starting just after it — would skip the very
+        # flow the deferral promised to come back to. Same off-by-one that makes a rotation
+        # look correct while quietly dropping one sub-unit per run.
+        last_flow = flow
 
         mx = _stored_max(path)
         if mx is None:
@@ -675,6 +687,24 @@ def update(unit, since) -> Result:
     if deferred:
         print(f"[{SOURCE}] budget of {BUDGET_MIN} min spent after {dl.elapsed_min():.1f} min; "
               f"{deferred} of {len(flows)} flow(s) deferred to the next tick", flush=True)
+
+    # R190. "Deferred to the next tick" is only true if the next tick STARTS SOMEWHERE ELSE.
+    # _flows() sorts, so the order is fixed and every "eits/..." precedes every "intltrade/...";
+    # with a 20-minute budget over 45 flows the EITS half would consume the run and the 24
+    # intltrade flows — the ones actually behind, which is the whole reason they were added —
+    # would be deferred FOREVER, while the source reported `partial` with a reassuring reason.
+    # That is the exact silent, self-certifying outage R190 describes, and adding the family
+    # without this would have re-created it.
+    #
+    # Saved even after a COMPLETE pass, so the wrap goes through this same path and no branch
+    # can quietly stop the rotation. Reachable, which R273 says is the part that actually
+    # matters: census's deadline is COOPERATIVE (`if dl.spent(): deferred += 1; continue`), so
+    # the loop finishes and this line runs — unlike the sources that overran the orchestrator's
+    # 45-minute HARD cap and were killed before their end-of-function save. That safety rests on
+    # BUDGET_MIN (20) staying well under that cap; if it is ever raised, move this save inside
+    # the loop.
+    if last_flow:
+        save_rotation(out_dir, last_flow)
 
     res = finalize(tally, total, max_last or (since or None), source=SOURCE,
                    series_cursors=cursors or None,
