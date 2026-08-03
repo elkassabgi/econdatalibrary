@@ -91,6 +91,17 @@ def current_vintage(unit):
     return f"wid-index:{len(rows)}:{h.hexdigest()[:16]}"
 
 
+def _has_expected_header(text: str) -> bool:
+    """True when the body IS the WID CSV, whether or not it carries data rows.
+
+    Distinguishes "this entity is empty upstream" (header only) from "the publisher changed
+    the format" (no recognisable header) — see the call site.
+    """
+    first = (text.splitlines() or [""])[0]
+    cols = {c.strip().strip('"').lower() for c in first.split(";")}
+    return {"variable", "year", "value"} <= cols
+
+
 def _parse(text: str, country: str):
     rd = csv.DictReader(io.StringIO(text), delimiter=";")
     keys, dates, vals = [], [], []
@@ -189,14 +200,29 @@ def update(unit, since) -> Result:
         if r.status_code in (429, 500, 502, 503, 504):
             tally.transient_unit(country)
             continue
-        if r.status_code != 200 or len(r.content) < 200:
+        if r.status_code != 200:
             tally.structural_unit(f"{country}: HTTP {r.status_code}")
             continue
 
-        keys, dates, vals, n_bad = _parse(
-            r.content.decode("utf-8-sig", errors="replace"), country)
+        text = r.content.decode("utf-8-sig", errors="replace")
+        keys, dates, vals, n_bad = _parse(text, country)
         if not keys:
-            tally.structural_unit(f"{country}: parsed 0 usable rows")
+            # AN EMPTY UPSTREAM FILE IS NOT A SCHEMA BREAK. This branch used to fire on
+            # `len(r.content) < 200` and report "HTTP 200" as a structural break, so six
+            # entities WID publishes as HEADER-ONLY files were flagged as breakage on every
+            # run: Al, ON, ON-MER, OO-MER, OP-MER, OQ-MER are each exactly 47 BYTES on the
+            # bulk index, against 17-22 MB for a real country. 47 bytes is the CSV header
+            # and nothing else.
+            #
+            # structural_unit is the loud signal that our PARSER no longer matches the
+            # publisher; spending it on "this entity has no data" both cries wolf and hides
+            # the real thing it exists to catch. So: a body that still parses as the expected
+            # CSV (header present, the columns we key on) with zero data rows is EMPTY;
+            # anything we cannot read as that CSV at all is structural.
+            if _has_expected_header(text):
+                tally.empty_unit(country)
+            else:
+                tally.structural_unit(f"{country}: body is not the expected WID CSV")
             continue
         tbl = pa.table({"series_key": pa.array(keys, pa.string()),
                         "obs_date": pa.array(dates, pa.date32()),
