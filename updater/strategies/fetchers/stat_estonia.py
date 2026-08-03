@@ -438,6 +438,10 @@ def update(unit, since) -> Result:
     subjects = rotate_after(sorted(by_subject), load_rotation(out_dir))
     stopped_early = False
     last_subj = ""
+    # Set when the budget expired INSIDE a subject's table loop, so the end-of-function
+    # save_rotation below must not overwrite the wound-back subject bookmark. Function-scope on
+    # purpose: the per-subject flag cannot be seen after the loop, and the save happens there.
+    capped_inside_subject = False
 
     # Sub-units actually ATTEMPTED — recomputed after the sweep, because the contract floor
     # must be measured against what this tick visited, not the whole catalogue. Counting all
@@ -462,9 +466,14 @@ def update(unit, since) -> Result:
     for subj in subjects:
         if dl.spent():
             stopped_early = True
+            n_left = len(subjects) - subjects.index(subj)
+            # Tallied for the same reason as the inner check: an untallied deferral leaves
+            # finalize() with nothing added and nothing failed, so it returns `no_change` and
+            # stamps a vintage claiming a coverage this tick never reached (R303).
+            tally.deferred_unit(f"{n_left} subject(s) after {last_subj or '(start)'}")
             print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
                   f"{dl.elapsed_min():.1f} min — stopped after subject {last_subj!r}, "
-                  f"{len(subjects) - subjects.index(subj)} of {len(subjects)} subject(s) "
+                  f"{n_left} of {len(subjects)} subject(s) "
                   f"deferred to the next tick", flush=True)
             break
         prev_subj = last_subj
@@ -524,9 +533,18 @@ def update(unit, since) -> Result:
             # the bookmark instead of stepping over its unfinished tail.
             if dl.spent():
                 hit_cap_inside = True
+                capped_inside_subject = True
                 stopped_early = True
                 save_rotation(out_dir, f"{subj}|{last_tbl}", _TBL_ROTATION)
                 save_rotation(out_dir, prev_subj)
+                # TALLY THE DEFERRAL, or the run lies about itself. Without this the tally is
+                # empty, finalize() sees nothing added and nothing failed, and returns
+                # `no_change` — stamping a vintage that claims a completeness this tick did not
+                # reach. Observed on a forced 3-second budget: 2,832 tables deferred and the run
+                # reported "no new rows" (R303's shape, in a source that had no deferred slot).
+                # deferred_unit does not touch `attempted`, so the denominator stays honest.
+                n_deferred = len(subj_tables) - subj_tables.index(t)
+                tally.deferred_unit(f"{subj}: {n_deferred} table(s) after {last_tbl or '(start)'}")
                 print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
                       f"{dl.elapsed_min():.1f} min INSIDE subject {subj!r} — completed "
                       f"{subj_tables.index(t)} of {len(subj_tables)} table(s); resuming after "
@@ -670,7 +688,13 @@ def update(unit, since) -> Result:
     # Save the bookmark even after a COMPLETE pass: it is then the last subject in order and
     # the next run wraps to the top through this same path, so no branch can silently stop
     # the rotation.
-    if last_subj:
+    # NOT when the budget expired INSIDE a subject. This line silently UNDID the whole
+    # table-grain fix: the inner deadline winds the subject bookmark back to prev_subj so the
+    # next tick re-enters the unfinished subject, and then this save overwrote it with
+    # last_subj — the interrupted one — so the next run resumed AFTER it and its tail was
+    # skipped exactly as before. Caught by running the fetcher with a 3-second budget, not by
+    # reading it: both writes look correct in isolation and only the order reveals the bug.
+    if last_subj and not capped_inside_subject:
         save_rotation(out_dir, last_subj)
     if stopped_early:
         visited = set(subjects[:subjects.index(last_subj) + 1])
