@@ -59,25 +59,38 @@ def own_paths(src: str) -> list:
     return [f"updater/strategies/fetchers/{src}.py", f"jobs/ingest_{src}.py"]
 
 
-def newest_commit(paths) -> "tuple[dt.datetime | None, str]":
-    """(committer datetime, 'hash subject') of the newest commit touching any of `paths`."""
+def commits_since(paths, after: dt.datetime, cap: int = 5) -> list:
+    """[(datetime, 'hash subject')] for commits to `paths` AFTER `after`, newest first.
+
+    ALL of them, not just the newest — the newest is often the wrong one to show. Measured on
+    this tool's own output: wid's row cited my unrelated deferral commit because it happened to
+    be newest, and I read that as "the change does not explain this error, so the row is live"
+    and went off to investigate. The commit that ACTUALLY explains it, 691e6126 "wid: an empty
+    upstream file is not a schema break", was two commits older and names the exact entities in
+    the message (Al, ON-MER, OO-MER ...). Showing one line turned a stale row into a false lead —
+    the opposite of this tool's whole purpose.
+    """
     real = [p for p in paths if os.path.exists(os.path.join(ROOT, p))]
     if not real:
-        return None, ""
+        return []
     try:
         out = subprocess.run(
-            ["git", "log", "-1", "--format=%cI\t%h %s", "--"] + real,
+            ["git", "log", f"--since={after.isoformat()}", "--format=%cI\t%h %s", "--"] + real,
             cwd=ROOT, capture_output=True, text=True, timeout=60)
     except Exception:                                              # noqa: BLE001
-        return None, ""
-    line = (out.stdout or "").strip()
-    if not line or "\t" not in line:
-        return None, ""
-    iso, subject = line.split("\t", 1)
-    try:
-        return dt.datetime.fromisoformat(iso), subject
-    except ValueError:
-        return None, subject
+        return []
+    found = []
+    for line in (out.stdout or "").splitlines():
+        if "\t" not in line:
+            continue
+        iso, subject = line.split("\t", 1)
+        try:
+            when = dt.datetime.fromisoformat(iso).astimezone(dt.timezone.utc)
+        except ValueError:
+            continue
+        if when > after:
+            found.append((when, subject))
+    return found[:cap]
 
 
 def main() -> int:
@@ -102,18 +115,16 @@ def main() -> int:
             att = dt.datetime.fromisoformat(attempt)
         except ValueError:
             continue
-        when, subject = newest_commit(own_paths(src))
-        # BOTH SIDES IN UTC BEFORE COMPARING *AND* BEFORE PRINTING. git's %cI carries the
-        # committer's local offset (-05:00 here) while state.db stores UTC, so the comparison was
-        # already correct but the OUTPUT read as nonsense: bcrp printed "attempt 08:01Z -> fix
-        # 07:11Z" and was still filed superseded, because 07:11-05:00 is 12:11Z. A line that looks
-        # self-contradictory gets the whole tool disbelieved.
-        if when is not None:
-            when = when.astimezone(dt.timezone.utc)
+        # UTC on both sides before comparing AND before printing. git's %cI carries the committer's
+        # local offset (-05:00 here) while state.db stores UTC, so the comparison was already right
+        # but the OUTPUT read as nonsense: bcrp printed "attempt 08:01Z -> fix 07:11Z" and was
+        # still filed superseded, because 07:11-05:00 is 12:11Z. One self-contradictory line gets
+        # the whole tool disbelieved.
         if att.tzinfo is None:
             att = att.replace(tzinfo=dt.timezone.utc)
-        if when is not None and when > att:
-            superseded.append((src, unit, status, att, when, subject, err))
+        after = commits_since(own_paths(src), att)
+        if after:
+            superseded.append((src, unit, status, att, after, err))
         else:
             current.append((src, unit, status, att, err))
 
@@ -121,10 +132,13 @@ def main() -> int:
     if superseded:
         print("SUPERSEDED — the message predates a change to this source's code. Do NOT debug "
               "these from the message; let the source RUN and re-read it:")
-        for src, unit, status, att, when, subject, err in sorted(superseded, key=lambda r: r[0]):
-            print(f"\n  {src}/{unit}  status={status}")
-            print(f"      attempt {att:%Y-%m-%d %H:%M}Z  ->  fix {when:%Y-%m-%d %H:%M}Z  {subject}")
+        for src, unit, status, att, after, err in sorted(superseded, key=lambda r: r[0]):
+            print(f"\n  {src}/{unit}  status={status}   attempt {att:%Y-%m-%d %H:%M}Z")
             print(f"      says: {(err or '')[:110]}")
+            # EVERY commit since, oldest last — the one that explains the error is frequently not
+            # the newest, and printing only the newest turns a stale row into a false lead.
+            for when, subject in after:
+                print(f"      since: {when:%Y-%m-%d %H:%M}Z  {subject[:96]}")
     if current:
         print(f"\n\nCURRENT — no code change since the attempt, so the message still describes "
               f"what runs today ({len(current)}):")
