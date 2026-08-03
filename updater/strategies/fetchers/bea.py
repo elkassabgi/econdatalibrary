@@ -252,7 +252,7 @@ def update(unit, since) -> Result:
             continue
         for table in tables:
             if dl.spent():
-                tally.transient_unit(f"{dataset}:{table} deferred (budget "
+                tally.deferred_unit(f"{dataset}:{table} deferred (budget "
                                      f"{BUDGET_MIN:.0f} min)")
                 continue
             got = 0

@@ -112,7 +112,7 @@ def update(unit, since) -> Result:
             unchanged += 1
             continue
         if dl.spent():
-            tally.transient_unit(f"{key} deferred (budget {BUDGET_MIN} min)")
+            tally.deferred_unit(f"{key} deferred (budget {BUDGET_MIN} min)")
             continue
 
         url = meta.get("accessURL")

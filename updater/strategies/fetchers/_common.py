@@ -185,6 +185,10 @@ class Tally:
         # pass a label (endpoint / file / dataset id); finalize() names the offenders.
         self.structural_ids: list = []
         self.transient_ids: list = []
+        # NOT ATTEMPTED this tick — the budget stopped the sweep before reaching them. Kept apart
+        # from `transient` because they are not failures (R303).
+        self.deferred = 0
+        self.deferred_ids: list = []
 
     def added_unit(self, n: int, label=None):
         self.attempted += 1
@@ -208,6 +212,25 @@ class Tally:
         self.structural += 1
         if label:
             self.structural_ids.append(str(label))
+
+    def deferred_unit(self, label=None):
+        """Sub-unit the budget stopped us reaching. NOT a failure, and NOT attempted.
+
+        Before this existed, budget deferrals went through transient_unit(), so ecb reported
+            "252/540 sub-unit(s) transient-failed; will retry"
+        while every named unit read "budget 35 min spent, deferred". Nothing had failed and 252
+        units were never touched. Counting them as attempted AND failed makes the real failure
+        rate unreadable: 252 of 540 is alarming, 0 of 288 attempted is fine, and the log showed
+        the first (R303, measured on abs/ecb/ssb).
+
+        Deliberately does not touch `attempted` — that word has to keep meaning attempted, or the
+        denominator lies too. "Transient" says something went wrong and retrying may help;
+        "deferred" says nothing went wrong and rotation takes it next tick. Both mean come back;
+        only one means investigate.
+        """
+        self.deferred += 1
+        if label:
+            self.deferred_ids.append(str(label))
 
 
 def _named(ids, cap: int = 6) -> str:
@@ -241,6 +264,16 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
                       new_vintage="date-tail", series_cursors=series_cursors,
                       error=f"{tally.transient}/{tally.attempted} sub-unit(s) transient-failed; will retry"
                             + _named(tally.transient_ids))
+    if tally.deferred:
+        # NOTHING FAILED — the budget simply stopped the sweep. Still `partial`, because the tick
+        # did not cover everything and must not stamp a full-coverage vintage; the change is that
+        # the message no longer calls a deliberate deferral a failure, and the denominator is what
+        # was actually attempted (R303).
+        return Result(status="partial", obs=total_rows, last_obs_date=last_obs,
+                      new_vintage="date-tail", series_cursors=series_cursors,
+                      error=(f"{tally.attempted} sub-unit(s) attempted, none failed; "
+                             f"{tally.deferred} deferred by budget and taken next tick"
+                             + _named(tally.deferred_ids)))
     status = "ok" if tally.added > 0 else "no_change"
     return Result(status=status, obs=total_rows, last_obs_date=last_obs, new_vintage="date-tail",
                   series_cursors=series_cursors,

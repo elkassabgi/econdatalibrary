@@ -133,7 +133,7 @@ def update(unit, since) -> Result:
     for i in range(0, len(todo), BATCH):
         batch = todo[i:i + BATCH]
         if dl.spent():
-            tally.transient_unit(f"{len(batch)} series deferred (budget)")
+            tally.deferred_unit(f"{len(batch)} series deferred (budget)")
             continue
         start = min((stored.get(n) or FIRST_START) for n in batch)
         url = (f"{BASE}/observations/{','.join(batch)}/json?start_date={start}")

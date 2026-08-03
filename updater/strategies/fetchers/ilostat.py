@@ -128,7 +128,7 @@ def update(unit, since) -> Result:
 
         if dl.spent():
             deferred += 1
-            tally.transient_unit(iid)                        # deferral, not a verdict
+            tally.deferred_unit(iid)                         # deferral, not a verdict (R303)
             continue
 
         try:

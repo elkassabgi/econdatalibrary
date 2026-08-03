@@ -176,7 +176,7 @@ def update(unit, since) -> Result:
         # single source can consume the whole 300-minute job and every runner byte.
         if dl.spent():
             deferred += 1
-            tally.transient_unit(f"{flow} deferred (budget {BUDGET_MIN:.0f} min)")
+            tally.deferred_unit(f"{flow} deferred (budget {BUDGET_MIN:.0f} min)")
             total += before
             continue
         last_attempted = fn
