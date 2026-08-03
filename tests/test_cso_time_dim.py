@@ -108,3 +108,22 @@ def test_the_absurd_year_is_what_regressed_before():
     assert not any(r[1].year in (3001, 9998) for r in rows), (
         "the classification codes came through as years — the exact defect that put "
         "434,408 rows beyond the year 2100 in the live store")
+
+
+def test_is_time_dim_rejects_sentinel_codes_that_are_merely_four_digits():
+    r"""Defence in depth for the HEURISTIC pass, which the two-pass fix keeps for tables that
+    name no time axis. `^\d{4}...$` alone accepts CSO's 3001/9998/9999 sentinels; the year
+    bound is what makes the heuristic safe on its own."""
+    m = _mod()
+    assert not m.is_time_dim("C02750V03319A", ["3001", "3002", "9998", "9999", "3003"]), \
+        "classification sentinels still read as a time axis"
+    assert m.is_time_dim("SOMEDIM", ["2019", "2020", "2021", "2022", "2023"]), \
+        "real years must still be recognised"
+
+
+def test_is_time_dim_still_accepts_long_but_real_projection_horizons():
+    """The bound is 1800..2100, not current_year+2: this fleet genuinely carries projections
+    (un_wpp to 2101, gapminder and owid to 2100). Detection must not reject real data."""
+    m = _mod()
+    assert m.is_time_dim("PROJ", ["2050", "2060", "2070", "2080", "2090"])
+    assert m.is_time_dim("HIST", ["1841", "1851", "1861", "1871", "1881"])
