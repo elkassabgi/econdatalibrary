@@ -224,7 +224,13 @@ def update(unit, since) -> Result:
     # 1) Full per-table release-date map (the vintage source).
     cur_upd, err = _collection_updates(COLL_EPOCH, timeout=300)
     if err == "transient":
-        tally.transient_unit()
+        # Named like the per-matrix failures, and for a stronger reason: this one is the WHOLE
+        # run. Without the collection map there is no diff, so nothing is fetched at all — a
+        # very different fact from "23 of 26 tables were flaky", and previously the two were
+        # reported identically as an anonymous transient.
+        print(f"[cso] ReadCollection ({COLLECTION_METHOD}) failed transiently — no vintage map, "
+              f"so no matrices could be diffed this run", flush=True)
+        tally.transient_unit("ReadCollection: transient (no vintage map)")
         return finalize(tally, _total_rows(out_dir), None, source=SOURCE)
     if err == "structural" or not cur_upd:
         tally.structural_unit()  # 200 collection that parsed 0 matrices -> schema break
@@ -276,15 +282,27 @@ def update(unit, since) -> Result:
         if not sbj:
             # no subject mapping in cached catalog -> can't route; treat as transient (re-try when
             # the catalog is refreshed) rather than silently dropping a real table
-            tally.transient_unit()
+            tally.transient_unit(f"{mtr}: no subject mapping in catalog")
             continue
+        # EVERY FAILURE BELOW NAMES ITSELF. These four branches used to call transient_unit()
+        # with no argument and no log line, so a run could report "23/26 sub-unit(s)
+        # transient-failed" and there was NOTHING anywhere saying whether that was a timeout, a
+        # 429, a 403, a parse error or an empty 200 — four different problems with four
+        # different fixes. Measured 2026-08-03: CI failed 23 of 26 (and 60 of 60 the run
+        # before) while the SAME matrices fetched fine from the workstation seconds later
+        # (AKA03/AKM01/AKM02/AKM03, 4 of 4, ~1s each), which points at upstream throttling the
+        # runner — but the fetcher's own output could not distinguish that from a schema break,
+        # so the routing decision had no evidence to stand on. Tally.transient_unit already
+        # takes an id (the branch above uses it); these simply never passed one.
         try:
             rows = ing.fetch_table(mtr)   # reuse ReadDataset URL + JSON-stat2 parse + RATE throttle
-        except (requests.Timeout, requests.ConnectionError):
-            tally.transient_unit()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            print(f"[cso] {mtr}: network {type(e).__name__}: {str(e)[:120]}", flush=True)
+            tally.transient_unit(f"{mtr}: {type(e).__name__}")
             continue
-        except Exception:
-            tally.transient_unit()
+        except Exception as e:                                   # noqa: BLE001
+            print(f"[cso] {mtr}: {type(e).__name__}: {str(e)[:160]}", flush=True)
+            tally.transient_unit(f"{mtr}: {type(e).__name__}")
             continue
         if not rows:
             # The ingester's get_json() retries then returns None on a persistent network
@@ -293,7 +311,14 @@ def update(unit, since) -> Result:
             # value. Classify as TRANSIENT (re-pulls next tick; cursor NOT advanced) rather
             # than structural, so a flaky-upstream empty can't false-raise DefinitiveError.
             # A real structural break recurs and is still re-pulled every tick (never frozen).
-            tally.transient_unit()
+            #
+            # Named anyway. The classification stays TRANSIENT — that reasoning is unchanged —
+            # but "which matrices came back empty" is the evidence that tells a persistent
+            # schema break apart from a flaky hour, and discarding the id threw exactly that
+            # away. An unnamed failure is one nobody can act on.
+            print(f"[cso] {mtr}: fetch_table returned no rows "
+                  f"(network failure after retries, or a 200 that parsed 0 obs)", flush=True)
+            tally.transient_unit(f"{mtr}: empty")
             continue
         buf = by_subject.setdefault(sbj, {"keys": [], "dates": [], "vals": []})
         for key, d, v in rows:
