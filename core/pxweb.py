@@ -127,6 +127,32 @@ def parse_period(s: str) -> "_dt.date | None":
         m = _re.match(r"^(\d{4})(\d{2})$", s)   # bare YYYYMM
         if m and 1 <= int(m.group(2)) <= 12:
             return _dt.date(int(m.group(1)), int(m.group(2)), 1)
+        # DAILY: "2010M01D01" (PxWeb TLIST(D1)). Measured on CSO 2026-08-03: MTD05
+        # ("Precipitation Amount") and MTH05 each publish ~6,025 of these; the endpoint returns
+        # HTTP 200 with 557,685 bytes of real data and EVERY row was dropped, because the
+        # grammar had no daily case. The source then reported it as a network failure.
+        m = _re.match(r"^(\d{4})M(\d{2})D(\d{2})$", s, _re.IGNORECASE)
+        if m:
+            mo, dy = int(m.group(2)), int(m.group(3))
+            if 1 <= mo <= 12 and 1 <= dy <= 31:
+                return _dt.date(int(m.group(1)), mo, dy)   # ValueError -> None for 02-30 etc.
+            return None
+        # SPLIT / ACADEMIC YEAR: "2003-2004" (CSO EDA21, "Average Class Size in Mainstream
+        # National Schools"). Dated to the year the period BEGINS, consistent with bare YYYY
+        # mapping to that year's 31 Dec.
+        #
+        # The second year MUST be the first + 1. That is what an academic year is, and the
+        # constraint is load-bearing rather than cosmetic: parse_period doubles as the DETECTOR
+        # in date_parse_rate(), so a loose "^\d{4}-\d{4}$" would let an ordinary range label
+        # ("1990-2000", a cohort or a footnoted span) parse as a date and could hand the
+        # value-driven resolver a classification axis as the time axis — the exact defect the
+        # two-pass resolver exists to prevent.
+        m = _re.match(r"^(\d{4})-(\d{4})$", s)
+        if m:
+            y1, y2 = int(m.group(1)), int(m.group(2))
+            if y2 == y1 + 1:
+                return _dt.date(y1, 12, 31)
+            return None
     except (ValueError, TypeError):
         pass
     return None
