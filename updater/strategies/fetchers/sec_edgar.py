@@ -367,27 +367,28 @@ def _coerce_insider(df: pd.DataFrame, table: str, prod_cfg: dict) -> pd.DataFram
         if c in dt_cols:
             s = df[c].replace("", pd.NA)
             s = pd.to_datetime(s, format="%d-%b-%Y", errors="coerce")
-            # DEFENSIVE, AND HONESTLY UNPROVEN — read before extending or removing.
+            # FORCE THE ns CONTRACT. This is why sec_edgar had never reported a success.
             #
-            # sec_edgar has never reported a success; its state row records
+            # Its state row recorded
             #   ArrowInvalid('Casting from timestamp[us] to timestamp[ns] would result in out of
             #    bounds timestamp: -61950355200000000')
-            # which, read as microseconds, is 0006-11-15. The stored parquets are timestamp[ns]
-            # deliberately (the docstring above requires new partitions to match them exactly),
-            # so a us column carrying year 6 cannot be aligned to them and the whole run dies.
+            # which, read as microseconds, is 0006-11-15 — a filing typo SEC actually publishes.
             #
-            # WHAT I COULD NOT SHOW: that this line is where that column comes from. On pandas
-            # 2.3.3 / pyarrow 23.0.0, to_datetime(..., errors="coerce") on "15-NOV-0006" already
-            # returns datetime64[ns] with NaT, and the cast to ns SUCCEEDS — so the tidy
-            # explanation ("pandas 2.x returns non-ns and year 6 survives") is false for this
-            # version, and CI installs the same 2.3.x. All 1,019 stored parquets were also
-            # scanned: none holds an out-of-ns-range timestamp. The origin is still open.
+            # `errors="coerce"` does NOT cover it: coerce nulls strings that fail to PARSE, and
+            # "15-NOV-0006" parses perfectly. Whether it then survives depends on the pandas
+            # version, and dev and CI do not agree:
+            #     local pandas 2.3.3 -> datetime64[ns], value NaT      (bug invisible)
+            #     CI    pandas 3.0.5 -> datetime64[us], year 6 KEPT    (bug fires)
+            # requirements-updater.txt pins `pandas>=2.2` uncapped and the runner resolves that to
+            # pandas-3.0.5-cp311, which parses to non-nanosecond resolution by default.
             #
-            # This block is therefore a GUARD, not a repair: it makes the ns contract explicit
-            # and local instead of relying on a to_datetime default that has changed before and
-            # may change again. It is cheap, it cannot corrupt in-range data (see
-            # tests/test_sec_edgar_out_of_range_dates.py), and it does not license the claim
-            # that sec_edgar is fixed.
+            # The stored insider parquets are timestamp[ns] — measured, all 972 timestamp columns
+            # across 648 files — because the docstring above requires new partitions to match the
+            # existing schema exactly. So aligning a us column holding year 6 to them raises, and
+            # one bad cell takes every table in the run with it.
+            #
+            # Pinning the resolution HERE rather than chasing the pandas default keeps the
+            # fetcher's contract with its own store explicit and version-proof.
             #
             # NOT merge._report_impossible_dates: that REPORTS after the fact, deliberately does
             # not drop, and runs after the merge — it cannot prevent a cast that fails during
