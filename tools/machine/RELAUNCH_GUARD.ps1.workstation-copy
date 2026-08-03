@@ -1,0 +1,144 @@
+﻿# Self-healing watchdog for the econ ingestion fleet.
+# Run-once: relaunch any of the tracked jobs that isn't currently running.
+# Each ingest script is resumable (skips completed work), so relaunching is safe.
+# Intended to be invoked every few minutes by a Scheduled Task (survives the
+# enterprise process-kills / session cleanup that keep stopping the jobs), and
+# at logon (survives reboots).
+
+$root = "E:\research\econfindatalibrary"
+$logsDir = Join-Path $root "logs"
+$guardLog = Join-Path $logsDir "_guard.log"
+
+# Pinned interpreter (cutover plan B.7): bare "python" resolves through PATH and
+# can hit the WindowsApps store shim; the crawlers must always get this exact exe.
+$python = "C:\Users\aelkassabgi\AppData\Local\Programs\Python\Python314\python.exe"
+
+# GUS registered tier: the crawler reads GUS_DBW_CLIENT_ID from its process env.
+# A guard started from a context without user env vars would silently relaunch
+# gus_dbw at the anonymous tier (5x slower) â€” inject from the user registry.
+if (-not $env:GUS_DBW_CLIENT_ID) {
+  $env:GUS_DBW_CLIENT_ID = [Environment]::GetEnvironmentVariable('GUS_DBW_CLIENT_ID','User')
+}
+
+# Tracked jobs: match-substring in the python command line + launch args.
+$jobs = @(
+  @{ n = 'cbs_nl';         match = 'ingest_cbs_nl.py';   args = @('jobs/ingest_cbs_nl.py') },
+  @{ n = 'gus_dbw';        match = 'ingest_gus_dbw.py';  args = @('jobs/ingest_gus_dbw.py') },
+  # dbnomics_istat REMOVED 2026-08-03. This entry relaunched
+  #     jobs/_dbnomics_pull.py ISTAT
+  # every five minutes, for ever. DBnomics is BANNED (CLAUDE.md 0 / ledger R251) - "no
+  # fetching, no probing api.db.nomics.world, no relays or mirrors" - so a watchdog that
+  # RESURRECTS the banned puller is the most durable possible form of the violation: it
+  # survives being killed, by design. It was dormant only because the guard itself was down.
+  #
+  # Nothing is lost. istat_sliced below pulls the same data from ISTAT's OWN SDMX host
+  # (esploradati.istat.it), which is where it should have come from all along.
+  # ISTAT SDMX slicing-recovery: completes the ~4,874-dataflow ISTAT sweep that the
+  # flaky esploradati.istat.it host left partial (only ~389 landed). Resumable via
+  # _sliced_done.json; keeps being relaunched until complete, then write
+  # logs/istat_sliced.DONE to retire it (CC BY 3.0 IT â€” redistributable).
+  @{ n = 'istat_sliced';   match = 'ingest_istat_sliced.py'; args = @('jobs/ingest_istat_sliced.py') }
+)
+
+# --- LONG ONE-OFF JOBS (added 2026-08-03, after a reboot killed all three) -------------------
+# These are not crawlers: they FINISH. Until now they were launched by hand, so the 2026-08-03
+# restart silently ended a statcan derive, a noaa re-derive and the eurostat re-key measurement,
+# and nothing on the machine would ever have restarted them. Anything that has to be relaunched
+# by a person is not running — it is waiting for that person to notice.
+#
+# Run through tools/run_guarded_job.ps1, which writes logs/<n>.DONE ONLY on exit 0, so the guard
+# stops relaunching a job that genuinely completed while still resuming one that was killed,
+# crashed, or died in a reboot. Without that sentinel this table would restart finished jobs every
+# five minutes for ever.
+#
+# EACH ONE IS RESUMABLE, which is what makes relaunching safe rather than merely repeated:
+#   statcan   --skip-existing lists what is already in R2 and derives only the rest
+#   noaa      --skip-newer-than: a re-derive must OVERWRITE, so --skip-existing would skip
+#             everything; this skips only what THIS campaign has already rewritten
+#   eurostat  a --dry-run measurement, read-only, safe to repeat from the start
+$pwsh = 'powershell.exe'
+$runner = Join-Path (Join-Path $root 'tools') 'run_guarded_job.ps1'
+$longJobs = @(
+  @{ n = 'derive_statcan'; match = 'derive_statcan_tables.py';
+     jobArgs = @('-u','tools/derive_statcan_tables.py','--bucket','econ-data',
+                 '--max-rows','3000000','--skip-existing','--workers','20'); env = @{} },
+  @{ n = 'derive_noaa';    match = 'derive_csv';
+     jobArgs = @('-u','-m','core.derive_csv','--bucket','econ-data','--source','noaa',
+                 '--workers','16','--skip-newer-than','2026-08-03T00:00:00Z'); env = @{} },
+  @{ n = 'rekey_eurostat'; match = 'rekey_eurostat.py';
+     jobArgs = @('-u','tools/rekey_eurostat.py','--dry-run');
+     env = @{ AQUEDUCT_BACKEND = 'r2' } }
+)
+
+# Stop guarding a job once it has genuinely finished: a sentinel file
+# logs/<job>.DONE means "do not relaunch" (written by the operator when a job
+# completes, so the guard doesn't resurrect a finished pull).
+$running = @((Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue).CommandLine)
+
+foreach ($j in $jobs) {
+  $doneFlag = Join-Path $logsDir ("{0}.DONE" -f $j.n)
+  if (Test-Path $doneFlag) { continue }
+
+  $alive = $false
+  foreach ($cmd in $running) { if ($cmd -and $cmd -like ("*{0}*" -f $j.match)) { $alive = $true; break } }
+
+  if (-not $alive) {
+    $ts = Get-Date -Format "MMdd_HHmm"
+    Start-Process $python -ArgumentList $j.args -WorkingDirectory $root -WindowStyle Hidden `
+      -RedirectStandardOutput (Join-Path $logsDir ("guard_{0}_{1}.log" -f $j.n, $ts)) `
+      -RedirectStandardError  (Join-Path $logsDir ("guard_{0}_{1}.err.log" -f $j.n, $ts))
+    Add-Content -Path $guardLog -Value ("{0}  relaunched {1}" -f (Get-Date -Format s), $j.n)
+  }
+}
+
+foreach ($j in $longJobs) {
+  $doneFlag = Join-Path $logsDir ("{0}.DONE" -f $j.n)
+  if (Test-Path $doneFlag) { continue }
+
+  # Match against the python command line, exactly as the crawler loop above does — the runner
+  # is a shim, so what is actually running is still `python -u ... <script>`.
+  $alive = $false
+  foreach ($cmd in $running) { if ($cmd -and $cmd -like ("*{0}*" -f $j.match)) { $alive = $true; break } }
+
+  if (-not $alive) {
+    # JOINED WITH '|', not passed as an array: PowerShell binds any array element starting with
+    # '-' as a parameter NAME, so `-JobArgs -u tools/x.py --dry-run` never binds and the runner
+    # dies before executing a line — while this guard has already logged "relaunched". That is
+    # the worst failure shape available: the log says it started and nothing did.
+    $argList = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$runner,
+                 '-Name',$j.n,'-Exe',$python,'-Root',$root,
+                 '-JobArgsJoined',($j.jobArgs -join '|'))
+    if ($j.env.Count -gt 0) {
+      # k=v pairs for the same reason: a [hashtable] cannot cross a `powershell -File` boundary.
+      # Kept out of the guard's own environment on purpose (see run_guarded_job.ps1).
+      $argList += '-EnvPairs'
+      foreach ($k in $j.env.Keys) { $argList += ("{0}={1}" -f $k, $j.env[$k]) }
+    }
+    Start-Process $pwsh -ArgumentList $argList -WorkingDirectory $root -WindowStyle Hidden
+    Add-Content -Path $guardLog -Value ("{0}  relaunched long job {1}" -f (Get-Date -Format s), $j.n)
+  }
+}
+
+# --- LOCAL HEAVY UPDATER (added 2026-07-31) ------------------------------------------
+# Sources carrying run_location: local are now genuinely EXCLUDED from the cloud daily run
+# (updater/orchestrate.py). That stopped them killing the runner - and would have left them
+# updating NOWHERE, because nothing on this machine invoked them. Scheduled Tasks are blocked
+# by policy here, so this guard loop is the only durable, reboot-surviving trigger available.
+#
+# The cadence decision lives in the script, not here: -IfDue exits 0 immediately unless a run
+# is genuinely due (>= 20h since the last COMPLETED pass) and no other pass holds the lock, so
+# calling it on every 5-minute tick is cheap and idempotent. The script also refuses to start
+# while a CI updater-daily run is in flight (R5: both writers compare-and-swap on the state
+# ETag, so an overlap throws away one run's state).
+$heavy = Join-Path (Join-Path $root 'tools') 'run_local_heavy.ps1'
+if (Test-Path $heavy) {
+  $heavyDone = Join-Path $logsDir 'local_heavy.DONE'
+  if (-not (Test-Path $heavyDone)) {
+    $ts = Get-Date -Format "MMdd_HHmm"
+    Start-Process 'powershell.exe' `
+      -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$heavy,'-IfDue') `
+      -WorkingDirectory $root -WindowStyle Hidden `
+      -RedirectStandardOutput (Join-Path $logsDir ("guard_localheavy_{0}.log" -f $ts)) `
+      -RedirectStandardError  (Join-Path $logsDir ("guard_localheavy_{0}.err.log" -f $ts))
+  }
+}
