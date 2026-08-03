@@ -1,14 +1,25 @@
 """S3 (extend_by_date) fetcher — U.S. Census Economic Indicators Time Series (EITS).
 
-SCOPE IS THE 20 EITS FLOWS, DELIBERATELY. clean_full/census holds 80 parquets across SIXTY
-distinct schemas, and census is _NATIVE_ONLY (tidy_ok=False) with two resolvers:
+SCOPE IS EITS + intltrade. clean_full/census holds 80 parquets across SIXTY distinct schemas,
+and census is _NATIVE_ONLY (tidy_ok=False) with two resolvers:
   * eits__<flow>.parquet — uniform shape, 1,965,285 rows / 10,950 series, served by
-    _resolve_census. Real time series; the API supports a date tail. THIS module.
+    _resolve_census. Real time series; the API supports a date tail.
   * the other 60 — hundreds of string columns each, served at TABLE grain by
-    _resolve_census_table. They are periodic snapshots (economic census, annual surveys,
-    e.g. aies/basic at time=2023). A date tail is the wrong instrument: they do not gain
-    periods, they gain a whole new reference year. They need their own vintage check and
-    this module must not pretend to cover them.
+    _resolve_census_table.
+
+THIS SCOPE USED TO BE EITS ONLY, ON A CLAIM THAT WAS FALSE. The line here read: the others "are
+periodic snapshots ... A date tail is the wrong instrument: they do not gain periods, they gain
+a whole new reference year." Census's own catalogue says otherwise — api.census.gov/data.json
+lists every one of them as a `timeseries` dataset with c_vintage null: intltrade, qwi, asm,
+aies, bds, govs*, poverty/saipe, healthins/sahie, idb, soma, hhpulse, pseo, hps. They gain
+PERIODS. Measured 2026-08-03, 16 intltrade flows sat at 2026-03 while upstream served 2026-04
+and 2026-05 — exports/hs alone had 45,659 rows waiting — and that had been true, silently, for
+as long as the claim stood. A scope note that asserts why something is out of scope is a claim
+like any other, and this one was never checked.
+
+intltrade is now tailed (all 24 flows). What is still out, and WHY for each, is written against
+FAMILIES below rather than summarised here, because the reasons differ per family and a summary
+is how the original error survived.
 
 WHY IT EXISTS: census is catalogued, served and reachable, and NOTHING updated it. Measured
 2026-08-02, all 20 flows probed with zero failures: 19 are BEHIND upstream — monthly flows by
@@ -81,6 +92,27 @@ PREFIX = "eits__"
 # asm/industry sits at 2016 and is exactly current (2017 and 2018 both 204), while intltrade sat
 # at 2026-03 with 2026-04 and 2026-05 published. Unprobed families are tracked in task #62.
 FAMILIES = ("eits", "intltrade")
+# THE REST OF THE NON-EITS SURVEY, so nobody re-probes what has been probed (2026-08-03). Every
+# one of these is a /data/timeseries/ dataset with c_vintage null, so the framing in the module
+# docstring above — "periodic snapshots ... they gain a whole new reference year" — is wrong for
+# all of them; they gain PERIODS. What differs is whether they are behind and what a tail costs.
+#   soma            LEVEL. 5,244 rows at its stored 2025-Q4, 0 at 2026-Q1.
+#   hps             LEVEL at 2020, and it is the discontinued Household Pulse Survey. 0 at 2021.
+#   asm/aies/govs/poverty/healthins   LEVEL (measured separately). asm/industry is CURRENT at
+#                   2016 — 2017 and 2018 both 204 — so a freshness sweep will flag it forever.
+#   hhpulse         UNRESOLVED, not level: it returns 0 rows even for its OWN stored frontier
+#                   (2024), so the request shape is wrong rather than the source being current.
+#                   Do not read that 0 as "up to date".
+#   pseo/earnings, pseo/flows   NOT date-tailable at all — no `time` column; the grain is a
+#                   graduation cohort (GRAD_COHORT_YEARS), not a period.
+#   idb/1year, idb/5year   COMPLETE through 2026 (1978..2026, 49 periods, 2,763,360 rows for
+#                   1year) and NOT behind in any staleness sense. Upstream answers 2027, 2030,
+#                   2050 and 2100 with identical row counts (68,781 / 227) because the IDB
+#                   PROJECTS to 2100. Ingesting those is a product decision about whether we
+#                   serve forward projections — ~74 further periods, ~5.1M rows for 1year — and
+#                   it is a backfill, not a tail. The module already treats forward-dated periods
+#                   as not-evidence-of-recency; this is the other half of that same question.
+#
 # qwi IS NOT HERE BECAUSE IT IS NOT BEHIND. All three (qwi/rh, qwi/sa, qwi/se) sit at 2025-Q3
 # and that is upstream's latest: for=state:01 returns 6 rows at 2025-Q3 and ZERO at 2025-Q4 and
 # 2026-Q1. Worth writing down because adding it would not be cheap — qwi rejects for=state:* with
