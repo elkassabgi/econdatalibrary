@@ -47,6 +47,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from updater import blob, config                                   # noqa: E402
+from tools._store_banner import banner                             # noqa: E402
 from updater.strategies.fetchers import cso as C                   # noqa: E402
 
 
@@ -111,6 +112,9 @@ def main() -> int:
         return 2
 
     out_dir = C._out_dir()
+    # Name the store before deleting anything from it. R296: run against the local mirror by
+    # accident and every number still looks right, because the mirror has the same shape.
+    banner("cso", out_dir)
     parquet = os.path.join(out_dir, f"{a.subject}.parquet")
     cur_path = C._cursor_path()
 

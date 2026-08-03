@@ -56,6 +56,7 @@ from updater import blob, config                                   # noqa: E402
 # cursor and the parquets, so it needs the same in-flight guard the subject tool has. A second copy
 # of that check is a second thing to go stale, and the one that goes stale is always the copy.
 from tools.cso_repull_subject import runs_in_flight                # noqa: E402
+from tools._store_banner import banner                             # noqa: E402
 
 SOURCE = "cso"
 # A key holding an explicit time value. This is the defect signature itself, not a proxy for it:
@@ -95,6 +96,9 @@ def main() -> int:
     a = ap.parse_args()
 
     out_dir = config.source_dir(SOURCE)
+    # Say which store this is about to read and (with --apply) rewrite. R296: the same tool run
+    # against the local mirror produces numbers that look right and describe the wrong world.
+    banner(SOURCE, out_dir)
     found = scan(out_dir)
     if not found:
         print("no swapped matrices on the store — nothing to do")
