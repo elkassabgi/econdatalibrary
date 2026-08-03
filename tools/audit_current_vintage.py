@@ -53,8 +53,9 @@ sys.path.insert(0, ROOT)
 
 os.environ.setdefault("AQUEDUCT_BACKEND", "r2")
 
-from updater import registry                                       # noqa: E402
+from updater import config, registry                               # noqa: E402
 from updater.errors import TransientError                          # noqa: E402
+from tools._store_banner import banner                             # noqa: E402
 
 FETCHER_DIR = os.path.join(ROOT, "updater", "strategies", "fetchers")
 
@@ -75,6 +76,9 @@ def main() -> int:
     ap.add_argument("--live", action="store_true", help="only registry live:true sources")
     a = ap.parse_args()
 
+    # setdefault above means an INHERITED AQUEDUCT_BACKEND still wins, so this can silently be
+    # pointed at the local mirror by the shell that launched it. Say which one it got (R296).
+    banner("fetcher probes", config.DATA_ROOT)
     names = a.sources or all_fetchers()
     if a.live:
         live = {e["source_id"] for e in registry.load()["sources"] if e.get("live")}
