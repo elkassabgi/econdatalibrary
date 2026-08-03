@@ -1,0 +1,78 @@
+# Persistent watchdog: every 5 minutes, relaunch any tracked ingest job that
+# has died (calls the idempotent run-once guard). Runs until killed/reboot.
+# Start: powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File RELAUNCH_GUARD_LOOP.ps1
+#
+# THE WATCHDOG HAD NO WATCHDOG. On 2026-08-02 this loop stopped at 15:16 and nothing noticed
+# for ten hours. In that window the cbs_nl / gus_dbw / istat_sliced crawlers stayed dead and
+# the local heavy updater - the ONLY updater for the 17 cloud-infeasible sources, including
+# eia on a DAILY cadence - went 7 hours past due and never ran. None of it was visible
+# anywhere: the cloud health gate deliberately does not judge run_location: local sources, so
+# its silence about them is by design and says nothing about whether they ran.
+#
+# Two changes, both about making a dead loop DETECTABLE rather than making it immortal:
+#
+# 1. HEARTBEAT. Every tick stamps logs/guard_loop.heartbeat with the UTC time. Liveness is now
+#    a file anyone can read, instead of an inference from a process list - and a process list
+#    is exactly what fooled me here: my own detection command contained the loop's filename,
+#    so it matched ITSELF and reported the loop alive while it was dead. A heartbeat cannot be
+#    faked by the observer.
+#
+# 2. THE GUARD CALL CANNOT WEDGE THE LOOP. `& guard` ran inline and unbounded, so one hung
+#    invocation (a blocked Start-Process, a stalled CIM query) freezes the watchdog while its
+#    process stays alive - the worst shape, because "the process is running" then reads as
+#    healthy. It now runs as a job with a hard 120s ceiling and is killed if it overruns.
+# 3. THE BEAT IS PUBLISHED TO R2, not just to disk. A local file proves liveness only to
+#    someone already sitting at this machine - which is nobody at 03:00, which is exactly when
+#    the loop died. health.route_silence catches the multi-day version of this from the cloud
+#    and its own docstring states it cannot catch a short outage; the beat is the instrument
+#    for that, and it was useless while it stayed on the workstation. See
+#    tools/guard_heartbeat.py; the daily run fails on a stale beat.
+$ErrorActionPreference = 'Continue'
+$root  = 'E:\research\econfindatalibrary'
+$guard = Join-Path $root 'RELAUNCH_GUARD.ps1'
+$beat  = Join-Path $root 'logs\guard_loop.heartbeat'
+$loopLog = Join-Path $root 'logs\_guard_loop.log'
+# Pinned interpreter, same value and same reason as RELAUNCH_GUARD.ps1: bare "python" resolves
+# through PATH, which differs between an interactive shell and this hidden background process.
+$python = "C:\Users\aelkassabgi\AppData\Local\Programs\Python\Python314\python.exe"
+
+while ($true) {
+  $ts = (Get-Date).ToUniversalTime().ToString('o')
+  try {
+    $j = Start-Job -ScriptBlock { param($g) & $g } -ArgumentList $guard
+    if (Wait-Job $j -Timeout 120) {
+      Receive-Job $j -ErrorAction SilentlyContinue | Out-Null
+    } else {
+      Stop-Job $j -ErrorAction SilentlyContinue
+      Add-Content -Path $loopLog -Value ("$ts  guard tick EXCEEDED 120s - killed, loop continues") -Encoding utf8
+    }
+    Remove-Job $j -Force -ErrorAction SilentlyContinue
+  } catch {
+    Add-Content -Path $loopLog -Value ("$ts  guard tick threw: " + $_.Exception.Message) -Encoding utf8
+  }
+  # Written AFTER the tick, so the stamp means "a tick completed", not "a tick started".
+  try { Set-Content -Path $beat -Value $ts -Encoding utf8 } catch {}
+
+  # Same stamp, published where CI can read it. Bounded as a job for the same reason the guard
+  # call is: a hung PUT (dead network, R2 5xx) must not freeze the watchdog while leaving its
+  # process alive - the failure shape where "the process is running" reads as healthy.
+  # Failures are logged, never fatal: losing a beat must not stop the loop relaunching crawlers.
+  try {
+    $hb = Start-Job -ScriptBlock {
+      param($p, $r)
+      Set-Location $r
+      & $p 'tools/guard_heartbeat.py' '--publish'
+    } -ArgumentList $python, $root
+    if (Wait-Job $hb -Timeout 90) {
+      Receive-Job $hb -ErrorAction SilentlyContinue | Out-Null
+    } else {
+      Stop-Job $hb -ErrorAction SilentlyContinue
+      Add-Content -Path $loopLog -Value ("$ts  heartbeat publish EXCEEDED 90s - killed, loop continues") -Encoding utf8
+    }
+    Remove-Job $hb -Force -ErrorAction SilentlyContinue
+  } catch {
+    Add-Content -Path $loopLog -Value ("$ts  heartbeat publish threw: " + $_.Exception.Message) -Encoding utf8
+  }
+
+  Start-Sleep -Seconds 300
+}

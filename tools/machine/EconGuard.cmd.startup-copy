@@ -1,0 +1,6 @@
+@echo off
+rem EconGuard ??? reboot-survival launcher for the econ ingestion fleet.
+rem Starts the persistent watchdog loop (relaunches cbs_nl / gus_dbw if dead,
+rem every 5 min; respects logs/<job>.DONE sentinels). Recreated on the new
+rem 48-core workstation 2026-07-11 per CUTOVER_AND_BACKFILL_PLAN.md Phase B.7.
+start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "E:\research\econfindatalibrary\RELAUNCH_GUARD_LOOP.ps1"
