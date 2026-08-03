@@ -32,22 +32,46 @@ sys.path.insert(0, ROOT)
 import pyarrow.compute as pc                                       # noqa: E402
 from updater import blob, config                                   # noqa: E402
 
-KEY_COLS = ("series_key", "obs_date")
+DEFAULT_KEY_COLS = ("series_key", "obs_date")
+
+# SOURCES WHOSE DEDUP KEY IS COMPUTED PER FILE, so it cannot be read off a module constant.
+# treasury builds tuple(_identity_keys(["series_key","obs_date"] + out_cols)) — series_key there
+# is the ENDPOINT PATH and is constant within a file, so the identity is the dimension columns.
+# Auditing it against the default pair says 166 of its 181 files are under-keyed, and every one
+# of those is a FALSE POSITIVE. Skipped loudly rather than mis-measured.
+_COMPUTED_KEY = {"treasury"}
 
 
-def audit_file(path: str) -> tuple:
-    """(rows, distinct_keys, distinct_pairs) or None when the file has no dedup columns."""
+def dedup_key_for(source: str) -> tuple:
+    """The dedup key THIS source actually passes to merge_and_write.
+
+    Hardcoding ("series_key","obs_date") is what made the first version of this tool wrong. Of
+    18 live extend_by_date sources, three differ: treasury computes its key per file, ofr uses
+    ("series_id","obs_date"), and worldbank_esg uses ("country","obs_date") because it has no
+    series_key column at all. Read the constant from the module; do not assume it.
+    """
+    import importlib
+    try:
+        mod = importlib.import_module(f"updater.strategies.fetchers.{source}")
+    except Exception:                                              # noqa: BLE001
+        return DEFAULT_KEY_COLS
+    d = getattr(mod, "DEDUP", None)
+    return tuple(d) if d else DEFAULT_KEY_COLS
+
+
+def audit_file(path: str, key_cols: tuple) -> tuple:
+    """(rows, distinct_first_col, distinct_key_tuples) or None when the file lacks the columns."""
     try:
         schema = blob.read_schema(path)
     except Exception:                                              # noqa: BLE001
         return None
-    if not all(c in schema.names for c in KEY_COLS):
+    if not all(c in schema.names for c in key_cols):
         return None
-    t = blob.read_table(path, columns=list(KEY_COLS))
+    t = blob.read_table(path, columns=list(key_cols))
     if t.num_rows == 0:
         return (0, 0, 0)
-    keys = pc.count_distinct(t.column("series_key")).as_py()
-    pairs = t.group_by(list(KEY_COLS)).aggregate([]).num_rows
+    keys = pc.count_distinct(t.column(key_cols[0])).as_py()
+    pairs = t.group_by(list(key_cols)).aggregate([]).num_rows
     return (t.num_rows, keys, pairs)
 
 
@@ -60,6 +84,14 @@ def main() -> int:
 
     bad_total = 0
     for source in a.sources:
+        if source in _COMPUTED_KEY:
+            print(f"\n{source}: SKIPPED — its dedup key is computed per file "
+                  f"(series_key is the endpoint path and is constant within a file, so the "
+                  f"identity is the dimension columns). Auditing it against "
+                  f"{'/'.join(DEFAULT_KEY_COLS)} reports every file under-keyed and every one "
+                  f"of those is a false positive.")
+            continue
+        key_cols = dedup_key_for(source)
         d = config.source_dir(source)
         try:
             files = [f for f in blob.list_parquets(d, recursive=True)
@@ -72,7 +104,7 @@ def main() -> int:
               + (f" matching {a.prefix!r}" if a.prefix else ""))
         checked = skipped = bad = 0
         for rel in sorted(files):
-            r = audit_file(os.path.join(d, rel))
+            r = audit_file(os.path.join(d, rel), key_cols)
             if r is None:
                 skipped += 1
                 continue
@@ -82,15 +114,15 @@ def main() -> int:
                 bad += 1
                 bad_total += 1
                 print(f"  UNDER-KEYED  {rel}")
-                print(f"      rows={rows:,}  distinct series_key={keys:,}  "
-                      f"distinct (series_key,obs_date)={pairs:,}")
+                print(f"      rows={rows:,}  distinct {key_cols[0]}={keys:,}  "
+                      f"distinct {key_cols}={pairs:,}")
                 print(f"      -> a merge dedup would collapse {rows - pairs:,} row(s) "
                       f"({(rows - pairs) / max(rows, 1) * 100:.1f}% of the file). "
                       f"Re-key before tailing this incrementally.")
             elif not a.quiet_ok:
                 print(f"  ok           {rel}  rows={rows:,}  keys={keys:,}")
         print(f"  checked {checked}, under-keyed {bad}"
-              + (f", skipped {skipped} without {'/'.join(KEY_COLS)}" if skipped else ""))
+              + (f", skipped {skipped} without {'/'.join(key_cols)}" if skipped else ""))
 
     # A NON-ZERO EXIT so this can gate a change rather than merely inform one. The whole point
     # is to be run BEFORE enabling a tail, and a check nobody can wire into a script is a check
