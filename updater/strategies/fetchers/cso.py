@@ -109,11 +109,35 @@ def _subject_key(t) -> str:
 
 
 def _matrix_subject_map() -> dict[str, str]:
-    cat_path = _catalog_path()
-    if not os.path.exists(cat_path):
-        return {}
-    with open(cat_path, encoding="utf-8") as f:
-        cat = json.load(f)
+    # R36: read the sidecar through blob. os.path.exists/open address the LOCAL disk, and under
+    # AQUEDUCT_BACKEND=r2 that directory holds only what this run wrote — so on a runner this
+    # returned {} and every changed matrix lost its owning subject parquet.
+    #
+    # Measured 2026-08-03: _catalog.json is 3,140,483 B on the workstation and ABSENT from
+    # r2://econ-data/clean_full/cso/ entirely, because only the INGESTER ever wrote it and it
+    # wrote it locally. Routing the read alone would not have helped — the object simply is not
+    # there — so if the store has no copy we BUILD one from CSO's own Search API and cache it to
+    # the store, and the next run finds it. One request, and the source stops depending on a
+    # file that happens to exist on one machine.
+    raw = blob.read_bytes(_catalog_path())
+    cat = None
+    if raw:
+        try:
+            cat = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            cat = None
+    if not cat:
+        try:
+            cat = _ingester().build_catalog()
+        except Exception:                                    # noqa: BLE001
+            return {}                                        # never sink a run over a cache
+        if not cat:
+            return {}
+        try:
+            blob.write_bytes_atomic(_catalog_path(),
+                                    json.dumps(cat).encode("utf-8"))
+        except Exception:                                    # noqa: BLE001
+            pass                                             # cache is an optimisation
     return {t["MtrCode"]: _subject_key(t) for t in cat if t.get("MtrCode")}
 
 
@@ -209,11 +233,13 @@ def update(unit, since) -> Result:
     # 2) Diff against stored release-date cursor -> NEW or CHANGED matrices.
     cur_path = _cursor_path()
     stored = {}
-    if os.path.exists(cur_path):
+    # R36: read through blob — see _write_cursor. A local read here means stored={} on every
+    # runner, which makes every matrix look changed and prevents convergence entirely.
+    _raw = blob.read_bytes(cur_path)
+    if _raw:
         try:
-            with open(cur_path, encoding="utf-8") as f:
-                stored = json.load(f)
-        except (ValueError, OSError):
+            stored = json.loads(_raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
             stored = {}
     changed = [m for m, u in cur_upd.items() if stored.get(m) != u]
     # newest revisions first so the bounded run always advances the freshest data
@@ -315,17 +341,20 @@ def update(unit, since) -> Result:
 
 
 def _write_cursor(path, mapping):
-    tmp = f"{path}.{os.getpid()}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(mapping, f)
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+    """Persist the per-matrix LastUpdated cursor to the STORE, not the runner's disk.
+
+    THIS IS WHY cso COULD NEVER CONVERGE. The cursor decides what to fetch:
+        changed = [m for m, u in cur_upd.items() if stored.get(m) != u]
+    It was written with open()/os.replace and read with os.path.exists/open — the LOCAL disk.
+    Under AQUEDUCT_BACKEND=r2 that file is ephemeral scratch on the runner, so every run began
+    with stored={}, saw EVERY matrix as changed, pulled the newest MAX_TABLES=60, and threw the
+    cursor away. Next run: identical. Measured — neither _catalog.json nor _cursor.json exists
+    in r2://econ-data/clean_full/cso/ at all, and cso's last run was "60/60 sub-unit(s)
+    transient-failed" on a store of 48,960,271 rows it can never finish revisiting.
+
+    blob.write_bytes_atomic is the same store-routed, atomic path ons_uk's sidecar already uses.
+    """
+    blob.write_bytes_atomic(path, json.dumps(mapping, sort_keys=True).encode("utf-8"))
 
 
 def _total_rows(out_dir) -> int:
