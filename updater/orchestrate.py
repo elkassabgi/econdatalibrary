@@ -425,16 +425,35 @@ def _norm_id(s: str) -> str:
 
 
 def _catalog_series_count(source_id: str) -> int:
-    """How many series the CATALOGUE holds for a source. Read-only, same DB as
-    _catalog_ids_for.
+    """Does the CATALOGUE hold ANY series for this source? 1 = yes, 0 = none, -1 = unreadable.
 
-    Used only to recognise vacuous CSV coherence: zero catalogued series means no
-    per-series CSVs exist, so a cursorless publish cannot make anything stale.
+    Used only to recognise vacuous CSV coherence: zero catalogued series means no per-series
+    CSVs exist, so a cursorless publish cannot make anything stale. The one caller tests
+    `== 0` and nothing else, so an exact count was never needed — and computing one was
+    ruinously expensive.
 
-    Returns -1 when the catalogue cannot be read. That is deliberately NOT zero: an
-    unreadable catalogue must not be mistaken for "nothing to derive" and hand out a
-    free pass to every source. -1 fails the `== 0` test, so an unreadable catalogue
-    leaves the strict §5.7 path exactly as it was.
+    Returns -1 when the catalogue cannot be read. That is deliberately NOT zero: an unreadable
+    catalogue must not be mistaken for "nothing to derive" and hand out a free pass to every
+    source. -1 fails the `== 0` test, so an unreadable catalogue leaves the strict §5.7 path
+    exactly as it was.
+
+    WHY THE QUERY LOOKS LIKE THIS. It was:
+
+        SELECT count(*) FROM series WHERE series_id LIKE 'src:%'
+
+    and sqlite plans that as `SCAN series USING COVERING INDEX` — a FULL SCAN of the catalogue.
+    Prefix-LIKE is only index-optimisable when case_sensitive_like is ON, and it is off by
+    default, so the pattern cannot use the primary key. At 8.5 GB and 10.8M rows that is a full
+    scan PER SOURCE, on a run that touches ~120 of them.
+
+    Measured on the live catalogue 2026-08-03:
+        LIKE 'noaa:%'  count   -> SCAN,   116.35 s
+        >= 'noaa:' AND < 'noaa;' EXISTS -> SEARCH, 0.0001 s
+    A range on the primary key is exact for a prefix (':' + 1 == ';'), uses the index, and
+    LIMIT 1 stops at the first hit instead of walking 3.1M entries to count them.
+
+    The name is kept so the caller and its comments still read correctly; the docstring above
+    is now the contract.
     """
     import sqlite3
     cat = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
@@ -442,9 +461,10 @@ def _catalog_series_count(source_id: str) -> int:
         con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
         try:
             row = con.execute(
-                "SELECT count(*) FROM series WHERE series_id LIKE ?", (f"{source_id}:%",)
+                "SELECT 1 FROM series WHERE series_id >= ? AND series_id < ? LIMIT 1",
+                (f"{source_id}:", f"{source_id};"),
             ).fetchone()
-            return int(row[0]) if row else -1
+            return 1 if row else 0
         finally:
             con.close()
     except Exception:                                        # noqa: BLE001
