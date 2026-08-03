@@ -89,6 +89,7 @@ def main() -> int:
 
     tot_rows = tot_out = touched = clean = 0
     tot_keys_before = tot_keys_after = 0
+    tot_conflicts = 0        # (key, obs_date) groups holding MORE THAN ONE distinct value
     for i, fn in enumerate(files, 1):
         path = os.path.join(out_dir, fn)
         # CHEAP SKIP FIRST: one column, one value. A key scheme is uniform within a file (one
@@ -122,6 +123,26 @@ def main() -> int:
             uniq = dic.to_pylist()
             mapping = {k: stable_key(k) for k in uniq if k}
             t = t.set_column(t.column_names.index("series_key"), "series_key", newcol)
+            # COUNT CONFLICTING REVISIONS BEFORE DEDUP DESTROYS THE EVIDENCE.
+            #
+            # The header above promises "The dry run REPORTS that count before anything is
+            # written". It did not: the only figures printed were row counts, and a collapsed
+            # row count cannot distinguish the two cases that matter.
+            #
+            #   identical duplicate  same (key, obs_date), SAME value — the same observation
+            #                        republished under a new LAST UPDATE. Dropping one is a
+            #                        no-op and "keep LAST" is a formality.
+            #   real revision        same (key, obs_date), DIFFERENT value — eurostat restated
+            #                        the number. "Keep LAST" then silently PICKS one, and the
+            #                        count of such picks is the actual blast radius of this
+            #                        migration.
+            #
+            # Without this, 2,457,810 collapsed rows is a number you cannot act on: it is
+            # either entirely benign or 2.4M silent value changes, and the same figure is
+            # printed either way. Measured per file, summed, and printed beside the collapse.
+            g = t.group_by(["series_key", "obs_date"]).aggregate([("value", "count_distinct")])
+            vc = g.column("value_count_distinct")
+            tot_conflicts += pc.sum(pc.cast(pc.greater(vc, 1), pa.int64())).as_py() or 0
             # Dedup with the SAME routine the merge path uses, so this migration and the
             # fetcher agree on identity — including its null handling (R254).
             t = _dedup(t, ["series_key", "obs_date"])
@@ -140,6 +161,14 @@ def main() -> int:
     print(f"files already clean  : {clean:,}")
     print(f"rows                 : {tot_rows:,} -> {tot_out:,}  (collapsed {tot_rows - tot_out:,})")
     print(f"distinct series_key  : {tot_keys_before:,} -> {tot_keys_after:,}")
+    # The number the "keep LAST" policy actually rests on. Zero means every collapse was the
+    # same observation republished and this migration cannot change a single served value;
+    # non-zero is the exact count of places where it picks one of two real numbers.
+    print(f"conflicting revisions: {tot_conflicts:,}  "
+          f"((key, obs_date) groups with >1 DISTINCT value; 'keep LAST' decides these)")
+    if tot_conflicts == 0:
+        print("                       -> every collapsed row was an exact duplicate; the "
+              "re-key changes no served value.")
     if a.dry_run:
         print("\n--dry-run: nothing written.")
     return 0
