@@ -146,6 +146,32 @@ def parse_date(s: str) -> dt.date | None:
         # TLIST style: "TLIST(A1)" is the dimension name, values are years
         if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
             return dt.date.fromisoformat(s)
+        # DAILY, TLIST(D1): "2010M01D01". MEASURED 2026-08-03 — MTD05 ("Precipitation Amount")
+        # and MTH05 each publish ~6,025 of these. Both return HTTP 200 with real bodies (MTD05
+        # is 557,685 bytes) and BOTH PARSED TO ZERO ROWS, because this grammar stopped at
+        # monthly. The fetcher then filed them as "fetch_table returned no rows (network failure
+        # after retries...)" — so a pure parser gap was reported as upstream weather, for every
+        # daily matrix CSO publishes.
+        m = re.match(r"^(\d{4})M(\d{2})D(\d{2})$", s, re.IGNORECASE)
+        if m:
+            mo, dy = int(m.group(2)), int(m.group(3))
+            if 1 <= mo <= 12 and 1 <= dy <= 31:
+                return dt.date(int(m.group(1)), mo, dy)   # ValueError -> None for 02-30 etc.
+            return None
+        # SPLIT / ACADEMIC YEAR: "2003-2004" (EDA21, "Average Class Size in Mainstream National
+        # Schools"; 22 codes, all dropped). Dated to the year the period BEGINS, matching bare
+        # YYYY -> that year's 31 Dec above.
+        #
+        # Second year must be first + 1. parse_date also feeds is_time_dim's value-driven
+        # fallback, so a loose ^\d{4}-\d{4}$ would let a range label ("1990-2000") read as a
+        # date and could promote a classification axis to the time axis — the swapped-axis
+        # defect that cost 290 matrices and 754,780 rows to repair (R288).
+        m = re.match(r"^(\d{4})-(\d{4})$", s)
+        if m:
+            y1, y2 = int(m.group(1)), int(m.group(2))
+            if y2 == y1 + 1:
+                return dt.date(y1, 12, 31)
+            return None
     except (ValueError, TypeError):
         pass
     return None
