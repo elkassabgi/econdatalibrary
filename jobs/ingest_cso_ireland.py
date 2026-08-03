@@ -200,8 +200,40 @@ def parse_jsonstat2(data: dict, prefix: str) -> list[tuple[str, dt.date, float]]
             lab = cat.get("label", {})
             dim_labels.append([lab.get(c, "") if isinstance(lab, dict) else ""
                                for c in pos_to_code])
-            if time_dim_idx is None and is_time_dim(did, pos_to_code):
+        # TIME DIMENSION: AUTHORITATIVE FIRST, HEURISTIC ONLY AS A LAST RESORT.
+        #
+        # This used to be `if time_dim_idx is None and is_time_dim(...)` inside the loop above —
+        # FIRST MATCH WINS. is_time_dim answers True for any dimension where >=60% of a
+        # FIVE-VALUE sample matches ^\d{4}[MQHSAW]?\d*$, and CSO classification dimensions are
+        # full of numeric sentinel codes (3001, 9998, 9999 for "not stated"/"all"). So a
+        # classification axis that merely appeared BEFORE the real TLIST axis was taken as time,
+        # and its codes were parsed as years.
+        #
+        # Measured on the live store 2026-08-03: 434,408 of cso's 48,960,271 rows (0.887%),
+        # across 11 files, carry an obs_date beyond the year 2100 — 272,445 in
+        # 10_Census_2016.parquet alone, dated 9998-12-31. The keys show the mechanism plainly:
+        #   CSO:B0726:...C02750V03319A=3001:...        -> 3001-12-31
+        #   CSO:VSA10:TLIST(A1)=2019:STATISTIC=...     -> 2452-12-31
+        # In the second, TLIST(A1)=2019 is sitting in the KEY, which is where a dimension goes
+        # when it was NOT chosen as the time axis: the real year was right there and lost to an
+        # earlier numeric dimension.
+        #
+        # Two passes fix it without touching is_time_dim's meaning. An explicitly named time
+        # axis (TLIST*, TIME/YEAR/PERIOD/TID, or JSON-stat's own role.time) is authoritative and
+        # cannot be outvoted by a coincidence of digits; the sample heuristic still runs, but
+        # only for tables that name nothing. This is the same value-first principle the other
+        # eight PxWeb ingesters already use via core/pxweb.resolve_time_dim.
+        role_time = set((data.get("role") or {}).get("time") or [])
+        for i, did in enumerate(dim_ids):
+            u = did.upper()
+            if did in role_time or u.startswith("TLIST") or u in ("TIME", "YEAR", "PERIOD", "TID"):
                 time_dim_idx = i
+                break
+        if time_dim_idx is None:
+            for i, did in enumerate(dim_ids):
+                if is_time_dim(did, dim_codes[i]):
+                    time_dim_idx = i
+                    break
 
         if time_dim_idx is None:
             return results
