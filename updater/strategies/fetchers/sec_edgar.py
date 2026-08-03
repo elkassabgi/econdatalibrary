@@ -366,7 +366,46 @@ def _coerce_insider(df: pd.DataFrame, table: str, prod_cfg: dict) -> pd.DataFram
     for c in df.columns:
         if c in dt_cols:
             s = df[c].replace("", pd.NA)
-            df[c] = pd.to_datetime(s, format="%d-%b-%Y", errors="coerce")
+            s = pd.to_datetime(s, format="%d-%b-%Y", errors="coerce")
+            # DEFENSIVE, AND HONESTLY UNPROVEN — read before extending or removing.
+            #
+            # sec_edgar has never reported a success; its state row records
+            #   ArrowInvalid('Casting from timestamp[us] to timestamp[ns] would result in out of
+            #    bounds timestamp: -61950355200000000')
+            # which, read as microseconds, is 0006-11-15. The stored parquets are timestamp[ns]
+            # deliberately (the docstring above requires new partitions to match them exactly),
+            # so a us column carrying year 6 cannot be aligned to them and the whole run dies.
+            #
+            # WHAT I COULD NOT SHOW: that this line is where that column comes from. On pandas
+            # 2.3.3 / pyarrow 23.0.0, to_datetime(..., errors="coerce") on "15-NOV-0006" already
+            # returns datetime64[ns] with NaT, and the cast to ns SUCCEEDS — so the tidy
+            # explanation ("pandas 2.x returns non-ns and year 6 survives") is false for this
+            # version, and CI installs the same 2.3.x. All 1,019 stored parquets were also
+            # scanned: none holds an out-of-ns-range timestamp. The origin is still open.
+            #
+            # This block is therefore a GUARD, not a repair: it makes the ns contract explicit
+            # and local instead of relying on a to_datetime default that has changed before and
+            # may change again. It is cheap, it cannot corrupt in-range data (see
+            # tests/test_sec_edgar_out_of_range_dates.py), and it does not license the claim
+            # that sec_edgar is fixed.
+            #
+            # NOT merge._report_impossible_dates: that REPORTS after the fact, deliberately does
+            # not drop, and runs after the merge — it cannot prevent a cast that fails during
+            # schema alignment.
+            #
+            # Nulled, not clamped: NULL says "unknown", whereas a clamp to 1677 would invent a
+            # plausible date nobody could later tell from a real one.
+            lo, hi = pd.Timestamp.min, pd.Timestamp.max
+            try:
+                oor = s.notna() & ((s < lo) | (s > hi))
+                if bool(oor.any()):
+                    print(f"[{SOURCE}] {table}.{c}: {int(oor.sum())} date(s) outside "
+                          f"timestamp[ns] range nulled (e.g. {s[oor].iloc[0]})", flush=True)
+                    s = s.mask(oor)
+                s = s.astype("datetime64[ns]")
+            except (TypeError, OverflowError, ValueError):
+                pass          # already ns, or incomparable — leave as parsed rather than fail
+            df[c] = s
         elif c in fl_cols:
             s = df[c].replace("", pd.NA)
             df[c] = pd.to_numeric(s, errors="coerce").astype("float64")
