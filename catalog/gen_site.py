@@ -2007,7 +2007,21 @@ def render_dataset_page(rec):
     if rec["n_series"]:
         cov_rows.append(("Series catalogued", f"{rec['n_series']:,}"))
     if rec["cov_start"] or rec["cov_end"]:
-        span = f"{rec['cov_start'] or '?'} – {rec['cov_end'] or 'present'}"
+        # Never render a bare "?" for a bound we do not have. It read as a broken page
+        # ("Coverage ? – 2018-12-31" on ggdc and maddison, reported 2026-08-02), and it is
+        # also the wrong claim: we are not uncertain about the coverage, we simply have no
+        # usable START for it. Each shape gets a phrasing that is true on its own terms.
+        #
+        # The two affected sources are the ironic case: their real start IS year 1 (the
+        # Maddison Project genuinely estimates back that far), and sane_date() rejects
+        # anything below 1000 because for every other source such a value is parse damage.
+        # A true fact is dropped, so say plainly what is left rather than printing a glyph.
+        if rec["cov_start"] and rec["cov_end"]:
+            span = f"{rec['cov_start']} – {rec['cov_end']}"
+        elif rec["cov_start"]:
+            span = f"{rec['cov_start']} – present"
+        else:
+            span = f"through {rec['cov_end']}"
         cov_rows.append(("Temporal coverage", span))
     if rec["frequencies"]:
         cov_rows.append(

@@ -432,7 +432,14 @@ function renderRows(results, reset){
   for(const x of results){
     const tr=document.createElement('tr');
     const dims=[x.source, x.geography, FREQ[(x.frequency||'').toUpperCase()]||x.frequency, x.unit].filter(Boolean).join(' · ');
-    const cov=(x.start_date||'?').slice(0,4)+'–'+(x.end_date||'?').slice(0,4);
+    // A missing date is not an unknown date, and it must never print as a glyph: this
+    // rendered "?–?" for any series carrying neither bound (reported 2026-08-02), which
+    // reads as a broken row rather than as "we have no coverage metadata for this one".
+    // Each shape gets its own honest form; nothing known at all gets an em dash, the same
+    // marker the rest of this table uses for an empty cell.
+    const cy = v => (v ? String(v).slice(0,4) : '');
+    const cs = cy(x.start_date), ce = cy(x.end_date);
+    const cov = cs && ce ? cs + '–' + ce : cs ? cs + '–' : ce ? '–' + ce : '—';
     tr.innerHTML=`<td><input type="checkbox" class="chk rowchk" data-id="${esc(x.series_id)}" data-title="${esc(x.title)}" data-source="${esc(x.source)}" ${selected.has(x.series_id)?'checked':''}></td>
       <td><div class="title">${esc(x.title||x.series_id)}</div><div class="sid">${esc(x.series_id)}</div><div class="dims">${esc(dims)}</div></td>
       <td>${esc(cov)}</td>
