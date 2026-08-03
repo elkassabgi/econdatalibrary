@@ -1,0 +1,61 @@
+# tests.yml — run the test suite. It existed and nothing ran it.
+#
+# WHY THIS FILE EXISTS. There are 11 test files under tests/ and, until this workflow, NO
+# workflow invoked pytest. `grep -rniE "pytest|unittest|tests/" .github/workflows/` returned
+# nothing across all six workflows. 120 tests, green in 8.66 s locally, contributing zero
+# signal to CI.
+#
+# That is not a hypothetical cost. bls.current_vintage() unpacked two values from a function
+# returning four and raised ValueError on EVERY call for the life of a commit; the probe path
+# was dead and the health gate still printed a tidy, dismissable line, because the gate reports
+# from state rather than by probing (R292). A sibling of exactly that shape —
+# updater/strategies/_bls_selftest.py — calls current_vintage() and would have failed
+# instantly. It is wired into nothing either. A test nobody runs and a selftest nobody calls
+# are the same artefact: reassurance without evidence.
+#
+# So the tests get their own workflow, on push and PR, where a break is attributable to the
+# commit that caused it rather than surfacing days later as a data problem — the same argument
+# preflight.yml already makes for itself.
+#
+# NOT IN THE `aqueduct-updater` CONCURRENCY GROUP, deliberately. That group is shared by
+# updater-daily and updater-heavy so the two never write the single-writer state store at once
+# (R5). It is `cancel-in-progress: false`, which does NOT queue: GitHub holds at most ONE
+# pending run per group and a newer arrival EVICTS the one waiting. Putting a push-triggered
+# workflow in there would make every push a chance to evict a scheduled updater run — the exact
+# starvation measured on 2026-08-03, when updater-heavy was created at 06:30, started zero jobs,
+# and was cancelled at 08:19 (R291). These tests touch no store and no state, so they need no
+# lock and must not take one.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Own group, keyed by ref: a rapid second push supersedes its own earlier test run and nothing
+# else. Safe to cancel here precisely because nothing in this job writes anything.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      # The suite imports pyarrow, requests, botocore and zstandard — the updater's own set,
+      # verified by grepping every top-level import under tests/. Reusing the updater's
+      # requirements file rather than a second hand-maintained list keeps one source of truth
+      # (a second copy of a list is a second thing to go stale).
+      - name: Install
+        run: pip install --quiet -r requirements-updater.txt pytest
+      - name: pytest
+        run: python -m pytest tests/ -q
