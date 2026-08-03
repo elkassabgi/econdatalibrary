@@ -130,12 +130,24 @@ def _tree_frontier(out_dir: str) -> dt.date | None:
 
     Uses per-file column STATISTICS, not a read: pulling 67.4M obs_date values to compute one
     max would cost more than the fetch it is sizing.
+
+    R36 — THIS WALKED THE TREE WITH A RAW LOCAL GLOB, so it did nothing in the only place it
+    matters. `glob.glob(out_dir/**)` and `pq.ParquetFile(path)` both address the local disk;
+    under AQUEDUCT_BACKEND=r2 that directory does not exist on the runner, so the loop had
+    nothing to iterate, `best` stayed None, and the caller fell back to the grouped
+    bea.parquet — reinstating, silently and only in CI, the exact 2026-01-01-vs-2026-04-01
+    staleness this function was written to remove. It looked correct in every local run,
+    which is what let it survive: the local and blob paths resolve to the same file there.
+
+    Both halves are now blob-routed. The listing must be RECURSIVE: bea is one of the stores
+    that is not flat (clean_full/bea/<Dataset>/<Table>.parquet), and the default
+    non-recursive listing returns [] for it — the same empty answer as a missing store.
     """
-    import pyarrow.parquet as pq
     best = None
-    for f in glob.glob(os.path.join(out_dir, "**", "*.parquet"), recursive=True):
+    for rel in blob.list_parquets(out_dir, recursive=True):
+        f = os.path.join(out_dir, rel)
         try:
-            md = pq.ParquetFile(f).metadata
+            md = blob.read_metadata(f)
             idx = md.schema.names.index("obs_date") if "obs_date" in md.schema.names else None
             if idx is None:
                 continue
