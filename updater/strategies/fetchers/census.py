@@ -81,6 +81,15 @@ PREFIX = "eits__"
 # asm/industry sits at 2016 and is exactly current (2017 and 2018 both 204), while intltrade sat
 # at 2026-03 with 2026-04 and 2026-05 published. Unprobed families are tracked in task #62.
 FAMILIES = ("eits", "intltrade")
+# qwi IS NOT HERE BECAUSE IT IS NOT BEHIND. All three (qwi/rh, qwi/sa, qwi/se) sit at 2025-Q3
+# and that is upstream's latest: for=state:01 returns 6 rows at 2025-Q3 and ZERO at 2025-Q4 and
+# 2026-Q1. Worth writing down because adding it would not be cheap — qwi rejects for=state:* with
+# 400 "wildcard not supported in 'for' clause for this hierarchy", so a tail means one request
+# per state per period, and its variables.json requires THIRTEEN predicates (education, year,
+# ownercode, seasonadj, ethnicity, industry, firmsize, firmage, race, sex, agegrp, periodicity,
+# quarter) against the five dimensions the store's key carries. That is a per-state iteration
+# mechanism, and none of it is needed while the source is current. Re-probe before building it.
+#
 # bds IS NOT HERE, AND THE REASON IS NOT THE OBVIOUS ONE. It is genuinely behind (stored 2022,
 # upstream publishing 2023) and its under-keying is solvable — (series_key, obs_date, NAICS) is
 # unique at 5,910 = 5,910, which is why _EXTRA_DIMS still carries it. What stops it is the
