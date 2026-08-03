@@ -177,6 +177,7 @@ def parse_jsonstat2(data: dict, prefix: str) -> list[tuple[str, dt.date, float]]
 
         time_dim_idx = None
         dim_codes = []
+        dim_labels = []
         for i, did in enumerate(dim_ids):
             cat = dims.get(did, {}).get("category", {})
             cat_idx = cat.get("index", {})
@@ -191,6 +192,14 @@ def parse_jsonstat2(data: dict, prefix: str) -> list[tuple[str, dt.date, float]]
             else:
                 pos_to_code = []
             dim_codes.append(pos_to_code)
+            # Some tables index the time axis POSITIONALLY ("0","1","2"…) and carry the real
+            # period only in the category label. A code-only date lookup then parses nothing,
+            # every observation is skipped, and a good 200 yields zero rows — which the fetcher
+            # reports as a structural break. Keep the labels as a date fallback; the KEY still
+            # uses codes, so no existing series_key changes.
+            lab = cat.get("label", {})
+            dim_labels.append([lab.get(c, "") if isinstance(lab, dict) else ""
+                               for c in pos_to_code])
             if time_dim_idx is None and is_time_dim(did, pos_to_code):
                 time_dim_idx = i
 
@@ -222,6 +231,11 @@ def parse_jsonstat2(data: dict, prefix: str) -> list[tuple[str, dt.date, float]]
             if t_pos >= len(t_codes):
                 continue
             obs_date = parse_date(t_codes[t_pos])
+            if obs_date is None:
+                # positional-index time codes: the period is in the label (see above)
+                t_labels = dim_labels[time_dim_idx] if time_dim_idx < len(dim_labels) else []
+                if t_pos < len(t_labels):
+                    obs_date = parse_date(t_labels[t_pos])
             if obs_date is None:
                 continue
 

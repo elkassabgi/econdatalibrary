@@ -197,6 +197,7 @@ def parse_jsonstat2(data: dict, prefix: str, time_code: str | None = None) -> li
 
         time_dim_idx = None
         dim_codes = []
+        dim_labels = []
         for i, did in enumerate(dim_ids):
             cat = dims.get(did, {}).get("category", {})
             cat_idx = cat.get("index", {})
@@ -211,6 +212,16 @@ def parse_jsonstat2(data: dict, prefix: str, time_code: str | None = None) -> li
             else:
                 pos_to_code = []
             dim_codes.append(pos_to_code)
+            # POSITIONAL CODES NEED THEIR LABELS. Some PxWeb tables publish the time axis with
+            # codes that are INDEX POSITIONS ('0','1','2', ...) and carry the real periods only
+            # in the labels/valueTexts (measured on Hagstofa SJA01101: Year values ['0','1',..]
+            # vs valueTexts ['2010','2011',..]). parse_date('0') is None, so EVERY observation
+            # was skipped and the table produced zero rows from a good 200 — which the fetcher
+            # then reported as a schema/structural break. Keep the labels so the date lookup can
+            # fall back to them; the KEY still uses codes, so no existing series_key changes.
+            lab = cat.get("label", {})
+            dim_labels.append([lab.get(c, "") if isinstance(lab, dict) else ""
+                               for c in pos_to_code])
 
         # Pick the time dimension via the shared value-first resolver (core/pxweb.py):
         # authoritative `time: true` / role.time, else highest date-parse-rate, else name.
@@ -245,6 +256,11 @@ def parse_jsonstat2(data: dict, prefix: str, time_code: str | None = None) -> li
             if t_pos >= len(t_codes):
                 continue
             obs_date = parse_date(t_codes[t_pos])
+            if obs_date is None:
+                # positional-index time codes: the period is in the label (see above)
+                t_labels = dim_labels[time_dim_idx] if time_dim_idx < len(dim_labels) else []
+                if t_pos < len(t_labels):
+                    obs_date = parse_date(t_labels[t_pos])
             if obs_date is None:
                 continue
 
