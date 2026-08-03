@@ -390,6 +390,71 @@ def unjudged_live(report: dict) -> list[str]:
             if r.get("live") and not _judged_here(r)]
 
 
+# A route is DOWN once nothing on it has succeeded in this many days. Deliberately generous:
+# the claim is "that machine has stopped reporting entirely", not "one source is late".
+ROUTE_SILENCE_DAYS = 3.0
+
+
+def route_silence(report: dict) -> "list[str]":
+    """Routes that have delivered NO successful run at all lately.
+
+    WHY THIS EXISTS. gate_failures correctly refuses to judge sources that run elsewhere —
+    a gate must not pronounce on runs it cannot see. But "not judged here" plus "not judged
+    anywhere else" adds up to NOT JUDGED. The workstation route is the ONLY update path for
+    the 17 cloud-infeasible sources, `eia` among them on a DAILY cadence, and if that machine
+    stops nothing in CI says so.
+
+    WHAT THIS DOES AND DOES NOT CATCH — stated plainly, because I first wrote it believing it
+    would have caught the 2026-08-02 outage and it would NOT. That day the guard loop died at
+    15:16 and the local heavy pass went ~7h past due, but bis, bls, cepii_gravity and faostat
+    still carried successes from the day before, so no three-day threshold could have fired.
+    A short outage on a route whose pass runs every ~20h is INVISIBLE here by construction,
+    and the instrument for it is the guard's own heartbeat on that machine, not this.
+
+    What this catches is the sustained case: the machine is off, or wedged, for days, and the
+    whole route stops delivering. That is the genuinely dangerous version — a 10-hour gap
+    costs one deferred pass, a 10-day gap silently rots 6.7M series — and it was equally
+    invisible before.
+
+    THE CLAIM IS DIFFERENT FROM THE ONE gate_failures DECLINES TO MAKE, which is what makes it
+    legitimate from the cloud. We cannot tell whether `noaa` is healthy. We CAN tell that the
+    shared state store holds no successful local run in three days: a statement about the
+    ROUTE, about whether that machine reports at all, not about any source on it.
+
+    Two guards against crying wolf, since a gate that fires wrongly is one nobody reads:
+      * every source on the route must be silent — one fresh success clears it, because a
+        single stalled source is a SOURCE problem, judged where it runs;
+      * the route must have succeeded at some point. A route where nothing has EVER succeeded
+        is unconfigured, not silent, and would otherwise be permanently red from day one.
+    """
+    now = datetime.now(timezone.utc)
+    routes: dict = {}
+    for r in report["sources"]:
+        if not r.get("live"):
+            continue
+        loc = r.get("run_location") or "cloud"
+        if loc == execution_location():
+            continue                       # this gate judges its own route source-by-source
+        routes.setdefault(loc, []).append(r)
+
+    out = []
+    for loc, rows in sorted(routes.items()):
+        ages = [r.get("last_success_age_d") for r in rows]
+        fresh = [a for a in ages if a is not None and a <= ROUTE_SILENCE_DAYS]
+        if fresh:
+            continue                       # something on that route reported recently
+        seen = [a for a in ages if a is not None]
+        if not seen:
+            continue                       # never configured, not gone silent — see above
+        newest = f"{min(seen):.1f}d ago"
+        out.append(
+            f"ROUTE '{loc}' SILENT — {len(rows)} live source(s) run there and NOT ONE has "
+            f"succeeded within {ROUTE_SILENCE_DAYS:.0f}d (newest success: {newest}). This "
+            f"gate cannot judge those sources, but it can see that the route has stopped "
+            f"reporting: check the machine's guard loop and its heartbeat.")
+    return out
+
+
 _KNOWN_ARGS = {"--json", "--red", "--fail-past-2x-sla"}
 
 
@@ -450,15 +515,26 @@ def main():
             print("  it is not evidence about them. They must be judged where they run.")
             for line in skipped:
                 print(f"  {line}")
+        # ...but "we cannot judge those sources" must not become "we have nothing to say about
+        # that machine". A route that has gone completely silent is a fact THIS gate can
+        # establish from the shared state, and it is the failure that hid a ten-hour
+        # workstation outage on 2026-08-02 (see route_silence).
+        silent = route_silence(report)
+        for line in silent:
+            print(f"\n{line}")
         fails = gate_failures(report)
         if fails:
             print(f"\nHEALTH GATE FAILED: {len(fails)} live-tier source(s) "
                   f"unhealthy (§5.3 — red run, GH notification):")
             for line in fails:
                 print(f"  {line}")
+        elif silent:
+            print(f"\nHEALTH GATE FAILED: no '{here}' source is past its SLA, but "
+                  f"{len(silent)} route(s) have stopped reporting entirely (above).")
         else:
-            print(f"\nhealth gate OK: no live-tier '{here}' source past its SLA")
-        sys.exit(1 if fails else 0)
+            print(f"\nhealth gate OK: no live-tier '{here}' source past its SLA, "
+                  f"and every other route is still reporting")
+        sys.exit(1 if (fails or silent) else 0)
 
 
 if __name__ == "__main__":
