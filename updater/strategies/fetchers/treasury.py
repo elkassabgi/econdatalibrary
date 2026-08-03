@@ -296,31 +296,31 @@ def update(unit, since) -> Result:
         data_cols = [c for c in all_cols if c not in ("series_key", "obs_date")]
         date_field = _pick_date_field(all_cols)
 
-        # NO DATE FIELD -> THIS IS NOT A TIME SERIES, AND RE-FETCHING IT DESTROYS IT.
+        # A MISSING DATE FIELD IS NOT, BY ITSELF, A REASON TO SKIP — corrected 2026-08-03, same
+        # day as the over-broad version that said it was.
         #
-        # _build_table stamps obs_date=None on every row when date_field is None, and series_key
-        # is the endpoint, so all rows land on the single identity (endpoint, None) and dedup
-        # keeps ONE. Measured on the store: three endpoints are already in that state —
-        #     redemption_tables             125,728 rows, 1 distinct series_key, 0 distinct dates
-        #     sb_value                       35,936 rows, 1, 0
-        #     fbp_dpai_account_summary          185 rows, 1, 0
-        # 161,849 rows whose only protection is merge's never-shrink guard, which has been
-        # refusing "shrink 185->1" on every single run and reporting it as a treasury failure.
-        # The guard was doing its job; the fetch should never have been attempted.
+        # That version skipped every endpoint whose _pick_date_field returned None, on the theory
+        # that obs_date=None puts all rows on one identity (endpoint, None) and dedup keeps ONE.
+        # The theory was wrong: _identity_keys already appends every NON-VALUE column to the dedup
+        # key, so a dateless endpoint is still keyed by its dimensions. Measured on the store, all
+        # three dateless endpoints hold exactly their upstream row count —
+        #     redemption_tables  125,728 = 125,728   dims redemp_period, issue_name, issue_year,
+        #                                            issue_months, src_line_nbr
+        #     sb_value            35,936 =  35,936   dims issue_year, redemp_period, series_cd, ...
+        #     fbp_dpai_account…      185 =     185   dims account_desc, account_nbr
+        # Nothing had collapsed, and skipping them stopped refreshing 161,664 rows that were
+        # updating correctly. A fix aimed at a mechanism I had not verified broke two working
+        # endpoints to protect them from a collapse that was not happening.
         #
-        # Skipped, not failed, and not touched: the existing rows stay served exactly as they are.
-        # A static reference table (account_nbr -> account_desc) has nothing to date-tail.
-        #
-        # NOT A CLOSED QUESTION for two of the three: redemption_tables carries `redemp_period`
-        # and sb_value similar, so a date field may be derivable and 161k rows could become real
-        # time series. _pick_date_field only matches DATE_CANDS or a `*_date` suffix, which those
-        # miss. Widening it is a separate change that needs its own evidence — guessing a period
-        # column wrong is how an axis gets swapped (R288).
+        # WHAT IS STILL TRUE: treasury reports `refusing shrink 185->1` for fbp on every run, and
+        # merge's never-shrink guard is what keeps those 185 rows. Since account_nbr IS in the
+        # dedup key, "obs_date is null" does not explain it and the real cause is NOT yet known —
+        # so nothing here pretends to fix it. The guard already prevents the loss; it costs a
+        # `partial` status, which is the correct report for a fetch that cannot be applied.
+        # Tracked in #87 with the measurements, to be diagnosed rather than guessed at.
         if not date_field:
-            print(f"[{SOURCE}] {os.path.basename(path)}: no date field — static reference table, "
-                  f"not date-tailed (keeping {before:,} rows untouched)", flush=True)
-            total += before
-            continue
+            print(f"[{SOURCE}] {os.path.basename(path)}: no date field — fetched as a dateless "
+                  f"table, keyed by its dimension columns", flush=True)
 
         since_date = None
         if date_field and "obs_date" in all_cols:
