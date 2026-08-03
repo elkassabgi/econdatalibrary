@@ -95,10 +95,23 @@ def _stored_max(path) -> dict[str, dt.date]:
     # column group_by dereferences past the overflowed offsets and KILLS THE PROCESS
     # (0xC0000005 / SIGABRT) - it does not raise, so no try/except catches it. ons_uk died that
     # way on 2026-08-01 after 8h56m. merge.py documented it; the fetchers never got the memo.
+    # _max_by_key returns ISO STRINGS, so the previous `isinstance(v, dt.date)` filter could
+    # never be true and this returned an EMPTY map on EVERY run — silently. No crash, no log
+    # line; just no frontier, so every series re-fetched from EARLIEST and no cursors reached
+    # the §5.7 coherence check, which demotes the run to `partial` — and a partial never sets
+    # last_success_utc (R231). That is why riksbank has no recorded success.
+    #
+    # PARSE BACK TO dt.date, do not pass the strings through: update() compares
+    # `cat_max <= smax` against a dt.date from _pdate, and hands smax to revision_since().
+    # Returning strings would swap a silent empty for a TypeError — the annotation above is
+    # the contract this function owes its caller, and it is dates.
     agg_map = _max_by_key(t)
-    keys = list(agg_map.keys())
-    mx = list(agg_map.values())
-    return {k: v for k, v in zip(keys, mx) if isinstance(v, dt.date)}
+    out: dict[str, dt.date] = {}
+    for k, v in agg_map.items():
+        d = _pdate(v)
+        if k and d is not None:
+            out[k] = d
+    return out
 
 
 def _fetch_obs(sess, sid, frm, to):

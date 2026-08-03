@@ -142,15 +142,10 @@ def _per_series_cursors(path: str) -> dict[str, str]:
     # column group_by dereferences past the overflowed offsets and KILLS THE PROCESS
     # (0xC0000005 / SIGABRT) - it does not raise, so no try/except catches it. ons_uk died that
     # way on 2026-08-01 after 8h56m. merge.py documented it; the fetchers never got the memo.
+    # _max_by_key ALREADY returns ISO STRINGS, so the isinstance(dt.datetime) branch never
+    # fires and .isoformat() then raised `'str' object has no attribute 'isoformat'`.
     grp_map = _max_by_key(t)
-    out: dict[str, str] = {}
-    for k, d in zip(list(grp_map.keys()),
-                    list(grp_map.values())):
-        if isinstance(d, dt.datetime):
-            d = d.date()
-        if d is not None:
-            out[k] = d.isoformat()
-    return out
+    return {k: d for k, d in grp_map.items() if k and d}
 
 
 def update(unit, since) -> Result:

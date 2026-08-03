@@ -104,10 +104,11 @@ def _stored_maxes(path) -> dict:
     # column group_by dereferences past the overflowed offsets and KILLS THE PROCESS
     # (0xC0000005 / SIGABRT) - it does not raise, so no try/except catches it. ons_uk died that
     # way on 2026-08-01 after 8h56m. merge.py documented it; the fetchers never got the memo.
+    # _max_by_key ALREADY returns ISO STRINGS. Calling .isoformat() on them raised
+    # `'str' object has no attribute 'isoformat'` — which is exactly the note on boc's last
+    # recorded run, and why this source has never once reported a success.
     agg_map = _max_by_key(tbl)
-    keys = list(agg_map.keys())
-    maxes = list(agg_map.values())
-    return {k: d.isoformat() for k, d in zip(keys, maxes) if k and d is not None}
+    return {k: d for k, d in agg_map.items() if k and d}
 
 
 def update(unit, since) -> Result:
