@@ -171,6 +171,35 @@ $env:PYTHONUNBUFFERED = '1'
 # 1,222 flows in CI purely because of its 35-minute budget. Raise both, loudly.
 if (-not $env:AQUEDUCT_BUDGET_MIN_OVERRIDE) { $env:AQUEDUCT_BUDGET_MIN_OVERRIDE = '360' }
 if (-not $env:AQUEDUCT_RUN_BUDGET_MIN)      { $env:AQUEDUCT_RUN_BUDGET_MIN      = '2880' }
+
+# THE CI CHECK ABOVE IS A CHECK AT ONE INSTANT; THE BUDGET IS 48 HOURS. Those two facts
+# together are the bug this block fixes. "CI idle - safe to proceed" is true when it is
+# printed and says nothing about 06:00 UTC, when updater-daily starts on its cron. A local
+# pass that is still running then puts TWO writers on one state store: both pull, both push,
+# and the ETag compare-and-swap means the second push is rejected outright. The loser does not
+# lose a little - it loses the whole run's bookkeeping (cursors, last_success, vintages),
+# while its DATA sits in R2 unrecorded, so the next gate reads healthy sources as never-run.
+# That is R5 exactly: never run a local updater job concurrently with CI.
+#
+# So the run budget is clamped to the time remaining before the cron window opens, minus a
+# margin for the push-state and D1 sync that follow the updater. A pass that cannot finish
+# simply stops early and resumes tomorrow - every fetcher here rotates (R190), so stopping
+# early defers work rather than discarding it, and the sources left over are the stalest
+# tomorrow so they go first.
+$cronOpensUtc = [DateTime]::UtcNow.Date.AddHours(5).AddMinutes(40)   # 05:40Z, cron is 06:00Z
+if ([DateTime]::UtcNow -ge $cronOpensUtc) { $cronOpensUtc = $cronOpensUtc.AddDays(1) }
+$marginMin = 25
+$untilCron = [int](($cronOpensUtc - [DateTime]::UtcNow).TotalMinutes) - $marginMin
+if ($untilCron -lt 20) {
+    Say ("ABORT: only " + $untilCron + " usable min before the 05:40Z CI window - " +
+         "too little to be worth a state pull/push cycle. Next tick will pick this up.")
+    exit 0
+}
+if ([int]$env:AQUEDUCT_RUN_BUDGET_MIN -gt $untilCron) {
+    Say ("whole-run budget clamped " + $env:AQUEDUCT_RUN_BUDGET_MIN + " -> " + $untilCron +
+         " min so this pass ENDS before the 05:40Z CI window (R5: one writer on the state store)")
+    $env:AQUEDUCT_RUN_BUDGET_MIN = "$untilCron"
+}
 Say ("per-source budget override: " + $env:AQUEDUCT_BUDGET_MIN_OVERRIDE +
      " min; whole-run budget: " + $env:AQUEDUCT_RUN_BUDGET_MIN + " min")
 
