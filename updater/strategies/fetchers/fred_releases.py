@@ -318,21 +318,21 @@ def _fetch_release(session, key, release_id, obs_start, tries=2, deadline_s=90):
     return tbl, (not saw_pd and tbl.num_rows == 0)
 
 
+# R36: both of these READ through blob but LISTED with os.listdir behind an os.path.isdir
+# guard. Under AQUEDUCT_BACKEND=r2 the local directory is absent on the runner, the guard
+# short-circuits, and they report 0 rows and no frontier — values, not errors, so nothing
+# downstream reads them as a failure to look.
+def _release_files() -> list[str]:
+    return [x for x in blob.list_parquets(OUT_DIR) if x.startswith("release_")]
+
+
 def _total_rows() -> int:
-    if not os.path.isdir(OUT_DIR):
-        return 0
-    return sum(blob.row_count(os.path.join(OUT_DIR, x))
-               for x in os.listdir(OUT_DIR)
-               if x.startswith("release_") and x.endswith(".parquet"))
+    return sum(blob.row_count(os.path.join(OUT_DIR, x)) for x in _release_files())
 
 
 def _global_max_date() -> str | None:
-    if not os.path.isdir(OUT_DIR):
-        return None
     best = None
-    for x in os.listdir(OUT_DIR):
-        if not (x.startswith("release_") and x.endswith(".parquet")):
-            continue
+    for x in _release_files():
         md = _max_obs_date(os.path.join(OUT_DIR, x))
         if md and (best is None or md > best):
             best = md

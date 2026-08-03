@@ -284,28 +284,32 @@ def _keys_on_disk(prod_cfg) -> set[str]:
     """The dataset keys already materialized on disk for this product."""
     base = os.path.join(config.DATA_ROOT, prod_cfg["out_dir"])
     keys: set[str] = set()
+    # R36: this enumerates which partitions we ALREADY HOLD, and it walked them with nested
+    # os.listdir behind os.path.isdir guards. On a runner (AQUEDUCT_BACKEND=r2) none of those
+    # directories exist, every guard short-circuits, and it returns an EMPTY SET — which does
+    # not read as "I could not look", it reads as "we hold nothing", the opposite of the truth
+    # for a fully-ingested store.
+    #
+    # Partitions are DIRECTORIES and blob lists OBJECTS, so the key is recovered from each
+    # object's path instead: one recursive listing per table, then the leading `period=<key>/`
+    # segment, or the `<table>_<key>.parquet` basename under a `year=<YYYY>/` segment. Same
+    # keys, from a listing that is true on both backends.
     if prod_cfg["layout"] == "period_dir":
         # <TABLE>/period=<key>/...  -- enumerate across tables (union).
         for tbl in prod_cfg["tables"]:
-            d = os.path.join(base, tbl)
-            if not os.path.isdir(d):
-                continue
-            for name in os.listdir(d):
-                if name.startswith("period="):
-                    keys.add(name[len("period="):])
+            for rel in blob.list_parquets(os.path.join(base, tbl), recursive=True):
+                head = rel.split("/", 1)[0]
+                if head.startswith("period="):
+                    keys.add(head[len("period="):])
     else:  # year_file: <table>/year=<YYYY>/<table>_<key>.parquet
         for tbl in prod_cfg["tables"]:
-            d = os.path.join(base, tbl)
-            if not os.path.isdir(d):
-                continue
-            for yd in os.listdir(d):
-                yp = os.path.join(d, yd)
-                if not (yd.startswith("year=") and os.path.isdir(yp)):
+            for rel in blob.list_parquets(os.path.join(base, tbl), recursive=True):
+                parts = rel.split("/")
+                if len(parts) < 2 or not parts[0].startswith("year="):
                     continue
-                for fn in os.listdir(yp):
-                    m = re.match(rf"^{re.escape(tbl)}_(.+)\.parquet$", fn)
-                    if m:
-                        keys.add(m.group(1))
+                m = re.match(rf"^{re.escape(tbl)}_(.+)\.parquet$", parts[-1])
+                if m:
+                    keys.add(m.group(1))
     return keys
 
 

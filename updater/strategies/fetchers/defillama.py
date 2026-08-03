@@ -467,9 +467,12 @@ def update(unit, since) -> Result:
 
     # ----- per-ENTITY families left untouched here (slow per-entity loops; see docstring).
     # Count their existing rows so the returned obs reflects the whole source.
-    for fn in os.listdir(out_dir):
-        if not fn.endswith(".parquet"):
-            continue
+    #
+    # R36: blob.row_count below was routed, os.listdir was not. On a runner
+    # (AQUEDUCT_BACKEND=r2) the local directory is absent, so this loop added NOTHING and the
+    # run under-reported its own obs by every row in these families — silently, because a
+    # smaller total is not an error.
+    for fn in blob.list_parquets(out_dir):
         if (fn.startswith("tvl_protocol_shard")
                 or fn.startswith("yields_pool_shard")
                 or fn == "stablecoins_circulating.parquet"
