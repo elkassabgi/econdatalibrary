@@ -110,11 +110,38 @@ def scheduled_sources() -> tuple:
             stranded.setdefault(s, "updater-heavy matrix")
             continue
         why.setdefault(s, "updater-heavy matrix")
-    scheduled_sources.stranded = stranded
 
     sec = open(SEC, encoding="utf-8").read()
     for sid in sorted(set(re.findall(r"\bsec_edgar(?:_xbrl)?\b", sec))):
         why.setdefault(sid, "sec-edgar-daily")
+
+    # FOURTH MECHANISM: the workstation route. tools/run_local_heavy.ps1 asks
+    # tools/_list_local_sources.py which sources to run, and that selects on
+    # `run_location == "local"` REGARDLESS of `live` — so a source can be refreshed every
+    # ~20h without ever setting live:true. Omitting it here under-counted coverage by up to
+    # 17 sources, among them istat (14,267 catalogued series), census (2,993), bis, bls, eia,
+    # oecd, statcan, faostat and vdem — every one of which this file reported as NOT
+    # scheduled while the workstation was in fact updating them.
+    #
+    # Not hypothetical: the 2026-08-03T00:58Z pass logged "registry routes 17 source(s) to
+    # this machine: bea, bis, bls, cbs_nl, census, cepii_gravity, comtrade, eia, faostat,
+    # gus_dbw, istat, noaa, oecd, ons_uk, statcan, vdem, wid" and merged +8,457 rows into
+    # census on that very run.
+    #
+    # Same adapter caution as the matrix above, for the same measured reason: membership in a
+    # schedule is not the ability to run. A routed source with no fetcher is STRANDED, not
+    # scheduled, and counting it would overstate coverage exactly as matrix membership once
+    # did.
+    for s in reg["sources"]:
+        if (s.get("run_location") or "cloud") != "local":
+            continue
+        sid = s["source_id"]
+        if _adapter_missing(s):
+            stranded.setdefault(sid, "workstation route (run_location: local)")
+            continue
+        why.setdefault(sid, "workstation route (run_location: local)")
+
+    scheduled_sources.stranded = stranded
     return set(why), why
 
 
