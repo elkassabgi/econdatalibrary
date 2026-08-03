@@ -46,6 +46,31 @@ from ...errors import TransientError
 from ..base import Result
 from ._common import Deadline, Tally, finalize
 
+# ---------------------------------------------------------------------------------------------
+# RETIRED 2026-08-03 — DBnomics IS BANNED (CLAUDE.md §0, ledger R251): no fetching, no probing
+# api.db.nomics.world, no relays or mirrors. Every source that used this base has been migrated
+# to its publisher's own API; verified the same day that NONE of the 112 live registry sources
+# imports this module, and the three WHO fetchers that once did now mention DBnomics only in a
+# docstring line recording the migration.
+#
+# THE FILE IS KEPT, NOT DELETED, because its analysis is still the evidence behind tasks #69 and
+# #70 — the measured newest DBnomics index per provider (UNCTAD 2023-06-30, FAO 2024-05-09,
+# UNESCO 2022-04-04) is exactly why re-pointing those families at the mirror would produce a
+# green run transferring nothing, and that reasoning should not be lost with the code.
+#
+# But a working client for a banned host, importable and passing tests, is a loaded gun: dead
+# code stops being dead the moment someone greps for a base class and finds one that fits. So
+# importing it now FAILS, loudly, naming the ban. That is strictly better than deletion, which
+# would remove the explanation along with the hazard, and strictly better than a comment, which
+# does not stop anyone.
+raise ImportError(
+    "updater.strategies.fetchers._dbnomics is RETIRED: DBnomics is banned (CLAUDE.md §0, "
+    "ledger R251) — no fetching, no probing api.db.nomics.world, no relays or mirrors. "
+    "Fetch from the publisher's own API instead; see who_hwf/who_rs/who_sdg for the migrated "
+    "pattern. This module is kept only for the per-provider index-date analysis in its "
+    "docstring, which tasks #69/#70 rest on."
+)
+
 API = "https://api.db.nomics.world/v22"
 UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com"}
 DEDUP = ("series_key", "obs_date")
