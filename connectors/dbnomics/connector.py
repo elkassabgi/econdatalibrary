@@ -27,7 +27,25 @@ Series id format: dbnomics:<PROVIDER>/<DATASET>/<SERIES_CODE>
 (we keep the native DBnomics path as the identifier -- it is globally unique and
 round-trips back to the API).
 """
-from __future__ import annotations
+# RETIRED 2026-08-03 — DBnomics is BANNED (CLAUDE.md §0, ledger R251): no fetching, no probing
+# api.db.nomics.world, no relays or mirrors; every source comes from its own publisher.
+#
+# This file is a COMPLETE, WORKING client for the banned host — the v22 base URL, paging, the lot
+# — and it was still listed in jobs/ingest_all.py's connector run list, which shells out to
+# run_connector.py for EVERY entry. Anyone running that script would have pulled from the relay.
+# ingest_all is not scheduled, and that is precisely what made it dangerous rather than harmless:
+# a dormant run-all that violates the ban the first time someone runs it, reading as one name
+# among twenty-three. Same shape as the watchdog entry that resurrected the banned puller every
+# five minutes until it was found.
+#
+# Failing at IMPORT, loudly, naming the ban — the same treatment as
+# updater/strategies/fetchers/_dbnomics.py. Better than deletion, which would remove the
+# explanation along with the hazard, and better than a comment, which stops nobody.
+raise ImportError(
+    "connectors.dbnomics.connector is RETIRED: DBnomics is banned (CLAUDE.md §0, ledger R251) — "
+    "no fetching, no probing api.db.nomics.world, no relays or mirrors. Fetch from the "
+    "publisher's own API instead; see who_hwf/who_rs/who_sdg for the migrated pattern."
+)
 
 import datetime as dt
 import math
