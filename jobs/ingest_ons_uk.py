@@ -153,6 +153,113 @@ def parse_ons_period(s: str) -> dt.date | None:
     return None
 
 
+# ONS V4 declares each dimension's format in the CODE column's NAME (`mmm-yy`, `yyyy-yy`,
+# `two-year-intervals`, `calendar-years`, ...). That name is the only reliable discriminator,
+# because the VALUES of two formats collide outright: `2011-12` is financial year 2011/12 under
+# `yyyy-yy` and the two-year interval 2001-2003 under `two-year-intervals`, and read as ISO it is
+# December 2011. Parsing the value alone cannot tell them apart; the column name can.
+#
+# MEASURED 2026-08-03 — parse_ons_period() knows none of these, so it returned None for EVERY row
+# of every dataset that uses them, and the fetcher recorded "real body, zero parseable rows":
+#   cpih01                              457 months  Jan-88..Jan-26   0 of 4,000 rows parsed
+#   gdp-to-four-decimal-places          351 months                   0 of 4,000
+#   retail-sales-index                  457 months                   0 of 4,000
+#   index-private-housing-rental-prices 229 months                   0 of 4,000
+#   wellbeing-local-authority            12 fin yrs 2011-12..2022-23 0 of 4,000
+#   life-expectancy-by-local-authority   17 2-yr    2001-03..2017-19 0 of 4,000
+# ten of the twelve datasets in one batch, 0.5-22 MB of real CSV each.
+_MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+           "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+
+
+def _slide_century(yy: int, now_year: int) -> int:
+    """Two-digit year -> four, by a window ending at the CURRENT year.
+
+    NOT a fixed pivot. cpih01 carries `Jan-88` and `Jan-26` in the same column and both are
+    real (1988 and 2026), so any constant cut-off mis-dates one end by a century. A window
+    anchored on today maps yy to the most recent year not in the future, which is correct for
+    published statistics: 26 -> 2026, 88 -> 1988. Confirmed against the data — cpih01 has
+    exactly 457 distinct months, and Jan-1988..Jan-2026 inclusive is exactly 457, so the run
+    is contiguous under this mapping and no other assignment makes it so.
+
+    The one shape this cannot serve is a PROJECTION carrying future months in `mmm-yy`; that
+    would wrap to the 1920s. parse_dataset_csv_v4 therefore span-checks the result and bails
+    rather than publishing a century-wrapped series (ONS's own projection datasets use
+    four-digit `calendar-years`, which never reaches this function).
+    """
+    y = 2000 + yy
+    return y - 100 if y > now_year else y
+
+
+def parse_ons_time_code(value: str, code_name: str, now_year: int | None = None) -> dt.date | None:
+    """Parse a V4 time CODE using the format its column name declares.
+
+    Falls back to parse_ons_period for anything unrecognised, so this is strictly additive:
+    a format that already worked still works, by the same rule it used before.
+
+    Period-END convention throughout, matching parse_ons_period's own `2022 -> 2022-12-31`:
+    a financial year 2011-12 is 2012-03-31, a two-year interval 2001-03 is 2003-12-31.
+    Monthly stays at day 1, also as before.
+    """
+    s = (value or "").strip()
+    if not s:
+        return None
+    name = (code_name or "").strip().lower()
+    if now_year is None:
+        now_year = dt.date.today().year
+    try:
+        # mmm-yy: 'Jan-26'
+        if name == "mmm-yy":
+            m = re.match(r"^([A-Za-z]{3})-(\d{2})$", s)
+            if m and m.group(1).lower() in _MONTHS:
+                return dt.date(_slide_century(int(m.group(2)), now_year),
+                               _MONTHS[m.group(1).lower()], 1)
+            return None
+        # yyyy-yy: UK financial year '2011-12' -> ends 31 March 2012. The trailing pair MUST be
+        # the following year mod 100, else the column is not what its name claims and we bail
+        # rather than guess.
+        if name in ("yyyy-yy", "financial-years", "yyyy-yy-financial-year"):
+            m = re.match(r"^(\d{4})-(\d{2})$", s)
+            if m:
+                y1 = int(m.group(1))
+                if int(m.group(2)) == (y1 + 1) % 100:
+                    return dt.date(y1 + 1, 3, 31)
+            return None
+        # two-year-intervals: '2001-03' spans 2001-2003 -> ends 31 Dec 2003.
+        if name == "two-year-intervals":
+            m = re.match(r"^(\d{4})-(\d{2})$", s)
+            if m:
+                y1 = int(m.group(1))
+                if int(m.group(2)) == (y1 + 2) % 100:
+                    return dt.date(y1 + 2, 12, 31)
+            return None
+        # yyyy-to-yyyy-yy: '1978-to-2020-21' — a cumulative span ending in a financial year.
+        if name == "yyyy-to-yyyy-yy":
+            m = re.match(r"^(\d{4})-to-(\d{4})-(\d{2})$", s, re.I)
+            if m:
+                y2 = int(m.group(2))
+                if int(m.group(3)) == (y2 + 1) % 100:
+                    return dt.date(y2 + 1, 3, 31)
+            return None
+        # yyyy-mm / ISO month
+        if name in ("yyyy-mm", "month"):
+            m = re.match(r"^(\d{4})-(\d{2})$", s)
+            if m and 1 <= int(m.group(2)) <= 12:
+                return dt.date(int(m.group(1)), int(m.group(2)), 1)
+            return None
+        # yyyy-qq: '2020-Q3'
+        if name in ("yyyy-qq", "quarters", "yyyy-q"):
+            m = re.match(r"^(\d{4})[- ]?Q([1-4])$", s, re.I)
+            if m:
+                q = int(m.group(2))
+                return dt.date(int(m.group(1)), q * 3, 1)
+            return None
+    except (ValueError, TypeError):
+        return None
+    # calendar-years and anything else: the existing grammar already handles it.
+    return parse_ons_period(s)
+
+
 def get_all_datasets() -> list[dict]:
     """Get all datasets from the ONS catalog (paginated)."""
     results = []
@@ -297,10 +404,14 @@ def parse_dataset_csv_v4(dataset_id: str, content: bytes) -> tuple[list, list, l
 
         base = 1 + n_meta                                  # first dimension column
         time_col_i = base + 2 * t_i                        # the time CODE column
+        time_code_name = dims[2 * t_i]                     # 'mmm-yy', 'calendar-years', ...
         key_cols = [(dims[2 * i], base + 2 * i)
                     for i in range(len(pairs)) if i != t_i]
 
+        now_year = dt.date.today().year
         keys, dates, vals = [], [], []
+        n_unparsed_time = 0
+        time_sample = None
         for row in reader:
             if len(row) <= time_col_i:
                 continue
@@ -311,12 +422,37 @@ def parse_dataset_csv_v4(dataset_id: str, content: bytes) -> tuple[list, list, l
                 v = float(raw_v.replace(",", ""))
             except ValueError:
                 continue
-            d = parse_ons_period(row[time_col_i])
+            # Parse by the format the CODE COLUMN NAME declares, not by sniffing the value —
+            # `2011-12` is a financial year, a two-year interval or an ISO month depending
+            # entirely on which column it sits in.
+            d = parse_ons_time_code(row[time_col_i], time_code_name, now_year)
             if d is None:
+                n_unparsed_time += 1
+                if time_sample is None:
+                    time_sample = row[time_col_i]
                 continue
             keys.append(":".join(f"{n}={row[i]}" for n, i in key_cols if row[i]) or dataset_id)
             dates.append(d)
             vals.append(v)
+
+        # A time format this parser does not know must be LOUD, not a silently empty dataset.
+        # The live parser's failure mode was exactly this: it returned zero rows from a 22 MB
+        # body, the fetcher logged "real body, zero parseable rows", declined to advance the
+        # vintage, and re-downloaded the same dataset every run forever.
+        if n_unparsed_time and not dates:
+            log(f"  {dataset_id}: time code {time_code_name!r} unparseable "
+                f"(all {n_unparsed_time} rows dropped; sample {time_sample!r}) "
+                f"— dataset skipped")
+            return [], [], []
+        # Century-wrap guard for the two-digit formats: a sliding window cannot serve a
+        # dataset carrying FUTURE periods, which would land a century back. Publish nothing
+        # rather than a series that silently spans the 1920s.
+        if dates:
+            span = max(dates).year - min(dates).year
+            if span > 100:
+                log(f"  {dataset_id}: time span {min(dates)}..{max(dates)} exceeds 100y under "
+                    f"{time_code_name!r} — century wrap suspected, dataset skipped")
+                return [], [], []
         return keys, dates, vals
     except Exception as e:  # noqa: BLE001
         log(f"  {dataset_id}: v4 parse error: {e}")
