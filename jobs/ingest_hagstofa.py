@@ -131,27 +131,58 @@ def crawl_catalog() -> list[dict]:
     return tables
 
 
+# Statistics Iceland puts AGGREGATE PERIODS on the time axis ITSELF, coded as bare 4-digit
+# numbers in the 3000s. UMH11130.px is the proven case: its `Ár` variable is flagged time=True
+# AND carries role.time, and its values are ['3002','3003','3004','3001','1949','1950', ...] —
+# four sentinels and real years side by side on the same axis.
+#
+# So this is NOT the dimension-selection defect cso had, and the distinction matters because it
+# is why a synthetic test passed while production failed: the correct axis IS chosen here, the
+# codes on it simply are not all periods. Parsing 3001 as the year 3001 is what put 1,120 rows
+# of Umhverfi.parquet past the year 3000, and re-parsing UMH11130 live on 2026-08-03 produced
+# 120 impossible rows out of 168 with the selection logic already correct.
+#
+# A year we cannot place is not a period, so it yields None and the caller skips the row. That
+# is the right outcome: an observation whose time coordinate is fabricated is worse than no
+# observation. The bound is deliberately wide — genuine long history and real projections must
+# be untouched (un_wpp reaches 2101, bfs 2150 in scenarios) — and every sentinel actually
+# observed sits far outside it.
+_YEAR_LO, _YEAR_HI = 1500, 2100
+
+
+def _year_ok(y: int) -> bool:
+    return _YEAR_LO <= y <= _YEAR_HI
+
+
 def parse_date(s: str) -> dt.date | None:
+    # EVERY branch is bounded, not just the bare-year one. Bounding only `^\d{4}$` left
+    # `3001M03` parsing to 3001-03-01 — caught by a unit test after the live re-parse already
+    # looked clean, because UMH11130 happens to use bare years. A partial bound on a parser is
+    # the same bug with a smaller footprint, waiting for a table with a monthly sentinel.
     s = (s or "").strip()
     try:
         if re.match(r"^\d{4}$", s):
-            return dt.date(int(s), 12, 31)
+            y = int(s)
+            return dt.date(y, 12, 31) if _year_ok(y) else None
         m = re.match(r"^(\d{4})M(\d{2})$", s, re.IGNORECASE)
         if m:
-            return dt.date(int(m.group(1)), int(m.group(2)), 1)
+            y = int(m.group(1))
+            return dt.date(y, int(m.group(2)), 1) if _year_ok(y) else None
         m = re.match(r"^(\d{4})[QK](\d)$", s, re.IGNORECASE)
         if m:
-            q = int(m.group(2))
-            return dt.date(int(m.group(1)), (q - 1) * 3 + 1, 1)
+            y, q = int(m.group(1)), int(m.group(2))
+            return dt.date(y, (q - 1) * 3 + 1, 1) if _year_ok(y) else None
         m = re.match(r"^(\d{4})H(\d)$", s, re.IGNORECASE)
         if m:
-            return dt.date(int(m.group(1)), 1 if m.group(2) == "1" else 7, 1)
+            y = int(m.group(1))
+            return dt.date(y, 1 if m.group(2) == "1" else 7, 1) if _year_ok(y) else None
         m = re.match(r"^(\d{4})W(\d{2})$", s, re.IGNORECASE)
         if m:
             yr, wk = int(m.group(1)), int(m.group(2))
-            return dt.date.fromisocalendar(yr, wk, 1)
+            return dt.date.fromisocalendar(yr, wk, 1) if _year_ok(yr) else None
         if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-            return dt.date.fromisoformat(s)
+            d = dt.date.fromisoformat(s)
+            return d if _year_ok(d.year) else None
     except (ValueError, TypeError):
         pass
     return None

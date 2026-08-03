@@ -87,3 +87,37 @@ def test_positional_time_codes_fall_back_to_labels(name):
     assert run(False) == [], (
         f"{name}: rows appeared with the time labels stripped, so the positive case does "
         f"not prove the label fallback ran")
+
+
+# --- hagstofa: sentinel periods ON the time axis -------------------------------------------
+# Statistics Iceland puts AGGREGATE periods on the time variable itself, coded as bare 4-digit
+# numbers in the 3000s. UMH11130.px is the proven case: `Ar` is flagged time=True AND carries
+# role.time, and its values are ['3002','3003','3004','3001','1949','1950', ...]. So the right
+# axis is chosen and the codes on it simply are not all periods — a DIFFERENT defect from the
+# selection bug, and the reason a synthetic cube passed while live data failed (120 of 168 rows
+# past the year 2100 on a live re-parse).
+
+def _hagstofa():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_hags_pd", os.path.join(ROOT, "jobs", "ingest_hagstofa.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+@pytest.mark.parametrize("code", ["3001", "3001M03", "3001Q2", "3001H1", "3001W05",
+                                  "3001-06-15", "1499", "2101"])
+def test_hagstofa_rejects_out_of_range_years_in_every_branch(code):
+    r"""EVERY branch must be bounded, not just the bare-year one. Bounding only `^\d{4}$` left
+    '3001M03' parsing to 3001-03-01 — the same bug with a smaller footprint, waiting for a
+    table with a monthly sentinel."""
+    assert _hagstofa().parse_date(code) is None, f"{code} produced a date"
+
+
+@pytest.mark.parametrize("code,year", [("1949", 1949), ("1500", 1500), ("2100", 2100),
+                                       ("2020M03", 2020), ("2020Q2", 2020), ("2020H1", 2020),
+                                       ("2020W05", 2020), ("2020-06-15", 2020)])
+def test_hagstofa_still_parses_real_periods(code, year):
+    d = _hagstofa().parse_date(code)
+    assert d is not None and d.year == year, f"{code} -> {d}"
