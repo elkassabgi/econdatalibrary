@@ -159,8 +159,24 @@ def is_time_dim(dim_id: str, values: list[str]) -> bool:
     if did in ("TIME", "YEAR", "PERIOD", "TID"):
         return True
     if values:
+        # THE 4-DIGIT PREFIX MUST BE A PLAUSIBLE YEAR, not merely four digits. CSO
+        # classification dimensions use numeric sentinel codes — 3001/3002 for category splits,
+        # 9998/9999 for "not stated"/"all" — and `^\d{4}...$` alone accepts every one of them,
+        # so a classification axis could pass as time and have its codes parsed as years. That
+        # produced 434,408 rows dated beyond 2100 in the live store (272,445 in Census 2016
+        # alone, at 9998-12-31), and it is the same hole ingest_pxweb.py's is_time_dim already
+        # closes: "its values parse ... to a SANE year".
+        #
+        # The bound is 1800..2100, not current_year+2 as pxweb uses: detection must not reject
+        # a genuine projection axis, and legitimate long horizons exist in this fleet (un_wpp
+        # reaches 2101, gapminder and owid 2100). 1800..2100 excludes every sentinel observed
+        # while leaving real data alone.
         sample = values[:5]
-        yr_count = sum(1 for v in sample if re.match(r"^\d{4}[MQHSAW]?\d*$", str(v).strip()))
+        yr_count = 0
+        for v in sample:
+            m = re.match(r"^(\d{4})[MQHSAW]?\d*$", str(v).strip())
+            if m and 1800 <= int(m.group(1)) <= 2100:
+                yr_count += 1
         return yr_count >= len(sample) * 0.6
     return False
 
