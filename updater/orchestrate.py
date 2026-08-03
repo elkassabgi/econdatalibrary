@@ -48,6 +48,26 @@ from .errors import TransientError, DefinitiveError
 # the outage.
 FIRSTPASS_DIRS = {"cbs_nl", "gus_dbw", "dbnomics"}
 
+# A unit whose recent runs all finish inside this is "cheap" and rides the fast lane.
+FAST_LANE_SECONDS = 120.0
+
+
+def order_units(units, costs, staleness_key, fast_lane_seconds=FAST_LANE_SECONDS):
+    """Run order: CHEAP BAND FIRST, staleness within the band.
+
+    Module-level and pure so the scheduling rule can be tested directly. A test that
+    re-implements the ordering proves only that the test agrees with itself — the property
+    being asserted is about what the RUN does, so the run and the test must call the same
+    function (R249: match the tool to the claim).
+
+    `costs` maps source_id -> estimated seconds; a source ABSENT from it has never run and
+    sorts into the cheap band, so it keeps absolute priority for its first turn.
+    """
+    def band(unit):
+        est = costs.get(unit.source_id)
+        return 0 if est is None or est < fast_lane_seconds else 1
+    return sorted(units, key=lambda u: (band(u), staleness_key(u)))
+
 
 def _protected(unit) -> bool:
     """Protected in-flight backfill. Announced, never silent — see below."""
@@ -579,11 +599,40 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     # It does NOT reorder anything else — cadence, protection, location and budget checks all
     # still apply per unit, and an explicit --source list is unaffected because it is a filter,
     # not an order.
+    # ...BUT STALENESS ALONE STILL STARVES THE CHEAP SOURCES, because it is blind to COST.
+    #
+    # Measured on the 2026-08-02 06:00 run (CI 30738981790) against the 106 live cloud sources:
+    #
+    #     68 sources cost < 2 min each   —    24.5 min for ALL of them together
+    #     11 sources cost 2-10 min       —    40.7 min
+    #     27 sources cost >= 10 min      — 1,031.4 min   (4.3x the whole 240-min budget)
+    #
+    # Under one staleness order the 27 expensive ones interleave with the rest, so the budget
+    # is gone after 20 sources and 76 are NOT ATTEMPTED. Among the skipped: cnb, whose run
+    # takes 4.9 SECONDS, and frankfurter at 5.6s. Both are daily FX feeds with a 2-day SLA,
+    # both were last refreshed 2026-07-31, and both were RED-SLA in the gate — not because
+    # anything about them is broken, but because a 5-second job kept queueing behind a
+    # 400-minute one. A source cannot meet a 2-day SLA if its turn comes round every 5 days.
+    #
+    # So order by COST BAND first, staleness within the band. The cheap band drains in ~25 min
+    # (10% of the budget) and refreshes two thirds of the fleet every single night; the
+    # expensive band then gets ~215 of the 240 min instead of 240.
+    #
+    # THE COST TO THE EXPENSIVE SOURCES IS REAL AND SMALL: at ~38 min each they fit ~6 per run
+    # today and ~5.6 after this change — they were never all running anyway, and they rotate by
+    # staleness exactly as before. What changes is that their rotation no longer runs THROUGH
+    # the cheap sources.
+    #
+    # Never-run units keep absolute priority: unknown cost sorts into the cheap band and ""
+    # sorts first within it, so a brand-new source is still guaranteed a first run. That is
+    # deliberate — a never-run source has no cost on record precisely because it has never had
+    # a turn, and putting it last would be the starvation this whole ordering exists to undo.
     def _staleness(unit):
         st = store.get_unit(unit.source_id, unit.unit_id) or {}
         last = st.get("last_success_utc") or st.get("last_attempt_utc")
         return (last or "", unit.key)          # "" (never run) sorts first
-    units = sorted(units, key=_staleness)
+
+    units = order_units(units, store.run_cost_estimate(), _staleness)
 
     results = []
     pending_live, pending_other = [], []  # no-adapter sources, split by live tier
