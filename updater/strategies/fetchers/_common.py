@@ -268,8 +268,18 @@ reads as "we covered everything".
 """
 
 
-def _max_by_key(tbl, key_col="series_key", date_col="obs_date") -> dict:
-    """{key: max date ISO} WITHOUT pyarrow's group_by.
+def _max_by_key(tbl, key_col="series_key", date_col="obs_date") -> "dict[str, str]":
+    """{key: max date as an ISO STRING} WITHOUT pyarrow's group_by.
+
+    THE VALUES ARE STRINGS, NOT dates — the final line calls .isoformat() for you. Said in the
+    signature and shouted here because every caller but two got it wrong, and the failures were
+    not alike: boc and tcmb called .isoformat() a SECOND time and raised
+    `'str' object has no attribute 'isoformat'`, taking both sources to transient_fail;
+    riksbank filtered on `isinstance(v, dt.date)`, which no string can satisfy, so it returned
+    an EMPTY cursor map every run — no crash, no log line, just permanent `partial` from the
+    §5.7 coherence check. bcrp and scb work only because ISO strings sort and compare exactly
+    like dates. Cursors are STORED as ISO strings, so returning strings is correct; the
+    annotation is what was missing.
 
     group_by is not merely slow on a big string column, it is UNSAFE: Arrow indexes string
     data with int32 offsets, and past 2 GiB in one column the aggregate overflows and kills
