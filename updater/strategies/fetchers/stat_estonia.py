@@ -414,7 +414,21 @@ def update(unit, since) -> Result:
     # (R190: a bound over a fixed order is a truncation, not a budget). Per-subject merges
     # already land inside the loop, so stopping keeps what was done; the bookmark is what
     # makes the remainder actually arrive.
-    budget_min = float(os.environ.get("STAT_ESTONIA_BUDGET_MIN", "30"))
+    # 30 -> 18, MEASURED not guessed. The bound above was added precisely to stop the 45-minute
+    # kill, and on 2026-08-03 stat_estonia was killed by it AGAIN — "exceeded its 45-minute hard
+    # limit and was interrupted", with no budget message printed at all, so the deadline never
+    # got to fire. That is the shape of the problem: dl.spent() is only consulted BETWEEN
+    # subjects, so the real ceiling is budget + the longest single subject, and a 30-minute
+    # budget leaves only 15 minutes of headroom for a subject that evidently needs more.
+    #
+    # census showed the same arithmetic from the other side the same day: a 20-minute budget was
+    # reported "spent after 35.6 min". A cooperative deadline over coarse units does not bound
+    # wall-clock; it bounds when you next LOOK at the clock.
+    #
+    # 18 leaves 27 minutes for one in-flight subject. If the kill recurs, the next move is not a
+    # smaller number — it is checking the deadline inside the per-subject table loop, because at
+    # that point one subject alone exceeds the cap and no budget can help.
+    budget_min = float(os.environ.get("STAT_ESTONIA_BUDGET_MIN", "18"))
     dl = Deadline(minutes=budget_min)
     subjects = rotate_after(sorted(by_subject), load_rotation(out_dir))
     stopped_early = False
@@ -435,6 +449,14 @@ def update(unit, since) -> Result:
                   f"deferred to the next tick", flush=True)
             break
         last_subj = subj
+        # SAVED HERE, NOT ONLY AT THE END OF THE FUNCTION. The end-of-function save is exactly
+        # what a 45-minute kill destroys — the orchestrator interrupts the source rather than
+        # breaking its loop, so nothing after the sweep runs. That is why this source has never
+        # written a _rotation.json while worldbank_wdi and hagstofa each wrote their first one
+        # the moment they stopped being killed (R273, confirmed 2026-08-03). Relying on "we will
+        # not be killed" to persist the state whose whole purpose is surviving a kill is circular.
+        # One small write per subject removes the dependency.
+        save_rotation(out_dir, subj)
         subj_tables = by_subject[subj]
         path = os.path.join(out_dir, f"{subj}.parquet")
         before = blob.row_count(path)

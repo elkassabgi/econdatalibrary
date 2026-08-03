@@ -321,6 +321,13 @@ def update(unit, since) -> Result:
             break
         _fetch_indicator(code, date_param, iso2to3, tally, keys, dates, vals)
         last_code = code
+        # Written per sub-unit, not once at the end. The orchestrator's 45-minute cap
+        # KILLS a source rather than breaking its loop, so an end-of-function save is
+        # exactly what a kill destroys — which is why stat_estonia had never written a
+        # _rotation.json at all while worldbank_wdi and hagstofa each wrote their first
+        # one the moment they stopped being killed (R273). Relying on not being killed
+        # to persist the state whose purpose is surviving a kill is circular.
+        save_rotation(out_dir, code)
         done = n
         time.sleep(RATE)
         if n % 200 == 0:
