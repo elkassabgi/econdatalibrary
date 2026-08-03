@@ -305,14 +305,31 @@ def _max_by_key(tbl, key_col="series_key", date_col="obs_date") -> "dict[str, st
     """{key: max date as an ISO STRING} WITHOUT pyarrow's group_by.
 
     THE VALUES ARE STRINGS, NOT dates — the final line calls .isoformat() for you. Said in the
-    signature and shouted here because every caller but two got it wrong, and the failures were
-    not alike: boc and tcmb called .isoformat() a SECOND time and raised
-    `'str' object has no attribute 'isoformat'`, taking both sources to transient_fail;
-    riksbank filtered on `isinstance(v, dt.date)`, which no string can satisfy, so it returned
-    an EMPTY cursor map every run — no crash, no log line, just permanent `partial` from the
-    §5.7 coherence check. bcrp and scb work only because ISO strings sort and compare exactly
-    like dates. Cursors are STORED as ISO strings, so returning strings is correct; the
-    annotation is what was missing.
+    signature and shouted here because EVERY ONE of the five callers got it wrong, and the
+    failures were not alike:
+
+      boc, tcmb   called .isoformat() a SECOND time -> `'str' object has no attribute
+                  'isoformat'`, taking both sources to transient_fail. Fixed a1c42881.
+      riksbank    filtered on `isinstance(v, dt.date)`, which no string satisfies, so it returned
+                  an EMPTY cursor map every run — no crash, no log line, just permanent `partial`
+                  from the §5.7 coherence check. Fixed a1c42881.
+      bcrp        SAME .isoformat() crash, but 120 lines downstream of the call, in the cursor
+                  seed and again in last_db. It was still crashing in production SIX HOURS AFTER
+                  a1c42881 landed. Fixed 15f49f1c.
+      scb         worse-shaped: _table_frontiers is annotated dict[str, dt.date] and passed these
+                  strings straight through, so `stored_max.isoformat()` raised AND
+                  `_parse_date(c) > stored_max` raised TypeError — and that comparison IS the
+                  date-tail window deciding what gets fetched. Latent only because scb had not
+                  run since before this function existed. Fixed 15f49f1c at the source.
+
+    THIS PARAGRAPH PREVIOUSLY CLAIMED "bcrp and scb work only because ISO strings sort and compare
+    exactly like dates". That is true where a string meets a string and false the moment one meets
+    a real date — which is what both of them do. The claim came from reading each fetcher's CALL
+    SITE, where nothing is obviously wrong; both consume the value far downstream. If you add a
+    caller, trace where the VALUE ends up, not where the call is.
+
+    Cursors are STORED as ISO strings, so returning strings is correct; the annotation is what was
+    missing.
 
     group_by is not merely slow on a big string column, it is UNSAFE: Arrow indexes string
     data with int32 offsets, and past 2 GiB in one column the aggregate overflows and kills
