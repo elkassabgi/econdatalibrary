@@ -62,6 +62,10 @@ def main() -> int:
     ap.add_argument("filename", help="name RELATIVE to the source dir, e.g. 10_Census_2016.parquet")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--force-unsafe", action="store_true")
+    ap.add_argument("--cursor-cleared", action="store_true",
+                    help="for a CHANGE-DRIVEN source: confirm you have already dropped this "
+                         "file's entries from the fetcher's cursor sidecar, without which the "
+                         "delete is permanent")
     a = ap.parse_args()
 
     blockers = runs_in_flight()
@@ -69,6 +73,29 @@ def main() -> int:
         print("REFUSING — a writer may be active (R5, single-writer store):")
         for b in blockers:
             print(f"  - {b}")
+        return 2
+
+    # DELETING A FILE ONLY REBUILDS IT IF THE FETCHER NOTICES IT IS GONE. That is true of a
+    # snapshot fetcher, which re-pulls whatever the publisher currently offers, and FALSE of a
+    # change-driven one, which pulls only what the publisher reports as CHANGED since a stored
+    # cursor. cso is the measured case: `changed = [m for m,u in cur_upd.items() if
+    # stored.get(m) != u]`. Delete a subject parquet and its cursor still says "we hold the
+    # current version of every matrix", so nothing is re-fetched — the rows are simply gone
+    # until CSO happens to revise each table. That would have been 3.9M rows deleted and not
+    # returned, from a tool whose whole premise is that they come back.
+    #
+    # So: refuse unless the caller has cleared the cursor too, and name the file to clear.
+    _CURSOR_DRIVEN = {
+        "cso": "_collupd.json",       # per-matrix LastUpdated; entries must be dropped as well
+    }
+    if a.source in _CURSOR_DRIVEN and not a.cursor_cleared:
+        print(f"REFUSING — {a.source} is a CHANGE-DRIVEN fetcher. It pulls what the publisher "
+              f"reports as changed, not what is missing locally, so deleting this file does "
+              f"NOT make it come back.")
+        print(f"  Clear the matching entries from {_CURSOR_DRIVEN[a.source]} in the store first, "
+              f"then re-run with --cursor-cleared.")
+        print(f"  Without that the rows are gone until the publisher happens to revise each "
+              f"table — which is not a re-pull, it is a deletion.")
         return 2
 
     d = config.source_dir(a.source)
