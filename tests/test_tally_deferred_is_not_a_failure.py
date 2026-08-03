@@ -1,0 +1,106 @@
+"""A budget deferral is not a transient failure, and must not be counted as one.
+
+WHAT THIS PINS. ecb's recorded state read `252/540 sub-unit(s) transient-failed; will retry` and
+abs's `805/1222`. Every named unit said the same thing:
+
+    ECB__CSEC__M__SE__2022.parquet: budget 35 min spent, deferred
+    ABS_SEIFA2021_SA2 deferred (budget 35 min)
+
+Nothing had failed. Those units were never ATTEMPTED — the wall-clock budget stopped the sweep and
+rotation takes them next tick, which is the design working. They went through
+`tally.transient_unit()`, which both inflated `attempted` and called them failures, so the real
+failure rate was unreadable: 252 of 540 is alarming, 0 of 288 attempted is fine, and the log showed
+the first (R303).
+
+ELEVEN fetchers were doing it — abs, bea, boc, comtrade, ecb, eia, ilostat, snb, ssb, wid — found
+by grepping `transient_unit(.*defer` after only three showed up in state.db, because the state only
+records the LAST run and most had not deferred on theirs. ilostat's call site even carried the
+comment "deferral, not a verdict" while doing exactly the opposite.
+
+The status stays `partial` on purpose. A tick that deferred work did not cover everything and must
+not stamp a full-coverage vintage (R231). What changes is that the message no longer calls a
+deliberate deferral a failure, and the denominator counts only what was actually attempted.
+"""
+from __future__ import annotations
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from updater.strategies.fetchers._common import Tally, finalize   # noqa: E402
+
+
+def test_deferral_does_not_increment_attempted():
+    """`attempted` has to keep meaning attempted, or the denominator lies too."""
+    t = Tally()
+    t.added_unit(5)
+    t.deferred_unit("X: budget spent")
+    t.deferred_unit("Y: budget spent")
+    assert t.attempted == 1, "only the one unit actually worked on"
+    assert t.deferred == 2
+    assert t.transient == 0, "a deferral is not a transient failure"
+
+
+def test_deferral_only_run_is_partial_but_reports_no_failures():
+    t = Tally()
+    t.added_unit(10)
+    t.deferred_unit("flowA: budget 35 min spent, deferred")
+    r = finalize(t, 1000, None, source="demo")
+    assert r.status == "partial", "incomplete coverage must not claim ok"
+    assert "none failed" in r.error
+    assert "deferred by budget" in r.error
+    assert "transient-failed" not in r.error, "the whole point: stop calling it a failure"
+
+
+def test_a_real_transient_still_reports_as_a_failure():
+    """The fix must not launder genuine failures."""
+    t = Tally()
+    t.added_unit(3)
+    t.transient_unit("flowB: HTTP 503")
+    r = finalize(t, 50, None, source="demo")
+    assert r.status == "partial"
+    assert "transient-failed" in r.error
+    assert "flowB: HTTP 503" in r.error
+
+
+def test_transient_wins_when_both_occur():
+    """A run that both failed and deferred must surface the FAILURE, not the deferral."""
+    t = Tally()
+    t.added_unit(1)
+    t.transient_unit("flowB: HTTP 503")
+    t.deferred_unit("flowC: budget spent")
+    r = finalize(t, 10, None, source="demo")
+    assert "transient-failed" in r.error, "a real failure must not be hidden behind a deferral"
+
+
+def test_clean_run_is_unaffected():
+    t = Tally()
+    t.added_unit(7)
+    r = finalize(t, 70, None, source="demo")
+    assert r.status == "ok"
+    assert "+7 new rows" in r.error
+
+
+def test_deferred_units_are_named():
+    """Same reasoning as transient/structural ids: an unnamed deferral is unauditable."""
+    t = Tally()
+    t.added_unit(1)
+    for i in range(9):
+        t.deferred_unit(f"flow{i}: budget spent")
+    r = finalize(t, 10, None, source="demo")
+    assert "flow0: budget spent" in r.error
+    assert "more" in r.error, "the list is bounded and says so"
+
+
+def test_no_fetcher_files_a_deferral_as_transient():
+    """Grep-derived guard: the eleven call sites that did this must stay converted."""
+    import glob
+    import re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bad = []
+    pat = re.compile(r"transient_unit\([^)]*defer", re.I)
+    for p in glob.glob(os.path.join(root, "updater", "strategies", "fetchers", "*.py")):
+        for n, line in enumerate(open(p, encoding="utf-8"), 1):
+            if pat.search(line):
+                bad.append(f"{os.path.basename(p)}:{n}")
+    assert not bad, f"deferrals filed as transient failures: {bad}"

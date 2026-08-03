@@ -492,7 +492,7 @@ def update(unit, since) -> Result:
         if dl.spent():
             # Announced, not silent: deferred files are recorded transient so the run is
             # `partial`, the vintage is not advanced, and the next tick takes them first.
-            tally.transient_unit(f"{fn}: budget {BUDGET_MIN:.0f} min spent, deferred")
+            tally.deferred_unit(f"{fn}: budget {BUDGET_MIN:.0f} min spent, deferred")
             continue
         path = os.path.join(out_dir, fn)
         stem = fn[:-len(".parquet")]

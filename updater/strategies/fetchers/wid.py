@@ -256,7 +256,7 @@ def update(unit, since) -> Result:
         print(f"[wid] {deferred} country file(s) DEFERRED to the next run "
               f"(budget {BUDGET_S / 60:.0f} min reached) — untouched, not failed",
               flush=True)
-        tally.transient_unit(f"{deferred} countries deferred")
+        tally.deferred_unit(f"{deferred} countries deferred")
 
     return finalize(tally, total_rows, newest, source=SOURCE,
                     series_cursors=cursors or None)

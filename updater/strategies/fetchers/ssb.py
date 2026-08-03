@@ -519,7 +519,7 @@ def update(unit, since) -> Result:
         if dl.spent():
             # Announced, never silent: the deferred groups are recorded transient, so the run
             # is `partial`, the vintage is NOT advanced, and the next tick takes them first.
-            tally.transient_unit(f"{fn}: budget {BUDGET_MIN:.0f} min spent, group deferred")
+            tally.deferred_unit(f"{fn}: budget {BUDGET_MIN:.0f} min spent, group deferred")
             continue
         path = os.path.join(out_dir, fn)
         subj = fn[len("grp_"):-len(".parquet")]
@@ -547,7 +547,7 @@ def update(unit, since) -> Result:
 
         for tid in attempt_ids:
             if dl.spent():
-                tally.transient_unit(f"{tid}: budget spent, table deferred")
+                tally.deferred_unit(f"{tid}: budget spent, table deferred")
                 continue
             stored_max = per_max.get(tid)
             floor = _floor_for(stored_max, today)

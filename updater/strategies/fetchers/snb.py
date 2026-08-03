@@ -200,7 +200,7 @@ def update(unit, since) -> Result:
     for cube in cubes:
         path = os.path.join(out_dir, f"{cube}.parquet")
         if dl.spent():
-            tally.transient_unit(f"{cube} deferred (budget)")
+            tally.deferred_unit(f"{cube} deferred (budget)")
             continue
         try:
             pub, rows = _fetch(sess, cube)

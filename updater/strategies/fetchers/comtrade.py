@@ -119,7 +119,7 @@ def update(unit, since) -> Result:
               f"rate {ig.RATE}s", flush=True)
         for batch in batches:
             if dl.spent():
-                tally.transient_unit(f"{label}: budget — {len(batch)} reporters deferred")
+                tally.deferred_unit(f"{label}: budget — {len(batch)} reporters deferred")
                 print(f"[{SOURCE}] {label}: BUDGET SPENT, {len(batch)} reporter(s) deferred",
                       flush=True)
                 continue
@@ -152,7 +152,7 @@ def update(unit, since) -> Result:
     for flow, label in {"M": "import_bilateral", "X": "export_bilateral"}.items():
         for reporter in ig.MAJOR:
             if dl.spent():
-                tally.transient_unit(f"{label}:{reporter} deferred (budget)")
+                tally.deferred_unit(f"{label}:{reporter} deferred (budget)")
                 continue
             try:
                 recs = ig.fetch_bilateral_totals(reporter, list(ig.MAJOR_PARTNERS), flow)
