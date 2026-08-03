@@ -14,8 +14,27 @@
 # installed via `npm ci` inside the D1 sync step) and sqlite3/zipfile/xml etc.
 # (stdlib).
 
-pandas>=2.2        # fetch normalization + econdl derive path (updater/strategies/fetchers/*, clients/python/econdl/*)
-pyarrow>=23.0      # parquet merge invariants + all fetcher table builds (updater/merge.py, updater/blob.py)
+# UPPER BOUND ON THE MAJOR, because an unpinned major means dev and CI silently run DIFFERENT
+# code and a bug can be invisible on one of them. This is not hypothetical: `pandas>=2.2` uncapped
+# resolved to 2.3.3 locally and 3.0.5 on the runner, and sec_edgar had NEVER reported a success
+# because of it —
+#     local pandas 2.3.3 -> to_datetime("15-NOV-0006") gives datetime64[ns], value NaT (invisible)
+#     CI    pandas 3.0.5 -> datetime64[us], year 6 KEPT -> ArrowInvalid against the stored ns
+#                           schema, killing the whole run
+# The parse bug itself is fixed (3d7f4e3e forces the ns contract), but the DIVERGENCE it exploited
+# is the more general defect: every "verified locally" claim is only as good as dev matching CI.
+#
+# Pinned to the major the RUNNER ALREADY RESOLVES, deliberately: production has been on 3.x, so
+# capping there changes nothing about what CI installs and no source's behaviour moves. It is dev
+# that must come up to match — the opposite choice would have silently downgraded 120 sources'
+# runtime to chase local convenience.
+pandas>=3.0,<4     # fetch normalization + econdl derive path (updater/strategies/fetchers/*, clients/python/econdl/*)
+# SAME REASONING AS pandas ABOVE, and measured the same way: `pyarrow>=23.0` uncapped resolved to
+# 23.0.0 locally and 25.0.0 on the runner — TWO majors apart, in the library that every merge
+# invariant, every never-shrink guard and every fetcher's table build runs through. pandas was the
+# one that produced a visible failure; this is the larger surface, and it had exactly the same
+# licence to drift.
+pyarrow>=25.0,<26  # parquet merge invariants + all fetcher table builds (updater/merge.py, updater/blob.py)
 requests>=2.32     # every HTTP fetcher + vintage probes (updater/strategies/fetchers/*, _vintage.py)
 urllib3>=2.6       # imported directly for Retry config (updater/strategies/fetchers/defillama.py); also a requests dep
 PyYAML>=6.0        # registry load/validate (updater/registry.py, updater/gen_registry.py)
@@ -25,4 +44,8 @@ openpyxl>=3.1      # xlsx parsers: edgar_jrc (imports jobs/ingest_edgar_jrc.py a
 pyreadr>=0.5       # vdem RData reader (updater/strategies/fetchers/vdem.py _rdata_to_df; lazy import, same phantom-structural failure mode without it)
 xlrd>=2.0          # LEGACY .xls reader — openpyxl cannot read .xls at all. Needed by damodaran, shiller and sipri_polity (Polity5 p5v2018.xls + MEPVv2018.xls). Its absence on CI produced exactly the phantom failures this file's openpyxl note warns about: damodaran reported transient_fail ModuleNotFoundError, and sipri_polity reported '2/3 sub-unit(s) returned 200 but parsed 0 rows' — the 2 being precisely its two .xls files, while its .xlsx one parsed fine. One missing dep, two sources broken, neither naming the cause.
 lxml>=5.3         # fed_board's XML parser. jobs/ingest_fed_board.py does `from lxml import etree` at MODULE level and the fetcher imports that module, so on a runner without lxml the import fails and fetcher_implemented('fed_board') returns False — the source reports "no adapter built" (PENDING) and silently never runs, exactly the phantom this file's openpyxl and xlrd notes describe. Caught 2026-07-30 by diffing every newly-live fetcher's third-party imports against this file BEFORE its first CI run, rather than after a red one.
-numpy>=2.0        # imported DIRECTLY by updater/strategies/fetchers/vdem.py. It happens to be installed today as a transitive dep of pandas/pyarrow, which is why vdem works — but a direct import satisfied by somebody else's dependency is luck, not a contract: the day pandas drops or repins it, vdem stops importing and reports "no adapter built" with nothing naming numpy. Declared 2026-07-30 by tools/audit_updater_deps.py.
+# numpy is capped for consistency, not because it diverged: measured 2026-08-03 it is 2.3.4 local
+# vs 2.4.6 on the runner — same major, so it is the one of the three that did NOT drift. Capping
+# it now means the next major cannot arrive unannounced in CI while dev stays behind, which is
+# precisely how the pandas split went unnoticed until sec_edgar had never once succeeded.
+numpy>=2.0,<3     # imported DIRECTLY by updater/strategies/fetchers/vdem.py. It happens to be installed today as a transitive dep of pandas/pyarrow, which is why vdem works — but a direct import satisfied by somebody else's dependency is luck, not a contract: the day pandas drops or repins it, vdem stops importing and reports "no adapter built" with nothing naming numpy. Declared 2026-07-30 by tools/audit_updater_deps.py.
