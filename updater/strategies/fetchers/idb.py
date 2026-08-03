@@ -134,7 +134,7 @@ def update(unit, since) -> Result:
             # so it reports partial and the remainder drains next tick.
             print(f"[idb] budget {BUDGET_MIN} min spent — {slug} not pulled this run; "
                   f"retries next tick", flush=True)
-            tally.transient_unit(slug)
+            tally.deferred_unit(slug)
             capped = True
             continue
         j0 = ig.get_json(f"{ig.BASE}/datastore_search", params={"resource_id": rid, "limit": 0})

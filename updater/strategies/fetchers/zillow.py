@@ -153,7 +153,7 @@ def update(unit, since) -> Result:
 
         if dl.spent():
             print(f"[zillow] budget {BUDGET_MIN} min spent — {dataset} deferred", flush=True)
-            tally.transient_unit(dataset)
+            tally.deferred_unit(dataset)
             continue
 
         try:

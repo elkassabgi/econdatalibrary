@@ -302,7 +302,7 @@ def update(unit, since) -> Result:
             print(f"[insee_melodi] budget {BUDGET_MIN} min spent — {code} not pulled "
                   f"this run (keeping {before:,} existing rows); retries next tick",
                   flush=True)
-            tally.transient_unit(code)
+            tally.deferred_unit(code)
             total += before
             continue
 

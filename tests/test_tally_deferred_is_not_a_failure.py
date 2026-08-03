@@ -92,15 +92,44 @@ def test_deferred_units_are_named():
     assert "more" in r.error, "the list is bounded and says so"
 
 
-def test_no_fetcher_files_a_deferral_as_transient():
-    """Grep-derived guard: the eleven call sites that did this must stay converted."""
+def test_no_deadline_block_files_a_deferral_as_transient():
+    """BEHAVIOUR-derived, not text-derived — the text version found half the class.
+
+    My first sweep grepped `transient_unit(.*defer`, i.e. call sites whose LABEL said
+    "deferred". It found 11 fetchers and I shipped that as the fix. It was half: insee_melodi
+    writes `tally.transient_unit(code)` with the word "deferred" only in the print above it, and
+    so do bis, cso, ember, fed_board, idb, ipea, stats_nz, wikidata and zillow. Ten more, worth
+    four of the largest "failure" counts in the live queue (insee_melodi 129/144, ipea 298/1491,
+    idb 10/40, ember 4/48 — all deferrals).
+
+    So the guard looks at what follows a DEADLINE CHECK, which is the actual defining property:
+    if control reaches `if dl.spent():` the budget is gone and nothing has failed. Wording is
+    incidental; the deadline is not.
+    """
     import glob
     import re
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spent = re.compile(r"\b(dl|deadline)\.spent\(\)")
     bad = []
-    pat = re.compile(r"transient_unit\([^)]*defer", re.I)
-    for p in glob.glob(os.path.join(root, "updater", "strategies", "fetchers", "*.py")):
-        for n, line in enumerate(open(p, encoding="utf-8"), 1):
-            if pat.search(line):
-                bad.append(f"{os.path.basename(p)}:{n}")
-    assert not bad, f"deferrals filed as transient failures: {bad}"
+    for p in sorted(glob.glob(os.path.join(root, "updater", "strategies", "fetchers", "*.py"))):
+        lines = open(p, encoding="utf-8").read().split("\n")
+        for i, line in enumerate(lines):
+            if not spent.search(line):
+                continue
+            # The block a deadline check guards ENDS AT ITS break/continue. Scanning a fixed
+            # window instead was wrong and this test caught it: _who_gho breaks with NO tally
+            # call, and a genuine `except TransientError -> transient_unit(code)` sits ten lines
+            # further down, so a 12-line window blamed the deadline for an unrelated handler.
+            # Terminating at the jump is what "this block" actually means.
+            block = []
+            for line2 in lines[i + 1:i + 20]:
+                block.append(line2)
+                if re.match(r"\s*(break|continue)\b", line2):
+                    break
+            block = "\n".join(block)
+            if "deferred_unit(" in block:
+                continue
+            if "transient_unit(" in block:
+                bad.append(f"{os.path.basename(p)}:{i + 1}")
+    assert not bad, ("a budget deferral is being tallied as a transient FAILURE at: "
+                     f"{bad} — use tally.deferred_unit()")

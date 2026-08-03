@@ -276,7 +276,7 @@ def update(unit, since) -> Result:
             # it stays "changed" and is picked up first on the next tick.
             print(f"[cso] budget {BUDGET_MIN} min spent — {mtr} not pulled this run; "
                   f"retries next tick", flush=True)
-            tally.transient_unit(mtr)
+            tally.deferred_unit(mtr)
             continue
         sbj = m2s.get(mtr)
         if not sbj:
