@@ -88,36 +88,29 @@ FAMILIES = ("eits", "intltrade")
 # rather than guessing, and the 16 intltrade flows NOT listed here need no `for` at all.
 _WORLD_GEO_SUFFIXES = ("export", "import")
 
-# FLOWS WHOSE STORE IS NOT UNIQUELY KEYED BY (series_key, obs_date), SO THEY CANNOT BE TAILED.
+# FLOWS THAT CANNOT BE TAILED BECAUSE THEIR DEDUP KEY DOES NOT IDENTIFY A ROW. Empty today.
 #
-# merge_and_write dedups on that pair. Where the store already holds many rows sharing one, the
-# first incremental merge does not add a tail — it collapses the file. never-shrink refuses the
-# write so nothing is lost, but the flow then fails every run with a baffling "refusing shrink
-# 3,356,888->4,400" that looks like a fetcher bug and is not one: the STORE was never uniquely
-# keyed (same class as comtrade, task #16).
+# merge_and_write dedups on the key it is given. If a store holds many rows sharing one, the
+# first incremental merge does not add a tail — it collapses the file; never-shrink refuses that
+# below min_ratio, so the flow fails every run with a baffling "refusing shrink 3,356,888->4,400"
+# that reads as a fetcher bug and is not one.
 #
-# Measured 2026-08-03 with tools/audit_dedup_uniqueness.py, rows -> distinct (series_key,
-# obs_date). I enabled the intltrade family BEFORE running that check and 11 of its 24 flows are
-# in this state; the audit caught my own change. The other 13 are clean and are tailed — which
-# includes the two that matter most, exports/hs (8,718,542 rows / 55,233 keys) and imports/hs
-# (4,623,339 / 31,229).
+# It bit here. I enabled the intltrade family before checking, and tools/audit_dedup_uniqueness.py
+# then found 11 of its 24 flows holding many rows per (series_key, obs_date) — statehs 3,356,888
+# rows under 4,400 pairs, imports/usda 8,773 under 390. They were excluded by name.
 #
-# These are not broken forever: re-key the store and delete the entry. Deliberately a literal
-# list rather than a runtime group_by, because that check costs a full read of an 8.7M-row file
-# per flow per run to re-learn something that only changes when someone re-keys it.
-_UNDER_KEYED = {
-    "intltrade/exports/enduse":      (2_998_110, 167_370),
-    "intltrade/exports/hitech":      (286_836, 14_040),
-    "intltrade/exports/naics":       (2_356_501, 139_414),
-    "intltrade/exports/sitc":        (3_265_447, 4_940),
-    "intltrade/exports/statehs":     (3_356_888, 4_400),
-    "intltrade/exports/statenaics":  (1_534_235, 53_673),
-    "intltrade/exports/usda":        (79_151, 3_510),
-    "intltrade/imports/enduse":      (1_108_155, 58_106),
-    "intltrade/imports/hitech":      (94_449, 4_680),
-    "intltrade/imports/naics":       (2_430_142, 132_982),
-    "intltrade/imports/usda":        (8_773, 390),
-}
+# THE EXCLUSION IS GONE BECAUSE THE DIAGNOSIS WAS INCOMPLETE, not because the risk was. Looking
+# at one collapsed group: 44 rows sharing a (key, obs_date) differ by DISTRICT — '01' PORTLAND
+# ME, '02' ST. ALBANS VT — a real dimension the ingester left out of series_key. The rows are
+# distinct observations, so the key was too narrow; the STORE was not wrong. And because these
+# tables are served at TABLE grain (_resolve_census_table: ids are `census:<table>[#part]`,
+# predicate obs_date.is_valid()), series_key plays no part in resolution — so widening the dedup
+# key repairs the merge and changes NO published id. See _dedup_for. Verified unique on the FULL
+# data of all 11 files: distinct(key) == rows, 11 of 11.
+#
+# Kept as an empty dict rather than deleted: the exclusion path below is still the right home for
+# the next flow whose rows a wider key cannot separate either.
+_UNDER_KEYED: dict = {}
 
 # Most month-grained periods one flow will walk in a single run. A DISCLOSED bound: a file that
 # has fallen a long way behind converges over ticks rather than spending the whole budget in one
@@ -128,6 +121,46 @@ _MAX_TAIL_MONTHS = int(os.environ.get("CENSUS_MAX_TAIL_MONTHS", "6"))
 def _store_name(flow: str) -> str:
     """flow path -> store file stem. The inverse of _flows()'s '__' -> '/'."""
     return flow.replace("/", "__")
+
+
+# Period-suffixed measure columns. intltrade puts every measure in a column ending _MO or _YR
+# (ALL_VAL_MO, GEN_CIF_YR, VES_WGT_MO, CAL_DUT_YR, CC_MO, ...); everything else is a dimension.
+_MEASURE_SUFFIXES = ("_MO", "_YR")
+
+
+def _dedup_for(flow: str, data_cols: list) -> tuple:
+    """The dedup key for THIS flow.
+
+    WHY intltrade NEEDS A WIDER KEY THAN (series_key, obs_date). The ingester built series_key
+    from only some of each table's dimensions, so the pair does not identify a row: measured on
+    the full files, intltrade/exports/statehs holds 3,356,888 rows under 4,400 distinct pairs
+    and imports/usda 8,773 under 390. Inspecting one collapsed group shows why — 44 rows sharing
+    a (key, obs_date) differ by DISTRICT ('01' PORTLAND ME, '02' ST. ALBANS VT, ...), a real
+    dimension the key simply omits. Deduping on the pair would not extend the file, it would
+    collapse it; never-shrink refuses that below 97%, so 11 of 24 flows could never be tailed.
+
+    RE-KEYING THE STORE IS NOT REQUIRED, and this is the part worth stating: these tables are
+    served at TABLE grain (_resolve_census_table — catalog ids are `census:<table>[#part]` and
+    the predicate is simply obs_date.is_valid()), so series_key plays no part in resolution.
+    Widening the dedup key changes NO published id — unlike #46's re-key class.
+
+    MEASURES ARE EXCLUDED, following treasury's reasoning exactly: a revised value must
+    overwrite its row rather than form a new key and duplicate. In intltrade every measure is
+    period-suffixed (_MO/_YR) and every dimension is not, so the split is mechanical rather than
+    a guess. Verified on the FULL data of all 11 affected files: distinct(key) == rows in 11 of
+    11, i.e. the wider key identifies a row exactly.
+
+    EITS IS DELIBERATELY UNTOUCHED. Its measure is `cell_value`, which has no period suffix and
+    would therefore be read as a dimension here — putting the measure in the key, so a revision
+    would duplicate instead of overwriting. Its own key is already unique (eits__marts: 58,562
+    rows, 58,562 distinct pairs), so it keeps DEDUP.
+    """
+    if not flow.startswith("intltrade/"):
+        return DEDUP
+    dims = [c for c in data_cols
+            if c not in ("series_key", "obs_date", "time")
+            and not c.upper().endswith(_MEASURE_SUFFIXES)]
+    return tuple(["series_key", "obs_date"] + dims)
 BUDGET_MIN = float(os.environ.get("CENSUS_BUDGET_MIN", "20"))
 RATE = 0.3
 TIMEOUT = 120
@@ -703,7 +736,12 @@ def update(unit, since) -> Result:
         tbl = pa.table(arrays)
 
         try:
-            n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+            # The key that IDENTIFIES a row in this flow — wider than (series_key,
+            # obs_date) for intltrade, whose series_key omits real dimensions like
+            # DISTRICT. See _dedup_for; without it 11 of 24 flows collapse instead
+            # of extending.
+            n, md = merge.merge_and_write(path, tbl, mode="merge",
+                                          dedup_keys=_dedup_for(flow, data_cols))
         except DefinitiveError:
             tally.transient_unit(f"{flow}: merge refused")
             continue
