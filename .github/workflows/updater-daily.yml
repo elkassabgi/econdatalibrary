@@ -327,6 +327,24 @@ jobs:
         # date — the public endpoint never lies to hide our failure (§5.3).
         run: python -m updater.health --fail-past-2x-sla
 
+      - name: Workstation watchdog heartbeat
+        # THE OTHER HALF OF route_silence. That gate catches a workstation route that has
+        # delivered nothing for three days; its docstring states plainly that it CANNOT catch a
+        # short outage, because the sources on that route still carry yesterday's successes. On
+        # 2026-08-02 the guard loop died at 15:16 and the local heavy pass — the only updater
+        # for the 17 cloud-infeasible sources, eia among them on a DAILY cadence — went ~7h
+        # past due with nothing anywhere saying so.
+        #
+        # The watchdog stamps a beat to R2 every 5 minutes; this reads it. Stale (or never
+        # published) -> red run. Distinct step, not folded into the health gate, so the log
+        # says WHICH claim failed: "the machine stopped reporting" is a different fact from
+        # "a source is past its SLA", and merging them would hide one behind the other.
+        #
+        # always() so it still runs when the health gate above exited 1 — the two failures are
+        # independent and a run must not lose the second because it already had the first.
+        if: ${{ always() }}
+        run: python tools/guard_heartbeat.py --check
+
       - name: Daily digest email (morning report, like hfdatalibrary's)
         # Runs even when earlier steps failed so a broken morning is REPORTED,
         # not silent. Needs the RESEND_API_KEY repo secret; without it the step
