@@ -204,7 +204,7 @@ def update(unit, since) -> Result:
             continue                                         # already current — costs nothing
         if dl.spent():
             print(f"[stats_nz] budget {BUDGET_MIN} min spent — {prefix} deferred", flush=True)
-            tally.transient_unit(prefix)
+            tally.deferred_unit(prefix)
             continue
 
         raw = ig.try_download(url)

@@ -188,7 +188,7 @@ def update(unit, since) -> Result:
     for rel in rels:
         if dl.spent():
             print(f"[fed_board] budget {BUDGET_MIN} min spent — {rel} deferred", flush=True)
-            tally.transient_unit(rel)
+            tally.deferred_unit(rel)
             continue
 
         got = _fetch_hash(rel)

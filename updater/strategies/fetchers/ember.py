@@ -148,7 +148,7 @@ def update(unit, since) -> Result:
         if dl.spent():
             print(f"[ember] budget {BUDGET_MIN} min spent — {ds_id} not pulled this run; "
                   f"retries next tick", flush=True)
-            tally.transient_unit(ds_id)
+            tally.deferred_unit(ds_id)
             continue
 
         try:

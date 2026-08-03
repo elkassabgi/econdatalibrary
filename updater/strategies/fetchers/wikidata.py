@@ -167,7 +167,7 @@ def update(unit, since) -> Result:
             print(f"[wikidata] budget {BUDGET_MIN} min spent — {name} not pulled this "
                   f"run (keeping {before:,} existing rows); the next run RESUMES AFTER "
                   f"{last_started} so it is reached", flush=True)
-            tally.transient_unit(name)
+            tally.deferred_unit(name)
             total_rows += before
             continue
         last_started = name

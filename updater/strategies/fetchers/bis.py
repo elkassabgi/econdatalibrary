@@ -182,7 +182,7 @@ def update(unit, since) -> Result:
         if dl.spent():
             print(f"[bis] budget {BUDGET_MIN} min spent — {name} deferred to next run",
                   flush=True)
-            tally.transient_unit(name)
+            tally.deferred_unit(name)
             continue
 
         tmp = os.path.join(tempfile.gettempdir(), f"bis_{name}.zip")

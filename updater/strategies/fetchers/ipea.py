@@ -145,7 +145,7 @@ def update(unit, since) -> Result:
         if dl.spent():
             # Deferral, not a verdict: untouched, and the NEXT run starts after
             # last_started so this one is actually reached.
-            tally.transient_unit(code)
+            tally.deferred_unit(code)
             continue
         last_started = code
 
