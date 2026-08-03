@@ -523,6 +523,16 @@ def update(unit, since) -> Result:
         # flow the deferral promised to come back to. Same off-by-one that makes a rotation
         # look correct while quietly dropping one sub-unit per run.
         last_flow = flow
+        # SAVED HERE, NOT ONLY AT THE END, AND THE FIRST REAL RUN IS WHY. I had argued the
+        # end-of-function save was safe because census's deadline is cooperative and BUDGET_MIN
+        # (20) leaves a wide margin under the orchestrator's 45-minute HARD cap. Measured: the
+        # run spent its 20-minute budget after 35.6 MINUTES — the deadline is only consulted
+        # between flows, so one slow flow overruns it, and 35.6 against 45 is not a wide margin.
+        # A hard kill there loses the bookmark entirely and the rotation silently reverts to
+        # re-walking the same prefix (R273 — twelve of fourteen rotating sources have never
+        # persisted one, for exactly this reason). One small write per flow buys immunity from
+        # an assumption I have already seen bend once.
+        save_rotation(out_dir, flow)
 
         mx = _stored_max(path)
         if mx is None:
@@ -737,13 +747,11 @@ def update(unit, since) -> Result:
     # That is the exact silent, self-certifying outage R190 describes, and adding the family
     # without this would have re-created it.
     #
-    # Saved even after a COMPLETE pass, so the wrap goes through this same path and no branch
-    # can quietly stop the rotation. Reachable, which R273 says is the part that actually
-    # matters: census's deadline is COOPERATIVE (`if dl.spent(): deferred += 1; continue`), so
-    # the loop finishes and this line runs — unlike the sources that overran the orchestrator's
-    # 45-minute HARD cap and were killed before their end-of-function save. That safety rests on
-    # BUDGET_MIN (20) staying well under that cap; if it is ever raised, move this save inside
-    # the loop.
+    # Belt to the per-flow save's braces. The bookmark is written inside the loop after every
+    # flow (see there), so a hard kill cannot lose it; this final write only covers the case
+    # where the loop completed and the last flow is the natural resume point — saved even after
+    # a COMPLETE pass, so the wrap goes through this same path and no branch can quietly stop
+    # the rotation.
     if last_flow:
         save_rotation(out_dir, last_flow)
 
