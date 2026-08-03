@@ -296,6 +296,32 @@ def update(unit, since) -> Result:
         data_cols = [c for c in all_cols if c not in ("series_key", "obs_date")]
         date_field = _pick_date_field(all_cols)
 
+        # NO DATE FIELD -> THIS IS NOT A TIME SERIES, AND RE-FETCHING IT DESTROYS IT.
+        #
+        # _build_table stamps obs_date=None on every row when date_field is None, and series_key
+        # is the endpoint, so all rows land on the single identity (endpoint, None) and dedup
+        # keeps ONE. Measured on the store: three endpoints are already in that state —
+        #     redemption_tables             125,728 rows, 1 distinct series_key, 0 distinct dates
+        #     sb_value                       35,936 rows, 1, 0
+        #     fbp_dpai_account_summary          185 rows, 1, 0
+        # 161,849 rows whose only protection is merge's never-shrink guard, which has been
+        # refusing "shrink 185->1" on every single run and reporting it as a treasury failure.
+        # The guard was doing its job; the fetch should never have been attempted.
+        #
+        # Skipped, not failed, and not touched: the existing rows stay served exactly as they are.
+        # A static reference table (account_nbr -> account_desc) has nothing to date-tail.
+        #
+        # NOT A CLOSED QUESTION for two of the three: redemption_tables carries `redemp_period`
+        # and sb_value similar, so a date field may be derivable and 161k rows could become real
+        # time series. _pick_date_field only matches DATE_CANDS or a `*_date` suffix, which those
+        # miss. Widening it is a separate change that needs its own evidence — guessing a period
+        # column wrong is how an axis gets swapped (R288).
+        if not date_field:
+            print(f"[{SOURCE}] {os.path.basename(path)}: no date field — static reference table, "
+                  f"not date-tailed (keeping {before:,} rows untouched)", flush=True)
+            total += before
+            continue
+
         since_date = None
         if date_field and "obs_date" in all_cols:
             od = blob.read_table(path, columns=["obs_date"]).column("obs_date")
