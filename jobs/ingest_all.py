@@ -15,11 +15,21 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 RUNNER = os.path.join(ROOT, "jobs", "run_connector.py")
 
-# 23 connectors, lightest/fastest first, heavier API crawlers (oecd, imf) last.
+# 22 connectors, lightest/fastest first, heavier API crawlers (oecd, imf) last.
+#
+# "dbnomics" REMOVED 2026-08-03. It was in this list, and the loop below shells out to
+# run_connector.py for EVERY entry — so running ingest_all would have pulled from
+# api.db.nomics.world, which is banned outright (CLAUDE.md §0, ledger R251: no fetching, no
+# probing, no relays or mirrors; every source comes from its own publisher).
+#
+# That this script is not scheduled is what made it dangerous rather than harmless. A dormant
+# run-all that violates the ban the first time anyone runs it is the same shape as the watchdog
+# entry which resurrected the banned puller every five minutes — a violation that survives being
+# forgotten. Nothing in the list said so; it read as one connector name among twenty-three.
 SOURCES = [
     "frankfurter", "defillama", "treasury", "fed_board", "fhfa", "zillow",
     "ember", "owid", "penn_world_table", "worldbank_pink", "boe", "bis",
-    "statcan", "abs", "wikidata", "dbnomics", "worldbank_esg", "census",
+    "statcan", "abs", "wikidata", "worldbank_esg", "census",
     "faostat", "ilostat", "ecb", "oecd", "imf",
 ]
 
