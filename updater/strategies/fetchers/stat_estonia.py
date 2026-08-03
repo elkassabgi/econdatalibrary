@@ -82,6 +82,11 @@ from core import pxweb as _pxweb
 
 SOURCE = "stat_estonia"
 DEDUP = ("series_key", "obs_date")
+# Second, finer bookmark: "<subject>|<table path>". _rotation.json alone rotates SUBJECTS, which
+# is useless when one subject cannot finish inside the orchestrator's 45-minute cap — the sweep
+# is killed mid-subject and the next visit re-walks that subject's head. This one records where
+# inside a subject to resume. Separate file so the two grains cannot overwrite each other.
+_TBL_ROTATION = "_rotation_table.json"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
       "Accept": "application/json"}
 RATE = 0.25            # polite spacing between table requests
@@ -440,6 +445,20 @@ def update(unit, since) -> Result:
     # outage and trip the structural floor.
     n_subunits = sum(len(v) for v in by_subject.values())
 
+    # TABLE-LEVEL RESUME POINT, for the subject that alone cannot fit the cap.
+    #
+    # The subject loop's deadline check bounds when we next START a subject, not how long one
+    # takes — so a single oversized subject runs past the orchestrator's 45-minute hard limit and
+    # is KILLED. Measured on run 30799503843: stat_estonia took exactly 2,700s and printed
+    # "exceeded its 45-minute hard limit", with no budget message, on an 18-minute budget. The
+    # per-subject bookmark did survive that kill (R273's fix works — _rotation.json read
+    # {"after": "Lepetatud_tabelid"}), but surviving a kill is not the same as not being killed.
+    #
+    # A second bookmark, at TABLE grain, is what makes an interrupted subject resumable. Without
+    # it, breaking out of the table loop would be R190 one level down: the subject bookmark has
+    # already advanced past this subject, so the next visit re-walks its head, stops at the same
+    # table, and its TAIL IS NEVER FETCHED — a silent truncation reported as an honest `partial`.
+    tbl_rot = load_rotation(out_dir, _TBL_ROTATION)
     for subj in subjects:
         if dl.spent():
             stopped_early = True
@@ -448,6 +467,7 @@ def update(unit, since) -> Result:
                   f"{len(subjects) - subjects.index(subj)} of {len(subjects)} subject(s) "
                   f"deferred to the next tick", flush=True)
             break
+        prev_subj = last_subj
         last_subj = subj
         # SAVED HERE, NOT ONLY AT THE END OF THE FUNCTION. The end-of-function save is exactly
         # what a 45-minute kill destroys — the orchestrator interrupts the source rather than
@@ -458,6 +478,17 @@ def update(unit, since) -> Result:
         # One small write per subject removes the dependency.
         save_rotation(out_dir, subj)
         subj_tables = by_subject[subj]
+        # Resume mid-subject if the LAST run ran out of budget inside this one. The bookmark is
+        # "<subject>|<table path>"; it only applies to its own subject, so any other subject
+        # starts at its first table as usual.
+        if tbl_rot.startswith(f"{subj}|"):
+            resume_after = tbl_rot.split("|", 1)[1]
+            paths = [t["path"] for t in subj_tables]
+            if resume_after in paths:
+                subj_tables = rotate_after(subj_tables, resume_after,
+                                           key=lambda t: t["path"])
+                print(f"[{SOURCE}] {subj}: resuming after table {resume_after!r} "
+                      f"({len(subj_tables)} table(s) this pass)", flush=True)
         path = os.path.join(out_dir, f"{subj}.parquet")
         before = blob.row_count(path)
         stored = _max_by_table(path)     # per-table max within this subject file
@@ -479,9 +510,37 @@ def update(unit, since) -> Result:
         vals: list[float] = []
         seen: set[tuple] = set()
 
+        last_tbl = ""
+        hit_cap_inside = False
         for t in subj_tables:
+            # THE DEADLINE, CHECKED PER TABLE. The subject-level check above bounds when the NEXT
+            # subject starts; it cannot bound a subject already running, which is how an 18-minute
+            # budget produced a 45-minute kill. Checking here is what actually stops the clock.
+            #
+            # Rows accumulated so far are NOT discarded — the merge below still runs, so a capped
+            # pass publishes what it fetched. The table bookmark records the last table COMPLETED
+            # (not the one about to start, which would skip it), and the SUBJECT bookmark is wound
+            # back to the previous subject so the next tick re-enters this one and continues from
+            # the bookmark instead of stepping over its unfinished tail.
+            if dl.spent():
+                hit_cap_inside = True
+                stopped_early = True
+                save_rotation(out_dir, f"{subj}|{last_tbl}", _TBL_ROTATION)
+                save_rotation(out_dir, prev_subj)
+                print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
+                      f"{dl.elapsed_min():.1f} min INSIDE subject {subj!r} — completed "
+                      f"{subj_tables.index(t)} of {len(subj_tables)} table(s); resuming after "
+                      f"{last_tbl!r} next tick (subject bookmark held at {prev_subj!r})",
+                      flush=True)
+                break
             tpath = t["path"]
             prefix = _table_prefix(tpath)
+            # "Last table VISITED", recorded before the work rather than after it. Every branch
+            # below can `continue` (transient, empty, rejected query), and a bookmark that only
+            # advanced on success would re-walk a run of failing tables forever — the same
+            # truncation this bookmark exists to prevent. A visited-but-failed table is retried
+            # on the next wrap-around, not skipped.
+            last_tbl = tpath
             # Guard the FETCH boundary against a CORRUPT far-future stored max (year-9999
             # sentinel / 2085 projection). _build_query selects only period codes
             # strictly > stored_max; if stored_max is year 9999 NOTHING is ever newer and
@@ -596,6 +655,17 @@ def update(unit, since) -> Result:
                 maxd = _bump_unit_max(maxd, dt.date.fromisoformat(md))
         else:
             total += before
+
+        if hit_cap_inside:
+            # The merge above published this subject's partial haul; stop the sweep. Both
+            # bookmarks are already written (table = where to resume, subject = wound back so
+            # this subject is re-entered rather than stepped over).
+            break
+        if tbl_rot.startswith(f"{subj}|"):
+            # Subject finished. Retire its table bookmark so a later visit starts at its first
+            # table instead of resuming from a point that no longer means anything.
+            save_rotation(out_dir, "", _TBL_ROTATION)
+            tbl_rot = ""
 
     # Save the bookmark even after a COMPLETE pass: it is then the last subject in order and
     # the next run wraps to the top through this same path, so no branch can silently stop
