@@ -36,6 +36,21 @@ $log     = Join-Path $logsDir ("{0}_{1}.log" -f $Name, $stamp)
 $done    = Join-Path $logsDir ("{0}.DONE" -f $Name)
 $guardLog = Join-Path $logsDir '_guard.log'
 
+function Write-GuardLog([string]$line) {
+  # DEFINED BEFORE ITS FIRST USE. PowerShell resolves functions in execution order, so this sitting
+  # below the env loop that calls it meant the very first call failed silently.
+  #
+  # RETRIED, because these runners start SIMULTANEOUSLY and all append to one file. After the
+  # 2026-08-03 reboot the guard launched three at 17:40:26; two wrote their "starting" line and
+  # derive_noaa's vanished — Add-Content had lost a lock race and failed silently. I then read the
+  # missing line as "the runner never ran" and went hunting a binding bug that was not there.
+  # A log that drops lines under contention is worse than no log: it invents absences.
+  for ($i = 0; $i -lt 8; $i++) {
+    try { Add-Content -Path $guardLog -Value $line -ErrorAction Stop; return }
+    catch { Start-Sleep -Milliseconds (60 * ($i + 1)) }
+  }
+}
+
 # Per-job env, set in THIS process only. Deliberately not set globally in the guard: the crawlers
 # write locally and then upload, so flipping AQUEDUCT_BACKEND for everything would change what
 # they address (R36/R296 — a tool pointed at the wrong store still looks like it works).
@@ -44,24 +59,37 @@ foreach ($pair in $EnvPairs) {
   if ($i -gt 0) {
     $k = $pair.Substring(0, $i); $v = $pair.Substring($i + 1)
     Set-Item -Path ("env:{0}" -f $k) -Value $v
-    Add-Content -Path (Join-Path $logsDir '_guard.log') -Value ("{0}  {1}: env {2}={3}" -f (Get-Date -Format s), $Name, $k, $v)
+    Write-GuardLog ("{0}  {1}: env {2}={3}" -f (Get-Date -Format s), $Name, $k, $v)
   }
 }
 
 $JobArgs = $JobArgsJoined -split '\|'
-Add-Content -Path $guardLog -Value ("{0}  starting {1}: {2} {3}" -f (Get-Date -Format s), $Name, $Exe, ($JobArgs -join ' '))
+
+Write-GuardLog ("{0}  starting {1}: {2} {3}" -f (Get-Date -Format s), $Name, $Exe, ($JobArgs -join ' '))
 # -u on every job: Python block-buffers stdout when redirected, so a long job emits nothing for
 # hours and its log reads as a hang. Cost me a false progress report once already (R290).
-# `*> $log` would write UTF-16 (PowerShell 5.1's redirect default), which makes the log awkward
-# to grep or tail from bash — and these logs are the only window into a 14-hour job. Route through
-# Out-File with an explicit encoding instead.
-& $Exe @JobArgs 2>&1 | Out-File -FilePath $log -Encoding utf8
-$rc = $LASTEXITCODE
+# USE THE PATTERN THAT ALREADY WORKS IN THIS REPO, not a third one.
+#
+# Two attempts failed before this. `*> $log` writes UTF-16 in PS 5.1, so the log could not be
+# grepped or tailed from bash. Replacing it with `2>&1 | Out-File -Encoding utf8` fixed the
+# encoding and introduced PIPELINE BUFFERING: measured after the 2026-08-03 reboot, statcan and
+# eurostat wrote fine while derive_noaa sat at 0 BYTES for eight minutes with the process
+# demonstrably alive and running `-u`. A log that stays empty is indistinguishable from a job that
+# never started — the exact ambiguity this runner exists to remove (R290).
+#
+# Start-Process -RedirectStandard* is what RELAUNCH_GUARD.ps1 already uses for the three crawlers,
+# and their logs have always been readable and live. The child writes the file with its own
+# handle: no pipeline between it and disk, so nothing to buffer and no re-encoding.
+$errLog = Join-Path $logsDir ("{0}_{1}.err.log" -f $Name, $stamp)
+$proc = Start-Process $Exe -ArgumentList $JobArgs -WorkingDirectory $Root -WindowStyle Hidden `
+          -RedirectStandardOutput $log -RedirectStandardError $errLog -PassThru
+$proc.WaitForExit()
+$rc = $proc.ExitCode
 
 if ($rc -eq 0) {
   Set-Content -Path $done -Value ("completed {0} (exit 0), log {1}" -f $stamp, $log) -Encoding utf8
-  Add-Content -Path $guardLog -Value ("{0}  {1} COMPLETED (exit 0) - sentinel written, guard will not relaunch" -f (Get-Date -Format s), $Name)
+  Write-GuardLog ("{0}  {1} COMPLETED (exit 0) - sentinel written, guard will not relaunch" -f (Get-Date -Format s), $Name)
 } else {
-  Add-Content -Path $guardLog -Value ("{0}  {1} exited {2} - NO sentinel, guard will relaunch" -f (Get-Date -Format s), $Name, $rc)
+  Write-GuardLog ("{0}  {1} exited {2} - NO sentinel, guard will relaunch" -f (Get-Date -Format s), $Name, $rc)
 }
 exit $rc
