@@ -566,7 +566,16 @@ def current_vintage(unit) -> str | None:
     any_known = False
     for sv in surveys:
         try:
-            vintage, _tail = _survey_vintage(sess, sv)
+            # Unpack all FOUR. _survey_vintage returns (vintage, tail, escalated, can_uc);
+            # this call unpacked two and had done so since the initial release, while the
+            # return widened in 8b34bf5a and only the caller in update() (below) was updated.
+            # A two-way unpack of a 4-tuple is not a type warning, it is a ValueError at
+            # RUNTIME on every call where any survey exists on disk — so this function never
+            # returned a token and never returned None either. It raised, through
+            # BulkSnapshotIfChanged.detect_change, which does not catch ValueError. The
+            # docstring's promise ("returns None ... so the strategy fetches anyway") had not
+            # been true for the whole life of that commit.
+            vintage, _tail, _escalated, _can_uc = _survey_vintage(sess, sv)
         except TransientError:
             return None  # a probe network failure -> don't claim 'unchanged'
         h.update(sv.encode("utf-8"))
