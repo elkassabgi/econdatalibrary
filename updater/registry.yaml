@@ -6195,11 +6195,12 @@ sources:
 - source_id: who_hwf
   live: true
   scripts:
-  - jobs/_dbnomics_pull.py
+  - updater/strategies/fetchers/who_hwf.py
   strategy: bulk_snapshot_if_changed
-  strategy_reason: Ids ARE DBnomics series codes (series_key WHO_HWF:<code>), so no crosswalk is needed and the dataset can
-    simply be re-pulled whole when DBnomics re-indexes it. Gating is on the dataset's own indexed_at rather than any HTTP
-    validator.
+  strategy_reason: >-
+    WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the DBnomics
+    mirror 2026-08-02 (banned, CLAUDE.md 0 / ledger R251). Coverage measured against WHO on the
+    full indicator set at migration: 4,421 of 4,421 published series available.
   cadence: monthly
   # data_cadence MEASURED 2026-08-02: 1 distinct obs_date(s) in the trailing
   # 3 years => the publisher releases annual. Sets the LATENESS clock only; the
@@ -6215,10 +6216,25 @@ sources:
 - source_id: who_rs
   live: true
   scripts:
-  - jobs/_dbnomics_pull.py
+  - updater/strategies/fetchers/who_rs.py
   strategy: bulk_snapshot_if_changed
-  strategy_reason: Ids ARE DBnomics series codes (series_key WHO_RS:<code>); re-pull the whole dataset when DBnomics
-    re-indexes it, gating on the dataset's indexed_at.
+  strategy_reason: >-
+    WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the DBnomics
+    mirror 2026-08-02 (banned, CLAUDE.md 0 / ledger R251). Indicators come from the CATALOGUE and
+    the whole set is re-pulled each tick; GHO exposes no dataset-level updated-at, so the vintage
+    is the date-tail sentinel rather than a fabricated token.
+  upstream_verified:
+    latest_obs: '2021-01-01'
+    checked: '2026-08-03'
+    method: >-
+      NOT a freeze — we are exactly level with the publisher. The gate reported RED-DATA
+      (newest obs 2021-01-01, 2,040d old), so all NINE catalogued WHO_RS indicators were
+      queried directly at ghoapi.azureedge.net on 2026-08-03 and their newest TimeDim with a
+      non-null NumericValue read off: RS_196 and RS_198 reach 2021; RS_194 2017; RS_246 2016;
+      RS_1845 and RS_576 2010; RS_208, RS_212 and RS_217 carry rows but no numeric values at
+      all. WHO's own maximum across the nine is therefore 2021, which our store already holds.
+      Road-safety indicators come from the Global Status Report, published every few years, so
+      the age is the publication cycle and not a missed release.
   cadence: monthly
   # data_cadence MEASURED 2026-08-02: 0 distinct obs_date(s) in the trailing
   # 3 years => the publisher releases annual. Sets the LATENESS clock only; the
@@ -6233,10 +6249,14 @@ sources:
 - source_id: who_sdg
   live: true
   scripts:
-  - jobs/_dbnomics_pull.py
+  - updater/strategies/fetchers/who_sdg.py
   strategy: bulk_snapshot_if_changed
-  strategy_reason: Ids ARE DBnomics series codes (series_key WHO_SDG:<code>); re-pull the whole dataset when DBnomics
-    re-indexes it, gating on the dataset's indexed_at.
+  strategy_reason: >-
+    WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the DBnomics
+    mirror 2026-08-02 (banned, CLAUDE.md 0 / ledger R251). WHO serves series the mirror never
+    carried — 10,339 of them, catalogued by tools/catalog_who_gho.py. SDGAIRBOD returns
+    @odata.count 0 at WHO; its existing rows are KEPT (merge never shrinks) and the gap is
+    reported every run rather than silently dropped.
   cadence: monthly
   # data_cadence MEASURED 2026-08-02: 2 distinct obs_date(s) in the trailing
   # 3 years => the publisher releases annual. Sets the LATENESS clock only; the
