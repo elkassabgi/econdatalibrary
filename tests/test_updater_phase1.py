@@ -269,6 +269,15 @@ def fake_r2(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "STATE_DIR", state_dir)
     monkeypatch.setattr(config, "STATE_DB", state_db)
     monkeypatch.setattr(runmod, "ETAG_PATH", os.path.join(state_dir, ".state_etag"))
+    # The backup key embeds `os.environ.get("GITHUB_RUN_ID", "local")` (run.py:175), so these
+    # tests read differently on a laptop and on a runner. Pin the environment instead of
+    # asserting whichever one happens to be running: unset here, and covered explicitly for the
+    # set case by test_backup_key_carries_run_id below.
+    #
+    # This is why the suite has to run in CI. It was green locally for its whole life and
+    # failed on its first runner execution, because it encoded "no GITHUB_RUN_ID" as a fact
+    # about the world rather than a property of one machine.
+    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
     # a fresh R2Blob per call builds its client lazily -> gets the fake
     os.makedirs(state_dir, exist_ok=True)
     con = sqlite3.connect(state_db)
@@ -285,6 +294,18 @@ class TestStateCAS:
         assert runmod.STATE_KEY in fake_r2.s3.objs
         backups = [k for k in fake_r2.s3.objs if k.startswith("_aqueduct/backups/state-")]
         assert len(backups) == 1 and backups[0].endswith("-local.db.zst")
+
+    def test_backup_key_carries_run_id(self, fake_r2, monkeypatch):
+        """On a runner the backup is tagged with GITHUB_RUN_ID, not 'local'.
+
+        The other half of the branch the fixture pins. This matters beyond tidiness: the backup
+        key is how a bad state push is traced back to the run that made it, so a backup landing
+        under the wrong tag would break exactly the forensics it exists for."""
+        monkeypatch.setenv("GITHUB_RUN_ID", "1234567890")
+        assert runmod.push_state() == 0
+        backups = [k for k in fake_r2.s3.objs if k.startswith("_aqueduct/backups/state-")]
+        assert len(backups) == 1
+        assert backups[0].endswith("-1234567890.db.zst"), backups[0]
         stored = open(runmod.ETAG_PATH, encoding="utf-8").read().strip()
         assert stored == hashlib.md5(fake_r2.s3.objs[runmod.STATE_KEY]).hexdigest()
 
