@@ -196,6 +196,24 @@ def main():
                          "plus dated backup, then exit (exit 2 = another writer won)")
     a = ap.parse_args()
 
+    # STAMP THE STACK. Dev and CI are not on the same major pandas: this workstation runs 2.3.3
+    # and the runner resolves `pandas>=2.2` (uncapped, deliberately — see requirements-updater.txt)
+    # to pandas-3.0.5-cp311. That is not academic. pandas 3.0 parses datetimes to non-nanosecond
+    # resolution by default, which is why SEC's "15-NOV-0006" survived coercion on the runner,
+    # produced a timestamp[us] column, and made sec_edgar fail every run it ever had while the
+    # same input returned NaT on the laptop the fetcher was written on.
+    #
+    # That difference at least RAISED. The dangerous ones are quiet — dtype defaults, NA handling,
+    # pandas 3.0's str-by-default — and would read as data rather than as a failure. One line in
+    # every log makes a behaviour change attributable to the stack instead of to the publisher.
+    try:
+        import pandas as _pd
+        import pyarrow as _pa
+        print(f"[run] python {sys.version.split()[0]}  pandas {_pd.__version__}  "
+              f"pyarrow {_pa.__version__}", flush=True)
+    except Exception:                                              # noqa: BLE001
+        pass          # a version banner must never be the reason a run does not start
+
     if a.pull_state and a.push_state:
         ap.error("--pull-state and --push-state are separate steps; pass one at a time")
     if a.pull_state:
