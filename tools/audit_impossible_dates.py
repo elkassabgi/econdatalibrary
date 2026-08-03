@@ -61,9 +61,20 @@ def main() -> int:
     g.add_argument("--local", action="store_true")
     g.add_argument("--r2", action="store_true")
     ap.add_argument("--source", help="one source id (default: every registered source)")
+    # THE WRITE-TIME BOUND AND THE AUDIT BOUND SHOULD NOT BE THE SAME NUMBER, and this flag is
+    # why. merge_and_write must be unarguable — one false positive on UN WPP's real 2101 and the
+    # check gets switched off, protecting nothing — so it sits at 2200. But fabrication does not
+    # politely stay above 2200: cso/10_Census_2016.parquet holds 272,445 rows past 2100 and only
+    # 268,765 past 2200, so 3,680 fabricated rows live in the ambiguous band. An operator
+    # investigating deliberately can look wherever they like; the automated guard cannot.
+    # 2102 is the tightest defensible floor — UN WPP genuinely reaches 2101-07-01.
+    ap.add_argument("--after", metavar="YYYY-MM-DD", default=IMPOSSIBLE_AFTER.isoformat(),
+                    help=f"report obs_date beyond this (default {IMPOSSIBLE_AFTER}, the "
+                         f"write-time bound). Lower it to sweep the ambiguous band, where real "
+                         f"projections also live.")
     a = ap.parse_args()
 
-    bound = IMPOSSIBLE_AFTER.isoformat()
+    bound = a.after
     sources = ([a.source] if a.source
                else sorted(e["source_id"] for e in registry.load().get("sources", [])))
     print(f"scanning {len(sources)} source(s) for obs_date > {bound}  "
