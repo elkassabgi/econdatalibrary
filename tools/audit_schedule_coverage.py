@@ -184,6 +184,25 @@ def main() -> int:
     print(f"\n>>> {len(covered)} of {len(served)} sources / {covered_series:,} of "
           f"{served_series:,} series scheduled  ({pct_s:.1f}% of sources, {pct_o:.1f}% of series)")
 
+    # WHAT THIS NUMBER DOES NOT MEAN, said here because it has been read as more than it is.
+    # "Scheduled" is answered from the registry: the source is live, has an adapter, and the
+    # orchestrator will offer it a turn. It says NOTHING about whether the fetcher, once running,
+    # reaches every sub-unit it owns.
+    #
+    # The difference is not hypothetical. worldbank_esg counted inside this figure for months
+    # while 32 of its 71 indicators sat frozen at their first-pass ingest date, and adb likewise
+    # with 44 of 54 flows — both bounded over a fixed order with no rotation, both reporting an
+    # honest `partial` the whole time (R190, fixed 2026-08-03). Neither could ever have shown up
+    # here, because both were scheduled, and were.
+    #
+    # Sub-unit coverage is a different measurement against a different source of truth — the
+    # store's write times, not the registry — and it lives in tools/audit_untouched_files.py.
+    # Run BOTH before saying a source auto-updates.
+    print("    NOTE: 'scheduled' is a registry fact — live, adapter built, offered a turn. It is\n"
+          "    NOT sub-unit coverage: a scheduled source can have most of its store frozen and\n"
+          "    still be counted here (worldbank_esg 32/71, adb 44/54, both fixed 2026-08-03).\n"
+          "    For that question run tools/audit_untouched_files.py --live.")
+
     # Catalogued but NOT resolvable — a live 501 for anyone who asks. Distinct from the gap.
     unresolvable = {s: counts[s] for s in counts if s not in supported}
     if unresolvable:
