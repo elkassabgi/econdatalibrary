@@ -151,6 +151,53 @@ def _fmt(v, dash="—"):
     return dash if v in (None, "", [], {}) else v
 
 
+def store_frontier(sid, reg):
+    """(files, frontier, observed_max) from LOCAL parquet footers, or (None, None, None).
+
+    Footer statistics only — one read per file, no rows — so this is affordable across every
+    source. `frontier` is the furthest period held INCLUDING projections; `observed_max` is the
+    furthest period that is not in the future. Showing both next to the state's claim is what
+    turns a confusing number into a diagnosis: cso's state says last_obs_date 5630-12-31 while
+    its store frontier is 2057-12-31, so the 5630 is a stale artifact and NOT in the data —
+    a distinction that cost real time to work out by hand (R327).
+
+    LOCAL, and that is a real limitation: under AQUEDUCT_BACKEND=r2 this directory is only a
+    scratch mirror of the last run, so for a cloud source these numbers can UNDER-report. The
+    file count is printed so the gap is visible rather than assumed (same caveat the
+    impossible-dates audit carries).
+    """
+    import glob
+    import pyarrow.parquet as pq
+    d = os.path.join(ROOT, "data", "clean_full", (reg.get(sid, {}) or {}).get("out_dir") or sid)
+    if not os.path.isdir(d):
+        return None, None, None
+    files = glob.glob(os.path.join(d, "**", "*.parquet"), recursive=True)
+    files = [f for f in files if not os.path.basename(f).startswith("_")]
+    if not files:
+        return 0, None, None
+    today = dt.date.today().isoformat()
+    hi = obs = None
+    for f in files:
+        try:
+            md = pq.read_metadata(f)
+            names = md.schema.names
+            if "obs_date" not in names:
+                continue
+            i = names.index("obs_date")
+            for rg in range(md.num_row_groups):
+                st = md.row_group(rg).column(i).statistics
+                if st is None or st.max is None:
+                    continue
+                v = str(st.max)[:10]
+                if hi is None or v > hi:
+                    hi = v
+                if v <= today and (obs is None or v > obs):
+                    obs = v
+        except Exception:                                     # noqa: BLE001
+            continue
+    return len(files), hi, obs
+
+
 def render(sid, reg, st, runs, cat, served, with_store=False):
     e = reg.get(sid, {})
     units = st.get(sid, [])
@@ -230,6 +277,56 @@ def render(sid, reg, st, runs, cat, served, with_store=False):
       "`tools/audit_impossible_dates.py`, whose bounds (before 1500, after 2200) are "
       "deliberately far outside every real projection horizon.")
     A("")
+
+    if with_store:
+        nf, fr, ob = store_frontier(sid, reg)
+        if nf is not None:
+            A("### Store vs state — do they agree?")
+            A("")
+            A(f"- local parquet files: **{nf:,}**")
+            A(f"- store FRONTIER (furthest period held, projections included): `{_fmt(fr)}`")
+            A(f"- store newest OBSERVED (not in the future): `{_fmt(ob)}`")
+            # WARN ONLY WHEN THE STATE VALUE IS IMPOSSIBLE, OR THE LOCAL STORE IS AUTHORITATIVE.
+            #
+            # "state is ahead of the local store" is NORMAL for a cloud source: under
+            # AQUEDUCT_BACKEND=r2 this directory holds only what the last LOCAL run wrote, so bcb
+            # reading 2026-07-31 against a local 2026-07-23 is mirror lag, not a defect. A first
+            # cut of this warning fired on 18 sources, nearly all of them exactly that. A manual
+            # that cries wolf on 18 pages teaches its reader to skip the warning - the failure
+            # the health gate's own comments warn about, and the shape of R318.
+            #
+            # So it needs a reason the mirror cannot explain: the value is outside any real
+            # horizon (a sentinel or a counter), or run_location: local, where this IS the store.
+            claim = (units[0].get("last_obs") if units else None)
+            c10 = str(claim)[:10] if claim else ""
+            impossible = bool(c10) and (c10 > "2200-01-01" or c10 < "1500-01-01")
+            local_auth = (e.get("run_location") == "local")
+            if claim and fr and c10 > str(fr) and (impossible or local_auth):
+                A("")
+                if impossible:
+                    A(f"> **state's `last_obs_date = {claim}` is not a real date.** The store's "
+                      f"furthest period is `{fr}`, and that value is NOT in the data at all - a "
+                      f"stale stamp from a run whose rows were later repaired or removed, or a "
+                      f"sentinel/counter the parser accepted. It inflates `frontier` (display "
+                      f"only); `newest_obs` filters to <= today, so RECENCY is unaffected and the "
+                      f"health gate is NOT misled. Benign, but it will mislead a human - see "
+                      f"R327, and R320/R322 for sentinel vs counter.")
+                else:
+                    A(f"> **state (`{claim}`) is ahead of the store (`{fr}`), and this source runs "
+                      f"LOCALLY** - so this directory IS the real store and the gap is not mirror "
+                      f"lag. Something was stamped that is not in the data. Investigate.")
+                A("")
+            elif claim and fr and c10 > str(fr):
+                A("")
+                A(f"> state (`{claim}`) is ahead of the local store (`{fr}`). For a CLOUD source "
+                  f"that is NORMAL - this directory is a scratch mirror of the last local run, "
+                  f"not the served store. Not a defect on its own; confirm against R2 if it "
+                  f"matters.")
+                A("")
+            A("> Read LOCALLY. Under `AQUEDUCT_BACKEND=r2` this directory is a scratch mirror of "
+              "the last run, so for a cloud source these can UNDER-report. Confirm anything you "
+              "act on against R2.")
+            A("")
 
     rr = runs.get(sid) or []
     if rr:
