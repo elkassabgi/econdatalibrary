@@ -78,9 +78,21 @@ def get_json(url: str, retries: int = 3) -> dict | None:
     return None
 
 
-def build_catalog() -> list[dict]:
-    """Get all matrix (table) codes via a single Search call (13,000+ tables)."""
-    if os.path.exists(CATALOG_FILE):
+def build_catalog(refresh: bool = False) -> list[dict]:
+    """Get all matrix (table) codes via a single Search call (13,000+ tables).
+
+    refresh=True BYPASSES the on-disk short-circuit below. Without it there was no way to
+    rebuild a stale catalog at all: the file exists, so this returned the same bytes forever,
+    and the fetcher's refresh-on-miss would re-read and re-upload exactly the cache already
+    known to be out of date.
+
+    Measured 2026-08-03: 222 CSO matrices were unroutable for want of a subject mapping — 27 of
+    the 36 sub-unit failures in CI run 30796923747 — and they consumed roughly 45% of every
+    run's 60-table budget while never publishing anything, which is what kept cso from
+    converging. The matrices themselves are fine (SIH13 and SIA208 both fetch today); they were
+    simply missing from a cache nothing could refresh.
+    """
+    if os.path.exists(CATALOG_FILE) and not refresh:
         with open(CATALOG_FILE) as f:
             cat = json.load(f)
         log(f"Loaded catalog: {len(cat)} tables")

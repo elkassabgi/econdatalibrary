@@ -108,7 +108,7 @@ def _subject_key(t) -> str:
     return s[:50]
 
 
-def _matrix_subject_map() -> dict[str, str]:
+def _matrix_subject_map(force: bool = False) -> dict[str, str]:
     # R36: read the sidecar through blob. os.path.exists/open address the LOCAL disk, and under
     # AQUEDUCT_BACKEND=r2 that directory holds only what this run wrote — so on a runner this
     # returned {} and every changed matrix lost its owning subject parquet.
@@ -119,7 +119,10 @@ def _matrix_subject_map() -> dict[str, str]:
     # there — so if the store has no copy we BUILD one from CSO's own Search API and cache it to
     # the store, and the next run finds it. One request, and the source stops depending on a
     # file that happens to exist on one machine.
-    raw = blob.read_bytes(_catalog_path())
+    # force=True is the refresh-on-miss path: a matrix absent from the cache IS the evidence
+    # that the cache is stale, and without this the cache was only ever written when ABSENT, so
+    # a present-but-stale one froze permanently and 222 matrices stayed unroutable.
+    raw = None if force else blob.read_bytes(_catalog_path())
     cat = None
     if raw:
         try:
@@ -128,7 +131,11 @@ def _matrix_subject_map() -> dict[str, str]:
             cat = None
     if not cat:
         try:
-            cat = _ingester().build_catalog()
+            # refresh=force so the ingester bypasses its own on-disk short-circuit; without it
+            # the rebuild re-reads the same stale bytes and re-uploads them unchanged.
+            cat = _ingester().build_catalog(refresh=force)
+        except TypeError:
+            cat = _ingester().build_catalog()                # older signature: still works
         except Exception:                                    # noqa: BLE001
             return {}                                        # never sink a run over a cache
         if not cat:
@@ -260,6 +267,7 @@ def update(unit, since) -> Result:
 
     batch = changed[:MAX_TABLES]
     m2s = _matrix_subject_map()
+    refreshed_map = False   # the subject-catalog rebuild below is allowed ONCE per run
     ing = _ingester()
 
     # 3) Group changed matrices by owning subject parquet, fetch + parse each table.
@@ -279,9 +287,35 @@ def update(unit, since) -> Result:
             tally.deferred_unit(mtr)
             continue
         sbj = m2s.get(mtr)
+        if not sbj and not refreshed_map:
+            # REFRESH ON MISS, ONCE PER RUN, before giving up on the matrix.
+            #
+            # The cached _catalog.json goes stale the moment CSO publishes a matrix it did not
+            # contain, and NOTHING ever rebuilt it: _matrix_subject_map only writes the cache
+            # when it is ABSENT, so a present-but-stale cache froze permanently. Measured in CI
+            # run 30796923747 — 27 of 36 failures were this, and 222 matrices are unroutable
+            # today. They consume ~45% of every run's 60-table budget while never publishing,
+            # which is what has kept cso from converging.
+            #
+            # A miss IS the evidence that the cache is stale, so it is the right moment to pay
+            # for one rebuild. Bounded to a single attempt per run so a genuinely retired
+            # matrix cannot trigger a multi-MB fetch per occurrence.
+            refreshed_map = True
+            print(f"[cso] {mtr}: not in the cached subject catalog — rebuilding it once from "
+                  f"CSO's Search API", flush=True)
+            fresh = _matrix_subject_map(force=True)
+            if fresh:
+                m2s = fresh
+                sbj = m2s.get(mtr)
         if not sbj:
-            # no subject mapping in cached catalog -> can't route; treat as transient (re-try when
-            # the catalog is refreshed) rather than silently dropping a real table
+            # Still unroutable after the refresh: either retired upstream, or absent from CSO's
+            # Search API. Transient rather than dropped, so it re-tries.
+            #
+            # NAMED IN THE LOG, not only in the tally. This was the one failure branch that
+            # recorded itself in the error string and printed NOTHING — which is why 27 of 36
+            # failures were invisible in CI while the other 9 were diagnosable at a glance.
+            print(f"[cso] {mtr}: no subject mapping in catalog — cannot route to a subject "
+                  f"parquet; retries next tick", flush=True)
             tally.transient_unit(f"{mtr}: no subject mapping in catalog")
             continue
         # EVERY FAILURE BELOW NAMES ITSELF. These four branches used to call transient_unit()
