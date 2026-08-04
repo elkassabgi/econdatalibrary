@@ -216,12 +216,40 @@ def resolve_time_dim(dim_ids, dim_codes, *, meta_time_code=None, role_time=None,
     if best_i is not None:
         return best_i
 
-    # 3. LAST RESORT — no axis parses as dates; fall back to a literal name match. Such
-    #    a table is genuinely date-less or index-coded and will legitimately yield 0 rows,
-    #    which the caller must classify as EMPTY (never-landed), not a structural break.
+    # 3. LAST RESORT — no axis parses as SANE dates; fall back to a literal name match.
+    #
+    # THIS BRANCH FABRICATED ~637,000 SERVED OBSERVATIONS, and the comment above used to claim
+    # it could not. It said such a table "will legitimately yield 0 rows" — true only if
+    # parse_fn REJECTS the codes. It does not: every source's parse_date turns ANY 4-digit
+    # token into a year, so a zero-padded counter becomes a calendar.
+    #
+    #     parse_date('0001') -> 0001-12-31    parse_date('0114') -> 0114-12-31
+    #     parse_date('9999') -> 9999-12-31
+    #
+    # And the names matched here are genuinely time-ish while their VALUES are not years:
+    # `vecka` is Swedish for week, `manudur` Icelandic for month, `leto` Slovenian for year on
+    # an axis that turned out to be index-coded. Measured on the live stores 2026-08-04:
+    #
+    #     stat_slovenia 05W   506,605 rows — one key holding years 1,2,3...6152, all at 12-31
+    #     scb BE / HE          71,368 rows below year 1500 (DodaVeckaRegionCKM = deaths by WEEK)
+    #     statfin tyonv        32,013 rows at 9999-12-31
+    #     hagstofa Umhverfi     1,120 rows at 3005-12-31
+    #
+    # Step 2 already refuses every one of these — date_parse_rate on a padded counter is 0.0
+    # inside [sane_lo, sane_hi] — and then this branch handed back the same axis on its NAME.
+    # The sanity check existed and step 3 walked around it.
+    #
+    # So a name match must now also produce at least ONE sane date. The threshold is
+    # deliberately "any", not min_rate: a real axis that mixes sane years with odd codes should
+    # still resolve, and only an axis with NOTHING parseable is rejected. When nothing
+    # qualifies we return None — which is exactly what the original comment promised, the
+    # caller yields 0 rows and classifies the table EMPTY (never-landed), not a structural
+    # break.
     for i, did in enumerate(dim_ids):
         if str(did).strip().lower() in TIME_CODES:
-            return i
+            codes = dim_codes[i] if i < len(dim_codes) else []
+            if date_parse_rate(codes, parse_fn, sane_lo=sane_lo, sane_hi=sane_hi) > 0:
+                return i
     return None
 
 
