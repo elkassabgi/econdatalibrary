@@ -1615,6 +1615,21 @@ STEP 3 (defensibility): "noncommercial_only" is TOO PERMISSIVE in two ways: (a) 
 ### International Monetary Fund (IMF)
 
 - **Databases (30):** `imf_afrreo`, `imf_apdreo`, `imf_bopagg`, `imf_cofer`, `imf_commodity`, `imf_cpi`, `imf_fas`, `imf_fdi`, `imf_fiscaldecentralization`, `imf_fm`, `imf_fsire`, `imf_gender_budgeting`, `imf_gender_equality`, `imf_gfscofog`, `imf_gfse`, `imf_gfsfalcs`, `imf_gfsibs`, `imf_gfsmab`, `imf_gfsssuc`, `imf_hpdd`, `imf_mcdreo`, `imf_namain_idc_n`, `imf_pctot`, `imf_pgcs`, `imf_pgi`, `imf_psbsfad`, `imf_unsdg_imf_inputs`, `imf_weo`, `imf_whdreo`, `imf_world`
+- **Scope note added 2026-08-04 — the FSI family, recorded rather than left to inherit silently.**
+  Three Financial Soundness Indicators datasets fall under this verdict but were not named in the
+  list above: `imf_fsibsis_direct` (43,814 series), `imf_fsic_direct` (32,906) and
+  `imf_fsicdm_direct` (1,856). They are not a new verdict and not an analogy to a sibling — the
+  grant quoted below is written by DATASET CLASS, not by an enumerated list: *"'Data' refers to
+  any published statistical data produced or curated by the IMF"*, naming IFS, BOP, DOT and GFS
+  and then extending to *"Most statistical data available on www.IMF.org, www.data.IMF.org, or
+  the iData Portal that explicitly identify the International Monetary Fund as the source."*
+  FSI is IMF-produced statistical data published on data.IMF.org, fetched here from
+  `api.imf.org` under IMF's own SDMX flow ids (`FSIC:`, `FSIBSIS:`, `FSICDM:`), and the sibling
+  FSI dataset `imf_fsire` is already in the list above. The attribution limb is met the same way
+  as the other 30 (citation header carrying Source, License, Homepage, Terms URL, Cite-as).
+  Written down because R113/R117 is the failure where a flag is an assertion nobody recorded:
+  `tools/catalog_imf_direct.py` gates on the `imf-terms` licence row being reservable and treats
+  its sources as IMF BY CONSTRUCTION, so the evidence for that construction belongs here.
 - **Official terms URL:** https://www.imf.org/en/about/copyright-and-terms
 - **License:** IMF Copyright and Usage Terms — statistical "Data" special terms (free access and free reuse with attribution)
 - **Classification:** redistributable_attribution
