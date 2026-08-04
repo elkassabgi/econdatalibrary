@@ -39,7 +39,9 @@ METHODS = {"transient_unit", "structural_unit"}
 # a bisect into a one-line fix.
 # 158 -> 152: bundesbank's six. Its >256-byte size split now travels with the label, because that
 # number IS the decision between "schema break" and "truncated response, retry".
-BUDGET = 152
+# 152 -> 147: _giant's five. Highest leverage of the lot -- _giant drives the biggest sources
+# over hundreds of flows, so its unlabelled count was the least actionable row in the system.
+BUDGET = 147
 
 
 class _Counter(ast.NodeVisitor):

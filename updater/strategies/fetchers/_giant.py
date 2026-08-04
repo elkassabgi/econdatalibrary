@@ -134,16 +134,75 @@ def http_get(url, accept, timeout, *, retries=4, rate=1.0, session=None):
 
 
 def _max_obs_date(out_path: str) -> str | None:
+    """The flow file's stored max obs_date — the date-tail boundary for the next fetch.
+
+    NEVER MATERIALISE THE FILE TO ANSWER THIS (2026-08-02). This used to be a bare
+    `blob.read_table(out_path)`: every column, every row, to take one max. That is the
+    same defect fixed on 2026-07-30 in statcan.py and merge._max_obs_date — the SHARED
+    giant driver was missed, and it is on the hot path of both callers (oecd, eurostat),
+    once per selected flow.
+
+    The cost scales with the LARGEST file in the store, not with the work:
+    oecd's OECD.STI.PIE__DSD_TIVA_FDVA@DF_FDVA.parquet is 1,792,000,000 rows over five
+    columns (two of them strings) — 15.4 GB compressed on disk and well past 125 GB
+    decoded. No runner or workstation we own can hold that, so the read did not merely
+    cost memory: it ALWAYS threw, and the bare `except: return None` below turned that
+    into `since=None`, which `_since_param` renders as an empty string — i.e. a silent
+    FULL-HISTORY re-pull of that flow, reported as success. Self-perpetuating, too: the
+    re-pull keeps the file huge, so the next tick fails the same way forever.
+
+    Two bounded paths, in order:
+      1. Row-group statistics from the FOOTER — parquet already stores each row group's
+         obs_date min/max, so the answer needs no decode at all (measured: complete stats
+         on 8,960/8,960 oecd row groups and 13/13 eurostat).
+      2. If any row group lacks stats, fall back to blob.iter_batches — one batch of one
+         column in memory, whatever the file size. Never the whole table.
+    """
     if not blob.exists(out_path):
         return None
+    best = None
+    try:
+        md = blob.read_metadata(out_path)
+        if md.num_rows == 0:
+            return None
+        names = [md.schema.column(i).name for i in range(md.num_columns)]
+        if "obs_date" not in names:
+            return None
+        idx = names.index("obs_date")
+        complete = True
+        for g in range(md.num_row_groups):
+            st = md.row_group(g).column(idx).statistics
+            if st is None or not st.has_min_max:
+                complete = False   # one gap and the footer cannot be trusted for a MAX
+                break
+            if st.max is not None and (best is None or st.max > best):
+                best = st.max
+        if complete:
+            return str(best) if best is not None else None
+    except Exception as e:                                   # noqa: BLE001
+        # Fall through to the batched scan rather than returning None: see below for
+        # why a silent None here is expensive, not merely imprecise.
+        print(f"[giant] footer stats unusable for {os.path.basename(out_path)} "
+              f"({type(e).__name__}: {e}); scanning obs_date in batches", flush=True)
+
+    best = None
     try:
         import pyarrow.compute as pc
-        t = blob.read_table(out_path)
-        if t.num_rows == 0 or "obs_date" not in t.column_names:
-            return None
-        m = pc.max(t.column("obs_date")).as_py()
-        return str(m) if m is not None else None
-    except Exception:
+        for batch in blob.iter_batches(out_path, columns=["obs_date"]):
+            if batch.num_rows == 0:
+                continue
+            m = pc.max(batch.column("obs_date")).as_py()
+            if m is not None and (best is None or m > best):
+                best = m
+        return str(best) if best is not None else None
+    except Exception as e:                                   # noqa: BLE001
+        # LOUD, because the caller cannot tell this apart from "no data yet". Returning
+        # None is still the right fallback (a full re-pull is correct, just expensive) —
+        # but it must never again be invisible. Ledger: every early exit has to answer
+        # "does this status let the gate advance?"
+        print(f"[giant] WARNING: cannot read max obs_date from "
+              f"{os.path.basename(out_path)} ({type(e).__name__}: {e}); falling back to a "
+              f"FULL re-pull of this flow (no startPeriod tail)", flush=True)
         return None
 
 
@@ -226,28 +285,31 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         flow_st = dict(state.get(fid, {}))
         try:
             table, status = fetch_flow(fid, meta, since, sess)
-        except TransientError:
-            tally.transient_unit()
+        except TransientError as e:
+            # NAME THE FLOW. _giant drives the biggest sources (oecd et al) over `selected`
+            # flows, so an unlabelled count is the least actionable row in the system: hundreds
+            # of flows, one number, five different causes below.
+            tally.transient_unit(f"{fid}: {str(e)[-60:]}")
             flow_st.update(status="transient_fail")  # vintage NOT advanced -> reselected next tick
             state[fid] = flow_st
             time.sleep(rate)
             continue
         except DefinitiveError as e:
             # A structural/hard error on ONE flow must not abort the whole giant.
-            tally.structural_unit()
+            tally.structural_unit(f"{fid}: {str(e)[-60:]}")
             flow_st.update(status="definitive_fail", error=str(e)[:200])
             state[fid] = flow_st
             time.sleep(rate)
             continue
 
         if status == "transient":
-            tally.transient_unit()
+            tally.transient_unit(f"{fid}: fetch_flow reported transient")
             flow_st.update(status="transient_fail")
             state[fid] = flow_st
             time.sleep(rate)
             continue
         if status == "structural":
-            tally.structural_unit()
+            tally.structural_unit(f"{fid}: fetch_flow reported structural")
             flow_st.update(status="definitive_fail")
             state[fid] = flow_st
             time.sleep(rate)
@@ -267,7 +329,9 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         except DefinitiveError as e:
             # A would-shrink / column-drop / 0-row merge: keep old data, surface partial,
             # do NOT advance vintage so it is reattempted (could be a truncated upstream).
-            tally.transient_unit()
+            # WHICH guard tripped is the difference between "upstream truncated" and "we broke
+            # the schema", so carry the merge's own message.
+            tally.transient_unit(f"{fid}: merge guard — {str(e)[-60:]}")
             flow_st.update(status="partial", error=str(e)[:200])
             state[fid] = flow_st
             time.sleep(rate)
