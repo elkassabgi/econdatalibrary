@@ -133,31 +133,28 @@ def _parse_date(s: str) -> dt.date | None:
     return None
 
 
-# TABLES HELD BACK UNTIL THEIR LEGACY ROWS ARE REMOVED. Not "broken" — the opposite: the
-# grammars added just above finally let these parse, and writing them NOW would duplicate.
+# TABLES HELD BACK WHILE THEIR OLD-GRAIN ROWS STILL EXIST. Empty is the healthy state.
 #
-# THE TWO GRAINS ARE INCOMPATIBLE, measured on the store 2026-08-04:
+# Add a tpath here whenever a parser change moves the TIME AXIS, because that changes
+# `series_key` and the two grains cannot be merged (R22/R331/R333):
 #
-#   OLD  ...Medellivsl:Kon=1:ContentsCode=000000NH:Tid=1998-2002   obs_date 0114-12-31
+#   OLD  ...Medellivsl:Kon=1:ContentsCode=000000NH:Tid=1998-2002   obs_date 1715-12-31
 #   NEW  ...Medellivsl:Region=00:Kon=1:ContentsCode=000000NH       obs_date 1998-12-31
 #
-# `Tid` was unparseable, so it was baked INTO the key and `Region` — municipality codes
-# 0114..2584 — was read as the date. With the grammars, Tid becomes the date and Region moves
-# into the key. Dedup is on (series_key, obs_date), so old and new NEVER collide: both survive,
-# the file only grows, and merge's never-shrink guard cannot see the duplication. That is
-# exactly how ons_uk reached 20,198,302 rows for 10,099,151 observations (R22, task #42).
+# `Tid` was unparseable, so it sat INSIDE the key while `Region` — municipality codes
+# 0114..2584 — was read as the date. Fixed, they swap. Dedup is on (series_key, obs_date), so
+# old and new NEVER collide: both survive, the file only grows, and never-shrink cannot see the
+# duplication. That is how ons_uk reached 20,198,302 rows for 10,099,151 observations.
 #
-# TO RELEASE: remove these tables' existing rows (table-grain, per tools/cso_repull_matrix.py —
-# do NOT retire BE.parquet whole, it holds 1,553,817 rows of which only 26,206 are affected),
-# then delete the entry here. The next tick backfills them from scratch at the correct grain.
-# Rows currently held under the wrong grain: HE 61,152 / BE 26,206.
-_REGRAIN_QUARANTINE = frozenset({
-    "HE/HE0110/HE0110H/TABIRH3",
-    "HE/HE0110/HE0110H/TABIRH4",
-    "HE/HE0110/HE0110H/TABIRH5",
-    "BE/BE0101/BE0101I/DodaVeckaRegionCKM",
-    "BE/BE0101/BE0101I/Medellivsl",
-})
+# PROCEDURE, and the order is load-bearing: drop the old-grain rows FIRST
+# (`tools/prune_bad_grain_rows.py --apply --only scb`, GRAIN pass — selection by key shape,
+# because a date-band test cannot see code-as-year fabrication, R334), THEN empty this set.
+# Reversed, a tick lands new-grain rows beside the old ones and recreates the defect.
+#
+# LAST USED 2026-08-04 for TABIRH3/4/5 + DodaVeckaRegionCKM + Medellivsl: 87,358 rows removed
+# in two passes (71,368 out-of-band, then 15,990 that were in-band but still old-grain),
+# verified 0 old-grain rows remaining, and released here so the publisher backfills them.
+_REGRAIN_QUARANTINE: frozenset[str] = frozenset()
 
 _NAMED_TIME = ("tid", "time", "year", "period", "datum", "ar")
 
