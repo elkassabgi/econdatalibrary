@@ -205,7 +205,12 @@ def parse_jsonstat2(data: dict, prefix: str, meta_time_code: str | None = None) 
         # authoritative `time: true` / role.time, else highest date-parse-rate, else name.
         # Value-first stops a MESEC month axis (codes that parse to no date) from
         # outranking the LETO year axis when it comes first in a MESEC+LETO cube.
-        time_dim_idx = _pxweb.resolve_time_dim(dim_ids, dim_codes, meta_time_code=meta_time_code, role_time=_pxweb.role_time_of(data), parse_fn=parse_date)
+        # dim_labels is passed so the resolver can judge an AUTHORITATIVELY-FLAGGED axis on its
+        # codes OR its labels. SURS mis-flags `time: true` on the age axis of 05L1027S, whose
+        # code '1000' is labelled "Deaths - TOTAL" and parsed to year 1000. Without labels the
+        # resolver cannot tell that apart from a legitimate POSITIONAL axis whose periods live
+        # only in the labels, so it has to accept both. See core/pxweb.resolve_time_dim step 1.
+        time_dim_idx = _pxweb.resolve_time_dim(dim_ids, dim_codes, meta_time_code=meta_time_code, role_time=_pxweb.role_time_of(data), parse_fn=parse_date, dim_labels=dim_labels)
 
         if time_dim_idx is None:
             return results
