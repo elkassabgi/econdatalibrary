@@ -433,6 +433,23 @@ def update(unit, since) -> Result:
     # 18 leaves 27 minutes for one in-flight subject. If the kill recurs, the next move is not a
     # smaller number — it is checking the deadline inside the per-subject table loop, because at
     # that point one subject alone exceeds the cap and no budget can help.
+    #
+    # THAT MOVE WAS MADE (272faee5 + ad6360b0) AND IS NOW MEASURED, 2026-08-04. First execution of
+    # the current code — the three 45-minute kills on record all predate it, so until this run
+    # nothing had ever exercised it (R339):
+    #
+    #     budget of 18 min spent after 18.0 min INSIDE subject 'Lepetatud_tabelid' —
+    #     completed 1079 of 2832 table(s); resuming after '.../HT295.PX' next tick
+    #     [orchestrator] <<< stat_estonia/_all took 1,093s     -> partial
+    #
+    # 1,093s against the 2,700s hard limit, and `partial` instead of `transient_fail obs=0`. The
+    # in-loop deadline bounds the clock and the table bookmark makes the remainder arrive.
+    #
+    # WHAT IS STILL WRONG IS NOT THE CAP, IT IS WHERE THE BUDGET GOES. 100% of that pass was spent
+    # inside `Lepetatud_tabelid` — Estonian for DISCONTINUED TABLES — at ~60 tables/min, and that
+    # one subject holds 2,832 of them, i.e. ~2.6 full ticks before any live subject is reached.
+    # A source that only ever walks its archive is bounded, honest, and still not updating. That
+    # is the per-table long-cadence gate (queue #92), and this run is its measurement.
     budget_min = float(os.environ.get("STAT_ESTONIA_BUDGET_MIN", "18"))
     dl = Deadline(minutes=budget_min)
     subjects = rotate_after(sorted(by_subject), load_rotation(out_dir))
