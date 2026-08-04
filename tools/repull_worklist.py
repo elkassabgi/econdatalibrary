@@ -70,10 +70,13 @@ def main() -> int:
         os.path.dirname(ROOT), "repull_worklist.json")
     worklist: dict[str, dict] = {}
     grand = {"clean": 0, "corrupt": 0, "two_axis": 0, "false_alarm": 0}
+    skipped: list[str] = []
+    print(f"  DATA root: {DATA}")
     print(f"  {'source':<14} {'subject.parquet':<34} {'clean':>6} {'corr':>5} {'2ax':>5} {'false':>6}")
     for src in SOURCES:
         scanned = scan_source(src)
         if scanned is None:
+            skipped.append(src)
             print(f"  {src:<14} (no on-disk data — skipped)")
             continue
         src_wl: dict[str, dict] = {}
@@ -105,6 +108,18 @@ def main() -> int:
     print(f"  RE-PULL WORKLIST: {n_corrupt} corrupt + {n_two} two_axis tables "
           f"across {n_subj} subject parquets in {len(worklist)} source(s)")
     print(f"  written -> {out_path}")
+
+    # A SCAN THAT SAW NOTHING IS NOT A CLEAN BILL OF HEALTH. Every source skipping means the
+    # DATA root is wrong, not that nine national statistics offices are defect-free. Until
+    # 2026-08-04 that case printed `0 corrupt` and exited 0, because DATA pointed at a drive
+    # letter the store had moved off. Report the denominator, and make the empty scan LOUD.
+    if skipped:
+        print(f"\n  NOTE: {len(skipped)} source(s) had no on-disk data: {', '.join(skipped)}")
+    if len(skipped) == len(SOURCES):
+        print(f"\n  ABORT: all {len(SOURCES)} sources were skipped, so this run measured NOTHING.")
+        print(f"  The zero above is the absence of a denominator, not the absence of defects.")
+        print(f"  Check DATA (currently {DATA!r}) or set ECONDL_CLEAN_FULL.")
+        return 2
     return 0
 
 

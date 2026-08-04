@@ -29,7 +29,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA = r"D:/research/econfindatalibrary/data/clean_full"
+# Derived, not hardcoded — the store moved D: -> E: in the workstation cutover, and every
+# consumer of the stale root silently reported "no data" as "no defects". See R330.
+DATA = os.environ.get("ECONDL_CLEAN_FULL") or os.path.join(ROOT, "data", "clean_full")
+if not os.path.isdir(DATA):
+    raise SystemExit(f"repull_surgical: clean_full root not found: {DATA!r}\n"
+                     f"Set ECONDL_CLEAN_FULL. Refusing to run against an absent tree — a "
+                     f"re-pull tool that sees nothing must not conclude nothing needs repair.")
 STAGE = r"D:/temp/claude/D--research-hfdatalibrary/5bda36f5-59a1-4804-b441-06c56c3755da/scratchpad/wave2_fixed"
 WAVE2 = ["ssb", "stat_latvia", "stat_slovenia", "dst"]
 
