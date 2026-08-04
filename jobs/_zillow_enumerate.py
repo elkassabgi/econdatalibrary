@@ -4,9 +4,15 @@ import json
 import os
 from collections import Counter
 
-PAGE = r'D:/research/econfindatalibrary/data/_zillow_page.html'
 
+# Repo root derived from this file, never a drive letter: the store moved D: -> E: in the
+# workstation cutover, and a verify script pointed at an absent tree reports "0 files,
+# nothing wrong" instead of failing. R330.
+def _RD(*parts):
+    _r = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(_r, *parts) if parts else _r
 
+PAGE = _RD('data', '_zillow_page.html')
 def extract_data_object(t: str):
     start = t.find('var data')
     brace = t.find('{', start)

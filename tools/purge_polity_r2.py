@@ -11,11 +11,21 @@ Archive first (same contract as the ten): every PRIMARY object md5-verified on d
 delete. The derived CSVs are regenerable from that parquet.
 """
 import sys, hashlib, os, shutil, urllib.parse
-sys.path.insert(0, r"D:/research/econfindatalibrary")
+# Derived from this file, never a drive letter. Both constants below said
+# `D:/research/econfindatalibrary`, which the store left in the workstation cutover — so this
+# tool raised ImportError on the next line and had been dead rather than dangerous. A PURGE
+# tool resolving a stale root is the worst case of R330: its md5 "verified on disk" precondition
+# reads an absent tree, and absent is not the same as verified.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 from core import r2_util  # noqa
 
 BUCKET = "econ-data"
-LOCAL_ROOT = r"D:/research/econfindatalibrary/data"
+LOCAL_ROOT = os.environ.get("ECONDL_DATA") or os.path.join(ROOT, "data")
+if not os.path.isdir(LOCAL_ROOT):
+    raise SystemExit(f"purge_polity_r2: data root not found: {LOCAL_ROOT!r}. Refusing to run — "
+                     f"this tool deletes R2 objects after verifying local copies, and it cannot "
+                     f"verify anything against a tree that is not there.")
 read = r2_util.client()
 write = r2_util.client(write=True)
 

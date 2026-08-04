@@ -3,7 +3,12 @@ findings, each with an adversarial verdict), one entry per database."""
 import json, os, sys
 
 OUT = sys.argv[1]
-DEST = "D:/research/econfindatalibrary/DATABASE_LICENSES_VERBATIM.md"
+# Derived from this file (tools/license_audit/ -> repo root), not a drive letter (R330).
+# A stale absolute DEST writes the canonical licence file into a tree nobody reads, and the
+# run reports success — the licence audit is the gate for what we are allowed to serve.
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEST = os.environ.get("ECONDL_LICENSE_FILE") or os.path.join(
+    ROOT, "DATABASE_LICENSES_VERBATIM.md")
 TODAY = "2026-07-14"
 
 results = json.load(open(OUT, encoding="utf-8"))["result"]

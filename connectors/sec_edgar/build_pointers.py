@@ -34,8 +34,11 @@ from multiprocessing import Process, Queue
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-# --- Windows D:/ paths ---------------------------------------------------
-ROOT = "D:/research/econfindatalibrary"
+# --- repo-relative paths -------------------------------------------------
+# Derived from this file (connectors/sec_edgar/ -> repo root), not a drive letter. The store
+# moved D: -> E: in the workstation cutover; OUT_DIR below feeds os.makedirs, so a stale ROOT
+# would CREATE a ghost tree and write a whole real run into it, where nothing ever looks. R330.
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ZIP_PATH = os.path.join(ROOT, "data", "raw", "sec_edgar", "submissions.zip")
 OUT_DIR = os.path.join(ROOT, "data", "clean_full", "edgar_pointers")
 

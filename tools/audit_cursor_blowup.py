@@ -127,6 +127,31 @@ def unprojected_reads(text: str) -> int:
     return n
 
 
+def imports_within(text: str) -> set[str]:
+    """Sibling fetcher modules this one imports (`from . import x`, `from .x import y`).
+
+    NEEDED BECAUSE A SHARED HELPER HAS NO STORE OF ITS OWN. CLASS 2 originally scored a
+    module against the store DIRECTORY OF THE SAME NAME, so `_giant` and `_imf_direct` —
+    which are helpers, not sources — looked up nothing, scored 0.0 GB, and could never be
+    flagged however fatal their reads were. That is exactly how `_giant._max_obs_date`
+    survived: a bare whole-table read on the hot path of oecd (largest flow file
+    1,792,000,000 rows, >125 GB decoded) while this audit printed "CLASS 2 ... 0".
+    A helper is judged against the stores of the modules that USE it.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level:
+            if node.module:                       # from .x import y  /  from ._giant import z
+                out.add(node.module.split(".")[0])
+            else:                                 # from . import x, y
+                out.update(a.name for a in node.names)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--threshold-rows", type=int, default=20_000_000,
@@ -146,7 +171,7 @@ def main() -> int:
         print(f"store root not found: {root} — nothing to audit")
         return 0
 
-    reports, bounded, per_series, unproj = {}, {}, {}, {}
+    reports, bounded, per_series, unproj, sibling_imports = {}, {}, {}, {}, {}
     for fn in sorted(os.listdir(FETCHERS)):
         if not fn.endswith(".py") or fn.startswith("__"):
             continue
@@ -162,6 +187,7 @@ def main() -> int:
         bounded[src] = any(b in code for b in BOUNDED)
         per_series[src] = any(m in code for m in PER_SERIES)
         unproj[src] = unprojected_reads(text)
+        sibling_imports[src] = imports_within(text)
 
     print(f"store root: {root}")
     print(f"{len(reports)} fetcher module(s); "
@@ -179,12 +205,34 @@ def main() -> int:
         return (rows >= args.threshold_rows and reports.get(src) and per_series.get(src)
                 and not bounded.get(src) and src not in EXEMPT)
 
-    def _read_risk_gb(src):
-        """GB a single unprojected read_table() would decode for this store's LARGEST file."""
+    def _stores_for(src, seen=None):
+        """Store dir(s) an unprojected read in `src` can actually land on.
+
+        A source module owns the store of the same name. A HELPER owns none, so it is
+        judged against the stores of every module that imports it (transitively).
+        """
+        if src in rows_by_src:
+            return {src}
+        seen = seen or set()
+        if src in seen:
+            return set()
+        seen.add(src)
+        out: set[str] = set()
+        for user, imps in sibling_imports.items():
+            if src in imps:
+                out |= _stores_for(user, seen)
+        return out
+
+    def _read_risk(src):
+        """(GB, store) for the worst single file any unprojected read in `src` can hit."""
         if not unproj.get(src):
-            return 0.0
-        biggest = rows_by_src.get(src, (0, 0, 0))[2]
-        return biggest * BYTES_PER_ROW / 1e9
+            return (0.0, None)
+        worst, where = 0.0, None
+        for st in _stores_for(src):
+            gb = rows_by_src.get(st, (0, 0, 0))[2] * BYTES_PER_ROW / 1e9
+            if gb > worst:
+                worst, where = gb, st
+        return (worst, where)
 
     # EVALUATED OVER EVERY SOURCE, DISPLAYED FOR THE TOP 25. The first cut appended
     # offenders inside the display slice, so only the 25 biggest stores were ever judged —
@@ -194,8 +242,19 @@ def main() -> int:
     ranked = sorted(rows_by_src.items(), key=lambda kv: -kv[1][0])
     offenders = [(s, r) for s, (r, _f, _b) in ranked if _is_offender(s, r)]
     # SECOND CLASS: an unprojected read_table() whose worst single file would not fit.
-    read_risks = [(s, _read_risk_gb(s)) for s, _v in ranked
-                  if _read_risk_gb(s) >= args.read_gb]
+    # ITERATE THE MODULES, NOT `ranked`. `ranked` is keyed by STORE, so a helper module
+    # with no store of its own was never even visited — the other half of the miss that
+    # let _giant._max_obs_date read a 1,792,000,000-row file while this printed 0.
+    read_risks, unjudged = [], []
+    for src in sorted(unproj):
+        if not unproj[src]:
+            continue
+        if not _stores_for(src):
+            unjudged.append(src)
+            continue
+        gb, where = _read_risk(src)
+        if gb >= args.read_gb:
+            read_risks.append((src, gb, where))
 
     shown = set()
     print(f"{'source':26s} {'store rows':>16s} {'files':>7s}   fold      bound")
@@ -225,10 +284,19 @@ def main() -> int:
 
     print(f"\nCLASS 2 — unprojected read_table() vs the LARGEST single file "
           f"(must be 0): {len(read_risks)}")
-    for s, gb in sorted(read_risks, key=lambda kv: -kv[1]):
-        print(f"    {s}: {unproj[s]} read_table() call(s) with no columns=; largest file "
-              f"{rows_by_src[s][2]:,} rows -> ~{gb:.0f} GB decoded (runner has 16 GB)")
-    return 1 if (offenders or read_risks) else 0
+    for s, gb, where in sorted(read_risks, key=lambda t: -t[1]):
+        print(f"    {s}: {unproj[s]} read_table() call(s) with no columns=; worst store "
+              f"{where}, largest file {rows_by_src[where][2]:,} rows -> ~{gb:.0f} GB "
+              f"decoded (runner has 16 GB)")
+
+    # AN UNJUDGEABLE MODULE IS NOT A CLEAN ONE. Scoring it 0.0 GB and moving on is how
+    # the last one hid; if it cannot be mapped to a store it gets NAMED and fails the run.
+    print(f"\nCLASS 2b — unprojected read in a module that maps to NO store "
+          f"(must be 0): {len(unjudged)}")
+    for s in unjudged:
+        print(f"    {s}: {unproj[s]} unprojected read_table() call(s); no same-named store "
+              f"and no importer with one — map it or judge it by hand")
+    return 1 if (offenders or read_risks or unjudged) else 0
 
 
 if __name__ == "__main__":

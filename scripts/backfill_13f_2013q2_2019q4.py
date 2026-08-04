@@ -31,9 +31,17 @@ import pyarrow.parquet as pq
 UA          = "Econ-Fin Data Library admin@hfdatalibrary.com"
 SOURCE_ID   = "edgar_13f"
 BASE_URL    = "https://www.sec.gov/files/structureddata/data/form-13f-data-sets"
-RAW_DIR     = r"D:/research/econfindatalibrary/data/raw/sec_edgar/form13f"
-OUT_ROOT    = r"D:/research/econfindatalibrary/data/clean_full/edgar_13f"
-PROGRESS    = r"D:/research/econfindatalibrary/data/raw/sec_edgar/_backfill_2013_2019_progress.json"
+
+# Repo root derived from this file, never a drive letter. The store moved D: -> E: in
+# the workstation cutover; a stale root here silently writes into, or reports on, a
+# tree that is not there. R330.
+def _RD(*parts):
+    _r = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(_r, *parts) if parts else _r
+
+RAW_DIR     = _RD('data', 'raw', 'sec_edgar', 'form13f')
+OUT_ROOT    = _RD('data', 'clean_full', 'edgar_13f')
+PROGRESS    = _RD('data', 'raw', 'sec_edgar', '_backfill_2013_2019_progress.json')
 
 TABLES = ["SUBMISSION", "COVERPAGE", "OTHERMANAGER", "OTHERMANAGER2",
           "INFOTABLE", "SIGNATURE", "SUMMARYPAGE"]

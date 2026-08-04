@@ -12,9 +12,11 @@ import importlib.util, io, json, os, zipfile, csv
 from datetime import datetime, timezone
 import pyarrow.parquet as pq
 
-PROJ = r"D:/research/econfindatalibrary"
-OUT_DIR = r"D:/research/econfindatalibrary/data/clean_full/edgar_13f"
-RAW_DIR = r"D:/research/econfindatalibrary/data/raw/sec_edgar/form13f"
+# Derived from this file, never a drive letter — the store moved D: -> E: in the workstation
+# cutover. PROJ also locates ingest_edgar_13f.py for the importlib load below. R330.
+PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT_DIR = os.path.join(PROJ, "data", "clean_full", "edgar_13f")
+RAW_DIR = os.path.join(PROJ, "data", "raw", "sec_edgar", "form13f")
 
 # load the ingest module (reuse its fixed read_tsv / coerce / write_parquet / download_zip)
 spec = importlib.util.spec_from_file_location("ing", os.path.join(PROJ, "jobs", "ingest_edgar_13f.py"))

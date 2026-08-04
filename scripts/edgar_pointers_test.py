@@ -7,7 +7,15 @@ import pyarrow.parquet as pq
 import edgar_pointers_build as B
 
 LIMIT = 6000
-TEST_OUT = 'D:/research/econfindatalibrary/data/_edgar_test'
+
+# Repo root derived from this file, never a drive letter. The store moved D: -> E: in
+# the workstation cutover; a stale root here silently writes into, or reports on, a
+# tree that is not there. R330.
+def _RD(*parts):
+    _r = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(_r, *parts) if parts else _r
+
+TEST_OUT = _RD('data', '_edgar_test')
 
 def main():
     t0 = time.time()
