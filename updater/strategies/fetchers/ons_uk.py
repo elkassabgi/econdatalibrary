@@ -183,15 +183,23 @@ def _fetch_one(ds_id, version_href=None):
     """
     try:
         url = None
+        no_distribution = False
         if version_href:
             meta = ig.get_json(version_href)
             if meta:
-                for dl in (meta.get("downloads") or {}).values():
+                downloads = meta.get("downloads") or {}
+                for dl in downloads.values():
                     href = dl.get("href", "")
                     if href.endswith(".csv") or "csv" in href.lower():
                         url = href
                         break
                 if not url:
+                    # The publisher can list a version as `state: published` and still offer
+                    # NO distribution for it: `downloads` is {} and the /csv route 404s.
+                    # MEASURED over all 337 catalog datasets 2026-08-03 — exactly 2 are like
+                    # this (trade, TS058); 335 offer a download. Remembering it here lets the
+                    # 404 below be reported as "nothing to fetch" instead of a failure.
+                    no_distribution = not downloads
                     url = version_href.rstrip("/") + "/csv"
         if not url:
             url = ig.resolve_csv_url(ds_id)
@@ -199,6 +207,15 @@ def _fetch_one(ds_id, version_href=None):
             return ds_id, None, None, None, "no CSV url resolvable"
         content = ig.get_csv_bytes(url)
         if not content:
+            if no_distribution:
+                # NOT transient. Retrying cannot conjure a distribution the publisher does not
+                # publish, and calling it a failure would hold the whole source at `partial`
+                # forever (R231: partial never sets last_success_utc), permanently flagging
+                # "investigate" for a condition with nothing to investigate. Same reasoning as
+                # R303, which split budget deferrals out of `transient` for exactly this
+                # reason. Empty list (not None) so update() routes it to empty_unit, and the
+                # reason is printed either way.
+                return ds_id, [], [], [], "publisher offers no distribution (downloads:{}, /csv 404)"
             return ds_id, None, None, None, f"empty body from {url[-60:]}"
         # V4 parser: TIME-FREE, code-based keys. See the module docstring — the old
         # parse_dataset_csv folded the time axis and the observation-metadata columns into
@@ -278,10 +295,14 @@ def update(unit, since) -> Result:
                     tally.transient_unit()
                     continue
                 if not keys:
-                    # Real body, zero parseable rows. NOT structural: finalize() raises on any
-                    # structural unit, which would abort the whole source and block the other
-                    # ~23 datasets from publishing (run 30133686534: 2/25 -> nothing merged).
-                    # Empty + vintage deliberately NOT advanced, so it retries next tick.
+                    # Real body, zero parseable rows — or nothing the publisher offers to
+                    # fetch. NOT structural: finalize() raises on any structural unit, which
+                    # would abort the whole source and block the other ~23 datasets from
+                    # publishing (run 30133686534: 2/25 -> nothing merged). Empty + vintage
+                    # deliberately NOT advanced, so it retries next tick; rotation stops that
+                    # retry from starving the rest of the catalog.
+                    print(f"[ons_uk] {ds_id}: no rows — {err or 'parsed 0 rows from a real body'}",
+                          flush=True)
                     tally.empty_unit()
                     continue
                 tbl = pa.table({

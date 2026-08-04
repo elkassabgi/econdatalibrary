@@ -247,12 +247,27 @@ def parse_ons_time_code(value: str, code_name: str, now_year: int | None = None)
             if m and 1 <= int(m.group(2)) <= 12:
                 return dt.date(int(m.group(1)), int(m.group(2)), 1)
             return None
-        # yyyy-qq: '2020-Q3'
+        # yyyy-qq: '2012-q1' -> the quarter's FIRST month, which is what parse_ons_period has
+        # always done for 'YYYY Qn' ((q-1)*3+1) and what the store already holds. VERIFIED
+        # against the approved 2026-07-29 re-key: regional-gdp-by-quarter's on-disk dates are
+        # 2012-01-01, 2012-04-01, 2012-07-01, 2012-10-01. An earlier draft of this function
+        # used q*3 (the quarter's LAST month) and disagreed with every one of that dataset's
+        # 31,992 rows while producing an identical KEY set — a mismatch invisible to any check
+        # that compares series ids rather than observations.
         if name in ("yyyy-qq", "quarters", "yyyy-q"):
             m = re.match(r"^(\d{4})[- ]?Q([1-4])$", s, re.I)
             if m:
                 q = int(m.group(2))
-                return dt.date(int(m.group(1)), q * 3, 1)
+                return dt.date(int(m.group(1)), (q - 1) * 3 + 1, 1)
+            return None
+        # mmm-mmm-yyyy: a ROLLING window, e.g. 'apr-jun-2019' (labour market three-month
+        # averages) -> the window's FIRST month. Decided from the store rather than by taste:
+        # under first-month all 31,968 of labour-market's (key, date) pairs reproduce the
+        # on-disk table exactly, under last-month 1,728 disagree.
+        if name == "mmm-mmm-yyyy":
+            m = re.match(r"^([A-Za-z]{3})-([A-Za-z]{3})-(\d{4})$", s)
+            if m and m.group(1).lower() in _MONTHS and m.group(2).lower() in _MONTHS:
+                return dt.date(int(m.group(3)), _MONTHS[m.group(1).lower()], 1)
             return None
     except (ValueError, TypeError):
         return None
