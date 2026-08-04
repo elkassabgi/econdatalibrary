@@ -182,7 +182,17 @@ def update(unit, since) -> Result:
         # The stamp is WID's own listing metadata for that file, so it moves exactly
         # when the country is republished. Checked against the parquet actually being
         # present, because a stamp alone would suppress the fetch after a store reset.
-        if done.get(country) == f"{_mod}|{_size}" and blob.exists(path):
+        # TWO STAMP FORMS, because the two cases have different evidence available.
+        #   "mod|size"        a real country — skip only if its parquet is actually present,
+        #                     so a store reset re-fetches rather than being suppressed.
+        #   "mod|size|empty"  an entity WID publishes as a 47-byte header — there is no
+        #                     parquet and never will be, so requiring one would re-fetch it
+        #                     on every run forever (which is exactly what used to happen).
+        # Either way the stamp is WID's own listing metadata, so it moves the moment the
+        # entity is republished — the only moment an empty one could gain data.
+        _stamp = done.get(country)
+        if _stamp == f"{_mod}|{_size}|empty" or (
+                _stamp == f"{_mod}|{_size}" and blob.exists(path)):
             skipped += 1
             continue
 
@@ -221,6 +231,28 @@ def update(unit, since) -> Result:
             # anything we cannot read as that CSV at all is structural.
             if _has_expected_header(text):
                 tally.empty_unit(country)
+                # STAMP THE EMPTY ONES TOO, or they are re-fetched forever AND become the only
+                # thing a later run attempts.
+                #
+                # The success branch below records `done[country] = f"{mod}|{size}"` so a
+                # country is not re-downloaded until WID republishes it. This branch recorded
+                # NOTHING, so the 12 header-only entities were re-fetched on every run. Worse:
+                # once every real country is stamped, these 12 are the entire work list, a run
+                # attempts 12 sub-units of which 12 are empty, and finalize()'s empty-window
+                # guard reads that as "the source went dark" and RAISES — on a source that is
+                # perfectly healthy and whose upstream never failed.
+                #
+                # The `|empty` suffix lets the skip gate tell the two cases apart. A real
+                # country must still have its parquet present to be skipped (a stamp alone
+                # would suppress the fetch after a store reset), but an entity WID publishes
+                # as 47 bytes of CSV header has no parquet and never will — demanding one
+                # there would defeat the stamp entirely. blob.exists(path) is False for 11 of
+                # these 12 today.
+                #
+                # WID's own (last-modified|size) still drives it, so each is re-checked exactly
+                # when republished — the only moment it could gain data.
+                done[country] = f"{_mod}|{_size}|empty"
+                dirty = True
             else:
                 tally.structural_unit(f"{country}: body is not the expected WID CSV")
             continue
