@@ -113,6 +113,16 @@ sources:
   strategy_reason: Static academic dataset of 15 hardcoded GitHub Pages CSVs rebuilt into one parquet; a 'delta' is meaningless
     - re-fetch and overwrite the single parquet only when the upstream files move.
   cadence: static
+  # upstream_verified — PROBED 2026-08-04. barrolee.github.io/BarroLeeDataSet announces
+  # "2021 September Update: Barro-Lee Estimates of Educational Attainment for the Population
+  # Aged 15-64 from 1950 to 2015" and footers "Dataset Last Updated: 2021 September". Our
+  # newest observation is 2015-12-31 — the publisher's own end, matched exactly.
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying if our
+  # data ever falls behind 2015-12-31.
+  upstream_verified:
+    latest_obs: '2015-12-31'
+    checked: '2026-08-04'
   refresh_cost: fast
   out_dir: barro_lee
   review: true
@@ -2306,6 +2316,19 @@ sources:
   strategy_reason: Small (~700KB) static cross-section whole table that a re-run rebuilds correctly; no upstream date param,
     so gate on a vintage signal and overwrite the single parquet only when the release changes.
   cadence: static
+  # upstream_verified — PROBED 2026-08-04. datasets.wri.org lists v1.3.0 as the current
+  # non-deprecated version and states generation is provided "at the year scale for the years
+  # 2013-2017". Our newest observation is 2020-12-31, which is AHEAD of that — and is not a
+  # real observation date at all: jobs/ingest_gppd.py:87 hardcodes dt.date(2020, 12, 31) as a
+  # baseline sentinel for capacity_mw, a time-INVARIANT plant attribute with no year of its
+  # own ("date = unknown/baseline, use 2020-12-31"). The genuine data year is 2017, which the
+  # same file uses at line 114 for estimated generation.
+  #
+  # So RED-DATA here was measuring the age of a constant. Declared against the publisher's
+  # real end; our 2020 sentinel sits above it and the guard still holds.
+  upstream_verified:
+    latest_obs: '2017-12-31'
+    checked: '2026-08-04'
   refresh_cost: fast
   out_dir: gppd
   review: true
@@ -3792,6 +3815,25 @@ sources:
   strategy_reason: Legacy PWT 10.0 single-workbook bulk download with no since filter; a small whole table re-estimated per
     vintage — gate on the rug.nl file vintage and atomically overwrite. (Superseded by penn_world_table.)
   cadence: static
+  # upstream_verified — PROBED 2026-08-04. rug.nl/ggdc/productivity/pwt states "PWT version
+  # 11.0 is a database ... covering 185 countries between 1950 and 2023", "Published on October
+  # 7, 2025". This source_id is the SUPERSEDED 10.0 vintage (see strategy_reason above); PWT
+  # 11.0 is ingested separately as `penn_world_table`, which holds 418,397 rows to 2023-12-31.
+  #
+  # A frozen academic vintage cannot gain observations: 10.0 ends at 2019 and always will,
+  # because the successor is a re-estimation published under a new version rather than an
+  # extension of this one. So RED-DATA here reports data that does not exist, which is the
+  # case health.py's own comment describes for the IMF's finished datasets.
+  #
+  # NOT a mute: lapses to ATTENTION after 180 days for a re-probe, and stops applying entirely
+  # if our data ever falls behind 2019-12-31.
+  #
+  # SEPARATE and NOT fixed by this: the catalogue serves 7,159 rows for this superseded vintage
+  # and 60 for current 11.0, so a browsing user mostly finds 10.0. That is a product decision
+  # (retire vs catalogue 11.0 to parity), tracked in task #90 — not a freshness problem.
+  upstream_verified:
+    latest_obs: '2019-12-31'
+    checked: '2026-08-04'
   refresh_cost: fast
   out_dir: pwt
   review: true
