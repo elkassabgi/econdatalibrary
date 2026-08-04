@@ -275,6 +275,96 @@ def _max_by_table(parquet_path: str) -> dict[str, dt.date]:
 
 
 # --------------------------------------------------------------------------- #
+# COLD TABLES: the archive must not eat the budget the live tables need.
+# --------------------------------------------------------------------------- #
+# MEASURED 2026-08-04, catalogue (4,978 tables) + local store (3,447 with rows):
+#
+#   Lepetatud_tabelid ("discontinued tables")  2,832 catalogued  56.9% of the source
+#   the other six subjects                     2,146             43.1%
+#
+# and at ~60 tables/min under an 18-minute budget a full pass is ~4.6 ticks, of which the
+# archive alone is ~2.6. The first successful capped run spent 100% of its 1,079 tables
+# inside Lepetatud_tabelid and never reached a live subject at all.
+#
+# TWO SIGNALS, because ONE IS NOT ENOUGH — this is the part I got wrong before measuring:
+#
+#  * Freshness alone is a poor discriminator. A 3-year cutoff calls 94.8% of the archive
+#    cold, but ALSO 481 of 1,578 (30.5%) stored tables in the LIVE subjects — finished
+#    surveys that simply live in an active tree (KO11..KO19 end 2020, SHL0xx end 2015).
+#    Those are genuinely finished and deferring them is right, but it means "stale" and
+#    "archived" are different questions.
+#  * The archive label alone is not enough either: 963 of the 2,832 archive tables have NO
+#    stored rows, so a freshness-only rule leaves a third of the archive permanently hot.
+#
+# So: cold if the publisher files it under the archive tree, OR its OBSERVED frontier is
+# older than the cutoff. Observed, not raw — a 2085 projection is not freshness (R327), and
+# a table whose only rows are future-dated is left HOT rather than judged.
+#
+# COLD IS A CADENCE, NEVER A SKIP. Cold tables are visited on a bounded slice per pass with
+# their own per-subject bookmark, so every one is reached within ceil(n_cold/slice) passes.
+# A table that is simply never revisited is R190 — a silent truncation that reports itself
+# as a healthy `partial` for ever — which is the exact failure this fetcher already carries
+# two bookmarks to prevent.
+_DISCONTINUED_SUBJECT = "Lepetatud_tabelid"     # publisher's own archive tree
+_COLD_ROTATION_FMT = "_rotation_cold_{}.json"   # per SUBJECT: one shared file would let each
+                                                # subject clobber the next one's bookmark and
+                                                # re-walk the same prefix for ever (R190).
+
+
+def _cold_after_days() -> float:
+    return float(os.environ.get("STAT_ESTONIA_COLD_DAYS", "1095"))    # 3 years
+
+
+def _cold_slice() -> int:
+    return int(os.environ.get("STAT_ESTONIA_COLD_SLICE", "150"))
+
+
+def _is_cold(subject: str, stored_max, today: dt.date, cutoff_days: float) -> bool:
+    """Is this table's data finished, so far as we can tell from what we hold?
+
+    NEVER DEFER AN UNKNOWN. A table outside the archive tree with no stored rows might be
+    brand new, so it stays hot; only the publisher's own archive label can make an
+    unknown cold.
+    """
+    if subject == _DISCONTINUED_SUBJECT:
+        return True
+    if stored_max is None:
+        return False
+    d = stored_max if isinstance(stored_max, dt.date) else None
+    if d is None:
+        try:
+            d = dt.date.fromisoformat(str(stored_max)[:10])
+        except Exception:                                    # noqa: BLE001
+            return False
+    if d > today:
+        return False          # a projection is not staleness — leave it hot (R327)
+    return (today - d).days > cutoff_days
+
+
+def _cold_plan(tables, subject, stored, bookmark, today, cutoff_days, slice_n):
+    """(cold_paths_set, due_paths_set) for one subject's pass.
+
+    Pure on purpose: the scheduling rule is the part that can silently truncate, so it is
+    testable without a network, a store or a clock.
+
+    `bookmark` is the last cold table ACTUALLY VISITED last pass (not the last one planned)
+    — see the caller. Rotating on a planned-but-unreached table is how a budget cut turns
+    a cadence into a skip.
+    """
+    cold, order = set(), []
+    for t in tables:
+        p = t["path"]
+        if _is_cold(subject, stored.get(_table_prefix(p)), today, cutoff_days):
+            cold.add(p)
+            order.append(p)
+    if not order:
+        return cold, set()
+    if bookmark and bookmark in order:
+        order = rotate_after(order, bookmark)
+    return cold, set(order[:max(0, slice_n)])
+
+
+# --------------------------------------------------------------------------- #
 # Build the date-tail query for one table (only periods AFTER stored max).
 # --------------------------------------------------------------------------- #
 def _build_query(ing, variables, stored_max: dt.date | None):
@@ -530,6 +620,18 @@ def update(unit, since) -> Result:
             cursors[pref] = _cursor_value(d)
             maxd = _bump_unit_max(maxd, d)
 
+        # COLD PLAN for this subject. `subj` already passed _safe_subject when by_subject was
+        # built, so it is a safe filename component here.
+        _cold_file = _COLD_ROTATION_FMT.format(subj)
+        _cold_book = load_rotation(out_dir, _cold_file)
+        cold_set, cold_due = _cold_plan(subj_tables, subj, stored, _cold_book,
+                                        dt.date.today(), _cold_after_days(), _cold_slice())
+        if cold_set:
+            print(f"[{SOURCE}] {subj}: {len(cold_set)} of {len(subj_tables)} table(s) cold "
+                  f"(archive or frontier older than {_cold_after_days():.0f}d); "
+                  f"{len(cold_due)} due this pass, resuming after {_cold_book.split('|')[-1] or '(start)'!r}",
+                  flush=True)
+
         # accumulate this subject's NEW rows across all its tables, then merge once.
         keys: list[str] = []
         dates: list[dt.date] = []
@@ -537,6 +639,13 @@ def update(unit, since) -> Result:
         seen: set[tuple] = set()
 
         last_tbl = ""
+        # The last COLD table actually reached this pass. The cold bookmark advances over
+        # this and never over the planned slice: if the budget cuts the pass short, the cold
+        # tables we never got to must still be first in line next time, or the cadence
+        # silently becomes a skip (R190).
+        last_cold_visited = ""
+        n_cold_deferred = 0
+        n_cold_visited = 0
         hit_cap_inside = False
         for t in subj_tables:
             # THE DEADLINE, CHECKED PER TABLE. The subject-level check above bounds when the NEXT
@@ -569,6 +678,18 @@ def update(unit, since) -> Result:
                       flush=True)
                 break
             tpath = t["path"]
+            # COLD AND NOT DUE -> defer, cheaply, with NO network. Counted, never silent:
+            # an untallied deferral leaves finalize() with nothing added and nothing failed,
+            # so it returns `no_change` and stamps a vintage claiming a coverage this tick
+            # never reached (R303). Unlabelled on purpose — 2,682 labels would bury the real
+            # offenders in the run note, and the aggregate is printed below instead.
+            if tpath in cold_set and tpath not in cold_due:
+                tally.deferred_unit()
+                n_cold_deferred += 1
+                continue
+            if tpath in cold_set:
+                last_cold_visited = tpath
+                n_cold_visited += 1
             prefix = _table_prefix(tpath)
             # "Last table VISITED", recorded before the work rather than after it. Every branch
             # below can `continue` (transient, empty, rejected query), and a bookmark that only
@@ -690,6 +811,24 @@ def update(unit, since) -> Result:
                 maxd = _bump_unit_max(maxd, dt.date.fromisoformat(md))
         else:
             total += before
+
+        # COLD BOOKMARK — advanced over what was REACHED, and placed here so it is written on
+        # BOTH exits: a complete subject falls through, and a capped one breaks out of the table
+        # loop into the merge above and arrives here too. Writing it inside the deadline branch
+        # instead would leave a complete pass never advancing, i.e. the same 150 archive tables
+        # for ever.
+        #
+        # Left UNTOUCHED when nothing cold was reached (budget died first), so the slice that
+        # was due stays due. Advancing on a planned-but-unvisited table is exactly how a
+        # cadence decays into a skip.
+        if last_cold_visited:
+            save_rotation(out_dir, last_cold_visited, _cold_file)
+        if n_cold_deferred:
+            # VISITED, not planned. On a capped pass these differ, and reporting the plan as
+            # though it were the outcome is how a bound starts looking like coverage.
+            print(f"[{SOURCE}] {subj}: deferred {n_cold_deferred} cold table(s) to a later pass; "
+                  f"visited {n_cold_visited} of {len(cold_due)} due, "
+                  f"last {last_cold_visited or '(none reached)'!r}", flush=True)
 
         if hit_cap_inside:
             # The merge above published this subject's partial haul; stop the sweep. Both
