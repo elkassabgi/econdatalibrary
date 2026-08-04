@@ -135,6 +135,28 @@ def ledger_hits(sid):
     return hits
 
 
+def load_findings():
+    """Per-source root causes from the 2026-08-04 unfetchable audit (29 agents, each finding
+    adversarially challenged). Stored as JSON beside the runbook so it is regenerable and
+    committed, rather than stranded in a workflow journal that does not survive the session."""
+    p = os.path.join(OUT_DIR, "_findings.json")
+    try:
+        d = json.load(open(p, encoding="utf-8"))
+    except Exception:                                         # noqa: BLE001
+        return {}, ""
+    raw = d.get("sources", {})
+    out = {}
+    for k, v in raw.items():
+        # a key may name a GROUP ("abs-ecb-ssb", "small-batch: ember, idb, ...") - attach it to
+        # every source it covers, so each page carries its own diagnosis
+        ids = re.findall(r"[a-z][a-z0-9_]{2,}", k.split("(")[0])
+        for sid in ids or [k]:
+            if sid in ("small", "batch", "whole", "updater", "audit"):
+                continue
+            out.setdefault(sid, (k, v))
+    return out, d.get("audit", "")
+
+
 def licence_line(sid):
     try:
         txt = open(LICENCES, encoding="utf-8").read()
@@ -198,7 +220,7 @@ def store_frontier(sid, reg):
     return len(files), hi, obs
 
 
-def render(sid, reg, st, runs, cat, served, with_store=False):
+def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
     e = reg.get(sid, {})
     units = st.get(sid, [])
     L = []
@@ -426,6 +448,46 @@ def render(sid, reg, st, runs, cat, served, with_store=False):
       "'fix' it.")
     A("")
 
+    # ---- 4b. AUDIT FINDING
+    fkey_v = (findings or {}).get(sid)
+    if fkey_v:
+        fkey, f = fkey_v
+        A("## 4b. Root cause when this was last investigated (2026-08-04)")
+        A("")
+        A(f"*From the unfetchable-source audit — 29 agents, every finding challenged by a "
+          f"skeptic before it was accepted. This source was covered by the target `{fkey}`.*")
+        A("")
+        A(f"- **root cause**: `{f.get('root_cause')}`  (confidence {f.get('confidence')})")
+        if f.get("verdict") is True:
+            A(f"- **the skeptic REFUTED it**: {f.get('verdict_reason')}")
+            A(f"- corrected reading: {f.get('corrected_root_cause')}")
+        elif f.get("verdict") is False:
+            A("- the skeptic could not refute it (evidence reproduced independently)")
+        if f.get("failing_units"):
+            A(f"- **which units**: {f['failing_units']}")
+        if f.get("blast_radius"):
+            A(f"- **blast radius**: {f['blast_radius']}")
+        A(f"- fixable by us: **{f.get('fixable_by_us')}**")
+        if f.get("needs_from_ahmed"):
+            A(f"- **needs Ahmed**: {f['needs_from_ahmed']}")
+        A("")
+        if f.get("recommended_fix"):
+            A("**Recommended fix, in order:**")
+            A("")
+            for _ln in str(f["recommended_fix"]).splitlines():
+                A("> " + _ln)
+            A("")
+        if f.get("evidence"):
+            A("<details><summary>Evidence produced during that investigation — HTTP codes, "
+              "file:line, measured counts. Re-verify before acting: it was true on "
+              "2026-08-04.</summary>")
+            A("")
+            for ev in f["evidence"]:
+                A(f"- {ev}")
+            A("")
+            A("</details>")
+            A("")
+
     # ---- 5. HISTORY
     hits = ledger_hits(sid)
     A("## 5. Everything that has already gone wrong here")
@@ -475,13 +537,14 @@ def main():
     a = ap.parse_args()
 
     reg = load_registry()
+    findings, audit_name = load_findings()
     st, runs = load_state()
     cat = load_catalog_counts()
     served = load_served()
 
     ids = sorted(set(reg) | set(st) | set(cat))
     if a.source:
-        print(render(a.source, reg, st, runs, cat, served, a.with_store))
+        print(render(a.source, reg, st, runs, cat, served, a.with_store, findings))
         return 0
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -490,7 +553,7 @@ def main():
         if not sid:
             continue
         with open(os.path.join(OUT_DIR, f"{sid}.md"), "w", encoding="utf-8", newline="") as f:
-            f.write(render(sid, reg, st, runs, cat, served, a.with_store))
+            f.write(render(sid, reg, st, runs, cat, served, a.with_store, findings))
         written += 1
 
     # ---- index
