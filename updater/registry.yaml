@@ -217,6 +217,12 @@ sources:
     per series and fetch start=max_date+1 - the current skip-if-key-present logic never extends a daily series (stale for
     a daily source).
   cadence: daily
+  # data_cadence MEASURED 2026-08-04: 673 distinct obs_date(s) in the trailing 3 years,
+  # of which 0 fall on a weekend => the publisher releases on BUSINESS days. `daily`
+  # gives a 3-day lateness tolerance, so a Friday observation is already stale on Monday
+  # and this source went RED-DATA ~2 days in 7 while level with its publisher. Sets the
+  # LATENESS clock only (6 days); the check cadence above is unchanged. See health.py.
+  data_cadence: business_daily
   refresh_cost: fast
   out_dir: bcrp
   review: true
@@ -921,6 +927,12 @@ sources:
   strategy_reason: Daily FX served as per-year files via ?year=YYYY; steady state fetches only the current year (the date
     tail), and the in-function (key,date) seen-set already de-dups for a clean merge into the stored max obs_date.
   cadence: daily
+  # data_cadence MEASURED 2026-08-04: 751 distinct obs_date(s) in the trailing 3 years,
+  # of which 0 fall on a weekend => the publisher releases on BUSINESS days. `daily`
+  # gives a 3-day lateness tolerance, so a Friday observation is already stale on Monday
+  # and this source went RED-DATA ~2 days in 7 while level with its publisher. Sets the
+  # LATENESS clock only (6 days); the check cadence above is unchanged. See health.py.
+  data_cadence: business_daily
   refresh_cost: fast
   out_dir: cnb
   review: true
@@ -1840,6 +1852,12 @@ sources:
   strategy_reason: The Frankfurter API accepts arbitrary start..end date ranges (start_date already used per-year); read max(obs_date)
     and fetch only max_date+1..today instead of re-pulling 1999..now every run.
   cadence: daily
+  # data_cadence MEASURED 2026-08-04: 763 distinct obs_date(s) in the trailing 3 years,
+  # of which 0 fall on a weekend => the publisher releases on BUSINESS days. `daily`
+  # gives a 3-day lateness tolerance, so a Friday observation is already stale on Monday
+  # and this source went RED-DATA ~2 days in 7 while level with its publisher. Sets the
+  # LATENESS clock only (6 days); the check cadence above is unchanged. See health.py.
+  data_cadence: business_daily
   refresh_cost: fast
   out_dir: frankfurter
   review: true
@@ -3355,6 +3373,12 @@ sources:
   strategy_reason: Fetched via FRED, which exposes a server-side observation_start date filter; derive it from each series'
     stored max(obs_date) and pull only the tail.
   cadence: daily
+  # data_cadence MEASURED 2026-08-04: 750 distinct obs_date(s) in the trailing 3 years,
+  # of which 0 fall on a weekend => the publisher releases on BUSINESS days. `daily`
+  # gives a 3-day lateness tolerance, so a Friday observation is already stale on Monday
+  # and this source went RED-DATA ~2 days in 7 while level with its publisher. Sets the
+  # LATENESS clock only (6 days); the check cadence above is unchanged. See health.py.
+  data_cadence: business_daily
   refresh_cost: fast
   out_dir: nyfed
   review: true
@@ -3467,6 +3491,12 @@ sources:
   strategy_reason: OFR v1/series/dataset endpoint accepts a server-side &mindate=YYYY-MM-DD date filter, so fetch only obs
     newer than stored max(obs_date) per dataset and merge/de-dup.
   cadence: daily
+  # data_cadence MEASURED 2026-08-04: 765 distinct obs_date(s) in the trailing 3 years,
+  # of which 12 fall on a weekend => the publisher releases on BUSINESS days. `daily`
+  # gives a 3-day lateness tolerance, so a Friday observation is already stale on Monday
+  # and this source went RED-DATA ~2 days in 7 while level with its publisher. Sets the
+  # LATENESS clock only (6 days); the check cadence above is unchanged. See health.py.
+  data_cadence: business_daily
   refresh_cost: fast
   out_dir: ofr
   review: true
@@ -3896,6 +3926,12 @@ sources:
   strategy_reason: SWEA v1 API accepts a server-side date range so we can fetch only obs after the stored last_obs_date and
     merge; current skip-if-series-exists logic freezes daily series, so a true since-delta is the right fix.
   cadence: daily
+  # data_cadence MEASURED 2026-08-04: 749 distinct obs_date(s) in the trailing 3 years,
+  # of which 0 fall on a weekend => the publisher releases on BUSINESS days. `daily`
+  # gives a 3-day lateness tolerance, so a Friday observation is already stale on Monday
+  # and this source went RED-DATA ~2 days in 7 while level with its publisher. Sets the
+  # LATENESS clock only (6 days); the check cadence above is unchanged. See health.py.
+  data_cadence: business_daily
   refresh_cost: fast
   out_dir: riksbank
   review: true
