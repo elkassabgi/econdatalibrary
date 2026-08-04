@@ -146,7 +146,18 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   carries its own PublishingDate, which is a publisher-supplied per-cube vintage - better than
 #   any HTTP validator. Keys and dates both verified at 100% against the existing store before
 #   wiring (762/762 keys, 303,358/303,358 rows).
-EXPECTED_SOURCE_COUNT = 141
+# 2026-08-04: 141 -> 144. imf_bop_direct, imf_irfcl_direct, imf_cpi_direct — the three IMF
+#   datasets pulled first-hand from api.imf.org (SDMX 2.1) instead of a relay. Each has a
+#   hand-pinned entry because the _direct family is absent from UPDATE_CAPABILITY_MATRIX.json,
+#   and each vintage_signal records a CALLED value (BOP 21.0.0, IRFCL 12.0.0, CPI 5.0.0).
+#
+#   I ADDED THE ENTRIES AND NOT THIS NUMBER, AND THAT TOOK THE WHOLE UPDATER DOWN. registry
+#   validation runs before any source does, so from that commit until this one every run — cloud
+#   and local — exited 1 at "expected 141 sources, found 144" having fetched NOTHING. It is not
+#   a warning and it does not skip the offending entries; it refuses the run. The guard is right
+#   (a silently-appearing source is exactly what it exists to catch); updating it is part of
+#   adding a source, not an afterthought. Ledger R347.
+EXPECTED_SOURCE_COUNT = 144
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
