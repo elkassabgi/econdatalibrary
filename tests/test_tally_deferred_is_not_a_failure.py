@@ -82,14 +82,30 @@ def test_clean_run_is_unaffected():
 
 
 def test_deferred_units_are_named():
-    """Same reasoning as transient/structural ids: an unnamed deferral is unauditable."""
+    """Same reasoning as transient/structural ids: an unnamed deferral is unauditable.
+
+    Derived from _named's OWN cap rather than a hardcoded count. This test used 9 ids and
+    asserted the "+N more" elision, which silently encoded the cap of the day — raising that
+    cap 6 -> 20 on 2026-08-04 turned a still-correct test red. The property being pinned is
+    "some are named, and any elision is stated", and that holds at every cap.
+    """
+    from updater.strategies.fetchers._common import _named
+    cap = _named.__defaults__[0]
+
     t = Tally()
     t.added_unit(1)
-    for i in range(9):
+    for i in range(cap + 3):                 # deliberately over the bound, whatever it is
         t.deferred_unit(f"flow{i}: budget spent")
     r = finalize(t, 10, None, source="demo")
     assert "flow0: budget spent" in r.error
-    assert "more" in r.error, "the list is bounded and says so"
+    assert "+3 more" in r.error, "the list is bounded and says so"
+
+    t2 = Tally()
+    t2.added_unit(1)
+    for i in range(cap):                     # exactly at the bound: nothing to elide
+        t2.deferred_unit(f"flow{i}: budget spent")
+    r2 = finalize(t2, 10, None, source="demo")
+    assert "more" not in r2.error, "nothing was dropped, so nothing should claim it was"
 
 
 def test_no_deadline_block_files_a_deferral_as_transient():
