@@ -37,7 +37,9 @@ METHODS = {"transient_unit", "structural_unit"}
 # transient status, hard 4xx, RData body unparseable, year column renamed, RData rows melting to
 # zero, merge refusal. The renamed-column one now prints the columns that DID arrive, which turns
 # a bisect into a one-line fix.
-BUDGET = 158
+# 158 -> 152: bundesbank's six. Its >256-byte size split now travels with the label, because that
+# number IS the decision between "schema break" and "truncated response, retry".
+BUDGET = 152
 
 
 class _Counter(ast.NodeVisitor):

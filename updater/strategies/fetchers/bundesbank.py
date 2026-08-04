@@ -144,12 +144,16 @@ def update(unit, since) -> Result:
         try:
             r = requests.get(url, headers=UA, timeout=600, stream=True)
             if r.status_code in _TRANSIENT:
-                tally.transient_unit()
+                # NAME THE FLOW. bundesbank iterates FLOWS, so an unlabelled count gives
+                # "N/M sub-unit(s) failed" for six DIFFERENT causes: transient status, a flow
+                # that vanished, a network drop mid-stream, an unparseable body, a suspiciously
+                # tiny body, and a real body parsing to zero rows.
+                tally.transient_unit(f"{flow_id}: HTTP {r.status_code} (transient)")
                 total_rows += before
                 continue
             if r.status_code != 200:
                 # 4xx other than transient -> structural (flow vanished / id changed)
-                tally.structural_unit()
+                tally.structural_unit(f"{flow_id}: HTTP {r.status_code} — flow gone or renamed")
                 total_rows += before
                 continue
             chunks = []
@@ -157,8 +161,8 @@ def update(unit, since) -> Result:
                 if chunk:
                     chunks.append(chunk)
             xml_bytes = b"".join(chunks)
-        except (requests.Timeout, requests.ConnectionError, requests.RequestException):
-            tally.transient_unit()
+        except (requests.Timeout, requests.ConnectionError, requests.RequestException) as e:
+            tally.transient_unit(f"{flow_id}: {type(e).__name__} during stream")
             total_rows += before
             continue
 
@@ -167,10 +171,12 @@ def update(unit, since) -> Result:
             keys, dates, vals = _parse_flow(xml_bytes, flow_id)
         except ET.ParseError:
             # 200 with an unparseable body from a non-trivial response -> structural
+            # The size split is the whole decision here, so carry it: >256 B of unparseable
+            # XML is a schema break, a tiny body is a truncated/errored response worth retrying.
             if len(xml_bytes) > 256:
-                tally.structural_unit()
+                tally.structural_unit(f"{flow_id}: {len(xml_bytes):,} B of unparseable XML")
             else:
-                tally.transient_unit()
+                tally.transient_unit(f"{flow_id}: truncated body, {len(xml_bytes)} B")
             total_rows += before
             continue
 
@@ -181,7 +187,7 @@ def update(unit, since) -> Result:
         })
         if tbl.num_rows == 0:
             # 200 but parsed nothing from a real body -> structural break (schema change)
-            tally.structural_unit()
+            tally.structural_unit(f"{flow_id}: {len(xml_bytes):,} B parsed to 0 rows")
             total_rows += before
             continue
 
