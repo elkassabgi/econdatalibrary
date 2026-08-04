@@ -5661,6 +5661,80 @@ sources:
       (agency IMF.STA); re-pull only when it moves. Agency ids are NOT uniform
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Currency Composition of Official Foreign Exchange Reserves (COFER)
+- source_id: imf_bop_direct
+  # ADDED 2026-08-04. `imf_bop` holds 99,636 relay-era series with NO fetcher at all, so it has
+  # never auto-updated — the largest single frozen block left. IMF publishes it as dataflow BOP,
+  # agency IMF.STA, v21.0.0: an EXACT id match read from IMF's own /dataflow catalogue (222 live
+  # flows), not guessed. Agency ids are NOT uniform here (FDI is IMF.MCM, WEO IMF.RES, FM/WORLD
+  # IMF.FAD) and assuming IMF.STA cost four spurious 404s in an earlier pass.
+  #
+  # NEW source id, not a replacement: imf_bop keeps its ids and its data. Whether this supersedes
+  # it is a re-key question (#46, reserved) and is settled by the ingest's measured series count,
+  # not assumed — ingest_imf_direct's own header records direct being SMALLER for some flows
+  # (MCDREO 57%, FM 9%), which is why those two are excluded from this batch.
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_bop_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow BOP
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-04 by
+      calling the module's own current_vintage(): BOP -> BOP:21.0.0.
+    name: Balance of Payments (BOP)
+- source_id: imf_irfcl_direct
+  # ADDED 2026-08-04 alongside imf_bop_direct. `imf_irfcl` holds 54,126 relay-era series with no
+  # fetcher and has never auto-updated. EXACT dataflow id read from IMF's own catalogue.
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_irfcl_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow IRFCL
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-04 by
+      calling the module's own current_vintage(): IRFCL -> IRFCL:12.0.0.
+    name: International Reserves and Foreign Currency Liquidity (IRFCL)
+- source_id: imf_cpi_direct
+  # ADDED 2026-08-04. `imf_cpi` holds 28,420 relay-era series with no fetcher. NOT to be confused
+  # with dataflow CPIS (Coordinated Portfolio Investment Survey), which is our separate imf_cpis.
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: fast
+  out_dir: imf_cpi_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow CPI
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-04 by
+      calling the module's own current_vintage(): CPI -> CPI:5.0.0.
+    name: Consumer Price Index (CPI)
 - source_id: imf_fsic_direct
   live: true
   scripts:
