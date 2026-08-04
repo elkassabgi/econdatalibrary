@@ -38,6 +38,12 @@ node_modules/
 
 # Desktop/session-local ops (Windows watchdogs, not part of the product)
 .claude/
+# EXCEPT the econ-updater skill: it is the operating manual for this repo and must be
+# versioned WITH the code it describes (Ahmed, 2026-08-04). Session droppings
+# (KEEP_WORKING, STOP_REASON, worktrees) stay ignored via the rules below.
+!.claude/
+.claude/*
+!.claude/skills/
 RELAUNCH_*.ps1
 EconGuard.cmd
 
@@ -96,3 +102,8 @@ _updater_proof/
 mcp/mcp-publisher.exe
 mcp/mcp-publisher.tar.gz
 dbnomics_license_manifest.json
+
+# keep-working Stop-hook sentinel + counter (machine-local)
+.claude/KEEP_WORKING
+.claude/.keep_working_count
+.claude/STOP_REASON

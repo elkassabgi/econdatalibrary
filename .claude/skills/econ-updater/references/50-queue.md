@@ -1,0 +1,165 @@
+# Work queue + standing constraints — measured 2026-08-04
+
+> The queue SNAPSHOT below ages. The live number is always
+> `python tools/audit_schedule_coverage.py` — re-run it at the start of a cycle and
+> refresh this file when the delta is material. The constraints are verbatim from the
+> canonical files and do NOT age without an explicit decision from Ahmed.
+
+## Standing constraints (verbatim from E:/research/econfindatalibrary/CLAUDE.md)
+
+### §0 — DBnomics is BANNED (CLAUDE.md:3-28)
+
+> **Do not fetch from DBnomics. Do not probe api.db.nomics.world. Do not build, keep or "temporarily" rely on a DBnomics-backed fetcher, relay, mirror or vintage signal. Do not run the DBnomics staleness audit as if it described a supported path.** Every source must come from ITS OWN PUBLISHER.
+
+Why (CLAUDE.md:15-20): 98 of the 101 datasets ever taken from DBnomics have not been re-indexed in over 180 days (UNCTAD: 1,581 days), and its vintage signal is DBnomics' own hash, so a frozen dataset reports `no_change` forever while the health gate sees daily success.
+
+What it means in practice (CLAUDE.md:22-28, quoted):
+> - Existing DBnomics-derived data STAYS until migrated to the publisher — nothing is deleted by this rule. `who_hwf`, `who_rs`, `who_sdg` are the last three live relay fetchers and are to be MIGRATED to WHO directly, not refreshed via DBnomics.
+> - Never add a new one. If a publisher has no usable API, say so and ask — do not reach for the aggregator.
+> - Do not cite DBnomics coverage as evidence of anything about a source's freshness.
+
+### §1 — Do not end a turn to report (CLAUDE.md:31-50)
+
+> **Definition of done for any task here:** the change is committed, pushed, deployed where applicable, and VERIFIED against the live system — not "the code is written".
+
+Only three things end a turn (CLAUDE.md:41-46, quoted):
+> 1. A decision in the RESERVED list below (§2) that I am not authorised to make.
+> 2. A hard external blocker — a credential I do not have, an account only Ahmed can create, a service that is down.
+> 3. The queue is genuinely empty.
+
+### §2 — Pre-authorised (do without asking) (CLAUDE.md:54-66, quoted)
+
+> - Adding NEW source ids, catalog rows, fetchers, ingesters, registry entries
+> - Deriving and uploading CSVs to R2; syncing catalog rows to D1
+> - Flipping `SUPPORTED_SOURCES` **after** verifying the CSVs exist (derive → sync → flip; never flag-first, which turns a 501 into a 404)
+> - Promoting a source to `live: true` once it proves in CI
+> - Building/committing/pushing/deploying fixes to econdatalibrary + its worker
+> - Restarting local crawlers, dispatching CI runs, adding audits and instrumentation
+> - Fetching a source directly instead of via an aggregator, when measured to be equal-or-better coverage
+
+### §2 — RESERVED (stop and ask) (CLAUDE.md:67-81, quoted)
+
+> **RESERVED — stop and ask.** Each of these can destroy something a user has:
+>
+> - **Re-keying or retiring existing series ids** (breaks saved links, notebooks, MCP configs). Adding a parallel id is pre-authorised; changing an existing one is not.
+> - **Deleting data, catalog rows, or R2 objects** — including "phantom" rows, until their absence upstream is verified.
+> - **Auth / security / billing policy** (token lifetimes, key rotation, rate limits).
+> - **Publishing anything to a PUBLIC repo that is internal** — MISTAKES.md, licence negotiations, operational notes.
+> - **Sending email** or any outward communication under Ahmed's name.
+> - **Switching a source to a feed that serves LESS than the current one** (e.g. IMF MCDREO direct has 57% of the relay's series; FM 9%).
+>
+> If a task is mostly pre-authorised with one reserved step, do the whole pre-authorised part first and surface only the reserved step.
+
+### Other standing constraints
+
+- **Reporting filter** (CLAUDE.md:83-89): report decisions needed, blockers, verified completions, and model-changing findings; never intermediate investigation, plans about to be executed, restated status, or a proposal that could simply be done.
+- **Runbook-first diagnosis** (CLAUDE.md:91-115): a stopped source starts at `docs/runbook/<source_id>.md` (248 generated pages, index `docs/runbook/README.md`; regenerate with `python tools/gen_runbook.py --with-store`, never hand-edit). Three traps on every page: a `partial` never sets `last_success_utc` (R231); `obs_count` means "rows this run" on a productive run and "whole store" on a quiet one (R326); a FUTURE date is usually a legitimate projection — a defect is a SENTINEL (9999/2999) or a COUNTER, never judged by size (R327). In the 2026-08-04 all-sources audit the causes were `budget_deferral`, `code_bug`, `rate_limited`, `gated_by_design` — **zero expired credentials or dead endpoints**; `deferred (budget N min)` means nothing failed (R303).
+- **Verification rules** (CLAUDE.md:117-137): read the MISTAKES.md Rules Digest, especially R0, before trusting any number you produced (R328 — sixteen entries with zero digest lines were invisible the same night). A green run is not a proof — read what it DID (R50); announce work BEFORE starting it (R70); verify at the surface the user touches — local catalog ≠ live D1 ≠ R2 (R60); run a known-good control before believing a negative (R52/R67); a test that cannot fail proves nothing (R64); names are an interface — grep every consumer (R66); a budget bounds only the failure mode it measures (R72).
+
+## Licence gates & disputes (canonical file: E:/research/econfindatalibrary/DATABASE_LICENSES_VERBATIM.md — do NOT re-derive)
+
+Header rule (line 5): single source of truth; a database is only cleared to re-host when terms **explicitly permit redistribution** AND the adversarial verifier CONFIRMED it; anything ambiguous stays gated.
+
+Summary (lines 13-21): CLEARED-attribution 144, RESTRICTED-keep-gated 18, NEEDS HUMAN REVIEW 11, CLEARED-open 9, CLEARED-NC-only 6, CLEARED by written permission 2 (+1 scoped), verdicts CONFIRMED=184 / DISPUTED=7.
+
+**The 7 DISPUTED verdicts** (needs-attention table, lines 37-58; per-provider detail at cited lines):
+| Source | Verdict summary | Lines |
+|---|---|---|
+| bundesbank | non_redistributable use-only grant; metadata-only/link-out unless written permission | 38, 799-823 |
+| faostat | NC + anti-endorsement + third-party carve-out (not plain CC BY) | 45, 1107-1125 |
+| freedomhouse | data gated behind "FIW Data Request"; open re-hosting not authorized | 47, 1282-1294 |
+| idb | CC BY-NC-ND, and ~86% of IDB datasets carry NO licence at all | 48, 1580-1609 |
+| owid | mixed/source-dependent — majority is third-party data, not blanket CC BY | 51, 1991-2008 |
+| worldbank | CC BY with third-party exceptions — embedded UN/IMF/WHO/ILO/IEA/UNESCO series may NOT be redistributed | 56, 2769-2788 |
+| worldbank_pink | restricted — LME/Cotlook/SICOM/ICCO/ICO proprietary series; NEEDS-REVIEW pending per-series clearance | 57, 2994-3016 |
+
+**RESTRICTED/permission_required (CONFIRMED, stay gated)** (lines 37-58): WTO (8 dbs), cboe, cow, damodaran (unclear_not_found), defillama, Energy Institute, Kenneth French, frankfurter (unclear), irena (unclear), nbp, polity5, shiller (unclear), sipri, tcmb, zillow. Plus **fred — RESTRICTED, keep gated** (3519-3566): mirroring and "essential experience" prohibitions apply to ALL use including non-commercial; serving only the public-domain tier does NOT rescue it; 48.2M local obs must stay uncatalogued/underived — "It must STAY that way. Do not catalogue, do not derive CSVs, do not add a fetcher or a registry entry" (3563-3564); deleting the local copy is Ahmed's call (3564-3566). Also an ML/LLM-training clause binding even internal use (3537, 3557-3559).
+
+**Written permissions on file** (lines 25-31): comtrade (holdings must stay ≤100,000 records), kof_globalization (NC academic, cite KOF/ETH), whr — **OPEN gate**: "GRANTED in writing (Gallup/WHR) but SCOPED to the Figure 2.1 summary ONLY; currently re-gated pending trim to that scope" (line 31).
+
+**Open / pending items:**
+- **fdic** — NEEDS HUMAN REVIEW, keep gated (3441-3479): no licence stated anywhere; §105 public-domain inference explicitly rejected ("'probably fine' is not a quote", 3473); answerable by writing webmaster@fdic.gov (reserved: sending email).
+- **istat, fdic, gleif** — RESEARCHER-ASSESSED single pass, "verdict field as pending that second reader" (3404-3407, 3450-3451, 3490-3491). istat itself CLEARED CC BY 4.0 (3397-3437).
+- **gleif** — licence CLEARED (CC0, 3483-3517) but "the blocker here is SHAPE, not licence": entity registry, no series model fits; serving needs an entity-lookup surface = product decision (3512-3517).
+- **un_wpp** — CLEARED CC BY 3.0 IGO locally, but **D1 still records NEEDS-REVIEW**; D1 must be aligned before un_wpp is ever hosted (3311-3314).
+- **wid** — CC BY-NC-SA 4.0 (3113-3148): the CC BY text in the page source is COMMENTED OUT — do not cite it (3137-3139); SA means own licence row; plus a **currency condition** — Alice asked we "keep the most updated data sources", so WID must be wired to refresh, not snapshotted (3147-3148).
+- **yale_epi** — CC BY-NC-SA; flags were corrected 2026-07-28 after being copied from another source's row (3151-3178).
+- **iep (gpi/gti/ppi/etr)** — CLEARED CC BY-NC-SA via Ahmed's 2026-07-06 form grant (3215-3229); the earlier NEEDS-REVIEW verdict is superseded (3235-3264).
+- **adb** — CLEARED via KIDB's own broader grant; attribution must carry the PRESCRIBED verbatim form "Asian Development Bank: Key Indicators Database Online (https://kidb.adb.org). Accessed on [insert date of access]." plus pass-through (3369-3393). ons_uk carve-out closed — exemptions are images/video only (3355-3367).
+
+**etalab-2.0 date-condition precedent** (1541-1561): Etalab imposes THREE limbs — source attribution, **the date of last update of the data when known**, and no meaning-alteration; "Any future source under Etalab must satisfy all three limbs, not just attribution" (1555). Class sweep 2026-07-29 (1557): insee_bdm 101,789/101,848 dated, insee_melodi 134/139. **cepii_gravity — GATE CLOSED (1559): 1,143,250/1,143,250 dated (100%)** using the `Last-Modified` header CEPII serves on the exact hosted file (`Gravity_csv_V202211.zip`) → `2024-04-15`, "an observed publisher fact, not our fetch time and not a day invented out of a month" — writing "2022-11-01" from the V202211 stamp would have fabricated precision. Keep both facts: dataset version V202211, file re-issued 2024-04-15. Currency check (1561): V202211 is CEPII's newest release.
+
+## Coverage headline (measured 2026-08-04, `cd E:/research/econfindatalibrary && PYTHONIOENCODING=utf-8 python tools/audit_schedule_coverage.py`)
+
+**126 of 223 sources / 9,931,121 of 11,298,111 series scheduled (56.5% of sources, 87.9% of series).** Catalogued 223, resolvable (util.ts) 225, SERVED (both) 223 = 11,298,111 series. NOT scheduled: 97 sources / 1,366,990 series.
+
+Tool's own caveat: "'scheduled' is a registry fact — live, adapter built, offered a turn. It is NOT sub-unit coverage" (worldbank_esg 32/71 and adb 44/54 both fixed 2026-08-03); for sub-unit coverage run `tools/audit_untouched_files.py --live`.
+
+Also reported:
+- **Scheduled on paper, CANNOT RUN** (fetcher-backed strategy, no fetcher module — orchestrator files "PENDING — no adapter built" and skips forever): `cbs_nl`, `gus_dbw` (both workstation route, run_location: local).
+- **Scheduled but NOT served** (refreshed on disk, reaches nobody; verify each): `cepii_baci` (0 catalog rows), `fdic` (gated by licence — legitimate), `gleif` (gated — shape blocker), `sec_edgar_xbrl`, `vdem` (workstation route).
+
+## Work queue (97 served, licence-cleared-enough, not auto-updating sources / 1,366,990 series)
+
+Key structural fact for ALL imf_* rows (updater/registry.yaml:5527-5543): the relay-era ids are DBnomics-shaped and IMF re-keyed its datasets, so no first-hand refresh preserves the old ids. The supported path is **parallel `imf_<flow>_direct` ids from api.imf.org** (pre-authorised: new ids alongside), never overwriting — "Overwriting imf_<flow> would re-key thousands of live series to buy freshness" (registry.yaml:5538-5540). 19 `imf_*_direct` registry entries already exist (registry.yaml:5544-5998).
+
+### ACTIONABLE (26 sources / 996,987 series) — build/promote the publisher-direct sibling; legacy relay ids stay frozen
+
+| Source | Series | Known notes |
+|---|---|---|
+| imf_dot | 101,000 | No direct sibling yet — build `imf_dot_direct` |
+| imf_cpis | 100,783 | No direct sibling yet. Dataflow CPIS = Coordinated Portfolio Investment Survey — distinct from CPI (registry.yaml:5717-5718) |
+| imf_ifs | 100,706 | **IMF retired IFS** (registry.yaml:5535) — no same-name flow exists; successor-flow mapping needed before any direct id can be added |
+| imf_bop | 99,636 | `imf_bop_direct` already registered (registry.yaml:5664) — prove/promote |
+| imf_cdis | 97,723 | No direct sibling yet |
+| imf_mfs | 88,271 | No direct sibling yet |
+| imf_irfcl | 54,126 | `imf_irfcl_direct` added 2026-08-04, vintage IRFCL:12.0.0 verified live (registry.yaml:5694-5715) |
+| imf_gfsr | 52,055 | No confirmed direct mapping yet (check GFS_SOEF, registry.yaml:5945) |
+| imf_gfse | 48,750 | Covered by `imf_gfssoo_direct` — GFS_SOO carries legacy gfse G26* codes; 475,049 series, live:false, **needs its own runner** (registry.yaml:5798-5825) |
+| imf_gfsmab | 43,179 | Also covered by `imf_gfssoo_direct` (G11*/G12* codes; same runner blocker) |
+| imf_gfsssuc | 36,901 | `imf_gfsssuc_direct` registered, live:false — needs own runner, too big for daily job's ceiling (registry.yaml:5854) |
+| imf_gfscofog | 34,731 | `imf_gfscofog_direct` registered, live:false — same runner blocker (registry.yaml:5826) |
+| imf_gfsibs | 29,390 | Corresponds to `imf_gfsbs_direct` (GFS_BS), live:false (registry.yaml:5889) |
+| imf_cpi | 28,420 | `imf_cpi_direct` added 2026-08-04, vintage CPI:5.0.0 verified (registry.yaml:5716-5737) |
+| imf_gfsfalcs | 20,249 | Corresponds to `imf_gfssfcp_direct` (GFS_SFCP), live:false (registry.yaml:5917) |
+| imf_fsire | 18,620 | No direct sibling yet |
+| imf_psbsfad | 14,018 | No direct sibling yet |
+| imf_pgi | 8,891 | No direct sibling yet |
+| imf_bopagg | 7,801 | No direct sibling yet (relation to BOP_direct unverified) |
+| imf_pctot | 4,320 | No direct sibling yet |
+| imf_unsdg_imf_inputs | 2,515 | No direct sibling yet |
+| imf_pgcs | 2,262 | No direct sibling yet |
+| imf_namain_idc_n | 1,926 | No direct sibling yet |
+| imf_gender_equality | 295 | No direct sibling yet |
+| imf_gender_budgeting | 288 | No direct sibling yet |
+| imf | 131 | Monthly registry entry exists (registry.yaml:2581, docs/DAILY_UPDATE_STATUS.md:33) — reconcile why audit counts it unscheduled |
+
+### RESERVED (71 sources / 370,003 series) — decision belongs to Ahmed; do not work
+
+| Source | Series | Why reserved |
+|---|---|---|
+| unctad_* (38 ids: tabbapotta 29,358; rfia 24,720; gdpgbtoevbkoeatasa 21,158; sbtisvsaga 7,920; gasbtoia 6,776; fdiiaofasa 5,107; gasbeaiogasa 5,076; tabmcioeaiopa 4,250; tabmscioeaiopa 4,250; gasbtbia 3,402; sbeaiotsvsaga 3,010; gdptapccac2pa 1,734; soigapotta 1,226; taupa 898; rgdptapcgra 867; bopcaba 842; mpcadioeaia 816; lsciq 760; mttasa 704; cpia 637; mtba 584; srbca 414; sotwmfvbcoboa 373; reericba 352; mttgra 351; lscia 344; reerigdba 333; tabpcioeaia 308; neera 280; cpta 177; mfbcoboa 155; mmcascioeaiopa 86; fmcpa 50; cpa 50; cioiuibbicoeair4a 15; fmcpia21 14; wstbtocabgoea 8; ciocgeaia 8) | 127,413 total | Upstream (UNCTAD Data Hub) re-coded ids; DBnomics relay was 1,581 days stale (CLAUDE.md:18) and is banned; no unctad entry exists in registry.yaml; refreshing under new ids = re-key, RESERVED (CLAUDE.md:69-70) |
+| imf_fsi | 73,288 | IMF publishes NO "FSI" dataflow; measured 2026-08-01 all 73,288 ids are DBnomics-shaped; three `imf_fsi{c,bsis,cdm}_direct` are the supported path — "Retiring or re-keying 73,288 live ids is the owner's call, not a build task" (registry.yaml:2678-2691) |
+| imf_fas | 13,960 | Direct sibling LIVE (registry.yaml:5564); crosswalk ~0% (registry.yaml:5536-5538) — only the retire/re-key decision remains |
+| imf_world | 2,268 | Direct LIVE (registry.yaml:5584); crosswalk ~0%; same retire decision |
+| imf_fdi | 1,728 | Direct LIVE (registry.yaml:5544); crosswalk 95.3%; same retire decision |
+| imf_afrreo | 1,654 | Direct LIVE (registry.yaml:5604); ~100% coverage; same retire decision |
+| imf_whdreo | 322 | Direct LIVE (registry.yaml:5979); crosswalk 56%; same retire decision |
+| imf_apdreo | 265 | Direct LIVE (registry.yaml:5624); crosswalk 100% by code; same retire decision |
+| imf_cofer | 154 | Direct LIVE (registry.yaml:5644); crosswalk ~0% (currency moved into its own dimension); same retire decision |
+| imf_fm | 1,356 | Direct feed has **9%** of relay's series — switching to a thinner feed is RESERVED (CLAUDE.md:77-78; registry.yaml:5540-5543) |
+| imf_mcdreo | 1,095 | Direct feed has **57%** of relay's series — same reserved class (CLAUDE.md:77-78; registry.yaml:5540-5543) |
+| unesco_clte | 23,868 | UNESCO culture/innovation 4 — Ahmed's call. Precedent: unesco_sci stays out because only 12/1,230 legacy indicator codes exist in the current UIS API (api/worker/src/util.ts:191-192); same currency question applies |
+| unesco_inno | 18,909 | Same |
+| unesco_film | 8,527 | Same |
+| unesco_cltt | 6,226 | Same |
+| fao_* (18 ids: ql 20,179; ga 15,018; ge 11,813; gt 10,506; gb 6,980; rp 5,440; gn 4,761; gl 3,057; gf 2,591; gy 2,491; ic 2,468; gr 617; es 595; ep 519; ew 169; ae 164; af 162; ec 49) | 87,579 total | FAOSTAT restructure question — Ahmed's. Precedent to reuse when he decides: fao_qcl went direct 2026-07-28 and DBnomics-era ids turned out to BE FAOSTAT's own codes, 98.2% reproducing exactly (registry.yaml:6061-6075) |
+| hf_equities | 1,391 | HF equities family — not in registry, no fetcher, no state ever (docs/runbook/hf_equities.md); belongs to Ahmed's hfdatalibrary pipeline decision |
+| insee_sdmx | — (not in queue; not served) | Needs full re-crawl: store unusable — 10.8M rows under 817 keys, all built from observation attributes (tools/derive_statcan_tables.py:53-55) |
+| unsdg | — (not in queue; denylisted) | Licence CLEARED 2026-07-21 (DATABASE_LICENSES_VERBATIM.md:3106) but sits on the denylist safety floor (api/worker/src/denylist.ts:72); un-gating a denylist entry is Ahmed's |
+| norgesbank | — (not in queue; denylisted) | Same: CLEARED NLOD 2.0 (DATABASE_LICENSES_VERBATIM.md:3105) but on denylist floor (api/worker/src/denylist.ts:64) |
+
+Cross-check: 26 actionable + 71 reserved = 97 queue sources; 996,987 + 370,003 = 1,366,990 series ✓ (matches audit total).
+
+COVERAGE: read lines 1-137 (complete file, 137 lines) of E:/research/econfindatalibrary/CLAUDE.md, last line read: `- **A budget bounds only the failure mode it measures** (time ≠ memory). R72.`
+COVERAGE: read lines 9-63 and 3087-3566 (end of file) of E:/research/econfindatalibrary/DATABASE_LICENSES_VERBATIM.md in full, plus grep-targeted excerpts of lines 1541-1565 (etalab/cepii), 799-823, 1107-1125, 1282-1294, 1580-1609, 1991-2008, 2769-2788, 2994-3016 (the 7 DISPUTED details) and all `^##`/`^###` headers; the middle (lines 64-3086) was NOT read line-by-line — per task instructions only headers/GATE/DISPUTED/etalab were extracted from it. Last line read: `needed under a different arrangement.` (line 3566, end of file).
