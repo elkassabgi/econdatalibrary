@@ -35,6 +35,9 @@ import pyarrow.compute as pc                                  # noqa: E402
 from updater import blob, config                              # noqa: E402
 
 IMPOSSIBLE_AFTER = dt.date(2200, 1, 1)
+# The LOW side matters at least as much: a counter-as-year starts at 1, so a future-only test
+# misses most fabrication. It reported 273,980 rows when the real figure was ~637,000 (R322).
+IMPOSSIBLE_BEFORE = dt.date(1500, 1, 1)
 
 
 def runs_in_flight() -> list:
@@ -109,12 +112,25 @@ def main() -> int:
     # was the thing we are fixing, and therefore how much good data rides along.
     t = blob.read_table(path, columns=["obs_date"])
     total = t.num_rows
-    bad = pc.sum(pc.cast(pc.greater(t.column("obs_date").combine_chunks(),
-                                    IMPOSSIBLE_AFTER), "int64")).as_py() or 0
+    col = t.column("obs_date").combine_chunks()
+    bad_hi = pc.sum(pc.cast(pc.greater(col, IMPOSSIBLE_AFTER), "int64")).as_py() or 0
+    bad_lo = pc.sum(pc.cast(pc.less(col, IMPOSSIBLE_BEFORE), "int64")).as_py() or 0
+    bad = bad_hi + bad_lo
     print(f"{a.source}/{a.filename}")
     print(f"  rows in file            : {total:,}")
-    print(f"  rows dated past {IMPOSSIBLE_AFTER.year}    : {bad:,} ({bad/max(total,1)*100:.1f}%)")
-    print(f"  rows that are FINE and will be re-fetched too: {total - bad:,}")
+    print(f"  rows dated past {IMPOSSIBLE_AFTER.year}    : {bad_hi:,} ({bad_hi/max(total,1)*100:.1f}%)")
+    print(f"  rows dated before {IMPOSSIBLE_BEFORE.year}  : {bad_lo:,} ({bad_lo/max(total,1)*100:.1f}%)")
+    # NOT "rows that are FINE". A range test cannot certify the rest, and saying it can is how
+    # 05W got called 42% damaged when it was 99.7% damaged: its fabricated dates are SETTLEMENT
+    # CODES, and codes 1500..6152 land inside any sane calendar window. Measured on stat_slovenia
+    # 05W — 506,605 rows, this line once read "291,830 FINE", the true figure was 1,463 (the ten
+    # tables carrying a real LETO/year axis; the other 23 were settlement counters end to end).
+    # A counter that starts at 1 walks THROUGH the plausible band on its way out of it, so
+    # in-range is not evidence of correctness. Say what was tested, and only that. R322/R329.
+    print(f"  rows OUTSIDE the impossible bands           : {total - bad:,}")
+    print(f"      ^ IN-RANGE ONLY — not a clean bill of health. A code-as-year counter passes")
+    print(f"        through 1500..2200; confirm per TABLE against the publisher's dimensions")
+    print(f"        before believing any of these are real observations.")
     if not bad:
         print("\n  This file has no impossible dates. If you are retiring it for another "
               "reason, say so explicitly — this tool's checks are about THIS defect.")
