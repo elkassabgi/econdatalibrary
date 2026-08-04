@@ -562,8 +562,10 @@ def update(unit, since) -> Result:
 
             try:
                 meta = _get_meta(sess, tid)
-            except TransientError:
-                tally.transient_unit()   # -> partial; existing data untouched
+            except TransientError as e:
+                # NAME THE TABLE. ssb sweeps ~1,515 tables, so an unlabelled count is a number
+                # with 1,515 candidates behind it and five different causes below.
+                tally.transient_unit(f"{tid}: metadata — {str(e)[-55:]}")   # existing data untouched
                 time.sleep(RATE)
                 continue
             if not meta or not isinstance(meta, dict):
@@ -574,7 +576,8 @@ def update(unit, since) -> Result:
             if not variables:
                 # 200 metadata with NO variables -> the expected PxWeb structure is gone.
                 if before > 0 and tid in per_max:
-                    tally.structural_unit()   # previously-populated table, structure lost
+                    # previously-populated table, structure lost
+                    tally.structural_unit(f"{tid}: 200 metadata carried NO variables")
                 else:
                     tally.empty_unit()
                 time.sleep(RATE)
@@ -588,7 +591,7 @@ def update(unit, since) -> Result:
                 # as (code, []) and falls through to the "nothing newer" empty_unit
                 # below instead — quietly current, never a false structural break.
                 if before > 0 and tid in per_max:
-                    tally.structural_unit()
+                    tally.structural_unit(f"{tid}: no time variable in metadata")
                 else:
                     tally.empty_unit()
                 time.sleep(RATE)
@@ -609,8 +612,8 @@ def update(unit, since) -> Result:
             body = {"query": query, "response": {"format": "json-stat2"}}
             try:
                 resp = _post_data(sess, tid, body)
-            except TransientError:
-                tally.transient_unit()
+            except TransientError as e:
+                tally.transient_unit(f"{tid}: data POST — {str(e)[-55:]}")
                 time.sleep(RATE)
                 continue
             if not resp:
@@ -630,7 +633,7 @@ def update(unit, since) -> Result:
                 # a legitimately-quiet/all-null tail.
                 if resp.get("value") and resp.get("id") and before > 0 and tid in per_max \
                         and not isinstance(resp.get("id"), list):
-                    tally.structural_unit()
+                    tally.structural_unit(f"{tid}: data response shape unrecognised")
                 else:
                     tally.empty_unit()
                 time.sleep(RATE)
