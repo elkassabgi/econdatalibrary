@@ -127,11 +127,31 @@ def main() -> int:
             print("could not establish the key order - refusing to write titles that may be "
                   "wrong (--require-titles)")
             return 1
+        # REPORT WHAT WAS MEASURED, NOT A REMEMBERED CAUSE. This message used to assert one
+        # explanation: "the stored keys use IMF's retired area-code vocabulary (`4F`, `1C_355`)
+        # ... it needs an area-code -> ISO-3 crosswalk". That is TRUE of the legacy relay stores
+        # it was written for (imf_irfcl's `IMF_IRFCL:A.4F.…`) and FALSE of a store freshly
+        # ingested from api.imf.org, whose keys are already ISO-3 —
+        # `BOP:A_NFA_T.ABW.A..D1_F5A.BPM6.USD`, countries ARG/ISL/GEO/NLD.
+        #
+        # Measured 2026-08-04 on imf_bop_direct: EVERY key part resolves against IMF's published
+        # codelists (A_NFA_T -> CL_BOP_ACCOUNTING_ENTRY, D1_F5A -> CL_BOP_INDICATOR, BPM6 ->
+        # CL_METHODOLOGY), so no crosswalk is missing. The real failure is that load_structure
+        # maps codelists only to things the DSD lists as *Dimensions*; METHODOLOGY is not one for
+        # BOP, so `BPM6` has nowhere to resolve and total-resolution fails at 5 known dims
+        # against 7 key parts. A confident wrong cause is worse than no cause — it sends the
+        # next reader to build a crosswalk nobody needs.
+        n_parts = sorted({len(str(k).split(":", 1)[-1].split(".")) for k in list(span)[:12]})
         print(f"TITLES DEGRADED: {a.source} rows get their RAW KEY as title — downloadable by "
-              f"id, poor to search. This is NOT fixed by finding a better --flow: the stored "
-              f"keys use IMF's retired area-code vocabulary (e.g. `4F`, `1C_355`) and today's "
-              f"COUNTRY codelist is ISO-3, so no dimension ordering resolves them. It needs an "
-              f"area-code -> ISO-3 crosswalk.")
+              f"id, poor to search.")
+        print(f"  key parts seen: {n_parts}   dims with a codelist: {len(dim_codes)} "
+              f"{sorted(dim_codes)}")
+        print("  DIAGNOSE BEFORE FIXING — two different causes look identical from here: "
+              "(a) the stored keys use a retired vocabulary today's codelists no longer carry "
+              "(legacy relay stores — needs a crosswalk), or (b) the parts ARE current but a "
+              "dimension carrying one of them is missing from dim_codes, so no ordering can "
+              "resolve every part (needs that codelist wired up, NOT a crosswalk). Check one "
+              "real key against the DSD's referenced codelists before choosing.")
         dim_codes, order = {}, []
     else:
         print(f"key order: {order}")
