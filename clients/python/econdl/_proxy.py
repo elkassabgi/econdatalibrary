@@ -118,7 +118,7 @@ def upstream_url(series_id: str, *, db: str | None = None) -> str:
 
     Preference order (most specific first), all pointing AWAY from our store:
       1. the series' own upstream landing page derived from metadata
-         (for DBnomics: ``https://db.nomics.world/<dbnomics_path>`` -- the
+         (for legacy relay-era series only, DBnomics: ``https://db.nomics.world/<dbnomics_path>`` -- fetching from it is BANNED (R251); this is a provenance pointer, the
          provider-attributed series page), then the provider website / terms;
       2. the source's homepage / terms_url from the registry;
       3. a bare honest marker if nothing upstream is on record.
@@ -127,7 +127,7 @@ def upstream_url(series_id: str, *, db: str | None = None) -> str:
     # DBnomics-style aggregator: the path locates the provider-attributed series.
     path = md.get("dbnomics_path")
     if path:
-        return f"https://db.nomics.world/{path}"
+        return f"https://db.nomics.world/{path}"  # provenance pointer ONLY - fetching BANNED (R251)
     for k in ("provider_website", "provider_terms_of_use"):
         if md.get(k):
             return str(md[k])

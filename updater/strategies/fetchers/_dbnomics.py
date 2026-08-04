@@ -71,7 +71,7 @@ raise ImportError(
     "docstring, which tasks #69/#70 rest on."
 )
 
-API = "https://api.db.nomics.world/v22"
+API = "https://api.db.nomics.world/v22"  # dead code after the ImportError above - BANNED (R251)
 UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com"}
 DEDUP = ("series_key", "obs_date")
 PAGE = 1000

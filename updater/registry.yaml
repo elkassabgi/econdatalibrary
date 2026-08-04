@@ -2670,8 +2670,8 @@ sources:
       existing max(obs_date) and request observations server-side, but the v22 series endpoint has no since filter so you
       would still transfer all obs per series — better to just unconditionally overwrite given the small size.'
     keys_or_blockers:
-    - No API key (DBnomics api.db.nomics.world/v22, IMF/PCPS). Politeness sleep 1.0s/page, PAGE_SIZE=1000 series/page, 3-retry
-      backoff. DBnomics fair-use rate limits apply but no auth.
+    - 'HISTORICAL, now BANNED (R251). Formerly no API key (DBnomics api.db.nomics.world/v22, IMF/PCPS). Politeness sleep 1.0s/page, PAGE_SIZE=1000 series/page, 3-retry
+      backoff. DBnomics fair-use rate limits apply but no auth.'
     storage_layout:
     - 'single parquet: data/clean_full/imf_commodity/imf_commodity.parquet. Schema series_key(str), obs_date(date32), value(float64).
       series_key = IMF_COMMODITY:<series_code>. (Companion _log/_err text files in same dir are run logs, not data.)'

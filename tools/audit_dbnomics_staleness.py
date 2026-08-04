@@ -21,6 +21,14 @@ fresh -- silence is not evidence.
 
 Usage:  python tools/audit_dbnomics_staleness.py [--days 180] [--json out.json]
 """
+
+# DEFUSED 2026-08-04: the guard below is the enforcement, the CI test tests/test_dbnomics_ban.py
+# is the proof, and the PreToolUse hook is the session-level backstop. Three layers on purpose.
+raise SystemExit(
+    "RETIRED: this tool PROBES DBnomics, which is BANNED (CLAUDE.md \u00a70, ledger R251) - "
+    "no fetching and no probing, including liveness/staleness checks. Judge staleness against "
+    "the PUBLISHER (see updater/health.py data-cadence logic). Kept for history; running it is refused.")
+
 from __future__ import annotations
 
 import argparse

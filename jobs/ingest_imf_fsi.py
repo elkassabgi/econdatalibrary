@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """IMF Financial Soundness Indicators (FSI) ingest.
 
 Source: https://data.imf.org/?sk=51B096FA-2CD2-40C2-8D09-0699CC1764DA
@@ -12,6 +12,15 @@ series_key: FSI:{indicator}:{country_code}  e.g. FSI:FSANL:USA
 Output: data/clean_full/imf_fsi/imf_fsi.parquet
 Run: python jobs/ingest_imf_fsi.py
 """
+
+# DEFUSED 2026-08-04: the guard below is the enforcement, the CI test tests/test_dbnomics_ban.py
+# is the proof, and the PreToolUse hook is the session-level backstop. Three layers on purpose.
+raise SystemExit(
+    "RETIRED: this script fetched from DBnomics, which is BANNED (CLAUDE.md \u00a70, ledger R251) - "
+    "no fetching, no probing, no relays or mirrors. The data it ingested is maintained by "
+    "publisher-direct paths now (see updater/strategies/fetchers/ and jobs/ingest_imf_direct.py). "
+    "Kept for history; running it is refused.")
+
 from __future__ import annotations
 import datetime as dt, io, os, time
 import requests, pyarrow as pa, pyarrow.parquet as pq

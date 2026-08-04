@@ -17,6 +17,15 @@ Source: DBnomics. license_id = per-provider passthrough (provider's own terms;
 source-level license stays dbnomics-passthrough). Polite UA, retry/backoff, conc<=6.
 Resumable: a provider is skipped if data/clean_full/dbnomics/<PROVIDER>/_DONE exists.
 """
+
+# DEFUSED 2026-08-04: the guard below is the enforcement, the CI test tests/test_dbnomics_ban.py
+# is the proof, and the PreToolUse hook is the session-level backstop. Three layers on purpose.
+raise SystemExit(
+    "RETIRED: this script fetched from DBnomics, which is BANNED (CLAUDE.md \u00a70, ledger R251) - "
+    "no fetching, no probing, no relays or mirrors. The data it ingested is maintained by "
+    "publisher-direct paths now (see updater/strategies/fetchers/ and jobs/ingest_imf_direct.py). "
+    "Kept for history; running it is refused.")
+
 from __future__ import annotations
 import concurrent.futures as cf
 import json

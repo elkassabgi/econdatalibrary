@@ -1,6 +1,6 @@
 """DBnomics connector -- aggregator with per-series license passthrough.
 
-DBnomics (https://db.nomics.world) re-publishes time series from ~90 statistical
+DBnomics (https://db.nomics.world - BANNED, R251) re-publishes time series from ~90 statistical
 providers behind one uniform REST API. There is no single license: each series
 inherits the terms of its *underlying provider*. So our source-level license_id is
 "dbnomics-passthrough" (declared RESERVABLE in core/licenses.py only because each
@@ -61,7 +61,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from connectors.base import Connector, SeriesMeta, Observation  # noqa: E402
 
-API = "https://api.db.nomics.world/v22"
+API = "https://api.db.nomics.world/v22"  # dead code after the ImportError above - BANNED (R251)
 UA = "Econ-Fin Data Library admin@hfdatalibrary.com"
 
 # DBnomics frequency label -> contract single-letter frequency code.
@@ -139,9 +139,9 @@ class DBnomicsConnector(Connector):
     name = "DBnomics"
     license_id = "dbnomics-passthrough"   # per-series; real terms come from each provider
     schedule = "0 7 * * 1"                # weekly (Mon 07:00) -- aggregator refresh cadence
-    attribution = ("Source: DBnomics (https://db.nomics.world), re-publishing data from the "
+    attribution = ("Source: DBnomics (https://db.nomics.world), re-publishing data from the "  # dead code - BANNED (R251)
                    "underlying provider named per series; each series under its provider's terms.")
-    homepage = "https://db.nomics.world"
+    homepage = "https://db.nomics.world"  # dead code after the ImportError above - BANNED (R251)
 
     # ---- helpers ----------------------------------------------------------
     def _provider_of(self, path: str) -> str:
