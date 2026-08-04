@@ -1328,8 +1328,30 @@ def _resolve_eia(series_id: str, root: str) -> Resolution:
 # Registry + central cross-cutting policy.
 # --------------------------------------------------------------------------- #
 
+
+def _resolve_cepii_baci(series_id: str, root: str) -> Resolution:
+    """cepii_baci: serve ONLY the pair-grain tidy projection, never the raw vintage files.
+
+    The store dir holds the raw BACI vintages (baci_hs17/hs96.parquet — schema
+    year/exporter/importer/product/value/quantity) BESIDE the tidy cepii_baci_pairs.parquet
+    the fetcher projects from HS96. The generic resolver globs every parquet in the dir and
+    would refuse on the raw schema (or worse, scan 243M raw rows per request), so this pins
+    the exact serving artifact. Keys: BACI:tv:<EXP>:<IMP> / BACI:tq:<EXP>:<IMP> — product
+    dimension aggregated away, stated in every catalogue title.
+    """
+    src, native = series_id.split(":", 1)
+    path = os.path.join(root, "cepii_baci", "cepii_baci_pairs.parquet")
+    if not os.path.exists(path):
+        raise ResolveError(
+            f"{series_id}: pairs projection missing at {path!r} — the fetcher builds it "
+            "after each vintage (build_pairs_projection); it must exist before serving.")
+    pred = pc.equal(ds.field("series_key"), native)
+    return Resolution(series_id, src, path, "series_key", pred)
+
+
 _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "bls": _resolve_bls,
+    "cepii_baci": _resolve_cepii_baci,
     "worldbank_wdi": _resolve_wdi,
     "penn_world_table": _resolve_pwt,
     "defillama": _resolve_defillama,
