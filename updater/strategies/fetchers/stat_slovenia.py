@@ -723,6 +723,21 @@ def update(unit, since) -> Result:
             rows = _parse_jsonstat2(resp, prefix, meta_time_code)
 
             if not rows:
+                # FIRST: is this even a time series? SURS publishes census CROSS-TABULATIONS
+                # (05W: "Families, census 2002 by SETTLEMENT" — 6,152 settlement codes, no time
+                # axis on ANY dimension). Those legitimately yield 0 rows, and they have on-disk
+                # history plus a real value array, so the structural test below fires on them
+                # every single run and holds the whole source at `partial` forever. That is
+                # exactly what made ons_uk unable to succeed once in its history: 287 of its 337
+                # "datasets" were Cantabular cross-tabs, and `empty` is not a transient state.
+                #
+                # Asked via _time_var_index, the SAME shared resolver _parse_jsonstat2 keys on,
+                # so the two can never disagree about whether an axis exists (R333). A table
+                # with no date-bearing axis is not a failure and not a break — it is not a time
+                # series, and the ingester writes nothing for it either.
+                if _time_var_index(variables) is None:
+                    current += 1
+                    continue
                 # 200 POST but parsed 0 rows even though the requested time codes WERE
                 # parseable dates. Distinguish a structural break from a quiet window:
                 #   * an ESTABLISHED table (has on-disk history) whose response carries a
