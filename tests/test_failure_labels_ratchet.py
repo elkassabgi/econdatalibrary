@@ -30,7 +30,10 @@ FETCHERS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 METHODS = {"transient_unit", "structural_unit"}
 
 # Lower this when you label some. It must never go up.
-BUDGET = 171
+# 171 -> 165 on 2026-08-04: ecb's six labelled (path-key build, HTTP status, fetch transient,
+# body-rows-parsed-to-zero, publish contention, merge refusal). ecb sweeps 540 sub-units, so an
+# unlabelled count there was the worst per-call offender in the repo.
+BUDGET = 165
 
 
 class _Counter(ast.NodeVisitor):
