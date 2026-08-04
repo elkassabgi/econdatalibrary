@@ -103,11 +103,18 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // adding imf_cpi_direct is a strict addition of auto-updating coverage. But RETIRING imf_cpi in
   // favour of it would be a 4.7% coverage regression and is a reserved decision, not a follow-up.
   //
-  // imf_bop_direct is NOT here on purpose. Its 260,931 CSVs are derived and in R2, but the
-  // cataloguer cannot title them (5 codelisted dims vs 7 key parts), so cataloguing today would
-  // spend ~16% of D1 headroom on raw-key titles that nobody can search. Queued with the real
-  // cause; the tool's own "needs an area-code crosswalk" message was wrong and is now fixed.
-  "imf_irfcl_direct", "imf_cpi_direct",
+  // imf_bop_direct JOINS THEM 2026-08-04, and the reason it was held back is now fixed rather
+  // than worked around. It was excluded because the cataloguer could not title it — 5 codelisted
+  // dims against 7 key parts — which would have spent ~16% of D1 headroom on raw-key titles
+  // nobody can search. The cause was not the codelists: the ingest RECORDS the authoritative key
+  // order in a sidecar, but wrote it one directory above where the reader looks AND the reader
+  // used open() on a store that lives in R2. Both fixed (R344); the recorded order titles it
+  // completely.
+  //   imf_bop_direct 260,931 catalogue == 260,931 R2 == 260,931 D1 · MISSING 0 · ORPHANED 0 · 150/150 bytes
+  //   titles: 260,931/260,931 resolve 5/5, 0 blank, 0 fell back to the raw key
+  // Same fix re-titled imf_cpi_direct in place: 27,094 better, 0 worse, ids unchanged
+  // ("... — CPI — Index" is now "... — Consumer price index (CPI) — Index").
+  "imf_irfcl_direct", "imf_cpi_direct", "imf_bop_direct",
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
