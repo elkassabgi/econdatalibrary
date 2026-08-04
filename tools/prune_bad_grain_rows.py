@@ -65,6 +65,46 @@ TARGETS = [
 ]
 
 
+# TABLES WHERE THE DATE BAND IS NOT A SUFFICIENT TEST, so we key off the GRAIN MARKER instead.
+#
+# Measured 2026-08-04, AFTER the band-based prune had run on these same tables: every surviving
+# row still carried the old grain. scb's fabricated dates are Swedish MUNICIPALITY CODES, and
+# those run 0114..2584 — so codes 1500..2200 land inside any sane calendar window and no date
+# test can distinguish them from real observations:
+#
+#     BE:...:Medellivsl:Kon=1:ContentsCode=000000NH:Tid=1998-2002   obs_date 1715-12-31
+#                                                    ^^^^^^^^^^^^^   ^^^^ code 1715, not a year
+#
+# `Tid=` INSIDE a series_key is definitionally wrong: time varies per observation and therefore
+# cannot be part of a series identity. That is the same unambiguous signature cso used
+# (`TLIST(A1)=1991` in a key) and ons_uk used (`calendar-years=`), and it needs no threshold.
+#
+# Dropping these empties the tables — correctly, because 100% of their on-disk content is
+# fabricated. That is why the empty-table refusal is OVERRIDDEN here and only here, and why the
+# release procedure below is not optional: the rows come back from the publisher, at the right
+# grain, on the next tick after the quarantine is lifted.
+#
+# ORDER IS LOAD-BEARING (the cso lesson): drop the rows FIRST, release
+# updater/strategies/fetchers/scb.py::_REGRAIN_QUARANTINE SECOND. The other order lets a tick
+# land new-grain rows while the old grain is still present, which is the duplication the
+# quarantine exists to prevent.
+GRAIN_TARGETS = [
+    ("scb", "HE.parquet", "HE:HE0110:HE0110H:TABIRH3", ":Tid="),
+    ("scb", "HE.parquet", "HE:HE0110:HE0110H:TABIRH4", ":Tid="),
+    ("scb", "HE.parquet", "HE:HE0110:HE0110H:TABIRH5", ":Tid="),
+    ("scb", "BE.parquet", "BE:BE0101:BE0101I:DodaVeckaRegionCKM", ":Tid="),
+    ("scb", "BE.parquet", "BE:BE0101:BE0101I:Medellivsl", ":Tid="),
+]
+
+
+def _grain_masks(t, prefix, marker):
+    """(in_table, is_old_grain) — selection by KEY SHAPE, not by date."""
+    keys = t.column("series_key").combine_chunks()
+    in_table = pc.starts_with(keys, pattern=prefix + ":")
+    has_marker = pc.match_substring(keys, pattern=marker)
+    return in_table, pc.and_(in_table, has_marker)
+
+
 def _masks(t, prefix):
     """(in_table, is_bad) boolean arrays over the whole table.
 
@@ -161,9 +201,68 @@ def main() -> int:
         pruned += 1
         print(flush=True)
 
+    # ---- GRAIN pass: selection by key shape, for tables where no date test can work ----
+    g_by_file: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for src, fn, pref, marker in GRAIN_TARGETS:
+        if a.only and src not in a.only:
+            continue
+        g_by_file.setdefault((src, fn), []).append((pref, marker))
+
+    if g_by_file:
+        print("\n--- GRAIN pass (key shape, not date) ---", flush=True)
+    for (src, fn), items in g_by_file.items():
+        path = os.path.join(config.source_dir(src), fn)
+        if not blob.exists(path):
+            print(f"{src}/{fn}: ABSENT — skipped", flush=True)
+            continue
+        t = blob.read_table(path)
+        print(f"{src}/{fn}: {t.num_rows:,} rows", flush=True)
+        drop = None
+        for pref, marker in items:
+            in_table, is_old = _grain_masks(t, pref, marker)
+            n_tab = pc.sum(pc.cast(in_table, "int64")).as_py() or 0
+            n_old = pc.sum(pc.cast(is_old, "int64")).as_py() or 0
+            print(f"    {pref}: {n_tab:,} rows, {n_old:,} carry {marker!r} in the key "
+                  f"-> {n_tab - n_old:,} would remain", flush=True)
+            if n_old == 0:
+                print(f"        already clean", flush=True)
+                continue
+            if n_tab - n_old == 0:
+                # Deliberate, and the ONLY place the empty-table refusal is overridden. Every
+                # row of this table is fabricated, so leaving any behind would serve wrong data;
+                # the table is restored by the publisher on the next tick once the fetcher's
+                # _REGRAIN_QUARANTINE entry is removed. If you drop these WITHOUT lifting the
+                # quarantine, the table stays empty indefinitely — that is the failure to avoid.
+                print(f"        table empties: 100% of its rows are old-grain. Allowed here "
+                      f"ONLY because lifting scb's _REGRAIN_QUARANTINE backfills it.",
+                      flush=True)
+            drop = is_old if drop is None else pc.or_(drop, is_old)
+        if drop is None:
+            print(f"    -> nothing to do\n", flush=True)
+            continue
+        n_drop = pc.sum(pc.cast(drop, "int64")).as_py() or 0
+        kept = t.filter(pc.invert(drop))
+        print(f"    total to drop: {n_drop:,} -> {kept.num_rows:,} rows remain", flush=True)
+        if not a.apply:
+            print(f"    (dry run — nothing written)\n", flush=True)
+            continue
+        blob.write_table_atomic(path, kept)
+        back = blob.read_table(path)
+        still = 0
+        for pref, marker in items:
+            _, is_old = _grain_masks(back, pref, marker)
+            still += pc.sum(pc.cast(is_old, "int64")).as_py() or 0
+        print(f"    WROTE {back.num_rows:,} rows; old-grain rows remaining: {still}", flush=True)
+        assert back.num_rows == kept.num_rows and still == 0
+        pruned += 1
+        print(flush=True)
+
     print(f"{'PRUNED' if a.apply else 'would prune'}: {pruned} file(s); refused: {refused}")
     if refused:
         print("A refusal is the tool working. Those tables need a re-pull, not a prune.")
+    if a.apply and g_by_file:
+        print("\nNEXT, and it is not optional: remove those table paths from "
+              "_REGRAIN_QUARANTINE in updater/strategies/fetchers/scb.py, or they stay empty.")
     return 0
 
 
