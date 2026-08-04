@@ -27,7 +27,18 @@ sys.path.insert(0, ROOT)
 from core import pxweb  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 
-DATA = r"D:/research/econfindatalibrary/data/clean_full"
+# DERIVED from the repo, never hardcoded. This was `D:/research/econfindatalibrary/...` until
+# 2026-08-04, and the store moved to E: in the workstation cutover. Nothing raised: the consumers
+# call `os.path.isdir(DATA)` and treat False as "this source has no data", so
+# tools/repull_worklist.py scanned nine sources, found none, and printed
+#
+#     GRAND: clean=0 corrupt=0 two_axis=0 false_alarm=0
+#     RE-PULL WORKLIST: 0 corrupt + 0 two_axis tables across 0 subject parquets in 0 source(s)
+#
+# which reads exactly like "the data is clean" while the store held 637,178 out-of-range rows.
+# A path constant that can go stale must be derived or must fail; a re-pull tool that answers
+# "nothing to repair" when it cannot see the data is worse than one that crashes. See R330.
+DATA = os.environ.get("ECONDL_CLEAN_FULL") or os.path.join(ROOT, "data", "clean_full")
 SOURCES = ["hagstofa", "statfin", "scb", "stat_estonia", "bfs",
            "ssb", "stat_latvia", "stat_slovenia", "dst"]
 MIN_RATE = 0.6
