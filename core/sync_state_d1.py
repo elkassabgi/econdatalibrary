@@ -55,6 +55,23 @@ ROWS_PER_STMT = 20        # matches core/export_d1.py (D1 statement-length cap)
 MAX_FILE_BYTES = 900_000  # per-file cap under wrangler's payload limit
 
 
+def _echo(s: str) -> str:
+    """Make wrangler's output printable on THIS stdout, whatever its encoding.
+
+    wrangler emits emoji (a 🪵 in its log banner). On a Windows console stdout is cp1252, so
+    echoing that raw raises UnicodeEncodeError '\\U0001fab5' — and it does so from the RETRY and
+    FATAL paths, i.e. exactly when a sync is already failing. The crash then replaces the
+    diagnostic it was trying to print, so the real wrangler error is never seen and the traceback
+    blames an encoding instead. Hit while syncing the IMF direct sources; worked around at the
+    time with PYTHONIOENCODING=utf-8, which fixes my shell and not the next person's.
+
+    Round-trips through the actual stdout encoding with errors='replace': unprintable characters
+    degrade to '?' and the message still arrives.
+    """
+    enc = (getattr(sys.stdout, "encoding", None) or "utf-8")
+    return s.encode(enc, errors="replace").decode(enc, errors="replace")
+
+
 def _lit(v) -> str:
     """SQL literal, same rules as core/export_d1.py (D1 IS SQLite)."""
     if v is None:
@@ -227,12 +244,12 @@ def execute_remote(files: list[str]) -> None:
                 break
             if attempt < TRIES - 1:
                 first = ((res.stderr or res.stdout or "").strip().splitlines() or [""])[-1]
-                print(f"    exit {res.returncode}, retry {attempt + 1}/{TRIES - 1} in "
-                      f"{5 * (attempt + 1)}s — {first[:110]}", flush=True)
+                print(_echo(f"    exit {res.returncode}, retry {attempt + 1}/{TRIES - 1} in "
+                            f"{5 * (attempt + 1)}s — {first[:110]}"), flush=True)
                 time.sleep(5 * (attempt + 1))
         if res is None or res.returncode != 0:
-            sys.stderr.write((res.stdout if res else "") or "")
-            sys.stderr.write((res.stderr if res else "") or "")
+            sys.stderr.write(_echo((res.stdout if res else "") or ""))
+            sys.stderr.write(_echo((res.stderr if res else "") or ""))
             raise SystemExit(
                 f"FATAL: wrangler exited {res.returncode if res else '?'} on {p} after "
                 f"{TRIES} attempts — D1 sync aborted; remaining chunks NOT executed; "
