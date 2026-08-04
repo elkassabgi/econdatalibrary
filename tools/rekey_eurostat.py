@@ -31,6 +31,7 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import json
 import os
 import re
 import sys
@@ -67,6 +68,14 @@ def split_kv(key: str) -> list[tuple[str, str]]:
 def stable_key(key: str) -> str:
     """Drop every non-dimension segment, preserving the dimensions' original order."""
     return ":".join(f"{n}={v}" for n, v in split_kv(key) if _norm(n) not in _NON_KEY)
+
+
+MARKER = "_rekeyed.json"   # read by eurostat._require_rekeyed; see that guard
+
+
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
 
 def main() -> int:
@@ -191,6 +200,33 @@ def main() -> int:
               "re-key changes no served value.")
     if a.dry_run:
         print("\n--dry-run: nothing written.")
+        return 0
+
+    # COMPLETION MARKER — written ONLY here, i.e. only after the loop walked every file.
+    #
+    # The fetcher's guard used to spot-check `blob.list_parquets(out_dir)[:5]`: the first five
+    # of a SORTED list that this tool walks in the SAME order. A partial --apply therefore
+    # converted exactly those five first and disarmed the guard at 0.06% of 7,754 files, after
+    # which a daily tick would merge stable-key fetches into ~3,300 still-unstable ones under
+    # two key schemes — the duplication never-shrink cannot catch. That interrupt is observed,
+    # not hypothetical: see the note above about the pass that died at file 4,403 of 7,754.
+    #
+    # REFUSED when any file was unreadable: an unreadable file is not known to be re-keyed, and
+    # claiming a completed migration over it is exactly the overstatement the `clean` counter
+    # above already declines to make.
+    if unreadable:
+        print(f"\nNOT writing {MARKER}: {unreadable:,} file(s) were unreadable, so this pass did "
+              f"not establish that the whole store is re-keyed. Re-run to cover them — the "
+              f"fetcher's guard stays armed until a clean pass completes.")
+        return 1
+    blob.write_bytes_atomic(
+        os.path.join(out_dir, MARKER),
+        json.dumps({"files_seen": len(files), "touched": touched, "clean": clean,
+                    "conflicts": tot_conflicts, "completed_utc": _now_iso()},
+                   indent=2, sort_keys=True).encode("utf-8"))
+    print(f"\nwrote {MARKER}: files_seen={len(files):,} touched={touched:,} clean={clean:,}. "
+          f"The fetcher's guard compares that count against the live file count, so it re-arms "
+          f"by itself if the store grows.")
     return 0
 
 

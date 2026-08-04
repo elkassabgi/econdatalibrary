@@ -31,6 +31,7 @@ from __future__ import annotations
 import csv
 import datetime as _dt
 import io
+import json
 import os
 
 import pyarrow as pa
@@ -196,26 +197,74 @@ def fetch_flow(flow_id, meta, since, session):
     return table, "ok"
 
 
+REKEY_MARKER = "_rekeyed.json"          # written by tools/rekey_eurostat.py --apply
+
+
 def _require_rekeyed() -> None:
     """Refuse incremental eurostat until the one-time re-key migration has stripped
     the unstable 'LAST UPDATE=' prefix from existing series_key. Running before that
     splits keys (stable new tail vs unstable history) and GROWS the file with the
     same (series,obs_date) under two key schemes — which never-shrink cannot catch.
-    Self-protecting guard; see the eurostat re-key data-op. Enumerates and reads
-    through blob so the guard still bites under AQUEDUCT_BACKEND=r2 — a raw local
-    glob returns [] on a CI runner and would silently DISABLE the guard exactly
+
+    TWO CHECKS, because the content check alone had a hole big enough to drive the
+    migration through.
+
+    THE HOLE: this used to be `blob.list_parquets(out_dir)[:5]` — the first five of a
+    SORTED list (blob.py returns sorted in both the R2 and local branches), and
+    tools/rekey_eurostat.py walks that identical sorted list. So a partial --apply
+    converts exactly those five FIRST and the guard releases at 0.06% of 7,754 files.
+    Not hypothetical: that tool's own comment records a pass dying at file 4,403 of
+    7,754 after ~4 hours on a transient R2 read. A daily tick resuming after such a
+    death would merge stable-key fetches into ~3,300 still-unstable files — precisely
+    the mixed-scheme duplication this guard exists to prevent.
+
+      1. COMPLETION MARKER. The migration writes _rekeyed.json only after a FULL pass
+         with zero unreadable files, recording how many it saw. A run that dies leaves
+         no marker, so the guard still bites. The count must still match the store, so
+         a marker from an older, smaller store does not vouch for files added since.
+
+      2. CONTENT SPOT-CHECK, sampled at EVENLY SPACED indices rather than the head.
+         Deterministic (a fetcher should not flap run to run) but uncorrelated with the
+         migration's walk order, so a pass that stopped at 57% is caught by the 3/4 and
+         last samples. Belt and braces: the marker proves the migration ran to the end,
+         this proves the data actually changed.
+
+    Enumerates and reads through blob so the guard still bites under AQUEDUCT_BACKEND=r2 —
+    a raw local glob returns [] on a CI runner and would silently DISABLE the guard exactly
     where un-re-keyed data would do the most damage."""
     out_dir = config.source_dir("eurostat")
-    for fn in blob.list_parquets(out_dir)[:5]:
+    files = blob.list_parquets(out_dir)
+    if not files:
+        return                                   # nothing stored yet; nothing to protect
+
+    marker = None
+    try:
+        raw = blob.read_bytes(os.path.join(out_dir, REKEY_MARKER))
+        marker = json.loads(raw.decode("utf-8")) if raw else None
+    except Exception:                            # noqa: BLE001
+        marker = None
+    seen = marker.get("files_seen") if isinstance(marker, dict) else None
+    if seen != len(files):
+        raise DefinitiveError(
+            f"eurostat: the one-time re-key migration has not completed over this store "
+            f"({REKEY_MARKER} says {seen!r}, store holds {len(files)} parquet file(s)). "
+            f"Run tools/rekey_eurostat.py --apply to completion before incremental updates; "
+            f"a PARTIAL re-key is the dangerous case, because new stable-key fetches would "
+            f"merge into still-unstable files under two key schemes. Existing data untouched.")
+
+    n = len(files)
+    idx = sorted({0, n // 4, n // 2, (3 * n) // 4, n - 1})
+    for i in idx:
         try:
-            t = blob.read_table(os.path.join(out_dir, fn), columns=["series_key"])
-        except Exception:
+            t = blob.read_table(os.path.join(out_dir, files[i]), columns=["series_key"])
+        except Exception:                        # noqa: BLE001
             continue
-        if t.num_rows and any("LAST UPDATE" in (k or "") for k in t.column("series_key")[:50].to_pylist()):
+        if t.num_rows and any("LAST UPDATE" in (k or "")
+                              for k in t.column("series_key")[:50].to_pylist()):
             raise DefinitiveError(
-                "eurostat: existing data still uses the UNSTABLE 'LAST UPDATE=' series_key — "
-                "run the one-time re-key migration before incremental updates (else keys split "
-                "and the file duplicates). Existing data left untouched.")
+                f"eurostat: {files[i]} still uses the UNSTABLE 'LAST UPDATE=' series_key even "
+                f"though {REKEY_MARKER} claims a completed re-key — the marker does not match "
+                f"the data. Re-run tools/rekey_eurostat.py --apply. Existing data untouched.")
 
 
 def update(unit, since) -> Result:
