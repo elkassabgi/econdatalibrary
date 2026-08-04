@@ -235,6 +235,38 @@ def update(unit, since) -> Result:
     sidecar = _load_sidecar(out_dir)
 
     # Which datasets actually need work: vintage moved, or we don't hold them yet.
+    #
+    # FIRST, drop what is not this product at all. ONS's catalog mixes TWO things under
+    # /v1/datasets, and it says which is which in each item's `type`:
+    #
+    #     cantabular_flexible_table       161
+    #     cantabular_multivariate_table   126     <- Census 2021 cross-tabulations
+    #     (absent)                         39     <- the v4 time-series product
+    #     filterable                       11     <- also v4
+    #
+    # The cantabular ones are Census cross-tabulations: `ltla` x `has_ever_worked` and the
+    # like, with NO time dimension anywhere. They cannot become a time series, the v4 parser
+    # correctly declines them, and the store has never held one.
+    #
+    # Before this filter they were still WORK: 287 of the 337 catalog entries were queued,
+    # downloaded, parsed to zero rows and discarded — every run, forever, because a zero-row
+    # dataset deliberately does not advance its vintage. That is 287 pointless downloads per
+    # full rotation from a publisher that rate-limits hard, and — since `empty` sub-units hold
+    # a source at `partial` — it also meant ons_uk could NEVER report success no matter how
+    # well the other 50 did. Filtering on the publisher's own declaration fixes both.
+    #
+    # Deliberately keyed on the type ONS publishes, not on the `TS`/`RM` id prefixes, so a new
+    # naming scheme cannot quietly re-admit them. Anything mislabelled still meets the v4
+    # parser and lands in empty_unit, as before — this narrows the queue, it does not widen
+    # what we accept.
+    CANTABULAR = {"cantabular_flexible_table", "cantabular_multivariate_table"}
+    n_before = len(items)
+    items = [it for it in items if (it.get("type") or "") not in CANTABULAR]
+    if n_before != len(items):
+        print(f"[ons_uk] catalog {n_before} -> {len(items)} datasets "
+              f"({n_before - len(items)} Cantabular census tabulations excluded: no time "
+              f"dimension, not a time series)", flush=True)
+
     todo = []
     for it in items:
         ds_id = it.get("id")
