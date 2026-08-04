@@ -631,7 +631,10 @@ def update(unit, since) -> Result:
                 continue
             if not isinstance(meta, dict) or "variables" not in meta or not meta.get("variables"):
                 # 200 but the expected PxWeb metadata structure is gone -> structural break.
-                tally.structural_unit()
+                # NAMED, like hagstofa's: "1/85 sub-unit(s) ... parsed 0 rows" with no table id
+                # is a break you cannot act on. The three structural sites below are three
+                # DIFFERENT failures, so each says which one it was.
+                tally.structural_unit(f"{tid_clean}: metadata envelope gone")
                 continue
 
             variables = meta["variables"]
@@ -659,7 +662,7 @@ def update(unit, since) -> Result:
                 # an outage-feeding empty. (If it somehow had on-disk history yet now
                 # parses to nothing, that IS a break -> structural.)
                 if stored_max is not None:
-                    tally.structural_unit()
+                    tally.structural_unit(f"{tid_clean}: time axis parses to no dates")
                 else:
                     current += 1
                 continue
@@ -749,7 +752,7 @@ def update(unit, since) -> Result:
                 #     an outage-feeding empty, not a break.
                 has_body = bool(resp.get("value")) if isinstance(resp, dict) else False
                 if stored_max is not None and has_body:
-                    tally.structural_unit()
+                    tally.structural_unit(f"{tid_clean}: non-empty body parsed 0 rows")
                 else:
                     current += 1
                 continue
