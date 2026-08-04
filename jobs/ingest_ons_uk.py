@@ -197,9 +197,35 @@ def parse_ons_time_code(value: str, code_name: str, now_year: int | None = None)
     Falls back to parse_ons_period for anything unrecognised, so this is strictly additive:
     a format that already worked still works, by the same rule it used before.
 
-    Period-END convention throughout, matching parse_ons_period's own `2022 -> 2022-12-31`:
-    a financial year 2011-12 is 2012-03-31, a two-year interval 2001-03 is 2003-12-31.
-    Monthly stays at day 1, also as before.
+    WHICH CONVENTIONS ARE MEASURED AND WHICH ARE CHOSEN — stated because they are not the
+    same kind of claim, and a reader should not have to guess which is which.
+
+    VERIFIED against the store (the approved 2026-07-29 re-key preserved original dates, so
+    an untouched dataset is ground truth; all pairs reproduced exactly):
+        yyyy-qq        -> quarter's FIRST month   regional-gdp-by-quarter, 31,992 rows
+        mmm-mmm-yyyy   -> window's FIRST month    labour-market, 31,968 rows
+        calendar-years -> 31 Dec                  health-accounts + 15 others
+        (unknown names fall through to parse_ons_period, which is how
+         `years-quarters-months` works — output-in-the-construction-industry matches)
+
+    SELF-VALIDATING, needing no store:
+        mmm-yy         -> day 1, century by sliding window. cpih01 yields exactly 457
+                          distinct months, 1988-01..2026-01 CONTIGUOUS, and that span is
+                          exactly 457 months — no other century assignment is unbroken.
+
+    CHOSEN, and NOT verifiable: ONS publishes only the LABEL for these periods (the
+    /code-lists/yyyy-yy options carry `"label": "2022-23"` and no boundary dates), and each
+    grammar has exactly ONE dataset in the catalogue, so there is no second instance to check
+    against either. The period END is used, for consistency with parse_ons_period's own
+    treatment of a bare year (`2022 -> 2022-12-31`):
+        yyyy-yy         2011-12        -> 2012-03-31   (UK financial year ends 31 March)
+        two-year-intervals  2001-03    -> 2003-12-31
+        yyyy-to-yyyy-yy 1978-to-2020-21-> 2021-03-31
+    Note this makes the module internally inconsistent by design — months and quarters take
+    the period's START, years and year-spans its END — because that is what parse_ons_period
+    already did and changing it would silently move every calendar-years date in the store.
+    If the period-start reading is ever preferred, it is a deliberate re-derive of three
+    datasets (~382,301 rows), not a bug fix.
     """
     s = (value or "").strip()
     if not s:
