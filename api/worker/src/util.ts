@@ -90,6 +90,24 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // CONFIRMED IMF statistical-Data grant, and the three are now NAMED in
   // DATABASE_LICENSES_VERBATIM.md rather than inheriting it silently.
   "imf_fsibsis_direct", "imf_fsic_direct", "imf_fsicdm_direct",
+  // IRFCL + CPI direct, added 2026-08-04. `imf_irfcl` (54,126) and `imf_cpi` (28,420) are
+  // relay-era stores with NO fetcher, so neither has ever auto-updated. Built from IMF's own
+  // /dataflow catalogue (IRFCL v12.0.0, CPI v5.0.0, both agency IMF.STA — read, not guessed).
+  // Verified before flipping:
+  //   imf_irfcl_direct 58,861 catalogue == 58,861 R2 == 58,861 D1 · MISSING 0 · ORPHANED 0 · 150/150 bytes
+  //   imf_cpi_direct   27,094 catalogue == 27,094 R2 == 27,094 D1 · MISSING 0 · ORPHANED 0 · 150/150 bytes
+  //
+  // COVERAGE vs the relay copies, recorded because the ingester's header says "do not switch
+  // blind": IRFCL 58,861 vs 54,126 = 1.09x MORE. CPI 27,094 vs 28,420 = 0.95x, i.e. SMALLER.
+  // Nothing is switched or removed — these are new ids and imf_cpi keeps all 28,420 series — so
+  // adding imf_cpi_direct is a strict addition of auto-updating coverage. But RETIRING imf_cpi in
+  // favour of it would be a 4.7% coverage regression and is a reserved decision, not a follow-up.
+  //
+  // imf_bop_direct is NOT here on purpose. Its 260,931 CSVs are derived and in R2, but the
+  // cataloguer cannot title them (5 codelisted dims vs 7 key parts), so cataloguing today would
+  // spend ~16% of D1 headroom on raw-key titles that nobody can search. Queued with the real
+  // cause; the tool's own "needs an area-code crosswalk" message was wrong and is now fixed.
+  "imf_irfcl_direct", "imf_cpi_direct",
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
