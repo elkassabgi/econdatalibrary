@@ -107,7 +107,19 @@ def _parse_date(s: str) -> dt.date | None:
         if m:
             q = int(m.group(2))
             return dt.date(int(m.group(1)), (q - 1) * 3 + 1, 1)
-        m = re.match(r"^(\d{4})W(\d{2})$", s, re.IGNORECASE)
+        # Multi-year WINDOW: 2011-2012, 2011-2015, 1998-2002 -> the year the window OPENS.
+        # Same convention as ons_uk's yyyy-yy / mmm-mmm-yyyy, so overlapping windows stay
+        # monotonic. Ordered after ^(\d{4})-(\d{2})$ so monthly 2023-01 still wins (and they
+        # cannot collide: 2 digits after the dash vs 4). Kept identical to
+        # jobs/ingest_scb.py::parse_date — if the backfill path and the nightly path disagree
+        # about what a date is, they write different rows for the same series. R331.
+        m = re.match(r"^(\d{4})-(\d{4})$", s)
+        if m:
+            y0, y1 = int(m.group(1)), int(m.group(2))
+            if y1 >= y0:
+                return dt.date(y0, 12, 31)
+        # V is Swedish "vecka" and is what SCB publishes (DodaVeckaRegionCKM: 2025V01..).
+        m = re.match(r"^(\d{4})[WV](\d{2})$", s, re.IGNORECASE)
         if m:
             yr, wk = int(m.group(1)), int(m.group(2))
             return dt.date.fromisocalendar(yr, wk, 1)
@@ -120,6 +132,32 @@ def _parse_date(s: str) -> dt.date | None:
         pass
     return None
 
+
+# TABLES HELD BACK UNTIL THEIR LEGACY ROWS ARE REMOVED. Not "broken" — the opposite: the
+# grammars added just above finally let these parse, and writing them NOW would duplicate.
+#
+# THE TWO GRAINS ARE INCOMPATIBLE, measured on the store 2026-08-04:
+#
+#   OLD  ...Medellivsl:Kon=1:ContentsCode=000000NH:Tid=1998-2002   obs_date 0114-12-31
+#   NEW  ...Medellivsl:Region=00:Kon=1:ContentsCode=000000NH       obs_date 1998-12-31
+#
+# `Tid` was unparseable, so it was baked INTO the key and `Region` — municipality codes
+# 0114..2584 — was read as the date. With the grammars, Tid becomes the date and Region moves
+# into the key. Dedup is on (series_key, obs_date), so old and new NEVER collide: both survive,
+# the file only grows, and merge's never-shrink guard cannot see the duplication. That is
+# exactly how ons_uk reached 20,198,302 rows for 10,099,151 observations (R22, task #42).
+#
+# TO RELEASE: remove these tables' existing rows (table-grain, per tools/cso_repull_matrix.py —
+# do NOT retire BE.parquet whole, it holds 1,553,817 rows of which only 26,206 are affected),
+# then delete the entry here. The next tick backfills them from scratch at the correct grain.
+# Rows currently held under the wrong grain: HE 61,152 / BE 26,206.
+_REGRAIN_QUARANTINE = frozenset({
+    "HE/HE0110/HE0110H/TABIRH3",
+    "HE/HE0110/HE0110H/TABIRH4",
+    "HE/HE0110/HE0110H/TABIRH5",
+    "BE/BE0101/BE0101I/DodaVeckaRegionCKM",
+    "BE/BE0101/BE0101I/Medellivsl",
+})
 
 _NAMED_TIME = ("tid", "time", "year", "period", "datum", "ar")
 
@@ -550,6 +588,10 @@ def update(unit, since) -> Result:
         for tinfo in tables:
             tpath = tinfo["path"]
             n_subunits += 1
+            if tpath in _REGRAIN_QUARANTINE:
+                # See _REGRAIN_QUARANTINE above. Fetching these now would DUPLICATE, not repair.
+                tally.deferred_unit(f"{tpath}: quarantined pending re-grain (R22/R331)")
+                continue
             stored_max = frontiers.get(tpath)             # None => never landed -> backfill
             # seed cursor from the on-disk frontier so an untouched/current table still
             # reports its real freshness (a frozen table can't hide behind subject max).
