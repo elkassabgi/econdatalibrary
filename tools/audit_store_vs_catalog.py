@@ -103,6 +103,7 @@ def main() -> int:
             continue
 
         t0 = time.time()
+        qualified = False        # set when the shard-qualified recount was the better answer
         q = duckdb.connect()
         try:
             q.execute(f"SET memory_limit='{a.memory_limit}'")
@@ -110,6 +111,33 @@ def main() -> int:
             lst = "[" + ",".join(f"'{f}'".replace("\\", "/") for f in files) + "]"
             n = q.execute(f"select count(distinct series_key) from "
                           f"read_parquet({lst}, union_by_name=true)").fetchone()[0]
+            # SHARD-QUALIFIED RETRY, only when the bare count says ORPHAN.
+            #
+            # Some sources key their CATALOGUE by shard - fed_board:CHGDEL:STFBAILB_XEOP_MA_N.Q,
+            # fhfa:annual_cbsa:01 - which is exactly what derive_csv_bulk's --qualify-with-shard
+            # exists for. A bare `count(distinct series_key)` then UNDERCOUNTS them: one key
+            # appearing in two shards is two catalogue rows but one distinct value, so the source
+            # reports as ORPHAN ("listed and undownloadable") when nothing is wrong at all.
+            #
+            # Measured 2026-08-04: this produced fed_board -29 and fhfa -2,021, i.e. 2,050 of the
+            # run's 2,408 reported orphans. All 2,050 were phantom -- re-counted with the shard
+            # qualifier both sources are EXACTLY coherent (52,322 == 52,322, 89,706 == 89,706),
+            # and the other 358 real orphans (unhcr 303, noaa 55) were every one downloadable
+            # in R2. A false ORPHAN is expensive: it is the one verdict that says users are being
+            # offered something that 404s, so it gets chased first.
+            #
+            # Only recomputed on the ORPHAN branch, so the common path costs nothing.
+            if n < cat:
+                # parse_filename(path, true) strips directory AND extension. Deliberately not a
+                # regex: the obvious `regexp_replace(filename, '^.*[/\\]', '')` has to survive
+                # Python-string escaping and then DuckDB's, and my first attempt reached DuckDB
+                # as the invalid class `[/\]` and threw. A builtin has no escaping to get wrong.
+                qn = q.execute(
+                    f"select count(distinct (parse_filename(filename, true) || ':' || "
+                    f"series_key)) from read_parquet({lst}, union_by_name=true, "
+                    f"filename=true)").fetchone()[0]
+                if abs(qn - cat) < abs(n - cat):
+                    n, qualified = qn, True
         except Exception as e:                                 # noqa: BLE001
             fh.write(f"{d}\t\t{cat}\t\tscan failed {type(e).__name__}\n"); fh.flush()
             print(f"[{i}/{len(names)}] {d:24s} SCAN FAILED {type(e).__name__}: "
@@ -127,9 +155,12 @@ def main() -> int:
             note, orph = "ORPHAN", orph - gap
         else:
             note = "ok"
-        fh.write(f"{d}\t{n}\t{cat}\t{gap}\t{note}\n"); fh.flush()
+        # Say WHICH count is being reported. A number that silently changed meaning is how the
+        # fed_board/fhfa false orphans read as real in the first place.
+        tag = "  [shard-qualified]" if qualified else ""
+        fh.write(f"{d}\t{n}\t{cat}\t{gap}\t{note}{tag}\n"); fh.flush()
         print(f"[{i}/{len(names)}] {d:24s} store {n:>12,}  cat {cat:>12,}  {gap:>+12,}  "
-              f"{note:14s} {gb:,.1f} GB {time.time()-t0:,.0f}s", flush=True)
+              f"{note:14s} {gb:,.1f} GB {time.time()-t0:,.0f}s{tag}", flush=True)
 
     fh.close()
     print(f"\nhosted but not catalogued : {unc:,} series")
