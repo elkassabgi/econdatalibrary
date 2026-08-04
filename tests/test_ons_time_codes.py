@@ -86,8 +86,30 @@ def test_cumulative_span_ends_at_its_final_financial_year():
     assert parse_ons_time_code("1978-to-2020-21", "yyyy-to-yyyy-yy", NOW) == dt.date(2021, 3, 31)
 
 
-def test_quarters():
-    assert parse_ons_time_code("2020-Q3", "yyyy-qq", NOW) == dt.date(2020, 9, 1)
+def test_quarters_map_to_the_quarters_FIRST_month():
+    """Pinned against the STORE, not taste.
+
+    An earlier draft used q*3 — the quarter's LAST month. It disagreed with every one of
+    regional-gdp-by-quarter's 31,992 on-disk rows while producing an IDENTICAL key set, so a
+    check that compared series ids would have passed it. The approved re-key holds
+    2012-01-01 / 2012-04-01 / 2012-07-01 / 2012-10-01, and parse_ons_period has always used
+    (q-1)*3+1 for 'YYYY Qn' — the new grammar must not contradict the old one.
+    """
+    assert parse_ons_time_code("2012-q1", "yyyy-qq", NOW) == dt.date(2012, 1, 1)
+    assert parse_ons_time_code("2012-q2", "yyyy-qq", NOW) == dt.date(2012, 4, 1)
+    assert parse_ons_time_code("2012-q3", "yyyy-qq", NOW) == dt.date(2012, 7, 1)
+    assert parse_ons_time_code("2012-q4", "yyyy-qq", NOW) == dt.date(2012, 10, 1)
+    assert parse_ons_time_code("2020 Q3", "yyyy-qq", NOW) == parse_ons_period("2020 Q3")
+
+
+def test_rolling_three_month_window_takes_its_FIRST_month():
+    """labour-market ships 'apr-jun-2019' three-month averages. Decided from the store:
+    under first-month all 31,968 (key, date) pairs reproduce the on-disk table exactly;
+    under last-month 1,728 disagree."""
+    assert parse_ons_time_code("apr-jun-2019", "mmm-mmm-yyyy", NOW) == dt.date(2019, 4, 1)
+    assert parse_ons_time_code("sep-nov-2024", "mmm-mmm-yyyy", NOW) == dt.date(2024, 9, 1)
+    assert parse_ons_time_code("feb-apr-2025", "mmm-mmm-yyyy", NOW) == dt.date(2025, 2, 1)
+    assert parse_ons_time_code("xxx-jun-2019", "mmm-mmm-yyyy", NOW) is None
 
 
 def test_unknown_column_falls_back_to_the_old_grammar_unchanged():
