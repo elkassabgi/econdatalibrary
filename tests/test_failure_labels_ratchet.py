@@ -33,7 +33,11 @@ METHODS = {"transient_unit", "structural_unit"}
 # 171 -> 165 on 2026-08-04: ecb's six labelled (path-key build, HTTP status, fetch transient,
 # body-rows-parsed-to-zero, publish contention, merge refusal). ecb sweeps 540 sub-units, so an
 # unlabelled count there was the worst per-call offender in the repo.
-BUDGET = 165
+# 165 -> 158: vdem's seven, which were SIX different causes sharing one string — network drop,
+# transient status, hard 4xx, RData body unparseable, year column renamed, RData rows melting to
+# zero, merge refusal. The renamed-column one now prints the columns that DID arrive, which turns
+# a bisect into a one-line fix.
+BUDGET = 158
 
 
 class _Counter(ast.NodeVisitor):

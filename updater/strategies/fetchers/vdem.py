@@ -191,31 +191,38 @@ def update(unit, since):
         # --- fetch (transient-aware) ---
         try:
             r = requests.get(url, headers=UA, timeout=300)
-        except (requests.Timeout, requests.ConnectionError):
-            tally.transient_unit()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            # NAME THE DATASET AND WHICH OF THE SIX WAYS IT FAILED. vdem sweeps DATASETS, so an
+            # unlabelled count reads "N/M sub-unit(s) failed" and the six distinct causes below
+            # -- network drop, transient status, hard 4xx, RData unparseable, missing year
+            # column, empty melt -- become one indistinguishable string.
+            tally.transient_unit(f"{label}: {type(e).__name__}")
             total_rows += before
             continue
         if r.status_code in _TRANSIENT:
-            tally.transient_unit()
+            tally.transient_unit(f"{label}: HTTP {r.status_code} (transient)")
             total_rows += before
             continue
         if r.status_code != 200:
             # hard 4xx / moved / stale URL -> structural (surfaced, not faked)
-            tally.structural_unit()
+            tally.structural_unit(f"{label}: HTTP {r.status_code} on {remote_name}")
             total_rows += before
             continue
 
         # --- parse (reuse ingester) ---
         df = _rdata_to_df(r.content)
         if df is None:
-            tally.structural_unit()
+            tally.structural_unit(f"{label}: RData body did not parse ({len(r.content):,} B)")
             total_rows += before
             continue
         col_map = {c.lower(): c for c in df.columns}
         ccol = col_map.get(country_col.lower(), country_col)
         ycol = col_map.get(year_col.lower(), year_col)
         if ycol not in df.columns:
-            tally.structural_unit()
+            # Say what was expected AND what arrived — a renamed year column is a one-line fix
+            # once you can see the new name.
+            tally.structural_unit(
+                f"{label}: year column {year_col!r} absent; got {list(df.columns)[:8]}")
             total_rows += before
             continue
 
@@ -228,7 +235,7 @@ def update(unit, since):
         })
         if tbl.num_rows == 0:
             # 200 with a real RData body but it melted to nothing -> structural break
-            tally.structural_unit()
+            tally.structural_unit(f"{label}: {len(df):,} RData rows melted to 0 observations")
             total_rows += before
             continue
 
@@ -242,8 +249,8 @@ def update(unit, since):
         # structural sub-unit (existing file left untouched by merge on refusal).
         try:
             n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-        except DefinitiveError:
-            tally.structural_unit()
+        except DefinitiveError as e:
+            tally.structural_unit(f"{label}: merge refused — {str(e)[-60:]}")
             total_rows += before
             continue
         tally.added_unit(max(0, n - before))
