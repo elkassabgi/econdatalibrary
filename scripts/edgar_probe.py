@@ -1,6 +1,15 @@
+import os
 import zipfile, re, sys, time, json
 
-ZIP = 'D:/research/econfindatalibrary/data/raw/sec_edgar/submissions.zip'
+
+# Repo root derived from this file, never a drive letter. The store moved D: -> E: in
+# the workstation cutover; a stale root here silently writes into, or reports on, a
+# tree that is not there. R330.
+def _RD(*parts):
+    _r = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(_r, *parts) if parts else _r
+
+ZIP = _RD('data', 'raw', 'sec_edgar', 'submissions.zip')
 
 t0 = time.time()
 print('opening zip...', flush=True)

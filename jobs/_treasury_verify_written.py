@@ -3,8 +3,15 @@ actual row counts vs source-published totals. This is the honesty check."""
 import glob, json, os
 import pyarrow.parquet as pq
 
-OUT = r"D:/research/econfindatalibrary/data/clean_full/treasury"
-catalog = json.load(open(r"D:/research/econfindatalibrary/data/_treasury_catalog_final.json"))
+# Derived from this file, never a drive letter (R330). This script calls itself "the honesty
+# check", and a stale root makes it glob an absent directory: 0 files, no error, and a report
+# that reads as a clean verification of nothing.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(_ROOT, "data", "clean_full", "treasury")
+if not os.path.isdir(OUT):
+    raise SystemExit(f"_treasury_verify_written: {OUT!r} does not exist — refusing to report "
+                     f"a verification over zero files.")
+catalog = json.load(open(os.path.join(_ROOT, "data", "_treasury_catalog_final.json")))
 
 files = sorted(glob.glob(os.path.join(OUT, "*.parquet")))
 print(f"Parquet files written: {len(files)}")

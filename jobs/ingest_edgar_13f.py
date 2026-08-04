@@ -45,7 +45,12 @@ import pyarrow.parquet as pq
 import requests
 
 # --- license gate (use the library's own gate so this can't publish a bad class) ---
-PROJ = r"D:/research/econfindatalibrary"
+# PROJ MUST be derived. It was `D:/research/econfindatalibrary`, a path the store left in the
+# workstation cutover, and it is what makes `from core.licenses import assert_reservable`
+# resolve. A stale PROJ does not fail loudly: the import raises, the `except Exception` below
+# swallows it, and the gate silently degrades to the permissive inline stub — which is the exact
+# thing the comment above says this design prevents. R330.
+PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJ not in sys.path:
     sys.path.insert(0, PROJ)
 try:
@@ -63,8 +68,10 @@ PAGE_URL = "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-set
 BASE_DL = "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/"
 UA = "Econ-Fin Data Library admin@hfdatalibrary.com"
 
-OUT_DIR = r"D:/research/econfindatalibrary/data/clean_full/edgar_13f"
-RAW_DIR = r"D:/research/econfindatalibrary/data/raw/sec_edgar/form13f"
+# Both feed os.makedirs, so a stale root does not raise — it CREATES a ghost tree on a dead
+# drive and writes a whole real run into it, where nothing ever looks. R330.
+OUT_DIR = os.path.join(PROJ, "data", "clean_full", "edgar_13f")
+RAW_DIR = os.path.join(PROJ, "data", "raw", "sec_edgar", "form13f")
 
 TABLES = [
     "SUBMISSION", "COVERPAGE", "OTHERMANAGER", "OTHERMANAGER2",

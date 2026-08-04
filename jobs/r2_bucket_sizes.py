@@ -10,7 +10,10 @@ from __future__ import annotations
 import os
 import sys
 
-ENV_PATH = r"D:/research/econfindatalibrary/.env"
+# Derived from this file, not a drive letter (R330). A stale path here does not raise — it
+# yields an empty env, and the caller then authenticates with no credentials.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ENV_PATH = os.environ.get("ECONDL_ENV") or os.path.join(ROOT, ".env")
 
 
 def load_env(path: str) -> dict:

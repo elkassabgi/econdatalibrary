@@ -24,9 +24,17 @@ import orjson
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ZIP      = 'D:/research/econfindatalibrary/data/raw/sec_edgar/submissions.zip'
-OUT_DIR  = 'D:/research/econfindatalibrary/data/clean_full/edgar_pointers'
-TICKERS  = 'D:/research/econfindatalibrary/data/raw/sec_edgar/company_tickers.json'
+
+# Repo root derived from this file, never a drive letter. The store moved D: -> E: in
+# the workstation cutover; a stale root here silently writes into, or reports on, a
+# tree that is not there. R330.
+def _RD(*parts):
+    _r = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(_r, *parts) if parts else _r
+
+ZIP      = _RD('data', 'raw', 'sec_edgar', 'submissions.zip')
+OUT_DIR  = _RD('data', 'clean_full', 'edgar_pointers')
+TICKERS  = _RD('data', 'raw', 'sec_edgar', 'company_tickers.json')
 N_SHARDS = 256
 FLUSH_ROWS = 3_000_000          # flush all buffers when this many rows are buffered globally
 ARCH_PREFIX = 'https://www.sec.gov/Archives/edgar/data/'
