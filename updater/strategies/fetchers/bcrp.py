@@ -137,8 +137,24 @@ def _parse_period(s: str) -> dt.date | None:
     return None
 
 
-def _per_series_last(path) -> dict[str, dt.date]:
-    """Map series_key -> max obs_date from the existing parquet (empty if none)."""
+def _per_series_last(path) -> dict[str, str]:
+    """Map series_key -> max obs_date as an ISO STRING, from the existing parquet (empty if none).
+
+    THE ANNOTATION USED TO SAY dict[str, dt.date] AND THAT WAS THE ROOT ENABLER of three
+    separate production failures in this file. It passes through whatever _max_by_key returns,
+    and _max_by_key builds `{k: d.isoformat() ...}` — strings. Every downstream site read the
+    signature, believed it, and treated the values as dates:
+
+        line 276  cursors[skey] = d.isoformat()      -> AttributeError on a str   (fixed R310)
+        line 343  any(di > last for di in d)         -> TypeError date vs str     (fixed R320s)
+        line 363  max(...).isoformat()               -> AttributeError on a str   (fixed R310)
+
+    Three symptoms, two different exception types, one lie in a type hint. Grepping for the
+    first symptom could never have found the second, which is why the R310 sweep fixed the
+    sites either side of line 343 and stepped over it.
+
+    Verified against the real production parquet: 'BCRP:USDPEN_mid' -> '2026-07-21', type str.
+    """
     if not blob.exists(path):
         return {}
     t = blob.read_table(path)
@@ -324,7 +340,27 @@ def update(unit, since) -> Result:
             # quiet run. Count a sub-unit as ADDED only when it produced a date
             # strictly newer than its prior stored max (genuinely new data);
             # otherwise it's an honest empty (boundary-only re-fetch / revision).
-            genuinely_new = any((di > last) for di in d) if last is not None else bool(d)
+            #
+            # THE THIRD SITE OF THE STRING-VS-DATE CLASS, and the one the R310 sweep stepped
+            # OVER: that pass fixed the cursor seed ~50 lines above and last_db ~15 lines
+            # below, and this comparison sits BETWEEN them in execution order.
+            #
+            # `di` is a dt.date from _parse_period(); `last` is last_by_series.get(skey), which
+            # _common.py:379 mints as an ISO STRING (`{k: d.isoformat() ...}`). Verified on the
+            # real production parquet: 'BCRP:USDPEN_mid' -> '2026-07-21', type str. Comparing
+            # them raises
+            #     TypeError: '>' not supported between 'datetime.date' and 'str'
+            # — the same defect as the AttributeError that started this, wearing a different
+            # exception, which is exactly why grepping for the previous symptom missed it.
+            #
+            # Normalised to ISO on BOTH sides, matching what line 321 above already does
+            # (`mx.isoformat() > cur`). ISO strings sort identically to dates, so behaviour is
+            # unchanged for well-typed input; this only stops it raising on mixed input.
+            _last_iso = (last if isinstance(last, str)
+                         else last.isoformat() if last is not None else None)
+            genuinely_new = (
+                any((di if isinstance(di, str) else di.isoformat()) > _last_iso for di in d)
+                if _last_iso is not None else bool(d))
             if genuinely_new:
                 tally.added_unit(len(k))
             else:
