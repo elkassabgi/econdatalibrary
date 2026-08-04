@@ -159,32 +159,7 @@ def assess(store=None) -> dict:
         # This field CAN hide staleness, so declaring one without evidence is the abuse
         # case. It cuts both ways: a source polled annually that publishes monthly gets a
         # TIGHTER clock, not a looser one.
-        #
-        # A BUSINESS-DAY PUBLISHER IS NOT LATE ON A MONDAY. `daily` gives
-        # data_days = 1 * (2.0 + 1.0) = 3, so a Friday observation is already 3 days old on
-        # Monday and 4 on Tuesday — every source that publishes on business days went
-        # RED-DATA roughly two days in seven while being exactly level with its publisher.
-        #
-        # MEASURED 2026-08-04, weekday distribution of every distinct obs_date over the
-        # trailing 3 years (not inferred from the cadence field, per the rule above):
-        #     bcrp         673 dates, 0 weekend      cnb    751 dates, 0 weekend
-        #     frankfurter  763 dates, 0 weekend      nyfed  750 dates, 0 weekend
-        #     riksbank     749 dates, 0 weekend      ofr    765 dates, 12 weekend (1.6%)
-        # Five of the six carry ZERO Saturday or Sunday observations. They had all stalled on
-        # 2026-07-31, which was a Friday.
-        #
-        # ofr was additionally checked against the PUBLISHER rather than inferred: the newest
-        # observation at data.financialresearch.gov for fnyr and repo was 2026-07-31, exactly
-        # what we hold, and re-running the fetcher added 261 rows and turned it `ok`.
-        #
-        # 2 * 3 = 6 days, so Friday's data stays acceptable through Thursday. Still a real
-        # check — a business-daily feed silent for six calendar days has missed four trading
-        # days — but it no longer fires on the calendar instead of on the data. A gate that
-        # reddens predictably every Monday teaches its reader to skip Mondays, which is
-        # precisely how a real freeze gets ignored.
-        #
-        # Lateness clock only: these stay cadence=daily and are still offered a turn daily.
-        LATENESS_PERIOD = {"irregular": 365, "business_daily": 2}
+        LATENESS_PERIOD = {"irregular": 365}
         lat_cadence = e.get("data_cadence") or cadence
         data_days = (LATENESS_PERIOD.get(lat_cadence,
                                          CADENCE_DAYS.get(lat_cadence, period))
