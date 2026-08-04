@@ -130,7 +130,13 @@ def ledger_hits(sid):
         start = m.end()
         nxt = re.search(r"^### R\d+ — ", txt[start:], re.M)
         body = txt[start:start + (nxt.start() if nxt else 4000)]
-        if re.search(rf"\b{re.escape(sid)}\b", body):
+        # CASE-INSENSITIVE, and that is not a nicety. Ledger entries name publishers the way
+        # people write them — "SCB", "ONS", "BIS", "OECD" — while source ids are lowercase.
+        # R331 is entirely about scb, mentions it five times as "SCB", and appeared on ZERO
+        # runbook pages: the one page whose reader most needs it did not carry it. Same shape as
+        # R328 (I wrote sixteen entries and updated the read-path zero times) — an entry nobody
+        # can reach is an entry nobody wrote.
+        if re.search(rf"\b{re.escape(sid)}\b", body, re.I):
             hits.append((m.group(1), m.group(2).strip()))
     return hits
 
