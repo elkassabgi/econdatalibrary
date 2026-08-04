@@ -170,10 +170,13 @@ def update(unit, since) -> Result:
         flow = fn[:-len(".parquet")]
         before = blob.row_count(path)
 
-        # Stop STARTING new flows once the budget is spent. Deferred flows are recorded
-        # transient, so the run is `partial`, the unit vintage is NOT advanced and the
-        # remainder drains on the next tick — nothing is silently skipped. Without this a
-        # single source can consume the whole 300-minute job and every runner byte.
+        # Stop STARTING new flows once the budget is spent. Deferred flows go through
+        # tally.deferred_unit(), NOT transient_unit(): nothing failed and nothing was even
+        # attempted, so they must not inflate the failure count (R303 — abs once reported
+        # "805/1222 sub-unit(s) transient-failed" when every named unit read "deferred
+        # (budget 35 min)"). The unit vintage is still NOT advanced and the remainder drains
+        # on the next tick, so nothing is silently skipped. Without this a single source can
+        # consume the whole 300-minute job and every runner byte.
         if dl.spent():
             deferred += 1
             tally.deferred_unit(f"{flow} deferred (budget {BUDGET_MIN:.0f} min)")

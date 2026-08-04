@@ -517,8 +517,10 @@ def update(unit, since) -> Result:
 
     for fn in pfiles:
         if dl.spent():
-            # Announced, never silent: the deferred groups are recorded transient, so the run
-            # is `partial`, the vintage is NOT advanced, and the next tick takes them first.
+            # Announced, never silent — and recorded as DEFERRED, not transient (R303).
+            # Nothing failed and nothing was attempted, so these must not enter the failure
+            # count; ssb read "135/1515 transient-failed" on a run with 0 real failures.
+            # The vintage is still NOT advanced and the next tick takes them first.
             tally.deferred_unit(f"{fn}: budget {BUDGET_MIN:.0f} min spent, group deferred")
             continue
         path = os.path.join(out_dir, fn)
