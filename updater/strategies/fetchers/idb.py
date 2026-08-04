@@ -139,7 +139,10 @@ def update(unit, since) -> Result:
             continue
         j0 = ig.get_json(f"{ig.BASE}/datastore_search", params={"resource_id": rid, "limit": 0})
         if not j0:
-            tally.transient_unit()
+            # Name the resource. "10/40 sub-unit(s) transient-failed" told a reader nothing
+            # about WHICH of idb's 40 resources were failing, so the same row appeared whether
+            # one dataset had been retired or the whole CKAN endpoint was flaking.
+            tally.transient_unit(f"{slug}/{rid[:8]}: datastore_search returned nothing")
             continue
         r0 = j0.get("result", {})
         total = r0.get("total", 0)
@@ -151,7 +154,9 @@ def update(unit, since) -> Result:
 
         rows = ig.fetch_resource_all_rows(rid, total)
         if not rows:
-            tally.transient_unit()
+            # DISTINCT from the case above: search SAID there were `total` rows and the fetch
+            # returned none. Carrying the count is what makes that visible.
+            tally.transient_unit(f"{slug}/{rid[:8]}: 0 of {total} rows fetched")
             continue
 
         keys, dates, vals = ig.rows_to_long(rows, slug, rname, fields)
@@ -169,8 +174,8 @@ def update(unit, since) -> Result:
         before = blob.row_count(path) if blob.exists(path) else 0
         try:
             n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-        except DefinitiveError:
-            tally.transient_unit()
+        except DefinitiveError as e:
+            tally.transient_unit(f"{slug}/{rid[:8]}: merge guard — {str(e)[-60:]}")
             continue
         published += n
         tally.added_unit(max(0, n - before))

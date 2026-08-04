@@ -174,8 +174,10 @@ def update(unit, since) -> Result:
         date_param = _window(path, since)
         try:
             rows = _fetch_window(ind_id, date_param)
-        except TransientError:
-            tally.transient_unit()
+        except TransientError as e:
+            # Name the indicator and the cause. Unlabelled, an 8-of-9 failure reads only
+            # "8/9 sub-unit(s) transient-failed; will retry" — a number with nothing to act on.
+            tally.transient_unit(f"{ind_id}: {str(e)[-70:]}")
             total += blob.row_count(path)
             time.sleep(RATE)
             continue
@@ -212,8 +214,10 @@ def update(unit, since) -> Result:
         before = blob.row_count(path)
         try:
             n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-        except DefinitiveError:
-            tally.transient_unit()
+        except DefinitiveError as e:
+            # A merge guard trip (never-shrink etc.) is a DIFFERENT failure from a fetch
+            # failure, and unlabelled they are indistinguishable in the state row.
+            tally.transient_unit(f"{ind_id}: merge guard — {str(e)[-60:]}")
             total += before
             time.sleep(RATE)
             continue

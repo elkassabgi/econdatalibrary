@@ -155,8 +155,12 @@ def update(unit, since) -> Result:
             raw = ig.download_bytes(sess, key)
             df = ig.read_csv_bytes(raw)
             family, rows = ig.route(ds_id, df)
-        except Exception:
-            tally.transient_unit()
+        except Exception as e:                                   # noqa: BLE001
+            # This catch spans download, CSV parse AND routing, so the exception TYPE is the
+            # only thing that says which of the three broke. Unlabelled it collapsed to
+            # "4/48 sub-unit(s) transient-failed" — the same row whether ember's CDN was down
+            # or our router rejected a renamed column.
+            tally.transient_unit(f"{ds_id}: {type(e).__name__} {str(e)[:60]}")
             continue
 
         if not rows:
@@ -182,9 +186,10 @@ def update(unit, since) -> Result:
         before = blob.row_count(path) if blob.exists(path) else 0
         try:
             n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-        except DefinitiveError:
-            # a never-shrink/guard trip on ONE dataset must not abort the whole source
-            tally.transient_unit()
+        except DefinitiveError as e:
+            # a never-shrink/guard trip on ONE dataset must not abort the whole source —
+            # but say WHICH dataset and WHICH guard, or the survival is untraceable
+            tally.transient_unit(f"{ds_id}: merge guard — {str(e)[-60:]}")
             continue
 
         published += n
