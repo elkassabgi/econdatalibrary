@@ -89,11 +89,30 @@ TARGETS = [
 # land new-grain rows while the old grain is still present, which is the duplication the
 # quarantine exists to prevent.
 GRAIN_TARGETS = [
+    # scb — APPLIED 2026-08-04, 15,990 rows. Left here as the worked example; re-running is a
+    # no-op ("already clean") and the entries document what the marker looks like in practice.
     ("scb", "HE.parquet", "HE:HE0110:HE0110H:TABIRH3", ":Tid="),
     ("scb", "HE.parquet", "HE:HE0110:HE0110H:TABIRH4", ":Tid="),
     ("scb", "HE.parquet", "HE:HE0110:HE0110H:TABIRH5", ":Tid="),
     ("scb", "BE.parquet", "BE:BE0101:BE0101I:DodaVeckaRegionCKM", ":Tid="),
     ("scb", "BE.parquet", "BE:BE0101:BE0101I:Medellivsl", ":Tid="),
+    # statfin — found 2026-08-04 only after `--r2` was made to actually read R2 (R335); the
+    # local mirror had hidden them. Both tables carry a CLASSIFICATION axis whose values are
+    # years, beside the real `timeperiod_y` (flagged time=true by the publisher):
+    #
+    #   mkan/11ti.px  "Vehicle stock by YEAR OF FIRST REGISTRATION" — kvuosi_trafi_4_20140101
+    #                 holds 'YH', 2025..1902 and '9999' (= unknown registration year)
+    #   tkker/13ew.px "R&D funding for research institutes" — tkke_tk_henkilo_35 holds
+    #                 'SSS', 2003, 2005, ... and '2301'
+    #
+    # The old parse keyed obs_date off the classification and baked `timeperiod_y` INTO the key.
+    # The resolver now picks timeperiod_y in both cases WITH OR WITHOUT the flag (verified), so
+    # the correct grain is already arriving and these files hold both at once:
+    #   mkan:11ti   old 4,536 rows (1900..9999) | new 4,590 (2025)
+    #   tkker:13ew  old   384 rows (2003..2301) | new   429 (2016..2026)
+    # Neither empties — the marker selects only the old half.
+    ("statfin", "mkan.parquet", "mkan:11ti.px", ":timeperiod_y="),
+    ("statfin", "tkker.parquet", "tkker:13ew.px", ":timeperiod_y="),
 ]
 
 
@@ -137,6 +156,7 @@ def main() -> int:
         by_file.setdefault((src, fn), []).append(pref)
 
     pruned = refused = 0
+    emptied: list[tuple[str, str]] = []
     for (src, fn), prefixes in by_file.items():
         path = os.path.join(config.source_dir(src), fn)
         if not blob.exists(path):
@@ -233,9 +253,11 @@ def main() -> int:
                 # the table is restored by the publisher on the next tick once the fetcher's
                 # _REGRAIN_QUARANTINE entry is removed. If you drop these WITHOUT lifting the
                 # quarantine, the table stays empty indefinitely — that is the failure to avoid.
-                print(f"        table empties: 100% of its rows are old-grain. Allowed here "
-                      f"ONLY because lifting scb's _REGRAIN_QUARANTINE backfills it.",
+                print(f"        table empties: 100% of its rows are old-grain. Allowed ONLY "
+                      f"because the fetcher backfills it once its quarantine entry is cleared.",
                       flush=True)
+                if a.apply:
+                    emptied.append((src, pref))
             drop = is_old if drop is None else pc.or_(drop, is_old)
         if drop is None:
             print(f"    -> nothing to do\n", flush=True)
@@ -260,9 +282,16 @@ def main() -> int:
     print(f"{'PRUNED' if a.apply else 'would prune'}: {pruned} file(s); refused: {refused}")
     if refused:
         print("A refusal is the tool working. Those tables need a re-pull, not a prune.")
-    if a.apply and g_by_file:
-        print("\nNEXT, and it is not optional: remove those table paths from "
-              "_REGRAIN_QUARANTINE in updater/strategies/fetchers/scb.py, or they stay empty.")
+    # Only say this when a table was actually EMPTIED. It used to fire on any grain pass and
+    # named scb's quarantine unconditionally — so a statfin-only run ended with an instruction
+    # to edit a file it had not touched. An instruction that is wrong in the common case is
+    # worse than none: it teaches the reader to skim the closing line.
+    if a.apply and emptied:
+        print(f"\nNEXT, and it is not optional — {len(emptied)} table(s) were emptied and will "
+              f"STAY empty until the fetcher is allowed to backfill them:")
+        for src, pref in emptied:
+            print(f"    {src}: {pref}  -> clear its entry in "
+                  f"updater/strategies/fetchers/{src}.py::_REGRAIN_QUARANTINE")
     return 0
 
 
