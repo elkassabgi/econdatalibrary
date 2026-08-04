@@ -3643,6 +3643,18 @@ sources:
   strategy_reason: Closed single-file dataset (Jan 2020-Dec 2022) from a fixed GitHub raw CSV with no date param; small whole
     table best handled by a vintage-gated atomic overwrite.
   cadence: static
+  # upstream_verified — PROBED 2026-08-04, not assumed. github.com/OxCGRT/covid-policy-dataset
+  # describes itself as "the final version of the Oxford Covid-19 Government Response Tracker
+  # (OxCGRT)", published to a static repository in June 2023 and spanning 2020, 2021 and 2022.
+  # Our newest observation is 2022-12-31, which IS the publisher's end — so RED-DATA here was
+  # the gate reporting that data does not exist rather than that we are missing it (health.py
+  # makes exactly this argument for the IMF's finished datasets).
+  #
+  # An ASSERTION WITH AN EXPIRY, never a mute: it lapses to ATTENTION after 180 days so somebody
+  # re-probes, and if our data ever falls BEHIND 2022-12-31 the declaration stops applying.
+  upstream_verified:
+    latest_obs: '2022-12-31'
+    checked: '2026-08-04'
   refresh_cost: fast
   out_dir: oxcgrt
   review: true
