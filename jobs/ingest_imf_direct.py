@@ -397,9 +397,29 @@ def _pull_streamed(url: str, flow: str, agency: str, source_id: str,
     # Written next to the parquet so a catalogue/title builder can decode keys without
     # re-deriving a guess. Best-effort: a sidecar problem must never sink a good publish.
     try:
-        dims_path = (out_path or os.path.join(OUT, f"{source_id}.parquet")) + ".dims.json"
-        with open(dims_path, "w", encoding="utf-8") as fh:
-            json.dump({"flow": flow, "agency": agency, "key_dims": dims}, fh, indent=1)
+        # THE SAME PATH THE PARQUET ACTUALLY GOES TO. The published file is written to
+        # OUT/<source_id>/<source_id>.parquet (see the write at the end of this function), but
+        # this fallback said OUT/<source_id>.parquet - one directory too shallow. So the sidecar
+        # landed where tools/imf_direct_titles.load_dims never looks, load_dims returned None,
+        # and EVERY _direct source silently fell back to INFERRING the key order this file had
+        # just recorded exactly. The comment above already claimed "written next to the
+        # parquet"; it simply was not.
+        #
+        # It cost imf_bop_direct its titles. Inference demands that every key part resolve, and
+        # BOP has 7 key parts against 5 codelisted dims (IFS_FLAG and METHODOLOGY are not DSD
+        # Dimensions, so nothing can resolve BPM6), so no ordering fits and all 260,931 series
+        # fell back to their raw key - while this sidecar held the right answer all along.
+        dims_path = (out_path or os.path.join(OUT, source_id,
+                                              f"{source_id}.parquet")) + ".dims.json"
+        # THROUGH blob, NOT open(). The parquet is published via blob and lands in R2 under
+        # AQUEDUCT_BACKEND=r2; a plain open() puts the sidecar on the runner's local disk, where
+        # it dies with the container. blob.read_bytes' own docstring warns about precisely this
+        # ("a plain open(path) sees nothing on a CI runner"). write_bytes_atomic mirrors local
+        # AND R2, and makedirs the new subdirectory, which the bare open() would have needed
+        # since the sidecar is written before the parquet creates that directory.
+        from updater import blob as _blob
+        _blob.write_bytes_atomic(dims_path, json.dumps(
+            {"flow": flow, "agency": agency, "key_dims": dims}, indent=1).encode("utf-8"))
     except Exception as e:                                   # noqa: BLE001
         print(f"[imf_direct] WARNING: could not record key dims ({e!r}); a title "
               f"builder will have to re-derive them", flush=True)

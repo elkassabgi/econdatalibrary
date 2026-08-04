@@ -105,8 +105,26 @@ def load_structure(flow: str, agency: str):
 
 
 def load_dims(source_id: str, store_path: str) -> list[str] | None:
-    """The authoritative key order, if the ingest recorded it."""
+    """The authoritative key order, if the ingest recorded it.
+
+    READ IT THE WAY IT IS WRITTEN. This tested os.path.exists and open()ed the local file, so
+    under AQUEDUCT_BACKEND=r2 - the mode the catalogue actually runs in - it never saw a sidecar
+    published to R2, returned None, and handed the job to infer_dims, which GUESSES the order
+    the ingest had recorded exactly. That guess is only as good as the codelists: it costs
+    imf_cpi_direct a dimension (CPI read as a METHODOLOGY, not an INDEX_TYPE) and it cannot
+    place imf_bop_direct at all - 7 key parts against 5 codelisted dims, so no ordering resolves
+    every part and all 260,931 series fall back to their raw key.
+
+    Falls back to the local path so a store written under the local backend still decodes.
+    """
     p = store_path + ".dims.json"
+    try:
+        from updater import blob
+        raw = blob.read_bytes(p)
+        if raw:
+            return json.loads(raw.decode("utf-8")).get("key_dims")
+    except Exception:                                            # noqa: BLE001
+        pass                                                     # local fallback below
     if not os.path.exists(p):
         return None
     try:
