@@ -24,16 +24,52 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
 
 
-def _supported():
-    """The worker's SUPPORTED_SOURCES, or None if it cannot be read (UNCHECKED, never 'fine')."""
+API_BASE = os.environ.get("ECONDL_API", "https://econdl-api.elkassabgi.workers.dev")
+
+
+def _listed_live(source: str):
+    """Is this source visible on the LIVE API? True / False / None (unchecked).
+
+    ASK THE RUNNING SYSTEM, NOT THE SOURCE FILE. This used to parse SUPPORTED_SOURCES out of
+    api/worker/src/util.ts and call the result "the worker's SUPPORTED_SOURCES". It is not: that
+    constant takes effect only once the worker is DEPLOYED, and nothing in .github/workflows
+    deploys the worker. The check therefore flipped to 'yes' the instant I edited a text file,
+    and stayed 'yes' while the live worker — last deployed 2026-08-02 — could not serve those ids
+    at all. It reported my own intent back to me and I read it as a verdict. Cost: 425,462 series
+    across three tasks called "SERVED" and "live" while unreachable (R345). The identical lesson
+    is already written into the D1 leg below (R224); this leg was never held to it.
+
+    WHY /v1/sources AND NOT A CSV PROBE. My first attempt fetched /v1/series/<id>.csv and treated
+    "not 501" as supported. Measured against the live API, that discriminates NOTHING: auth runs
+    BEFORE the migration gate, so a fabricated id returns the same 401 as a real one —
+
+        zillow:ZHVI_US -> 401   not_a_real_source:abc -> 401   imf_cpi_direct:<real> -> 401
+
+    A check that returns True for `not_a_real_source` is worse than no check. /v1/sources is
+    unauthenticated and discriminates for real (verified: imf_cpi_direct listed, zillow and ksh
+    absent).
+
+    NOTE THE SCOPE HONESTLY: this proves the source is DISCOVERABLE on the deployed API — it
+    needs a `source` row, >=1 series row in D1, and a worker that answers. It does not by itself
+    isolate SUPPORTED_SOURCES membership; no unauthenticated endpoint exposes that today, and
+    inventing a green light for it is what caused R345.
+    """
+    import json
+    import urllib.request
+    # EXPLICIT User-Agent: urllib's default ("Python-urllib/3.x") is refused with 403 by the
+    # edge, while curl gets 200 for the same URL. Without this the probe returns None for every
+    # source — "unchecked" for all of them, which is at least honest but useless.
+    req = urllib.request.Request(f"{API_BASE}/v1/sources",
+                                 headers={"User-Agent": "econdl-verify/1.0"})
     try:
-        import re
-        ts = open(os.path.join(ROOT, "api", "worker", "src", "util.ts"),
-                  encoding="utf-8").read()
-        blk = ts.split("SUPPORTED_SOURCES: readonly string[] = [", 1)[1].split("];", 1)[0]
-        return set(re.findall(r'"([a-z0-9_]+)"', re.sub(r"//[^\n]*", "", blk)))
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        rows = d if isinstance(d, list) else d.get("sources", d.get("data", []))
+        ids = {(x.get("source") or x.get("source_id") or x.get("id"))
+               for x in rows if isinstance(x, dict)}
+        return source in ids
     except Exception:                                          # noqa: BLE001
-        return None
+        return None                                            # UNCHECKED, never "fine"
 
 
 def _d1_count(source: str):
@@ -149,8 +185,8 @@ def main() -> int:
     # 404'd (R224). Local artefacts agreeing with each other is not evidence that a request
     # succeeds.
     d1_n, d1_err = _d1_count(a.source)
-    sup = _supported()
-    in_sup = a.source in sup if sup is not None else None
+    # Probe the DEPLOYED worker with a real id from this source, not the local util.ts.
+    in_sup = _listed_live(a.source)
     if d1_err:
         print(f"D1             : UNCHECKED ({d1_err})")
     else:
@@ -158,8 +194,9 @@ def main() -> int:
         print(f"D1             : {d1_n:,} row(s)"
               + (f"  — {gap:,} CATALOGUED BUT NOT IN D1: those ids 404 at the API"
                  if gap > 0 else "  — matches the catalogue"))
-    print(f"SUPPORTED_SOURCES: {'yes' if in_sup else 'NO — every id answers 501 not_migrated'
-                               if in_sup is False else 'unchecked'}")
+    print(f"LIVE /v1/sources : {'listed — discoverable on the deployed API'
+                                if in_sup else 'NOT LISTED — invisible to anyone browsing'
+                                if in_sup is False else 'unchecked (probe failed)'}")
 
     coherent = not missing and not junk and not bad
     reachable = (d1_err is None and d1_n >= len(cat)) and in_sup is not False
