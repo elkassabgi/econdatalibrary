@@ -87,6 +87,36 @@ OWNER = f"orch-{os.getpid()}"
 _TTL_BY_COST = {"fast": 7200, "medium": 7200, "large": 43200, "giant": 172800}
 
 
+def _clip_err(msg, limit: int = 1400) -> str:
+    """Bound an error string WITHOUT silently defeating the offender list inside it.
+
+    Errors were stored as `str(e)[:300]`. That cap is right in spirit — an unbounded error
+    goes into state.db, which is pulled and pushed on EVERY run — but 300 chars is below the
+    length of the messages the fetchers deliberately build. finalize() names the sub-units
+    that failed precisely so a finding is actionable without a bisect (see Tally.structural_ids),
+    and the cap was cutting that list off mid-token:
+
+        hagstofa: 7/1096 sub-unit(s) returned 200 but parsed 0 rows ... [kosningar/.../KOS03190.px,
+        kosningar/.../KOS03190a.px, manntal/2011/1manntalfjolsk/CEN01560.px, manntal/2011/1manntalf
+
+    Four of seven offenders, the fourth unusable. The prefix alone is ~135 characters, so any
+    source whose unit ids are paths loses most of its list. The naming fix and the truncation
+    were each reasonable alone and cancelled each other out.
+
+    Two changes: a limit that fits a real offender list, and truncation that ANNOUNCES itself
+    and lands on a separator, so a reader can tell "these are the 4 that failed" from "these
+    are 4 of 7 and the rest were cut". A silent clip reads as completeness.
+    """
+    s = str(msg)
+    if len(s) <= limit:
+        return s
+    cut = s[:limit]
+    i = cut.rfind(", ")
+    if i > limit * 0.5:          # end on a whole element when one is close enough
+        cut = cut[:i]
+    return f"{cut} …[truncated, {len(s) - len(cut)} more chars]"
+
+
 def _ttl(unit) -> int:
     return _TTL_BY_COST.get((unit.config or {}).get("refresh_cost"), 7200)
 
@@ -738,7 +768,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                   flush=True)
             if not dry:
                 _record(store, unit, "transient_fail",
-                        err=("adapter import broken: " + repr(e))[:300])
+                        err=_clip_err("adapter import broken: " + repr(e)))
             if _is_live(unit):
                 pending_live.append(unit.source_id)  # live + unrunnable => run failure
             results.append((unit.key, "broken_adapter"))
@@ -899,16 +929,16 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # UNEXPECTED. Transient by design: nothing was corrupted, the source simply did
             # not finish, and it is re-queued.
             print(f"[orchestrator] TIMEOUT {unit.key} — {e}", flush=True)
-            _record(store, unit, "transient_fail", err=str(e)[:300], dur=time.time() - t0)
+            _record(store, unit, "transient_fail", err=_clip_err(e), dur=time.time() - t0)
             results.append((unit.key, "timeout"))
         except TransientError as e:
-            _record(store, unit, "transient_fail", err=str(e)[:300], dur=time.time() - t0)
+            _record(store, unit, "transient_fail", err=_clip_err(e), dur=time.time() - t0)
             results.append((unit.key, "transient_fail"))
         except DefinitiveError as e:
-            _record(store, unit, "partial", err=str(e)[:300], dur=time.time() - t0)
+            _record(store, unit, "partial", err=_clip_err(e), dur=time.time() - t0)
             results.append((unit.key, "partial"))
         except Exception as e:  # noqa: BLE001 — unexpected: treat as transient, surface, retry
-            _record(store, unit, "transient_fail", err=("UNEXPECTED:" + repr(e))[:300], dur=time.time() - t0)
+            _record(store, unit, "transient_fail", err=_clip_err("UNEXPECTED:" + repr(e)), dur=time.time() - t0)
             results.append((unit.key, "error"))
         finally:
             store.release_lease(unit.key, owner=OWNER)
