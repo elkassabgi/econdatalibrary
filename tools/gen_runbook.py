@@ -216,6 +216,20 @@ def render(sid, reg, st, runs, cat, served, with_store=False):
       "`last SUCCESS: NEVER` may be ingesting millions of rows perfectly well and failing one "
       "sub-unit. Check `obs_count` and the run history before concluding it is dead.")
     A("")
+    A("> **A FUTURE `last_obs_date` IS USUALLY CORRECT, NOT A BUG.** Many publishers ship "
+      "genuine PROJECTIONS: CSO Ireland's `18_Population_Projections` runs to 2057, Estonia's "
+      "`rahvastik` to 2085, ABS to 2046/2071, UN WPP to 2101, IMF WEO to 2031. `health.py` "
+      "already separates the two — `frontier` is the furthest period held INCLUDING projections "
+      "(display only), `newest_obs` filters to periods <= today and is the recency signal — "
+      "because 28 of 93 units legitimately reported a future frontier. Do NOT \"repair\" a "
+      "future date until you have looked at the series key and the year sequence.")
+    A(">")
+    A("> What IS a defect: a SENTINEL (9999-12-31, 2999-12-31) or a COUNTER read as a year "
+      "(years 1, 2, 3 ... contiguous from 1 — no projection starts at year 1). Tell them apart "
+      "by the key and the sequence, never by the size of the number. See R320/R322 and "
+      "`tools/audit_impossible_dates.py`, whose bounds (before 1500, after 2200) are "
+      "deliberately far outside every real projection horizon.")
+    A("")
 
     rr = runs.get(sid) or []
     if rr:
@@ -300,7 +314,8 @@ def render(sid, reg, st, runs, cat, served, with_store=False):
       f"fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];"
       f"print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')\"")
     A("")
-    A("# 6. Are its dates real? A counter read as a year is silent and has hit 7 sources.")
+    A("# 6. Are its dates real? A counter-as-year or a 9999 sentinel is silent (7 sources hit).")
+    A("#    NOTE: a FUTURE date is usually a legitimate projection - check the key before repairing.")
     A(f"python tools/audit_impossible_dates.py --r2 --source {sid}")
     A("```")
     A("")
