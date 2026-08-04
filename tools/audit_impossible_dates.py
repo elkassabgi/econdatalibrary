@@ -33,6 +33,26 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+# MAKE `--r2` MEAN R2 — before updater.config is imported and freezes BACKEND from the env.
+#
+# It did not, and the flag lied. `--r2` only chose blob.list_parquets() over a local glob, and
+# blob honours config.BACKEND, which comes from AQUEDUCT_BACKEND. So
+#
+#     python tools/audit_impossible_dates.py --r2 --source scb
+#
+# read the LOCAL tree and printed "(r2)" over it. Not a cosmetic mislabel: under
+# AQUEDUCT_BACKEND=r2 the local tree is a scratch mirror of the LAST RUN ONLY (R296/R36), so it
+# is systematically CLEANER than the store users download — a repair writes to R2, the audit
+# then reads local, and the all-clear describes a directory nobody is served from. This was the
+# verification used to confirm a 104,501-row prune, and it was measuring the wrong store.
+#
+# Setting the env var here keeps ONE source of truth, and the resolved backend is printed in the
+# header so it never has to be assumed again. R330/R296.
+if "--r2" in sys.argv:
+    os.environ["AQUEDUCT_BACKEND"] = "r2"
+elif "--local" in sys.argv:
+    os.environ["AQUEDUCT_BACKEND"] = "local"
+
 import pyarrow.parquet as pq                                  # noqa: E402
 from updater import blob, config, registry                    # noqa: E402
 
@@ -139,8 +159,10 @@ def main() -> int:
     lo = a.before
     sources = ([a.source] if a.source
                else sorted(e["source_id"] for e in registry.load().get("sources", [])))
-    print(f"scanning {len(sources)} source(s) for obs_date > {bound}  "
-          f"({'local' if a.local else 'r2'})\n")
+    # Print the RESOLVED backend, not the flag. They disagreed until 2026-08-04 and the header
+    # was the thing that made the disagreement invisible.
+    print(f"scanning {len(sources)} source(s) for obs_date > {bound} and < {lo}  "
+          f"(backend={config.BACKEND})\n")
 
     hits = []
     for sid in sources:
