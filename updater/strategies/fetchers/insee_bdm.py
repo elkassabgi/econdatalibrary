@@ -274,10 +274,17 @@ def update(unit, since) -> Result:
 
         try:
             root = _get_xml(sess, url)
-        except TransientError:
+        except TransientError as e:
             # Leave this flow's existing data untouched; record & keep going so one flaky
             # flow can't strand the other 200. -> run becomes 'partial'.
-            tally.transient_unit()
+            #
+            # NAME THE FLOW AND THE REASON. _get_xml already builds a usable message
+            # ("insee_bdm GET <url>: <cause>") and this discarded it, so the state row read only
+            # "201/201 sub-unit(s) transient-failed; will retry" — no flow, no status code, no
+            # exception text. That is exactly how insee_bdm sat in production for four days:
+            # failing totally and undiagnosably, and it took a live probe session to establish
+            # only that the endpoint was up. _named() renders up to 20 of these.
+            tally.transient_unit(f"{flow_id}: {str(e)[-70:]}")
             total += before
             if streak.fail():
                 print(f"[insee_bdm] {streak.limit} flows transient-failed in a row — the "
@@ -288,7 +295,9 @@ def update(unit, since) -> Result:
 
         if isinstance(root, tuple) and root[0] == "STRUCTURAL":
             # 200 parsed as XML but the SDMX data envelope is gone (root=<root[1]>).
-            tally.structural_unit()
+            # Carry the flow AND the unexpected root element — a schema break is only
+            # actionable if you know which flow broke and what came back instead.
+            tally.structural_unit(f"{flow_id}: SDMX envelope gone, root=<{root[1]}>")
             total += before
             time.sleep(RATE)
             continue
@@ -300,7 +309,7 @@ def update(unit, since) -> Result:
                 # the BDM catalog ("Could not find Dataflow"/"DSD") is a real structural
                 # break — surface it for human attention (finalize -> DefinitiveError),
                 # not a transient retried forever. Existing on-disk data is kept.
-                tally.structural_unit()
+                tally.structural_unit(f"{flow_id}: withdrawn/renumbered upstream (404)")
             else:
                 # A NoRecordsFound 404 (or a 404 on a flow with no on-disk anchor) is a
                 # quiet/empty tail, not a break: record empty so the source can still
@@ -321,7 +330,7 @@ def update(unit, since) -> Result:
             #  - otherwise (n_series == 0, or no on-disk anchor): a genuinely empty SDMX
             #    envelope — a legitimately quiet flow, not a break -> empty.
             if n_series > 0 and existing_max is not None:
-                tally.structural_unit()
+                tally.structural_unit(f"{flow_id}: {n_series} <Series> parsed to 0 obs")
             else:
                 tally.empty_unit()
             total += before
