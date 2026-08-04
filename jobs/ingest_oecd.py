@@ -219,9 +219,18 @@ _W = re.compile(r"^(\d{4})-W(\d{2})$")
 _Y = re.compile(r"^(\d{4})$")
 
 
+# OECD's own PLACEHOLDER periods, not periods. Kept in sync with the same set in
+# updater/strategies/fetchers/oecd.py — this ingester and that fetcher must not disagree about
+# what a date is, or a backfill and a nightly tick write different rows for the same series.
+# Measured 2026-08-04: 13,355 rows at 2999 in DSD_REICO_VIZ@DF_SP and 11,805 in
+# DSD_SBRD@DF_SBRD; every affected key also carries real dated observations, so dropping these
+# removes an appendix row per series and never a series. R330-adjacent, task #91.
+_PLACEHOLDER_PERIODS = {"2999", "9999"}
+
+
 def parse_period(p):
     p = p.strip()
-    if not p:
+    if not p or p in _PLACEHOLDER_PERIODS:
         return None
     m = _Y.match(p)
     if m:

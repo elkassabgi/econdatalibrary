@@ -77,10 +77,33 @@ def fetch_catalog() -> dict:
     return out
 
 
+# TIME_PERIOD values that are PLACEHOLDERS, not periods. These come from OECD itself — we did
+# not fabricate them — but materialising them as dates puts observations 973 years in the future
+# into a time-series store, where every freshness and staleness instrument reads them as real.
+# Measured 2026-08-04 on the only two files that carry them:
+#
+#     DSD_REICO_VIZ@DF_SP   139,930 rows, 13,355 at 2999
+#     DSD_SBRD@DF_SBRD      369,167 rows, 11,805 at 2999
+#
+# Dropping them loses no SERIES: every one of those 13,355 and 11,805 keys ALSO carries real
+# dated observations, so this removes an appendix row per series, never a series. That check is
+# load-bearing — had they been disjoint (a series existing ONLY at 2999) dropping would silently
+# retire it, and this guard would have to gate the whole table instead.
+#
+# Eurostat's equivalent is '9999' paired with freq='NAP', and it is NOT resolved by this guard:
+# there, entire tables are 9999-only (ENV_WAT_LTAA, TEN00001 — genuinely time-invariant
+# "long-term annual average" tables), so dropping the rows empties the table, and an `empty`
+# table holds a whole source at `partial`. That is a hosting decision, not a parser one. Task #91.
+_PLACEHOLDER_PERIODS = {"2999", "9999"}
+
+
 def _parse_period(p: str):
-    """OECD SDMX TIME_PERIOD -> date (annual YYYY -> Dec 31, matches existing parquet)."""
+    """OECD SDMX TIME_PERIOD -> date (annual YYYY -> Dec 31, matches existing parquet).
+
+    Returns None for a placeholder period, which drops that observation.
+    """
     p = (p or "").strip()
-    if not p:
+    if not p or p in _PLACEHOLDER_PERIODS:
         return None
     try:
         if len(p) == 4 and p.isdigit():
