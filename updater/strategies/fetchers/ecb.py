@@ -541,8 +541,12 @@ def update(unit, since) -> Result:
 
         try:
             path_key = _build_path_key(flow, decoded, sample_keys)
-        except TransientError:
-            tally.transient_unit()
+        except TransientError as e:
+            # NAME THE FLOW. ecb sweeps 540 sub-units, so an unlabelled count says
+            # "N/540 sub-unit(s) transient-failed" and leaves the reader to bisect 540 flows
+            # to find the broken one. Each of the three failures below is a DIFFERENT thing
+            # (key build / HTTP status / fetch transient) and unlabelled they are one string.
+            tally.transient_unit(f"{flow}: path-key build failed — {str(e)[-60:]}")
             total += before
             continue
 
@@ -558,11 +562,11 @@ def update(unit, since) -> Result:
                 tally.empty_unit()
                 total += before
                 continue
-            tally.transient_unit()
+            tally.transient_unit(f"{flow}: HTTP {e.code}")
             total += before
             continue
-        except TransientError:
-            tally.transient_unit()
+        except TransientError as e:
+            tally.transient_unit(f"{flow}: {str(e)[-60:]}")
             total += before
             continue
 
@@ -577,7 +581,9 @@ def update(unit, since) -> Result:
             # must NOT nuke the whole source. (The all-empty floor still catches a
             # wholesale outage where EVERY file goes empty.)
             if n_body >= STRUCT_MIN_BODY:
-                tally.structural_unit()
+                # Carry the body size: it is the number the STRUCT_MIN_BODY decision turned on,
+                # so a reader can see why this was called structural rather than a quiet tail.
+                tally.structural_unit(f"{flow}: {n_body} body rows parsed to 0 dates")
             else:
                 tally.empty_unit()
             total += before
@@ -606,15 +612,17 @@ def update(unit, since) -> Result:
             # when an AV scanner / another reader briefly holds the destination). The
             # existing file is left intact; record transient -> the WHOLE run reports
             # 'partial' and this file is retried next tick. NEVER let it crash the run.
-            tally.transient_unit()
+            tally.transient_unit(f"{flow}: publish contention — {type(e).__name__}")
             total += before
             del e
             continue
-        except DefinitiveError:
+        except DefinitiveError as e:
             # merge refused to publish (would shrink/empty/drop a column or break dedup)
             # for THIS file — a structural problem for this sub-unit. Keep the existing
             # data, record it, and keep going so one bad file can't strand the other 539.
-            tally.structural_unit()
+            # WHICH guard refused matters as much as which flow: shrink, empty and
+            # column-drop have different causes and different fixes.
+            tally.structural_unit(f"{flow}: merge refused — {str(e)[-60:]}")
             total += before
             continue
         total += n
