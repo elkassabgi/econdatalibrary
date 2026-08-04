@@ -88,9 +88,44 @@ change Ahmed's model of the system (a bug class, a wrong assumption of his or mi
 Do not report: intermediate investigation, plans about to be executed, restated
 status, or a proposal that could simply be done.
 
+## 3b. A SOURCE STOPPED UPDATING — start at its runbook, not at the code
+
+`docs/runbook/<source_id>.md` — one file per database, 248 of them, GENERATED from the registry,
+`state.db`, `catalog.db`, `util.ts`, the fetcher's own docstring, the licence file and the
+ledger. Index at `docs/runbook/README.md`. Regenerate with
+`python tools/gen_runbook.py --with-store` after any change; never hand-edit.
+
+Each page carries that source's real state, its adapter contract, a six-step DIAGNOSE section
+with runnable commands, **the ledger entries about that specific source** (ons_uk has nine,
+three of which record a fix that was shipped and was WRONG), and a store-vs-state comparison.
+
+Read it BEFORE forming a theory. Three things mislead nearly everyone, so they are on every page:
+
+- A `partial` never sets `last_success_utc` (R231), so "last SUCCESS: **never**" is often a
+  perfectly healthy source failing one sub-unit.
+- `obs_count` means "rows this run" on a productive run and "whole store" on a quiet one (R326)
+  — a healthy source can appear to have lost 168M rows.
+- A FUTURE date is usually a legitimate PROJECTION, not staleness (CSO to 2057, Estonia 2085,
+  UN WPP 2101). A defect is a SENTINEL (9999/2999) or a COUNTER (contiguous from year 1). Never
+  judge by the size of the number. R327.
+
+From the 2026-08-04 audit of every source that could not be fetched, the causes were
+`budget_deferral` (NOT broken — ran out of its time slice), `code_bug`, `rate_limited`,
+`gated_by_design`. **Zero were an expired credential or a dead endpoint**, though that is the
+usual first guess. If sub-units are named `deferred (budget N min)`, nothing has failed (R303).
+
 ## 4. Verification rules earned the hard way
 
-Full detail in `.claude/MISTAKES.md` (R1–R72). The ones that bite most often here:
+**READ `.claude/MISTAKES.md`'s Rules Digest — especially ⚠ R0 — before trusting any number you
+produced.** Not the 8,600-line archive below it; the digest is the read-path. On 2026-08-04 I
+wrote sixteen entries and added zero digest lines, so those lessons were invisible the same
+night (R328). R0 collects the error that keeps recurring — a measurement whose SHAPE is wrong,
+not a question that is wrong — as five checks: compute what the SYSTEM computes rather than
+re-implementing its rule; read a long job's ARGV, not its progress; read a sweep's FAILURE count
+before its results; when a probe reports ABSENCE, test it against a known PRESENCE; and a
+one-sided test on a two-sided failure yields a number that merely looks like a measurement.
+
+Full detail in `.claude/MISTAKES.md`. The ones that bite most often here:
 
 - **A green run is not a proof** — read what it DID (units processed > 0). R50.
 - **Announce work BEFORE starting it** — a killed process prints nothing, so the
