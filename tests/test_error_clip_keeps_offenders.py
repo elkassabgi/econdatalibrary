@@ -66,3 +66,43 @@ def test_truncation_lands_on_a_whole_element():
 def test_non_string_input_is_tolerated():
     """Callers pass exception objects, not strings."""
     assert _clip_err(ValueError("nope")) == "nope"
+
+
+# --- the fetcher side of the same contract -------------------------------------------------
+from updater.strategies.fetchers._common import _named
+from updater.orchestrate import _clip_err as _clip
+
+
+def test_the_two_real_cases_are_named_IN_FULL():
+    """wid reports 12 structural sub-units and hagstofa 7. Under the old cap of 6 both read
+    "...6 shown, +N more" — a finding that still needed a bisect. They must now be complete."""
+    wid = ["Al", "ON-MER", "ON", "OO-MER", "OP-MER", "OQ-MER",
+           "OR-MER", "OS-MER", "OT-MER", "OU-MER", "OV-MER", "OW-MER"]
+    out = _named(wid)
+    assert "more" not in out, "all 12 fit; nothing should be elided"
+    for v in wid:
+        assert v in out
+
+    hag = [f"manntal/2011/1manntalfjolsk/CEN0{n}.px" for n in range(1560, 1567)]
+    out = _named(hag)
+    assert "more" not in out
+    for v in hag:
+        assert v in out
+
+
+def test_the_bound_still_exists_and_still_announces_itself():
+    ids = [f"unit_{i:04d}" for i in range(500)]
+    out = _named(ids)
+    assert "+480 more" in out
+    assert out.count(", ") < 500
+
+
+def test_named_output_survives_the_orchestrator_store():
+    """The two bounds must compose: a full 20-name list must not then be clipped away."""
+    ids = [f"some/nested/path/table_{i:03d}.px" for i in range(20)]
+    msg = "src: 20/1096 sub-unit(s) returned 200 but parsed 0 rows from a non-trivial body " \
+          "(schema/structural break); existing data kept" + _named(ids)
+    stored = _clip(msg)
+    assert "truncated" not in stored, f"len={len(msg)} should fit the 1400-char store"
+    for i in (0, 9, 19):
+        assert f"table_{i:03d}.px" in stored

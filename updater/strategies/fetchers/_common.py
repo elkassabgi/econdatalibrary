@@ -233,12 +233,24 @@ class Tally:
             self.deferred_ids.append(str(label))
 
 
-def _named(ids, cap: int = 6) -> str:
+def _named(ids, cap: int = 20) -> str:
     """Render the offending sub-unit labels for an error message, bounded.
 
     Bounded because a source with hundreds of sub-units would otherwise push a
     multi-KB blob into unit_state.last_error and the digest email; the count in
     the message stays authoritative, and the elision is stated rather than silent.
+
+    CAP RAISED 6 -> 20 on 2026-08-04. Six was matched to the orchestrator's old
+    `str(e)[:300]` store — naming more was pointless when the row would be cut anyway. That
+    clip now carries 1400 characters and announces itself (orchestrate._clip_err), so the
+    binding constraint moved and the cap can follow it.
+
+    20 is chosen against the sources that actually have this problem rather than as a round
+    number: wid names 12 sub-units and hagstofa 7, so both go from a partial list plus
+    "+6 more" to the COMPLETE set — which is the difference between a finding you can act on
+    and one that still needs a bisect. Twenty path-shaped ids run ~900 characters, comfortably
+    inside 1400 with the message prefix; beyond that the orchestrator's clip takes over and
+    says so.
     """
     if not ids:
         return ""
