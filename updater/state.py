@@ -20,6 +20,34 @@ CREATE TABLE IF NOT EXISTS source_state(
   source_id TEXT PRIMARY KEY, strategy TEXT, cadence TEXT, status TEXT,
   last_success_utc TEXT, last_attempt_utc TEXT, owner TEXT,
   enabled INTEGER DEFAULT 1, note TEXT);
+-- obs_count IS NOT COMPARABLE ACROSS RUNS. Read this before drawing a conclusion from it.
+--
+-- It is whatever the fetcher passed finalize() as `total_rows`, and fetchers mean two different
+-- things by that. Most pass ROWS MERGED THIS RUN. Thirteen of them then do
+--
+--     if published == 0:
+--         published = sum(blob.row_count(f) for f in every file in the store)
+--
+-- so on a run that wrote nothing the same column silently becomes TOTAL ROWS IN THE STORE.
+-- Those differ by orders of magnitude and nothing in the row says which one you are reading.
+--
+-- MEASURED 2026-08-04 on ecb, whose budget was cut from ~72 min to 35 min on 08-01:
+--
+--     2026-07-31   obs=218,396,836   dur=4362.8s   +5,866,080 new rows
+--     2026-08-01   obs= 62,928,444   dur=2108.4s   243/540 deferred
+--     2026-08-03   obs= 49,851,636   dur=2102.9s   290/540 deferred
+--
+-- Read straight, that is a source losing 168 million observations in three days. The store was
+-- counted directly: 218,396,859 rows across all 540 files — intact, and 23 rows MORE than the
+-- 07-31 figure. Nothing was lost; the source simply began touching a fraction of its files per
+-- tick, so the number it reports collapsed (ledger R326).
+--
+-- A metric that silently changes denominator is worse than a missing one: a missing number
+-- prompts a question, this one answers confidently and wrongly, in the direction of alarm. Same
+-- shape as R231, where a `partial` never setting last_success_utc makes healthy sources read as
+-- having never succeeded.
+--
+-- TO ASK "how big is this source", COUNT THE STORE. Do not read it from here.
 CREATE TABLE IF NOT EXISTS unit_state(
   source_id TEXT, unit_id TEXT, strategy TEXT, upstream_vintage TEXT,
   last_success_utc TEXT, last_attempt_utc TEXT, status TEXT,
