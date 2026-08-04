@@ -124,7 +124,25 @@ def crawl_catalog() -> list[dict]:
 
 
 def parse_date(s: str) -> dt.date | None:
-    """Parse PxWeb time value (e.g. 2023, 2023M01, 2023K1, 2023Q1, 2023W01)."""
+    """Parse an SCB PxWeb time value.
+
+    VERIFIED against SCB's own metadata (the `Tid` variable of a live table), not guessed:
+        2023          annual                    -> 2023-12-31
+        2023M01       monthly                   -> 2023-01-01
+        2023-01       monthly, dashed           -> 2023-01-01
+        2023K1/2023Q1 quarterly (K = kvartal)   -> first month of the quarter
+        2023H1        half-year                 -> 2023-01-01 / 2023-07-01
+        2023W01       weekly                    -> ISO first day of that week
+        2025V01       weekly (V = vecka)        -> ISO first day of that week
+        2011-2012     multi-year window         -> 2011-12-31 (the year it OPENS)
+        2023-01-15    full date                 -> as written
+
+    Returning None is not free. A dimension whose values do not parse gets a zero
+    parse-rate, the resolver rejects it, and the fall-through picks whatever OTHER
+    dimension happens to look numeric — for SCB that is `Region`, whose municipality
+    codes are 0114..2584. Five tables were dated to years 114..2026 that way. A missing
+    grammar here does not produce missing data; it produces confident wrong data. R331.
+    """
     s = (s or "").strip()
     try:
         # Annual: 2023
@@ -142,8 +160,26 @@ def parse_date(s: str) -> dt.date | None:
         if m:
             q = int(m.group(2))
             return dt.date(int(m.group(1)), (q - 1) * 3 + 1, 1)
-        # Weekly: 2023W01 → first day of week
-        m = re.match(r"^(\d{4})W(\d{2})$", s, re.IGNORECASE)
+        # Multi-year WINDOW: 2011-2012, 2011-2015, 1998-2002.
+        # SCB publishes pooled estimates over a rolling window — TABIRH3/4/5 ("Long term
+        # income ... Period 2011-2012 - 2023-2024", 91 values on `Tid`) and Medellivsl
+        # (life expectancy, 5-year windows). The window's FIRST year is the anchor,
+        # matching the convention already used for ons_uk's `yyyy-yy` and `mmm-mmm-yyyy`
+        # grammars: an observation is dated where its window OPENS, so successive
+        # overlapping windows stay monotonic. Dated 12-31 like any other annual value.
+        # Placed AFTER ^(\d{4})-(\d{2})$ so monthly 2023-01 keeps winning; the two cannot
+        # collide anyway (2 digits after the dash vs 4). See R331.
+        m = re.match(r"^(\d{4})-(\d{4})$", s)
+        if m:
+            y0, y1 = int(m.group(1)), int(m.group(2))
+            if y1 >= y0:
+                return dt.date(y0, 12, 31)
+        # Weekly: 2023W01, or 2025V01 — V is Swedish "vecka" and is what SCB actually
+        # publishes (DodaVeckaRegionCKM, deaths by week, 2025V01..). Only W was handled,
+        # so every value on that axis failed to parse, the resolver rejected the real
+        # `Tid` dimension for a zero parse-rate, and fell through to `Region` — whose
+        # municipality codes 0114..2584 became years 114..2026. R331.
+        m = re.match(r"^(\d{4})[WV](\d{2})$", s, re.IGNORECASE)
         if m:
             yr, wk = int(m.group(1)), int(m.group(2))
             return dt.date.fromisocalendar(yr, wk, 1)
