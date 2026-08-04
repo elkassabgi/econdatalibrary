@@ -179,7 +179,7 @@ def date_parse_rate(codes, parse_fn=parse_period, *, sane_lo=1500, sane_hi=2100)
 
 def resolve_time_dim(dim_ids, dim_codes, *, meta_time_code=None, role_time=None,
                      parse_fn=parse_period, sane_lo=1500, sane_hi=2100,
-                     min_rate=0.6):
+                     min_rate=0.6, dim_labels=None):
     """Return the INDEX (into dim_ids) of the time dimension, or None if the cube has
     no date axis at all.
 
@@ -193,14 +193,50 @@ def resolve_time_dim(dim_ids, dim_codes, *, meta_time_code=None, role_time=None,
     Precedence: authoritative flag -> highest date-parse-rate (>= min_rate) with a
     name-match tie-break -> literal name match as a last resort. A name match on an
     index-coded axis can NEVER outrank an axis whose values are real dates."""
-    # 1. AUTHORITATIVE — the upstream told us which axis is time.
+    # 1. AUTHORITATIVE — the upstream told us WHICH axis is time.
+    #
+    #    A publisher CAN mis-flag it. SURS marks `time: true` on the AGE axis of 05L1027S
+    #    ("Deaths by COMPLETED YEAR / YEAR OF BIRTH"), whose codes are '1000' (labelled "Deaths -
+    #    TOTAL"), '000' ("Age 0"), '001' ("Age 0, year of birth 2025")... '1000' parses to year
+    #    1000 and three served rows were dated to it.
+    #
+    #    But refusing a flagged axis on its CODES alone is worse in two distinct ways, and both
+    #    are load-bearing:
+    #
+    #      (a) POSITIONAL TIME CODES. Some tables index time as '0','1','2' and carry the period
+    #          only in category.label (Hagstofa SJA01101: codes ['0','1',..] vs valueTexts
+    #          ['2010','2011',..]). The parsers already fall back to labels — that fallback is
+    #          what fixed hagstofa's 26 false "structural breaks", and tests/test_pxweb_time_
+    #          labels.py gates it with a labels-stripped negative control. A codes-only check
+    #          makes those axes look unreadable and kills it.
+    #      (b) FALLING THROUGH to the value scan when the flagged axis will not parse hands the
+    #          table to another dimension. scb's `Tid` held '2011-2012' and '2025V01', unreadable
+    #          until R331, and the fall-through picked `Region` — municipality codes 0114..2584
+    #          became years 114..2026 across 87,358 rows. The publisher was RIGHT about which
+    #          axis was time; we were wrong about how to read it.
+    #
+    #    So: judge the flagged axis on CODES **or LABELS**, and when neither yields a sane date
+    #    return None — never a different dimension.
+    #
+    #    BACKWARD COMPATIBLE BY CONSTRUCTION: a caller that does not pass dim_labels cannot be
+    #    judged on labels, so it keeps the old unconditional behaviour exactly. Only callers that
+    #    supply labels (and can therefore be judged fairly) get the stricter rule. 23 call sites
+    #    exist; migrating them is opt-in, one at a time, each provable.
     auth = meta_time_code
     if auth is None and role_time:
         auth = role_time[0] if isinstance(role_time, (list, tuple)) else role_time
     if auth is not None:
         for i, did in enumerate(dim_ids):
             if did == auth:
-                return i
+                if dim_labels is None:
+                    return i
+                codes = dim_codes[i] if i < len(dim_codes) else []
+                labels = dim_labels[i] if i < len(dim_labels) else []
+                if (date_parse_rate(codes, parse_fn, sane_lo=sane_lo, sane_hi=sane_hi) > 0
+                        or date_parse_rate(labels, parse_fn,
+                                           sane_lo=sane_lo, sane_hi=sane_hi) > 0):
+                    return i
+                return None
 
     # 2. VALUE-DRIVEN — the axis whose codes actually parse as dates wins.
     best_i, best_rate, best_named = None, 0.0, False
