@@ -200,6 +200,31 @@ def _table_to_bytes(table, compression: str = "zstd") -> bytes:
 _IMPOSSIBLE_AFTER = dt.date(2200, 1, 1)
 
 
+# IMPOSSIBLE DATES SEEN THIS UNIT. The guard below has always returned its count and the
+# caller has always thrown it away, so the only record was a printed line — and a warning that
+# never blocks and never AGGREGATES is indistinguishable from silence. It was printed on every
+# affected run for weeks while 273,980 rows across six sources sat published with dates between
+# 2999-12-31 and 9999-12-31, and it was found by finally running a standalone audit, not by
+# anyone reading a log (ledger R320).
+#
+# Accumulating it here lets the orchestrator report a per-source total next to the row counts,
+# where a number that grows is noticeable. Still does NOT block a publish: dropping rows on a
+# heuristic would be data loss, and that judgement is unchanged.
+_impossible_seen: dict = {"rows": 0, "files": 0, "worst": None}
+
+
+def impossible_reset() -> None:
+    """Called by the orchestrator before each unit runs."""
+    _impossible_seen["rows"] = 0
+    _impossible_seen["files"] = 0
+    _impossible_seen["worst"] = None
+
+
+def impossible_report() -> dict:
+    """Snapshot of impossible-date rows written since the last reset."""
+    return dict(_impossible_seen)
+
+
 def _report_impossible_dates(table, out_path) -> int:
     """Count and ANNOUNCE observations dated beyond any possible publication horizon.
 
@@ -232,6 +257,8 @@ def _report_impossible_dates(table, out_path) -> int:
         n_bad = pc.sum(pc.cast(bad, "int64")).as_py() or 0
         if not n_bad:
             return 0
+        _impossible_seen["rows"] += int(n_bad)
+        _impossible_seen["files"] += 1
         sample = table.filter(bad).slice(0, 1)
         key = (sample.column("series_key")[0].as_py()
                if "series_key" in sample.column_names else "?")
@@ -240,6 +267,9 @@ def _report_impossible_dates(table, out_path) -> int:
               f"are dated after {_IMPOSSIBLE_AFTER.year} — e.g. {str(key)[:80]} -> {when}. "
               f"Published anyway (dropping would be data loss decided by a heuristic), but a "
               f"time axis is almost certainly being read off a non-time dimension.", flush=True)
+        if (_impossible_seen["worst"] is None
+                or when > _impossible_seen["worst"][1]):
+            _impossible_seen["worst"] = (str(key)[:80], when)
         return n_bad
     except Exception:                                        # noqa: BLE001
         return 0                                             # never fail a good publish

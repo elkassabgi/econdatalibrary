@@ -23,6 +23,7 @@ import os
 import time
 
 from . import config
+from . import merge
 from . import registry
 from .state import StateStore, now_utc
 from .strategies import get as get_strategy
@@ -859,6 +860,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             results.append((unit.key, "locked"))
             continue
 
+        merge.impossible_reset()   # per-unit, so the count below is THIS source's
         t0 = time.time()
         try:
             # sane_since GUARDS THE CURSOR AT THE HAND-OFF, not in each fetcher. The stored
@@ -954,8 +956,21 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 mem = f", peak_rss={peak_mb:,.0f}MB"
             except Exception:                                # noqa: BLE001
                 mem = ""                                     # Windows: not available
+            # IMPOSSIBLE DATES, aggregated per source. merge's guard has always printed one
+            # line per affected FILE and returned a count nobody kept, so the evidence existed
+            # only as scattered lines in a log nobody diffed — 273,980 rows across six sources
+            # sat published at 2999-12-31..9999-12-31 while it printed on every run, and it
+            # took a standalone audit to find them (R320). A per-source total sits next to the
+            # cost line that IS read, and a number that grows is noticeable in a way a repeated
+            # warning is not. Still does not block the publish; that judgement is unchanged.
+            imp = merge.impossible_report()
+            bad = ""
+            if imp.get("rows"):
+                worst = imp.get("worst") or ("?", "?")
+                bad = (f", IMPOSSIBLE_DATES={imp['rows']:,} row(s) in {imp['files']} file(s)"
+                       f" (worst {worst[1]} e.g. {str(worst[0])[:60]})")
             print(f"[orchestrator] <<< {unit.key} took "
-                  f"{time.time() - t_unit:,.0f}s{mem}", flush=True)
+                  f"{time.time() - t_unit:,.0f}s{mem}{bad}", flush=True)
     if not_due:
         # Restated in the summary so a reader who sees "0 unit(s) processed" can tell a
         # healthy cadence skip from a source that cannot run at all.
