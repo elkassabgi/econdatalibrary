@@ -76,6 +76,20 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // downloadable by id, invisible to search. Now catalogued with titles decoded from IMF's own
   // codelists and their CSVs derived, so listing them here is an offer we can actually meet.
   "imf_gfssoef_direct", "imf_gfsssuc_direct",
+  // FSI direct, added 2026-08-04 — same shape as the GFS pair above, found the same way:
+  // scheduled every run, data in R2, ZERO catalogue rows, so 78,576 series were refreshed daily
+  // and reachable by nobody. Their fetchers had ALSO been stuck at `partial` for ever, with
+  // "csv coherence unmet: 43,814 / 32,906 / 1,856" — exactly their series counts — because a
+  // source with no catalogue rows can never satisfy coherence, and a `partial` never sets
+  // last_success_utc (R231). Cataloguing them fixes the serving AND unsticks the fetchers.
+  // Order was CSVs -> D1 -> this flag, per the note above. Verified before flipping:
+  //   imf_fsicdm_direct   1,856 catalogue == 1,856 R2 · MISSING 0 · ORPHANED 0 · 200/200 bytes
+  //   imf_fsic_direct    32,906 catalogue == 32,906 R2 · MISSING 0 · ORPHANED 0 · 200/200 bytes
+  //   imf_fsibsis_direct 43,814 catalogue == 43,814 R2 · MISSING 0 · ORPHANED 0 · 200/200 bytes
+  // Titles decode from IMF's own codelists: 0 unresolved, 0 raw-key fallbacks. Licence is the
+  // CONFIRMED IMF statistical-Data grant, and the three are now NAMED in
+  // DATABASE_LICENSES_VERBATIM.md rather than inheriting it silently.
+  "imf_fsibsis_direct", "imf_fsic_direct", "imf_fsicdm_direct",
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
