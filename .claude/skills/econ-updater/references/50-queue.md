@@ -148,10 +148,10 @@ serve), none supersedes anything. Ignore every dated *_VINTAGE snapshot flow.
 | imf_bopagg | 7,801 | DONE 2026-08-05 (cycle 6): `imf_bopagg_direct` SERVED — 208 C.F table ids / 7,839 series / 140,907 obs, verify exit 0. 6-part keys with a sometimes-EMPTY phantom part; 2 GX aggregate codes unnamed (DIP class). Legacy stays served-frozen (#46) |
 | imf_pctot | 4,320 | DONE 2026-08-05 (cycle 9): `imf_ctot_direct` SERVED — 360 C.F table ids / 4,320 series (EXACTLY the legacy count, R75) / 1,264,128 obs, verify exit 0. Agency IMF.RES. Legacy stays served-frozen (#46) |
 | imf_unsdg_imf_inputs | 2,515 | DONE 2026-08-05 (cycle 10): `imf_sdg_direct` SERVED — SERIES grain, 2,577 series / 42,789 obs, verify exit 0. 16-part UN-SDMX keys; titles via the IAEG-SDGs codelists (dimension-level enumeration fallback + _T skip added to imf_direct_titles). Sidecar rename bug found: publish strands _staging_*.dims.json — fixed for SDG by R2 copy; class check pending |
-| imf_pgcs | 2,262 | No direct sibling yet |
+| imf_pgcs | 2,262 | PROBED 2026-08-05: successor = IMF.FAD:ICSD v1.0.0 'Investment and Capital Stock Dataset' — pgcs's kpriv/kgov/kppp capital-stock indicators ARE the ICSD content (name+content match); build imf_icsd_direct, confirm coverage at the proof run |
 | imf_namain_idc_n | 1,926 | Successor IMF.STA:NA_MAIN v1.0.0 'National Accounts Main Aggregates (SDMX)' — probe-confirmed 2026-08-05 |
 | imf_gender_equality | 295 | GS_* split confirmed live: GS_LGRGHTS v1.0.1, GS_LEPM v2.0.0, GS_SDO v1.0.0, GS_ATF v1.0.0 (IMF.STA) |
-| imf_gender_budgeting | 288 | No direct sibling yet |
+| imf_gender_budgeting | 288 | PROBED 2026-08-05: NO flow matches 'gender budget' in the 222 (keyword sweep); its GB_* codes need a vocabulary check against the GS_* family stores before a retirement verdict (R354: decompose to the shared grain, run a positive control) |
 | imf | 131 | Monthly registry entry exists (registry.yaml:2581, docs/DAILY_UPDATE_STATUS.md:33) — reconcile why audit counts it unscheduled |
 
 ### RESERVED (71 sources / 370,003 series) — decision belongs to Ahmed; do not work
