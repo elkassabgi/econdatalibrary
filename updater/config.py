@@ -157,7 +157,8 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   a warning and it does not skip the offending entries; it refuses the run. The guard is right
 #   (a silently-appearing source is exactly what it exists to catch); updating it is part of
 #   adding a source, not an afterthought. Ledger R347.
-EXPECTED_SOURCE_COUNT = 144
+# 2026-08-05: +imf_imts_direct (IMTS v1.0.0 called live; DOTS successor) -> 145
+EXPECTED_SOURCE_COUNT = 145
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
