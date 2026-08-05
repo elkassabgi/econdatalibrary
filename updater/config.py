@@ -159,7 +159,8 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   adding a source, not an afterthought. Ledger R347.
 # 2026-08-05: +imf_imts_direct (IMTS v1.0.0 called live; DOTS successor) -> 145
 # 2026-08-05: +imf_pip_direct (PIP v5.0.0 called live; CPIS successor) -> 146
-EXPECTED_SOURCE_COUNT = 146
+# 2026-08-05: +imf_dip_direct (DIP v12.0.1 called live; CDIS successor) -> 147
+EXPECTED_SOURCE_COUNT = 147
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
