@@ -191,6 +191,14 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // content, and a coverage SUPERSET of the frozen legacy (3,195 vs 2,262).
   // First source whose dims sidecar arrived canonically via the carry fix.
   "imf_icsd_direct",
+  // imf_fd_direct added 2026-08-05 (cycle 13): SERIES grain — 8,398 series /
+  // 160,957 obs, EXACTLY the frozen legacy count (R75). Fiscal decentralization,
+  // titles resolved 0-fallback via the carried sidecar. Generic resolver.
+  "imf_fd_direct",
+  // imf_hpd_direct added 2026-08-05 (cycle 14): SERIES grain — 191 series /
+  // 9,628 obs, EXACTLY the frozen legacy count (R75). Historical public debt,
+  // titles resolved 0-fallback. Generic resolver.
+  "imf_hpd_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
