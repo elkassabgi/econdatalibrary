@@ -107,6 +107,22 @@ NOT sub-unit coverage"; for sub-unit coverage run `tools/audit_untouched_files.p
 
 Key structural fact for ALL imf_* rows (updater/registry.yaml:5527-5543): the relay-era ids are DBnomics-shaped and IMF re-keyed its datasets, so no first-hand refresh preserves the old ids. The supported path is **parallel `imf_<flow>_direct` ids from api.imf.org** (pre-authorised: new ids alongside), never overwriting — "Overwriting imf_<flow> would re-key thousands of live series to buy freshness" (registry.yaml:5538-5540). 19 `imf_*_direct` registry entries already exist (registry.yaml:5544-5998).
 
+### NEW-COVERAGE CANDIDATES (probe-confirmed live 2026-08-05, no legacy counterpart id)
+
+Found by the IFS-families keyword sweep; each is a build (fetcher + registry + count bump +
+serve), none supersedes anything. Ignore every dated *_VINTAGE snapshot flow.
+
+| Flow | Version | Covers |
+|---|---|---|
+| IMF.STA:ER | 4.0.1 | Exchange Rates — the E* family of imf_ifs (5,918 legacy series) |
+| IMF.STA:EER | 6.0.0 | Effective Exchange Rate indices |
+| IMF.STA:LS | 9.0.0 | Labor Statistics — the L* family of imf_ifs (3,049) |
+| IMF.STA:PI | 2.0.0 | Production Indexes — the AIP-type family of imf_ifs |
+| IMF.STA:PI_WCA | 1.0.0 | Production Indexes, world/country-group aggregates |
+| IMF.STA:QGFS | 12.0.0 | Quarterly GFS (revenue G-codes present in its INDICATOR codelist) |
+| IMF.STA:GS_LI | 1.0.0 | Gender Statistics — Labor and Income (fifth GS flow beyond the quartet) |
+| IMF.STA:MFS_IR | 9.0.0 | REGISTERED 2026-08-05 (cycle 5) — fifth MFS flow, Interest Rates |
+
 ### ACTIONABLE (26 sources / 996,987 series) — build/promote the publisher-direct sibling; legacy relay ids stay frozen
 
 | Source | Series | Known notes |
