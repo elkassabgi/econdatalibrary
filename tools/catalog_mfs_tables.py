@@ -67,6 +67,14 @@ FLOWS = {
         "sub": "financial markets and positions",
         "expect_obs": 55_623, "expect_series": 276, "expect_tables": 207,
     },
+    # MFS_IR measured 2026-08-05: 4-PART keys — the flow has only 3 dims (COUNTRY,
+    # FREQUENCY, INDICATOR) plus the family's phantom 'true' at position 3 (all 537,710
+    # rows); no tail dim. Positions 1/2 vocabulary-proven, so the C.F cut is unchanged.
+    "imf_mfsir_direct": {
+        "flow": "MFS_IR", "version": "MFS_IR:9.0.0",
+        "sub": "interest rates",
+        "expect_obs": 537_710, "expect_series": 3_382, "expect_tables": 510,
+    },
 }
 
 
