@@ -101,12 +101,30 @@ def load_catalog_counts():
 
 
 def load_served():
-    """source ids listed in the worker's resolvable set."""
+    """source ids listed in the worker's resolvable set.
+
+    COPIED FROM tools/audit_schedule_coverage.supported_sources() — the production accessor
+    (R276: copy the accessor that already reads the structure). The previous regex here,
+    `^\\s*"id",\\s*$`, matched only lines holding EXACTLY ONE quoted id, so every source on a
+    packed line ("imf_bop", "imf_cdis", "imf_cpis", "imf_dot",) read as NOT SERVED in its
+    runbook page — the tool that anchors the per-source 5-reads was lying about served-ness
+    (found 2026-08-05 when imf_dot's page contradicted the live /v1/sources). Two tools, one
+    structure, two parsers is the R333 drift class; this keeps the logic identical by
+    construction: scope to the SUPPORTED_SOURCES array, strip comments FIRST (R137 — the
+    array is heavily commented and prose contains quoted-looking words), then harvest every
+    quoted token.
+    """
     try:
         ts = open(UTIL_TS, encoding="utf-8").read()
     except Exception:
         return set()
-    return set(re.findall(r'^\s*"([a-z0-9_]+)",\s*$', ts, re.M))
+    m = re.search(r"SUPPORTED_SOURCES\s*:\s*readonly\s+string\[\]\s*=\s*\[(.*?)\]\s*;",
+                  ts, re.S)
+    if not m:
+        return set()
+    body = re.sub(r"//[^\n]*", "", m.group(1))
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    return set(re.findall(r'"([^"]+)"', body))
 
 
 def fetcher_doc(sid):
