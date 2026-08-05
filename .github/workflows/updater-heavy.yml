@@ -124,7 +124,7 @@ jobs:
           # is what a fetcher-less source does and this one is no longer.
           # insee_sirene stays OUT: implemented() is still False, and it is an entity registry
           # whose serving shape is an open product decision, not a missing module.
-          ALL='["un_wpp","bundesbank","cepii_baci","imf_gfsbs_direct","imf_gfscofog_direct","imf_gfssfcp_direct","imf_gfssoef_direct","imf_gfssoo_direct","imf_gfsssuc_direct","imf_imts_direct","imf_pip_direct","imf_dip_direct","imf_mfsdc_direct","imf_mfsma_direct","imf_mfsofc_direct","imf_mfsfmp_direct","imf_mfsir_direct"]'
+          ALL='["un_wpp","bundesbank","cepii_baci","imf_gfsbs_direct","imf_gfscofog_direct","imf_gfssfcp_direct","imf_gfssoef_direct","imf_gfssoo_direct","imf_gfsssuc_direct","imf_imts_direct","imf_pip_direct","imf_dip_direct","imf_mfsdc_direct","imf_mfsma_direct","imf_mfsofc_direct","imf_mfsfmp_direct","imf_mfsir_direct","imf_bopagg_direct"]'
           REQ='${{ inputs.source }}'
           if [ -z "$REQ" ]; then
             echo "sources=$ALL" >> "$GITHUB_OUTPUT"
