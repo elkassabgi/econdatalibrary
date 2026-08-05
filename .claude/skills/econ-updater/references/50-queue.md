@@ -118,7 +118,7 @@ serve), none supersedes anything. Ignore every dated *_VINTAGE snapshot flow.
 | IMF.STA:EER | 6.0.0 | DONE 2026-08-05 (cycle 17): `imf_eer_direct` SERVED — SERIES grain (2x collapse makes tables pointless), 732 series / 179,736 obs, verify exit 0 |
 | IMF.STA:LS | 9.0.0 | DONE 2026-08-05 (cycle 18): `imf_ls_direct` SERVED — SERIES grain, 4,160 series / 339,635 obs (supersedes IFS's 3,049 frozen L*), verify exit 0 |
 | IMF.STA:PI | 2.0.0 | DONE 2026-08-05 (cycle 19): `imf_pi_direct` SERVED — SERIES grain, 3,100 series / 447,095 obs, verify exit 0 |
-| IMF.STA:PI_WCA | 1.0.0 | Production Indexes, world/country-group aggregates |
+| IMF.STA:PI_WCA | 1.0.0 | DONE 2026-08-05 (cycle 20): `imf_piwca_direct` SERVED — 16 aggregate series / 2,168 obs, verify exit 0 |
 | IMF.STA:QGFS | 12.0.0 | Quarterly GFS (revenue G-codes present in its INDICATOR codelist) |
 | IMF.STA:GS_LI | 1.0.0 | Gender Statistics — Labor and Income (fifth GS flow beyond the quartet) |
 | IMF.STA:MFS_IR | 9.0.0 | REGISTERED 2026-08-05 (cycle 5) — fifth MFS flow, Interest Rates |
