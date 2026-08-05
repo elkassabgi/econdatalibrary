@@ -87,6 +87,13 @@ def http_get(url: str) -> bytes:
                 raise                                        # definitive: no such flow
             last = e
         except Exception as e:                               # noqa: BLE001
+            # THE ORCHESTRATOR'S KILL MUST KILL. UnitTimeout is deliberately an Exception so
+            # the UNIT handler demotes one source — but this broad retry caught it, slept,
+            # and RETRIED: the SIGALRM's one shot consumed, the unit unbounded (PIP ran 80+
+            # minutes past a 45-minute deadline before this was found). Name-based to avoid
+            # an import cycle (orchestrate -> strategies -> _imf_direct -> this module).
+            if type(e).__name__ == "UnitTimeout":
+                raise
             last = e
         time.sleep(5 * (attempt + 1))
     raise RuntimeError(f"GET failed after {RETRIES} tries: {url} ({last!r})")
@@ -129,6 +136,13 @@ def http_get_to_file(url: str, dest: str) -> int:
                 raise                                        # definitive: no such flow
             last = e
         except Exception as e:                               # noqa: BLE001
+            # THE ORCHESTRATOR'S KILL MUST KILL. UnitTimeout is deliberately an Exception so
+            # the UNIT handler demotes one source — but this broad retry caught it, slept,
+            # and RETRIED: the SIGALRM's one shot consumed, the unit unbounded (PIP ran 80+
+            # minutes past a 45-minute deadline before this was found). Name-based to avoid
+            # an import cycle (orchestrate -> strategies -> _imf_direct -> this module).
+            if type(e).__name__ == "UnitTimeout":
+                raise
             last = e
         time.sleep(5 * (attempt + 1))
     raise RuntimeError(f"GET failed after {RETRIES} tries: {url} ({last!r})")
@@ -241,6 +255,11 @@ def pull(flow: str, agency: str, source_id: str, out_path: str | None = None,
         try:
             return _pull_streamed(url, flow, agency, source_id, out_path, min_obs)
         except Exception as e:                               # noqa: BLE001
+            # A TIMEOUT IS NOT A SIZE ERROR. Falling through here on UnitTimeout turned the
+            # orchestrator's 45-minute kill into the STARTING GUN for a full sliced re-pull —
+            # the unit that was being stopped began its work again from zero.
+            if type(e).__name__ == "UnitTimeout":
+                raise
             # A BELT-AND-BRACES FALLBACK for the size errors CI reports —
             # OverflowError('size does not fit in an int') on GFS_BS, GFS_COFOG and GFS_SOO,
             # ParseError('out of memory') on GFS_SFCP.
