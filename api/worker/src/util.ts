@@ -133,6 +133,12 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // dataflow description; NOT the World Bank's `pip`. Grain forced by the same D1
   // arithmetic as IMTS (#105/#45): series grain would be ~6-7x the remaining budget.
   "imf_pip_direct",
+  // imf_dip_direct added 2026-08-05 (cycle 4): TABLE grain — 5,180 catalog ids
+  // (COUNTRY x FREQ x INDICATOR, mid-key positions 2/4/5 of the 5-part DIP key,
+  // counterpart economy FIRST) serving 776,752 series inside their table CSVs.
+  // DIP = the CDIS successor per IMF's own dataflow name ("formerly CDIS").
+  // Same #45 D1 arithmetic: 5,180 rows ≈ 1% of remaining headroom.
+  "imf_dip_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
