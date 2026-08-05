@@ -224,6 +224,9 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // 339,635 obs (10x C.F collapse, but at 0.8% of headroom per-series search
   // wins). Labor statistics — new coverage for IFS's orphaned L* family.
   "imf_ls_direct",
+  // imf_pi_direct added 2026-08-05 (cycle 19): SERIES grain — 3,100 series /
+  // 447,095 obs. Production indexes — new coverage for IFS's AIP family.
+  "imf_pi_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
