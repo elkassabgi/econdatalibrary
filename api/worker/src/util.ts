@@ -159,6 +159,12 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // the fifth MFS sibling (found by the IFS-families probe); 4-part keys (no tail
   // dim) but the same positions-1/2 prefix, so the shared resolver applies.
   "imf_mfsir_direct",
+  // imf_bopagg_direct added 2026-08-05 (cycle 6): TABLE grain COUNTRY x FREQ — 208
+  // ids serving 7,839 series / 140,907 obs. BOP_AGG = the renamed BOPAGG (headline
+  // BOP/IIP aggregates; distinct from the served BOP detailed flow). 6-part keys
+  // with a sometimes-empty phantom part; positions 1/2 are the C.F prefix, so the
+  // shared MFS-family resolver applies.
+  "imf_bopagg_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
