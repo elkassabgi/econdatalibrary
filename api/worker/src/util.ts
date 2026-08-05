@@ -215,6 +215,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // explicitly). NEW coverage: the successor home of dismembered IFS's orphaned
   // exchange-rate family. C.F prefix resolver.
   "imf_er_direct",
+  // imf_eer_direct added 2026-08-05 (cycle 17): SERIES grain — 732 series /
+  // 179,736 obs (a 2x C.F collapse makes tables pointless; the R356 arithmetic
+  // picks per-series titles and search). Effective exchange-rate indices, new
+  // coverage. Generic resolver.
+  "imf_eer_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
