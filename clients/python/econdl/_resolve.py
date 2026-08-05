@@ -1349,9 +1349,34 @@ def _resolve_cepii_baci(series_id: str, root: str) -> Resolution:
     return Resolution(series_id, src, path, "series_key", pred)
 
 
+
+def _resolve_imf_imts_direct(series_id: str, root: str) -> Resolution:
+    """imf_imts_direct: TABLE grain — catalog id names COUNTRY x FREQ x INDICATOR, the store
+    keys one row per PARTNER series (5 parts: COUNTRY.COUNTERPART.FREQ.INDICATOR.METHODOLOGY).
+
+    The counterpart sits MID-key, so the PxWeb pure-prefix _FLOW_GRAIN mechanism cannot match;
+    the predicate is prefix + suffix instead, exact because IMF codes never contain dots:
+        id  imf_imts_direct:IMTS:USA.M.MG_CIF_USD
+        key IMTS:USA.<COUNTERPART>.M.MG_CIF_USD.IMTS
+    Grain decided by arithmetic 2026-08-05 (#104): 472,234 series vs a D1 at 9.31 GB of 10 —
+    series grain would have consumed the library's entire remaining catalogue budget; 2,937
+    table rows serve all of them.
+    """
+    src, native = series_id.split(":", 1)
+    country, freq, ind = native.split(":", 1)[1].split(".")
+    path = os.path.join(root, src, f"{src}.parquet")
+    if not os.path.exists(path):
+        raise ResolveError(f"{series_id}: store missing at {path!r}")
+    flow = native.split(":", 1)[0]
+    pred = (pc.starts_with(ds.field("series_key"), f"{flow}:{country}.")
+            & pc.ends_with(ds.field("series_key"), f".{freq}.{ind}.{flow}"))
+    return Resolution(series_id, src, path, "series_key", pred)
+
+
 _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "bls": _resolve_bls,
     "cepii_baci": _resolve_cepii_baci,
+    "imf_imts_direct": _resolve_imf_imts_direct,
     "worldbank_wdi": _resolve_wdi,
     "penn_world_table": _resolve_pwt,
     "defillama": _resolve_defillama,
