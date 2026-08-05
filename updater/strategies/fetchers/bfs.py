@@ -445,9 +445,14 @@ def update(unit, since) -> Result:
 
     if not vals:
         # Nothing new fetched. finalize() decides honest status from the Tally.
+        # Cursor keys are reported STORE-prefixed ('BFS:{dbid}', 2026-08-05): the
+        # catalog id is 'bfs:BFS:{dbid}', so a bare dbid could never map under
+        # §5.7's exact rule — all 582 changed keys unmapped, every run demoted to
+        # partial ("582 rows for it but none matched"), CSVs never re-derived.
         last_obs = max(cursors.values()) if cursors else (since or None)
         return finalize(tally, before, last_obs, source=SOURCE,
-                        series_cursors=cursors, empty_window_floor=floor)
+                        series_cursors={f"BFS:{db}": d for db, d in cursors.items()},
+                        empty_window_floor=floor)
 
     new_tbl = pa.table({
         "series_key": pa.array(keys, pa.string()),
@@ -456,5 +461,7 @@ def update(unit, since) -> Result:
     })
     n, maxd = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
     last_obs = maxd or (max(cursors.values()) if cursors else None)
+    # Same store-prefixed reporting as the quiet path above (catalog id 'bfs:BFS:{dbid}').
     return finalize(tally, n, last_obs, source=SOURCE,
-                    series_cursors=cursors, empty_window_floor=floor)
+                    series_cursors={f"BFS:{db}": d for db, d in cursors.items()},
+                    empty_window_floor=floor)
