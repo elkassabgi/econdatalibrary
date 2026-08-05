@@ -137,6 +137,8 @@ def run(flow: str, agency: str, source_id: str) -> Result:
     except Exception:                                        # noqa: BLE001
         pass
 
+    _carry_dims_sidecar(stage, path)
+
     try:
         os.remove(stage)          # staging file is scratch, never a second copy
     except OSError:
@@ -144,6 +146,24 @@ def run(flow: str, agency: str, source_id: str) -> Result:
 
     mx = pc.max(tbl.column("obs_date")).as_py()
     return finalize(tally, tbl.num_rows, mx, source=source_id, series_cursors=cursors)
+
+
+def _carry_dims_sidecar(stage: str, path: str) -> bool:
+    """Move the key-order sidecar over the staging boundary. The ingester records
+    <stage>.dims.json next to the STAGING parquet it was told to write; the publish
+    merges rows into the canonical path and deletes the staging parquet, and until
+    cycle 11 nothing carried the sidecar — so every _direct source's key order sat
+    stranded under a _staging_ name no reader looks at (imf_sdg_direct made it
+    visible; DIP/IMTS/PIP/NA_MAIN all had the same strand). Best-effort like the
+    write itself: a sidecar problem must never sink a good publish."""
+    try:
+        data = blob.read_bytes(stage + ".dims.json")
+        if data is not None:
+            blob.write_bytes_atomic(path + ".dims.json", data)
+            return True
+    except Exception:                                        # noqa: BLE001
+        pass
+    return False
 
 
 def _max_date(path: str):
