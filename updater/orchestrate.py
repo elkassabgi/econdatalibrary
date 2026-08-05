@@ -414,8 +414,21 @@ def _derive_changed_csvs(unit, res, blob):
             else:
                 why = (f"source has {n_ids:,} catalog ids, UNDER the "
                        f"{_DERIVE_ALL_CAP:,} cap — cause is NOT the cap")
-            note = (f"csv coherence partial: {len(unmapped)} changed keys unmapped "
-                    f"for {unit.source_id} ({why})")
+            # COVERAGE, NOT COHERENCE (2026-08-05). §5.7's claim is that SERVED CSVs
+            # track the store. Reaching here means every changed key that HAS a catalog
+            # row was mapped and derived without failure; the residue provably has no
+            # catalog row to go stale (measured above, all three mapping rules tried).
+            # The old "coherence partial" demotion punished partial catalogue coverage
+            # HARDER than zero coverage (a source with 0 catalogued series passes
+            # trivially at line ~300) and kept statfin/snb/unesco_*/who_sdg permanently
+            # partial — never green, never vintage-bumped, gate red every day, which is
+            # how gates stop being read (R244). Zero-mapped-with-rows (the key-form
+            # mismatch class, defillama pre-fix) still demotes above; derive failures
+            # and missing cursors still demote. The tail stays visible: this note is
+            # persisted on the unit and printed here.
+            note = (f"csv coverage note: {len(unmapped)} changed keys have no catalog "
+                    f"row for {unit.source_id} ({why}) — served ids coherent")
+            print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
         return failed, note
     except Exception as e:  # noqa: BLE001 — CSV failure must NEVER sink the data publish
         return changed, (f"csv_derive crashed ({len(changed)} series queued): " + repr(e))[:300]
@@ -891,6 +904,13 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # un-bumped vintage below makes the next run re-check + re-derive.
             if status == "ok" and not dry:
                 csv_failed, csv_err = _derive_changed_csvs(unit, res, blob)
+                if csv_err and csv_err.startswith("csv coverage note:") and not csv_failed:
+                    # Coverage, not coherence: every mapped (= served) changed id was
+                    # re-derived; the residual keys have no catalog row to go stale.
+                    # Keep the note visible on the unit, keep the run GREEN — a
+                    # permanently-partial source is how gates stop being read (R244).
+                    err_note = "; ".join(x for x in (err_note, csv_err) if x)
+                    csv_err = None
                 if csv_failed or csv_err:
                     # csv_err with no ids = coherence unmet with unknown series
                     # (no cursors reported): still `partial`, nothing queueable.
