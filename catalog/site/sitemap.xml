@@ -2,13 +2,18 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://econdatalibrary.com/</loc>
-    <lastmod>2026-08-02</lastmod>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>daily</changefreq>
   </url>
   <url>
     <loc>https://econdatalibrary.com/catalog</loc>
-    <lastmod>2026-08-02</lastmod>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>daily</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/download</loc>
+    <lastmod>2026-08-05</lastmod>
+    <changefreq>weekly</changefreq>
   </url>
   <url>
     <loc>https://econdatalibrary.com/docs</loc>
@@ -18,6 +23,11 @@
   <url>
     <loc>https://econdatalibrary.com/api</loc>
     <lastmod>2026-08-02</lastmod>
+    <changefreq>monthly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/mcp</loc>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>monthly</changefreq>
   </url>
   <url>
@@ -98,6 +108,11 @@
   <url>
     <loc>https://econdatalibrary.com/census</loc>
     <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/cepii_baci</loc>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
@@ -411,6 +426,11 @@
     <changefreq>weekly</changefreq>
   </url>
   <url>
+    <loc>https://econdatalibrary.com/imf_bop_direct</loc>
+    <lastmod>2026-08-05</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
     <loc>https://econdatalibrary.com/imf_bopagg</loc>
     <lastmod>2026-08-02</lastmod>
     <changefreq>weekly</changefreq>
@@ -432,7 +452,7 @@
   </url>
   <url>
     <loc>https://econdatalibrary.com/imf_commodity</loc>
-    <lastmod>2026-08-02</lastmod>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
@@ -441,8 +461,18 @@
     <changefreq>weekly</changefreq>
   </url>
   <url>
+    <loc>https://econdatalibrary.com/imf_cpi_direct</loc>
+    <lastmod>2026-08-05</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
     <loc>https://econdatalibrary.com/imf_cpis</loc>
     <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/imf_dip_direct</loc>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
@@ -483,6 +513,21 @@
   <url>
     <loc>https://econdatalibrary.com/imf_fsi</loc>
     <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/imf_fsibsis_direct</loc>
+    <lastmod>2026-08-05</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/imf_fsic_direct</loc>
+    <lastmod>2026-08-05</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/imf_fsicdm_direct</loc>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
@@ -576,8 +621,18 @@
     <changefreq>weekly</changefreq>
   </url>
   <url>
+    <loc>https://econdatalibrary.com/imf_imts_direct</loc>
+    <lastmod>2026-08-05</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
     <loc>https://econdatalibrary.com/imf_irfcl</loc>
     <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/imf_irfcl_direct</loc>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
@@ -588,6 +643,31 @@
   <url>
     <loc>https://econdatalibrary.com/imf_mfs</loc>
     <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/imf_mfsdc_direct</loc>
+    <lastmod>2026-08-05</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/imf_mfsfmp_direct</loc>
+    <lastmod>2026-08-05</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/imf_mfsir_direct</loc>
+    <lastmod>2026-08-05</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/imf_mfsma_direct</loc>
+    <lastmod>2026-08-05</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/imf_mfsofc_direct</loc>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
@@ -608,6 +688,11 @@
   <url>
     <loc>https://econdatalibrary.com/imf_pgi</loc>
     <lastmod>2026-08-02</lastmod>
+    <changefreq>weekly</changefreq>
+  </url>
+  <url>
+    <loc>https://econdatalibrary.com/imf_pip_direct</loc>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
@@ -687,7 +772,7 @@
   </url>
   <url>
     <loc>https://econdatalibrary.com/noaa</loc>
-    <lastmod>2026-08-02</lastmod>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>
@@ -722,7 +807,7 @@
   </url>
   <url>
     <loc>https://econdatalibrary.com/penn_world_table</loc>
-    <lastmod>2026-08-02</lastmod>
+    <lastmod>2026-08-05</lastmod>
     <changefreq>weekly</changefreq>
   </url>
   <url>

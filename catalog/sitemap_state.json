@@ -1,0 +1,1215 @@
+{
+ "generated": "2026-08-05",
+ "pages": {
+  "abs.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "e682d3ffd5985ab764f69f34ac4ef949bb73e4c767f55e68ae30612b38b481d1"
+  },
+  "adb.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "dded7d97df06ce64abc7be9f0e235031d4d4cc7bb37dffe420878daad085b3b9"
+  },
+  "api.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "21a5259a164566d40f6695d20c4b5e8613ea1571a7930e4fbb5017ffb97d068c"
+  },
+  "barro_lee.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "13133ad61519fa963cc3e4743028ab1fb495c783a6b419f4885a22428c2ba45d"
+  },
+  "bcb.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "3caef38e53fa055ff778bdc231c0a1ec3f7037053c421558d5eacefbb84258e8"
+  },
+  "bcrp.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "2a17d01998cba1a8e6cc7a2dd24fe407ea47eb0acc63c4049f3324f84ef59022"
+  },
+  "bea.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "486aa81f1a4c1d899c0c64911a9df170d7fcd33d15612b21eda90508d85b8bc7"
+  },
+  "bfs.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "8894a5912930d4709a8d2d94641c0367ce86b3872d5edeedb13f44865613d77a"
+  },
+  "bis.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "df6e6e55140911af048a89c778f62ed62fd7e240e6c6d3ae533d5367d1795bf8"
+  },
+  "bls.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "06715b0fb8f415cf87538ae45b5166cd8bbe9a1108e28b6fe400e3473f779bfe"
+  },
+  "boc.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "2ab5807c50c2cfec4e585b1cf862b4417f26eafdf076bc177bdbc92fc20a8a43"
+  },
+  "boe.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "ff3b46bc034d745652f1177ef7edaff060715bd9234966806b3f55bbdac7bf04"
+  },
+  "bundesbank.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "55c394f66ae223b18324469754c2ec709de35d98f84b9c751f362e4bb23de5f5"
+  },
+  "catalog.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "4913c85293284e2205375e642f5a818283f74f4e87935ed258cba0bdc842adf4"
+  },
+  "census.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "0b063dcaac98721e20cb2eae0d968a51b1deb634aa78daafde7e5db2cd70ade8"
+  },
+  "cepii_baci.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "c2098e7b9bbc840bb7ebb00af9dd0dc7b61a7ec1d802b219167227c70f23b32f"
+  },
+  "cepii_gravity.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "d3e8925641da344e84a66d4ed65ece8874fb266919cf95e7dafcdb0a8b1a9e76"
+  },
+  "cite.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5feb0cc4b317ef2121f946ec34382ffb4ee8de656453290bfe6d8d16e2c3681b"
+  },
+  "cnb.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "23a12a510c4eba43bac7dc7a06e648a6a7c410026ffdc977e75ecfeda13a6416"
+  },
+  "comtrade.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "519926e787f3ab33f3dfbecf3ca06e15ea332c9834acb5ad661eeb5b05f6bef5"
+  },
+  "contact.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "bc16f603f789082d5d16b1e4f784d219256c0aff586b64f9dbbb9063e583536f"
+  },
+  "cso.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "22bb4c3fa59d934ebc89a54a998a639c73c126796ae960b37b984461c17e87f3"
+  },
+  "damodaran.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "e0d98543d7ee698f72e2271d14f2b9d1163ae72522951bcbe4b9cac947867e6e"
+  },
+  "defillama.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "d539673fb8bf2534de1aef2c6b45ad72d6b0fd56614864413e7aece43ceb1d2b"
+  },
+  "docs.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "220aab6e9a4e417abf0537895ae112ccdd2a650f493f3589d20aa9b17b30e13e"
+  },
+  "download.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "528d1aec59dbfa7ad69c7e541e7caadc7b7c03b523395a0ca5cc37fedf448401"
+  },
+  "dst.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "bb91ccb27df85d361929eac268a580826b55f701a24260b7d22d5fdd00fe3646"
+  },
+  "ecb.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "74f56e5643e942a41064bf6991f66dd79520b661b62d7af1139fa365d4a67a26"
+  },
+  "edgar_jrc.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "66936b1335b7d55a8454f03d323f01cc14858b61e5cacfcd07110c70877aa75c"
+  },
+  "ei_statreview.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "c66bfdd7debd0ada6d3789e695511ffddf6294ecd049f1cbc32dd62d99ff0123"
+  },
+  "eia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "aebe8e9b2239caa7a09566330c486c5e00849985c69f43cb747d0a6aa3362eea"
+  },
+  "ember.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "02ef5c246be81d7fb6b8abd77df099b5763b0b40a6e1db21e9a4a5cf7d5f4ba3"
+  },
+  "epu.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "22b16063e740411a078a94428f39e06dae709d6280dab8b89e1186964ff5a46d"
+  },
+  "etr.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "7781e106953bd881f6af21c6c4ee5f76d2050c6a217ad26d5661e8485f1ef741"
+  },
+  "eurostat.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "23f00527764c982b3818267d8220bfd33e9d3a120e240b3d5cd03603b30500b1"
+  },
+  "fao_ae.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "c64a1ee56341967cf47ad937878a52d9403233701e3d55f1b8463aa7243c89fc"
+  },
+  "fao_af.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "77fd390697de4f6a1c713040d8e31e65379073137e9d4e3c801c8c2f6697de70"
+  },
+  "fao_ec.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "c9c420e2bccb395c6d9e56b5ffe9918822afb6182eecd9356fda22430ad22f15"
+  },
+  "fao_ep.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "4ab3944db5b079a17be6004b213b491575e19b29565aa41ff881280e03b5288b"
+  },
+  "fao_es.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "a63c22b69bd5e7ed013dcc924cd5841da64f3ec25f88e2504fe6e480461cae3b"
+  },
+  "fao_et.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "72983a664177d221a4edd77cece384fbe72f8f0873cc669cf07c7d9daa68a72e"
+  },
+  "fao_ew.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "caa14f2451b0f88f3967b5766dc1bad12c4ad6a65dca192c9260c2c423f4ddb4"
+  },
+  "fao_fo.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "8b36b1a308fefb041a3943f8bc790a9b05b0f199a0f645df5f1064244c4ce91e"
+  },
+  "fao_ga.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "8f29334132f2cebdcc1c538dfbbcb15ac0215beec6702abe4bac419c9a7c4ba2"
+  },
+  "fao_gb.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "cdabba466002b924968766e3264e1a189ff89ac2b27130ca8a89807caf390581"
+  },
+  "fao_ge.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "e493a588bb07fc9cdc8135a3b3b21f237870f62bd6b3ae8df61421d9ab0b439f"
+  },
+  "fao_gf.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "8ac8af82d807557ca4ee9a5660d7779c3377bc9069fdf4dd4e36e07734f3b346"
+  },
+  "fao_gl.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "69f1c97a8ddcae446e9655e48f64fa3796a5ae25f8dd876321772eb2838cd5f5"
+  },
+  "fao_gn.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "2fc170fd34e36d65211deb80eca8201d00392495617f4ede254aa851acf895cf"
+  },
+  "fao_gr.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "c8b472b8fc03ac3684188f429a37f6159841a17f64a763723e2d323cd6331f05"
+  },
+  "fao_gt.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "07899350548789f9568b744a6d25fee363c5151f7764996213e17d986e8a469a"
+  },
+  "fao_gy.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "564f1516ed6b51d133a9126b02a8e8b2a63bb0292ffb257a6ffadbf75a910795"
+  },
+  "fao_ic.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "4a1d2d37c07117ca0c53e544b9aa86ae9aa4ee81c24b60071a63d9bd35b564f6"
+  },
+  "fao_oa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "3e3041824414aaad5e73241a347908cedd72f2df7d26987f08fc30f4be1a7e2e"
+  },
+  "fao_pp.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "4a2ffc4f8bb207bdc74fd3cd3e1c7d2e4e81dcbcf9fd88f377423e06098a04b3"
+  },
+  "fao_qa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "2541b791003e0d3ecf27b6338d85119866ca2cbad1ebe8c06e104bf45867330b"
+  },
+  "fao_qcl.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "d077d1590fffedc47a7c6cf20b098ba8aa7d59d1a6fec6059a1978f000bdf0ff"
+  },
+  "fao_ql.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "39767236166f252162bc1d792ac94dd3f610fa74f7eaf14ee981b72a3fdedee4"
+  },
+  "fao_qp.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "224fe93b536f71c3407b45a094e52f37f714e2224da3ed9a906d8b2914696346"
+  },
+  "fao_rp.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "638d148a2493c7ea94d0df58f2f8e71357cb5e0f8c45d1b8e028f8341f3976d0"
+  },
+  "faostat.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "748a99f3eb14ecaf344e7932f9e6b4557119e3812496ade4e0f081d3de51d374"
+  },
+  "fed_board.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "68b090eb7d594870c55f0a68495c359ad10ab1a44a54f216f329e28fc1a9281e"
+  },
+  "fhfa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "976fa037ba05438f6e85ce0e8265213f504f205e13248c94c7a8d6a804355962"
+  },
+  "frankfurter.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "d1076bd858249ed79fa786aa5d71702c047da573c1e7c6577bea5c169ebe258d"
+  },
+  "fsi_fundforpeace.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "dbc5fdba4e02651dfddc0084da1f6136d5a33352f68e74cbe636c52e4ecdc7cf"
+  },
+  "gapminder.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "8e3fc19b133d661bfc5ff9fab5c2a4f8f18411bc511e192a70993211fbeb2d89"
+  },
+  "gcb.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "19d89792915dbe4ea2c9c8107d233b0180bb5e11bc2cfcf67420989762218a35"
+  },
+  "ggdc.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "f0f3b71b7ffb42b338b39729d139465e97232131d94f4c1cdfe83ecde02c2fc0"
+  },
+  "gpi.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "904628e193784810120fe3b70ed452095d43a302f7ccb8fc8075c5e5d95c0720"
+  },
+  "gppd.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "73bcd6976bcbecacf5b433e91354188551457f97972c0b44bf392fb11a679b91"
+  },
+  "gti.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "a23543affb01fc9d72876f48e4b55cb78c8297a53cc1809f806d0137a566e837"
+  },
+  "hagstofa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "e2134f56c409b1ed046ad58effa6616a717faa5474005a3815ce007a82c7d76e"
+  },
+  "harvard_atlas.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "443136e3c05e30c54740a84ba56bc0f8662b4d4fe43c334f0667f86dc6c7c350"
+  },
+  "hf_equities.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5af249a54183411dae514419cc0fb6159445fad97c2e4e9d04e9f3815948180f"
+  },
+  "idb.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "db02904db810bda86a7d83f3c0dc3c55694a54f7ae24e823cba6d54fde86d8d3"
+  },
+  "ilostat.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "826dd9575dc35d2641bc9f28b9d4b94e16cbfb5598e51021fe0343aa824c6bec"
+  },
+  "imf.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "2e026bac4f9b49c26e446bb81a9eed6390cdc6adb226e32faea65bbd687a245f"
+  },
+  "imf_afrreo.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "a1e8bbbd05504342e72c632932e4717198765c70dd33d53b938fc29eb0d253b9"
+  },
+  "imf_afrreo_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "90c677d013151ddca51e8dc1138560c7bddd6a4a52c5f251831367ecfd81edee"
+  },
+  "imf_apdreo.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "204227bf67047280b56257896291668052dfd9d9b1e67894b664c75afc14757d"
+  },
+  "imf_apdreo_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "2e313d81c047d6cc1cdec32029b9ca3a9278b639f98f67273ac2fb9c83f03b1a"
+  },
+  "imf_bop.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "c62464efb38fa493aaf30fd64181518da49d01ae914f4f632447cb817363193a"
+  },
+  "imf_bop_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "f269b5a0d2095b18fe85d04b4b11944aa2efe13c29fb8951df6647362f2eb16c"
+  },
+  "imf_bopagg.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "9400b8b0d52984cfd6a1a555c2c53c40dc15d65c731573ee7a5e98959a7c170c"
+  },
+  "imf_cdis.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "73d20762b3cea9de56af89b28ed9cb46b0ff2b43d80657350e9c5139631f2fe3"
+  },
+  "imf_cofer.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "7b2618765f6998feb15a157daca876c7d143e4883e0da3fa81e696fb56423b35"
+  },
+  "imf_cofer_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "3bb51a31c18314ffb61f16cba160b60724096872a3f0874180f909dc02857e98"
+  },
+  "imf_commodity.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "d9ddd8e9b5a579972e3156284157d0de79f3e45ae8a57c8a18e38600855cf535"
+  },
+  "imf_cpi.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "e0d2a0a9cb1173f35b636906a8a7b590cfae2d012b6170cd77e8a4a66548235c"
+  },
+  "imf_cpi_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "a2b20d1fd0f74d7612c9190403c04892df3267f74142f6c6c401461b5006fac3"
+  },
+  "imf_cpis.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "2d681b5411794b3d2ca6e80f0981c1435e743c5d25750f6e375749e0601f328b"
+  },
+  "imf_dip_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "751d41cf269206d636a08748cfd5b04d3b97889c80b0d91ff19904302b88c648"
+  },
+  "imf_dot.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "9a2193b2faa4ea89a40a2081df794dd6f99a12228fafea9eff01ad1fefe8c9f9"
+  },
+  "imf_fas.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "331bacfad1248100417976d64fa267ec17a1e2777940319289f7dcd9b19b38f2"
+  },
+  "imf_fas_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "e6139dac52864d4b849a08d5409cbb5c58e1068ea37c6a17196f8cc6cfba5da0"
+  },
+  "imf_fdi.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "66362d83c047d9e508fa6267f29e8aaedbba6497f3841ab11276c687faa8ab05"
+  },
+  "imf_fdi_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "bdf3941e79ab9edcd8e7b8a2aa73c2743d3bcfe1c724a56dfab6dd026b92684e"
+  },
+  "imf_fiscaldecentralization.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "4d8bfc84fb4a1f3f80c3efa0e87d5fc480109b5b08d50467ebeefe66c98862d1"
+  },
+  "imf_fm.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "4a2cfd63ca0b5467d237f7788a778a541fb151f6f7bb20d228b3a77d85095d36"
+  },
+  "imf_fsi.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "e14c6e2847239d3e3aa743e6c576bb73c6eafd210d045c77e7793db29ae8a531"
+  },
+  "imf_fsibsis_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "3596d7ab5055deaf250930b68145bcbbd47a798b1d5a128aa346caedc0605974"
+  },
+  "imf_fsic_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "ab9979dd1890ffe39b44844122180ca9cf81ab6b5e6c9a205ecfa51cbbf3cb8c"
+  },
+  "imf_fsicdm_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "f6dc71d74ef40788a44fbe425f7e22fc94969e238b5c2a4c30902a26b789fbff"
+  },
+  "imf_fsire.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "a293d29a38ae853c6ac889858ed48378fcf7bb656b3c6eb694516f045669ac6e"
+  },
+  "imf_gender_budgeting.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "7d9c2c23e8e528bebee3196ad910b7146b0732e5892bfc23a11209d19763f078"
+  },
+  "imf_gender_equality.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "d5143394bda10124c678c6e4a89fc6a97e590d9ca3afd80bb6ea53105da1c451"
+  },
+  "imf_gfsbs_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "071a669e42e5223d91dc92f10f8a3e985677bc496c61e3e35ac6c2c577eec723"
+  },
+  "imf_gfscofog.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "b6c13de20477a0762a4aaeb0e99b727514a4b2ef2380edc68610c87277a885dc"
+  },
+  "imf_gfscofog_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "cc3bfc959406eeb426249f861806e937e8d1c9d308719bcec0b0ad5ba4a03b73"
+  },
+  "imf_gfse.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "4cdc497b7094782ba2467b6c8a65c0bd877ca35e44d6e7df2d45160c3783b1f3"
+  },
+  "imf_gfsfalcs.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "06d7f3e2abc9f36ee48a687020f94a74cee394e2a6fec6b21b1c42d701f8287f"
+  },
+  "imf_gfsibs.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "72218e4592b2e7ec89d8e236014bd9df27729e59e28c51afdc3668feb316d7db"
+  },
+  "imf_gfsmab.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "71fc3ed2ee91c205e6b40d51aee43427f59df0dcaf62bc86b2c705aa33993e19"
+  },
+  "imf_gfsr.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "335d4b34b0977491c21027d50a71c71e761a61810032f181068ec5eb3ee0dcb7"
+  },
+  "imf_gfssfcp_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5600eb36070f8e1637c75e48a98f152dc144079f86ee54846e78a0d19723d0f3"
+  },
+  "imf_gfssoef_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "a57a0b3e75fa9072c9cc3a437f368237145a13c18f13f68f52aca1a3921debe4"
+  },
+  "imf_gfssoo_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "34d50879fc028d3ea8ddc515db9db93909405d9df1a37122cb8e3ad5dd916642"
+  },
+  "imf_gfsssuc.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5dc7b000fa8fc2ee7d7cb6feb49acddfcdb36feea68269b1b947d712f523d5d4"
+  },
+  "imf_gfsssuc_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "f5ea68a3a9c35f1aafd9d27310ecb3586e5e1ac690fc0d4867bdab2b8363a164"
+  },
+  "imf_hpdd.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "407105111ab3af6a6c45d9a810264b27d7cb9a3c715136a17805c950895648c2"
+  },
+  "imf_ifs.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5e30702c69dd82292072b6ad5e21a3c547ff3e0275ada7df1ef978e1b656cd17"
+  },
+  "imf_imts_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "84eff1e154e9c42c5f552f26e2c000dee72810c748bc5c30bfe45ba37761773c"
+  },
+  "imf_irfcl.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "09ce71aa8d120f432e130aca12fcfc5ed4ce7086e9a22668e07b7ed22f982c97"
+  },
+  "imf_irfcl_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "f267e5b0f774e9db3283158619a80010ea04ad5abde5ae4d49780a4ea547faa2"
+  },
+  "imf_mcdreo.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "d4b8e4fa498f9f03c63b951caa4e151fa6964d99e7ec782515d283248218e490"
+  },
+  "imf_mfs.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5686a4920990f628232d5fcafc927fe0ac321672b6208a32fe338d556f116ced"
+  },
+  "imf_mfsdc_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "cb73cd27997e8ef8e86dc8aefc963929b3d6c2183f00c1ef814d3a4ae93977a3"
+  },
+  "imf_mfsfmp_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "5f9df967132efc08e8b3ba5be609dd89b2f17a49f2de39e08a647990c90ea5e1"
+  },
+  "imf_mfsir_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "85655c30eaaed3effcb557428615d6ae3118cc8a40ec934bb6c3bf7649449379"
+  },
+  "imf_mfsma_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "2e0251393dd12505a34b3179e3b00fe6a105491fcfe9118421bd0bdabbc34aa9"
+  },
+  "imf_mfsofc_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "745b4a0cc809e559f2fa260fb361a0eee1dcf086a4e18b5f42338fef1fe9aae2"
+  },
+  "imf_namain_idc_n.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "0d1517282d52e539828e73cbc2f9fbb66f99542c5f124668a908c2185875cd06"
+  },
+  "imf_pctot.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "d84af01f2b3ecb04cbae597b63b0716c697c7044aabdb6cfa8088c413bb168fe"
+  },
+  "imf_pgcs.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "e3dc34e8e4dc91037c0d0f47538deff85229c814a504540a54ac651175c0f9f6"
+  },
+  "imf_pgi.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "ccb57a9ac4f95b70f4e60765dcf35667259fa120b748ead9149ec00bc669d66b"
+  },
+  "imf_pip_direct.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "5425f5c87e3f353f2b92a539f6e9f11d80097a6f2f00a52a80af6b95b8f358c9"
+  },
+  "imf_psbsfad.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "87865d4604f1ffa459c47000f3b6d698008b740534957ae163c409ab176651ce"
+  },
+  "imf_unsdg_imf_inputs.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "2d61d2b148211b8d5109c59b668406361421668e2382d855211fa9ed5034efa2"
+  },
+  "imf_weo.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "1144bb2cdc531da3653bfe966f00a642d6de06c52678999212bb875c4c441cc1"
+  },
+  "imf_whdreo.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "1a6b63c5c085dab8f6c273b961f31a5c4a75bedb61ef95164a452fc27c97172a"
+  },
+  "imf_whdreo_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "185806a926790e264f3179a0515abf7f9b6f5dfedeff91a08798e87e6ac34982"
+  },
+  "imf_world.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "c3ac0212151e6d606b6a97bc66fd6a7bb0cd9174d3e3039f9884ad43b6fc1621"
+  },
+  "imf_world_direct.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "00e594ff629c1c12d638651cca386be67ed2cd6420c5d4d9ff02ee4eeacdd9d8"
+  },
+  "index.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "211651301c4095e14a5a76b44e36ef61f397fa24b802bb70b50a7e9b7acabee3"
+  },
+  "insee_bdm.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "764072439a5269c821f8849871373bc3bd8a2783d322d5744e8118e129a9ce28"
+  },
+  "insee_melodi.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "a3737e875182b40abfe03912bbb92016318ef159f9348edf256f7609e171a707"
+  },
+  "ipea.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "966a60342c7b0f94630c4a2c1aadee7131a64ee9e5f036ddaf0118ca35bba2a5"
+  },
+  "istat.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "8f7f554a248e91a4142b2dd0089e238267bf3f2b0f8bb71ea95ec4c6a562d364"
+  },
+  "kof_globalization.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "c9be45e16881a9ada34068c7af21cd9c126f648d2b4789a7e67f641ae72fc651"
+  },
+  "ksh_stadat.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "09455a1447ea9ea98baf595a8f72f93d050bd8b7032566feb20ba7a064accb1c"
+  },
+  "maddison.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "67ee0e82b944c879cf0f734cd87aedaec491f11b826a1297bf06819d54f80b35"
+  },
+  "mcp.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "d18b9c0905b2354f58944bdc2acc78007d46890f6a90877e58de6cfb59a04dc7"
+  },
+  "nasa_giss.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "1636d0d2d51596f253f4e4914dc09421527873d451e2f7270507fbde4c84387d"
+  },
+  "noaa.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "faae42cce10c0898f93844010048738e8d8e74e47945bcc973a0ba63689a6465"
+  },
+  "nyfed.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "324aa085a39d9dbf70a89400e863158d03c28b2920701794acbac6b2fce73423"
+  },
+  "oecd.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "773243150bc77fda6e147b9cc0f78891b6ddadec60b859151c381f4e174b1016"
+  },
+  "ofr.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "07f5d4cc7f606ed7dfa090205d9b51caae25f54bddd476bc67fe1c11a14bfc42"
+  },
+  "ons_uk.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "093794b9ee61a9a8e75ffdd66b8dda8485c7cccbb915a221c1c9f5d01fa2ff58"
+  },
+  "owid.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "75d52b7416a55500c14d2f6e09ce71e8f377dafaa934eca64db0b60df03e3e24"
+  },
+  "oxcgrt.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5e3a134f5b18499aa710ef43c93f5f464b5440fb486bf23467088a3c86761c6f"
+  },
+  "penn_world_table.html": {
+   "lastmod": "2026-08-05",
+   "noindex": false,
+   "sha256": "402b9d240f054e17fca21c429d5023a008dabb316e9f5d81243b6ab01fc3ff8a"
+  },
+  "pip.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "57b3e1885756a0d856eb6462a75361eda90ef4c5d21c7090f9ca2d197354f42b"
+  },
+  "ppi.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "01177be92a79db9a9bbfa9c207b885747c1ab396c67eb907f30861ae1874244b"
+  },
+  "pwt.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "ca29548468c11ac99ffc3e8dba8a26437cf03f23c511e7233170bd853ebf99ba"
+  },
+  "rba.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "545f5608d599a0725b5df3575ef4a35260dd5f21d5473b646e00e1d593d881af"
+  },
+  "riksbank.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "1323a01fa6761e1c28cf9ccb4bd057e187e2643a6d40322a8e9f148e80ff26db"
+  },
+  "scb.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "1f71009e593936e1504f838983fee12a2ac51c73145dfceb82c1721a2e3524cb"
+  },
+  "sec_edgar.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "7fe6c4cecd8a5b20dcdbf9569a9dcd10ba1fece43c4b467d0d2dcb73afc7e09d"
+  },
+  "snb.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "39e7799edc3c8ce6b71f129a323d948efabcac7ab69103c82c03adbd41ba4478"
+  },
+  "ssb.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "4afc045fb381405ba2b5b4f20be72ea435e1179ccb95a0fe13f9ccddf696443a"
+  },
+  "stat_estonia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "27521ebe82e55430da3f546c652da7fac525ef1d39ee26149eed90c79dbfd7f1"
+  },
+  "stat_latvia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "06f756c3437f2c31fa26990f23bb0735fcc6baf0d2bccbaf30c058385c0dd723"
+  },
+  "stat_slovenia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "b2cade171ec45df95c6abb3c41fed4d0acf84a6639042b2ce36a3ad0552e5dba"
+  },
+  "statcan.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "21d023bd0828ba9a9b3289ba55d3d018522b47b8270919fd8563d3e18330d7e1"
+  },
+  "statfin.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "d5a839e9727c94ae3cd41a47256d820f05f876c2c8cea41a48f07a441fb40110"
+  },
+  "stats.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "2f1eb0195066e8053dcda75ed99c35630b660ef2430e23e5cc4bb705388ade4d"
+  },
+  "stats_nz.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "6eb124a15d606be8b26008c2e5574be69ae80a569b7c142e9456ef52db821c9d"
+  },
+  "status.html": {
+   "lastmod": "2026-08-05",
+   "noindex": true,
+   "sha256": "3468068c7b0d6cc3aa28c59e1a4201992acd6ad662239ffa17a7b2193dce0f65"
+  },
+  "swiid.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "1f0912db6088cf16fe6c6c85f36c84251501a695dbf7d01c46412f33376d8fe4"
+  },
+  "transparency_ti.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "14e4de9c3f0480bdab8e7b3a4826010c52f325fb04cf213f89368bd20844f067"
+  },
+  "treasury.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "c11cfe51f1147e897973d4dfc1fa1c463f727973cd040c93fa2b4c98825986f2"
+  },
+  "ucdp.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "00fdb1e4da8aa25c4c5bb12d58a159f9b7bdf8f52799336fda7a51a38871c7a3"
+  },
+  "un_wpp.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "4753ec2e657caca8f20c21851b85f33e1fff0e843976342eacb811ed57ba3306"
+  },
+  "unctad_bopcaba.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5e7d45e9fb322217af7604b074c9da12a935df69b5c8b611af3d238b6c87ee7a"
+  },
+  "unctad_ciocgeaia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "9f1cf733452cea1df73fc2644ee89ffd457c82759c70ff5f67d01e219a9aa674"
+  },
+  "unctad_cioiuibbicoeair4a.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "2de64b57522bb29916ef17e25b868350bd34ffa55f36ac8620ddd60219875a1b"
+  },
+  "unctad_cpa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "1ad9be907fcc368b86bd36e6fbb1ceb422f71a9b8b44b31b2c8d569cc05a659c"
+  },
+  "unctad_cpia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "80710e6a16a81aa07eb371fb85b055d46675b9aed480887005c52c581359301a"
+  },
+  "unctad_cpta.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "65e40ec762cb1075da79cc7d49daa04f89014529054d135ec4840fb1b6c6cc3d"
+  },
+  "unctad_fdiiaofasa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "8ff9166b13c2fb1fde5aed508d57ada3a0f96a5dbc163745d54c4a975e627471"
+  },
+  "unctad_fmcpa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "ddeb226a8746bd1381ced0fdd9bdafe556377509b71f22c50ce191207436fac9"
+  },
+  "unctad_fmcpia21.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5f42250879960395af1963b9433174ee259b00f5d7bfd39f87bfdcdb77cec335"
+  },
+  "unctad_gasbeaiogasa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "0e6f4a6677308f35c8ac3116d020000e48db5732ce3cf0de4bb76113a90e9ebd"
+  },
+  "unctad_gasbtbia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "a6616bb930981f22e380281df5731707158c8454a8d28d819367dd0a4456321e"
+  },
+  "unctad_gasbtoia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "b7aac034c2e12be632b3efcce183061b512d1bd6b52dfaf5b88ec438d35a68ef"
+  },
+  "unctad_gdpgbtoevbkoeatasa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "33f36a778e14acc86705a278bc62067d5666f968d43646fd40e965740bc85da5"
+  },
+  "unctad_gdptapccac2pa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "0fa6cc481a504b5381b39ec45cff2b15c3c9d11934af5c93f9403f77302cd216"
+  },
+  "unctad_lscia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "99bd4ff7f03b69c033b01db37d4d19352ae98e75a33300f342bea369d9629efd"
+  },
+  "unctad_lsciq.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "42672743aaf3d0999a49e9127569db84a4256ef56f3c10d90b084e59304d149f"
+  },
+  "unctad_mfbcoboa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "d2bc8d61e90f43673b3b76a2925a4ed9a719091b923a49436b4dcc36d050c192"
+  },
+  "unctad_mmcascioeaiopa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "eff992fa161a0c27f018fa58b226126e0201ce7953124c3b94ee37bb62fca856"
+  },
+  "unctad_mpcadioeaia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "17f7b944483f1559558b68406d604bf64f47df42f556d5ccdce70daf4ea8edf1"
+  },
+  "unctad_mtba.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "bc09f719d86610cdcc47444d350f6d5a793784e0fa6d6d471345b61ede2e2d37"
+  },
+  "unctad_mttasa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "8492aff80cddd0761b8cf78a7b23ca7b7d9401e6e406ad1c14ebe21b114c1407"
+  },
+  "unctad_mttgra.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "8e12e2c67d8c89f96a4e795ef1f80ff404211aca1674857ee6a519dacd0dc768"
+  },
+  "unctad_neera.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "cf95561934b281286fbf3725bfe83583ee097f9539c0899d09bb57efbb26145c"
+  },
+  "unctad_reericba.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "094d3e5e091583d50bc15600430824d54d65bba45e4f93decb431b27b553419c"
+  },
+  "unctad_reerigdba.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "a026b0352664a387cf648baa8da9ebf0694bc49c355a837ac0afa6b4ff64ccfe"
+  },
+  "unctad_rfia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "02e94689b0e32b75ad05f51067ceddc5688add3b7ac76d16dbb7ecc3e0c0edff"
+  },
+  "unctad_rgdptapcgra.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "a56b413b745df1b32bf08e52167adf804715d4c0815c34a7537be5063c686899"
+  },
+  "unctad_sbeaiotsvsaga.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "391131da3dec1d7b073b26fabad7dbb0e8a494b4dba54924b1c6626fd3238027"
+  },
+  "unctad_sbtisvsaga.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "51a768a4054c8c186b0008cf87fea246ea54b316a8641791d53e8d3c73e151b1"
+  },
+  "unctad_soigapotta.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5dd1454b81229e16af8962edc6112d7c93545b30bed4b332a0e0456f82564e1a"
+  },
+  "unctad_sotwmfvbcoboa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "9c8f92b27e9a5df751480a23643f92c72c836a483bf7f32e1c39e53cf7e0305b"
+  },
+  "unctad_srbca.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5fd5296fa2be27a46b5a723383368c1bfd60bafc351fda10781f444642298612"
+  },
+  "unctad_tabbapotta.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "47972ea9a4d17d7ae2db932cc5530a101003be741fe38ec9e5a5d16433b4b780"
+  },
+  "unctad_tabmcioeaiopa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "1415d33f6a63d316c936b5880f2686fc86aa37de1274cf2de2d6df5ed4bd6056"
+  },
+  "unctad_tabmscioeaiopa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "1498bb5dd5d349285a1df4fe4e4eaa94bcd0b0824e5f15b3b81eba3bd5089f74"
+  },
+  "unctad_tabpcioeaia.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "9fd4dfaad283509b3d14a0dd422dd51f210b57cde7bb88a95f5feee25b83b362"
+  },
+  "unctad_taupa.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "401573e648734175d311ff12eab7875680e2fdb684a3bdc3b7600160a8c6eb66"
+  },
+  "unctad_wstbtocabgoea.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "c30098b8e9c27dc90fc64d1e6672d7f88d73d773164b6d99325ac5ae1588de68"
+  },
+  "undp_hdr.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "48c0c2027a9223fd4cd58bd589e9846493ddd531dcb54005473bb91e86b266d0"
+  },
+  "unesco_clte.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "9ab55278bd35a3cb2ef144d0346732e8825b925a4ae65fe416c21cb003cbe748"
+  },
+  "unesco_cltt.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "7372bb5e10207d29336e5faa19fabcbca8c432e053e9779e56f92ebc8a05a546"
+  },
+  "unesco_dem.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "ce29db622366cf369d98a92b14944417fc4d29e925279d12e46f964569f38696"
+  },
+  "unesco_film.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "7a6c987fa273adbe29964f01b780809c917c0b70b8afa9d835a7f9271d13321b"
+  },
+  "unesco_inno.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "17cbf911e8c0c0cee853bf636e73d5b63f7121ec3fcb3e8a42ed3f59bcfa0ac3"
+  },
+  "unesco_natmon.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "9e7229546f9d0b1f3855247c22ce0e1fe57d8a49a7921a314feccdd36bcaeb2d"
+  },
+  "unesco_sdg.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "001a9c5613b0a4bcbced7abec40c2367704672b40f10d00f05e0924cd1ac630a"
+  },
+  "unhcr.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "333cd1ab79f5993385aad873073d83af6de5b692dd11580a429724298622f66c"
+  },
+  "usda.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "f988a1cdb298deb3f1dd4baf2d2495d88cb5909909c5ed13fa0003f9a67d25c5"
+  },
+  "wgi.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "b2749a1e02fb68406a2ee1f3490c24b2cb55ee1102d9a013ca095ced7f3db2c2"
+  },
+  "who_hwf.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "d27d9180de89f2104cadfdf82fc8c2b9b8f291499449952188d098e954672d6e"
+  },
+  "who_rs.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "e066a94d5dbe40b4413fcb9ef78f42d05f3ddce3b4c8d6b66195ef5954101678"
+  },
+  "who_sdg.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "f01d7665fa1c0576ee56ec7ebc14d5887f9a03982641062759759cae9e0c3ffd"
+  },
+  "wid.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "640998f9e2a0e3fb4cf59b1e53196118243bedfc083d868f42ac3074cb6596d2"
+  },
+  "wikidata.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "e036c5a7b1dddd8fb297dedfea79d3520ff8482723572dfca600a645e828656e"
+  },
+  "worldbank.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "51f1ddea55021e3e3162f12f43fe1a9eebdab140da98ce24102965ed3b9bf14b"
+  },
+  "worldbank_esg.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "8dc9dd7ecdebd758db43c73f4776e0ec5ea6c46fe9032a331ec295266122da00"
+  },
+  "worldbank_pink.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "5d2ff900275f2734da2f44ad1ae9f591cabc43dc823bded182583f890b20b673"
+  },
+  "worldbank_wdi.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "d62819d03721b519608b23a0c203a7a22ce03d2bc0a04940470c913adadd5817"
+  },
+  "yale_epi.html": {
+   "lastmod": "2026-08-02",
+   "noindex": false,
+   "sha256": "0fe38ccb20b769cc4bd6a3f5f6eaf7baf071798952c0d53dee435d615a9ddf72"
+  }
+ }
+}
