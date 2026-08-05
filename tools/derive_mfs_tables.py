@@ -40,7 +40,9 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--threads", type=int, default=16)
     a = ap.parse_args()
-    flow = FLOWS[a.source]["flow"]
+    cfg = FLOWS[a.source]
+    flow = cfg["flow"]
+    pc_, pf_ = cfg.get("pos_country", 1), cfg.get("pos_freq", 2)
 
     import duckdb
     from core import r2_util
@@ -54,8 +56,8 @@ def main() -> int:
     q = duckdb.connect()
     q.execute("PRAGMA threads=6")
     cur = q.execute(f"""
-        SELECT '{flow}:' || split_part(split_part(series_key,':',2),'.',1) || '.' ||
-               split_part(split_part(series_key,':',2),'.',2)   AS tbl,
+        SELECT '{flow}:' || split_part(split_part(series_key,':',2),'.',{pc_}) || '.' ||
+               split_part(split_part(series_key,':',2),'.',{pf_})   AS tbl,
                series_key, obs_date, value
         FROM read_parquet('{store.replace(chr(92), '/')}')
         ORDER BY 1, 2, 3

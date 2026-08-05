@@ -152,8 +152,8 @@ serve), none supersedes anything. Ignore every dated *_VINTAGE snapshot flow.
 | imf_namain_idc_n | 1,926 | DONE 2026-08-05 (cycle 11): `imf_namain_direct` SERVED — SERIES grain, 1,969 series / 86,928 obs, verify exit 0. 22-part ESA/SNA keys decoded via the carried dims sidecar + the _Z placeholder skip. Legacy stays served-frozen |
 | imf_fiscaldecentralization | 8,398 | DONE 2026-08-05 (cycle 13): `imf_fd_direct` SERVED — SERIES grain, 8,398 series (EXACT legacy count) / 160,957 obs, 0 title fallbacks, verify exit 0 |
 | imf_hpdd | 191 | DONE 2026-08-05 (cycle 14): `imf_hpd_direct` SERVED — SERIES grain, 191 series (EXACT legacy count) / 9,628 obs, verify exit 0 |
-| imf_gender_equality | 295 | GS_* split confirmed live: GS_LGRGHTS v1.0.1, GS_LEPM v2.0.0, GS_SDO v1.0.0, GS_ATF v1.0.0 (IMF.STA) |
-| imf_gender_budgeting | 288 | PROBED 2026-08-05: NO flow matches 'gender budget' in the 222 (keyword sweep); its GB_* codes need a vocabulary check against the GS_* family stores before a retirement verdict (R354: decompose to the shared grain, run a positive control) |
+| imf_gender_equality | 295 | DONE 2026-08-05 (cycle 15): ALL FIVE GS flows SERVED — LGRGHTS 8,084 + LEPM 973 + SDO 7,599 + ATF 12,057 (series grain) + LI 80,394 via 233 C.F table ids (mid-key positions 3/4, the #45 arithmetic at a 345x collapse) = 109,107 series total, verify exit 0 each. Legacy pair stays served-frozen |
+| imf_gender_budgeting | 288 | VERDICT 2026-08-05: NO successor — 0 of 24 GB_* codes in ANY of the five GS family stores (prefix-tolerant, positive control passed) and no flow matches by name. Joins fsire/pgi in the no-successor class; legacy stays served-frozen |
 | imf | 131 | Monthly registry entry exists (registry.yaml:2581, docs/DAILY_UPDATE_STATUS.md:33) — reconcile why audit counts it unscheduled |
 
 ### RESERVED (71 sources / 370,003 series) — decision belongs to Ahmed; do not work

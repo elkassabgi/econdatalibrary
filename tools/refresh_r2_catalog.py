@@ -91,6 +91,20 @@ def main() -> int:
         stream_decompress(c, KEY, cur_db)
 
     old, new = source_counts(cur_db), source_counts(LOCAL)
+    # TORN-PAGE PHANTOMS (found 2026-08-05): a refresh that streams catalog.db while a
+    # cataloguer writes it can upload a structurally-valid-but-logically-torn snapshot —
+    # quick_check passes, yet the series table carries rows whose source_id is raw page
+    # BYTES (b-tree fragments). Those are corruption, not sources: comparing against them
+    # blocks every future upload (114 phantom "sources" once held the guard hostage) and
+    # the report line itself crashed on bytes.__format__. Drop them from the OLD side
+    # LOUDLY; the healthy local catalog replacing them is the repair, not a shrink.
+    phantoms = [s for s in old if not isinstance(s, str)]
+    if phantoms:
+        print(f"  CORRUPT R2 COPY: {len(phantoms)} non-text source_id row(s) — torn-page "
+              f"phantoms from a concurrent-write upload; excluded from the superset guard "
+              f"and REPLACED by this upload")
+        for s in phantoms:
+            old.pop(s, None)
     shrink = sorted((old[s] - new.get(s, 0), s) for s in old if new.get(s, 0) < old[s])
     gained = sum(new[s] - old.get(s, 0) for s in new if new[s] > old.get(s, 0))
     print(f"\n  current R2 : {sum(old.values()):,} series across {len(old)} sources")
