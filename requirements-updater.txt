@@ -56,3 +56,11 @@ numpy>=2.0,<3     # imported DIRECTLY by updater/strategies/fetchers/vdem.py. It
 # The R178 phantom-dep audit (tools/audit_updater_deps.py) did not catch it because it walks
 # only updater/strategies/fetchers/ — its scope gap is a known open item.
 duckdb>=1.5,<2
+# botocore: imported DIRECTLY by core/r2_util.py. Installed today as boto3's transitive dep —
+# but a direct import satisfied by somebody else's dependency is luck, not a contract (the
+# exact numpy/vdem lesson recorded above). Same pin family as boto3.
+botocore
+# psutil: tools/measure_merge_peak.py (merge-peak measurements before routing giants to runners).
+psutil
+# pycountry: tools/catalog_whr.py (ISO country name resolution for WHR titles).
+pycountry

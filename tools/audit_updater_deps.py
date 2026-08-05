@@ -65,20 +65,32 @@ def _imports_of(path: str):
     except (SyntaxError, UnicodeDecodeError):
         return set(), set()
     third, local = set(), set()
+
+    def classify(dotted: str):
+        root = dotted.split(".")[0]
+        if root in LOCAL_ROOTS:
+            local.add(dotted)
+            return
+        # BARE SIBLING IMPORTS. tools/ and jobs/ scripts import each other by bare name
+        # after sys.path juggling (`import imf_direct_titles`); the dotted root then looks
+        # third-party and the widened scan flagged 10 first-party modules as undeclared.
+        # A name that resolves to a repo file IS first-party — follow it into the graph.
+        for d in ("tools", "jobs", "core"):
+            if os.path.exists(os.path.join(ROOT, d, root + ".py")):
+                local.add(f"{d}.{root}")
+                return
+        third.add(root)
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
-                root = a.name.split(".")[0]
-                (local if root in LOCAL_ROOTS else third).add(
-                    a.name if root in LOCAL_ROOTS else root)
+                classify(a.name)
         elif isinstance(node, ast.ImportFrom):
             if node.level and node.level > 0:
                 continue                                     # relative: same package, in-repo
             if not node.module:
                 continue
-            root = node.module.split(".")[0]
-            (local if root in LOCAL_ROOTS else third).add(
-                node.module if root in LOCAL_ROOTS else root)
+            classify(node.module)
     return third, local
 
 
@@ -90,6 +102,18 @@ def main() -> int:
     for f in sorted(os.listdir(FETCHERS)):
         if f.endswith(".py"):
             queue.append(os.path.join(FETCHERS, f))
+    # SCOPE WIDENED 2026-08-05. The original roots were the fetchers alone, so a dependency
+    # used only by a standalone tool was invisible — and duckdb (imported by 22 files across
+    # tools/ and jobs/) turned CI's tests red for FIVE runs with a ModuleNotFoundError this
+    # audit exists to prevent. tests.yml and preflight execute tools/; anything they can
+    # execute must have its imports declared. jobs/ scripts guarded by a RETIRED SystemExit
+    # still parse (ast doesn't run the guard), which is correct: a declared import for a
+    # defused script costs nothing, an undeclared one for a live script costs five red runs.
+    for d in ("tools", "core", "jobs"):
+        base = os.path.join(ROOT, d)
+        for f in sorted(os.listdir(base)):
+            if f.endswith(".py"):
+                queue.append(os.path.join(base, f))
 
     while queue:
         path = queue.pop()
