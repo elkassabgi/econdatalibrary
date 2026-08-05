@@ -87,6 +87,19 @@ FLOWS = {
         "family_long": ("BOP and IIP Statistics aggregates ({flow}, formerly BOPAGG)"),
         "expect_obs": 140_907, "expect_series": 7_839, "expect_tables": 208,
     },
+    # PSBS measured 2026-08-05 (cycle 7): clean 5-part keys, NO phantom —
+    # COUNTRY.FREQ.INDICATOR.SECTOR.UNIT, all five dims codelisted (position 2 is 'A'
+    # only, ambiguous by vocabulary but fixed by the alphabetical dim order and by
+    # position 3 fitting INDICATOR with 144 values). Distinct series = 14,018 =
+    # EXACTLY the legacy imf_psbsfad count (the R75 same-dataset proof, now in the
+    # store itself). Agency IMF.FAD.
+    "imf_psbs_direct": {
+        "flow": "PSBS", "version": "PSBS:2.0.0", "agency": "IMF.FAD",
+        "sub": "stocks of assets and liabilities",
+        "family": "Public sector balance sheet",
+        "family_long": ("Public Sector Balance Sheet ({flow}, formerly PSBSFAD)"),
+        "expect_obs": 209_229, "expect_series": 14_018, "expect_tables": 86,
+    },
 }
 
 
@@ -122,7 +135,7 @@ def main() -> int:
         return 1
     print(f"licence {LIC}: reservable=1  ok")
 
-    _dims, codes = T.load_structure(flow, "IMF.STA")
+    _dims, codes = T.load_structure(flow, cfg.get("agency", "IMF.STA"))
     cnames = codes.get("COUNTRY", {})
     print(f"codelists: {len(cnames)} countries")
 

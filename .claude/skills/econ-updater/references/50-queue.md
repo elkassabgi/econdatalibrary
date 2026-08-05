@@ -143,7 +143,7 @@ serve), none supersedes anything. Ignore every dated *_VINTAGE snapshot flow.
 | imf_cpi | 28,420 | `imf_cpi_direct` added 2026-08-04, vintage CPI:5.0.0 verified (registry.yaml:5716-5737) |
 | imf_gfsfalcs | 20,249 | Corresponds to `imf_gfssfcp_direct` (GFS_SFCP), live:false (registry.yaml:5917) |
 | imf_fsire | 18,620 | MEASURED 2026-08-05: 0 of 68 fsire indicator codes appear in any FSI-trio store at ANY decomposition level (exact, tail, segment) — NOT absorbed, and no matching flow among the 222 advertised. Joins imf_pgi in the no-successor class; legacy stays served-frozen |
-| imf_psbsfad | 14,018 | No direct sibling yet |
+| imf_psbsfad | 14,018 | DONE 2026-08-05 (cycle 7): `imf_psbs_direct` SERVED — 86 C.F table ids / 14,018 series (EXACTLY the legacy count, R75's same-dataset proof) / 209,229 obs, verify exit 0. Agency IMF.FAD. Legacy stays served-frozen (#46) |
 | imf_pgi | 8,891 | NO matching flow in the 222 advertised (probed by name+keywords 2026-08-05) — probable full retirement (the G20 PGI initiative); candidate for the RESERVED/retired class, not a build |
 | imf_bopagg | 7,801 | DONE 2026-08-05 (cycle 6): `imf_bopagg_direct` SERVED — 208 C.F table ids / 7,839 series / 140,907 obs, verify exit 0. 6-part keys with a sometimes-EMPTY phantom part; 2 GX aggregate codes unnamed (DIP class). Legacy stays served-frozen (#46) |
 | imf_pctot | 4,320 | RENAMED: successor IMF.RES:CTOT v5.0.1 (R74's rename, probe-confirmed live 2026-08-05; note agency IMF.RES) |
