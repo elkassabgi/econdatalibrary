@@ -99,6 +99,18 @@ def load_structure(flow: str, agency: str):
                     if _t(r) == "Ref" and r.get("id"):
                         cref = r.get("id")
         cl = concept_cl.get(cref) or concept_cl.get(did)
+        if not (cl and cl in codelists):
+            # STANDARD-SDMX FALLBACK (found via imf_sdg_direct, cycle 10): flows built on
+            # external structures (SDG references IAEG-SDGs codelists) enumerate on the
+            # DIMENSION's LocalRepresentation, not the concept's CoreRepresentation — the
+            # concept path above finds nothing and every codelist reads as empty. Read the
+            # Enumeration ref directly under the dimension; concept path stays first so
+            # the existing IMF-native flows resolve exactly as before.
+            for r in d.iter():
+                if (_t(r) == "Ref" and r.get("class") == "Codelist"
+                        and r.get("id") in codelists):
+                    cl = r.get("id")
+                    break
         if cl and cl in codelists:
             dim_codes[did] = codelists[cl]
     return sorted(set(dims) - NON_IDENTITY), dim_codes
@@ -218,7 +230,11 @@ def title_for(key, order, dim_codes) -> tuple[str, int, int]:
     parts = key.split(":", 1)[1].split(".")
     bits, hit, tot = [], 0, 0
     for did, code in zip(order, parts):
-        if code == "":
+        # "_T" is the SDMX total/no-breakdown placeholder (found on imf_sdg_direct, whose
+        # 16-part keys carry ~12 of them): decoding each to "No breakdown" buries the
+        # country and indicator under noise. Skip it like the empty part — IMF-native
+        # flows never use "_T" as a code, so this is inert for every existing source.
+        if code in ("", "_T"):
             continue
         if did in dim_codes:
             tot += 1                                             # only count what CAN resolve

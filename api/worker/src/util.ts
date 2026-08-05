@@ -175,6 +175,12 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // distinct-series count EXACTLY equals the frozen legacy catalogue (R75). Clean
   // 4-dim keys, C.F prefix resolver.
   "imf_ctot_direct",
+  // imf_sdg_direct added 2026-08-05 (cycle 10): SERIES grain — 2,577 series /
+  // 42,789 obs (0.5% of D1 headroom; table grain saves nothing at this size).
+  // SDG = the renamed UNSDG IMF-inputs dataset. 16-part UN-SDMX keys decoded via
+  // the IAEG-SDGs codelists (dimension-level enumeration fallback in
+  // imf_direct_titles). Served by the generic uniform-long resolver.
+  "imf_sdg_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
