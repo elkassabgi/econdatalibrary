@@ -156,6 +156,24 @@ serve), none supersedes anything. Ignore every dated *_VINTAGE snapshot flow.
 | imf_gender_budgeting | 288 | VERDICT 2026-08-05: NO successor — 0 of 24 GB_* codes in ANY of the five GS family stores (prefix-tolerant, positive control passed) and no flow matches by name. Joins fsire/pgi in the no-successor class; legacy stays served-frozen |
 | imf | 131 | RECONCILED 2026-08-05 (cycle 21 close): the audit is CORRECT — the registry entry (registry.yaml:2581) has NO `live:` key (parsed and verified), is absent from the heavy matrix, and so was registered but never promoted. Promoting it would have jobs/ingest_imf_full.py re-pull whole dataflows over the store the 131 retained legacy ids resolve against — the #46 re-key class, RESERVED. Joins the served-frozen legacy set |
 
+### HEALTH-GATE TRIAGE (classified 2026-08-05, cycle 22 — after the last ACTIONABLE build closed)
+
+The daily runs had been red for 2+ days on 36 ATTENTION sources. Classified by NOTE (one
+query), not source-by-source: 5 designed budget-slices (abs/dst/ecb/ssb/stat_estonia —
+healthy, in-progress), 12 coherence, 19 assorted. Root causes fixed this cycle:
+
+| Item | State |
+|---|---|
+| §5.7 punished partial catalogue coverage harder than zero (R359) | FIXED b7bee0d9/8dc5cbec: proven-uncatalogued residue = non-demoting `csv coverage note:`; zero-mapped-with-rows + derive failures still demote. Clears statfin/snb/imf_fas_direct/unesco_natmon/unesco_sdg/who_sdg as they re-attempt |
+| defillama: NC grant advertised commercial_ok=1 for 20d (R358) + bare cursor keys froze all 24 served CSVs | FIXED: catalog.db→defillama-granted via tools/apply_license_class.py, D1 synced, R2 refreshed; cursors family-qualified; proof run 31054705327 |
+| bfs: cursor keys dropped the `BFS:` store prefix — 582/582 unmapped every run | FIXED: store-prefixed cursor reporting; proof run 31054927114 |
+| Stale-verdict cohort (adb, fhfa, imf_fsi*, imf_gfssoef/ssuc, usda, worldbank_wdi) | Self-clears: their catalog gaps were closed by the 08-04/08-05 R2 refreshes (R271 class); verdicts age out as the rotation re-attempts each (R277) |
+| insee_bdm 201/201 + insee_melodi 129/144 transient-failed (verdicts 07-31) | NEXT: force-run first (R277 — verdict may predate recovery); if it reproduces, diagnose upstream vs fetcher |
+| stat_slovenia 1/2 "returned 200 but parsed 0 rows" (08-04) | NEXT: schema-break check, same class as hagstofa's 7/1096 (#94) |
+| owid 25,358 unmapped + GATED | Question: gated sources' coherence semantics — after R359 lands it goes green-with-note; the real question (should a gated store keep refreshing?) is Ahmed's |
+| defillama per-chain + per-entity families (23 chain series data, protocols/yields) | The S1 fetcher refreshes only bulk aggregates; jobs/ingest_defillama.py owns per-entity and nothing schedules it — per-chain series data frozen ~June. Candidate: schedule it on the workstation route, or catalogue the bulk families (headroom decision #45) |
+| eurostat "UNSTABLE 'LAST UPDATE=' series_key — run the one-time re-key" | #71/#80: the re-key is a SERVED-id change = RESERVED (#46 class) |
+
 ### RESERVED (71 sources / 370,003 series) — decision belongs to Ahmed; do not work
 
 | Source | Series | Why reserved |
