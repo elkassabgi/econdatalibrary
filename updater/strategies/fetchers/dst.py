@@ -126,10 +126,17 @@ def current_vintage(unit):
 
 
 def _load_manifest() -> dict:
+    # BLOB-ROUTED (R36/R355): under backend=r2 a raw os.path.exists/open here reads the
+    # runner's empty scratch dir, so the manifest "never exists", every CI run cold-starts,
+    # the cold start adopts the catalog's CURRENT timestamps as baseline, and nothing is
+    # ever due — the store froze at 2026-04 behind four months of daily green no_change
+    # while the #54 fix converged only on the workstation. The manifest is state, and
+    # state lives where the store lives.
     path = os.path.join(config.source_dir(SOURCE), MANIFEST_NAME)
-    if os.path.exists(path):
+    data = blob.read_bytes(path)
+    if data is not None:
         try:
-            d = json.load(open(path, encoding="utf-8"))
+            d = json.loads(data.decode("utf-8"))
             d.setdefault("tables", {})
             return d
         except Exception:
@@ -138,12 +145,10 @@ def _load_manifest() -> dict:
 
 
 def _save_manifest(man: dict) -> None:
+    # Same channel as the load: blob-routed so CI checkpoints actually persist (R355).
     os.makedirs(config.source_dir(SOURCE), exist_ok=True)
     path = os.path.join(config.source_dir(SOURCE), MANIFEST_NAME)
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(man, f)
-    os.replace(tmp, path)
+    blob.write_bytes_atomic(path, json.dumps(man).encode("utf-8"))
 
 
 # THE READS BELOW WERE BLOB-ROUTED; THE LISTINGS WERE NOT (R36).
