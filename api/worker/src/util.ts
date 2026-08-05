@@ -43,6 +43,13 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // of all 1,143,250 objects), and the licence is CONFIRMED redistributable_attribution
   // (Etalab Open Licence 2.0, 100% dated from CEPII's own Last-Modified, 2024-04-15).
   "cepii_gravity",
+  // cepii_baci added 2026-08-04 (cycle 1 of the econ-updater loop): 90,582 pair-grain series
+  // (BACI:tv/tq:<EXP>:<IMP>) projected HS96-only from the V202601 vintage — the product
+  // dimension is aggregated away and every catalogue title says so. Licence etalab-2.0 with
+  // the publisher's own version string as the last-update statement ("2026-01", month
+  // precision — a day invented from a month would be fabricated precision, the cepii_gravity
+  // rule). verify 300/300 byte-identical through the bespoke pairs resolver before the flip.
+  "cepii_baci",
   "cnb", "comtrade", "damodaran", "dbnomics", "defillama",
   "ecb", "edgar_jrc", "ei_statreview", "eia", "ember", "epu",
   "eurostat", "fao_ae", "fao_af", "fao_ec", "fao_ep",
