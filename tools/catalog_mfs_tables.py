@@ -52,6 +52,21 @@ FLOWS = {
         "sub": "monetary aggregates",
         "expect_obs": 344_652, "expect_series": 3_016, "expect_tables": 468,
     },
+    # MFS_OFC measured 2026-08-05: same 5-part shape (phantom 'true' at position 3 across
+    # all 348,519 rows), positions 1/2 vocabulary-proven COUNTRY/FREQUENCY, tail
+    # INDICATOR.TYPE_OF_TRANSFORMATION; 76 reporting countries.
+    "imf_mfsofc_direct": {
+        "flow": "MFS_OFC", "version": "MFS_OFC:7.0.0",
+        "sub": "other financial corporations survey",
+        "expect_obs": 348_519, "expect_series": 4_704, "expect_tables": 231,
+    },
+    # MFS_FMP measured 2026-08-05: same 5-part shape (phantom 'true' at position 3 across
+    # all 55,623 rows), positions 1/2 vocabulary-proven COUNTRY/FREQUENCY; 69 countries.
+    "imf_mfsfmp_direct": {
+        "flow": "MFS_FMP", "version": "MFS_FMP:3.0.0",
+        "sub": "financial markets and positions",
+        "expect_obs": 55_623, "expect_series": 276, "expect_tables": 207,
+    },
 }
 
 

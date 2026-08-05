@@ -149,6 +149,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // catalog ids serving 3,016 series / 344,652 obs. Monetary aggregates flow of the
   // MFS split; same measured shape and prefix resolver as MFS_DC.
   "imf_mfsma_direct",
+  // imf_mfsofc_direct + imf_mfsfmp_direct added 2026-08-05 (cycle 5): TABLE grain
+  // COUNTRY x FREQ — 231 ids / 4,704 series and 207 ids / 276 series. Other
+  // financial corporations + financial markets and positions flows of the MFS
+  // split; same measured shape and prefix resolver as MFS_DC/MA.
+  "imf_mfsofc_direct", "imf_mfsfmp_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
