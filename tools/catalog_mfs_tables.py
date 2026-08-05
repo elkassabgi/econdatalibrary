@@ -100,6 +100,19 @@ FLOWS = {
         "family_long": ("Public Sector Balance Sheet ({flow}, formerly PSBSFAD)"),
         "expect_obs": 209_229, "expect_series": 14_018, "expect_tables": 86,
     },
+    # GS_LI measured 2026-08-05 (cycle 15): 11-part keys, COUNTRY at position 3 and
+    # FREQUENCY at position 4 (alphabetical dim order, mid-key — vocabulary-proven, 233
+    # of 233 position-3 codes in the COUNTRY codelist). 80,394 series collapse to 233
+    # C.F tables (345x): the #45 arithmetic decides, series grain would cost ~16% of
+    # remaining headroom for what tables serve at 0.05%.
+    "imf_gsli_direct": {
+        "flow": "GS_LI", "version": "GS_LI:1.0.0",
+        "sub": "labor and income",
+        "family": "Gender statistics",
+        "family_long": ("Gender Statistics — Labor and Income ({flow})"),
+        "pos_country": 3, "pos_freq": 4,
+        "expect_obs": 1_372_801, "expect_series": 80_394, "expect_tables": 233,
+    },
     # CTOT measured 2026-08-05 (cycle 9): clean 4-part keys, no phantom —
     # COUNTRY.FREQ.INDICATOR.WGT_TYPE, all four dims codelisted and vocabulary-proven.
     # Distinct series = 4,320 = EXACTLY the legacy imf_pctot count (R75). Agency IMF.RES.
@@ -152,8 +165,8 @@ def main() -> int:
     q = duckdb.connect()
     sp = store.replace(chr(92), "/")
     rows_db = q.execute(f"""
-        SELECT split_part(split_part(series_key, ':', 2), '.', 1) AS country,
-               split_part(split_part(series_key, ':', 2), '.', 2) AS freq,
+        SELECT split_part(split_part(series_key, ':', 2), '.', {cfg.get('pos_country', 1)}) AS country,
+               split_part(split_part(series_key, ':', 2), '.', {cfg.get('pos_freq', 2)}) AS freq,
                COUNT(DISTINCT series_key)     AS n_series,
                MIN(obs_date)                  AS d0,
                MAX(obs_date)                  AS d1,

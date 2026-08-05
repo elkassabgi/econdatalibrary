@@ -199,6 +199,17 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // 9,628 obs, EXACTLY the frozen legacy count (R75). Historical public debt,
   // titles resolved 0-fallback. Generic resolver.
   "imf_hpd_direct",
+  // GS gender family added 2026-08-05 (cycle 15) — five flows replacing the frozen
+  // 583-series legacy pair with 109,417 series total:
+  //   imf_gslgrghts_direct  8,084 series (legal rights)        — series grain
+  //   imf_gslepm_direct       973 series (labor/employment)    — series grain
+  //   imf_gssdo_direct      7,599 series (seats/decision)      — series grain
+  //   imf_gsatf_direct     12,057 series (access to finance)   — series grain
+  //   imf_gsli_direct      80,394 series via 233 C.F TABLE ids — the #45 arithmetic
+  //     (a 345x collapse; COUNTRY.FREQ sit MID-KEY at positions 3-4 of 11, so it
+  //     gets the position-anchored resolver, not the family prefix)
+  "imf_gslgrghts_direct", "imf_gslepm_direct", "imf_gssdo_direct",
+  "imf_gsatf_direct", "imf_gsli_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
