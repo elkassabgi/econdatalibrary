@@ -127,6 +127,13 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // Grain forced by arithmetic: D1 measured 9.31 GB of its 10 GB ceiling; series grain would
   // have consumed the library's entire remaining catalogue budget (#104/#45).
   "imf_imts_direct",
+  // imf_pip_direct added 2026-08-05 (cycle 3): TABLE grain — 8,876 catalog ids
+  // (COUNTRY x FREQ x INDICATOR, mid-key positions 4-6 of the 7-part PIP key) serving
+  // 3,126,127 series inside their table CSVs. PIP = the CPIS successor per IMF's own
+  // dataflow description; NOT the World Bank's `pip`. Grain forced by the same D1
+  // arithmetic as IMTS (#105/#45): series grain would be ~6-7x the remaining budget.
+  "imf_pip_direct",
+
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
