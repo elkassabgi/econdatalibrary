@@ -210,6 +210,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   //     gets the position-anchored resolver, not the family prefix)
   "imf_gslgrghts_direct", "imf_gslepm_direct", "imf_gssdo_direct",
   "imf_gsatf_direct", "imf_gsli_direct",
+  // imf_er_direct added 2026-08-05 (cycle 16): TABLE grain COUNTRY x FREQ — 681 ids
+  // serving 10,474 series / 2,427,666 obs (15x collapse, the R356 arithmetic run
+  // explicitly). NEW coverage: the successor home of dismembered IFS's orphaned
+  // exchange-rate family. C.F prefix resolver.
+  "imf_er_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
