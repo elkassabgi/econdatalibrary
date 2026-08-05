@@ -89,15 +89,19 @@ Summary (lines 13-21): CLEARED-attribution 144, RESTRICTED-keep-gated 18, NEEDS 
 
 **etalab-2.0 date-condition precedent** (1541-1561): Etalab imposes THREE limbs — source attribution, **the date of last update of the data when known**, and no meaning-alteration; "Any future source under Etalab must satisfy all three limbs, not just attribution" (1555). Class sweep 2026-07-29 (1557): insee_bdm 101,789/101,848 dated, insee_melodi 134/139. **cepii_gravity — GATE CLOSED (1559): 1,143,250/1,143,250 dated (100%)** using the `Last-Modified` header CEPII serves on the exact hosted file (`Gravity_csv_V202211.zip`) → `2024-04-15`, "an observed publisher fact, not our fetch time and not a day invented out of a month" — writing "2022-11-01" from the V202211 stamp would have fabricated precision. Keep both facts: dataset version V202211, file re-issued 2024-04-15. Currency check (1561): V202211 is CEPII's newest release.
 
-## Coverage headline (measured 2026-08-04, `cd E:/research/econfindatalibrary && PYTHONIOENCODING=utf-8 python tools/audit_schedule_coverage.py`)
+## Coverage headline (re-measured 2026-08-05 after loop cycles 1-2)
 
-**126 of 223 sources / 9,931,121 of 11,298,111 series scheduled (56.5% of sources, 87.9% of series).** Catalogued 223, resolvable (util.ts) 225, SERVED (both) 223 = 11,298,111 series. NOT scheduled: 97 sources / 1,366,990 series.
+**127 of 224 sources / 10,021,703 of 11,388,693 series scheduled (56.7% of sources, 88.0% of
+series).** cepii_baci SERVED + scheduled 2026-08-05 (90,582 pair-grain series, verify exit 0).
 
-Tool's own caveat: "'scheduled' is a registry fact — live, adapter built, offered a turn. It is NOT sub-unit coverage" (worldbank_esg 32/71 and adb 44/54 both fixed 2026-08-03); for sub-unit coverage run `tools/audit_untouched_files.py --live`.
+**D1 CAPACITY (measured 2026-08-05, supersedes every older figure): 9.31 GB of the ~10 GB hard
+ceiling, 11,378,473 series rows, ~818 B/row effective. Practical budget for ALL remaining
+cataloguing: ~400-500k rows. EVERY grain decision starts from this number now (task #45 holds
+the next-tier options for Ahmed). The 6.9 GB / 1,647,600-row figures cited anywhere else are
+DEAD.**
 
-Also reported:
-- **Scheduled on paper, CANNOT RUN** (fetcher-backed strategy, no fetcher module — orchestrator files "PENDING — no adapter built" and skips forever): `cbs_nl`, `gus_dbw` (both workstation route, run_location: local).
-- **Scheduled but NOT served** (refreshed on disk, reaches nobody; verify each): `cepii_baci` (0 catalog rows), `fdic` (gated by licence — legitimate), `gleif` (gated — shape blocker), `sec_edgar_xbrl`, `vdem` (workstation route).
+Tool's own caveat: "'scheduled' is a registry fact — live, adapter built, offered a turn. It is
+NOT sub-unit coverage"; for sub-unit coverage run `tools/audit_untouched_files.py --live`.
 
 ## Work queue (97 served, licence-cleared-enough, not auto-updating sources / 1,366,990 series)
 
@@ -107,7 +111,7 @@ Key structural fact for ALL imf_* rows (updater/registry.yaml:5527-5543): the re
 
 | Source | Series | Known notes |
 |---|---|---|
-| imf_dot | 101,000 | No direct sibling yet — build `imf_dot_direct` |
+| imf_dot | 101,000 | IMF RENAMED the flow: successor is IMTS (IMF.STA v1.0.0, "formerly Direction of Trade Statistics"). `imf_imts_direct` registered + heavy-matrix 2026-08-05 (cycle 2, #104); NO flow id contains DOT — do not search for one |
 | imf_cpis | 100,783 | No direct sibling yet. Dataflow CPIS = Coordinated Portfolio Investment Survey — distinct from CPI (registry.yaml:5717-5718) |
 | imf_ifs | 100,706 | **IMF retired IFS** (registry.yaml:5535) — no same-name flow exists; successor-flow mapping needed before any direct id can be added |
 | imf_bop | 99,636 | `imf_bop_direct` already registered (registry.yaml:5664) — prove/promote |
