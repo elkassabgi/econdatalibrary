@@ -31,9 +31,13 @@ import sys
 import threading
 import urllib.parse
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
+# Same resolution contract as updater/config.py: ECONDL_ROOT wins, else the repo this file
+# lives in. The env override is what lets tests point the tool at a fixture tree instead of
+# the production store — without it, a test of this tool IS a run against production.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.environ.get("ECONDL_ROOT") or _REPO
+sys.path.insert(0, _REPO)
+sys.path.insert(0, os.path.join(_REPO, "clients", "python"))
 
 from core import r2_util  # noqa: E402
 
@@ -171,6 +175,29 @@ def main() -> int:
         print(f"no parquet in {src_dir}")
         return 2
     paths = [os.path.join(src_dir, f) for f in pqs]
+
+    # ONLY UNIFORM-LONG FILES ARE THE SERVING STORE. A store dir may hold native/raw parquets
+    # BESIDE the tidy projection that serves (cepii_baci: baci_hs17/hs96.parquet are the raw
+    # vintages with year/exporter/importer columns; cepii_baci_pairs.parquet is what serves).
+    # Feeding a raw file into the DISTINCT-series_key scan is a BinderException at best and a
+    # wrong id universe at worst. Skip by SCHEMA, and say so — a silent skip would read as
+    # "covered everything" (the no-silent-caps rule).
+    import duckdb as _duck
+    _need = {"series_key", "obs_date", "value"}
+    uniform, skipped = [], []
+    for p in paths:
+        cols = {r[0] for r in _duck.connect().execute(
+            "SELECT name FROM parquet_schema(?)", [p]).fetchall()}
+        (uniform if _need <= cols else skipped).append(p)
+    if skipped:
+        print(f"skipping {len(skipped)} non-uniform parquet(s) (missing "
+              f"{sorted(_need)} columns) — native/raw files are not the serving store: "
+              + ", ".join(os.path.basename(s) for s in skipped), flush=True)
+    if not uniform:
+        print(f"no uniform-long parquet (series_key/obs_date/value) in {src_dir} — "
+              f"nothing here can serve")
+        return 2
+    paths = uniform
     # `path` is what the VERIFY step and the distinct-key count read. DuckDB's read_parquet
     # takes a list as happily as a string, so a sharded source is verified across all of its
     # shards rather than only the first - sampling one shard of 417 would certify a format
