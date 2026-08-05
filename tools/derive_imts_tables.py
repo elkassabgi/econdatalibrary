@@ -90,9 +90,9 @@ def main() -> int:
         cid = f"{SOURCE}:{cur_tbl}"
         body = csv_bytes(rows)
         if a.sample and sampled < a.sample:
-            os.makedirs(os.path.join(ROOT, "..", "_imts_sample"), exist_ok=True)
-            fn = os.path.join(ROOT, "..", "_imts_sample",
-                              cur_tbl.replace(":", "_") + ".csv")
+            sample_dir = os.path.join(ROOT, "logs", "derive_samples", "imts_tables")
+            os.makedirs(sample_dir, exist_ok=True)
+            fn = os.path.join(sample_dir, cur_tbl.replace(":", "_") + ".csv")
             open(fn, "wb").write(body)
             sampled += 1
         if a.dry_run:
