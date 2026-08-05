@@ -392,9 +392,17 @@ def _stablecoins_total(sess):
 # --------------------------------------------------------------------------- #
 # orchestration helpers
 # --------------------------------------------------------------------------- #
-def _merge_file(path, tbl, dedup_keys, tally, cursors=None, keys=None, dates=None):
+def _merge_file(path, tbl, dedup_keys, tally, cursors=None, keys=None, dates=None,
+                qualify=None):
     """Publish one refreshed table under merge's never-shrink invariant and update the
-    tally honestly. before>0 + 0 parsed rows -> structural; else add/empty."""
+    tally honestly. before>0 + 0 parsed rows -> structural; else add/empty.
+
+    `qualify` maps an in-file series_key to the CATALOG suffix before the cursor is
+    reported (2026-08-05): this store spells identity as FILE + bare key ('Bitcoin' in
+    chains_tvl.parquet) while the catalog id is family-qualified
+    ('defillama:chain_tvl:Bitcoin'), so unqualified cursors could never map under
+    §5.7's exact rule and every run demoted to partial with all 24 served CSVs frozen
+    ("the catalog this run read has 24 rows for it but none matched")."""
     before = blob.row_count(path)
     label = os.path.basename(path)           # names the offender in the failure message
     if tbl is None:                          # transient sub-failure: keep old data
@@ -413,7 +421,10 @@ def _merge_file(path, tbl, dedup_keys, tally, cursors=None, keys=None, dates=Non
         # rows folded one cursor per series with no cap. abs's version of this exact shape
         # (376M series, ~94 GB) destroyed the CI runner and took the whole daily updater
         # down with it; every cursor is also a state.db row and a _catalog_ids_for query.
-        if merge_cursor_map(cursors, _ts_maxes(keys, dates)):
+        m = _ts_maxes(keys, dates)
+        if qualify:
+            m = {qualify(k): v for k, v in m.items()}
+        if merge_cursor_map(cursors, m):
             _CURSORS_CAPPED.append(1)
     return n, md
 
@@ -452,16 +463,22 @@ def update(unit, since) -> Result:
         acc(path, md)
 
     # ----- chains_tvl.parquet: bulk __ALL__ aggregate only (per-chain via heavy ingester) -----
+    # Cursor keys are family-qualified to the CATALOG suffix (see _merge_file docstring):
+    # '__ALL__' is served as defillama:tvl:total, a per-chain row as defillama:chain_tvl:<C>.
     path = os.path.join(out_dir, "chains_tvl.parquet")
     tbl, dk, keys, dates, err = _chains_tvl_aggregate(sess)
-    n, md = _merge_file(path, tbl, dk, tally, cursors, keys, dates)
+    n, md = _merge_file(path, tbl, dk, tally, cursors, keys, dates,
+                        qualify=lambda k: "tvl:total" if k == "__ALL__"
+                        else f"chain_tvl:{k}")
     total += n
     acc(path, md)
 
     # ----- stablecoins_total.parquet: bulk __ALL__ aggregate -----
     path = os.path.join(out_dir, "stablecoins_total.parquet")
     tbl, dk, keys, dates, err = _stablecoins_total(sess)
-    n, md = _merge_file(path, tbl, dk, tally, cursors, keys, dates)
+    n, md = _merge_file(path, tbl, dk, tally, cursors, keys, dates,
+                        qualify=lambda k: "stablecoins:total_usd" if k == "__ALL__"
+                        else f"stablecoins:{k}")
     total += n
     acc(path, md)
 
