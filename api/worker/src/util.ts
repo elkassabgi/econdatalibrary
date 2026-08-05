@@ -186,6 +186,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // accounts aggregates; 22-part ESA/SNA keys decoded via the recovered dims
   // sidecar (the _staging_ strand bug's third occurrence). Generic resolver.
   "imf_namain_direct",
+  // imf_icsd_direct added 2026-08-05 (cycle 12): SERIES grain — 3,195 series /
+  // 155,840 obs (0.6% of D1 headroom). ICSD = the pgcs successor by name and
+  // content, and a coverage SUPERSET of the frozen legacy (3,195 vs 2,262).
+  // First source whose dims sidecar arrived canonically via the carry fix.
+  "imf_icsd_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
