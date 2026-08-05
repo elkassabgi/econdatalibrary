@@ -154,7 +154,7 @@ serve), none supersedes anything. Ignore every dated *_VINTAGE snapshot flow.
 | imf_hpdd | 191 | DONE 2026-08-05 (cycle 14): `imf_hpd_direct` SERVED — SERIES grain, 191 series (EXACT legacy count) / 9,628 obs, verify exit 0 |
 | imf_gender_equality | 295 | DONE 2026-08-05 (cycle 15): ALL FIVE GS flows SERVED — LGRGHTS 8,084 + LEPM 973 + SDO 7,599 + ATF 12,057 (series grain) + LI 80,394 via 233 C.F table ids (mid-key positions 3/4, the #45 arithmetic at a 345x collapse) = 109,107 series total, verify exit 0 each. Legacy pair stays served-frozen |
 | imf_gender_budgeting | 288 | VERDICT 2026-08-05: NO successor — 0 of 24 GB_* codes in ANY of the five GS family stores (prefix-tolerant, positive control passed) and no flow matches by name. Joins fsire/pgi in the no-successor class; legacy stays served-frozen |
-| imf | 131 | Monthly registry entry exists (registry.yaml:2581, docs/DAILY_UPDATE_STATUS.md:33) — reconcile why audit counts it unscheduled |
+| imf | 131 | RECONCILED 2026-08-05 (cycle 21 close): the audit is CORRECT — the registry entry (registry.yaml:2581) has NO `live:` key (parsed and verified), is absent from the heavy matrix, and so was registered but never promoted. Promoting it would have jobs/ingest_imf_full.py re-pull whole dataflows over the store the 131 retained legacy ids resolve against — the #46 re-key class, RESERVED. Joins the served-frozen legacy set |
 
 ### RESERVED (71 sources / 370,003 series) — decision belongs to Ahmed; do not work
 
