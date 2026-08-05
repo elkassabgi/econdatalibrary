@@ -227,6 +227,9 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // imf_pi_direct added 2026-08-05 (cycle 19): SERIES grain — 3,100 series /
   // 447,095 obs. Production indexes — new coverage for IFS's AIP family.
   "imf_pi_direct",
+  // imf_piwca_direct added 2026-08-05 (cycle 20): SERIES grain — 16 world/group
+  // aggregate production-index series / 2,168 obs. PI's aggregate companion.
+  "imf_piwca_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
