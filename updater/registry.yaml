@@ -6094,6 +6094,131 @@ sources:
       (agency IMF.FAD); re-pull only when it moves. Verified live 2026-08-05 by
       calling the module's own current_vintage(): HPD -> HPD:1.0.0.
     name: Historical Public Debt (HPD, formerly HPDD)
+- source_id: imf_gslgrghts_direct
+  # ADDED 2026-08-05 (cycle 15 of the econ-updater loop). The relay-era gender stores
+  # (imf_gender_equality 295 + imf_gender_budgeting 288, both served-frozen) were
+  # restructured into the GS_* family; this entry covers GS_LGRGHTS (legal rights).
+  # current_vintage() CALLED live 2026-08-05: GS_LGRGHTS -> GS_LGRGHTS:1.0.1. live:false +
+  # heavy matrix, sized at the proof run, grain by the #45 arithmetic.
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: imf_gslgrghts_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow GS_LGRGHTS
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      calling the module's own current_vintage(): GS_LGRGHTS -> GS_LGRGHTS:1.0.1.
+    name: Gender Statistics — legal rights (GS_LGRGHTS)
+- source_id: imf_gslepm_direct
+  # ADDED 2026-08-05 (cycle 15 of the econ-updater loop). The relay-era gender stores
+  # (imf_gender_equality 295 + imf_gender_budgeting 288, both served-frozen) were
+  # restructured into the GS_* family; this entry covers GS_LEPM (labor and employment).
+  # current_vintage() CALLED live 2026-08-05: GS_LEPM -> GS_LEPM:2.0.0. live:false +
+  # heavy matrix, sized at the proof run, grain by the #45 arithmetic.
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: imf_gslepm_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow GS_LEPM
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      calling the module's own current_vintage(): GS_LEPM -> GS_LEPM:2.0.0.
+    name: Gender Statistics — labor and employment (GS_LEPM)
+- source_id: imf_gssdo_direct
+  # ADDED 2026-08-05 (cycle 15 of the econ-updater loop). The relay-era gender stores
+  # (imf_gender_equality 295 + imf_gender_budgeting 288, both served-frozen) were
+  # restructured into the GS_* family; this entry covers GS_SDO (seats and decision-making offices).
+  # current_vintage() CALLED live 2026-08-05: GS_SDO -> GS_SDO:1.0.0. live:false +
+  # heavy matrix, sized at the proof run, grain by the #45 arithmetic.
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: imf_gssdo_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow GS_SDO
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      calling the module's own current_vintage(): GS_SDO -> GS_SDO:1.0.0.
+    name: Gender Statistics — seats and decision-making offices (GS_SDO)
+- source_id: imf_gsatf_direct
+  # ADDED 2026-08-05 (cycle 15 of the econ-updater loop). The relay-era gender stores
+  # (imf_gender_equality 295 + imf_gender_budgeting 288, both served-frozen) were
+  # restructured into the GS_* family; this entry covers GS_ATF (access to finance).
+  # current_vintage() CALLED live 2026-08-05: GS_ATF -> GS_ATF:1.0.0. live:false +
+  # heavy matrix, sized at the proof run, grain by the #45 arithmetic.
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: imf_gsatf_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow GS_ATF
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      calling the module's own current_vintage(): GS_ATF -> GS_ATF:1.0.0.
+    name: Gender Statistics — access to finance (GS_ATF)
+- source_id: imf_gsli_direct
+  # ADDED 2026-08-05 (cycle 15 of the econ-updater loop). The relay-era gender stores
+  # (imf_gender_equality 295 + imf_gender_budgeting 288, both served-frozen) were
+  # restructured into the GS_* family; this entry covers GS_LI (labor and income).
+  # current_vintage() CALLED live 2026-08-05: GS_LI -> GS_LI:1.0.0. live:false +
+  # heavy matrix, sized at the proof run, grain by the #45 arithmetic.
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: annual
+  refresh_cost: fast
+  out_dir: imf_gsli_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow GS_LI
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      calling the module's own current_vintage(): GS_LI -> GS_LI:1.0.0.
+    name: Gender Statistics — labor and income (GS_LI)
 - source_id: imf_pip_direct
   # ADDED 2026-08-05 (cycle 3 of the econ-updater loop). `imf_cpis` holds 100,783 relay-era
   # series — catalogued, SERVED, frozen: no fetcher, no registry entry. IMF RENAMED the
