@@ -1461,6 +1461,27 @@ def _resolve_imf_gsli_direct(series_id: str, root: str) -> Resolution:
     return Resolution(series_id, src, path, "series_key", pred)
 
 
+def _resolve_imf_qgfs_direct(series_id: str, root: str) -> Resolution:
+    """imf_qgfs_direct: TABLE grain with COUNTRY.FREQ MID-KEY (positions 2-3 of 7).
+
+    QGFS's alphabetical dim order puts ACCOUNTS ahead of COUNTRY (ACCOUNTS.COUNTRY.
+    FREQUENCY.IFS_FLAG.INDICATOR.METHODOLOGY.SECTOR, sidecar-recorded), so the
+    family's starts_with prefix cannot anchor - the GS_LI position-exact class
+    applies, with the part count pinned at 7 so no other key shape can alias in.
+    """
+    src, native = series_id.split(":", 1)
+    flow, rest = native.split(":", 1)
+    country, freq = rest.split(".")
+    path = os.path.join(root, src, f"{src}.parquet")
+    if not os.path.exists(path):
+        raise ResolveError(f"{series_id}: store missing at {path!r}")
+    rx = ("^" + re.escape(flow) + ":" + r"[^.]*\." +
+          re.escape(country) + r"\." + re.escape(freq) +
+          r"(\.[^.]*){4}$")
+    pred = pc.match_substring_regex(ds.field("series_key"), rx)
+    return Resolution(series_id, src, path, "series_key", pred)
+
+
 _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "bls": _resolve_bls,
     "cepii_baci": _resolve_cepii_baci,
@@ -1475,6 +1496,7 @@ _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "imf_bopagg_direct": _resolve_imf_mfs_tables,
     "imf_psbs_direct": _resolve_imf_mfs_tables,
     "imf_gsli_direct": _resolve_imf_gsli_direct,
+    "imf_qgfs_direct": _resolve_imf_qgfs_direct,
     "imf_ctot_direct": _resolve_imf_mfs_tables,
     "imf_er_direct": _resolve_imf_mfs_tables,
     "worldbank_wdi": _resolve_wdi,

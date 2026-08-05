@@ -119,8 +119,8 @@ serve), none supersedes anything. Ignore every dated *_VINTAGE snapshot flow.
 | IMF.STA:LS | 9.0.0 | DONE 2026-08-05 (cycle 18): `imf_ls_direct` SERVED — SERIES grain, 4,160 series / 339,635 obs (supersedes IFS's 3,049 frozen L*), verify exit 0 |
 | IMF.STA:PI | 2.0.0 | DONE 2026-08-05 (cycle 19): `imf_pi_direct` SERVED — SERIES grain, 3,100 series / 447,095 obs, verify exit 0 |
 | IMF.STA:PI_WCA | 1.0.0 | DONE 2026-08-05 (cycle 20): `imf_piwca_direct` SERVED — 16 aggregate series / 2,168 obs, verify exit 0 |
-| IMF.STA:QGFS | 12.0.0 | Quarterly GFS (revenue G-codes present in its INDICATOR codelist) |
-| IMF.STA:GS_LI | 1.0.0 | Gender Statistics — Labor and Income (fifth GS flow beyond the quartet) |
+| IMF.STA:QGFS | 12.0.0 | DONE 2026-08-05 (cycle 21 — the LAST actionable item): `imf_qgfs_direct` SERVED — TABLE grain COUNTRY x FREQ (mid-key positions 2-3 of 7), 267 ids / 20,502 series / 1,243,439 obs (77x collapse, #45 arithmetic), verify exit 0, worker 7d5c3e76. Sidecar auto-carried — `_carry_dims_sidecar`'s first live proof |
+| IMF.STA:GS_LI | 1.0.0 | DONE 2026-08-05 (cycle 15): `imf_gsli_direct` SERVED — TABLE grain (mid-key positions 3-4 of 11), 233 ids / 80,394 series (345x collapse), verify exit 0; row left open by mistake when the ACTIONABLE entry closed |
 | IMF.STA:MFS_IR | 9.0.0 | REGISTERED 2026-08-05 (cycle 5) — fifth MFS flow, Interest Rates |
 
 ### ACTIONABLE (26 sources / 996,987 series) — build/promote the publisher-direct sibling; legacy relay ids stay frozen
