@@ -113,6 +113,16 @@ FLOWS = {
         "pos_country": 3, "pos_freq": 4,
         "expect_obs": 1_372_801, "expect_series": 80_394, "expect_tables": 233,
     },
+    # ER measured 2026-08-05 (cycle 16): 5-part keys COUNTRY.FREQ.<IFS_FLAG 'true'>.
+    # INDICATOR.TYPE_OF_TRANSFORMATION, prefix positions 1/2 vocabulary-consistent.
+    # 10,474 series collapse to 681 C.F tables (15x — the R356 arithmetic, run explicitly).
+    "imf_er_direct": {
+        "flow": "ER", "version": "ER:4.0.1",
+        "sub": "exchange rates",
+        "family": "Exchange rates",
+        "family_long": ("Exchange Rates ({flow})"),
+        "expect_obs": 2_427_666, "expect_series": 10_474, "expect_tables": 681,
+    },
     # CTOT measured 2026-08-05 (cycle 9): clean 4-part keys, no phantom —
     # COUNTRY.FREQ.INDICATOR.WGT_TYPE, all four dims codelisted and vocabulary-proven.
     # Distinct series = 4,320 = EXACTLY the legacy imf_pctot count (R75). Agency IMF.RES.
