@@ -6268,6 +6268,31 @@ sources:
       (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
       calling the module's own current_vintage(): EER -> EER:6.0.0.
     name: Effective Exchange Rate (EER)
+- source_id: imf_ls_direct
+  # ADDED 2026-08-05 (cycle 18 of the econ-updater loop). NEW COVERAGE: the successor
+  # home of dismembered IFS's labor family (3,049 frozen L* series). LS (IMF.STA)
+  # found by the IFS-families sweep. current_vintage() CALLED live 2026-08-05:
+  # LS -> LS:9.0.0. live:false + heavy matrix, sized at the proof run, grain by the
+  # #45 arithmetic.
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: quarterly
+  refresh_cost: large
+  out_dir: imf_ls_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow LS
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      calling the module's own current_vintage(): LS -> LS:9.0.0.
+    name: Labor Statistics (LS)
 - source_id: imf_pip_direct
   # ADDED 2026-08-05 (cycle 3 of the econ-updater loop). `imf_cpis` holds 100,783 relay-era
   # series — catalogued, SERVED, frozen: no fetcher, no registry entry. IMF RENAMED the
