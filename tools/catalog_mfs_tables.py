@@ -123,6 +123,21 @@ FLOWS = {
         "family_long": ("Exchange Rates ({flow})"),
         "expect_obs": 2_427_666, "expect_series": 10_474, "expect_tables": 681,
     },
+    # QGFS measured 2026-08-05 (cycle 21): 7-part keys, COUNTRY at position 2 and
+    # FREQUENCY at position 3 (alphabetical dim order ACCOUNTS.COUNTRY.FREQUENCY.
+    # IFS_FLAG.INDICATOR.METHODOLOGY.SECTOR, sidecar-recorded — the carry fix's first
+    # live run). Vocabulary-proven: 125/125 position-2 codes in the COUNTRY codelist,
+    # negative control pos-1 (BS/SOO/SSUC) fits none. 20,502 series collapse to 267
+    # C.F tables (77x): the #45 arithmetic run explicitly (R356); PSBS at 14,018
+    # already went table grain.
+    "imf_qgfs_direct": {
+        "flow": "QGFS", "version": "QGFS:12.0.0",
+        "sub": "quarterly government finance statistics",
+        "family": "Government finance statistics",
+        "family_long": ("Quarterly Government Finance Statistics ({flow})"),
+        "pos_country": 2, "pos_freq": 3,
+        "expect_obs": 1_243_439, "expect_series": 20_502, "expect_tables": 267,
+    },
     # CTOT measured 2026-08-05 (cycle 9): clean 4-part keys, no phantom —
     # COUNTRY.FREQ.INDICATOR.WGT_TYPE, all four dims codelisted and vocabulary-proven.
     # Distinct series = 4,320 = EXACTLY the legacy imf_pctot count (R75). Agency IMF.RES.

@@ -230,6 +230,12 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // imf_piwca_direct added 2026-08-05 (cycle 20): SERIES grain — 16 world/group
   // aggregate production-index series / 2,168 obs. PI's aggregate companion.
   "imf_piwca_direct",
+  // imf_qgfs_direct added 2026-08-05 (cycle 21 — the LAST actionable queue item):
+  // TABLE grain COUNTRY x FREQ — 267 ids serving 20,502 series / 1,243,439 obs
+  // (77x collapse, the #45 arithmetic run explicitly; PSBS at 14,018 already went
+  // table grain). Quarterly GFS, new coverage. COUNTRY.FREQ sit MID-KEY at
+  // positions 2-3 of 7, so the position-anchored resolver, not the family prefix.
+  "imf_qgfs_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
