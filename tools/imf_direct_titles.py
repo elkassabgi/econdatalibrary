@@ -230,11 +230,11 @@ def title_for(key, order, dim_codes) -> tuple[str, int, int]:
     parts = key.split(":", 1)[1].split(".")
     bits, hit, tot = [], 0, 0
     for did, code in zip(order, parts):
-        # "_T" is the SDMX total/no-breakdown placeholder (found on imf_sdg_direct, whose
+        # "_T" (total/no-breakdown) and "_Z" (not applicable) are SDMX placeholders (found on imf_sdg_direct, whose
         # 16-part keys carry ~12 of them): decoding each to "No breakdown" buries the
         # country and indicator under noise. Skip it like the empty part — IMF-native
         # flows never use "_T" as a code, so this is inert for every existing source.
-        if code in ("", "_T"):
+        if code in ("", "_T", "_Z"):
             continue
         if did in dim_codes:
             tot += 1                                             # only count what CAN resolve

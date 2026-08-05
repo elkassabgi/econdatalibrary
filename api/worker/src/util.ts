@@ -181,6 +181,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // the IAEG-SDGs codelists (dimension-level enumeration fallback in
   // imf_direct_titles). Served by the generic uniform-long resolver.
   "imf_sdg_direct",
+  // imf_namain_direct added 2026-08-05 (cycle 11): SERIES grain — 1,969 series /
+  // 86,928 obs (0.4% of D1 headroom). NA_MAIN = the renamed NAMAIN_IDC_N national
+  // accounts aggregates; 22-part ESA/SNA keys decoded via the recovered dims
+  // sidecar (the _staging_ strand bug's third occurrence). Generic resolver.
+  "imf_namain_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
