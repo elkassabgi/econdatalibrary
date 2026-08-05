@@ -29,7 +29,9 @@ if not os.path.isdir(DATA):                    # fail loudly rather than "derive
     raise SystemExit(f"parquet store not found at {DATA} — refusing to report empty scans")
 SOURCES = ["ssb", "stat_slovenia", "stat_latvia", "dst", "scb", "statfin", "hagstofa", "stat_estonia", "bfs"]
 PREFIX_RE = r"^(?P<p>.*?):[^:=]*="
-SAMPLE_DIR = r"D:/temp/claude/D--research-hfdatalibrary/5bda36f5-59a1-4804-b441-06c56c3755da/scratchpad/derive_sample"
+# Repo-derived, never a session path: the previous value hardcoded ONE Claude session's
+# scratchpad, which dangles for every other session and machine (the R330 class).
+SAMPLE_DIR = os.path.join(MAIN, "logs", "derive_samples", "pxweb_flowgrain")
 
 
 def group_subject(path: str) -> dict:
