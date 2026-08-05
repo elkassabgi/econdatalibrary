@@ -220,6 +220,10 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // picks per-series titles and search). Effective exchange-rate indices, new
   // coverage. Generic resolver.
   "imf_eer_direct",
+  // imf_ls_direct added 2026-08-05 (cycle 18): SERIES grain — 4,160 series /
+  // 339,635 obs (10x C.F collapse, but at 0.8% of headroom per-series search
+  // wins). Labor statistics — new coverage for IFS's orphaned L* family.
+  "imf_ls_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
