@@ -6244,6 +6244,30 @@ sources:
       (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
       calling the module's own current_vintage(): ER -> ER:4.0.1.
     name: Exchange Rates (ER)
+- source_id: imf_eer_direct
+  # ADDED 2026-08-05 (cycle 17 of the econ-updater loop). NEW COVERAGE: effective
+  # exchange-rate indices (real + nominal), sibling of imf_er_direct from the
+  # IFS-families sweep. current_vintage() CALLED live 2026-08-05: EER -> EER:6.0.0.
+  # live:false + heavy matrix, sized at the proof run, grain by the #45 arithmetic.
+  live: false
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships versioned dataflows, so the honest
+    change signal is the dataflow's own published version, not a date-tail probe —
+    a back-revision rewrites history without extending it and a date probe would
+    miss it entirely.
+  cadence: monthly
+  refresh_cost: fast
+  out_dir: imf_eer_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow EER
+      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      calling the module's own current_vintage(): EER -> EER:6.0.0.
+    name: Effective Exchange Rate (EER)
 - source_id: imf_pip_direct
   # ADDED 2026-08-05 (cycle 3 of the econ-updater loop). `imf_cpis` holds 100,783 relay-era
   # series — catalogued, SERVED, frozen: no fetcher, no registry entry. IMF RENAMED the
