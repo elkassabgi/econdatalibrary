@@ -165,6 +165,12 @@ jobs:
       # and the digest for work that already SUCCEEDED (batch 30277746949 died
       # exactly that way at 354 min).
       AQUEDUCT_RUN_BUDGET_MIN: '240'
+      # The per-unit SIGALRM defaults to 45 min — right for the shared daily run, wrong for a
+      # workflow whose entire purpose is ONE giant source per runner: IMTS's honest first pull
+      # was 23 min but PIP's exceeds 45, and a kill here just wastes the dedicated slot.
+      # 180 keeps a hung unit bounded far below the 240-min budget + 300-min job ceiling,
+      # with teardown headroom (the R66b rule: bound INSIDE with room to push state).
+      AQUEDUCT_UNIT_TIMEOUT_MIN: '180'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
