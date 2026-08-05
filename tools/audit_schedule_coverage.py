@@ -149,6 +149,13 @@ def catalog_counts() -> dict:
     if not os.path.exists(CATALOG):
         raise SystemExit(f"no catalog at {CATALOG}")
     con = sqlite3.connect(f"file:{CATALOG}?mode=ro", uri=True)
+    # catalog.db has concurrent writers (the derive jobs hold it for minutes at a time), so even
+    # a read-only connection fails with "database is locked" the moment one of them runs — which
+    # is exactly when this audit gets run. Six sibling tools already open it this way
+    # (audit_store_vs_catalog, audit_license_coverage, the catalog_* family); this one was the
+    # outlier and crashed instead of waiting, so the ONE number the procedure says to report was
+    # unobtainable whenever the workstation was busy. R210.
+    con.execute("PRAGMA busy_timeout = 180000")
     rows = con.execute("SELECT source_id, COUNT(*) FROM series GROUP BY source_id").fetchall()
     con.close()
     return {r[0]: r[1] for r in rows if r[0]}
