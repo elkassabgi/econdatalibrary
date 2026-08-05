@@ -1447,6 +1447,8 @@ _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "imf_dip_direct": _resolve_imf_dip_direct,
     "imf_mfsdc_direct": _resolve_imf_mfs_tables,
     "imf_mfsma_direct": _resolve_imf_mfs_tables,
+    "imf_mfsofc_direct": _resolve_imf_mfs_tables,
+    "imf_mfsfmp_direct": _resolve_imf_mfs_tables,
     "worldbank_wdi": _resolve_wdi,
     "penn_world_table": _resolve_pwt,
     "defillama": _resolve_defillama,
