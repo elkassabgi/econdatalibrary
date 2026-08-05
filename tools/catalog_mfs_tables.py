@@ -100,6 +100,16 @@ FLOWS = {
         "family_long": ("Public Sector Balance Sheet ({flow}, formerly PSBSFAD)"),
         "expect_obs": 209_229, "expect_series": 14_018, "expect_tables": 86,
     },
+    # CTOT measured 2026-08-05 (cycle 9): clean 4-part keys, no phantom —
+    # COUNTRY.FREQ.INDICATOR.WGT_TYPE, all four dims codelisted and vocabulary-proven.
+    # Distinct series = 4,320 = EXACTLY the legacy imf_pctot count (R75). Agency IMF.RES.
+    "imf_ctot_direct": {
+        "flow": "CTOT", "version": "CTOT:5.0.1", "agency": "IMF.RES",
+        "sub": "commodity export/import price and terms-of-trade indices",
+        "family": "Commodity terms of trade",
+        "family_long": ("Commodity Terms of Trade ({flow}, formerly PCTOT)"),
+        "expect_obs": 1_264_128, "expect_series": 4_320, "expect_tables": 360,
+    },
 }
 
 

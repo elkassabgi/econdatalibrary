@@ -170,6 +170,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // IMF.FAD); distinct-series count EXACTLY equals the frozen legacy catalogue,
   // the R75 same-dataset proof. Clean 5-dim keys, C.F prefix resolver.
   "imf_psbs_direct",
+  // imf_ctot_direct added 2026-08-05 (cycle 9): TABLE grain COUNTRY x FREQ — 360 ids
+  // serving 4,320 series / 1,264,128 obs. CTOT = the renamed PCTOT (agency IMF.RES);
+  // distinct-series count EXACTLY equals the frozen legacy catalogue (R75). Clean
+  // 4-dim keys, C.F prefix resolver.
+  "imf_ctot_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",

@@ -146,7 +146,7 @@ serve), none supersedes anything. Ignore every dated *_VINTAGE snapshot flow.
 | imf_psbsfad | 14,018 | DONE 2026-08-05 (cycle 7): `imf_psbs_direct` SERVED — 86 C.F table ids / 14,018 series (EXACTLY the legacy count, R75's same-dataset proof) / 209,229 obs, verify exit 0. Agency IMF.FAD. Legacy stays served-frozen (#46) |
 | imf_pgi | 8,891 | NO matching flow in the 222 advertised (probed by name+keywords 2026-08-05) — probable full retirement (the G20 PGI initiative); candidate for the RESERVED/retired class, not a build |
 | imf_bopagg | 7,801 | DONE 2026-08-05 (cycle 6): `imf_bopagg_direct` SERVED — 208 C.F table ids / 7,839 series / 140,907 obs, verify exit 0. 6-part keys with a sometimes-EMPTY phantom part; 2 GX aggregate codes unnamed (DIP class). Legacy stays served-frozen (#46) |
-| imf_pctot | 4,320 | RENAMED: successor IMF.RES:CTOT v5.0.1 (R74's rename, probe-confirmed live 2026-08-05; note agency IMF.RES) |
+| imf_pctot | 4,320 | DONE 2026-08-05 (cycle 9): `imf_ctot_direct` SERVED — 360 C.F table ids / 4,320 series (EXACTLY the legacy count, R75) / 1,264,128 obs, verify exit 0. Agency IMF.RES. Legacy stays served-frozen (#46) |
 | imf_unsdg_imf_inputs | 2,515 | Successor IMF.STA:SDG v2.0.1 'IMF Reported SDG Data' — probe-confirmed 2026-08-05 |
 | imf_pgcs | 2,262 | No direct sibling yet |
 | imf_namain_idc_n | 1,926 | Successor IMF.STA:NA_MAIN v1.0.0 'National Accounts Main Aggregates (SDMX)' — probe-confirmed 2026-08-05 |
