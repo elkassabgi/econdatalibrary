@@ -47,7 +47,7 @@ class _Res:
         self.obs = obs
 
 
-def _run(monkeypatch, tmp_path, catalog_ids, cursors, derive_out=None):
+def _run(monkeypatch, tmp_path, catalog_ids, cursors, derive_out=None, source="src"):
     from updater import orchestrate as O
     from updater import config as C
     # The boundary under test is the r2 branch: locally, derive-all repairs any
@@ -60,7 +60,7 @@ def _run(monkeypatch, tmp_path, catalog_ids, cursors, derive_out=None):
     monkeypatch.setitem(sys.modules, "updater.derive", fake)
     monkeypatch.setattr(O, "_record_for_catalog_sync", lambda ids: None, raising=False)
     monkeypatch.setattr(O, "_resolve_blob", lambda: None, raising=False)
-    return O._derive_changed_csvs(_Unit("src"), _Res(cursors), blob=object())
+    return O._derive_changed_csvs(_Unit(source), _Res(cursors), blob=object())
 
 
 def test_mapped_plus_uncatalogued_residue_is_coverage_note(monkeypatch, tmp_path):
@@ -93,6 +93,17 @@ def test_caller_prefix_contract(monkeypatch, tmp_path):
     from updater import orchestrate as O
     src = inspect.getsource(O.run_once)
     assert 'csv_err.startswith("csv coverage note:")' in src
+
+
+def test_bfs_store_prefixed_cursor_maps_exactly(monkeypatch, tmp_path):
+    # bfs catalog ids are 'bfs:BFS:{dbid}' while the fetcher used to report bare
+    # dbids — 582/582 unmapped, the hard unmet demotion, every run. The fix reports
+    # 'BFS:{dbid}', which the exact rule maps with no fallback needed.
+    failed, note = _run(monkeypatch, tmp_path,
+                        catalog_ids=["bfs:BFS:px-x-0102010000_100"],
+                        cursors={"BFS:px-x-0102010000_100": "2026-08-05"},
+                        source="bfs")
+    assert not failed and note is None, (failed, note)
 
 
 def test_defillama_cursor_keys_are_catalog_qualified(monkeypatch):
