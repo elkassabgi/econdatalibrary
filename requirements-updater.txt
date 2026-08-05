@@ -49,3 +49,10 @@ lxml>=5.3         # fed_board's XML parser. jobs/ingest_fed_board.py does `from 
 # it now means the next major cannot arrive unannounced in CI while dev stays behind, which is
 # precisely how the pandas split went unnoticed until sec_edgar had never once succeeded.
 numpy>=2.0,<3     # imported DIRECTLY by updater/strategies/fetchers/vdem.py. It happens to be installed today as a transitive dep of pandas/pyarrow, which is why vdem works — but a direct import satisfied by somebody else's dependency is luck, not a contract: the day pandas drops or repins it, vdem stops importing and reports "no adapter built" with nothing naming numpy. Declared 2026-07-30 by tools/audit_updater_deps.py.
+# duckdb: imported by 22 files across tools/ and jobs/ (derive_csv_bulk's schema filter,
+# catalog_imts_tables, derive_imts_tables, the audits) and exercised by the test suite via
+# subprocess — tests.yml installs THIS file, so its absence made CI red for 5 straight runs
+# with ModuleNotFoundError while dev stayed green (the R312 dev-vs-CI class; local 1.5.4).
+# The R178 phantom-dep audit (tools/audit_updater_deps.py) did not catch it because it walks
+# only updater/strategies/fetchers/ — its scope gap is a known open item.
+duckdb>=1.5,<2
