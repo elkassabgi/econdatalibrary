@@ -115,7 +115,7 @@ serve), none supersedes anything. Ignore every dated *_VINTAGE snapshot flow.
 | Flow | Version | Covers |
 |---|---|---|
 | IMF.STA:ER | 4.0.1 | DONE 2026-08-05 (cycle 16): `imf_er_direct` SERVED — 681 C.F table ids / 10,474 series / 2,427,666 obs (15x collapse, R356 arithmetic run explicitly), verify exit 0 |
-| IMF.STA:EER | 6.0.0 | Effective Exchange Rate indices |
+| IMF.STA:EER | 6.0.0 | DONE 2026-08-05 (cycle 17): `imf_eer_direct` SERVED — SERIES grain (2x collapse makes tables pointless), 732 series / 179,736 obs, verify exit 0 |
 | IMF.STA:LS | 9.0.0 | Labor Statistics — the L* family of imf_ifs (3,049) |
 | IMF.STA:PI | 2.0.0 | Production Indexes — the AIP-type family of imf_ifs |
 | IMF.STA:PI_WCA | 1.0.0 | Production Indexes, world/country-group aggregates |
