@@ -75,6 +75,18 @@ FLOWS = {
         "sub": "interest rates",
         "expect_obs": 537_710, "expect_series": 3_382, "expect_tables": 510,
     },
+    # BOP_AGG measured 2026-08-05 (cycle 6): 6-PART keys — COUNTRY.FREQ.<phantom true OR
+    # EMPTY>.INDICATOR.BPM6.<TYPE_OF_TRANSFORMATION> (methodology constant at 5; phantom
+    # attribute sometimes absent -> empty part). Positions 1/2 vocabulary-proven: 206 of
+    # 208 position-1 codes in the COUNTRY codelist, the 2 misfits are GX010/GX205, the
+    # DIP-class publisher aggregates. Annual only.
+    "imf_bopagg_direct": {
+        "flow": "BOP_AGG", "version": "BOP_AGG:9.0.1",
+        "sub": "headline aggregates",
+        "family": "BOP and IIP statistics",
+        "family_long": ("BOP and IIP Statistics aggregates ({flow}, formerly BOPAGG)"),
+        "expect_obs": 140_907, "expect_series": 7_839, "expect_tables": 208,
+    },
 }
 
 
@@ -85,6 +97,10 @@ def main() -> int:
     a = ap.parse_args()
     cfg = FLOWS[a.source]
     flow = cfg["flow"]
+    fam = cfg.get("family", "Monetary and financial statistics")
+    fam_long = cfg.get("family_long",
+                       "Monetary and Financial Statistics ({flow}), one of the five flows "
+                       "the former MFS dataset was split into").format(flow=flow)
 
     os.environ.setdefault("AQUEDUCT_BACKEND", "r2")
     import duckdb
@@ -136,11 +152,9 @@ def main() -> int:
 
     meta_base = {
         "citation_short": "International Monetary Fund (IMF).",
-        "citation_long": ("International Monetary Fund — Monetary and Financial Statistics "
-                          f"({flow}), one of the four flows the former MFS dataset was "
-                          "split into. Retrieved directly from the IMF SDMX API "
-                          "(api.imf.org). Compiled and redistributed by the Elkassabgi "
-                          "Data Library."),
+        "citation_long": (f"International Monetary Fund — {fam_long}. Retrieved "
+                          "directly from the IMF SDMX API (api.imf.org). Compiled and "
+                          "redistributed by the Elkassabgi Data Library."),
         "description_processing": ("TABLE-grain listing: one catalogue entry per country x "
                                    "frequency; the CSV carries every series of the pair "
                                    "(all indicators and transformations) in long form, "
@@ -155,7 +169,7 @@ def main() -> int:
         if not cn:
             unnamed += 1
             cn = country
-        title = (f"Monetary and financial statistics — {cfg['sub']} — {cn} ({country}) — "
+        title = (f"{fam} — {cfg['sub']} — {cn} ({country}) — "
                  f"{FREQ_LABEL.get(freq, freq)} ({n_series} series) — {flow}")
         md = dict(meta_base, n_table_series=n_series, n_observations=n_obs)
         out.append((f"{a.source}:{flow}:{country}.{freq}", a.source, title,
@@ -172,10 +186,10 @@ def main() -> int:
     con.execute(
         "INSERT OR REPLACE INTO source(source_id,name,homepage,license_id,attribution,"
         "terms_url) VALUES(?,?,?,?,?,?)",
-        (a.source, "International Monetary Fund — Monetary and Financial Statistics, "
+        (a.source, f"International Monetary Fund — {fam}, "
                    f"{cfg['sub']} ({flow}; direct from api.imf.org)",
          "https://www.imf.org/en/data", LIC,
-         f"Source: International Monetary Fund, Monetary and Financial Statistics ({flow})."
+         f"Source: International Monetary Fund, {fam} ({flow})."
          " Retrieved directly from the IMF SDMX API (api.imf.org).", TERMS))
     con.executemany(
         """INSERT OR REPLACE INTO series

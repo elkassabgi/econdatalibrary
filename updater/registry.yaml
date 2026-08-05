@@ -5552,6 +5552,16 @@ sources:
     published version, not a date-tail probe — a back-revision rewrites history
     without extending it and a date probe would miss it entirely.
   cadence: annual
+  # upstream_verified — PROBED 2026-08-05. FDI here is IMF.MCM's FINANCIAL DEVELOPMENT
+  # INDEX (nine depth/access/efficiency indices, "over 180 countries on annual frequency
+  # from 1980 onwards" per the dataflow's own description), NOT foreign direct investment.
+  # A research-index product recomputed only occasionally: dataflow version still 1.0.0
+  # (never revised), and every one of our 1,728 series ends 2020-12-31 — the publisher's
+  # latest computation, matched exactly. The vintage signal below catches any future
+  # recomputation; the health exemption is perishable (re-probe within 180d).
+  upstream_verified:
+    latest_obs: '2020-12-31'
+    checked: '2026-08-05'
   refresh_cost: fast
   out_dir: imf_fdi_direct
   review: true
