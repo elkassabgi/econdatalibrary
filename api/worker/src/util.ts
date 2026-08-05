@@ -154,6 +154,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // financial corporations + financial markets and positions flows of the MFS
   // split; same measured shape and prefix resolver as MFS_DC/MA.
   "imf_mfsofc_direct", "imf_mfsfmp_direct",
+  // imf_mfsir_direct added 2026-08-05 (cycle 5, closing the family): TABLE grain
+  // COUNTRY x FREQ — 510 ids / 3,382 series / 537,710 obs. Interest-rates flow,
+  // the fifth MFS sibling (found by the IFS-families probe); 4-part keys (no tail
+  // dim) but the same positions-1/2 prefix, so the shared resolver applies.
+  "imf_mfsir_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
