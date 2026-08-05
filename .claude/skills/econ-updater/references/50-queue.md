@@ -112,11 +112,11 @@ Key structural fact for ALL imf_* rows (updater/registry.yaml:5527-5543): the re
 | Source | Series | Known notes |
 |---|---|---|
 | imf_dot | 101,000 | IMF RENAMED the flow: successor is IMTS (IMF.STA v1.0.0, "formerly Direction of Trade Statistics"). `imf_imts_direct` registered + heavy-matrix 2026-08-05 (cycle 2, #104); NO flow id contains DOT — do not search for one |
-| imf_cpis | 100,783 | No direct sibling yet. Dataflow CPIS = Coordinated Portfolio Investment Survey — distinct from CPI (registry.yaml:5717-5718) |
+| imf_cpis | 100,783 | RENAMED: successor IMF.STA:PIP v5.0.0 'Portfolio Investment Positions by Counterpart Economy (formerly CPIS)'. imf_pip_direct registered 2026-08-05 (cycle 3) — NOT the World Bank's `pip`, never abbreviate |
 | imf_ifs | 100,706 | **IMF retired IFS** (registry.yaml:5535) — no same-name flow exists; successor-flow mapping needed before any direct id can be added |
 | imf_bop | 99,636 | `imf_bop_direct` already registered (registry.yaml:5664) — prove/promote |
-| imf_cdis | 97,723 | No direct sibling yet |
-| imf_mfs | 88,271 | No direct sibling yet |
+| imf_cdis | 97,723 | RENAMED: successor IMF.STA:DIP v12.0.1 'Direct Investment Positions by Counterpart Economy (formerly CDIS)' — probe-confirmed 2026-08-05 |
+| imf_mfs | 88,271 | SPLIT: successors are the MFS family — MFS_DC v8.0.0, MFS_MA v10.0.1, MFS_OFC, MFS_FMP (IMF.STA; plus dated _VINTAGE snapshots to ignore). Multi-flow build |
 | imf_irfcl | 54,126 | `imf_irfcl_direct` added 2026-08-04, vintage IRFCL:12.0.0 verified live (registry.yaml:5694-5715) |
 | imf_gfsr | 52,055 | No confirmed direct mapping yet (check GFS_SOEF, registry.yaml:5945) |
 | imf_gfse | 48,750 | Covered by `imf_gfssoo_direct` — GFS_SOO carries legacy gfse G26* codes; 475,049 series, live:false, **needs its own runner** (registry.yaml:5798-5825) |
@@ -130,11 +130,11 @@ Key structural fact for ALL imf_* rows (updater/registry.yaml:5527-5543): the re
 | imf_psbsfad | 14,018 | No direct sibling yet |
 | imf_pgi | 8,891 | No direct sibling yet |
 | imf_bopagg | 7,801 | No direct sibling yet (relation to BOP_direct unverified) |
-| imf_pctot | 4,320 | No direct sibling yet |
-| imf_unsdg_imf_inputs | 2,515 | No direct sibling yet |
+| imf_pctot | 4,320 | RENAMED: successor IMF.RES:CTOT v5.0.1 (R74's rename, probe-confirmed live 2026-08-05; note agency IMF.RES) |
+| imf_unsdg_imf_inputs | 2,515 | Successor IMF.STA:SDG v2.0.1 'IMF Reported SDG Data' — probe-confirmed 2026-08-05 |
 | imf_pgcs | 2,262 | No direct sibling yet |
-| imf_namain_idc_n | 1,926 | No direct sibling yet |
-| imf_gender_equality | 295 | No direct sibling yet |
+| imf_namain_idc_n | 1,926 | Successor IMF.STA:NA_MAIN v1.0.0 'National Accounts Main Aggregates (SDMX)' — probe-confirmed 2026-08-05 |
+| imf_gender_equality | 295 | GS_* split confirmed live: GS_LGRGHTS v1.0.1, GS_LEPM v2.0.0, GS_SDO v1.0.0, GS_ATF v1.0.0 (IMF.STA) |
 | imf_gender_budgeting | 288 | No direct sibling yet |
 | imf | 131 | Monthly registry entry exists (registry.yaml:2581, docs/DAILY_UPDATE_STATUS.md:33) — reconcile why audit counts it unscheduled |
 
