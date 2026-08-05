@@ -122,6 +122,12 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // Same fix re-titled imf_cpi_direct in place: 27,094 better, 0 worse, ids unchanged
   // ("... — CPI — Index" is now "... — Consumer price index (CPI) — Index").
   "imf_irfcl_direct", "imf_cpi_direct", "imf_bop_direct",
+  // imf_imts_direct added 2026-08-05 (cycle 2): TABLE grain — 2,937 catalog ids
+  // (COUNTRY x FREQ x INDICATOR) serving 472,234 partner series inside their table CSVs.
+  // Grain forced by arithmetic: D1 measured 9.31 GB of its 10 GB ceiling; series grain would
+  // have consumed the library's entire remaining catalogue budget (#104/#45).
+  "imf_imts_direct",
+
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
