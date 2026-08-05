@@ -165,6 +165,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // with a sometimes-empty phantom part; positions 1/2 are the C.F prefix, so the
   // shared MFS-family resolver applies.
   "imf_bopagg_direct",
+  // imf_psbs_direct added 2026-08-05 (cycle 7): TABLE grain COUNTRY x FREQ — 86 ids
+  // serving 14,018 series / 209,229 obs. PSBS = the renamed PSBSFAD (agency
+  // IMF.FAD); distinct-series count EXACTLY equals the frozen legacy catalogue,
+  // the R75 same-dataset proof. Clean 5-dim keys, C.F prefix resolver.
+  "imf_psbs_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
