@@ -1396,11 +1396,35 @@ def _resolve_imf_pip_direct(series_id: str, root: str) -> Resolution:
     return Resolution(series_id, src, path, "series_key", pred)
 
 
+
+def _resolve_imf_dip_direct(series_id: str, root: str) -> Resolution:
+    """imf_dip_direct: TABLE grain with the table dims MID-KEY (positions 2/4/5 of 5).
+
+    Key: DIP:<COUNTERPART_COUNTRY>.<COUNTRY>.<DV_TYPE>.<FREQ>.<INDICATOR> - exactly
+    5 parts, counterpart FIRST. Same trap as imf_pip_direct: counterpart-country
+    codes share the COUNTRY vocabulary, so a dotted-substring match could align
+    USA-as-counterpart into the country slot. POSITION-EXACT regex over the whole
+    key; note there is NO trailing part after INDICATOR.
+    """
+    src, native = series_id.split(":", 1)
+    flow, rest = native.split(":", 1)
+    country, freq, ind = rest.split(".")
+    path = os.path.join(root, src, f"{src}.parquet")
+    if not os.path.exists(path):
+        raise ResolveError(f"{series_id}: store missing at {path!r}")
+    rx = ("^" + re.escape(flow) + ":" + r"[^.]+\." +
+          re.escape(country) + r"\.[^.]+\." + re.escape(freq) + r"\." +
+          re.escape(ind) + "$")
+    pred = pc.match_substring_regex(ds.field("series_key"), rx)
+    return Resolution(series_id, src, path, "series_key", pred)
+
+
 _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "bls": _resolve_bls,
     "cepii_baci": _resolve_cepii_baci,
     "imf_imts_direct": _resolve_imf_imts_direct,
     "imf_pip_direct": _resolve_imf_pip_direct,
+    "imf_dip_direct": _resolve_imf_dip_direct,
     "worldbank_wdi": _resolve_wdi,
     "penn_world_table": _resolve_pwt,
     "defillama": _resolve_defillama,

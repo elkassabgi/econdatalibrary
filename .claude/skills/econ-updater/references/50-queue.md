@@ -115,7 +115,7 @@ Key structural fact for ALL imf_* rows (updater/registry.yaml:5527-5543): the re
 | imf_cpis | 100,783 | RENAMED: successor IMF.STA:PIP v5.0.0 'Portfolio Investment Positions by Counterpart Economy (formerly CPIS)'. imf_pip_direct registered 2026-08-05 (cycle 3) — NOT the World Bank's `pip`, never abbreviate |
 | imf_ifs | 100,706 | **IMF retired IFS** (registry.yaml:5535) — no same-name flow exists; successor-flow mapping needed before any direct id can be added |
 | imf_bop | 99,636 | `imf_bop_direct` already registered (registry.yaml:5664) — prove/promote |
-| imf_cdis | 97,723 | RENAMED: successor IMF.STA:DIP v12.0.1 'Direct Investment Positions by Counterpart Economy (formerly CDIS)' — probe-confirmed 2026-08-05 |
+| imf_cdis | 97,723 | RENAMED: successor IMF.STA:DIP v12.0.1 'Direct Investment Positions by Counterpart Economy (formerly CDIS)'. `imf_dip_direct` SERVED 2026-08-05 (cycle 4, #106): 776,752 series via 5,180 table ids, key is 5-part with counterpart FIRST (table dims at positions 2/4/5) |
 | imf_mfs | 88,271 | SPLIT: successors are the MFS family — MFS_DC v8.0.0, MFS_MA v10.0.1, MFS_OFC, MFS_FMP (IMF.STA; plus dated _VINTAGE snapshots to ignore). Multi-flow build |
 | imf_irfcl | 54,126 | `imf_irfcl_direct` added 2026-08-04, vintage IRFCL:12.0.0 verified live (registry.yaml:5694-5715) |
 | imf_gfsr | 52,055 | NO flow matches 'stability' or GFSR (probed 2026-08-05); the GFS_SOEF hypothesis remains the only candidate — needs a coverage comparison, not a name match |
