@@ -118,7 +118,7 @@ Key structural fact for ALL imf_* rows (updater/registry.yaml:5527-5543): the re
 | imf_cdis | 97,723 | RENAMED: successor IMF.STA:DIP v12.0.1 'Direct Investment Positions by Counterpart Economy (formerly CDIS)'. `imf_dip_direct` SERVED 2026-08-05 (cycle 4, #106): 776,752 series via 5,180 table ids, key is 5-part with counterpart FIRST (table dims at positions 2/4/5) |
 | imf_mfs | 88,271 | SPLIT: successors are the MFS family — MFS_DC v8.0.0, MFS_MA v10.0.1, MFS_OFC, MFS_FMP (IMF.STA; plus dated _VINTAGE snapshots to ignore). Multi-flow build |
 | imf_irfcl | 54,126 | `imf_irfcl_direct` added 2026-08-04, vintage IRFCL:12.0.0 verified live (registry.yaml:5694-5715) |
-| imf_gfsr | 52,055 | NO flow matches 'stability' or GFSR (probed 2026-08-05); the GFS_SOEF hypothesis remains the only candidate — needs a coverage comparison, not a name match |
+| imf_gfsr | 52,055 | RESOLVED by coverage comparison 2026-08-05: gfsr is GFS REVENUE (not the stability report) and 61 of 74 of its bare G-codes are in the served imf_gfssoo_direct store as _T-suffixed successors (G111->G111_T). No separate revenue flow exists; the 13 unmatched are deep grant/memo detail SOO no longer carries. The gfse pattern: covered, no build. NOTE: QGFS v12.0.0 (Quarterly GFS, IMF.STA) is live and UNREGISTERED — candidate new build, ignore its *_VINTAGE snapshots |
 | imf_gfse | 48,750 | Covered by `imf_gfssoo_direct` — GFS_SOO carries legacy gfse G26* codes; 475,049 series, live:false, **needs its own runner** (registry.yaml:5798-5825) |
 | imf_gfsmab | 43,179 | Also covered by `imf_gfssoo_direct` (G11*/G12* codes; same runner blocker) |
 | imf_gfsssuc | 36,901 | `imf_gfsssuc_direct` registered, live:false — needs own runner, too big for daily job's ceiling (registry.yaml:5854) |
@@ -126,7 +126,7 @@ Key structural fact for ALL imf_* rows (updater/registry.yaml:5527-5543): the re
 | imf_gfsibs | 29,390 | Corresponds to `imf_gfsbs_direct` (GFS_BS), live:false (registry.yaml:5889) |
 | imf_cpi | 28,420 | `imf_cpi_direct` added 2026-08-04, vintage CPI:5.0.0 verified (registry.yaml:5716-5737) |
 | imf_gfsfalcs | 20,249 | Corresponds to `imf_gfssfcp_direct` (GFS_SFCP), live:false (registry.yaml:5917) |
-| imf_fsire | 18,620 | NO matching flow beyond the already-served FSI trio (probed 2026-08-05) — probably absorbed/retired; verify against the FSI successors' coverage before any decision |
+| imf_fsire | 18,620 | MEASURED 2026-08-05: 0 of 68 fsire indicator codes appear in any FSI-trio store at ANY decomposition level (exact, tail, segment) — NOT absorbed, and no matching flow among the 222 advertised. Joins imf_pgi in the no-successor class; legacy stays served-frozen |
 | imf_psbsfad | 14,018 | No direct sibling yet |
 | imf_pgi | 8,891 | NO matching flow in the 222 advertised (probed by name+keywords 2026-08-05) — probable full retirement (the G20 PGI initiative); candidate for the RESERVED/retired class, not a build |
 | imf_bopagg | 7,801 | Successor IMF.STA:BOP_AGG v9.0.1 'BOP and IIP Statistics (BOP/IIP)' — probe-confirmed 2026-08-05; distinct flow from BOP |
