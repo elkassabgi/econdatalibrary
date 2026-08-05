@@ -1419,12 +1419,34 @@ def _resolve_imf_dip_direct(series_id: str, root: str) -> Resolution:
     return Resolution(series_id, src, path, "series_key", pred)
 
 
+
+def _resolve_imf_mfs_tables(series_id: str, root: str) -> Resolution:
+    """imf_mfs*_direct family: TABLE grain COUNTRY x FREQ, dims at the key PREFIX.
+
+    Store keys are <FLOW>:<COUNTRY>.<FREQ>.<...tail>; the catalog id carries only
+    the first two parts, so a starts_with over "FLOW:C.F." is position-exact - the
+    trailing dot stops a short freq code from matching a longer one (A vs AB) and
+    the string start anchors COUNTRY. Measured, not assumed: position-to-dim
+    mapping was proven against each flow's own codelists before cataloguing.
+    """
+    src, native = series_id.split(":", 1)
+    flow, rest = native.split(":", 1)
+    country, freq = rest.split(".")
+    path = os.path.join(root, src, f"{src}.parquet")
+    if not os.path.exists(path):
+        raise ResolveError(f"{series_id}: store missing at {path!r}")
+    pred = pc.starts_with(ds.field("series_key"), f"{flow}:{country}.{freq}.")
+    return Resolution(series_id, src, path, "series_key", pred)
+
+
 _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "bls": _resolve_bls,
     "cepii_baci": _resolve_cepii_baci,
     "imf_imts_direct": _resolve_imf_imts_direct,
     "imf_pip_direct": _resolve_imf_pip_direct,
     "imf_dip_direct": _resolve_imf_dip_direct,
+    "imf_mfsdc_direct": _resolve_imf_mfs_tables,
+    "imf_mfsma_direct": _resolve_imf_mfs_tables,
     "worldbank_wdi": _resolve_wdi,
     "penn_world_table": _resolve_pwt,
     "defillama": _resolve_defillama,

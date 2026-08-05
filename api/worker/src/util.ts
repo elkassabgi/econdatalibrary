@@ -139,6 +139,16 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // DIP = the CDIS successor per IMF's own dataflow name ("formerly CDIS").
   // Same #45 D1 arithmetic: 5,180 rows ≈ 1% of remaining headroom.
   "imf_dip_direct",
+  // imf_mfsdc_direct added 2026-08-05 (cycle 5): TABLE grain COUNTRY x FREQ — 539
+  // catalog ids serving 36,506 series / 4,494,366 obs. MFS_DC is one of the four
+  // flows IMF split the former MFS dataset into. C.F.I grain would have been 35,949
+  // rows for 36,506 series (saves nothing); C.F costs ~0.1% of remaining D1
+  // headroom (#45). Dims sit at the key PREFIX — plain starts_with resolver.
+  "imf_mfsdc_direct",
+  // imf_mfsma_direct added 2026-08-05 (cycle 5): TABLE grain COUNTRY x FREQ — 468
+  // catalog ids serving 3,016 series / 344,652 obs. Monetary aggregates flow of the
+  // MFS split; same measured shape and prefix resolver as MFS_DC.
+  "imf_mfsma_direct",
 
 
   "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
