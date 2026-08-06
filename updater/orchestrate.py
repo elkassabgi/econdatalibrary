@@ -436,6 +436,11 @@ def _derive_changed_csvs(unit, res, blob):
 
 _DERIVE_ALL_CAP = 5000
 
+# Max queued csv-retry ids attempted per source per run (the drain at the csv step).
+# Bounded so a large parked backlog (insee_bdm: 43,354) cannot monopolise the derive
+# budget that fresh changes need; the rest stays queued for later runs.
+_CSV_RETRY_CAP = 20_000
+
 
 def _flow_of(key: str) -> str:
     """FLOW-grain id for a series-grain PxWeb store key.
@@ -921,6 +926,34 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # un-bumped vintage below makes the next run re-check + re-derive.
             if status == "ok" and not dry:
                 csv_failed, csv_err = _derive_changed_csvs(unit, res, blob)
+                # DRAIN THE RETRY QUEUE (2026-08-06). derive.py has promised since it
+                # gained a wall-clock budget that ids not reached "come back in `failed`
+                # ... so they are retried next run instead of lost" — but the queue was
+                # WRITE-ONLY: csv_retries()/clear_csv_retries() had zero callers, so
+                # every queued id was lost after all (insee_bdm alone parked 43,354 in
+                # one outage-recovery run). Retries run AFTER the fresh changes (fresh
+                # first — they are the run's purpose), bounded per run; successes are
+                # cleared, refailures simply STAY QUEUED — they are deliberately NOT
+                # merged into csv_failed, because demoting a run over OLD residue would
+                # re-create the permanently-partial disease (R359) through this path.
+                # Under the r2 backend a retried id derives only when its file is on
+                # this runner (written by this run) — others fast-fail on the local
+                # miss and wait for the run that next rewrites their file.
+                _retry_rows = store.csv_retries(unit.source_id)
+                if _retry_rows and not csv_err:
+                    _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
+                    from . import derive as _derive_mod
+                    _out = _derive_mod.derive_and_put(
+                        _retry_ids, blob if blob is not None else _resolve_blob()) or {}
+                    _refailed = set(str(s) for s in (_out.get("failed") or []))
+                    _cleared = [s for s in _retry_ids if s not in _refailed]
+                    if _cleared:
+                        store.clear_csv_retries(_cleared)
+                        _record_for_catalog_sync(_cleared)
+                    print(f"[orchestrator] {unit.source_id}: csv retry queue "
+                          f"{len(_retry_rows):,} -> attempted {len(_retry_ids):,}, "
+                          f"cleared {len(_cleared):,}, still queued {len(_refailed):,}",
+                          flush=True)
                 if csv_err and csv_err.startswith("csv coverage note:") and not csv_failed:
                     # Coverage, not coherence: every mapped (= served) changed id was
                     # re-derived; the residual keys have no catalog row to go stale.
