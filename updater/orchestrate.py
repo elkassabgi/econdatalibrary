@@ -555,6 +555,23 @@ def _catalog_ids_for(source_id: str, changed_keys):
                     seen.add(fcand)
                     exact.append(fcand)
                     continue
+            # SPLIT-PART expansion (2026-08-05, the census cycle). A table too large for
+            # one CSV is catalogued as `<source>:<table>#<part>` rows with NO base id
+            # (census: eits__m3#no/#yes, idb__1year#AD..., six composite trade splits) —
+            # so a table-grain cursor exact-misses while every part's CSV genuinely goes
+            # stale on change. A changed table conservatively re-derives ALL its parts.
+            # `#` never appears in a non-split id's tail, and LIKE-wildcards in the key
+            # are escaped so a key containing % or _ cannot over-match.
+            esc = cand.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            parts = [r[0] for r in con.execute(
+                r"SELECT series_id FROM series WHERE series_id LIKE ? ESCAPE '\'",
+                (esc + "#%",))]
+            if parts:
+                for p in parts:
+                    if p not in seen:
+                        seen.add(p)
+                        exact.append(p)
+                continue
             unmapped.append(k)
 
         # PUNCTUATION-GRAIN fallback. frankfurter stores the key `EURUSD` while its

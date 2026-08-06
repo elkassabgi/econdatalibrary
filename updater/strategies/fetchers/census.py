@@ -748,9 +748,6 @@ def update(unit, since) -> Result:
                 for c in data_cols:
                     i = hidx.get(c)
                     cols[c].append(row[i] if i is not None and i < len(row) else None)
-                iso = d.isoformat()
-                if cursors.get(sk, "") < iso:
-                    cursors[sk] = iso
         if broke:
             continue
 
@@ -839,8 +836,18 @@ def update(unit, since) -> Result:
         tally.added_unit(added, flow)
         if md and (max_last is None or str(md) > str(max_last)):
             max_last = str(md)
-        merge_cursor_map(cursors, cursors_from_table(tbl, cap=CURSOR_CAP,
-                                                     key_col="series_key"), cap=CURSOR_CAP)
+        # Cursors are reported at TABLE grain (2026-08-05): the catalog serves census
+        # as one id per store FILE (`census:eits__advm3`, split parts as `#<part>`), so
+        # a store-key cursor ('eits/advm3|dim=val|...') could never map under §5.7 —
+        # 12,019 changed keys unmapped, every run partial, the table CSVs never
+        # re-derived. _store_name(flow) IS the catalog id suffix; split parts are
+        # expanded by the orchestrator's `#`-suffix rule. md is the merge's own max
+        # obs_date, i.e. post keep-filter — a dropped new-coverage row cannot advance it.
+        if md:
+            iso = md if isinstance(md, str) else md.isoformat()
+            tid = _store_name(flow)
+            if cursors.get(tid, "") < iso:
+                cursors[tid] = iso
         print(f"[{SOURCE}] {flow}: +{max(0, n - before_rows):,} row(s) "
               f"({len(seen_series):,} series at/after {mx})", flush=True)
 

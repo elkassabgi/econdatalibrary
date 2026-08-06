@@ -106,6 +106,28 @@ def test_bfs_store_prefixed_cursor_maps_exactly(monkeypatch, tmp_path):
     assert not failed and note is None, (failed, note)
 
 
+def test_split_part_expansion_maps_table_cursor_to_all_parts(monkeypatch, tmp_path):
+    # census tables too large for one CSV are catalogued ONLY as '<table>#<part>' rows;
+    # a table-grain cursor must conservatively re-derive every part, not fall through
+    # to the coverage note (the parts' CSVs genuinely go stale).
+    failed, note = _run(monkeypatch, tmp_path,
+                        catalog_ids=["census:eits__m3#no", "census:eits__m3#yes"],
+                        cursors={"eits__m3": "2026-08-05"},
+                        source="census")
+    assert not failed and note is None, (failed, note)
+
+
+def test_split_part_expansion_escapes_like_wildcards(monkeypatch, tmp_path):
+    # A cursor key containing % must not over-match: 'a%b' may expand only to its own
+    # parts, never to 'axb#...'. With one genuinely-mapped key alongside, the wildcard
+    # key must land in the coverage residue rather than derive a stranger's parts.
+    failed, note = _run(monkeypatch, tmp_path,
+                        catalog_ids=["src:ok", "src:axb#1"],
+                        cursors={"ok": "2026-08-05", "a%b": "2026-08-05"})
+    assert not failed
+    assert note and note.startswith("csv coverage note:") and "1 changed keys" in note, note
+
+
 def test_defillama_cursor_keys_are_catalog_qualified(monkeypatch):
     from updater.strategies.fetchers import defillama as D
     from updater import blob
