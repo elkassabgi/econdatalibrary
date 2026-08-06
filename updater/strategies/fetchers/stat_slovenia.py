@@ -77,6 +77,20 @@ from core import pxweb as _pxweb
 
 SOURCE = "stat_slovenia"
 BASE = "https://pxweb.stat.si/SiStatData/api/v1/en/Data"
+
+
+def _body_has_data(resp) -> bool:
+    """A json-stat2 body carries DATA only if some value is non-null.
+
+    SURS pre-lists the NEXT period in a table's time codelist before publishing any
+    data for it: a boundary tail for that period returns a real json-stat2 structure
+    whose `value` array is ALL NULLS (2221405S reproduced live 2026-08-06: LETO
+    carries '2024', the POST returns 36 values, every one null). `bool(vals)` is True
+    for a list of nulls, so that unpopulated forward period was classified a
+    STRUCTURAL break every sweep. All-null is the same publisher condition as an
+    empty array — nothing published yet — wearing a different JSON shape."""
+    vals = resp.get("value") if isinstance(resp, dict) else None
+    return bool(vals) and any(v is not None for v in vals)
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 DEDUP = ("series_key", "obs_date")
 # Where the rotating sweep offset lives. Beside the DATA, not in the state store, because it has
@@ -750,8 +764,7 @@ def update(unit, since) -> Result:
                 #     yet), or a FIRST-SEEN table that the body yields nothing usable for
                 #     (the ingester would write nothing either) -> alive & confirmed, not
                 #     an outage-feeding empty, not a break.
-                has_body = bool(resp.get("value")) if isinstance(resp, dict) else False
-                if stored_max is not None and has_body:
+                if stored_max is not None and _body_has_data(resp):
                     tally.structural_unit(f"{tid_clean}: non-empty body parsed 0 rows")
                 else:
                     current += 1
