@@ -166,7 +166,11 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   /dataflow catalogue with MCDREO as the present-control. Last genuinely-missing Class B1 build;
 #   the direct scope is ~9% of relay-era imf_fm, resolved by the same "match the publisher"
 #   ruling. Ignore the dated FM_2025_OCT_VINTAGE flow) -> 173
-EXPECTED_SOURCE_COUNT = 173
+# 2026-08-06: +whr RE-ADDED (cycle 35, Ahmed's "trim whr"): the Gallup/WHR written grant covers
+#   exactly the Figure 2.1 workbook, and the fetcher is rewritten to the PUBLISHER's own file
+#   host (files.worldhappiness.report, real ETag/CL validators) — never OWID (R215). New keys
+#   FIG21:* in whr_fig21.parquet; legacy OWID-era rows stay unserved. -> 174
+EXPECTED_SOURCE_COUNT = 174
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

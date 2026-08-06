@@ -7029,6 +7029,44 @@ sources:
       merged into.
     key_env: none
     confidence: high
+- source_id: whr
+  # RE-ADDED 2026-08-06 (cycle 35, Ahmed: "trim whr"). Removed 2026-07-22 with the
+  # unpermitted-crawl purge; what re-adds it is the Gallup/WHR WRITTEN grant (2026-07-09,
+  # DATABASE_LICENSES_VERBATIM.md "CLEARED by WRITTEN PERMISSION (scoped/conditional)")
+  # which covers EXACTLY the Figure 2.1 workbook — and a rewritten fetcher whose data now
+  # comes from the PUBLISHER (files.worldhappiness.report), never OWID (the R215 provenance
+  # hold). New keys FIG21:<measure>:<geo> in whr_fig21.parquet; the 2,270 legacy OWID-era
+  # rows in whr.parquet stay uncatalogued/unserved pending purge.
+  live: true
+  scripts:
+  - jobs/ingest_whr.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    WHR publishes one Figure 2.1 workbook per annual edition (new filename each
+    year, re-issues happen: WHR25 shipped a v3) and revises history in place, so
+    the honest change signal is the newest listing link plus the file's own
+    ETag/Content-Length — files.worldhappiness.report serves REAL validators,
+    measured 2026-08-06. A date-tail probe would miss in-place revisions.
+  cadence: irregular
+  # data_cadence: the report is ANNUAL (each March); irregular polling (7d) just
+  # watches the listing cheaply between editions.
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: whr
+  review: true
+  adapter:
+    vintage_signal: >-
+      Parse https://www.worldhappiness.report/data-sharing/ for the newest
+      WHR<NN>_Data_Figure_2.1*.xls[x] link (R78: watch the LISTING, filenames
+      change yearly) and token = edition + ETag + Content-Length of that file.
+    since_param: n/a
+    out_paths_note: 'data/clean_full/whr/whr_fig21.parquet — keys FIG21:<measure>:<iso3>,
+      11 measures (ladder, whiskers, 6 factors, dystopia_residual, rank), annual Dec-31
+      stamps. Legacy whr.parquet (OWID-era) deliberately untouched and unserved.'
+    rate_note: Two requests per run (listing + one xlsx, ~130 KB). No key.
+    key_env: none
+    confidence: high
+    name: World Happiness Report — Figure 2.1 (Gallup/WHR written grant)
 - source_id: wid
   # CLOUD-INFEASIBLE - measured 95,888,122 rows in a single file (wid.parquet),
   # about 6.7 GB once decoded into Arrow. merge_and_write materialises the whole
