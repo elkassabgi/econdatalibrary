@@ -182,6 +182,7 @@ healthy, in-progress), 12 coherence, 19 assorted. Root causes fixed this cycle:
 | owid 25,358 unmapped + GATED | Question: gated sources' coherence semantics — after R359 lands it goes green-with-note; the real question (should a gated store keep refreshing?) is Ahmed's |
 | defillama per-chain + per-entity families (23 chain series data, protocols/yields) | The S1 fetcher refreshes only bulk aggregates; jobs/ingest_defillama.py owns per-entity and nothing schedules it — per-chain series data frozen ~June. Candidate: schedule it on the workstation route, or catalogue the bulk families (headroom decision #45) |
 | eurostat "UNSTABLE 'LAST UPDATE=' series_key — run the one-time re-key" | #71/#80: the re-key is a SERVED-id change = RESERVED (#46 class) |
+| Transient cohort (worldbank_esg 8/9, ipea 298/1491, idb 10/40, ember 4/48, ksh 1/60, sec_edgar 1/8) | ALL upstreams probed ALIVE 2026-08-06 (idb via its REAL CKAN endpoint data.iadb.org — a guessed URL 404'd first, the R61 trap): passed outages/throttles; rotation clears them under the R359-fixed green path. No work |
 
 ### RESERVED (71 sources / 370,003 series) — decision belongs to Ahmed; do not work
 
