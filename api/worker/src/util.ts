@@ -307,7 +307,10 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // the absence of an ingest file (R226).
   // owid REMOVED 2026-08-06 (Ahmed: "remove owids") — 64 residual listed rows deleted from
   // catalog + D1; licence DISPUTED, the gated store on R2 stays untouched, denylist entry kept.
-  "kof_globalization", "ksh_stadat", "maddison", "nasa_giss", "noaa", "nyfed", "oecd", "ofr", "oxcgrt",
+  // norgesbank added 2026-08-06 (cycle 37, Ahmed's authorized serve): 35,135 series /
+  // 3,768,215 obs rebuilt in full from data.norges-bank.no (run 31129475260) after the
+  // 07-23 purge; NLOD 2.0 CLEARED, floor pin removed the same day (see gen_denylist.py).
+  "kof_globalization", "ksh_stadat", "maddison", "nasa_giss", "noaa", "norgesbank", "nyfed", "oecd", "ofr", "oxcgrt",
   "penn_world_table", "pip", "pwt", "rba", "riksbank",
   "sec_edgar", "snb", "statcan", "stats_nz",
   "swiid", "transparency_ti", "treasury", "ucdp", "unctad_bopcaba",

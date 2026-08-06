@@ -142,7 +142,17 @@ LEGACY_KEEP = {
     # unesco_sci STAYS PINNED. Only 12 of its 1,230 indicator codes exist in the
     # current UIS API, so it cannot be kept current from that endpoint; hosting it
     # would publish a 2019 snapshot that can never update.
-    "fred", "fred_releases", "gus", "ibge", "ine_spain", "norgesbank",
+    #
+    # norgesbank REMOVED from the floor 2026-08-06, the barro_lee/unesco_natmon pattern:
+    # it was pinned as "no reply to the permission request / never assessed", but the
+    # licence audit has since CLEARED it — the data API registers NLOD 2.0
+    # (DATABASE_LICENSES_VERBATIM.md:3105, "can freely be used"; catalog licence row
+    # nlod-2.0 reservable=1), a permission request is only needed where the licence
+    # itself does not grant redistribution, and Ahmed explicitly authorized serving it
+    # 2026-08-06. A deliberate, human-authorised un-gate, executed only after the store
+    # was REBUILT from the publisher (3,768,215 rows, run 31129475260) — the purged
+    # data never resurfaces; freshly-fetched data serves.
+    "fred", "fred_releases", "gus", "ibge", "ine_spain",
     "unesco_sci", "unicef", "unsdg", "vdem", "who_gho",
     # barro_lee REMOVED from the floor 2026-07-22. It was originally gated as
     # "unclear -- gate until confirmed"; DATABASE_LICENSES_VERBATIM.md has since
