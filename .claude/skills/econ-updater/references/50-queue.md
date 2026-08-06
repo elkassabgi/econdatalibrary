@@ -230,16 +230,43 @@ gfsr/gfse/gfsmab→gfssoo (61/74 measured; the 13 unmatched are detail SOO no lo
 (gfsfalcs: verify its direct successor exists before including.) ≈ 25 sources / ~1.02M rows.
 
 **Class B1 — BUILD DIRECT FIRST, then retire (live IMF dataflows, no direct built yet):**
-weo (19,242), commodity/PCPS (1,236), cofer (154), world (2,268), afrreo/apdreo/whdreo,
-mcdreo (direct=57% of legacy) and fm (direct=9%) — Ahmed's "match the publisher" ruling
-RESOLVES the serves-less concern: the publisher's current scope wins. Also: imf (131,
-never-promoted entry) folds into this wave. unsdg + norgesbank rebuild from upstream
+CORRECTED 2026-08-06 (cycle 32, the R343 label-vs-system check): **weo and commodity need NO
+build** — `imf_weo` (DataMapper API, live, no_change 2026-08-03) and `imf_commodity` (live, ok
++9,788 rows 2026-07-28) are ALREADY publisher-direct fetchers maintaining their own catalogued
+ids; they retire nothing and nothing supersedes them. cofer/world/afrreo/apdreo/whdreo/fdi/fas
+directs were already LIVE. The genuinely-missing builds were mcdreo + fm:
+**mcdreo — DONE 2026-08-06 (cycle 32): `imf_mcdreo_direct` registered (MCDREO v8.0.0, agency
+IMF.MCD, count 171→172, f687e893)** — Ahmed's "match the publisher" ruling resolves the 57%
+serves-less concern. fm (direct=9%) — same ruling applies, build next. Also: imf (131,
+never-promoted entry) folds into the retirement wave. unsdg + norgesbank rebuild from upstream
 (their R2 residue was purged 2026-07-23 — un-gating = a build, not a toggle).
 
 **Class B2 — PUBLISHER-DISCONTINUED, one-line keep/delete list for Ahmed (NOT re-crawlable):**
 fsire (18,620), pgi (8,891), gender_budgeting (288), the ifs remainder (subset of 100,706
 after the ER/EER/LS/PI families are subtracted). Deleting loses data that exists nowhere
 upstream; keeping contradicts "clean". Awaiting his one line.
+
+**AUTHORIZED + EXECUTED 2026-08-06 (Ahmed: "yes, remove hf, owids, and trim whr" / "yes match
+publisher for unctad unesco"):**
+- hf_equities DELISTED: 1,391 metadata-only rows deleted from catalog.db + D1
+  (tools/delist_source_rows.py — deletes rows, NEVER touches R2; distinct from retire_source.py),
+  removed from util.ts, deployed 21a17009, live /v1/sources absence verified with present
+  control. 0 R2 objects ever existed for it.
+- owid DELISTED: 64 residual rows deleted from catalog.db + D1, removed from util.ts (deployed
+  same version), live absence verified. The DISPUTED gated store on R2 stays UNTOUCHED; denylist
+  entry kept. RESIDUE: its 40 orphaned series/owid%3A CSVs on R2 — the delete_objects call is
+  classifier-blocked (same permission class as retire_source --apply); they are unreachable
+  (source 501s) so cosmetic; sweep them when the retirement permission opens.
+- whr "trim" RECLASSIFIED as a BUILD: catalog is already 0 rows. Serving the granted Figure-2.1
+  scope requires a RE-INGEST from the PRIMARY publisher (worldhappiness.report) — the R215
+  finding stands: the existing store's whr data came from OWID grapher fallbacks, which the
+  Gallup/WHR written grant does not cover. Do not serve the current store. Queue: fetch Figure
+  2.1 data appendix from worldhappiness.report, verify provenance from the ingest log's URLs,
+  catalogue exactly that scope, then un-gate (denylist removal is the last step, verify 451→200).
+- unctad (38 legacy ids) + unesco culture/innovation (4): "match the publisher" CONFIRMED —
+  build new-id successors from UNCTAD Data Hub / current UIS API at the publisher's current
+  scope; legacy ids then retire via the Class A pipeline. These move from RESERVED to ACTIONABLE
+  builds (large: survey both APIs first, one source at a time).
 
 **Retirement pipeline per source (tools/retire_imf_legacy.py, to build on the
 purge_unpermitted_r2.py pattern):** archive primary parquet → delete catalog.db rows →
