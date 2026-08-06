@@ -5651,6 +5651,31 @@ sources:
       (agency IMF.APD); re-pull only when it moves. Agency ids are NOT uniform
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Asia and Pacific Regional Economic Outlook
+- source_id: imf_mcdreo_direct
+  # ADDED 2026-08-06 (retirement plan Class B1). The direct MCDREO feed carries ~623 series vs
+  # the frozen relay-era imf_mcdreo's 1,095 (57%) — previously RESERVED as a serves-less switch;
+  # Ahmed's 2026-08-06 "refresh to match publisher / clean database" ruling resolves it: the
+  # publisher's current scope wins. New parallel id; the legacy retires via the Class A pipeline.
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships dated vintages
+    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
+    published version, not a date-tail probe — a back-revision rewrites history
+    without extending it and a date probe would miss it entirely.
+  cadence: irregular
+  refresh_cost: fast
+  out_dir: imf_mcdreo_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow MCDREO
+      (agency IMF.MCD; verified live 2026-08-06, version 8.0.0); re-pull only
+      when it moves. Agency ids are NOT uniform across IMF datasets — read them
+      from the catalogue, never assume IMF.STA.
+    name: Middle East and Central Asia Regional Economic Outlook
 - source_id: imf_cofer_direct
   live: true
   scripts:
