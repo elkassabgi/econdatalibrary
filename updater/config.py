@@ -170,7 +170,10 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   exactly the Figure 2.1 workbook, and the fetcher is rewritten to the PUBLISHER's own file
 #   host (files.worldhappiness.report, real ETag/CL validators) — never OWID (R215). New keys
 #   FIG21:* in whr_fig21.parquet; legacy OWID-era rows stay unserved. -> 174
-EXPECTED_SOURCE_COUNT = 174
+# 2026-08-06: +norgesbank RE-ADDED (cycle 37, Ahmed's answer #5): purged 2026-07-23, then
+#   audit-CLEARED (NLOD 2.0) and authorized to serve; entry recovered from git 8d182e5a^;
+#   first run backfills the purged store (API probed live). -> 175
+EXPECTED_SOURCE_COUNT = 175
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
