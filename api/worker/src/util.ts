@@ -236,9 +236,15 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // table grain). Quarterly GFS, new coverage. COUNTRY.FREQ sit MID-KEY at
   // positions 2-3 of 7, so the position-anchored resolver, not the family prefix.
   "imf_qgfs_direct",
+  // imf_mcdreo_direct added 2026-08-06 (cycle 32, Class B1): SERIES grain — 623 series /
+  // 17,997 obs from flow MCDREO v8.0.0 (agency IMF.MCD). Ahmed's "match the publisher"
+  // ruling resolves the 57%-of-legacy scope; the frozen imf_mcdreo retires via Class A.
+  "imf_mcdreo_direct",
 
 
-  "hf_equities", "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
+  // hf_equities REMOVED 2026-08-06 (Ahmed: "remove hf") — 1,391 metadata-only listings econ
+  // could never serve (R29); catalog + D1 rows deleted the same day, zero R2 objects existed.
+  "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
   "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
   "imf_gfse", "imf_gfsfalcs", "imf_gfsibs", "imf_gfsmab", "imf_gfsssuc",
@@ -295,7 +301,9 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // as "distinct data" when it only meant "different key convention" — the same trap ilo/ilostat
   // set. A retirement decision is not visible in either check; it lives in git history and in
   // the absence of an ingest file (R226).
-  "kof_globalization", "ksh_stadat", "maddison", "nasa_giss", "noaa", "nyfed", "oecd", "ofr", "owid", "oxcgrt",
+  // owid REMOVED 2026-08-06 (Ahmed: "remove owids") — 64 residual listed rows deleted from
+  // catalog + D1; licence DISPUTED, the gated store on R2 stays untouched, denylist entry kept.
+  "kof_globalization", "ksh_stadat", "maddison", "nasa_giss", "noaa", "nyfed", "oecd", "ofr", "oxcgrt",
   "penn_world_table", "pip", "pwt", "rba", "riksbank",
   "sec_edgar", "snb", "statcan", "stats_nz",
   "swiid", "transparency_ti", "treasury", "ucdp", "unctad_bopcaba",
