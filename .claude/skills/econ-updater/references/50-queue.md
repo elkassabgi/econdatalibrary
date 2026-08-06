@@ -235,11 +235,15 @@ build** — `imf_weo` (DataMapper API, live, no_change 2026-08-03) and `imf_comm
 +9,788 rows 2026-07-28) are ALREADY publisher-direct fetchers maintaining their own catalogued
 ids; they retire nothing and nothing supersedes them. cofer/world/afrreo/apdreo/whdreo/fdi/fas
 directs were already LIVE. The genuinely-missing builds were mcdreo + fm:
-**mcdreo — DONE 2026-08-06 (cycle 32): `imf_mcdreo_direct` registered (MCDREO v8.0.0, agency
-IMF.MCD, count 171→172, f687e893)** — Ahmed's "match the publisher" ruling resolves the 57%
-serves-less concern. fm (direct=9%) — same ruling applies, build next. Also: imf (131,
-never-promoted entry) folds into the retirement wave. unsdg + norgesbank rebuild from upstream
-(their R2 residue was purged 2026-07-23 — un-gating = a build, not a toggle).
+**mcdreo — DONE 2026-08-06 (cycle 32): `imf_mcdreo_direct` SERVED — 623 series, verify exit 0,
+worker 21a17009, confirming run no_change.** **fm — DONE 2026-08-06 (cycle 34): `imf_fm_direct`
+SERVED — 128 series / 5,077 obs (FM v5.0.0, IMF.FAD), verify exit 0, worker 0d011df0; adopted
+from a concurrent session that died uncommitted, validated line-by-line before commit
+(count 172→173). CLASS B1 IS COMPLETE.** Remaining non-IMF builds: whr primary-provenance
+rebuild, unsdg + norgesbank rebuilds from upstream (their R2 residue was purged 2026-07-23 —
+un-gating = a build, not a toggle), unctad 38 (surveyed cycle 33, blocked on Ahmed's free
+UNCTADstat API key — see scratchpad survey), unesco 4. Also: imf (131, never-promoted entry)
+folds into the retirement wave.
 
 **Class B2 — PUBLISHER-DISCONTINUED, one-line keep/delete list for Ahmed (NOT re-crawlable):**
 fsire (18,620), pgi (8,891), gender_budgeting (288), the ifs remainder (subset of 100,706
