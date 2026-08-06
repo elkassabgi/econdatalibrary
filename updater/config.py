@@ -173,7 +173,10 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 # 2026-08-06: +norgesbank RE-ADDED (cycle 37, Ahmed's answer #5): purged 2026-07-23, then
 #   audit-CLEARED (NLOD 2.0) and authorized to serve; entry recovered from git 8d182e5a^;
 #   first run backfills the purged store (API probed live). -> 175
-EXPECTED_SOURCE_COUNT = 175
+# 2026-08-06: +unsdg RE-ADDED (cycle 38, same authorization): UNdata terms grant redistribution
+#   verbatim; fetcher reworked with rotation (R190) + chunked merges (R249), self-bounds at
+#   200 codes/run; 4 rotated runs backfill all 713 (API live, release 2026.Q2.G.01). -> 176
+EXPECTED_SOURCE_COUNT = 176
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

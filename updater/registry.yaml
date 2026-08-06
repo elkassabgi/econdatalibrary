@@ -5029,6 +5029,42 @@ sources:
   storage_layout:
   - 'single parquet: data/clean_full/unesco_sdg/unesco_sdg.parquet. Schema: series_key (string), obs_date date32
     (period-START), value float64.'
+- source_id: unsdg
+  # RE-ADDED 2026-08-06 (cycle 38, Ahmed's answer #5: serve unsdg+norgesbank). Purged
+  # 2026-07-23 with the may-not-host batch; the audit then CLEARED it — UNdata Terms of Use
+  # grant redistribution verbatim ("may be copied freely, duplicated and further distributed
+  # provided that UNdata is cited as the reference", DATABASE_LICENSES_VERBATIM.md:3106) and
+  # the WEBSITE terms that triggered the original gating do not govern the data service
+  # (ledger line 771). Store purged -> the fetcher backfills via rotation: reworked this
+  # cycle with a rotation bookmark (R190 — the old codes[:budget] was a fixed-prefix
+  # truncation) and chunked per-50 merges (R249 — accumulate-then-merge made a kill a total
+  # discard). Self-bounds at 200 codes/run (~28 min); 4 rotated runs = full 713-code
+  # backfill. API probed live 2026-08-06: Series/List = 713 codes, release 2026.Q2.G.01.
+  # Denylist floor pin stays until the SERVE step (catalogue at flow grain first).
+  live: true
+  scripts:
+  - jobs/ingest_unsdg.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    The SDG API has no since/updatedAfter filter and UNSD re-estimates history each
+    quarterly release; the honest change signal is the release tag stamped on every
+    series in Series/List (content-hashed), and a re-pull merges never-shrink.
+  cadence: weekly
+  data_cadence: quarterly
+  refresh_cost: medium
+  out_dir: unsdg
+  review: true
+  adapter:
+    vintage_signal: >-
+      Content hash of sorted (seriesCode, release) pairs from Series/List (~180 KB,
+      no auth) — moves iff any of the 713 series got a new release tag.
+    since_param: n/a (full per-series re-fetch, merged never-shrink)
+    out_paths_note: 'Single combined file data/clean_full/unsdg/unsdg.parquet; series_key
+      = <seriesCode>:<geoAreaCode>[|Dim=val|...] carrying ALL non-trivial dimensions.'
+    rate_note: No key. RATE=0.5s between series; ~7-9s per paginated series GET; 429 -> 60s
+      backoff. Self-bounded at 200 series/run with a rotation bookmark.
+    key_env: none
+    confidence: high
 - source_id: unhcr
   live: true
   scripts:
