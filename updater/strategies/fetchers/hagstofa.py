@@ -358,7 +358,29 @@ def _fetch_table(sess, db, path, prefix, since_date):
         # Time dimension gone. Structural ONLY if we already store this table; a
         # never-stored time-less table (e.g. a geography/topic lookup) is not part of
         # the dataset and the ingester correctly emitted nothing for it.
-        return [], ("structural" if since_date is not None else "empty")
+        if since_date is not None:
+            # ARCHIVAL discriminator (2026-08-05). Seven stored tables (KOS03190/a,
+            # CEN01560 + 4 more manntal/2011) are single-EVENT cross-tabs — probed
+            # live: KOS03190 is 'Participation by sex, age and municipality 2018'
+            # with Municipality/Age/Sex and NO time variable — whose stored history
+            # predates an upstream restructure. They can never parse again, so
+            # 'structural' re-fired on every sweep and hagstofa could never go green
+            # (the ons_uk not-a-time-series class meeting the R244 always-red gate).
+            # A stored max already >=2 years old is a frozen archive: kept, logged,
+            # 'quiet'. A RECENT stored max still classifies structural — a live
+            # table losing its time dimension is a real break.
+            try:
+                age_days = (dt.date.today()
+                            - dt.date.fromisoformat(str(since_date)[:10])).days
+            except ValueError:
+                age_days = 0
+            if age_days >= 730:
+                print(f"[hagstofa] {path}: no time dimension upstream and stored "
+                      f"data ends {since_date} — archival event table, kept frozen",
+                      flush=True)
+                return [], "quiet"
+            return [], "structural"
+        return [], "empty"
 
     time_codes = _newer_time_codes(tvar, since_date)
     if since_date is not None and not time_codes:
