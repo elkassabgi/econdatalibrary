@@ -1,4 +1,9 @@
-"""Catalogue whr — BUILT AND TESTED, BUT DO NOT RUN --apply YET. See PROVENANCE below.
+"""Catalogue whr — the Figure 2.1 store (PRIMARY provenance; blocker below is CLEARED 2026-08-06).
+
+The 2026-08-06 rewrite of updater/strategies/fetchers/whr.py pulls ONLY the publisher's own
+Figure 2.1 workbook (files.worldhappiness.report) and writes whr_fig21.parquet — the file this
+tool now catalogues. The OWID-era whr.parquet (the provenance hold documented below, kept for
+the record) is NOT touched and its keys are never catalogued.
 
 PROVENANCE BLOCKER (found 2026-08-01, before publishing anything). This data did not come from
 the World Happiness Report. jobs/ingest_whr.py tries WHR's own S3 XLS panels and several CSV
@@ -62,6 +67,19 @@ sys.path.insert(0, ROOT)
 
 SOURCE = "whr"
 LICENSE_ID = "whr-granted"
+MEASURE_NAMES = {
+    "rank": "Happiness ranking (Figure 2.1)",
+    "ladder": "Life evaluation, 3-year average (Cantril ladder)",
+    "whisker_low": "Life evaluation, 95% CI lower bound",
+    "whisker_high": "Life evaluation, 95% CI upper bound",
+    "gdp": "Contribution of log GDP per capita",
+    "social_support": "Contribution of social support",
+    "healthy_life": "Contribution of healthy life expectancy",
+    "freedom": "Contribution of freedom to make life choices",
+    "generosity": "Contribution of generosity",
+    "corruption": "Contribution of perceptions of corruption",
+    "dystopia_residual": "Dystopia + residual",
+}
 TERMS = "https://www.worldhappiness.report/data-sharing/"
 
 
@@ -73,7 +91,7 @@ def main() -> int:
     con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
     con.execute("PRAGMA busy_timeout = 180000")
 
-    store = os.path.join(ROOT, "data", "clean_full", SOURCE, "whr.parquet")
+    store = os.path.join(ROOT, "data", "clean_full", SOURCE, "whr_fig21.parquet")
     if not os.path.exists(store):
         print(f"no store at {store}")
         return 1
@@ -115,7 +133,8 @@ def main() -> int:
     out = []
     for key, start, end, n in rows_in:
         parts = key.split(":")
-        indicator = parts[1] if len(parts) > 2 else key
+        code = parts[1] if len(parts) > 2 else key
+        indicator = MEASURE_NAMES.get(code, code)
         iso = parts[-1]
         who = cname(iso)
         if who is None:
