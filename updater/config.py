@@ -160,7 +160,9 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 # 2026-08-05: +imf_imts_direct (IMTS v1.0.0 called live; DOTS successor) -> 145
 # 2026-08-05: +imf_pip_direct (PIP v5.0.0 called live; CPIS successor) -> 146
 # 2026-08-05: +imf_dip_direct (DIP v12.0.1 called live; CDIS successor) -> 147
-EXPECTED_SOURCE_COUNT = 171
+# 2026-08-06: +imf_mcdreo_direct (MCDREO v8.0.0 called live; agency IMF.MCD; Class B1 of the
+#   authorized retirement plan — Ahmed's "match the publisher" ruling resolves the 57% scope) -> 172
+EXPECTED_SOURCE_COUNT = 172
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
