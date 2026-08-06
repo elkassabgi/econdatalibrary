@@ -162,7 +162,11 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 # 2026-08-05: +imf_dip_direct (DIP v12.0.1 called live; CDIS successor) -> 147
 # 2026-08-06: +imf_mcdreo_direct (MCDREO v8.0.0 called live; agency IMF.MCD; Class B1 of the
 #   authorized retirement plan — Ahmed's "match the publisher" ruling resolves the 57% scope) -> 172
-EXPECTED_SOURCE_COUNT = 172
+# 2026-08-06: +imf_fm_direct (FM v5.0.0 called live; agency IMF.FAD, NOT IMF.STA — read from the
+#   /dataflow catalogue with MCDREO as the present-control. Last genuinely-missing Class B1 build;
+#   the direct scope is ~9% of relay-era imf_fm, resolved by the same "match the publisher"
+#   ruling. Ignore the dated FM_2025_OCT_VINTAGE flow) -> 173
+EXPECTED_SOURCE_COUNT = 173
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
