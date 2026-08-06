@@ -1,0 +1,60 @@
+# Running list — what I need from Ahmed (updated 2026-08-06 ~18:45, for the 3-hour check-in)
+
+Ordered by impact. Each item says exactly what to do and what it unblocks.
+
+## 1. The deletion permission (one settings edit — unblocks FOUR queued jobs)
+
+Add these two lines to `permissions.allow` in
+`E:\research\econfindatalibrary\.claude\settings.local.json`:
+
+    "Bash(python tools/retire_source.py *)",
+    "Bash(python tools/delist_source_rows.py *)"
+
+(If the file has no `permissions` block yet, tell me and I'll give the full JSON.)
+
+Unblocks, in execution order:
+- **Class A IMF retirement** — ~25 legacy sources / ~1.02M D1 rows (plan committed in
+  50-queue.md; tool dry-run-verified with exact counts). D1 hit 9.42 GB today — this
+  deletion likely defers the paid split entirely.
+- **whr un-gate** — purge the 178 OWID-era CSVs on R2, then remove whr from the denylist,
+  deploy, verify 451→200. The clean Figure-2.1 data (1,749 series) is already catalogued,
+  derived, and D1-synced, waiting behind the gate.
+- **owid residue** — 40 orphaned CSVs on R2 (unreachable, cosmetic).
+
+Alternative if you prefer not to add the rule: run the commands yourself from
+`E:\research\econfindatalibrary` — I'll print the exact list on request.
+
+## 2. UNCTAD API key (free account — unblocks 38 source builds)
+
+1. https://unctadstat.unctad.org/datacentre/ → Login → register (free).
+2. After login: **My Home** → copy **Client ID** and **API key**.
+3. Put in `E:\research\econfindatalibrary\.env` as:
+
+       UNCTAD_CLIENT_ID=...
+       UNCTAD_API_KEY=...
+
+   (Never paste them in chat — I verify presence without printing.)
+
+The full API survey is done (scratchpad/unctad_survey_20260806.md): catalogue + vintage
+endpoints already work keyless; only the observations endpoint needs the key.
+
+## 3. B2 keep/delete — one line from you
+
+The publisher-DISCONTINUED sets, NOT re-crawlable (deletion is permanent):
+**imf_fsire** (18,620 series) · **imf_pgi** (8,891) · **imf_gender_budgeting** (288) ·
+the **imf_ifs remainder** (~85k series with no successor family).
+Say "keep all", "delete all", or name them individually.
+
+## 4. Optional / when convenient
+
+- **Stats NZ key**: the registration phone field wants digits only, no spaces or "+"
+  (e.g. `5015551234`). Low value — don't burn time.
+- **Cloudflare tokens**: already verified — nothing expires, nothing to do (the "July 2
+  token" was my error; your Jul-31 `econdatalibrary-ci` token is the live one and healthy).
+- **GitHub PAT**: done and verified (push access on both repos). Nothing more needed.
+
+## Decisions parked until after the retirement frees D1 headroom
+
+- eia at table grain (#37: 238k–518k rows) and bea's 912,990 dark series (#65: would eat
+  52% of headroom) — both sized, both waiting on the post-retirement D1 measurement.
+- fao_* element-re-code family (#19) — 27%→79% is solvable, the last 20% is a restructure.
