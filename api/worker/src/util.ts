@@ -240,6 +240,10 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // 17,997 obs from flow MCDREO v8.0.0 (agency IMF.MCD). Ahmed's "match the publisher"
   // ruling resolves the 57%-of-legacy scope; the frozen imf_mcdreo retires via Class A.
   "imf_mcdreo_direct",
+  // imf_fm_direct added 2026-08-06 (cycle 34 — Class B1 COMPLETE): SERIES grain — 128
+  // series / 5,077 obs from flow FM v5.0.0 (agency IMF.FAD). The thinnest direct (9% of
+  // relay scope), resolved by the same ruling; the frozen imf_fm retires via Class A.
+  "imf_fm_direct",
 
 
   // hf_equities REMOVED 2026-08-06 (Ahmed: "remove hf") — 1,391 metadata-only listings econ
