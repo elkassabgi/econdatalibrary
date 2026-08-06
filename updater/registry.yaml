@@ -5676,6 +5676,34 @@ sources:
       when it moves. Agency ids are NOT uniform across IMF datasets — read them
       from the catalogue, never assume IMF.STA.
     name: Middle East and Central Asia Regional Economic Outlook
+- source_id: imf_fm_direct
+  # ADDED 2026-08-06 (retirement plan Class B1, the last genuinely-missing direct build).
+  # The direct FM feed is the thinnest in the family: relay-era imf_fm holds 1,356 series and
+  # the publisher's current scope carries ~9% of them. Previously RESERVED as a serves-less
+  # switch (CLAUDE.md:77-78); Ahmed's 2026-08-06 "refresh to match publisher / clean database"
+  # ruling resolves it the same way it resolved MCDREO's 57%. Nothing is switched either way —
+  # this is a NEW parallel id and legacy imf_fm stays served-frozen until Class A retires it.
+  live: true
+  scripts:
+  - jobs/ingest_imf_direct.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    IMF republishes whole datasets and ships dated vintages
+    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
+    published version, not a date-tail probe — a back-revision rewrites history
+    without extending it and a date probe would miss it entirely.
+  cadence: irregular
+  refresh_cost: fast
+  out_dir: imf_fm_direct
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET {BASE}/dataflow and read the version attribute of dataflow FM
+      (agency IMF.FAD — NOT IMF.STA; verified live 2026-08-06, version 5.0.0);
+      re-pull only when it moves. Agency ids are NOT uniform across IMF datasets
+      — read them from the catalogue, never assume IMF.STA. Ignore the dated
+      FM_2025_OCT_VINTAGE snapshot flow; FM is the maintained dataset.
+    name: Fiscal Monitor
 - source_id: imf_cofer_direct
   live: true
   scripts:
