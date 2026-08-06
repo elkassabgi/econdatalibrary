@@ -39,6 +39,12 @@ param(
     # way). It exits 0 QUIETLY unless a run is actually due, so the guard needs no cadence
     # logic of its own and there is exactly one place that decides when this runs.
     [switch]   $IfDue,
+    # -Force passes --force to the updater so a MANUAL PROOF of a not-due source actually
+    # exercises the fetcher (2026-08-06: `-Only census` on a monthly cadence printed
+    # "NOT DUE ... 0 unit(s) processed" and exited green having proven nothing — the exact
+    # R35/R50 false-green this repo already documents for the CLOUD dispatch path, which
+    # is why updater-daily.yml grew its own force input). Only meaningful with -Only.
+    [switch]   $Force,
     [int]      $MinHours = 20
 )
 
@@ -222,6 +228,7 @@ if ($LASTEXITCODE -ne 0) {
 # NOT $args - that is a reserved automatic variable and assigning to it breaks arg passing.
 $srcArgs = @()
 foreach ($t in $targets) { $srcArgs += '--source'; $srcArgs += $t }
+if ($Force) { $srcArgs += '--force'; Say 'FORCE: cadence gate overridden (manual proof)' }
 Say ("running updater for " + $targets.Count + " source(s) ...")
 & python -m updater.run @srcArgs
 $rc = $LASTEXITCODE
