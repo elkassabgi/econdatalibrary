@@ -131,7 +131,14 @@ def update(unit, since) -> Result:
     import pyarrow.parquet as pq
     published = 0
     cursors: dict = {}          # §5.7 changed-series set across every rebuilt cube
-    for f in sorted(names):
+    # CURSORS COLLECT FRESHEST-FILE-FIRST (2026-08-06). Alphabetical iteration filled
+    # the 50,000-cursor cap with annual_* series (newest obs 2025-12-31) before
+    # hpi_master's monthly series ever reported — measured: the store's
+    # hpi_master.parquet reaches 2026-05-01, LEVEL with the publisher's master CSV
+    # (yr 2026, period 5), yet the gate read newest_obs 2025-12-31 (218d) off the
+    # capped cursor set and RED-DATA'd a healthy, current source. hpi_master carries
+    # the recency signal, so its cursors go in first; the rest stay alphabetical.
+    for f in sorted(names, key=lambda n: (n != "hpi_master.parquet", n)):
         local = os.path.join(out_dir, f)
         blob.publish_file(local)
         if not f.endswith("__series.parquet"):
