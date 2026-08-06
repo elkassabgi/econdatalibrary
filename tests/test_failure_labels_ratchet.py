@@ -42,7 +42,7 @@ METHODS = {"transient_unit", "structural_unit"}
 # 152 -> 147: _giant's five. Highest leverage of the lot -- _giant drives the biggest sources
 # over hundreds of flows, so its unlabelled count was the least actionable row in the system.
 # 147 -> 142: ssb's five. ssb sweeps ~1,515 tables, so each label removes 1,515 candidates.
-BUDGET = 142
+BUDGET = 138  # 2026-08-06: whr rewrite removed 4 unlabelled calls (cycle 35)
 
 
 class _Counter(ast.NodeVisitor):
