@@ -148,6 +148,30 @@ def _matrix_subject_map(force: bool = False) -> dict[str, str]:
     return {t["MtrCode"]: _subject_key(t) for t in cat if t.get("MtrCode")}
 
 
+def _subject_from_metadata(mtr: str, timeout: int = 60) -> "str | None":
+    """Per-matrix routing fallback (2026-08-05). SIH13/SIA208 (and up to 222 more) EXIST
+    upstream with full metadata — probed live, label 'At Risk of Poverty Rate Threshold' —
+    yet are absent from CSO's Search API listing, so the Search-built map can never route
+    them and they retried forever, consuming ~45% of every run's budget (the R61 class:
+    absence from a LISTING is not absence from the API). ReadMetadata's extension.subject
+    carries {code, value} — exactly the fields _subject_key needs. One bounded RPC per
+    still-unroutable matrix per run; a pulled matrix leaves `changed`, so it is not repaid."""
+    body = {"jsonrpc": "2.0", "id": 1, "method": "PxStat.Data.Cube_API.ReadMetadata",
+            "params": {"matrix": mtr, "language": "en",
+                       "format": {"type": "JSON-stat", "version": "2.0"}}}
+    hdr = {"User-Agent": UA["User-Agent"], "Content-Type": "application/json"}
+    try:
+        r = requests.post(JSONRPC_URL, json=body, headers=hdr, timeout=timeout)
+        if r.status_code != 200:
+            return None
+        sub = ((r.json().get("result") or {}).get("extension") or {}).get("subject") or {}
+        if sub.get("code") is None:
+            return None
+        return _subject_key({"SbjCode": sub["code"], "SbjValue": sub.get("value", "")})
+    except (requests.RequestException, ValueError):
+        return None
+
+
 def _collection_updates(datefrom: str, timeout: int, tries: int = 3):
     """{MtrCode: updated_iso} from PxStat ReadCollection >= datefrom. Returns (map, error_kind).
     error_kind in {None, 'transient', 'structural'}; map is {} on error.
@@ -308,8 +332,15 @@ def update(unit, since) -> Result:
                 m2s = fresh
                 sbj = m2s.get(mtr)
         if not sbj:
-            # Still unroutable after the refresh: either retired upstream, or absent from CSO's
-            # Search API. Transient rather than dropped, so it re-tries.
+            # The matrix's OWN metadata is the authority the listing is not (R61).
+            sbj = _subject_from_metadata(mtr)
+            if sbj:
+                print(f"[cso] {mtr}: routed via its own ReadMetadata subject "
+                      f"(absent from the Search listing)", flush=True)
+                m2s[mtr] = sbj
+        if not sbj:
+            # Still unroutable after the refresh AND the metadata probe: genuinely retired
+            # upstream (metadata 404/empty). Transient rather than dropped, so it re-tries.
             #
             # NAMED IN THE LOG, not only in the tally. This was the one failure branch that
             # recorded itself in the error string and printed NOTHING — which is why 27 of 36
