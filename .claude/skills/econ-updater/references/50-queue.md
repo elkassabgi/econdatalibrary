@@ -214,3 +214,37 @@ Cross-check: 26 actionable + 71 reserved = 97 queue sources; 996,987 + 370,003 =
 
 COVERAGE: read lines 1-137 (complete file, 137 lines) of E:/research/econfindatalibrary/CLAUDE.md, last line read: `- **A budget bounds only the failure mode it measures** (time ≠ memory). R72.`
 COVERAGE: read lines 9-63 and 3087-3566 (end of file) of E:/research/econfindatalibrary/DATABASE_LICENSES_VERBATIM.md in full, plus grep-targeted excerpts of lines 1541-1565 (etalab/cepii), 799-823, 1107-1125, 1282-1294, 1580-1609, 1991-2008, 2769-2788, 2994-3016 (the 7 DISPUTED details) and all `^##`/`^###` headers; the middle (lines 64-3086) was NOT read line-by-line — per task instructions only headers/GATE/DISPUTED/etalab were extracted from it. Last line read: `needed under a different arrangement.` (line 3566, end of file).
+## IMF LEGACY RETIREMENT PLAN (AUTHORIZED by Ahmed 2026-08-06: "no bookmarks... refresh to match publisher... I need a clean database")
+
+Inventory measured 2026-08-06: 40 legacy (non-direct) imf sources, 1,122,144 catalog rows.
+Retiring frees ~1M D1 rows — likely DEFERS the #45 split entirely (D1 hard cap is 10 GB/db;
+storage past 5 GB bills $0.75/GB-mo ≈ $3.20/mo today; shrinks after cleanup).
+
+**Class A — RETIRE NOW (full/superset successor live and proven):** dot→imts, cpis→pip,
+cdis→dip, mfs→MFS×5, fsi→FSI trio, irfcl→irfcl_direct, bop→bop_direct, cpi→cpi_direct,
+psbsfad→psbs (EXACT 14,018), pctot→ctot (EXACT 4,320), fiscaldecentralization→fd (EXACT
+8,398), hpdd→hpd (EXACT 191), unsdg_imf_inputs→sdg, namain_idc_n→namain, pgcs→icsd,
+gender_equality→GS×5, fas→fas_direct, bopagg→bopagg_direct, fdi→fdi_direct,
+gfsr/gfse/gfsmab→gfssoo (61/74 measured; the 13 unmatched are detail SOO no longer carries
+= publisher's current scope), gfsssuc→direct, gfscofog→direct, gfsibs→direct.
+(gfsfalcs: verify its direct successor exists before including.) ≈ 25 sources / ~1.02M rows.
+
+**Class B1 — BUILD DIRECT FIRST, then retire (live IMF dataflows, no direct built yet):**
+weo (19,242), commodity/PCPS (1,236), cofer (154), world (2,268), afrreo/apdreo/whdreo,
+mcdreo (direct=57% of legacy) and fm (direct=9%) — Ahmed's "match the publisher" ruling
+RESOLVES the serves-less concern: the publisher's current scope wins. Also: imf (131,
+never-promoted entry) folds into this wave. unsdg + norgesbank rebuild from upstream
+(their R2 residue was purged 2026-07-23 — un-gating = a build, not a toggle).
+
+**Class B2 — PUBLISHER-DISCONTINUED, one-line keep/delete list for Ahmed (NOT re-crawlable):**
+fsire (18,620), pgi (8,891), gender_budgeting (288), the ifs remainder (subset of 100,706
+after the ER/EER/LS/PI families are subtracted). Deleting loses data that exists nowhere
+upstream; keeping contradicts "clean". Awaiting his one line.
+
+**Retirement pipeline per source (tools/retire_imf_legacy.py, to build on the
+purge_unpermitted_r2.py pattern):** archive primary parquet → delete catalog.db rows →
+delete D1 rows → remove from util.ts SUPPORTED_SOURCES → registry retire + count bump
+(same commit, R347) → R2 purge (series/ CSVs + clean_full/ store, terminated prefixes,
+guard imf_*_direct!) → wrangler deploy → live /v1/sources absence check → refresh_r2_catalog
+→ coverage re-measure. First batch: the EXACT quartet (psbsfad, pctot,
+fiscaldecentralization, hpdd) to prove the pipeline.
