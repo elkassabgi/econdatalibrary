@@ -250,6 +250,24 @@ fsire (18,620), pgi (8,891), gender_budgeting (288), the ifs remainder (subset o
 after the ER/EER/LS/PI families are subtracted). Deleting loses data that exists nowhere
 upstream; keeping contradicts "clean". Awaiting his one line.
 
+**unsdg REBUILD — IN PROGRESS (cycle 38, surveyed 2026-08-06; next cycle executes):**
+norgesbank's twin (Ahmed's answer #5 authorizes the serve; UNdata licence CLEARED, ledger
+line 771). Store purged 07-23; API probed live: Series/List = exactly 713 codes, current
+release 2026.Q2.G.01 (the release tag is the vintage — the fetcher's content-hash design is
+right). GRAIN DECIDED by #45 arithmetic: store keys are <seriesCode>:<geo>|dims (~353k
+distinct — the old digest's "353,081 unmapped" number); catalogue at SERIES-CODE grain =
+713 rows (~0.15% of headroom), the ilostat pattern; the key shape fits _resolve.py's
+_FLOW_GRAIN prefix mechanism (flow id = seriesCode prefix). BEFORE re-registering, the
+dead-code fetcher needs TWO fixes: (1) `codes = codes[:budget]` is an R190 fixed-prefix
+truncation — add load_rotation/save_rotation + rotate_after (statfin pattern) so bounded
+runs cover all 713 across ticks; (2) accumulate-then-merge is the R249 kill=discard class
+under the 45-min cap (~713 GETs at 7-9s ≈ 95 min) — merge in chunks inside the loop, and
+set a max_series default that self-bounds ≈30 min (~200 codes/run → 4 runs = full backfill).
+Also label the bare tally calls. THEN: registry re-add (count 175→176 same commit), CI
+backfill runs (~4 forced), flow-grain catalogue tool pass (713 rows + _FLOW_GRAIN entry),
+derive at flow grain, refresh, D1, util.ts, denylist floor pin removal (unsdg is pinned —
+same barro_lee precedent, Ahmed's authorization), deploy, verify.
+
 **AUTHORIZED + EXECUTED 2026-08-06 (Ahmed: "yes, remove hf, owids, and trim whr" / "yes match
 publisher for unctad unesco"):**
 - hf_equities DELISTED: 1,391 metadata-only rows deleted from catalog.db + D1
