@@ -7038,6 +7038,12 @@ sources:
   # hold). New keys FIG21:<measure>:<geo> in whr_fig21.parquet; the 2,270 legacy OWID-era
   # rows in whr.parquet stay uncatalogued/unserved pending purge.
   live: true
+  # run_location MEASURED, not guessed: worldhappiness.report's bot protection 403s
+  # GitHub-hosted runners (run 31128544146, 2026-08-06 — "403 Client Error: Forbidden"
+  # on the listing GET, the same 403 the licence audit's WebFetch hit), while the
+  # workstation fetches both the listing and the workbook clean (200, measured the same
+  # day). Same class as census (key not in CI) — the workstation pass owns it.
+  run_location: local
   scripts:
   - jobs/ingest_whr.py
   strategy: bulk_snapshot_if_changed
