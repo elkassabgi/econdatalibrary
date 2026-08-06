@@ -271,10 +271,19 @@ publisher for unctad unesco"):**
   data/_quarantine/whr_owid_era.parquet. WHEN THE DELETION PERMISSION OPENS: purge the 178 +
   owid's 40, THEN remove whr from denylist.ts, deploy, verify 451→200 + verify_source_served
   exit 0. Serving before the purge would expose ungranted OWID-provenance ids.
-- unctad (38 legacy ids) + unesco culture/innovation (4): "match the publisher" CONFIRMED —
-  build new-id successors from UNCTAD Data Hub / current UIS API at the publisher's current
-  scope; legacy ids then retire via the Class A pipeline. These move from RESERVED to ACTIONABLE
-  builds (large: survey both APIs first, one source at a time).
+- unctad (38 legacy ids): "match the publisher" CONFIRMED — build new-id successors from the
+  UNCTAD Data Hub at current scope (surveyed cycle 33; blocked on Ahmed's free UNCTADstat API
+  key); legacy ids then retire via Class A.
+- unesco culture/innovation (4) — CLOSED 2026-08-06 (cycle 36) as PUBLISHER-DISCONTINUED,
+  measured twice: (a) the current UIS API carries clte 21/408, film 1/76, cltt 0/34, inno 0/638
+  of our indicator codes (unesco_dem.py's own measurement); (b) the publisher's bulk page
+  (databrowser.uis.unesco.org/resources/bulk) lists NO culture/film/innovation file in the
+  current 202602 release — only dated archives (CLTEARCHIVE-JUN2019, CLTTARCHIVE-JUN2021,
+  FILM archive, INNOARCHIVE-APR2017, SCIARCHIVE-MAR2021). Our served 2022-era snapshots are
+  equal-or-newer than every archive, so a re-ingest adds nothing. Verdict: the four stay
+  SERVED-FROZEN as archival data (matching the publisher's own archival posture); no fetcher
+  is built (a fetcher on a frozen archive transfers zero information — the R73 class). They
+  join the no-successor set; deletion, if ever wanted, is re-crawlable from the archive zips.
 
 **Retirement pipeline per source (tools/retire_imf_legacy.py, to build on the
 purge_unpermitted_r2.py pattern):** archive primary parquet → delete catalog.db rows →
