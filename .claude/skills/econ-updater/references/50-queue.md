@@ -261,12 +261,16 @@ publisher for unctad unesco"):**
   entry kept. RESIDUE: its 40 orphaned series/owid%3A CSVs on R2 — the delete_objects call is
   classifier-blocked (same permission class as retire_source --apply); they are unreachable
   (source 501s) so cosmetic; sweep them when the retirement permission opens.
-- whr "trim" RECLASSIFIED as a BUILD: catalog is already 0 rows. Serving the granted Figure-2.1
-  scope requires a RE-INGEST from the PRIMARY publisher (worldhappiness.report) — the R215
-  finding stands: the existing store's whr data came from OWID grapher fallbacks, which the
-  Gallup/WHR written grant does not cover. Do not serve the current store. Queue: fetch Figure
-  2.1 data appendix from worldhappiness.report, verify provenance from the ingest log's URLs,
-  catalogue exactly that scope, then un-gate (denylist removal is the last step, verify 451→200).
+- whr REBUILT from PRIMARY provenance 2026-08-06 (cycle 35) and READY — un-gate BLOCKED on the
+  R2-deletion permission. Fetcher rewritten to files.worldhappiness.report (newest Figure-2.1
+  listing link, real ETag/CL vintage, NO OWID fallback); publisher 403s GitHub runners so whr is
+  run_location: local (proven: local pass merged WHR26 13,397 obs / 1,749 series, state pushed).
+  Catalogued 1,749 (whr-granted licence: reservable, NC, attribution), derived, D1-synced.
+  RESIDUE (R364): 178 OWID-era CSVs on R2 under series/whr%3AWHR%3A (the derive walked both
+  shards) — unreachable behind the 451 denylist; legacy shard quarantined at
+  data/_quarantine/whr_owid_era.parquet. WHEN THE DELETION PERMISSION OPENS: purge the 178 +
+  owid's 40, THEN remove whr from denylist.ts, deploy, verify 451→200 + verify_source_served
+  exit 0. Serving before the purge would expose ungranted OWID-provenance ids.
 - unctad (38 legacy ids) + unesco culture/innovation (4): "match the publisher" CONFIRMED —
   build new-id successors from UNCTAD Data Hub / current UIS API at the publisher's current
   scope; legacy ids then retire via the Class A pipeline. These move from RESERVED to ACTIONABLE
