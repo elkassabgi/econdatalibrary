@@ -3417,6 +3417,36 @@ sources:
     - 'overwrite-multi-file, ONE parquet per logical series: data/clean_full/nyfed/<name>.parquet for name in {sofr,bgcr(skipped),tgcr,obfr,sofr30d,sofr90d,sofr180d,sofridx,tgcrvol}
       (~8 files, tens of KB each). Schema per file: series_key (str, ''nyfed:{name}''), obs_date (date32), value (float64).
       Each file is written once with pq.write_table (full overwrite when the file is absent).'
+- source_id: norgesbank
+  # RE-ADDED 2026-08-06 (cycle 37, Ahmed's answer #5: serve unsdg+norgesbank, audit-CLEARED).
+  # Purged 2026-07-23 with the may-not-host batch; the licence audit then CLEARED it (NLOD 2.0,
+  # DATABASE_LICENSES_VERBATIM.md:3105) and Ahmed authorized serving it. The R2 store was purged
+  # so the fetcher's first run performs the full backfill (its union-of-flows design fetches any
+  # curated flow with no on-disk history in full). Entry recovered from the pre-purge registry
+  # (git 8d182e5a^); cadence weekly instead of monthly — EXR is daily data and 10 fast flows
+  # cost seconds. API probed live 2026-08-06 (EXR startPeriod window: 200, 38 series).
+  live: true
+  scripts:
+  - jobs/ingest_norgesbank.py
+  strategy: sdmx_delta
+  strategy_reason: Norges Bank is SDMX (SDMX-JSON) and supports startPeriod/endPeriod; pull per-dataflow delta from the stored
+    frontier and merge instead of whole-flow-or-nothing.
+  cadence: weekly
+  refresh_cost: fast
+  out_dir: norgesbank
+  review: true
+  adapter:
+    vintage_signal: SDMX startPeriod windowed re-fetch per flow (no updatedAfter on this API); the fetcher anchors startPeriod
+      AT the stored max so revisions of the boundary period are captured (see the module docstring).
+    since_param: '&startPeriod=<max(obs_date)> (per dataflow) appended to GET /api/data/{DATAFLOW}?format=sdmx-json; optional
+      &endPeriod.'
+    out_paths_note: 'Single combined file data/clean_full/norgesbank/norgesbank.parquet (~12MB, 10 dataflows). WARNING: sibling
+      per-dataflow files (EXR.parquet, IR.parquet, ANN_FX_SPU.parquet, MONEY_MARKET.parquet, etc.) in the same dir come from
+      a DIFFERENT/older ingester and are NOT touched by this script — downstream globbing could double-count.'
+    rate_note: No API key (data.norges-bank.no open). Self-throttled RATE=1.0s/flow, 120s timeout, 3 retries (5s*(attempt+1)
+      backoff); 400/404 treated as empty. Only 10 flows.
+    key_env: none
+    confidence: high
 - source_id: oecd
   # CLOUD-INFEASIBLE - measured 1,792,000,000 rows in a single file (OECD.STI.PIE__DSD_TIVA_FDVA@DF_FDVA.parquet),
   # about 125.4 GB once decoded into Arrow. merge_and_write materialises the whole
