@@ -31,7 +31,7 @@ import requests
 from ... import config, merge, blob
 from ...errors import DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Tally, finalize, load_rotation, save_rotation, rotate_after
 from ._vintage import content_hash, UA as _UA
 
 SOURCE = "unsdg"
@@ -43,9 +43,11 @@ PAGE = 1000
 RATE = 0.5          # polite delay between series (matches the ingester)
 PAGE_RETRIES = 4
 
-# Production default: re-fetch every series. Overridable (chiefly for live tests /
-# budgeted ticks) via unit.config['max_series'] or $UNSDG_MAX_SERIES. 0/empty = all.
-MAX_SERIES_DEFAULT = 0
+# SELF-BOUNDING default (R243): ~200 codes x ~8.5s/code ~= 28 min, safely under the
+# orchestrator's 45-min unit kill. With the rotation bookmark, 4 runs cover all 713
+# and the release-tag vintage gates re-pulls between releases. Overridable via
+# unit.config['max_series'] or $UNSDG_MAX_SERIES; 0/empty = all (manual backfills).
+MAX_SERIES_DEFAULT = 200
 
 
 def _get_json(url, params=None, retries=PAGE_RETRIES):
@@ -197,77 +199,92 @@ def update(unit, since) -> Result:
     series, outcome = _series_list()
     if outcome != "ok":
         # Can't even list series -> whole pull is transient; existing data untouched.
-        tally.transient_unit()
+        tally.transient_unit("Series/List")
         return finalize(tally, before, None, source=SOURCE)
     if not series:
-        tally.structural_unit()  # 200 catalog that parsed no series -> real break
+        tally.structural_unit("Series/List parsed 0 series")  # real catalogue break
         return finalize(tally, before, None, source=SOURCE)
 
     codes = [s.get("code") for s in series if s.get("code")]
-    if budget > 0:
+    total = len(codes)
+    # ROTATION (R190): Series/List order is stable, so a budget over it re-walks the
+    # same prefix forever and the tail never refreshes. Resume just after where the
+    # last run stopped; the bookmark is saved after every merged CHUNK below, so a
+    # kill costs at most one in-flight chunk of progress, never the rotation.
+    codes = rotate_after(codes, load_rotation(out_dir))
+    deferred = 0
+    if budget > 0 and len(codes) > budget:
+        deferred = len(codes) - budget
         codes = codes[:budget]
 
-    all_keys, all_dates, all_vals = [], [], []
-    transient = 0      # series that transient-failed (retry next run)
-    structural = 0     # series: 200/4xx that yielded 0 records from a real query
-    for code in codes:
+    # CHUNKED PUBLISH (R249): the old accumulate-then-merge made any kill a total
+    # discard — fatal for a ~713x8s full pull under the 45-min cap. Merging every
+    # CHUNK series turns a kill into truncation: everything merged so far survives
+    # and the bookmark resumes the tail next run.
+    CHUNK = 50
+    all_cursors: dict = {}
+    n, md = before, None
+    merged_any = False
+    keys, dates, vals = [], [], []
+
+    def _flush(last_code):
+        nonlocal n, md, merged_any, keys, dates, vals
+        if not keys:
+            save_rotation(out_dir, last_code)
+            return True
+        tbl = pa.table({"series_key": pa.array(keys, pa.string()),
+                        "obs_date": pa.array(dates, pa.date32()),
+                        "value": pa.array(vals, pa.float64())})
+        # Atomic merge per chunk: dedup on series_key+obs_date, revised values win,
+        # never-shrink guard intact (min_ratio unchanged) — see the 2026-07
+        # key-uniqueness note in git history for why the effective key is unique.
+        n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+        merged_any = True
+        all_cursors.update(_series_maxes(keys, dates))
+        keys, dates, vals = [], [], []
+        save_rotation(out_dir, last_code)
+        return True
+
+    for i, code in enumerate(codes):
         k, d, v, outc = _fetch_series(code)
         if outc == "transient":
-            transient += 1
-            time.sleep(RATE)
-            continue
-        if outc == "missing":
-            structural += 1
-            time.sleep(RATE)
-            continue
-        if not k:
-            # 200 with records but every record unparseable -> structural sub-unit.
-            structural += 1
-            time.sleep(RATE)
-            continue
-        all_keys.extend(k); all_dates.extend(d); all_vals.extend(v)
+            tally.transient_unit(code)
+        elif outc == "missing" or not k:
+            # A single listed code with no data is a SUB-UNIT gap, not a source break
+            # (R44 — faostat's per-domain structural_unit vetoed whole sources).
+            # finalize's all-empty-window floor still catches a wholesale outage.
+            tally.empty_unit(code)
+        else:
+            keys.extend(k); dates.extend(d); vals.extend(v)
+            tally.added_unit(len(k), code)
+        if (i + 1) % CHUNK == 0:
+            try:
+                _flush(code)
+            except DefinitiveError as e:
+                return Result(status="partial", obs=n, last_obs_date=md,
+                              new_vintage=None, series_cursors=all_cursors or None,
+                              error=("merge refused (existing data kept, guard "
+                                     f"intact): {e}"))
         time.sleep(RATE)
 
-    # Surface per-series structural/transient outcomes BEFORE publishing so the
-    # returned status is honest (existing data was never touched on a failure).
-    for _ in range(structural):
-        tally.structural_unit()
-    for _ in range(transient):
-        tally.transient_unit()
+    if codes:
+        try:
+            _flush(codes[-1])
+        except DefinitiveError as e:
+            return Result(status="partial", obs=n, last_obs_date=md,
+                          new_vintage=None, series_cursors=all_cursors or None,
+                          error=("merge refused (existing data kept, guard "
+                                 f"intact): {e}"))
 
-    # Nothing parsed at all -> let finalize raise the honest structural/empty-window
-    # error (existing data kept). With a tight per-run budget over a healthy upstream
-    # this won't trigger; it fires on a genuine wholesale break.
-    if not all_keys:
+    for _ in range(deferred):
+        tally.deferred_unit()          # budget slice, honest partial (R303)
+
+    if not merged_any:
+        # Nothing parsed anywhere -> finalize raises the honest structural/empty-window
+        # error over the attempted set (existing data kept).
         return finalize(tally, before, None, source=SOURCE)
 
-    tbl = pa.table({
-        "series_key": pa.array(all_keys, pa.string()),
-        "obs_date": pa.array(all_dates, pa.date32()),
-        "value": pa.array(all_vals, pa.float64()),
-    })
-
-    # The re-fetched series are published in ONE atomic merge (dedup on
-    # series_key+obs_date, revised values win, never-shrink @0.97). Untouched series
-    # survive the union, so a budgeted partial pull can only grow the table.
-    #
-    # KEY-UNIQUENESS FIX (resolved 2026-07): _parse_records now carries ALL non-trivial
-    # dimensions (dropped the old dim_parts[:3] cap), so (series_key, obs_date) is unique
-    # per re-fetched series and the merge dedup is lossless. The historical shrink
-    # (3,175,479 -> 2,822,808, 88.9% < 97%) that tripped never-shrink was self-inflicted:
-    # 288,453 of those 352,671 collapsed rows were EXACT (key,date,value) duplicates from
-    # an interrupted/resumed ingest double-append, and 64,218 were distinct values fused
-    # onto one key by the [:3] truncation (e.g. SE_ADT_ACTS's 4th dim "Type of skill",
-    # 36 values). After a one-time re-ingest with jobs/ingest_unsdg.py (also uncapped) the
-    # published file loses the duplicate inflation, the effective key is unique, and this
-    # merge grows-or-noops cleanly. The guard is left intact (min_ratio unchanged).
-    try:
-        n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-    except DefinitiveError as e:
-        return Result(status="partial", obs=before, last_obs_date=None,
-                      new_vintage=None,
-                      series_cursors=_series_maxes(all_keys, all_dates),
-                      error=("merge refused (existing data kept, guard intact): "
-                             f"{e}"))
-    tally.added_unit(max(0, n - before))
-    return finalize(tally, n, md, source=SOURCE, series_cursors=_series_maxes(all_keys, all_dates))
+    print(f"[unsdg] merged {len(all_cursors):,} refreshed keys across "
+          f"{min(len(codes), total):,}/{total} series codes; store now {n:,} rows",
+          flush=True)
+    return finalize(tally, n, md, source=SOURCE, series_cursors=all_cursors or None)
