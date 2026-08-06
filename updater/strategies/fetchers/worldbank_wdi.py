@@ -238,14 +238,22 @@ def _fetch_indicator(code: str, date_param: str, iso2to3: dict, tally: Tally,
 
 
 def _series_maxes(tbl):
+    """Cursor maxes folded to INDICATOR grain (2026-08-05): the store key is
+    'WDI:<indicator>:<geo>' but the catalog serves one id per indicator
+    ('worldbank_wdi:<indicator>' — the resolver's starts_with contract), so a
+    store-key cursor could never map under §5.7: 10,255 changed keys unmapped
+    every run and the 1,486 indicator CSVs never re-derived from CI. The middle
+    segment IS the catalog id suffix; per-geo maxes fold into their indicator's."""
     out = {}
     if tbl.num_rows == 0:
         return out
     for k, d in zip(tbl.column("series_key").to_pylist(), tbl.column("obs_date").to_pylist()):
         if d is None:
             continue
-        if k not in out or d > out[k]:
-            out[k] = d
+        parts = k.split(":")
+        ind = parts[1] if len(parts) == 3 and parts[0] == "WDI" else k
+        if ind not in out or d > out[ind]:
+            out[ind] = d
     return {k: v.isoformat() for k, v in out.items()}
 
 
