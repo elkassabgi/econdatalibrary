@@ -764,6 +764,16 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         if live_only and not _is_live(unit) and not sources:
             not_in_rollout.append(unit.source_id)
             continue
+        if _wrong_location(unit) and sources:
+            # The explicit --source override is location-BLIND by design (the workstation
+            # job depends on it) — but a manual cloud dispatch of a run_location: local
+            # source runs KEYLESS there and writes false structural verdicts (census,
+            # 2026-08-06: 45/45 'Missing Key' pages recorded as schema breaks, R362).
+            # The override stands; it just cannot be silent any more.
+            print(f"[orchestrator] WARNING {unit.key}: explicit --source OVERRIDES "
+                  f"run_location={(unit.config or {}).get('run_location')} on "
+                  f"{_here()} — a local-routed source's credentials are typically "
+                  f"absent here and its verdicts belong to the other lineage", flush=True)
         if _wrong_location(unit) and not sources:
             # Announced and recorded, never silent (R101). An explicit --source still runs it,
             # so the workstation job and a manual proof are both unaffected.
