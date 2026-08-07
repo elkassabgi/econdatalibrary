@@ -598,3 +598,30 @@ budgeted-without-rotation fetchers grows beyond the 17 audited today (those have
 per-sub-unit freshness sidecar — eia, zillow, bis, fed_board and similar — verified by
 reading the loop, not grepping). Negative control included: removing one allowlist entry
 makes it fire. Ledger R377.
+
+### ecb tail — figure CORRECTED, and a warning about the obvious check
+
+I quoted "280 of 540 never fetched / best prefix 260" from a single run. Measured across ALL
+**seven** ecb runs in state.db, using the sorted POSITION of each run's first-deferred file:
+
+    pos 297  ECB__CSEC__M__SI__2025      pos 233  ECB__CSEC__M__IT__2021
+    pos 288  ECB__CSEC__M__SE__2022      pos 202  ECB__CSEC__M__HR__2026
+    pos 260  ECB__CSEC__M__MT__2024      pos 191  ECB__CSEC__M__GR__2021
+    pos 250  ECB__CSEC__M__LU__2026
+
+    span 191..297 of 540 — never advancing, never past 297.
+
+So the accurate figure is **at least 243 files (indices 297-539) untouched across those seven
+runs**, not 280. The defect and the fix are unchanged; the number was too precise for its
+evidence.
+
+**The warning.** The obvious check — "does the first-deferred sub-unit CHANGE between runs?"
+— gives a FALSE ALL-CLEAR here. ecb's first-deferred name is different in all seven runs, so
+a name-based check calls it healthy. It is not: every one of those names is inside the same
+`ECB__CSEC__M__*` block, so the sweep stops at a slightly different point within the SAME
+prefix each time, depending on upstream speed. Only the sorted POSITION reveals it. Compare
+`abs`, where three runs deferred from ABS_CENSUS2011_T32_LGA, ABS_SEIFA2021_SA2 and
+C21_G44_SED — genuinely different regions, which is what advancing looks like.
+
+If you build a run-history check for this class, key it on POSITION and monotonicity, never
+on whether the label differs.
