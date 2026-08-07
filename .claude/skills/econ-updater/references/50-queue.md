@@ -1204,3 +1204,18 @@ STRUCTURAL FIX WORTH DOING (nobody has asked for it yet, so it is queued not don
      simply whose lease has outlived its source's cadence.
   3. Consider a shorter TTL with renewal instead of one long TTL, so a dead run frees its unit
      in minutes rather than in days.
+
+### GOTCHA: backticks in a `git commit -m` message are EXECUTED by bash, and the word vanishes
+
+Confirmed on two of today's commits. `git commit -q -m "... so `runs` alone answers ..."`
+printed `bash: runs: command not found` and stored "so  alone answers" — the backticked token
+is command-substituted away, leaving a double space and a sentence missing its subject.
+bb4b7381 lost one the same way ("which maps  but never the undimensioned").
+
+Nothing warns you: git records whatever bash hands it, so the message reads fine in the
+terminal scrollback you composed and wrong in the repo forever. On a project where commit
+messages ARE the durable record, that is a real loss.
+
+FIX: pass the message on stdin instead of interpolating it — `git commit -F -` with a
+single-quoted heredoc — or just never use backticks in `-m`. Quote code with plain quotes.
+Checking afterwards costs one command: `git log -1 --format=%B | grep -n "  "`.
