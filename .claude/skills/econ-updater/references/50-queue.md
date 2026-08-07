@@ -1283,3 +1283,26 @@ STILL OPEN, and bigger than one cycle:
   3. The 1,379 behind files mean more sources than the ones I repaired are serving stale bytes.
      The R380 sweep sampled 12 series per source; that is far too thin against 952 behind files
      in ilostat alone.
+
+### Post-audit re-verification (mirror R2-synced FIRST, so these verdicts are real)
+
+    ons_uk          42 series   25/25 identical   SERVED   (was hollow; retracted then redone)
+    insee_melodi   139          re-deriving
+    ilostat      3,305          re-deriving — 1,959 parquets synced from R2; the verify BEFORE
+                                the re-derive reported 8/15 identical, i.e. genuinely stale,
+                                where the same command had previously PASSED against the
+                                behind-mirror. That is the audit's point demonstrated exactly.
+    unesco_sdg 100,997          deriving, preflight clean
+    unesco_natmon 98,664        30/30 identical (verified earlier, mirror was current)
+
+TOOLING NOW CLOSES THE HOLE both ways:
+  - `core/derive_csv.py` REFUSES when the mirror is behind, and WARNS when it is ahead.
+  - `tools/verify_source_served.py` WITHHOLDS its byte verdict when the mirror is behind
+    rather than printing a pass that only means served==local.
+So the specific failure mode that produced the hollow tally cannot silently recur: both the
+writer and the checker now say so.
+
+STILL OPEN (audit's list, none of it done): the other ~1,300 behind files across eurostat 124,
+owid 58, ember 26, boe 25, statfin 23, ssb 22, dst 21, defillama 18, ksh_stadat 15,
+fed_board 13, cso 12 and more. Each needs the same treatment — sync from R2, re-derive,
+verify. ilostat was taken first because it was the worst (952).
