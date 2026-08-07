@@ -715,3 +715,32 @@ FIRST THING TO CHECK after the next scheduled daily: a large source that previou
 "csv_derive failed N/M" should now read "csv coverage note: derive budget spent — N of M
 id(s) deferred to csv_retry_queue, none failed" and NOT be `partial` on that account.
 insee_bdm is the one to look at (it read 43,354/77,501).
+
+### worldbank_esg — 6 of the 13 "archived" indicators are RENAMES we now fetch
+
+Probed the publisher directly (cycle 38). The archived set is not all dead data:
+
+    CC.EST -> GOV_WGI_CC.EST      PV.EST -> GOV_WGI_PV.EST      RQ.EST -> GOV_WGI_RQ.EST
+    GE.EST -> GOV_WGI_GE.EST      RL.EST -> GOV_WGI_RL.EST      VA.EST -> GOV_WGI_VA.EST
+
+Exact `GOV_WGI_<same id>` matches, all six present in the publisher's current source-75
+listing, and all six are among the 22 newly published indicators that today's new-indicator
+pickup already queued. `GE.EST` reads "Government Effectiveness: Estimate" with source **WDI
+Database Archives**; `GOV_WGI_GE.EST` reads "Government Effectiveness - Governance estimate"
+with source **Worldwide Governance Indicators**. Same concept, moved database.
+
+So the World Bank RE-HOMED the WGI six rather than dropping them, and we are already pulling
+the successors. Their old ids stay served-frozen as the pre-rename vintage.
+
+The remaining 7 have no `GOV_WGI_` counterpart: EN.ATM.CO2E.PC, EN.ATM.METH.PC,
+EN.ATM.NOXE.PC, EN.CLC.GHGR.MT.CE, IC.LGL.CRED.XQ, NY.GDP.MKTP.KD.ZG, SI.SPR.PCAP.ZG. The
+publisher now lists an AR5 greenhouse-gas family (EN.GHG.ALL.MT.CE.AR5, EN.GHG.CH4.MT.CE.AR5,
+EN.GHG.CO2.MT.CE.AR5, EN.GHG.N2O.MT.CE.AR5, EN.GHG.CO2.LU.MT.CE.AR5, EN.GHG.ALL.PC.CE.AR5)
+which plainly covers the same subject matter — but AR5 is a different accounting basis, so
+that is a CONCEPT CHANGE, not a rename, and no id should be treated as a successor without a
+human reading both definitions. **Not asserted.**
+
+METHOD NOTE: a fuzzy name match proposed EN.ATM.METH.PC and EN.ATM.NOXE.PC -> EG.USE.PCAP.KG.OE
+("Energy use per capita") on the strength of the words "per capita" — two false successors
+from one lazy matcher. The exact `GOV_WGI_<id>` test is what produced the six. R142: do not
+match on formatted text when an exact key exists.
