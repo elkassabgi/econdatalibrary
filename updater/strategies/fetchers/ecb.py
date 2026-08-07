@@ -62,7 +62,8 @@ import pyarrow.compute as pc
 from ... import blob, config, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+                      save_rotation)
 
 # --------------------------------------------------------------------------- #
 # Endpoint / constants — reused verbatim from jobs/ingest_ecb.py
@@ -480,6 +481,19 @@ def update(unit, since) -> Result:
     if not pfiles:
         raise DefinitiveError(f"no ecb parquet files under {out_dir}")
 
+    # RESUME PAST THE LAST FILE WORKED ON. blob.list_parquets returns sorted names, so
+    # without this the 35-minute budget re-walks the same alphabetical PREFIX every run and
+    # the rest is deferred forever while the note reassuringly says "taken next tick".
+    #
+    # MEASURED 2026-08-07 across four consecutive runs — the deferred set was always a
+    # SUFFIX (280, 349, 338, 307 of 540) and the best prefix ever reached was 260 of 540, so
+    # sorted indices 260-539 had NEVER been fetched: 280 files across 107 agency__flow
+    # groups, among them ECB__EXR (euro reference rates), ECB__ICP (HICP), ECB__YC (yield
+    # curves), ECB__FM, ECB__STS and 64 ESTAT__QSA files. ECB__EXR__D sat at newest obs
+    # 2026-07-31 while the run reported `partial` with nothing failing. The same defect as
+    # insee_melodi, at ~7x the file count (R190 class).
+    pfiles = rotate_after(pfiles, load_rotation(out_dir))
+
     catalog = _load_catalog(out_dir)
 
     tally = Tally()
@@ -496,6 +510,13 @@ def update(unit, since) -> Result:
             # The vintage is still not advanced and the next tick takes them first.
             tally.deferred_unit(f"{fn}: budget {BUDGET_MIN:.0f} min spent, deferred")
             continue
+        # AFTER the deferral check, never before: the bookmark means "the last file this run
+        # actually WORKED ON". Stamped above the check it would name a file that was
+        # deferred, and the next run — starting just past it — would skip exactly the file
+        # the deferral promised to return to. Written per file rather than once at the end,
+        # because the orchestrator's per-source cap KILLS a source rather than breaking its
+        # loop and an end-of-function save would be lost on that kill (R273).
+        save_rotation(out_dir, fn)
         path = os.path.join(out_dir, fn)
         stem = fn[:-len(".parquet")]
         before = blob.row_count(path)
