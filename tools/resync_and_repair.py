@@ -57,7 +57,8 @@ def store_root_for(src: str) -> str:
     """
     for r in STORE_ROOTS:
         d = os.path.join(ROOT, "data", r, src)
-        if os.path.isdir(d) and any(f.endswith(".parquet") for f in os.listdir(d)):
+        if os.path.isdir(d) and any(f.endswith(".parquet")
+                                    for _dp, _dn, fs in os.walk(d) for f in fs):
             return r
     return "clean_full"
 

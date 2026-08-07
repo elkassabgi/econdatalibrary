@@ -120,10 +120,28 @@ def _mirror_behind_store(sources, sample: int = 0):
     # "this source is fine".
     ROOTS = ("clean_full", "clean_grouped")
 
+    # NOR ONE DIRECTORY LEVEL. `os.listdir` sees only the top of the tree, and two stores are
+    # nested: bea is data/clean_full/bea/<Dataset>/<Table>.parquet and usda
+    # data/clean_full/usda/<theme>/part_NNN.parquet. For those this printed "NO local parquets
+    # under any of ('clean_full', 'clean_grouped') — UNCHECKED" while 60 usda parquets sat
+    # one level down, so the guard skipped the exact source it was meant to check. Walk, and
+    # carry the RELATIVE path so the R2 key matches (tools/footer_diff.py made the same mistake
+    # keying on the basename and reported 30 phantom AHEAD files for eia — ledger R389).
+    # NOT updater.blob.list_parquets(recursive=True), which does exactly this walk but is
+    # R2-ROUTED: under AQUEDUCT_BACKEND=r2 it lists the BUCKET. Using it here would make the
+    # "local" side of a local-vs-R2 comparison come from R2, so the guard would compare the
+    # store against itself and pass every time — a far worse failure than the one being fixed.
+    def _rel_parquets(d):
+        out_ = []
+        for dirpath, _dirs, fs in os.walk(d):
+            rel = os.path.relpath(dirpath, d).replace(os.sep, "/")
+            out_ += [f if rel == "." else f"{rel}/{f}" for f in fs if f.endswith(".parquet")]
+        return out_
+
     def _dir_for(src):
         for r in ROOTS:
             d = os.path.join(ROOT, "data", r, src)
-            if os.path.isdir(d) and any(f.endswith(".parquet") for f in os.listdir(d)):
+            if os.path.isdir(d) and _rel_parquets(d):
                 return d, r
         return None, None
 
@@ -157,7 +175,7 @@ def _mirror_behind_store(sources, sample: int = 0):
                 print(f"[preflight] {src}: NO local parquets under any of {ROOTS} — cannot "
                       f"compare against R2, so this source is UNCHECKED, not clean", flush=True)
             continue
-        files = [f for f in os.listdir(d) if f.endswith(".parquet")]
+        files = _rel_parquets(d)
         if not files:
             continue
         k = sample or min(64, max(6, len(files) // 20))
@@ -171,7 +189,7 @@ def _mirror_behind_store(sources, sample: int = 0):
                 # r2://econ-data/clean_grouped/, not clean_full, or every object 404s and the
                 # `except: continue` below turns the whole check into a silent pass.
                 s3.download_file("econ-data", f"{store_root}/{src}/{f}", rp)
-                ln, lmx = stats(os.path.join(d, f))
+                ln, lmx = stats(os.path.join(d, *f.split("/")))
                 rn, rmx = stats(rp)
             except Exception:                                         # noqa: BLE001
                 continue

@@ -82,10 +82,27 @@ def _mirror_matches_store(src: str, sample: int = 4) -> bool:
     import duckdb
     from core import r2_util
 
-    d = os.path.join(ROOT, "data", "clean_full", src)
-    if not os.path.isdir(d):
+    # RESOLVE THE STORE ROOT. This hardcoded clean_full on both sides, so every clean_grouped
+    # source returned False here and never reached the comparison at all — sec_edgar's 17,276
+    # served series were outside this daily probe entirely. False is the safe direction (it
+    # reads as "cannot prove level"), but a monitor that silently declines to look at a source
+    # is not monitoring it.
+    root = None
+    for _r in ("clean_full", "clean_grouped"):
+        _d = os.path.join(ROOT, "data", _r, src)
+        if os.path.isdir(_d) and any(f.endswith(".parquet")
+                                     for _dp, _dn, _fs in os.walk(_d) for f in _fs):
+            root, d = _r, _d
+            break
+    if root is None:
         return False
-    files = [f for f in os.listdir(d) if f.endswith(".parquet")]
+    # WALK. bea and usda nest their parquets one level down, so a flat listdir returns [] and
+    # this probe skips them without saying so — in a daily CI step whose whole job is to notice
+    # silence (ledger R390).
+    files = [f if rel == "." else f"{rel}/{f}"
+             for dp, _dn, fs in os.walk(d)
+             for rel in [os.path.relpath(dp, d).replace(os.sep, "/")]
+             for f in fs if f.endswith(".parquet")]
     if not files:
         return False
     s3 = r2_util.client()
@@ -105,11 +122,11 @@ def _mirror_matches_store(src: str, sample: int = 4) -> bool:
     for f in random.Random(0).sample(files, min(sample, len(files))):
         rp = os.path.join(tmp, "r.parquet")
         try:
-            s3.download_file("econ-data", f"clean_full/{src}/{f}", rp)
+            s3.download_file("econ-data", f"{root}/{src}/{f}", rp)
         except Exception:                                             # noqa: BLE001
             continue
         try:
-            ln, lmx = stats(os.path.join(d, f))
+            ln, lmx = stats(os.path.join(d, *f.split("/")))
             rn, rmx = stats(rp)
         except Exception:                                             # noqa: BLE001
             return False
