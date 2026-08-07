@@ -111,7 +111,8 @@ def main() -> int:
         r = subprocess.run(["npx", "wrangler", "d1", "execute", D1_NAME, "--remote",
                             "--command", stmt],
                            cwd=os.path.join(ROOT, "api", "worker"),
-                           capture_output=True, text=True, env=env, shell=(os.name == "nt"))
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", env=env, shell=(os.name == "nt"))
         ok = r.returncode == 0
         print(f"  D1: {stmt.split(' WHERE')[0]} -> {'ok' if ok else 'FAILED'}")
         if not ok:
