@@ -31,7 +31,7 @@ import requests
 from ... import config, merge, blob
 from ...errors import DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, load_rotation, save_rotation, rotate_after
+from ._common import Tally, finalize, load_rotation, save_rotation, rotate_after, Deadline
 from ._vintage import content_hash, UA as _UA
 
 SOURCE = "unsdg"
@@ -48,6 +48,12 @@ PAGE_RETRIES = 4
 # and the release-tag vintage gates re-pulls between releases. Overridable via
 # unit.config['max_series'] or $UNSDG_MAX_SERIES; 0/empty = all (manual backfills).
 MAX_SERIES_DEFAULT = 200
+# TIME self-bound (R243, measured run 31132634539): the alphabetical head codes are
+# giants (AG_LND_* paginate 30+ pages at 7-9s each), so a code-count bound cannot
+# guarantee staying under the orchestrator's 45-min kill. The Deadline is checked
+# between codes; on expiry the current chunk flushes, the bookmark saves, and the
+# remainder tallies as deferred (honest partial, R303).
+TIME_BUDGET_MIN = 35
 
 
 def _get_json(url, params=None, retries=PAGE_RETRIES):
@@ -245,7 +251,12 @@ def update(unit, since) -> Result:
         save_rotation(out_dir, last_code)
         return True
 
+    dl = Deadline(TIME_BUDGET_MIN)
+    stopped_at = None
     for i, code in enumerate(codes):
+        if dl.spent():
+            stopped_at = i
+            break
         k, d, v, outc = _fetch_series(code)
         if outc == "transient":
             tally.transient_unit(code)
@@ -268,16 +279,20 @@ def update(unit, since) -> Result:
         time.sleep(RATE)
 
     if codes:
+        last_visited = codes[(stopped_at - 1) if stopped_at else -1] if (stopped_at is None or stopped_at > 0) else None
         try:
-            _flush(codes[-1])
+            if last_visited is not None:
+                _flush(last_visited)
         except DefinitiveError as e:
             return Result(status="partial", obs=n, last_obs_date=md,
                           new_vintage=None, series_cursors=all_cursors or None,
                           error=("merge refused (existing data kept, guard "
                                  f"intact): {e}"))
 
+    if stopped_at is not None:
+        deferred += len(codes) - stopped_at
     for _ in range(deferred):
-        tally.deferred_unit()          # budget slice, honest partial (R303)
+        tally.deferred_unit()          # budget/deadline slice, honest partial (R303)
 
     if not merged_any:
         # Nothing parsed anywhere -> finalize raises the honest structural/empty-window
