@@ -1146,3 +1146,11 @@ the backfill uses.
 Net effect: wid returns to ONE coherent vintage everywhere. It is still the OLDER (2024)
 vintage — that is what the blocked retirement fixes — but it is no longer a mix, and no object
 carries contradictory duplicate dates.
+
+RESTORE COMPLETE: 9,220 of 9,763 written back to the monolith vintage; zero-result check
+passed (60 sampled from the repaired set, 0 with duplicate dates). The 543 not restored are
+series that exist ONLY in the shards — the monolith has no version of them, so their objects
+were never duplicated in the first place and are correct on the shard vintage. wid therefore
+has NO duplicate-date objects anywhere; it is uniformly the 2024 monolith vintage except for
+543 shard-only series. That residual inconsistency disappears when the monolith is retired and
+the source is re-derived from the shards.
