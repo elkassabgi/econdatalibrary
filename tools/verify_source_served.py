@@ -235,11 +235,30 @@ def main() -> int:
                 "D1 in step, source supported"
                 + (f"; {len(retained):,} retained legacy id(s)" if retained else ""))
     elif coherent:
-        note = ("STORE COHERENT BUT NOT REACHABLE — catalogue and R2 agree, but "
-                + ("D1 is behind" if d1_err is None and d1_n < len(cat) else "")
-                + (" and " if (d1_err is None and d1_n < len(cat)) and in_sup is False else "")
-                + ("the source is absent from SUPPORTED_SOURCES" if in_sup is False else "")
-                + ". Users cannot fetch these ids yet.")
+        # SEPARATE "BROKEN" FROM "COULD NOT CHECK". When the D1 probe itself fails — a wrangler
+        # timeout, a transient 500 — d1_err is set and `reachable` goes False, but neither of the
+        # two known causes applies. This used to print "…agree, but . Users cannot fetch these
+        # ids yet." with an EMPTY reason, which reads as a serving defect. Measured 2026-08-07:
+        # scb rendered exactly that, and the identical command a minute later returned SERVED
+        # with D1 2,550 in step. An instrument that reports an outage when it merely lost its
+        # connection is worse than one that says nothing.
+        why = []
+        if d1_err is None and d1_n < len(cat):
+            why.append("D1 is behind")
+        if in_sup is False:
+            why.append("the source is absent from SUPPORTED_SOURCES")
+        if why:
+            note = ("STORE COHERENT BUT NOT REACHABLE — catalogue and R2 agree, but "
+                    + " and ".join(why) + ". Users cannot fetch these ids yet.")
+        else:
+            unknown = []
+            if d1_err is not None:
+                unknown.append(f"the D1 probe failed ({d1_err})")
+            if in_sup is None:
+                unknown.append("the live /v1/sources probe failed")
+            note = ("STORE COHERENT, REACHABILITY NOT VERIFIED — catalogue and R2 agree and the "
+                    "sampled bytes match, but " + " and ".join(unknown or ["a probe failed"])
+                    + ". This is NOT evidence of an outage; re-run before treating it as one.")
     else:
         note = (f"NOT CLEAN — missing {len(missing):,}, unreachable {len(junk):,}, "
                 f"byte-mismatch {bad}")
