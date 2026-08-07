@@ -83,6 +83,63 @@ def _put_with_backoff(s3, bucket, key, body) -> None:
             _time.sleep(wait)
 
 
+def _mirror_behind_store(sources, sample: int = 4):
+    """[(source, detail)] for sources whose LOCAL parquets hold less than R2's.
+
+    Compared by row count and max observation date only — see the note at the call site for
+    why timestamps and hashes are both wrong here. Samples per source to stay affordable; a
+    single behind file is enough to refuse, because we cannot know which series it feeds.
+    Any error reading either side is treated as "cannot prove it is safe" and reported.
+    """
+    import glob
+    import random
+    import tempfile
+
+    out = []
+    try:
+        import duckdb
+        from core import r2_util
+        s3 = r2_util.client()
+    except Exception as e:                                            # noqa: BLE001
+        print(f"[preflight] cannot reach R2 to check the mirror ({e!r}) — not blocking")
+        return out
+
+    root = os.path.join(ROOT, "data", "clean_full") if "ROOT" in globals() else "data/clean_full"
+    names = sources or [os.path.basename(p) for p in glob.glob(os.path.join(root, "*"))]
+    q = duckdb.connect()
+    tmp = tempfile.mkdtemp()
+
+    def stats(path):
+        p = path.replace(os.sep, "/")
+        cols = [r[0] for r in q.execute(
+            f"describe select * from read_parquet('{p}')").fetchall()]
+        dc = [c for c in cols if "date" in c.lower()]
+        n = q.execute(f"select count(*) from read_parquet('{p}')").fetchone()[0]
+        mx = q.execute(
+            f"select max({dc[0]})::VARCHAR from read_parquet('{p}')").fetchone()[0] if dc else None
+        return n, mx
+
+    for src in names:
+        d = os.path.join(root, src)
+        if not os.path.isdir(d):
+            continue
+        files = [f for f in os.listdir(d) if f.endswith(".parquet")]
+        if not files:
+            continue
+        for f in random.Random(0).sample(files, min(sample, len(files))):
+            rp = os.path.join(tmp, "r.parquet")
+            try:
+                s3.download_file("econ-data", f"clean_full/{src}/{f}", rp)
+                ln, lmx = stats(os.path.join(d, f))
+                rn, rmx = stats(rp)
+            except Exception:                                         # noqa: BLE001
+                continue
+            if rn > ln or (rmx and lmx and str(rmx) > str(lmx)):
+                out.append((src, f"{f}: local {ln:,} rows/{lmx} vs R2 {rn:,} rows/{rmx}"))
+                break
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Derive per-series CSV objects to R2")
     ap.add_argument("--bucket")
@@ -104,7 +161,32 @@ def main() -> None:
                          "Measured 2026-07-29: cepii_gravity derives at 63 ms/series, so its "
                          "991,707 remaining objects are 17.4 h serial. Both halves of the work "
                          "release the GIL (pyarrow read, then the HTTPS PUT), so threads help.")
+    ap.add_argument("--allow-stale-mirror", action="store_true",
+                    help="derive even if the local parquet mirror is BEHIND R2. Only for a "
+                         "deliberate rebuild from an older vintage — see the guard below.")
     a = ap.parse_args()
+
+    # PREFLIGHT (ledger R383). This tool WRITES to R2 but READS through the econdl resolver,
+    # which reads data/clean_full/ — the LOCAL mirror. Under AQUEDUCT_BACKEND=r2 that is a
+    # scratch copy of whatever this machine last ran, so deriving from it can overwrite correct
+    # served objects with OLDER data. Not hypothetical: on 2026-08-07 a re-derive of
+    # stat_slovenia and hagstofa did exactly that (local 2,629 rows to 2024 against R2's 2,771
+    # to 2025; local 1,884,485 rows against 2,222,916) while trying to FIX a staleness bug.
+    #
+    # The rule existed in prose and did not stop it, so it lives here, where it refuses.
+    # Judged by CONTENT — row count and max observation date — never LastModified (upload time,
+    # not change time) and never md5 (a re-encoded parquet differs with identical data). Both
+    # of those proxies produced false verdicts the same day.
+    if not a.dry_run and not a.allow_stale_mirror:
+        behind = _mirror_behind_store(a.source)
+        if behind:
+            print("\nREFUSING TO DERIVE — the local parquet mirror is BEHIND R2 for:")
+            for src, detail in behind:
+                print(f"    {src}: {detail}")
+            print("\nDeriving from it would overwrite correct served objects with older data "
+                  "(R383).\nSync those parquets from R2 first, or pass --allow-stale-mirror if "
+                  "you genuinely mean to publish the older vintage.")
+            raise SystemExit(2)
 
     rows = _catalog_ids(a.limit, a.source)
     print(f"{len(rows):,} catalog series to derive")
