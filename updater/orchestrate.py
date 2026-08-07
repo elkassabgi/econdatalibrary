@@ -332,7 +332,19 @@ def _derive_changed_csvs(unit, res, blob):
             # source cannot exempt itself by asserting anything, it only passes when the
             # catalogue provably holds nothing to re-derive. Any source with catalogued
             # series still gets the full check below.
-            return [], None
+            #
+            # THE THIRD ELEMENT IS LOAD-BEARING. This returned a 2-TUPLE until 2026-08-07: when
+            # the deferred/failed split (30fa9ed7) widened this function's contract to
+            # (failed, note, deferred) it updated the two returns below and missed this one.
+            # The caller unpacks three, so every run reaching here raised ValueError — swallowed
+            # by the outer `except Exception`, which records `transient_fail`. Worse, EVERY
+            # success-path state write lives downstream of the call site, so none of them ran:
+            # gleif merged 3,395,736 rows, published them to the store, and had the run booked
+            # as a FAILURE with its vintage un-bumped, so it re-fetched in full every time.
+            # Measured: of 168 sources that have merged obs, 11 report no cursors, and gleif is
+            # the only one whose catalogue is genuinely empty — so it alone reached this line.
+            # R380 widened the reach by admitting `partial` runs here too.
+            return [], None, []
         if res.obs:
             # Coherence is UNMET, not merely unlogged: parquet changed but the
             # changed series are unknown, so their CSVs go stale. The caller
