@@ -107,3 +107,11 @@ dbnomics_license_manifest.json
 .claude/KEEP_WORKING
 .claude/.keep_working_count
 .claude/STOP_REASON
+
+# Derive OUTPUT staged for R2 — regenerable, never source. `git add -A` swept 37,778 of
+# these (1.1 GB) into a commit on 2026-08-07; the authoritative copies live in
+# r2://econ-data/series/. See ledger R370.
+series/
+tmp_*.py
+tmp_test_*.py
+_derive_*.txt
