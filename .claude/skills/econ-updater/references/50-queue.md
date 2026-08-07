@@ -744,3 +744,50 @@ METHOD NOTE: a fuzzy name match proposed EN.ATM.METH.PC and EN.ATM.NOXE.PC -> EG
 ("Energy use per capita") on the strength of the words "per capita" — two false successors
 from one lazy matcher. The exact `GOV_WGI_<id>` test is what produced the six. R142: do not
 match on formatted text when an exact key exists.
+
+### CLASS FIXED: a `partial` run now re-derives its CSVs (was: served data frozen)
+
+`orchestrate.run_once` gated the CSV re-derive on `status == "ok"`. Chronically partial
+sources never return ok — 136 of 173 sources with run history never had, ~56 of them live
+AND served — so their served CSVs never advanced while their parquet did.
+
+Live impact, measured 2026-08-07:
+
+    worldbank_esg   4 partials in 4 lifetime runs; 14 of 40 sampled objects stale.
+                    SH.DYN.MORT:PAK served 58.5 for 2023; store held the revised 57.8.
+    hagstofa        2 of 25 sampled objects stale
+    stat_slovenia   1 of 25
+    statfin, scb    clean (the store had not advanced since their last derive)
+
+Fixed by `_should_derive_csvs(status)` -> {ok, partial}, extracted so the rule is assertable
+(`tests/test_partial_runs_rederive_csvs.py`, with a negative control pinning that
+transient_fail/no_change derive nothing, and a check that the call site uses the predicate).
+
+SIDE EFFECT WORTH KNOWING: the R361 csv_retry_queue drain lived inside the ok-only branch, so
+it could never fire for insee_bdm — the chronically-partial source whose 43,354 parked ids
+motivated building it. That drain is now reachable.
+
+REMAINING (not done here): the fix repairs FUTURE runs. Sources whose objects are already
+stale need one re-derive each to catch up — worldbank_esg was re-derived (5,473 objects,
+verify exit 0), hagstofa and stat_slovenia are known-stale and NOT yet re-derived. The other
+~53 never-ok live+served sources have not been sampled; do that before assuming they are fine
+(statfin and scb prove some genuinely are).
+
+### worldbank_esg cycle 39 — governance successors served
+
+The curated set (24 indicators, `INDICATORS` in connectors/worldbank_esg/connector.py) was
+going stale by rename: all six Worldwide Governance Indicators moved to `GOV_WGI_<id>`, and
+the served originals freeze at 2023/193 economies while the successors carry 2024/~204.
+Catalogued 5 of the 6 (+1,015 rows) plus 13 economies that had gained data for the curated
+SH.H2O.SMDW.ZS. 4,447 -> 5,473 rows, derived, D1-synced, `verify_source_served` exit 0, live
+`/v1/series/...metadata.json` returns the new ids with end_date 2024-12-31.
+
+GOV_WGI_GE.EST is NOT in the store yet (its full-history pull 400'd transiently). It is in
+the publisher's listing and absent locally, so the new-indicator branch queues it on the next
+scheduled run; re-run `tools/catalog_worldbank_esg_gaps.py --apply` after that and it lands.
+
+NOT DONE, and it is Ahmed's call: the store holds 92 indicators and only 24+successors are
+served. The other 68 are the deliberate "Curated starter set" scope, not a defect (R381).
+Expanding it needs a pillar per indicator, which the publisher does not expose — `topics`
+does not reproduce the existing assignment (EG.ELC.ACCS.ZS and EG.ELC.RNEW.ZS share topics
+and differ in pillar), so those 68 pillars would be OUR editorial judgment on ~16k series.
