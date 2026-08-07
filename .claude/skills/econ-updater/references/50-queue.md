@@ -892,3 +892,24 @@ TWO TRAPS WORTH KEEPING:
 NOT SWEPT, and deliberately: 7 sources over the 250k cap (harvard_atlas, imf_bop_direct,
 imf_gfscofog_direct, imf_gfssoo_direct, noaa, un_wpp, wid). A full re-derive of a giant is its
 own decision — noaa alone is 3.1M billed PUTs — so they need sampling first, then a call.
+
+### The 7 giants sampled too — 6 clean, and `wid` is the biggest casualty in the library
+
+The sweep skipped sources over 250k series because a full re-derive of one is its own
+decision. Sampling them costs 12 GETs each, so there was no reason not to KNOW:
+
+    harvard_atlas, imf_bop_direct, imf_gfscofog_direct,
+    imf_gfssoo_direct, noaa, un_wpp                        12/12 identical — clean
+    wid                                       10 of 12 sampled DIFFER — ~83% stale
+
+wid is 2,465,197 series, the largest source we serve, and roughly five in six of its served
+objects disagree with the store. Re-derive launched (413/413 store files confirmed present
+locally first, so it will be a complete repair, not the partial one insee_melodi got). It is
+a long job — measured throughput elsewhere today was ~2,000 objects/min, so order 20 hours —
+and ~2.4M billed Class A PUTs, which at R2's rate is single-digit dollars, not a reason to
+hesitate. Progress is visible in data/_rederive_wid.log and by counting objects rewritten
+today under `series/wid%3A`.
+
+VERIFY WHEN IT LANDS: `python tools/verify_source_served.py --source wid --sample 40` must
+report byte-compare 40/40 before this is called done. Until then wid is REPAIR IN PROGRESS,
+not repaired.
