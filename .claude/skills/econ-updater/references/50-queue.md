@@ -462,3 +462,36 @@ just delete: their data is real and no longer re-crawlable.
 Also noted: `tally.transient_unit()` is called with `f"{ind_id}: ..."` precisely so failures
 are named, but the stored note carries no `[...]` list — compare with ipea, whose note does.
 Worth a look at whether the labels are reaching `finalize()` for this source.
+
+### insee_melodi — SUPERSEDES the two entries above; the gap is 9 flows, not 64
+
+**Both earlier insee_melodi entries in this file are WRONG and are retained only so the
+error is visible.** They counted parquet files on the LOCAL disk (84) for a source whose
+authoritative store is R2. Measured against R2 (2026-08-07):
+
+    publisher /dataflow/all        : 145 flows
+    R2 store holds                 : 139        (LOCAL disk holds 84 — not the store)
+    publisher flows R2 HOLDS       : 134
+    publisher flows R2 LACKS       :  11
+      of which publisher-empty     :   2   DS_FECONDITE, DS_MORTALITE (0 observations at any
+                                           period — correctly not ingested, not catalogued)
+      REAL ACTIONABLE GAP          :   9   DS_FLORES_A17, DS_FLORES_A38, DS_RP_EDUCATION,
+                                           DS_SIDE_CREA_COM, DS_SIDE_CREA_ENT_COM,
+                                           DS_SIDE_CREA_ETAB_COM, DS_SIDE_STOCKS_COM,
+                                           DS_SOCIAL_ECONOMY, DS_TOUR_CAP
+    R2 files the publisher no longer lists: 5  (the DS_ERFS_* family — frozen archival)
+
+So "we hold 79 of 145" was really 134 of 145, and the "64 real flows we lack" census
+described a population that is mostly HELD. The two publisher-empty verdicts survive — those
+were probed directly against the API and are real — but the 64 does not, and neither does
+any coverage number derived from it.
+
+The R190 prefix hypothesis was already refuted on its own terms; with a true gap of 9 there
+is no large-scale rotation failure left to explain either.
+
+NEXT: pull the 9. They are ordinary multi-page SDMX flows (DS_FLORES_A17 returned a
+10,000-observation page on a direct probe), so a targeted run should get them.
+
+**Read this before quoting any coverage figure in this file: a `data/clean_full/<src>/`
+listing on the workstation is NOT the store for a cloud-backend source.** Ledger R366, R371,
+R374 — the same mistake three times in one day, in three different sources.
