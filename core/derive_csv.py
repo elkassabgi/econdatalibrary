@@ -149,6 +149,28 @@ def _mirror_behind_store(sources, sample: int = 0):
             if rn > ln or (rmx and lmx and str(rmx) > str(lmx)):
                 out.append((src, f"{f}: local {ln:,} rows/{lmx} vs R2 {rn:,} rows/{rmx}"))
                 break
+            if ln > rn or (rmx and lmx and str(lmx) > str(rmx)):
+                # THE OTHER DIRECTION, which the first version of this guard could not see.
+                # An adversarial audit measured 79 clean_full files (+6 sec_edgar) with MORE
+                # rows locally than on R2 — ilostat 41, cbs_nl 10, edgar_13f 7, gus_dbw 7 — and
+                # six sources (abs, cso, ember, fed_board, ilostat, usda) diverging in BOTH
+                # directions at once. That is the store missing data, not the mirror lagging.
+                #
+                # It does NOT refuse: deriving from the richer local copy is not the danger
+                # here, and blocking would stop legitimate work over a store-side problem. But
+                # it must never be silent, because "local has rows R2 lacks" means an upload
+                # was lost and nobody has noticed.
+                #
+                # DO NOT "fix" this by copying local over R2. Spot checks show the divergence
+                # is two-directional on the same files: abs/LF_HOURS has 160 rows on R2 that
+                # are NOT local; zillow/State_zhvi differs in every row (revised values);
+                # sec_edgar/XOM is local 20,629 vs R2 274 yet R2's max date is NEWER. A blind
+                # push would destroy data. It is a MERGE queue.
+                print(f"[preflight] WARNING {src}/{f}: the LOCAL mirror is AHEAD of R2 "
+                      f"(local {ln:,} rows/{lmx} vs R2 {rn:,} rows/{rmx}) — the store is "
+                      f"missing rows this machine holds. Do not push local over R2; the "
+                      f"divergence is often two-directional. Investigate before trusting "
+                      f"either side.", flush=True)
     return out
 
 
