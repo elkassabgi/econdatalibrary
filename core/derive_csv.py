@@ -112,8 +112,29 @@ def _mirror_behind_store(sources, sample: int = 0):
         print(f"[preflight] cannot reach R2 to check the mirror ({e!r}) — not blocking")
         return out
 
-    root = os.path.join(ROOT, "data", "clean_full") if "ROOT" in globals() else "data/clean_full"
-    names = sources or [os.path.basename(p) for p in glob.glob(os.path.join(root, "*"))]
+    # NOT ONE STORE ROOT. This assumed data/clean_full and therefore returned [] for every
+    # source that lives elsewhere — silently CLEARING them. sec_edgar's 17,276 parquets are
+    # under data/clean_grouped/, so the guard added today would not have blocked its re-derive
+    # at all, and ~2,000 of its served CSVs were written from a stale mirror while the
+    # preflight reported nothing. A guard that cannot find a source's files must not read as
+    # "this source is fine".
+    ROOTS = ("clean_full", "clean_grouped")
+
+    def _dir_for(src):
+        for r in ROOTS:
+            d = os.path.join(ROOT, "data", r, src)
+            if os.path.isdir(d) and any(f.endswith(".parquet") for f in os.listdir(d)):
+                return d, r
+        return None, None
+
+    if sources:
+        names = list(sources)
+    else:
+        names = []
+        for r in ROOTS:
+            names += [os.path.basename(p)
+                      for p in glob.glob(os.path.join(ROOT, "data", r, "*"))]
+        names = sorted(set(names))
     q = duckdb.connect()
     tmp = tempfile.mkdtemp()
 
@@ -128,20 +149,28 @@ def _mirror_behind_store(sources, sample: int = 0):
         return n, mx
 
     for src in names:
-        d = os.path.join(root, src)
-        if not os.path.isdir(d):
+        d, store_root = _dir_for(src)
+        if d is None:
+            # SAY SO. Returning quietly here is what made sec_edgar invisible: no directory
+            # found reads downstream as "nothing wrong with this source".
+            if sources:
+                print(f"[preflight] {src}: NO local parquets under any of {ROOTS} — cannot "
+                      f"compare against R2, so this source is UNCHECKED, not clean", flush=True)
             continue
         files = [f for f in os.listdir(d) if f.endswith(".parquet")]
         if not files:
             continue
         k = sample or min(64, max(6, len(files) // 20))
         k = min(k, len(files))
-        print(f"[preflight] {src}: comparing {k} of {len(files)} parquet(s) against R2 "
-              f"by row count and max obs date", flush=True)
+        print(f"[preflight] {src}: comparing {k} of {len(files)} parquet(s) under "
+              f"data/{store_root}/ against R2 by row count and max obs date", flush=True)
         for f in random.Random(0).sample(files, k):
             rp = os.path.join(tmp, "r.parquet")
             try:
-                s3.download_file("econ-data", f"clean_full/{src}/{f}", rp)
+                # Same root on both sides — a clean_grouped source must be compared against
+                # r2://econ-data/clean_grouped/, not clean_full, or every object 404s and the
+                # `except: continue` below turns the whole check into a silent pass.
+                s3.download_file("econ-data", f"{store_root}/{src}/{f}", rp)
                 ln, lmx = stats(os.path.join(d, f))
                 rn, rmx = stats(rp)
             except Exception:                                         # noqa: BLE001

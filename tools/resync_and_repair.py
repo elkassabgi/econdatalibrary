@@ -44,11 +44,30 @@ sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
 BUCKET = "econ-data"
 
 
+STORE_ROOTS = ("clean_full", "clean_grouped")
+
+
+def store_root_for(src: str) -> str:
+    """Which data/<root>/ holds this source? NOT always clean_full.
+
+    sec_edgar's 17,276 parquets live under data/clean_grouped/. Assuming clean_full made the
+    R383 preflight blind to it — the directory did not exist, so the guard returned "nothing
+    behind" and its re-derive proceeded from a mirror three months stale (RF.parquet: local
+    43,739 rows to 2026-05-06 against R2's 44,330 to 2026-08-05).
+    """
+    for r in STORE_ROOTS:
+        d = os.path.join(ROOT, "data", r, src)
+        if os.path.isdir(d) and any(f.endswith(".parquet") for f in os.listdir(d)):
+            return r
+    return "clean_full"
+
+
 def sync(src: str, workers: int = 16) -> int:
     from core import r2_util
     from tools.store_inventory import r2_store_files
     s3 = r2_util.client()
-    d = os.path.join(ROOT, "data", "clean_full", src)
+    root = store_root_for(src)
+    d = os.path.join(ROOT, "data", root, src)
     os.makedirs(d, exist_ok=True)
     names = sorted(r2_store_files(src))
     if not names:
@@ -56,11 +75,11 @@ def sync(src: str, workers: int = 16) -> int:
         return 0
 
     def one(n):
-        s3.download_file(BUCKET, f"clean_full/{src}/{n}.parquet",
+        s3.download_file(BUCKET, f"{root}/{src}/{n}.parquet",
                          os.path.join(d, n + ".parquet"))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         list(ex.map(one, names))
-    print(f"  {src}: synced {len(names):,} parquet(s) from R2")
+    print(f"  {src}: synced {len(names):,} parquet(s) from r2://econ-data/{root}/")
     return len(names)
 
 
