@@ -495,3 +495,30 @@ NEXT: pull the 9. They are ordinary multi-page SDMX flows (DS_FLORES_A17 returne
 **Read this before quoting any coverage figure in this file: a `data/clean_full/<src>/`
 listing on the workstation is NOT the store for a cloud-backend source.** Ledger R366, R371,
 R374 — the same mistake three times in one day, in three different sources.
+
+### worldbank_esg — cycle 38 outcome (both directions fixed, catalogue work remains)
+
+Measured against R2 via `tools/store_inventory.py` and the publisher's source-75 listing:
+
+    publisher lists          : 80 indicators
+    R2 store holds           : 71
+    ARCHIVED upstream        : 13   CC.EST, EN.ATM.CO2E.PC, EN.ATM.METH.PC, EN.ATM.NOXE.PC,
+                                    EN.CLC.GHGR.MT.CE, GE.EST, IC.LGL.CRED.XQ,
+                                    NY.GDP.MKTP.KD.ZG, PV.EST, RL.EST, RQ.EST,
+                                    SI.SPR.PCAP.ZG, VA.EST
+      of those SERVED        :  9   — and all 9 HAVE their data in R2, so "served-frozen
+                                      archival" is an honest description, not a cover for a
+                                      hole. No product inconsistency, nothing to delist.
+    NEW upstream, unheld     : 22   — the fetcher could never have reached these
+
+SHIPPED: archived indicators are recognised from the publisher's LISTING (not an error
+message — see R373) and leave the work list entirely, so they are neither retried forever nor
+counted as healthy-empty, and they cannot trip finalize()'s "all attempted returned empty =>
+structural break" guard. Newly published indicators are queued by name with a full-history
+window. Both directions are driven by the one listing call the run already makes.
+
+REMAINING: the 22 need catalogue rows before any of them reaches a user — the fetch alone
+puts parquet in the store and nothing in front of it. Do that after a scheduled run has
+actually pulled them (do not catalogue ahead of the data: R29).
+
+NOT a defect: the stored "8/9 sub-unit(s) transient-failed" note would not reproduce.
