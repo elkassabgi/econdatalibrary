@@ -556,9 +556,12 @@ Starting at the head every run, those were never going to be fetched. SHIPPED: r
 + per-flow save_rotation placed after the deferral branch, with tests pinning that a flow at
 the END of the list leads the NEXT run.
 
-Also: `BUDGET_MIN = 25` in insee_melodi.py is a plain module constant with NO env override
-(unlike CSO_MAX_TABLES or AQUEDUCT_DERIVE_BUDGET_MIN). Passing INSEE_MELODI_BUDGET_MIN does
-nothing — R376. If the sweep needs longer, edit the constant or add a real override.
+Also, and CORRECTED: `BUDGET_MIN = 25` in insee_melodi.py is a module constant, but the
+budget IS tunable — centrally. `Deadline.__init__` in strategies/fetchers/_common.py reads
+**`AQUEDUCT_BUDGET_MIN_OVERRIDE`** and applies it to all 38 budgeted fetchers (verified:
+Deadline(25) -> 120 min with it set, 25 unset). `INSEE_MELODI_BUDGET_MIN` is a name I
+invented and nothing reads it — R376. To run any budgeted sweep longer, set
+AQUEDUCT_BUDGET_MIN_OVERRIDE; do NOT edit the constant.
 
 Expect the 9-flow gap to close over the next few scheduled runs as the bookmark walks the
 list. Re-check with `tools/store_inventory.py insee_melodi` (NOT a local glob — R374).
