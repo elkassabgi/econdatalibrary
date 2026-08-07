@@ -568,6 +568,13 @@ list. Re-check with `tools/store_inventory.py insee_melodi` (NOT a local glob â€
 
 ## NEVER-REACHED TAIL AUDIT (cycle 38, 2026-08-07) â€” the R190 class was NOT closed
 
+> **READ THE RETRACTIONS BELOW THIS SECTION BEFORE QUOTING ANY NUMBER FROM THE TABLE.**
+> The DEFECT rows are right; the SEVERITY column is not. ecb's "280 files never fetched" and
+> ssb's "~71% never reached" were derived from a run history filtered to notes mentioning
+> deferrals, which hid the uncapped runs that DO cover the tail (ledger R379). Corrected:
+> ecb and ssb are STALE between full passes, not unfetched; only insee_melodi's "never
+> fetched" survives, and on store evidence (six flows with zero rows), not on run notes.
+
 Audited every fetcher that constructs a `Deadline` (37 of 183) for a work list that a budget
 truncates in a FIXED order with no way for the next run to start somewhere new. Each claimed
 defect was then adversarially verified against the real store and run history, not taken on
