@@ -180,7 +180,11 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   permission granted this hour): both fully absorbed by their EXACT-count direct successors
 #   (imf_hpd_direct 191, imf_fd_direct 8,398); data plane retired archive-first via
 #   tools/retire_source.py, D1+R2 clean. psbsfad/pctot had no registry entries. -> 174
-EXPECTED_SOURCE_COUNT = 174
+# 2026-08-07: -imf_fsi, -imf RETIRED (Class A batches 2-3 complete — ALL 33 legacy IMF sources
+#   retired archive-first tonight on Ahmed's permission; only these two of the 29 batch-2/3
+#   ids had registry entries). fsi's successors = the served FSI trio; 'imf' was the
+#   never-promoted 131-id entry. -> 172
+EXPECTED_SOURCE_COUNT = 172
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

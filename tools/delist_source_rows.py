@@ -17,6 +17,10 @@ After running: remove the id from util.ts SUPPORTED_SOURCES, deploy, verify live
 Usage:
   python tools/delist_source_rows.py hf_equities          # dry run: counts only
   python tools/delist_source_rows.py hf_equities --apply
+  python tools/delist_source_rows.py whr --purge-csv-prefix "WHR:" --apply
+      # EXCLUSIVE R2-only mode: deletes series/<urlenc(source:PREFIX)>* CSV objects and
+      # touches NOTHING else (no catalog, no D1, no store). Built for provenance residue:
+      # whr's 178 OWID-era CSVs (R364) and owid's 40 orphans, both Ahmed-authorized.
 """
 from __future__ import annotations
 
@@ -25,9 +29,12 @@ import os
 import sqlite3
 import subprocess
 import sys
+import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+
+from core import r2_util  # noqa: E402
 
 D1_NAME = "econ-catalog"
 
@@ -36,8 +43,39 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("source")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--purge-csv-prefix", default=None, metavar="NATIVE_PREFIX",
+                    help="EXCLUSIVE mode: delete only R2 series CSVs whose native key starts "
+                         "with this prefix (terminated at the encoded delimiter); catalog/D1 "
+                         "untouched. Empty string = every CSV of the source.")
     a = ap.parse_args()
     src = a.source
+
+    if a.purge_csv_prefix is not None:
+        pfx = "series/" + urllib.parse.quote(f"{src}:{a.purge_csv_prefix}", safe="")
+        c = r2_util.client()
+        keys, tok = [], None
+        while True:
+            kw = dict(Bucket="econ-data", Prefix=pfx, MaxKeys=1000)
+            if tok:
+                kw["ContinuationToken"] = tok
+            r = c.list_objects_v2(**kw)
+            keys += [o["Key"] for o in r.get("Contents", [])]
+            if not r.get("IsTruncated"):
+                break
+            tok = r.get("NextContinuationToken")
+        print(f"{src}: {len(keys):,} CSV object(s) under terminated prefix {pfx}")
+        if not a.apply:
+            print("(dry run - pass --apply to purge)")
+            return 0
+        w = r2_util.client(write=True)
+        for i in range(0, len(keys), 1000):
+            batch = keys[i:i + 1000]
+            assert all(k.startswith(pfx) for k in batch)
+            w.delete_objects(Bucket="econ-data",
+                             Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True})
+        left = c.list_objects_v2(Bucket="econ-data", Prefix=pfx, MaxKeys=5).get("Contents", [])
+        print(f"  purged; residual objects: {len(left)} (must be 0)")
+        return 0 if not left else 1
 
     con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=120)
     con.execute("PRAGMA busy_timeout=120000")

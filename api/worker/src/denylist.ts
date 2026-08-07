@@ -40,7 +40,6 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "spi",
   "stat_austria",
   "unsdg",
-  "whr",
   "wiid",
   "wto_bat_bv_m",
   "wto_bat_bv_x",
