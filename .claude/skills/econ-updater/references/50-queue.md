@@ -693,3 +693,25 @@ less recently"; it was never fetched. Its three runs are all budget-capped (15 a
 **The general lesson for this whole class**: run notes tell you a sweep is truncated; they do
 NOT tell you what was never fetched. Only the store answers that — zero-row sub-units, or
 object timestamps far past the source's cadence. Ask the store before writing a severity.
+
+### Untested branch, stated plainly: the derive-budget deferral split
+
+The R372 fix (budget-deferred derive ids are queued but no longer demote the run) is covered
+by unit tests — `tests/test_csv_coherence_note.py::test_budget_deferral_is_not_a_failure` and
+its genuine-failure sibling — but its CALL SITE has not run in production, and I could not
+arrange it cheaply today.
+
+Why: `_derive_changed_csvs` only runs when a source returns `ok`. A run whose FETCH budget
+was spent returns `partial` and never reaches the derive, so the derive budget cannot be made
+to bite by shortening the fetch. Exercising it needs a source that completes its fetch AND
+has more changed series than the derive budget can process — worldbank_esg with a 1-minute
+derive budget did not reach it (the fetch deferred first).
+
+What IS exercised: the 3-tuple return and the rest of the changed orchestrator path ran
+cleanly through cso, worldbank_esg, insee_melodi and ecb today. The residual risk is confined
+to the `if csv_deferred: enqueue_csv_retry(...)` line.
+
+FIRST THING TO CHECK after the next scheduled daily: a large source that previously read
+"csv_derive failed N/M" should now read "csv coverage note: derive budget spent — N of M
+id(s) deferred to csv_retry_queue, none failed" and NOT be `partial` on that account.
+insee_bdm is the one to look at (it read 43,354/77,501).
