@@ -522,3 +522,30 @@ puts parquet in the store and nothing in front of it. Do that after a scheduled 
 actually pulled them (do not catalogue ahead of the data: R29).
 
 NOT a defect: the stored "8/9 sub-unit(s) transient-failed" note would not reproduce.
+
+### insee_melodi — the rotation refutation above was WRONG; the bookmark SHIPPED
+
+An entry above says the R190 rotation story was "TESTED AND REFUTED" and warns the next
+reader not to ship a rotation bookmark. **Ignore that.** It is retained so the error stays
+visible, and it is logged as R375.
+
+What actually happened. I tested the hypothesis by asking whether the flows we HOLD form a
+prefix of the publisher's order. They do not — but that was never implied, because the
+holdings came from a bulk ingest that did not run in that order. The prediction the
+hypothesis really makes is about where the MISSING flows sit, and a real run settled it:
+
+    2026-08-07 run, budget 25 min, no bookmark -> 26 flows deferred, of which SIX held
+    ZERO rows: DS_SIDE_CREA_COM (pos 123), DS_SIDE_CREA_ENT_COM (126),
+    DS_SIDE_CREA_ETAB_COM (129), DS_SIDE_STOCKS_COM (133), DS_SOCIAL_ECONOMY (135),
+    DS_TOUR_CAP (143) — of the publisher's 145.
+
+Starting at the head every run, those were never going to be fetched. SHIPPED: rotate_after
++ per-flow save_rotation placed after the deferral branch, with tests pinning that a flow at
+the END of the list leads the NEXT run.
+
+Also: `BUDGET_MIN = 25` in insee_melodi.py is a plain module constant with NO env override
+(unlike CSO_MAX_TABLES or AQUEDUCT_DERIVE_BUDGET_MIN). Passing INSEE_MELODI_BUDGET_MIN does
+nothing — R376. If the sweep needs longer, edit the constant or add a real override.
+
+Expect the 9-flow gap to close over the next few scheduled runs as the bookmark walks the
+list. Re-check with `tools/store_inventory.py insee_melodi` (NOT a local glob — R374).
