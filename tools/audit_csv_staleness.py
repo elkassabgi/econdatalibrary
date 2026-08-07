@@ -19,10 +19,24 @@ ONE-DIRECTIONAL and that asymmetry is the whole point:
                                    even when one row changed), so this is an upper bound on
                                    staleness, never a count of it.
 
-So a clean verdict here is trustworthy and a dirty one is a work list, not a finding. Confirm
-candidates with `tools/verify_source_served.py --source <sid> --sample N`, which byte-compares
-served bytes against the resolver — that is the authoritative check, and the one that caught
-the original defect.
+So a clean verdict here is trustworthy and a dirty one is NOT EVEN A WORK LIST. Measured the
+day this was written, against sources whose true state was already known by byte-compare:
+
+    statfin        flagged 1,539 of 1,539    byte-compare 25/25 identical  -> 0% truly stale
+    scb            flagged 2,550 of 2,550    byte-compare 25/25 identical  -> 0% truly stale
+    worldbank_esg  clean (just re-derived)   byte-compare 60/60 identical  -> correct
+
+That is ~zero precision on the dirty side, and the reason is structural, not a tuning problem:
+a merge rewrites the WHOLE parquet even when one row changed, so for any actively-updated
+source the newest parquet is newer than every CSV derived before it — the predicate fires on
+all of them. Do NOT read the candidate count as a backlog size; it is closer to "every source
+that has ingested anything since its last derive".
+
+What this tool is actually good for is the ONE-DIRECTIONAL half: a source in the PROVABLY NOT
+STALE list needs no further checking, which is worth having cheaply over millions of objects.
+For everything else the only answer is `tools/verify_source_served.py --source <sid> --sample N`,
+whose byte-compare is what caught the original defect and what corrected this tool's own
+over-reporting.
 
 NO SILENT CAPS: `--max-objects` bounds the listing per source, and any source whose listing
 was truncated is reported as PARTIAL SCAN with the number seen. A bounded scan that printed
@@ -139,8 +153,10 @@ def main() -> int:
         print(f"\nCLEAN SO FAR BUT SCAN TRUNCATED — verdict withheld: {sorted(partial_scan)}")
     if nodata:
         print(f"\nno store parquets or no CSVs, nothing to compare: {sorted(nodata)}")
-    print(f"\nCANDIDATES (upper bound, NOT a stale count — confirm with "
-          f"verify_source_served.py): {len(stale)}")
+    print(f"\nCANDIDATES — NOT a stale count and NOT a work list: {len(stale)}. Measured "
+          f"precision on this signal is ~0 (statfin flagged 1,539/1,539 and scb 2,550/2,550 "
+          f"while both byte-compared 25/25 identical), because a merge rewrites the whole "
+          f"parquet. Only verify_source_served.py --sample N answers it.")
     for src, older, total, trunc in sorted(stale, key=lambda x: -x[1]):
         print(f"  {src:24s} up to {older:,}/{total:,}" + ("  [PARTIAL SCAN]" if trunc else ""))
     return 1 if stale else 0
