@@ -47,3 +47,29 @@ class TestWiring:
         src = inspect.getsource(ecb.update)
         assert src.index("save_rotation(out_dir, fn)") > src.index("tally.deferred_unit"), \
             "saving before the deferral check would bookmark a file that was NOT worked on"
+
+
+class TestSsbRotation:
+    """ssb has the same defect: 186 sorted grp_* files under a 40-minute budget.
+
+    MEASURED 2026-08-07 — a run of 2,401 s (exactly the budget) deferred 135 sub-units
+    starting at Fbu03, a table inside grp_Fb, which is sorted index 53 of 186, then grp_Fe
+    (54), grp_Fi (55), grp_Fj (56) and "+129 more". Roughly 53 of 186 groups were ever
+    reached; the other ~71% had never been fetched.
+    """
+
+    def test_update_rotates_its_group_list(self):
+        from updater.strategies.fetchers import ssb
+        assert "rotate_after(pfiles, load_rotation(out_dir))" in inspect.getsource(ssb.update)
+
+    def test_bookmark_saved_after_the_deferral_branch(self):
+        from updater.strategies.fetchers import ssb
+        src = inspect.getsource(ssb.update)
+        assert src.index("save_rotation(out_dir, fn)") > src.index("group deferred")
+
+    def test_the_deferred_group_leads_the_next_run(self):
+        """Production shape: 186 sorted groups, budget stops after index 53."""
+        groups = [f"grp_{c}{i:02d}.parquet" for c in "ABCDEF" for i in range(31)]
+        out = rotate_after(groups, groups[53])
+        assert out[0] == groups[54]
+        assert sorted(out) == sorted(groups)
