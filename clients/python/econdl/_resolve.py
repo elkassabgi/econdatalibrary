@@ -1583,8 +1583,14 @@ _GENERIC_SKIP = ("__series.parquet",)
 # The trailing ":" in the prefix is load-bearing: without it `…ARA3.px` would also match
 # `…ARA30.px`. Kept as an explicit set rather than making the generic resolver
 # prefix-match everywhere, which would silently change behaviour for ~200 other sources.
+# unsdg joins them for the same reason, with the same key shape: catalog id
+# `unsdg:AG_LND_DGRD`, store keys `AG_LND_DGRD:AFG`, `AG_LND_DGRD:AFG|Sex=F`, ... One SDG
+# series code is the publisher's own unit of publication (713 codes vs 227,955 code:geo|dim
+# keys), so flow grain serves every key from 396 catalog rows instead of a quarter-million.
+# The trailing ":" matters here too: without it `AG_LND_DGRD` would also match a future
+# `AG_LND_DGRD2`.
 _FLOW_GRAIN = {"stat_latvia", "stat_estonia", "ssb", "bfs", "dst",
-               "statfin", "hagstofa", "stat_slovenia", "scb"}
+               "statfin", "hagstofa", "stat_slovenia", "scb", "unsdg"}
 
 
 def _resolve_generic_long(series_id: str, root: str) -> Resolution:
