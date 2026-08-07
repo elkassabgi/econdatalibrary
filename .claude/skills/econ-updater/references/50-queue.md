@@ -123,7 +123,20 @@ serve), none supersedes anything. Ignore every dated *_VINTAGE snapshot flow.
 | IMF.STA:GS_LI | 1.0.0 | DONE 2026-08-05 (cycle 15): `imf_gsli_direct` SERVED — TABLE grain (mid-key positions 3-4 of 11), 233 ids / 80,394 series (345x collapse), verify exit 0; row left open by mistake when the ACTIONABLE entry closed |
 | IMF.STA:MFS_IR | 9.0.0 | REGISTERED 2026-08-05 (cycle 5) — fifth MFS flow, Interest Rates |
 
-### ACTIONABLE (26 sources / 996,987 series) — build/promote the publisher-direct sibling; legacy relay ids stay frozen
+### ACTIONABLE — CLOSED 2026-08-07. Every row below names a RETIRED source; do not work them.
+
+**Verified 2026-08-07 (cycle 38):** imf_dot, imf_cpis, imf_bop, imf_irfcl, imf_gfse,
+imf_gfsmab, imf_gfsssuc — all **0 catalogue rows**. They were retired with the other legacy
+IMF ids (see "IMF LEGACY RETIREMENT — EXECUTED IN FULL" below), so a row here that still
+reads "prove/promote" is describing something that no longer exists. The one exception is
+**imf_ifs (100,706 rows, still catalogued)**, and its own note already records the verdict:
+IFS's mnemonics were re-coded semantically with 0 root-code overlap in every family, so no
+mechanical supersession is possible and it stays SERVED-FROZEN.
+
+The table is kept for its per-source research (which successor flow replaced what, and why
+some searches are dead ends) — not as a work list.
+
+### (historical) ACTIONABLE (26 sources / 996,987 series) — build/promote the publisher-direct sibling; legacy relay ids stay frozen
 
 | Source | Series | Known notes |
 |---|---|---|
