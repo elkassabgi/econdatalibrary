@@ -565,3 +565,36 @@ AQUEDUCT_BUDGET_MIN_OVERRIDE; do NOT edit the constant.
 
 Expect the 9-flow gap to close over the next few scheduled runs as the bookmark walks the
 list. Re-check with `tools/store_inventory.py insee_melodi` (NOT a local glob — R374).
+
+## NEVER-REACHED TAIL AUDIT (cycle 38, 2026-08-07) — the R190 class was NOT closed
+
+Audited every fetcher that constructs a `Deadline` (37 of 183) for a work list that a budget
+truncates in a FIXED order with no way for the next run to start somewhere new. Each claimed
+defect was then adversarially verified against the real store and run history, not taken on
+the auditor's word. **3 confirmed, 0 refuted.**
+
+| fetcher | scale | what had never been fetched |
+|---|---|---|
+| **ecb** | 540 sorted files, 35-min budget | Four consecutive runs deferred 280/349/338/307, always a SUFFIX; best prefix ever 260 of 540. Sorted indices 260-539 = **280 files over 107 agency__flow groups** — ECB__EXR (euro reference rates), ECB__ICP (HICP), ECB__YC (yield curves), ECB__FM, ECB__STS, ECB__RPP, ECB__RESR and 64 ESTAT__QSA. ECB__EXR__D (2,131,010 rows) stuck at newest obs 2026-07-31. |
+| **ssb** | 186 sorted `grp_*`, 40-min budget | A 2,401 s run (exactly the budget) deferred 135 sub-units from Fbu03 / grp_Fb (sorted index 53) onward — **~71% of groups never reached**. |
+| **insee_melodi** | 145 flows, 25-min budget | Six flows holding **ZERO rows** at positions 123-143 of 145. |
+
+All three FIXED the same way: `rotate_after` + per-sub-unit `save_rotation`, saved AFTER the
+deferral branch and inside the loop.
+
+**Why it stayed invisible for weeks.** Every run reported `partial` with ZERO failures and a
+note reading "taken next tick" — nothing implemented that. The health view showed no red.
+The evidence was free the whole time: consecutive runs' deferred sets in `state.db` repeat
+the same suffix, which is the signature.
+
+**Why "closed" was wrong.** Task #83 cleared this class "by behaviour, not by grep" and #67
+swept 33 budgeted sources concluding "every other one persists progress". All three of these
+DO persist progress — per-table max dates, cursors, catalogs — just not progress that removes
+a sub-unit from the next run's work list. **"Persists something" is not "resumes."** The only
+question is whether run N+1 starts anywhere run N did not.
+
+**Now mechanical:** `tests/test_budget_needs_resumption.py` fails CI if the set of
+budgeted-without-rotation fetchers grows beyond the 17 audited today (those have a
+per-sub-unit freshness sidecar — eia, zillow, bis, fed_board and similar — verified by
+reading the loop, not grepping). Negative control included: removing one allowlist entry
+makes it fire. Ledger R377.
