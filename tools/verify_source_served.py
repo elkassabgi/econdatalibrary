@@ -155,6 +155,33 @@ def main() -> int:
     for s in retained[:3]:
         print(f"   retained    {s}")
 
+    # WHAT THE BYTE-COMPARE BELOW CANNOT SEE — stated here because it was quoted as proof and
+    # should not have been (ledger R385). `_series_csv_bytes` resolves through the LOCAL mirror
+    # under data/clean_full/. If that mirror is behind R2, the served object and the "expected"
+    # bytes come from the SAME wrong copy, so a clean result establishes served == local and
+    # says nothing about the store. An adversarial audit measured 1,379 local files behind R2
+    # (ilostat 952, eurostat 124, owid 58) while this tool was printing 25/25 identical, and two
+    # of those "clean" sources were live regressions — ons_uk/weekly-deaths-age-sex served
+    # 31,878 rows against a 37,950-row store parquet.
+    #
+    # So check the mirror FIRST and withhold the byte verdict when it is behind. A withheld
+    # verdict is useful; a false "identical" is worse than no check at all.
+    if a.sample:
+        try:
+            from core.derive_csv import _mirror_behind_store
+            stale = _mirror_behind_store([a.source])
+        except Exception as e:                                 # noqa: BLE001
+            stale = []
+            print(f"   (mirror-vs-R2 check unavailable: {e!r} — read the byte-compare as "
+                  f"CONSISTENCY ONLY, not verification)")
+        if stale:
+            for _s, detail in stale:
+                print(f"MIRROR BEHIND R2 : {detail}")
+            print("byte-compare   : WITHHELD — the local mirror is behind the store, so "
+                  "comparing served bytes against it could only prove served==local. Sync "
+                  "this source's parquets from R2 and re-run.")
+            a.sample = 0
+
     # byte-compare a random sample of what is actually served
     bad = 0
     both = sorted(cat & keys)
