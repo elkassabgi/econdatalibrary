@@ -808,3 +808,33 @@ Probe validated against known-present before the absence was believed (R316): 4 
 indicators returned non-empty Spanish. Our pipeline is correct — it records translations
 where the publisher has them and omits them where it does not. DO NOT "fill the gap": the
 only way to produce those strings is to invent them.
+
+### R380 follow-through: 3 sources repaired, and the cheap screen for the rest DOES NOT WORK
+
+Repaired and re-verified after the gate fix (all `verify_source_served` exit 0):
+
+    worldbank_esg   5,473 objects re-derived   byte-compare 60/60 identical
+    hagstofa        1,061 re-derived (7 unresolvable = catalogued-but-zero-rows, pre-existing)
+    stat_slovenia   4,134 re-derived           byte-compare 30/30 identical
+
+I then tried to find the rest cheaply, via R2 LastModified: any CSV older than the source's
+newest parquet is a staleness candidate. IT HAS ~ZERO PRECISION and the reason is structural
+— a merge rewrites the WHOLE parquet even for a one-row change, so for any actively-updated
+source every CSV predates it. Measured against sources whose truth was already known:
+
+    statfin   flagged 1,539/1,539   byte-compare 25/25 identical  -> 0% truly stale
+    scb       flagged 2,550/2,550   byte-compare 25/25 identical  -> 0% truly stale
+
+So do NOT quote a "candidates" number as a backlog. `tools/audit_csv_staleness.py` is kept
+only for its one-directional half (a CSV newer than every parquet is provably fine, cheaply,
+over millions of objects) and now says all of this in its own output. The full 122-source
+screen was ABANDONED part-way rather than left running for hours to produce a list that
+cannot be acted on — partial output in data/_csv_staleness.log, not committed.
+
+HOW THE REMAINING BACKLOG ACTUALLY DRAINS. With the gate fixed, any series that changes again
+gets re-derived on the next run that merges it, so live sources self-heal as they update. What
+does NOT self-heal is a series whose last change predates its last derive and which never
+changes again — frozen at the stale bytes. Finding those needs byte-compare per source
+(`verify_source_served --source <sid> --sample N`), which is minutes per source; the honest
+next step is to walk the ~53 remaining never-ok live+served sources that way, worst-first, NOT
+to trust a listing-metadata shortcut.
