@@ -295,6 +295,63 @@ def audit(client):
     return 1 if (missing or orphan) else 0
 
 
+def prior_facts(client, path):
+    """What the store already holds for this company — mirror first, else R2. None if new.
+
+    READ R2, NOT JUST THE LOCAL FILE. A CI runner has no local store, so a local-only lookup
+    reports "new company" for all 17,322 of them and every merge below degenerates to a
+    replace — which is the exact bug this function exists to prevent, reintroduced by
+    environment.
+    """
+    import pyarrow.parquet as pq
+    if os.path.exists(path):
+        t = pq.read_table(path)
+    elif client is not None:
+        key = f"clean_grouped/sec_edgar/{os.path.basename(path)}"
+        try:
+            t = pq.read_table(io.BytesIO(
+                client.get_object(Bucket=BUCKET, Key=key)["Body"].read()))
+        except Exception:                                     # noqa: BLE001  (absent = new)
+            return None
+    else:
+        return None
+    return {c: t.column(c).to_pylist() for c in ("metric", "obs_date", "value", "vintage_date")}
+
+
+def merge_facts(prior, new):
+    """Multiset union of the store's rows and this payload's. Never returns fewer than either.
+
+    WHY MERGE AT ALL — a companyfacts payload is the full history OF ONE CIK, and a company can
+    change CIK. Exxon re-registered in 2024: ticker XOM now resolves to CIK 2115436, whose
+    payload is 274 facts from 2024-12-31. Writing that over the store keyed by TICKER deleted
+    18 years and 20,629 facts of Exxon fundamentals, and it did so silently because the write
+    path was `pq.write_table(tbl, path)` — a replace with no comparison to what was there.
+    Seven companies in the catalogue have already had a CIK re-assigned (NVRI, CLBK, CBAT, XOM,
+    GORO, XPRO, UROY), so this is a standing class, not one incident.
+
+    WHY MULTISET AND NOT A DEDUP KEY. `parse_companyfacts` keeps end/val/filed and drops SEC's
+    `start`, so one filing's 3-month and 9-month figures for the same period end collapse into
+    indistinguishable rows — XOM has 20,629 rows but only 20,578 distinct 4-tuples. There is no
+    key to dedup on, so the union takes max(count in store, count in payload) per distinct row.
+    A restatement that genuinely retracts a fact is therefore KEPT: vintage_date makes this a
+    point-in-time table, and a fact filed on a date stays true as of that date.
+    """
+    if not prior:
+        return new
+    import pandas as pd
+    cols = ["metric", "obs_date", "value", "vintage_date"]
+    kp = pd.DataFrame(prior)[cols].groupby(cols, dropna=False).size()
+    kn = pd.DataFrame(dict(zip(cols, new)))[cols].groupby(cols, dropna=False).size()
+    k = kp.align(kn, fill_value=0)
+    k = k[0].combine(k[1], max).astype(int).sort_index()
+    out = k.index.repeat(k.values).to_frame(index=False)
+    merged = tuple(out[c].tolist() for c in cols)
+    if len(merged[0]) < max(len(prior["metric"]), len(new[0])):
+        raise AssertionError(                       # the one way this could lose a row
+            f"union {len(merged[0])} < max(store {len(prior['metric'])}, payload {len(new[0])})")
+    return merged
+
+
 def csv_bytes(metric, odate, vals):
     """The served shape: series_id,obs_date,value — series_id IS the XBRL metric."""
     buf = io.StringIO()
@@ -355,10 +412,17 @@ def main():
         todo = todo[:a.limit]
         print(f"  LIMITED to {len(todo)} companies (testing)", flush=True)
 
+    # The client is needed for READS too, not only writes: merge_facts must see what the store
+    # already holds, and on CI the local mirror does not exist.
     client = None
-    if a.apply:
+    try:
         from core import r2_util
         client = r2_util.client()
+    except Exception as e:                                    # noqa: BLE001
+        if a.apply:
+            raise
+        print(f"  (no R2 client: {type(e).__name__} — dry run will diff against the local "
+              f"mirror only, so 'new company' here may just mean 'not mirrored')")
 
     ok = failed = 0
     n_with_baseline = 0
@@ -380,15 +444,21 @@ def main():
         ident = ticks[0] if ticks else f"CIK{cik:010d}"
         safe = ident.replace("/", "_").replace(":", "_")
         path = os.path.join(GROUPED, safe + ".parquet")
-        before = pq.read_metadata(path).num_rows if os.path.exists(path) else 0
+        prior = prior_facts(client, path)
+        before = len(prior["metric"]) if prior else 0
         if before:
             n_with_baseline += 1
-        # --force exists because the skip is keyed on the LOCAL parquet. After a run
-        # that updated local+CSV but not the R2 parquet, local already matches
-        # upstream, so a plain re-run would skip exactly the companies whose R2 copy
-        # needs repairing. A local-state check cannot detect remote drift.
+        try:
+            metric, odate, vals, vint = merge_facts(prior, (metric, odate, vals, vint))
+        except AssertionError as e:
+            failed += 1
+            errors.append(f"{ident}:merge:{e}")
+            continue
+        # The skip now compares the MERGED total against the store, not the payload against
+        # the store: a payload that adds nothing leaves the union unchanged, and a payload
+        # from a successor CIK adds rows without removing the predecessor's.
         if len(metric) == before and not a.force:
-            continue                       # identical fact count -> nothing new filed
+            continue                       # nothing new filed
         changed.append((ident, before, len(metric), max(odate)))
         # Title carries every ticker SEC maps to this CIK, matching the convention
         # applied across the source — searching GOOG must find Alphabet even though
@@ -426,18 +496,16 @@ def main():
 
     print()
     print(f"companies probed : {len(todo):,}")
-    # HONEST LABEL. The comparison baseline is the LOCAL parquet, which does not exist
-    # on a CI runner — so `before` is 0 for every company and everything registers as
-    # "changed". Calling that CHANGED would overstate it every single night: the true
-    # statement is "written", and only a run with a local store can claim a diff.
-    have_baseline = n_with_baseline > 0
-    label = "CHANGED" if have_baseline else "WRITTEN (no local baseline to diff)"
-    print(f"companies {label}: {len(changed):,}"
-          + ("  (dry run — nothing written)" if not a.apply else "  (parquet + CSV written)"))
-    if not have_baseline:
-        print("   NOTE: no local clean_grouped/sec_edgar store on this machine, so every "
-              "filer is refreshed rather than diffed. Correct but not a change count — "
-              "each companyfacts payload is full history, so rewriting is idempotent.")
+    # This used to read "WRITTEN (no local baseline to diff)" on CI, because the baseline was
+    # the LOCAL parquet and a runner has none — so every filer looked new and the count was
+    # honest but meaningless. prior_facts() now falls back to the R2 object, so CI has a real
+    # baseline and CHANGED means changed. A company with no baseline is genuinely first-seen.
+    print(f"companies CHANGED: {len(changed):,}  (of {len(todo):,} probed, "
+          f"{n_with_baseline:,} had a store baseline)"
+          + ("  — dry run, nothing written" if not a.apply else "  (parquet + CSV written)"))
+    if n_with_baseline < len(todo) - failed:
+        print(f"   {len(todo) - failed - n_with_baseline:,} filer(s) had NO store baseline — "
+              f"first appearance, or the company is stored under a different ident.")
     print(f"fetch failures   : {failed:,}{('  e.g. ' + str(errors[:4])) if errors else ''}")
     for ident, b, aft, latest in changed[:12]:
         print(f"   {ident:<12} {b:>8,} -> {aft:>8,} facts   newest obs {latest}")
