@@ -398,9 +398,24 @@ explain this gap, so do NOT ship a rotation bookmark on that story (R257: a hypo
 fits the symptoms and cites a real mechanism is exactly what a wrong diagnosis feels like;
 the tell is the unmeasured quantity it depends on).
 
-Next probe for whoever picks this up: the 66 are scattered, so ask per-flow WHY — run the
-fetcher against a few named misses (`DS_FECONDITE`, `DS_FLORES_A17`, `DS_MORTALITE`,
-`DS_PRENOM`) and read the outcome. Candidates worth distinguishing: individually oversized
-flows that exhaust the per-flow retry budget, flows whose DSD the parser rejects, and flows
-that return 200 with zero observations. The answer decides between a parser fix, a budget
-change, and a publisher-side dead end — three different repairs.
+PROBED 2026-08-07 — the 66 are NOT one population. Four named misses, asked directly:
+
+| flow | result | verdict |
+|---|---|---|
+| `DS_FECONDITE` | HTTP 200, **0 observations**, 527 B — with NO params and with `startPeriod=1990` | publisher-empty |
+| `DS_MORTALITE` | HTTP 200, **0 observations**, 526 B — same both ways | publisher-empty |
+| `DS_FLORES_A17` | HTTP 200, **10,000 observations**, 3.70 MB in 7.5 s | REAL DATA, should be held |
+| `DS_PRENOM` | HTTP 200, **10,000 observations**, 2.74 MB in 5.6 s | REAL DATA, should be held |
+
+So at least two causes, needing opposite responses:
+
+1. **Publisher-empty flows** — listed in `/dataflow/all`, serve nothing at any period. Not
+   ingesting them is CORRECT; they must never be catalogued either (a catalogue row with no
+   data is the R29 violation). Count them before deciding anything about the 66.
+2. **Large paginated flows** — 10,000 observations is the page cap, so these are multi-page
+   pulls of genuine data that we simply do not have. This is the actionable half: find out
+   whether they exhaust the per-flow page loop, the retry budget, or the run Deadline.
+
+Do the census before the fix: classify all 66 by a single cheap `?startPeriod=1990` probe
+(0 observations vs >0), because the empty ones will otherwise inflate every "coverage gap"
+number quoted for this source — and the gap that matters is only the second group.
