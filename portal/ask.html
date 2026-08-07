@@ -308,19 +308,4 @@ body{font-family:var(--sans);color:#111827;background:#f7f7f8;display:flex;flex-
   (async function () { await loadHealth(); })();
 })();
 </script>
-<!-- Hidden page-view counter. Records ONLY the path and the UTC date in our own
-     D1 (no cookie, no IP, no identifier), which is why the site needs no consent
-     banner. Fires after load so it can never delay or break rendering, and any
-     failure is swallowed silently. Read the totals at
-     /v1/pv/report on the econdl-api worker. -->
-<script>
-addEventListener("load", function () {
-  try {
-    // An Image beacon rather than fetch(): no CORS preflight, no promise left
-    // pending if the request is blocked, and nothing rendered either way.
-    new Image().src = "https://econdl-api.elkassabgi.workers.dev/v1/pv?p=" +
-      encodeURIComponent(location.pathname) + "&t=" + Date.now();
-  } catch (e) { /* a counter must never affect the page */ }
-});
-</script>
 </body></html>
