@@ -625,3 +625,38 @@ C21_G44_SED — genuinely different regions, which is what advancing looks like.
 
 If you build a run-history check for this class, key it on POSITION and monotonicity, never
 on whether the label differs.
+
+### ecb — SEVERITY RETRACTED. The defect is real; "never fetched" was WRONG.
+
+I published, repeatedly and in commit messages, that ecb had "280 of 540 files NEVER fetched"
+(later "at least 243"), naming euro reference rates, HICP and yield curves as frozen. **That
+is not true and I should not have said it.** Retracted here; ledger R379.
+
+What I did: read the 7 runs whose notes mention a deferral, saw the deferred set was always a
+suffix, and concluded the tail was unreachable. I never asked whether there were OTHER runs.
+
+What the FULL history shows — 12 ecb runs, not 7:
+
+    dur 4115.3s  ok       +7,169,502 new rows        <- no deferral: a COMPLETE pass
+    dur 4686.2s  partial  +6,202,626 new rows        <- complete pass, csv-coherence note only
+    dur 3973.0s  partial  +5,849,110 new rows        <- complete
+    dur 4362.8s  partial  +5,866,080 new rows        <- complete
+    dur ~2100s   partial  x7, budget-capped at 35 min, deferring a suffix
+
+So ecb alternates between full passes (~4,000 s, well past the 35-minute cap) and capped
+ones. The tail IS reached, just less often than the head.
+
+The store's own timestamps agree and I should have checked them first: of 540 objects only
+**15** are more than 30 days old, and those are alphabetically EARLY — ECB__AME__A, ECB__BKN,
+ECB__BOP__H, ECB__BSP__H — i.e. flows with no new data, not unreached ones. Before my own
+full pass started, 434 of 540 had been rewritten within 7 days.
+
+**What remains TRUE:** a budgeted sweep over a fixed order with no bookmark re-walks the same
+prefix, so the seven capped runs spent ~35 minutes each redoing work the previous capped run
+had already done, and the tail's freshness depended entirely on the occasional uncapped run.
+The rotation fix is correct and still worth having — capped runs now extend coverage instead
+of repeating it. Only the severity was invented.
+
+**ssb is NOT retracted.** Its evidence is independent of run notes: 81 of 186 group files sit
+in the 35-41 day bucket and 103 are >=21 days old, with no full-pass run in its history. That
+one stands.
