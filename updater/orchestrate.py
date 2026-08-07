@@ -956,6 +956,32 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             continue
 
         if not store.claim_lease(unit.key, owner=OWNER, ttl_s=_ttl(unit)):
+            # RECORD IT. This branch used to `continue` silently, and that made a two-day
+            # outage invisible: eia/_all was held by orch-41604 — a run that had died on
+            # 2026-08-05 — with a 64-hour TTL, so every pass since was refused the unit while
+            # the guard reported 3/3 jobs alive and healthy. Because nothing was logged and
+            # `last_attempt_utc` never moved, eia looked downstream exactly like a source that
+            # simply was not due. A daily source went 2+ days stale and no gate could see it.
+            #
+            # A lease is held by a PROCESS, and processes die; "locked" is therefore a claim
+            # about the world that deserves the same evidence trail as a fetch. The run row
+            # names the holder and when its lease expires, so `runs` alone answers "why did
+            # this source stop?" — which is the question that cost two days here.
+            held = store.lease_holder(unit.key) if hasattr(store, "lease_holder") else None
+            note = "unit is leased by another run"
+            if held:
+                note = (f"locked: held by {held.get('owner')} until "
+                        f"{held.get('expires_utc')} — if no such run is alive, the lease is "
+                        f"ORPHANED and this source is blocked until it expires")
+            print(f"[orchestrator] LOCKED {unit.key} — {note}", flush=True)
+            try:
+                store.log_run(unit.source_id, unit.unit_id, "locked", obs=0, dur_s=0.0,
+                              note=note)
+            except Exception as e:                                    # noqa: BLE001
+                # Never let bookkeeping sink the pass — but say so, because a silent failure
+                # here restores exactly the blindness this branch was written to remove.
+                print(f"[orchestrator] WARNING: could not log the locked unit ({e!r})",
+                      flush=True)
             results.append((unit.key, "locked"))
             continue
 
