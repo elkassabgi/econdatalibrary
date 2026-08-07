@@ -184,6 +184,32 @@ class StateStore:
         row = self.db.execute("SELECT owner FROM leases WHERE key=?", (key,)).fetchone()
         return bool(row and row["owner"] == owner)
 
+    def lease_holder(self, key):
+        """{'owner','expires_utc'} for a held lease, else None.
+
+        Exists so a REFUSED unit can say WHO is holding it. A lease is claimed by a process
+        and processes die; without this the orchestrator could only report "locked", which
+        downstream is indistinguishable from "not due". eia/_all sat behind a lease owned by
+        a run that died on 2026-08-05 with a 64-hour TTL, and nothing named the holder — a
+        daily source went two days stale in silence.
+        """
+        row = self.db.execute(
+            "SELECT owner, expires_utc FROM leases WHERE key=?", (key,)).fetchone()
+        return {"owner": row["owner"], "expires_utc": row["expires_utc"]} if row else None
+
+    def held_leases(self):
+        """Every lease still in force, as facts — [{key, owner, expires_utc}].
+
+        Deliberately NOT called "orphaned": this cannot know which owners are alive, and a
+        method that guessed would eventually tell someone to clear a lock a live run was
+        using. The caller pairs this with its own liveness check.
+        """
+        now = now_utc()
+        return [{"key": r["key"], "owner": r["owner"], "expires_utc": r["expires_utc"]}
+                for r in self.db.execute(
+                    "SELECT key, owner, expires_utc FROM leases WHERE expires_utc > ? "
+                    "ORDER BY expires_utc", (now,))]
+
     def release_lease(self, key, owner=None):
         """Release a lease. Owner-scoped so a run can't drop a lease it doesn't hold."""
         if owner is None:
