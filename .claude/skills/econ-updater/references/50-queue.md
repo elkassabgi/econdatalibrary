@@ -838,3 +838,11 @@ changes again — frozen at the stale bytes. Finding those needs byte-compare pe
 (`verify_source_served --source <sid> --sample N`), which is minutes per source; the honest
 next step is to walk the ~53 remaining never-ok live+served sources that way, worst-first, NOT
 to trust a listing-metadata shortcut.
+
+COST CHECK on the R380 change (the obvious objection: does deriving on `partial` blow the
+daily run's 250-min step?). No. The derive processes only `res.series_cursors` — the series
+merged THIS run — so in steady state it is the same small set an `ok` run would have derived.
+It is bounded anyway by `AQUEDUCT_DERIVE_BUDGET_MIN` (default 45 min per unit), and ids the
+budget does not reach go to csv_retry_queue as deferred-not-failed, which the same change
+makes drainable. The only sources that can spend the full budget are ones working off a real
+backlog, which is exactly the work that needs doing.
