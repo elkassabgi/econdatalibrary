@@ -214,7 +214,19 @@ Cross-check: 26 actionable + 71 reserved = 97 queue sources; 996,987 + 370,003 =
 
 COVERAGE: read lines 1-137 (complete file, 137 lines) of E:/research/econfindatalibrary/CLAUDE.md, last line read: `- **A budget bounds only the failure mode it measures** (time ≠ memory). R72.`
 COVERAGE: read lines 9-63 and 3087-3566 (end of file) of E:/research/econfindatalibrary/DATABASE_LICENSES_VERBATIM.md in full, plus grep-targeted excerpts of lines 1541-1565 (etalab/cepii), 799-823, 1107-1125, 1282-1294, 1580-1609, 1991-2008, 2769-2788, 2994-3016 (the 7 DISPUTED details) and all `^##`/`^###` headers; the middle (lines 64-3086) was NOT read line-by-line — per task instructions only headers/GATE/DISPUTED/etalab were extracted from it. Last line read: `needed under a different arrangement.` (line 3566, end of file).
-## IMF LEGACY RETIREMENT PLAN (AUTHORIZED by Ahmed 2026-08-06: "no bookmarks... refresh to match publisher... I need a clean database")
+## IMF LEGACY RETIREMENT — EXECUTED IN FULL 2026-08-07 (permission granted ~21:40, all done by ~23:55)
+
+**Class A COMPLETE: all 33 legacy sources retired archive-first, zero failures** (archives at
+r2://econ-data/archive/retired/<src>/). Registry -4 total (hpdd, fiscaldecentralization, fsi,
+imf; count 176→172), util.ts -33, deploy 1fd30232, all retired ids live-absent (present +
+successor controls), coherence refresh 2026-08-07b with every shrink declared. whr UN-GATED in
+the same deploy after its 178 tainted CSVs purged (SERVED, verify exit 0). **B2 ANSWERED: KEEP
+ALL FOUR** (fsire, pgi, gender_budgeting, ifs remainder stay served-frozen — Ahmed: "just keep
+them.. no need to crawl"). gfsfalcs still held pending its successor check. MEASURED RESULT:
+D1 9.42 GB → 8.71 GB (10,535,584 rows) — the #45 split DEFERRED; coverage 70.5% of sources /
+96.0% of series auto-updating. Original plan below for the record.
+
+## (original plan) IMF LEGACY RETIREMENT PLAN (AUTHORIZED by Ahmed 2026-08-06: "no bookmarks... refresh to match publisher... I need a clean database")
 
 Inventory measured 2026-08-06: 40 legacy (non-direct) imf sources, 1,122,144 catalog rows.
 Retiring frees ~1M D1 rows — likely DEFERS the #45 split entirely (D1 hard cap is 10 GB/db;
