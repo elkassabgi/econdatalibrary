@@ -47,23 +47,58 @@ BUCKET = "econ-data"
 BOOKMARK = "_aqueduct/csv_freshness_cursor.json"
 
 
+def _cursor_local() -> str:
+    return os.path.join(ROOT, "data", "_aqueduct", "csv_freshness_cursor.json")
+
+
 def _load_cursor(blob) -> str:
+    """The source this probe stopped after last time, from R2 with a local fallback.
+
+    NOT through the blob helper. `updater.blob` derives an R2 key from a STORE path and rejects
+    anything without a `/data/<tier>/` segment, so every attempt to persist
+    `_aqueduct/csv_freshness_cursor.json` raised and the probe never advanced. Measured
+    2026-08-07: it re-probed abs, adb, barro_lee, bcb, bcrp on every single run and had never
+    reached anything past 'b' — a rotating monitor that does not rotate, which is precisely the
+    R190 shape it was written to avoid. The warning printed each time and said so; nothing read
+    it. This is operational bookkeeping, not store data, so it goes to a plain R2 key.
+    """
     try:
-        raw = blob.read_bytes(BOOKMARK)
-        return (json.loads(raw.decode("utf-8")) or {}).get("after", "") if raw else ""
+        from core import r2_util
+        raw = r2_util.client().get_object(Bucket=BUCKET, Key=BOOKMARK)["Body"].read()
+        return (json.loads(raw.decode("utf-8")) or {}).get("after", "") or ""
+    except Exception:                                                 # noqa: BLE001
+        pass
+    try:
+        with open(_cursor_local(), encoding="utf-8") as fh:
+            return (json.load(fh) or {}).get("after", "") or ""
     except Exception:                                                 # noqa: BLE001
         return ""
 
 
 def _save_cursor(blob, after: str) -> None:
+    body = json.dumps({"after": after}, separators=(",", ":")).encode("utf-8")
+    wrote = []
     try:
-        blob.write_bytes_atomic(
-            BOOKMARK, json.dumps({"after": after}, separators=(",", ":")).encode("utf-8"))
+        from core import r2_util
+        r2_util.client().put_object(Bucket=BUCKET, Key=BOOKMARK, Body=body,
+                                    ContentType="application/json")
+        wrote.append("r2")
     except Exception as e:                                            # noqa: BLE001
+        print(f"  (bookmark: R2 write failed, {type(e).__name__}) ", flush=True)
+    try:
+        os.makedirs(os.path.dirname(_cursor_local()), exist_ok=True)
+        with open(_cursor_local(), "wb") as fh:
+            fh.write(body)
+        wrote.append("local")
+    except Exception:                                                 # noqa: BLE001
+        pass
+    if wrote:
+        print(f"  rotation bookmark -> after={after!r} ({'+'.join(wrote)})", flush=True)
+    else:
         # Never fail the probe over its own bookkeeping — but SAY SO, because a silently
         # unwritten cursor means this rotates nowhere and re-checks the same prefix forever.
-        print(f"WARNING: could not persist the rotation bookmark ({e!r}); the next run will "
-              f"re-probe the same sources and the tail of the alphabet stays unchecked",
+        print("WARNING: could not persist the rotation bookmark anywhere; the next run will "
+              "re-probe the same sources and the tail of the alphabet stays unchecked",
               flush=True)
 
 
