@@ -1241,3 +1241,45 @@ proves served==local, with both behind the store).
 Four of these — stat_slovenia, hagstofa, imf_fas_direct, insee_bdm — were repaired TWICE:
 once from a stale local mirror (which regressed them) and again after syncing from R2. Only
 the second pass counts, and only the second verify is meaningful.
+
+### ADVERSARIAL AUDIT OVERTURNED MY "VERIFIED" TALLY — read this before trusting the table above
+
+A 5-lens adversarial audit (each finding independently re-verified by a second agent told to
+REFUTE it) found my repair verification was structurally weak, and it is right.
+
+THE STRUCTURAL FLAW: `core/derive_csv.py` derives FROM the local mirror and
+`tools/verify_source_served.py` compares served bytes AGAINST the local mirror. When the mirror
+is behind R2, both read the same wrong copy, so "byte-compare 25/25 identical" means only
+"served == local" — it CANNOT see that both are behind the store. I knew this (R383) and still
+reported the tally as verification.
+
+WHAT IT MEASURED, from a from-scratch fleet comparison (row counts via parquet footers, never
+bytes/ETag/LastModified — 55,394 local files vs 36,972 R2 objects):
+
+    LOCAL BEHIND R2 : 1,379 files — ilostat 952, eurostat 124, owid 58, ember 26, boe 25,
+                      statfin 23, ssb 22, dst 21, defillama 18, ksh_stadat 15, fed_board 13,
+                      cso 12, ...   (my sampling found "15 of 17 mirrors current" and missed this)
+    LOCAL AHEAD OF R2: 79 files + 6 sec_edgar — ilostat 41, cbs_nl 10, edgar_13f 7, gus_dbw 7 ...
+    BOTH DIRECTIONS AT ONCE: abs, cso, ember, fed_board, ilostat, usda
+
+CONFIRMED REGRESSIONS IN SERVED DATA (hard numbers, R2 parquet vs the live served object):
+    ons_uk/weekly-deaths-age-sex   served 31,878 rows   R2 parquet 37,950
+    ons_uk/weekly-deaths-region    served  5,621        R2 parquet  5,929
+    insee_melodi                   8 flows regressed the same way
+=> My "ons_uk 25/25 identical" and "insee_melodi 25/25 identical" were HOLLOW. Retracted.
+   Both re-synced from R2 and re-derived (in flight at time of writing).
+
+ALSO: my mirror preflight is still only a SAMPLE. At HEAD it compares min(64, max(6, 5%)) files,
+which for dst is 39 of 782 — the auditor computed P(catch)=66.3% against its 21 behind files.
+A source can pass the guard and still be behind.
+
+STILL OPEN, and bigger than one cycle:
+  1. The 79 local-AHEAD files are NOT a copy queue. Spot checks show two-directional divergence
+     — abs/LF_HOURS has 160 rows on R2 that are not local; zillow/State_zhvi has EVERY row
+     different (revised values); sec_edgar/XOM is local 20,629 vs R2 274 yet R2's max date is
+     NEWER. Pushing local over R2 would destroy data. Treat as a MERGE queue (EXCEPT ALL both
+     ways, union where schemas match, re-fetch from the publisher where they do not).
+  2. Make `_mirror_behind_store` bidirectional — report `ln > rn` as "store behind mirror" too.
+  3. The 1,379 behind files mean more sources than the ones I repaired are serving stale bytes.
+     The R380 sweep sampled 12 series per source; that is far too thin against 952 behind files
+     in ilostat alone.
