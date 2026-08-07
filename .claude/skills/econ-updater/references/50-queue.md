@@ -1020,3 +1020,31 @@ authority after a day in which I regressed two sources by acting on an unchecked
 
 UNTIL THEN: wid's re-derive is STOPPED and must stay stopped. Deriving now just picks a vintage
 arbitrarily and freezes the wrong one into 2.4M objects. wid's served data is currently a mix.
+
+### wid, sharpened: RE-DERIVING WOULD CORRUPT IT, NOT FIX IT — and the order of operations matters
+
+Measured what each layer actually returns for three colliding series (1980-12-31):
+
+    series                          monolith        shard           SERVED now     resolver returns
+    WID:thwealj992:p81p82:992:j:LB  1467633959.2    2059969160.1    1467633959.2   BOTH
+    WID:thwealj992:p80p81:992:j:KM  2647844.0       2512369.8       2647844.0      BOTH
+    WID:thwealj999:p99.995p100:..PK 114151926.4     99578524.6      114151926.4    BOTH
+
+Two things follow, and the second one nearly cost us:
+
+1. The objects we serve TODAY are COHERENT — each carries the monolith's single value. They are
+   an older vintage (to 2024, not 2025), but they are not corrupt and there is no duplicate.
+
+2. `_resolve` returns a parquet_path spanning ALL 413 files, so `_series_csv_bytes` emits the
+   SAME DATE TWICE with contradictory values. A re-derive today would therefore replace 2.4M
+   coherent objects with duplicate-date CSVs. **The repair I was running would have made wid
+   materially worse than the "staleness" I started it to fix.** Stopped in time only because
+   derive_csv_bulk --verify refused on the mismatch.
+
+SO THE ORDER IS FIXED: retire the monolith FIRST, then re-derive. Doing it the other way
+publishes contradictions. Any future "just re-derive it" impulse on wid must read this.
+
+CLASS CHECK — is any other SERVED source shaped this way? Four sources carry a `<src>.parquet`
+alongside other files (fred, sipri, vdem, wid), but sipri/vdem/fred have **0 catalogued series**
+— none is served — and the two comparable ones show 0 overlapping keys. **wid is the only
+served source with the collision.** Bounded to one source.
