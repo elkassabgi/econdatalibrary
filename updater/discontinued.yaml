@@ -1,0 +1,47 @@
+# Sources the PUBLISHER has discontinued. Served-frozen on purpose; no fetcher can exist.
+#
+# WHY THIS FILE EXISTS. `tools/audit_schedule_coverage.py` prints "served but NOT auto-updating"
+# as the work queue. That queue is what the loop works down, so anything in it is a promise that
+# someone can build a fetcher. For a dataset the publisher has retired, nobody can — and leaving
+# it at the top of the list means the largest apparent gap in the library is permanently
+# un-closable. imf_ifs alone is 100,706 series, 24% of the entire gap.
+#
+# WHY IT IS DANGEROUS AND WHAT STOPS THE ABUSE. A file that removes things from the work queue is
+# a rug. Three rules, enforced by tests/test_discontinued_registry.py:
+#   1. Every entry carries `probe` (what was actually run), `finding` (what it returned) and
+#      `measured` (when). A verdict with no measurement is not admissible here.
+#   2. Nothing in this file may be `live: true` in registry.yaml — declaring a source dead while
+#      scheduling it is a contradiction, and the test fails on it.
+#   3. The audit still counts these series as NOT auto-updating. They are frozen; saying
+#      otherwise would be the lie this file exists to avoid. It reports them under their own
+#      heading, with the finding, so a reader sees WHY rather than a silent omission.
+#
+# To add one: measure the publisher yourself, today. A note in a task, a comment in a fetcher, or
+# a previous session's summary is a citation, not a measurement (ledger R381, R386).
+
+sources:
+  - source_id: imf_ifs
+    publisher: International Monetary Fund
+    dataset: International Financial Statistics (IFS)
+    measured: 2026-08-07
+    probe: >-
+      GET https://api.imf.org/external/sdmx/2.1/dataflow — the SDMX 2.1 dataflow catalogue that
+      every imf_*_direct fetcher already uses as its change signal — then matched every published
+      Dataflow id and Name against "IFS" and "International Financial Statistics".
+    finding: >-
+      222 dataflows published, 0 matching. IMF retired IFS and re-keyed its contents into
+      per-dataset flows (BOP, MFS_FC, MFS_MA, ER/EER, PI, IMTS, ITG and others), which this
+      library already serves first-hand as 54 imf_*_direct sources. Our imf_ifs store holds
+      13,460,864 rows across 100,706 series ending 2025-07-01 and cannot be extended from the
+      publisher by any route.
+    decision: >-
+      Stays SERVED and frozen as an archival snapshot. Not retired, not deleted, not re-keyed —
+      those would break live series ids for a dataset whose successors use different keys and
+      whose crosswalk is uneven (measured in _imf_direct.py: FDI 95.3%, APDREO 100%, WHDREO 56%,
+      FAS/WORLD/COFER ~0%). A replacement id is Ahmed's call, not a side effect of this file.
+
+# CANDIDATES — believed discontinued, NOT yet re-measured, so still counted as work.
+# unesco_clte (23,868), unesco_inno (18,909), unesco_film (8,527), unesco_cltt (6,226): a cycle-36
+# note records that the current UIS release ships no culture/film/innovation files, only pre-2022
+# archives, and that our snapshots are equal-or-newer. That note is a citation and this file takes
+# measurements, so they are deliberately left in the work queue until someone probes UIS directly.
