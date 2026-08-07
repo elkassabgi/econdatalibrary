@@ -28,23 +28,33 @@ sys.path.insert(0, ROOT)
 
 
 def test_the_bookmark_round_trips_without_the_store_path_helper():
+    """NOTE THE TEST KEY. The first version of this wrote its sentinel to the REAL bookmark.
+    It restored the local file and forgot that _save_cursor also writes to R2 — so the next
+    live probe opened with "rotating after 'zz_probe_sentinel'", i.e. a test had reached into
+    production state. (It wrapped to 'abs' and lost nothing, because _rotate_after treats an
+    unknown cursor as the start, but that was luck.) Both the key and the local path are
+    redirected here, and the R2 object is deleted afterwards."""
     from tools import probe_csv_freshness as P
-    saved = P._cursor_local()
-    backup = None
-    if os.path.exists(saved):
-        with open(saved, "rb") as fh:
-            backup = fh.read()
+    real_key, real_local = P.BOOKMARK, P._cursor_local
+    P.BOOKMARK = "_aqueduct/_test_csv_freshness_cursor.json"
+    P._cursor_local = lambda: os.path.join(ROOT, "data", "_aqueduct",
+                                           "_test_csv_freshness_cursor.json")
     try:
         P._save_cursor(None, "zz_probe_sentinel")
         assert P._load_cursor(None) == "zz_probe_sentinel", (
             "the cursor did not survive a save/load round trip — the probe will restart at the "
             "top of the alphabet on every run and never check the tail")
     finally:
-        if backup is not None:
-            with open(saved, "wb") as fh:
-                fh.write(backup)
-        elif os.path.exists(saved):
-            os.remove(saved)
+        try:
+            os.remove(P._cursor_local())
+        except OSError:
+            pass
+        try:
+            from core import r2_util
+            r2_util.client().delete_object(Bucket="econ-data", Key=P.BOOKMARK)
+        except Exception:                                             # noqa: BLE001
+            pass
+        P.BOOKMARK, P._cursor_local = real_key, real_local
 
 
 def test_the_bookmark_does_not_go_through_blob_path_keying():
