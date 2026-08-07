@@ -935,3 +935,32 @@ not repaired.
 STILL RUNNING at the time of writing: yale_epi (77,240), unesco_natmon (98,664),
 unesco_sdg (100,997), wid (2,465,197). None of them is repaired until its own byte-compare
 says so — do not mark them done from the derive's exit code alone.
+
+### CORRECTION to the R380 repair tally — "verified" was partly hollow (R383)
+
+`core/derive_csv.py` derives from the LOCAL mirror and `tools/verify_source_served.py`
+byte-compares served bytes against that SAME local mirror. So for any source whose mirror was
+behind R2, both the repair and its verification were measuring the wrong thing: "25/25
+identical" meant served == local, with both behind the store.
+
+Content-checked all 17 touched sources (row count + max observation date, never timestamps).
+**15 mirrors were current — those repairs and verifications stand.** Four were not:
+
+    stat_slovenia   local 2,629 rows to 2024   vs R2 2,771 to 2025      RESYNCED + re-derived
+    hagstofa        local 1,884,485 rows       vs R2 2,222,916          RESYNCED + re-derived
+    imf_fas_direct  local 197,286 rows         vs R2 200,095            RESYNCED + re-derived
+    insee_bdm       local to 2026-05           vs R2 to 2026-06         RESYNCED + re-derived
+
+THE GUARD PAID FOR ITSELF WITHIN MINUTES. `derive_csv` now refuses when the mirror is behind
+(--allow-stale-mirror overrides). Its first real act was to BLOCK the unesco pair:
+
+    unesco_natmon   local 1,876,322 rows to 2020  vs R2 2,757,932 to 2025
+    unesco_sdg      local   734,662 rows to 2020  vs R2 1,211,641 to 2025
+
+Five years and ~1.3M rows behind. Without the guard I would have rewritten ~200,000 served
+CSVs from 2020 data. Both resynced from R2 and re-derived.
+
+STANDING RULE, now enforced in the tool rather than written down: before deriving to R2,
+prove the local parquet is not behind the store, BY CONTENT. LastModified is upload time, not
+change time; md5 differs on a re-encoded parquet with identical data. Five of seven genuinely
+differing files today had identical rows and identical max dates.
