@@ -78,12 +78,35 @@ def _alive_jobs() -> "list[str]":
     return out
 
 
+def _emptiness_verdict() -> dict:
+    """Run the crawl-emptiness audit and carry its verdict in the beat.
+
+    WHY IT RIDES THE HEARTBEAT (R274: name the reader). cbs_nl once fetched 144,000,000
+    rows and wrote ZERO for weeks — the signal existed the whole time, in checkpoints on
+    this machine, with nobody reading it. An audit only the workstation can see is a log,
+    not monitoring; CI reads this beat every day, so the verdict travels to a reader who
+    can act. Failure to RUN the audit is reported as unknown, never as clean."""
+    import subprocess
+    tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audit_crawl_emptiness.py")
+    try:
+        r = subprocess.run([sys.executable, tool, "--json"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=900)
+        reports = json.loads(r.stdout)
+        return {"ran": True,
+                "fetch_without_write": sum(len(x["empty"]) for x in reports),
+                "unreadable": sum(len(x["unreadable"]) for x in reports),
+                "detail": {x["source"]: [e[0] for e in x["empty"]][:10] for x in reports}}
+    except Exception as e:                                   # noqa: BLE001
+        return {"ran": False, "error": f"{type(e).__name__}: {e}"[:200]}
+
+
 def publish() -> int:
     body = {
         "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "host": socket.gethostname(),
         "jobs_alive": _alive_jobs(),
         "tracked": list(TRACKED),
+        "emptiness": _emptiness_verdict(),
     }
     c = r2_util.client(write=True)
     c.put_object(Bucket=BUCKET, Key=KEY,
@@ -123,7 +146,20 @@ def check(max_age_min: float) -> int:
               "have NO other update path; nothing else in CI will notice this.")
         return 1
 
-    print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) — {where}")
+    emp = body.get("emptiness") or {}
+    if emp.get("ran") and emp.get("fetch_without_write"):
+        print(f"CRAWL EMPTINESS DEFECT: {emp['fetch_without_write']} unit(s) are FETCHING AND "
+              f"WRITING NOTHING — {emp.get('detail')}")
+        print("  This is the cbs_nl class (144,000,000 rows fetched, 0 written, for weeks). "
+              "Read that unit's parser before letting the crawl continue.")
+        return 1
+    if emp and not emp.get("ran"):
+        print(f"  NOTE: crawl-emptiness audit did NOT run on the workstation "
+              f"({emp.get('error')}) — emptiness is UNKNOWN this tick, not clean.")
+
+    print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) — {where}"
+          + (f", emptiness clean ({emp.get('fetch_without_write', 0)} defect units)"
+             if emp.get("ran") else ""))
     if tracked and len(alive) < len(tracked):
         # The loop is alive but not doing its job — a different failure from a dead loop, and
         # one a bare timestamp would hide. Reported, not failed: a crawler that has FINISHED is
