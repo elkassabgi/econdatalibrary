@@ -282,6 +282,23 @@ def _record_for_catalog_sync(ids) -> None:
               f"the next `sync_catalog_d1.py --source <id>` reconcile", flush=True)
 
 
+def _should_derive_csvs(status: str) -> bool:
+    """Does a run of this status have merged rows whose CSVs must be re-derived?
+
+    A named predicate rather than an inline comparison so the rule is testable directly —
+    the version of this that lived inline as `status == "ok"` silently froze live downloads
+    for every chronically-partial source and nothing could assert against it.
+
+    `ok`      — the clean case.
+    `partial` — SOME sub-units merged and `res.series_cursors` names exactly those series.
+                Excluding it assumed a source eventually returns ok; sources that never do
+                (worldbank_esg: 4 partials out of 4 runs ever) never re-derived at all.
+    `no_change` — nothing merged, nothing to derive.
+    `transient_fail` — nothing merged, nothing to derive.
+    """
+    return status in ("ok", "partial")
+
+
 def _derive_changed_csvs(unit, res, blob):
     """Contract step 5 — CSV/parquet coherence (§5.7): re-derive the CSV of every
     series whose parquet changed this run.
@@ -971,7 +988,29 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # series' CSVs in the same run. A CSV failure demotes the run to
             # `partial` and queues the ids — the parquet publish stands, and the
             # un-bumped vintage below makes the next run re-check + re-derive.
-            if status == "ok" and not dry:
+            #
+            # `partial` IS INCLUDED, and leaving it out froze live downloads (2026-08-07).
+            # The reasoning that excluded it — "re-derive after a clean success, the next
+            # run catches up" — assumes a source EVENTUALLY returns ok. Chronically partial
+            # sources never do: one flaky sub-unit out of eighty is enough, every run,
+            # forever. worldbank_esg has returned `partial` on 4 of the 4 runs it has ever
+            # had, so the pipeline never re-derived its CSVs even once: 14 of 40 sampled
+            # objects served 2023 values while the store held 2024 — and not merely a
+            # missing tail, SH.DYN.MORT:PAK served 58.5 for 2023 where the publisher had
+            # revised it to 57.8. Measured the same day: hagstofa 2/25 and stat_slovenia
+            # 1/25 objects likewise stale; ~56 live+served sources have never returned ok.
+            #
+            # A partial's succeeded sub-units DID merge rows, and `res.series_cursors` names
+            # exactly those series — which is why the block below already writes their
+            # freshness cursors on a partial, on the explicit grounds that "the parquet
+            # holding these observations DID publish". Recording a series as fresh while
+            # refusing to re-derive the bytes users download is the contradiction this
+            # closes. It also makes the csv_retry_queue drain reachable for the sources that
+            # actually queue retries (insee_bdm parked 43,354 ids in one run and is
+            # chronically partial, so the R361 drain could never fire for it).
+            #
+            # transient_fail is deliberately NOT included: nothing merged, nothing to derive.
+            if _should_derive_csvs(status) and not dry:
                 csv_failed, csv_err, csv_deferred = _derive_changed_csvs(unit, res, blob)
                 # DRAIN THE RETRY QUEUE (2026-08-06). derive.py has promised since it
                 # gained a wall-clock budget that ids not reached "come back in `failed`
