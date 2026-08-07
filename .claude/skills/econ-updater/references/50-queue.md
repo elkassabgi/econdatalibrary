@@ -322,3 +322,37 @@ delete D1 rows → remove from util.ts SUPPORTED_SOURCES → registry retire + c
 guard imf_*_direct!) → wrangler deploy → live /v1/sources absence check → refresh_r2_catalog
 → coverage re-measure. First batch: the EXACT quartet (psbsfad, pctot,
 fiscaldecentralization, hpdd) to prove the pipeline.
+
+## cso / ons_uk / insee_melodi — resolver FIXED; the residue is staleness, not absence
+
+**2026-08-07 (cycle 38). Read the correction before acting on the commit message**: commit
+5e938746 said these three sources' "downloads were broken". That is WRONG and is logged as
+R371. What was measured, and what is true:
+
+- The client resolver DID return 0 rows for all three (cso 7,896 ids, ons_uk 42,
+  insee_melodi 139; positive control stat_latvia returned 42). cso had no resolver entry at
+  all; ons_uk/insee_melodi put dataset identity in the FILENAME. Both fixed — cso joins
+  `_FLOW_GRAIN` (7,606 of 7,896 natives now resolve against the FULL R2 store),
+  ons_uk/insee_melodi get `_resolve_file_grain` (42/42 and 139/139).
+- **Users were never cut off.** The Worker serves PRE-DERIVED CSVs from R2, not the
+  resolver. All 7,896 / 42 / 139 CSVs are present with real content (medians 14 KB /
+  2.9 MB / 1.2 MB, zero header-only), last written 2026-07-29.
+- **The real defect is FROZEN DATA.** The daily derive is what goes through the resolver, so
+  "csv_derive failed 22/22" meant those CSVs could not be refreshed — stale since 2026-07-29,
+  not missing. The fix restores refreshability; confirm on the next scheduled cso run that
+  the csv_derive failure count drops to 0 and the CSVs get a newer LastModified.
+
+Open, measured, not yet actioned:
+
+- **cso: 290 catalogue natives have no rows in the R2 store** (7,606 of 7,896 resolve). They
+  still have CSVs on R2, so they serve a snapshot the store can no longer regenerate —
+  orphaned relics of the pre-#78 matrix repair. Decide per matrix: re-fetch from PxStat, or
+  delist the row AND purge its CSV. Do not leave a served CSV whose provenance is a
+  superseded store.
+- **insee_melodi coverage: we hold 79 of the publisher's 145 dataflows** (live
+  `/dataflow/all`, measured 2026-08-07 — 132 DS_*, 13 DD_*). 66 are a fetchable gap; the
+  fetcher enumerates every flow each run but is budget-bounded, so confirm it is actually
+  rotating toward them rather than re-tailing the same 79. 5 store files name flows the
+  publisher no longer lists (frozen archive, fine).
+- The earlier "insee_melodi: 55 catalogue rows with no store data" was FALSE — a LOCAL disk
+  listing (84 files) for a cloud-backend source whose R2 store holds all 139. R366/R371.
