@@ -1078,3 +1078,24 @@ TO FINISH (in this order — reversing it publishes contradictions):
     3. re-derive wid with tools/derive_csv_bulk.py --verify 300 (NOT core/derive_csv.py: the
        per-series path is ~65 objects/min = 25 days for 2.4M series)
     4. verify_source_served --source wid --sample 40 must report 40/40
+
+### R380 is UNIT-TESTED BUT STILL NOT PROVEN IN PRODUCTION — two attempts, both inconclusive
+
+The fix must be observed doing its job on a real run, not just asserted. Two tries today:
+
+  worldbank_esg --force : the World Bank API returned HTTP 502 thirty-seven consecutive times.
+                          Nothing merged, so nothing could derive. Killed rather than burn
+                          retries; the publisher is simply down.
+  ember --force         : returned `partial` in 77 s (4/33 sub-units transient-failed) and
+                          ZERO CSVs were rewritten. That is CONSISTENT with the fix rather
+                          than against it — ember is bulk_snapshot_if_changed, its snapshot
+                          had not moved, so no rows merged and res.series_cursors was empty.
+                          _derive_changed_csvs was reached and correctly had nothing to do.
+
+What is still missing is a run that is BOTH `partial` AND merges rows. Do not claim R380 is
+production-proven until one is observed.
+
+THE CHECK, for whoever sees it first: after any scheduled run whose note reads `partial` and
+whose obs/rows moved, list `series/<src>%3A` in R2 and confirm objects carry that run's
+timestamp. insee_bdm is the best candidate — chronically partial, 101,848 series, and it is
+the source whose 43,354 parked retry ids the R361 drain was built for.
