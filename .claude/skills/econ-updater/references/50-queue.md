@@ -428,3 +428,37 @@ we are missing carry genuine data.** Quote 64, not 66, and never 66-minus-a-gues
 
 The 2 publisher-empty flows must not be catalogued (a row with no data is the R29
 violation); check `insee_melodi:DS_FECONDITE` / `:DS_MORTALITE` and delist if present.
+
+### worldbank_esg — 13 indicators are ARCHIVED upstream and look "quiet", not dead (cycle 38)
+
+The stored note reads `8/9 sub-unit(s) transient-failed; will retry`. I could NOT reproduce
+that: calling the fetcher's own `_fetch_window()` against 10 indicators (5 archived, 5 live)
+succeeded 10/10 right now, and the World Bank API answered every probe. Treat the 8/9 as a
+past flaky-WB day unless it recurs — do not go hunting a bug that is not there today (R277:
+compare a verdict's age to the code before diagnosing it).
+
+What IS real, and quieter:
+
+    publisher source-75 indicators : 80
+    our store files                : 71
+    ours still published           : 58
+    ours ARCHIVED / DELETED        : 13   <-- can never refresh again
+    published we do NOT have       : 22   <-- coverage gap
+    catalogued AND archived        :  9   <-- SERVED and permanently frozen
+
+An archived indicator returns HTTP **200** carrying
+`{"message":[{"id":"175","key":"Invalid format","value":"The indicator was not found. It may
+have been deleted or archived."}]}`. That envelope is a 1-element list, so `_fetch_window`'s
+`len(j) < 2` branch returns `[]`, and the loop books it as `empty_unit` — "a quiet window is
+normal for annual data". Correct for a genuine quiet year; WRONG here, because these will be
+quiet forever. The source therefore reports healthy while 13 indicators are dead, which is
+the cso/unesco pattern arriving through a THIRD door.
+
+Fix shape (not done): distinguish a real empty window from message id 175 in `_fetch_window`
+and book the latter as retired — then decide per indicator whether the 9 served-and-archived
+ones stay as served-frozen archival (the unesco-culture verdict) or get delisted. Do NOT
+just delete: their data is real and no longer re-crawlable.
+
+Also noted: `tally.transient_unit()` is called with `f"{ind_id}: ..."` precisely so failures
+are named, but the stored note carries no `[...]` list — compare with ipea, whose note does.
+Worth a look at whether the labels are reaching `finalize()` for this source.
