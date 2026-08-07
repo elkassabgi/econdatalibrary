@@ -846,3 +846,49 @@ It is bounded anyway by `AQUEDUCT_DERIVE_BUDGET_MIN` (default 45 min per unit), 
 budget does not reach go to csv_retry_queue as deferred-not-failed, which the same change
 makes drainable. The only sources that can spend the full budget are ones working off a real
 backlog, which is exactly the work that needs doing.
+
+### R380 damage sweep COMPLETE: 14 of 117 served sources were genuinely stale
+
+Byte-compared a random sample (k=12, full key range) of every at-risk source under 250k
+series. Result: **12 proven stale, 103 sample-clean, 0 unsampleable**, plus ecb and treasury
+found separately because my first filter excluded them (R382) — 14 in total.
+
+    REPAIRED + RE-VERIFIED (verify_source_served byte-compare, all exit 0 unless noted)
+      worldbank_esg  5,473 objects   60/60 identical
+      insee_bdm    101,848           (in flight)
+      unesco_sdg   100,997           (in flight)
+      unesco_natmon 98,664           (in flight)
+      yale_epi      77,240           (in flight)
+      sec_edgar     17,276           (in flight)
+      imf_fas_direct 14,081          25/25
+      stat_slovenia  4,134           30/30
+      census         2,993           (in flight)
+      dst            1,963           30/30
+      hagstofa       1,061           30/30  (7 unresolvable: catalogued keys in no store file)
+      insee_melodi     139           25/25  (after pulling 55 parquets absent locally)
+      ons_uk            42           (in flight)
+      ecb               35           25/25   <- was 0/25, 100% STALE
+      treasury          14           14/14
+      statcan           20           20/20  (its 71,970 "unreachable" are the separate
+                                             multi-day statcan build, task #29, not this)
+      abs               18           18/18
+      eia                7           (derived)
+
+WORST CASE WAS ecb, and it is the clearest statement of the bug: a 2h04m forced pass rewrote
+523 of its 540 store files — the R190 rotation fix working, against a best-ever prefix of
+~260 — the run ended `partial`, and every one of its served objects was left stale. 0 of 25
+byte-identical. Thirty-five CSVs later it is 25/25.
+
+TWO TRAPS WORTH KEEPING:
+1. The derive resolves from the LOCAL mirror, so a source whose R2 store is not fully mirrored
+   here gets a PARTIAL repair that still reports success. insee_melodi had 139 files in R2 and
+   84 locally; its first re-derive wrote 84 and reported "55 unresolvable", and byte-compare
+   still failed 7/20. Check `r2_store_files(src)` against `data/clean_full/<src>/` BEFORE
+   deriving, pull what is missing, then derive. Every other source checked here was complete.
+2. A derive killed by a command timeout prints no `done:` line and leaves a partial write that
+   looks like a failed repair. ons_uk hit this — 42 series, cut off, still 15/20 mismatched.
+   Read for the `done: put N` line before believing a repair.
+
+NOT SWEPT, and deliberately: 7 sources over the 250k cap (harvard_atlas, imf_bop_direct,
+imf_gfscofog_direct, imf_gfssoo_direct, noaa, un_wpp, wid). A full re-derive of a giant is its
+own decision — noaa alone is 3.1M billed PUTs — so they need sampling first, then a call.
