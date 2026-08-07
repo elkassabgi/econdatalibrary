@@ -791,3 +791,20 @@ served. The other 68 are the deliberate "Curated starter set" scope, not a defec
 Expanding it needs a pillar per indicator, which the publisher does not expose — `topics`
 does not reproduce the existing assignment (EG.ELC.ACCS.ZS and EG.ELC.RNEW.ZS share topics
 and differ in pillar), so those 68 pillars would be OUR editorial judgment on ~16k series.
+
+### NO DEFECT: worldbank_esg's missing translated titles are the PUBLISHER's gap, not ours
+
+1,650 of its catalogue rows carry no `metadata.titles`, against 2,797 that do — a 37% hole in
+a feature the site advertises (`?lang=`, six languages). It splits perfectly by indicator: 15
+indicators fully translated, 14 with none at all, never a partial one.
+
+That is the World Bank's own coverage. `GET /v2/<lang>/indicator/<id>` returns an EMPTY name
+for every one of the 14 (CC/GE/PV/RL/RQ/VA.EST and their GOV_WGI_ successors, EN.ATM.METH.PC,
+ER.H2O.FWST.ZS, SH.H2O.SMDW.ZS) in both es and ar, while the 15 we do hold return real
+translations ('Área selvática (% del área de tierra)'). Country names translate fine for all
+of them — it is specifically the indicator names the publisher never localized.
+
+Probe validated against known-present before the absence was believed (R316): 4 of 4 control
+indicators returned non-empty Spanish. Our pipeline is correct — it records translations
+where the publisher has them and omits them where it does not. DO NOT "fill the gap": the
+only way to produce those strings is to invent them.
