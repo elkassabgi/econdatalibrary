@@ -168,13 +168,32 @@ def main() -> int:
     a = ap.parse_args()
 
     import duckdb
-    src_dir = os.path.join(ROOT, "data", "clean_full", a.source)
-    pqs = sorted(f for f in os.listdir(src_dir) if f.endswith(".parquet")
-                 and not f.endswith("__series.parquet"))
-    if not pqs:
+    # WALK, AND RESOLVE THE ROOT. A flat os.listdir under clean_full returns [] for two real
+    # layouts, and "no parquet in ..." is indistinguishable from an empty store. usda keeps
+    # data/clean_full/usda/<theme>/part_NNN.parquet (60 files) and bea
+    # data/clean_full/bea/<Dataset>/<Table>.parquet (592); sec_edgar is not under clean_full at
+    # all. The same assumption blinded the R383 preflight to its two nested sources (R390);
+    # this was the copy left unfixed in that sweep, and it surfaced the moment usda needed the
+    # bulk path — the per-series route was measured at 337 objects in 90 minutes, i.e. 314
+    # hours for its 69,704 series.
+    src_dir = None
+    for _root in ("clean_full", "clean_grouped"):
+        cand = os.path.join(ROOT, "data", _root, a.source)
+        if os.path.isdir(cand) and any(f.endswith(".parquet")
+                                       for _dp, _dn, fs in os.walk(cand) for f in fs):
+            src_dir = cand
+            break
+    if src_dir is None:
+        print(f"no parquet for {a.source} under data/clean_full or data/clean_grouped")
+        return 2
+    paths = sorted(os.path.join(dp, f)
+                   for dp, _dn, fs in os.walk(src_dir) for f in fs
+                   if f.endswith(".parquet") and not f.endswith("__series.parquet"))
+    if not paths:
         print(f"no parquet in {src_dir}")
         return 2
-    paths = [os.path.join(src_dir, f) for f in pqs]
+    print(f"source files: {len(paths)} parquet(s) under "
+          f"{os.path.relpath(src_dir, ROOT).replace(os.sep, '/')}", flush=True)
 
     # ONLY UNIFORM-LONG FILES ARE THE SERVING STORE. A store dir may hold native/raw parquets
     # BESIDE the tidy projection that serves (cepii_baci: baci_hs17/hs96.parquet are the raw
