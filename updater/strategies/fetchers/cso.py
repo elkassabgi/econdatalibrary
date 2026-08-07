@@ -323,6 +323,22 @@ def update(unit, since) -> Result:
             held = set(json.loads(_rawh.decode("utf-8")) or [])
         except (ValueError, UnicodeDecodeError):
             held = set()
+    # TARGETED BACKFILL. CSO_ONLY_MATRICES=<comma-list> restricts this run to named
+    # matrices, so a known set of holes can be filled out-of-band in one pass instead of
+    # waiting ~86 scheduled runs for the rotation to reach them. It only ever NARROWS the
+    # set the normal diff already selected, so it cannot pull something the cursor says is
+    # current, and it leaves every other mechanism (subject routing, merge, cursor and held
+    # advancement on pulled_ok only) untouched. Unset in normal operation.
+    _only = os.environ.get("CSO_ONLY_MATRICES", "").strip()
+    if _only:
+        want = {x.strip() for x in _only.split(",") if x.strip()}
+        before = len(changed)
+        changed = [m for m in changed if m in want]
+        missing = want - set(changed)
+        print(f"[cso] CSO_ONLY_MATRICES: {before:,} changed -> {len(changed):,} targeted"
+              + (f"; {len(missing)} requested matrix/matrices are NOT in the publisher's "
+                 f"changed set and will NOT be pulled: {sorted(missing)[:8]}" if missing else ""),
+              flush=True)
     changed = order_changed(changed, cur_upd, held)
     if held:
         _unheld = sum(1 for m in changed if m not in held)
