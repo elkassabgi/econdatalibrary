@@ -356,3 +356,37 @@ Open, measured, not yet actioned:
   publisher no longer lists (frozen archive, fine).
 - The earlier "insee_melodi: 55 catalogue rows with no store data" was FALSE — a LOCAL disk
   listing (84 files) for a cloud-backend source whose R2 store holds all 139. R366/R371.
+
+### cso batch ordering + the 290 holes (cycle 38, 2026-08-07)
+
+Measured, all against the live publisher and the real store:
+
+- CSO publishes **12,908** matrices. Our store holds **7,608**. The revision cursor
+  (`_collupd.json`) held **61** — it restarted empty when `_write_cursor` was blob-routed on
+  2026-08-03 — so nearly everything looked "changed" and newest-first re-pulled matrices we
+  already had.
+- A cso run is **2,017.8 s for 60 matrices** (~34 s each) against a 45-min cap, so the bound
+  is TIME. Raising `MAX_TABLES` cannot help.
+- Of the **290** catalogued matrices with ZERO store rows, only **4** were in the next 60 and
+  the last sat at queue position **11,945** (~200 runs).
+
+SHIPPED: `_held.json` (what the store can serve, seeded 7,608 by `tools/seed_cso_held.py`,
+confirmed on R2, extended per run from `pulled_ok`) + `order_changed()` — unheld first,
+newest within group. Re-measured: orphans in the next 60 go **4 → 31**, last orphan
+**11,945 → 5,142** (~86 runs). A 2.3x improvement, NOT a fix.
+
+RUNNING: targeted backfill of the **263** orphans CSO still publishes, via
+`CSO_ONLY_MATRICES` (~2.5 h in one pass). The other **27** are gone from ReadCollection
+entirely and cannot be re-fetched: `A0207 A0208 A0209 B0207 B0208 B0209 B0212 C0424 C0427
+C0429 C0438 CD820 E1004 E1018 E1033 E1036 E1037 E1038 E1039 E1042 E1043 E7043 NAA02 NAA03
+NAA04 NQQ34 NQQ38`. Their CSVs still hold real data on R2, so they are served-frozen
+archival (the unesco-culture verdict) — but their parquet download has no rows behind it,
+which is a product inconsistency to settle: either delist the 27 or accept CSV-only.
+
+### insee_melodi coverage (cycle 38, 2026-08-07)
+
+The publisher's `/dataflow/all` lists **145** flows (132 `DS_*`, 13 `DD_*`); we hold **79**.
+So **66** are a fetchable coverage gap, and 5 of our files name flows the publisher no
+longer lists. The fetcher enumerates every flow each run but is budget-bounded — confirm it
+is actually rotating toward the 66 rather than re-tailing the same 79 before assuming it
+self-heals.
