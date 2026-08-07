@@ -387,6 +387,20 @@ which is a product inconsistency to settle: either delist the 27 or accept CSV-o
 
 The publisher's `/dataflow/all` lists **145** flows (132 `DS_*`, 13 `DD_*`); we hold **79**.
 So **66** are a fetchable coverage gap, and 5 of our files name flows the publisher no
-longer lists. The fetcher enumerates every flow each run but is budget-bounded — confirm it
-is actually rotating toward the 66 rather than re-tailing the same 79 before assuming it
-self-heals.
+longer lists.
+
+The obvious hypothesis is the R190 rotation class: `update()` iterates `for flow in flows:`
+under a `Deadline` with NO bookmark, so every run restarts at the head of the list and the
+tail should never be reached. **TESTED AND REFUTED** — if that were the cause our holdings
+would be a PREFIX of the publisher's order, and they are not: we hold 62 of the first 79
+and 17 of the last 66, spanning positions 0..144 of 145. List-order truncation does not
+explain this gap, so do NOT ship a rotation bookmark on that story (R257: a hypothesis that
+fits the symptoms and cites a real mechanism is exactly what a wrong diagnosis feels like;
+the tell is the unmeasured quantity it depends on).
+
+Next probe for whoever picks this up: the 66 are scattered, so ask per-flow WHY — run the
+fetcher against a few named misses (`DS_FECONDITE`, `DS_FLORES_A17`, `DS_MORTALITE`,
+`DS_PRENOM`) and read the outcome. Candidates worth distinguishing: individually oversized
+flows that exhaust the per-flow retry budget, flows whose DSD the parser rejects, and flows
+that return 200 with zero observations. The answer decides between a parser fix, a budget
+change, and a publisher-side dead end — three different repairs.
