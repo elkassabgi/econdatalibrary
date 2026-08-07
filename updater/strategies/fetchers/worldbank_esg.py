@@ -64,6 +64,12 @@ def _stored_max_year(path) -> int | None:
 def _window(path, since) -> str:
     this_year = dt.date.today().year
     end = this_year + 1
+    if not blob.exists(path):
+        # An indicator we do not hold AT ALL wants its whole history, not a tail. Without
+        # this it would fall through to the `since`/default window below and we would ingest
+        # a new indicator already truncated to the last few years — silently, since a short
+        # series looks the same as a short-lived one.
+        return f"1960:{end}"
     smy = _stored_max_year(path)
     if smy is not None:
         start = smy - LOOKBACK_YEARS
@@ -209,6 +215,19 @@ def update(unit, since) -> Result:
     else:
         print("[worldbank_esg] source-75 indicator listing unreadable this run — keeping the "
               "stored retired set unchanged, retiring nothing new", flush=True)
+
+    # NEWLY PUBLISHED indicators. The work list is built from `blob.list_parquets(out_dir)`
+    # — the files we ALREADY have — so an indicator the World Bank adds is never fetched, no
+    # matter how long it is scheduled. Measured 2026-08-07: 22 of the publisher's 80 source-75
+    # indicators had no file here, and nothing in the loop could ever create one. Adding them
+    # by name gives `_window` a non-existent path, which now means "pull the full history".
+    if published:
+        new_inds = sorted(published - {f[:-len(".parquet")] for f in files} - retired)
+        if new_inds:
+            print(f"[worldbank_esg] {len(new_inds)} newly published indicator(s) not held "
+                  f"yet, queued for a full-history pull: {new_inds[:8]}"
+                  + (" ..." if len(new_inds) > 8 else ""), flush=True)
+            files = files + [f"{i}.parquet" for i in new_inds]
 
     if retired:
         before = len(files)
