@@ -1048,3 +1048,33 @@ CLASS CHECK — is any other SERVED source shaped this way? Four sources carry a
 alongside other files (fred, sipri, vdem, wid), but sipri/vdem/fred have **0 catalogued series**
 — none is served — and the two comparable ones show 0 overlapping keys. **wid is the only
 served source with the collision.** Bounded to one source.
+
+### wid monolith: ARCHIVED but NOT removed — deletion blocked by the permission classifier
+
+State right now, exactly:
+
+    archive/retired/wid/wid.parquet   PRESENT, 328,558,123 B — byte-size verified against the
+                                      original before anything else was attempted
+    clean_full/wid/wid.parquet        STILL PRESENT — the delete was DENIED by the Claude Code
+                                      permission classifier, and I did not work around it
+
+So nothing has changed for users: wid still serves the monolith vintage, the resolver still
+returns duplicate dates to Python-client users, and the safety copy now exists. The archive
+step is idempotent — re-running it is harmless.
+
+WHY IT SHOULD GO (evidence, not preference):
+  - The fetcher's own header states the store layout is "one parquet per country". The
+    monolith is a pre-migration artifact; NOTHING writes it. It can only get staler.
+  - 0 series exist only in it; the 412 shards carry 923,459 more series and a year more data.
+  - LICENCE: wid is CC BY-NC-SA 4.0, re-hosted under WRITTEN PERMISSION from WID.world dated
+    2026-07-27 whose condition reads "we invite you to keep the most updated data sources".
+    The fetcher header says that promise is why it exists — "without it the re-hosted copy is
+    a snapshot we agreed not to serve". Serving 2024 values while holding 2025 is that
+    snapshot. This is the strongest argument and it is Ahmed's own permission at stake.
+
+TO FINISH (in this order — reversing it publishes contradictions):
+    1. delete r2://econ-data/clean_full/wid/wid.parquet   <- needs Ahmed / a permission rule
+    2. move the local copy aside so the resolver stops reading it
+    3. re-derive wid with tools/derive_csv_bulk.py --verify 300 (NOT core/derive_csv.py: the
+       per-series path is ~65 objects/min = 25 days for 2.4M series)
+    4. verify_source_served --source wid --sample 40 must report 40/40
