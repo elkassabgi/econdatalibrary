@@ -1353,3 +1353,29 @@ the discriminating observation.
 Note the honest gap: 1,221 sub-units merged and 640 CSVs changed bytes. The two numbers are not
 supposed to match — a merge that re-writes identical values changes no bytes — but the ratio has
 NOT been decomposed, so do not quote 640/1,221 as a coverage figure.
+
+
+### unsdg is NOT a rebuild — it is a backfill at 55.5% that converges on its own rotation
+
+Task #43 carried "the unsdg rebuild (bigger — UNdata SDG API, scope first)". Scoped, measured
+against the live publisher today:
+
+    unstats.un.org/sdgapi/v1/sdg/Series/List   713 series codes
+    our store                                  396
+    missing                                    317   (55.5% coverage)
+    in our store but NOT published               0   (nothing retired or invented on our side)
+
+Nothing needs rebuilding. The fetcher is self-bounded at 200 series per run with a rotation
+bookmark, and the bookmark IS advancing — across today's five runs the deferred count fell
+662 -> 659 -> 656 -> 651 -> 591 while obs grew 698,600 -> 2,069,765. It converges by design.
+
+Do NOT read "591 deferred" as "591 never fetched". Deferred counts sub-units skipped by THIS
+run's budget, and a series already in the store is still deferred when its turn comes round for
+freshness. The coverage number is 396 of 713, and only that.
+
+One real constraint: the 2026-08-07T00:39 run was interrupted by its 45-minute hard limit
+(transient_fail, 0 obs). unsdg is budget-bound, so convergence is paced by that cap.
+
+The 396 already in the store are SERVED as of cycle 39 (D1 synced first, worker deployed
+ee394061, /v1/sources 221 including unsdg). Serving 396 while 317 are still arriving is coverage
+that is honest rather than complete — the catalogue grows as the rotation lands them.
