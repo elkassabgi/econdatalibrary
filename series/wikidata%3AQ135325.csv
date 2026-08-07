@@ -1,0 +1,2 @@
+series_key,qid,wikidata_url,name,tickers,primary_ticker,isins,exchanges,industries,country,lei,sec_cik,permid,opencorporates,crunchbase,inception,website
+Q135325,Q135325,http://www.wikidata.org/entity/Q135325,Alcoa,AA,AA,AU0000339426|US0138171014,New York Stock Exchange,Aluminium production|aluminium industry,United States,549300T12EZ1F6PWWU29,0001675149,5051045063,,alcoa|alcoa-howmet,1888-01-01T00:00:00Z,http://www.alcoa.com

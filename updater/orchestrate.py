@@ -442,20 +442,36 @@ _DERIVE_ALL_CAP = 5000
 _CSV_RETRY_CAP = 20_000
 
 
-def _flow_of(key: str) -> str:
-    """FLOW-grain id for a series-grain PxWeb store key.
+# Sources whose flow id is the FIRST ':'-segment of the store key rather than the
+# '='-stripped form. unsdg stores BOTH `AG_LND_DGRD:AFG|Sex=FEMALE` and the undimensioned
+# `AG_LND_DGRD:AFG` against the single catalog id `unsdg:AG_LND_DGRD`. The '=' rule below
+# maps the dimensioned keys and MISSES every undimensioned one — measured 2026-08-07:
+# 37,822 of 227,955 keys (16.6%), which is far more than enough to demote the source to
+# `partial` on every run however complete its catalogue is. Mirrors `_FLOW_GRAIN` in
+# clients/python/econdl/_resolve.py, which SERVES by this same boundary: if the two ever
+# disagree, the catalogue advertises ids the coherence mapper cannot resolve.
+_FIRST_SEGMENT_FLOW = {"unsdg"}
 
-    The store key is `<flow>:<dim>=<value>:<dim>=<value>…`, so the obvious rule is "drop the
-    `=`-bearing segments". That rule is WRONG whenever a dimension VALUE contains a colon:
-    hagstofa stores NACE codes like `Atvinnugrein=K: 65`, which splits into `Atvinnugrein=K`
-    (dropped, has `=`) and ` 65` (KEPT, has none), yielding the corrupt flow
+
+def _flow_of(key: str, source_id: str | None = None) -> str:
+    """FLOW-grain id for a series-grain store key.
+
+    The PxWeb store key is `<flow>:<dim>=<value>:<dim>=<value>…`, so the obvious rule is
+    "drop the `=`-bearing segments". That rule is WRONG whenever a dimension VALUE contains a
+    colon: hagstofa stores NACE codes like `Atvinnugrein=K: 65`, which splits into
+    `Atvinnugrein=K` (dropped, has `=`) and ` 65` (KEPT, has none), yielding the corrupt flow
     `…THJ11002.px: 65`. That silently left 658 hagstofa keys unmapped, and an unmapped key
     trips the _DERIVE_ALL_CAP fallback into re-deriving the source's entire catalog.
 
     Truncating at the table-id segment instead is immune to colons in values: measured on
     every one of those 658 keys, it maps 658/658. Sources whose table ids are not `*.px`
     (e.g. ssb's `SSB:A1Skog`) keep the `=` rule, verified unchanged.
+
+    `source_id` selects the first-segment rule for the sources that need it
+    (_FIRST_SEGMENT_FLOW); omitting it preserves the exact PxWeb behaviour.
     """
+    if source_id in _FIRST_SEGMENT_FLOW:
+        return key.split(":", 1)[0]
     parts = key.split(":")
     for i, p in enumerate(parts):
         if p.endswith(".px"):
@@ -550,7 +566,7 @@ def _catalog_ids_for(source_id: str, changed_keys):
             # "N changed series_keys have no catalog mapping" — stat_latvia's unmapped
             # count (1,952) equalled its catalog row count exactly, which is the tell that
             # the catalog was complete and only the GRAIN differed.
-            flow = _flow_of(k)
+            flow = _flow_of(k, source_id)
             if flow != k:
                 fcand = f"{source_id}:{flow}"
                 if fcand in seen:

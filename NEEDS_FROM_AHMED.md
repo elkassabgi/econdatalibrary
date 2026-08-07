@@ -1,6 +1,32 @@
-# Running list — what I need from Ahmed (updated 2026-08-06 ~18:45, for the 3-hour check-in)
+# Running list — what I need from Ahmed (updated 2026-08-07 ~12:30, for the 3-hour check-in)
 
 Ordered by impact. Each item says exactly what to do and what it unblocks.
+
+## 0. unsdg un-gate — one word from you (2.07M rows are built and waiting)
+
+**Say "un-gate unsdg" and it goes live in one deploy.** Everything else is done and proven:
+396 SDG series codes catalogued (all 396 titled by the publisher, zero raw-code fallbacks),
+396 CSVs / 114 MB derived to R2, the coherence catalog refreshed, the client resolver wired,
+and a mapping bug fixed that would otherwise have kept the source unhealthy forever
+(37,822 of its 227,955 keys could not resolve — now all 227,955 map, 0 unmapped).
+
+**Why I did not just do it.** unsdg sits on the `LEGACY_KEEP` floor in `core/gen_denylist.py`,
+pinned in the 2026-07-23 wave as "no reply to the permission request / never assessed". That
+floor exists so an UNCONFIRMED source can never silently un-gate, and every previous removal
+from it (barro_lee, unesco_natmon, unesco_sdg, norgesbank) records an explicit decision from
+you. I am not going to write your authorization for you.
+
+**Why it qualifies, in your own established pattern.** A permission request is only needed
+where the LICENCE does not itself grant redistribution — and unsdg's does. The audit has it
+CLEARED (attrib), verbatim: *"may be copied freely, duplicated and further distributed
+provided that UNdata is cited as the reference"*, with the explicit finding that the
+restrictive un.org WEBSITE terms do not govern the data service
+(`DATABASE_LICENSES_VERBATIM.md`). This is the norgesbank case exactly, one day later:
+purged in the same 07-23 wave, store since REBUILT from the publisher (so purged data never
+resurfaces — freshly-fetched data serves), licence since cleared.
+
+Note it is **396 of 713 codes** today; the rest are still being backfilled by the scheduler
+and will be added as they land. Nothing is advertised that we do not hold.
 
 ## 1. The deletion permission (one settings edit — unblocks FOUR queued jobs)
 

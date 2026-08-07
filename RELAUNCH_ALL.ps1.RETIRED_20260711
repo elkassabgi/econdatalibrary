@@ -1,0 +1,42 @@
+# Relaunch all econ ingestion jobs after a reboot.
+# Every script skips already-completed work (per-table/per-subject parquet +
+# checkpoints), so this is safe to run repeatedly — it resumes, never restarts.
+#
+# Usage after reboot:  powershell -File D:\research\econfindatalibrary\RELAUNCH_ALL.ps1
+
+$root = "D:\research\econfindatalibrary"
+$ts   = Get-Date -Format "MMdd_HHmm"
+
+$jobs = @(
+  @{n='eurostat';        a=@('jobs/ingest_sdmx_nso.py','eurostat')},
+  @{n='ecb';             a=@('jobs/ingest_sdmx_nso.py','ecb_sdmx')},
+  @{n='istat_sdmx';      a=@('jobs/ingest_sdmx_nso.py','istat')},
+  @{n='dbnomics_istat';  a=@('jobs/_dbnomics_pull.py','ISTAT')},
+  @{n='worldbank_extra'; a=@('jobs/ingest_worldbank_extra.py')},
+  @{n='ine_spain';       a=@('jobs/ingest_ine_spain.py')},
+  @{n='ibge';            a=@('jobs/ingest_ibge.py')},
+  @{n='cbs_nl';          a=@('jobs/ingest_cbs_nl.py')},
+  @{n='gus_bdl';         a=@('jobs/ingest_gus_bdl.py')}
+)
+
+# Don't double-launch anything already running
+$running = (Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+            ForEach-Object { $_.CommandLine }) -join "`n"
+
+foreach ($j in $jobs) {
+  $scriptName = $j.a[0]
+  $arg = if ($j.a.Count -gt 1) { $j.a[1] } else { '' }
+  $already = $running -match [regex]::Escape($scriptName) -and
+             ($arg -eq '' -or $running -match [regex]::Escape($arg))
+  if ($already) { Write-Host "skip  $($j.n) (already running)"; continue }
+
+  Start-Process python -ArgumentList $j.a -WorkingDirectory $root -WindowStyle Hidden `
+    -RedirectStandardOutput "$root\logs\re_$($j.n)_$ts.log" `
+    -RedirectStandardError  "$root\logs\re_$($j.n)_$ts.err.log"
+  Write-Host "launch $($j.n)"
+  Start-Sleep -Milliseconds 400
+}
+
+Start-Sleep -Seconds 4
+$n = (Get-Process python -ErrorAction SilentlyContinue | Measure-Object).Count
+Write-Host "`n$n python processes now running."

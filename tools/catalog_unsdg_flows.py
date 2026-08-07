@@ -27,7 +27,10 @@ import duckdb
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE = os.path.join(ROOT, "data", "clean_full", "unsdg", "unsdg.parquet")
-LICENSE_ID = "undata-terms"
+# CANONICAL id, read from configs/sources.yaml — do NOT re-type it here. This tool first
+# invented 'undata-terms' while sources.yaml declares 'un-data-terms', creating two licence
+# rows for one licence (the R358 two-store class, from the naming side). Fixed 2026-08-07.
+LICENSE_ID = "un-data-terms"
 TERMS = "https://data.un.org/Host.aspx?Content=UNdataUse"
 UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com"}
 
