@@ -60,7 +60,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+                      save_rotation)
 
 # Wall-clock cap for one insee_melodi run: it walks every published flow, and INSEE's
 # Melodi endpoint is slow enough per flow that this source can outlast the whole daily
@@ -287,6 +288,18 @@ def update(unit, since) -> Result:
     maxd = None
     cursors: dict[str, str] = {}   # flow_code -> max obs_date (per-flow freshness)
 
+    # RESUME PAST THE LAST FLOW WORKED ON. Without this the sweep starts at the head of
+    # /dataflow/all every run, spends its 25 minutes, and defers the same tail forever while
+    # honestly reporting "retries next tick" — the R190 class. Measured 2026-08-07: a real run
+    # deferred 26 flows, and SIX of the deferred held ZERO rows (DS_SIDE_CREA_COM,
+    # DS_SIDE_CREA_ENT_COM, DS_SIDE_CREA_ETAB_COM, DS_SIDE_STOCKS_COM, DS_SOCIAL_ECONOMY,
+    # DS_TOUR_CAP) sitting at positions 123-143 of the publisher's 145. They had never been
+    # fetched and, in this order, never would be.
+    #
+    # An unknown or empty bookmark degrades to "start at the top", so a first run or a
+    # renamed flow skips nothing.
+    flows = rotate_after(flows, load_rotation(out_dir), key=lambda f: f.get("code", ""))
+
     dl = Deadline(minutes=BUDGET_MIN)
     for flow in flows:
         code = flow.get("code", "")
@@ -305,6 +318,15 @@ def update(unit, since) -> Result:
             tally.deferred_unit(code)
             total += before
             continue
+
+        # AFTER the deferral check, never before: the bookmark means "the last flow this run
+        # actually WORKED ON". Stamped above the check it would record a flow that was
+        # deferred, and the next run — starting just past it — would skip the very flow the
+        # deferral promised to return to. Written per flow rather than once at the end
+        # because the end is not guaranteed to be reached: the orchestrator's per-source cap
+        # KILLS a source rather than breaking its loop, and a kill before an end-of-function
+        # save loses the bookmark entirely (R273). One tiny write against ~145 flows.
+        save_rotation(out_dir, code)
 
         on_disk_max = _flow_max_obs(path)
         # startPeriod = YEAR of the stored max (re-fetch boundary year for revisions);
