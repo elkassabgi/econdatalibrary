@@ -1327,3 +1327,29 @@ right reading of the whole episode is "unproven", not "wrong".
 Method note for whoever continues: `tools/resync_and_repair.py --source X --apply` does
 sync -> sample -> re-derive-only-if-stale, which is the ordering that makes the verdict mean
 something. Batch 2 (boe, ksh_stadat, fed_board, eurostat) running.
+
+
+### R380 PROVEN IN PRODUCTION at last — a `partial` run re-derived 640 served CSVs
+
+Three earlier attempts were inconclusive. The reason was timing, not the fix: the R380 change
+landed at **2026-08-07 16:02 UTC**, and every `partial` run recorded that day predated it (the
+latest was ksh_stadat at 10:02). There was nothing to observe.
+
+The proof, taken deliberately rather than found:
+
+1. Snapshotted the ETag of all **1,241** `ipea` served CSVs at **21:51:47 UTC**.
+2. Ran `python -m updater.run --source ipea --force` — ipea is the right subject because its
+   partials are BUDGET-DEFERRED with real merges, not empty transient failures, so a run
+   genuinely has changed series to re-derive.
+3. The run booked **`partial`, obs=780,137, 2,133s, ended 22:27:31 UTC**, note
+   "1221 sub-unit(s) attempted, none failed; 554 deferred by budget".
+4. Re-read every ETag: **640 CHANGED, 601 unchanged, 0 missing**, the rewrites stamped
+   22:26:46 UTC — inside the run, 45 seconds before it ended.
+
+Before R380 that number is 0 by construction: the derive sat behind `if status == "ok"`, and
+ipea has never returned `ok` in its recorded history. 640 rewritten objects on a partial run is
+the discriminating observation.
+
+Note the honest gap: 1,221 sub-units merged and 640 CSVs changed bytes. The two numbers are not
+supposed to match — a merge that re-writes identical values changes no bytes — but the ratio has
+NOT been decomposed, so do not quote 640/1,221 as a coverage figure.
