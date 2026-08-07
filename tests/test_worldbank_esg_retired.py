@@ -71,3 +71,23 @@ def test_retired_sidecar_is_blob_routed(tmp_path):
     assert "_retired_path" in src
     # and it must be READ through blob too, not open()
     assert "blob.read_bytes(_retired_path(out_dir))" in src
+
+
+class TestNewlyPublishedIndicators:
+    """The work list came from the files we ALREADY hold, so an indicator the World Bank
+    ADDS could never be fetched — measured 2026-08-07: 22 of the publisher's 80 source-75
+    indicators had no file here and nothing in the loop could create one."""
+
+    def test_a_new_indicator_gets_the_full_history_not_a_tail(self, tmp_path):
+        """A non-existent store file means 'we hold nothing', which wants 1960:now — not the
+        short default window, which would ingest a new indicator already truncated."""
+        w = W._window(str(tmp_path / "NEVER_SEEN.parquet"), None)
+        assert w.startswith("1960:"), w
+
+    def test_an_existing_file_still_gets_a_tail(self, tmp_path, monkeypatch):
+        """The new branch must not turn every refresh into a full re-pull."""
+        monkeypatch.setattr(W.blob, "exists", lambda p: True)
+        monkeypatch.setattr(W, "_stored_max_year", lambda p: 2024)
+        w = W._window(str(tmp_path / "HELD.parquet"), None)
+        assert not w.startswith("1960:"), w
+        assert w.startswith(str(2024 - W.LOOKBACK_YEARS)), w
