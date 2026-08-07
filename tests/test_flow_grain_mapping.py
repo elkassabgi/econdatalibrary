@@ -62,3 +62,65 @@ def test_resolver_and_mapper_agree_on_membership():
         f"{sorted(missing)} use the first-segment flow rule in updater/orchestrate.py but are "
         f"absent from _FLOW_GRAIN in the client resolver — the catalogue would advertise ids "
         f"whose CSV and parquet download disagree.")
+
+
+class TestCsoFlowGrain:
+    """cso (CSO Ireland, PxStat) is prefix-resolved like the other PxWeb sources.
+
+    It was SERVED with 7,896 catalogue rows while absent from _FLOW_GRAIN, so the generic
+    resolver's exact match found nothing: measured 2026-08-07, every id resolved to 0 rows
+    and its derive failed 22/22. After adding it, 7,606 of 7,896 resolve against the real
+    store (the remaining 290 are catalogue rows with no store data — a separate defect).
+    """
+
+    def test_cso_is_flow_grain(self):
+        import clients.python.econdl._resolve as r
+        assert "cso" in r._FLOW_GRAIN
+
+    def test_store_key_starts_with_the_catalogue_native(self):
+        native = "CSO:EIIEEA29"
+        key = "CSO:EIIEEA29:STATISTIC=EIIEEA29C01:C01841V02268=1"
+        assert key.startswith(native + ":")
+        # and the trailing colon keeps a longer matrix code from being swallowed
+        assert not "CSO:EIIEEA290:STATISTIC=X".startswith(native + ":")
+
+
+class TestFileGrainResolver:
+    """ons_uk / insee_melodi put the dataset identity in the FILENAME, not the key."""
+
+    def _store(self, tmp_path, src, name, cols):
+        import pyarrow as pa, pyarrow.parquet as pq
+        d = tmp_path / src
+        d.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.table(cols), d / f"{name}.parquet")
+        return str(tmp_path)
+
+    def test_resolves_the_named_file_and_selects_its_rows(self, tmp_path):
+        import clients.python.econdl._resolve as r
+        import pyarrow.dataset as ds
+        root = self._store(tmp_path, "ons_uk", "ageing-population-estimates", {
+            "series_key": ["administrative-geography=E06000001:sex=male",
+                           "administrative-geography=E06000002:sex=all"],
+            "obs_date": ["2020-12-31", "2020-12-31"], "value": [1.0, 2.0]})
+        res = r._resolve_file_grain("ons_uk:ageing-population-estimates", root)
+        assert ds.dataset(res.parquet_path).filter(res.predicate).count_rows() == 2
+
+    def test_flow_column_is_asserted_when_present(self, tmp_path):
+        """insee_melodi carries a `flow` column; a mis-named file must select NOTHING
+        rather than silently serve another dataset's rows under this id."""
+        import clients.python.econdl._resolve as r
+        import pyarrow.dataset as ds
+        root = self._store(tmp_path, "insee_melodi", "DD_CNA_AGREGATS", {
+            "flow": ["SOMETHING_ELSE", "SOMETHING_ELSE"],
+            "series_key": ["A=1", "A=2"],
+            "obs_date": ["2020-12-31", "2020-12-31"], "value": [1.0, 2.0]})
+        res = r._resolve_file_grain("insee_melodi:DD_CNA_AGREGATS", root)
+        assert ds.dataset(res.parquet_path).filter(res.predicate).count_rows() == 0
+
+    def test_missing_file_raises_instead_of_serving_empty(self, tmp_path):
+        """A catalogued id with no store file must fail loudly — an empty download is
+        indistinguishable from a series that genuinely has no observations."""
+        import clients.python.econdl._resolve as r
+        (tmp_path / "ons_uk").mkdir(parents=True)
+        with pytest.raises(r.ResolveError):
+            r._resolve_file_grain("ons_uk:does-not-exist", str(tmp_path))

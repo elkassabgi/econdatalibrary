@@ -1482,7 +1482,47 @@ def _resolve_imf_qgfs_direct(series_id: str, root: str) -> Resolution:
     return Resolution(series_id, src, path, "series_key", pred)
 
 
+def _resolve_file_grain(series_id: str, root: str) -> Resolution:
+    """One catalog id IS one store FILE; the rows inside carry dimension-only keys.
+
+    ons_uk       catalog `ons_uk:ageing-population-estimates`
+                 file    `ageing-population-estimates.parquet`
+                 keys    `administrative-geography=E06000001:sex=male:age-groups=85+:...`
+    insee_melodi catalog `insee_melodi:DD_CNA_AGREGATS`
+                 file    `DD_CNA_AGREGATS.parquet`
+                 keys    `ACCOUNTING_ENTRY=B:ACTIVITY=_T:...`
+
+    The dataset name appears NOWHERE in the key, so neither an exact match nor the
+    `_FLOW_GRAIN` prefix rule can find these rows -- the generic resolver matched zero rows
+    for every one of them (measured 2026-08-07: ons_uk 42/42, insee_melodi 139/139), i.e.
+    both were catalogued and undownloadable. Selecting the FILE is the whole identity.
+
+    Where the store carries a `flow` column (insee_melodi does, and it equals the native
+    id -- verified, not assumed) the predicate asserts it, so a mis-named file fails loudly
+    instead of serving another dataset's rows under this id. Otherwise the file itself is
+    the boundary and every valid-keyed row belongs to it.
+    """
+    import pyarrow.parquet as pq
+    src, native = series_id.split(":", 1)
+    path = os.path.join(root, src, f"{native}.parquet")
+    if not os.path.exists(path):
+        raise ResolveError(
+            f"{series_id}: {src} is file-grain and its store file {path!r} does not exist. "
+            f"The catalogue lists this id but nothing holds its rows -- backfill it or "
+            f"delist it; do not serve a listing with no data behind it.")
+    cols = set(pq.read_schema(path).names)
+    key_col = next((c for c in ("series_key", "series_id") if c in cols), None)
+    if key_col is None:
+        raise ResolveError(f"{series_id}: {path!r} has no series_key column (schema "
+                           f"{sorted(cols)}); it needs an explicit resolver.")
+    pred = (pc.equal(ds.field("flow"), native) if "flow" in cols
+            else pc.is_valid(ds.field(key_col)))
+    return Resolution(series_id, src, path, key_col, pred)
+
+
 _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
+    "ons_uk": _resolve_file_grain,
+    "insee_melodi": _resolve_file_grain,
     "bls": _resolve_bls,
     "cepii_baci": _resolve_cepii_baci,
     "imf_imts_direct": _resolve_imf_imts_direct,
@@ -1589,8 +1629,14 @@ _GENERIC_SKIP = ("__series.parquet",)
 # keys), so flow grain serves every key from 396 catalog rows instead of a quarter-million.
 # The trailing ":" matters here too: without it `AG_LND_DGRD` would also match a future
 # `AG_LND_DGRD2`.
+# cso is PxWeb-shaped too (CSO Ireland runs PxStat) and was missing from this set even
+# though it is SERVED with 7,896 catalogue rows: store `CSO:EIIEEA29:STATISTIC=...:C0184=1`
+# against catalog id `cso:CSO:EIIEEA29`. Measured 2026-08-07 — every one of its ids resolved
+# to ZERO rows (control: stat_latvia returned 42), so its downloads were broken and its
+# derive failed 22/22 series with the source stuck `partial`. Same symptom the stat_latvia
+# comment above describes; cso simply never got added when the other nine were.
 _FLOW_GRAIN = {"stat_latvia", "stat_estonia", "ssb", "bfs", "dst",
-               "statfin", "hagstofa", "stat_slovenia", "scb", "unsdg"}
+               "statfin", "hagstofa", "stat_slovenia", "scb", "unsdg", "cso"}
 
 
 def _resolve_generic_long(series_id: str, root: str) -> Resolution:
