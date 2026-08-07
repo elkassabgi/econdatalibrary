@@ -1170,3 +1170,37 @@ Re-running in the background with no timeout. The diagnostic groundwork is done 
 these out: the run DOES report cursors (15, matching its 15 attempted sub-units) and all 15
 map to catalogue rows as `insee_melodi:<key>`, so neither an empty cursor set nor a mapping
 gap can explain a no-op derive.
+
+### FOUND: eia has been BLOCKED BY AN ORPHANED LEASE for two days, silently
+
+Not a fetch failure — a lock nobody holds.
+
+    leases: eia/_all           owner=orch-41604  expires 2026-08-08T07:28
+            owid/_all          owner=orch-2393   expires 2026-08-07T12:02  (already expired)
+            insee_melodi/_all  owner=orch-29264  expires 2026-08-07T21:58  (mine, from a run I
+                                                                            killed with a bad timeout)
+    eia unit_state: last_attempt 2026-08-05T15:39:48, status partial, DAILY cadence
+    live updater.run processes: 0
+    guard heartbeat: OK, 0.2 min old, jobs_alive 3/3
+
+So the workstation guard is healthy and running; eia is simply refused the unit every pass.
+
+WHY NOTHING SURFACED IT — and this is the part worth fixing. `run_once` appends
+`(unit.key, "locked")` and returns WITHOUT calling `_record`, so a locked unit writes no run
+row and does not move `last_attempt_utc`. To every downstream check it looks exactly like a
+source that was never due. The health gate reads state; state says "partial, last attempted
+2026-08-05"; nothing anywhere says "something is holding its lock". `claim_lease` is
+TTL-based, so a killed run keeps its lease until expiry — here ~64 hours.
+
+IMMEDIATE: I tried to release the three orphaned leases and the Claude Code permission
+classifier DENIED the state.db mutation. I did not work around it. eia self-heals at
+2026-08-08T07:28 when the lease expires — a three-day gap on a daily source — or sooner if
+someone clears it. `StateStore.release_lease(key)` with owner=None does it unconditionally.
+
+STRUCTURAL FIX WORTH DOING (nobody has asked for it yet, so it is queued not done):
+  1. `run_once` should RECORD a locked unit — even a `locked` row with the holder's owner id
+     would have made this visible on day one.
+  2. The health gate should flag a unit whose lease is held while no orchestrator is alive, or
+     simply whose lease has outlived its source's cadence.
+  3. Consider a shorter TTL with renewal instead of one long TTL, so a dead run frees its unit
+     in minutes rather than in days.
