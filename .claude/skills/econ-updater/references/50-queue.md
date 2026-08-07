@@ -987,3 +987,36 @@ NOTE while switching: wid's parquets hold 2,858,393 distinct series against 2,46
 catalogued. The bulk tool derives from the PARQUET, so it will write ~393k objects that have no
 catalogue row — unreachable strays, not user-visible, but they inflate the object count and
 future orphan audits. Worth a look later; not a reason to keep the 25-day path.
+
+### wid: "83% STALE" WAS WRONG — it is a TWO-VINTAGE COLLISION, and the repair is blocked on it
+
+RETRACTING my own finding. I reported wid as ~83% stale (10 of 12 sampled objects differing)
+and launched a 2.4M-object re-derive on that basis. The served objects are not simply stale:
+wid's store holds TWO OVERLAPPING LAYOUTS and the resolver reads all of them at once.
+
+    wid.parquet (monolith)   95,888,122 rows   1,934,934 series   1800..2024   uploaded 07-28
+    412 per-country shards   (LB, KM, PK, ...) 2,858,393 series   1800..2025   uploaded 08-02
+
+The SAME series id lives in both with DIFFERENT values — WID:thwealj992:p81p82:992:j:LB for
+1980 is 2,059,969,160.1 in LB.parquet and 1,467,633,959.2 in wid.parquet. `_resolve` returns a
+parquet_path LIST spanning all 413 files, so a served value depends on which duplicate wins.
+That is the disagreement my byte-compare was measuring, not a stale CSV.
+
+CAUGHT BY `derive_csv_bulk --verify`, which refused to write on the mismatch — the reason that
+check exists. Had I used the per-series path to completion I would have rewritten 2.4M objects
+without ever learning this.
+
+THE MONOLITH IS FULLY SUPERSEDED — measured, not assumed:
+    series present ONLY in wid.parquet and in no shard : 0
+    shards carry 923,459 MORE series and a year more data
+So this is the "migrate off the legacy layout" pattern (task #20, worldbank's clean/ tree),
+left half-done: the 08-02 shard migration never removed the 07-28 monolith.
+
+DECISION FOR AHMED — retire `clean_full/wid/wid.parquet`, archive-first? It is provably
+redundant (0 unique series), it is re-crawlable from wid.world, and the archive-first pattern
+is exactly what the 33 legacy IMF sources used (task #46). But it is 95.9M rows on our LARGEST
+served source and it changes the served value for ~1.9M series, so I am not doing it on my own
+authority after a day in which I regressed two sources by acting on an unchecked assumption.
+
+UNTIL THEN: wid's re-derive is STOPPED and must stay stopped. Deriving now just picks a vintage
+arbitrarily and freezes the wrong one into 2.4M objects. wid's served data is currently a mix.
