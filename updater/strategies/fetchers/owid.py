@@ -33,7 +33,7 @@ import pyarrow as pa
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import CURSOR_CAP, Tally, finalize, merge_cursor_map
+from ._common import cancellable_pool, CURSOR_CAP, Tally, finalize, merge_cursor_map
 from jobs import ingest_owid as ig   # reuse http_get + THE chart parser
 
 SOURCE = "owid"
@@ -152,7 +152,7 @@ def update(unit, since) -> Result:
     batch = todo[:MAX_PER_RUN]
 
     if batch:
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        with cancellable_pool(MAX_WORKERS) as ex:
             futs = {ex.submit(_fetch_slug, s): (s, lm) for s, lm in batch}
             for fut in as_completed(futs):
                 slug, lastmod = futs[fut]

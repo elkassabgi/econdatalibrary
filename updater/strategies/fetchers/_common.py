@@ -682,3 +682,37 @@ def structural_on_zero_rows(stored_max, resp) -> bool:
     if isinstance(vals, dict):
         vals = list(vals.values())
     return any(v is not None for v in (vals or []))
+
+
+def cancellable_pool(max_workers: int):
+    """A ThreadPoolExecutor whose shutdown CANCELS queued work instead of draining it.
+
+    WHY THIS EXISTS — the 2026-08-07 daily updater outage. `with ThreadPoolExecutor(...) as ex`
+    calls `shutdown(wait=True)` on the way out, INCLUDING when an exception is propagating, and
+    that waits for every future already submitted. The orchestrator's per-unit hard timeout is a
+    SIGALRM that raises `UnitTimeout` in the main thread, so on a slow source the sequence is:
+
+        10:02  owid starts, submits all 150 slugs to a 6-worker pool
+        10:47  SIGALRM fires, UnitTimeout raised inside the as_completed loop
+        10:47  the `with` block starts shutdown(wait=True) and drains the remaining ~100 slugs
+        12:32  GitHub kills the step at its 250-minute cap
+
+    owid printed nothing for 150 minutes and the timeout message never appeared, because the
+    exception could not escape the context manager. The 45-minute cap was armed and correct; it
+    simply could not take effect. Four fetchers share the pattern (boe, ksh_stadat, ons_uk, owid).
+
+    `cancel_futures=True` drops the QUEUED futures and `wait=True` still joins the at most
+    `max_workers` already running, so shutdown is bounded by one task, not by the backlog. On the
+    success path nothing is queued and this is a no-op.
+    """
+    import contextlib
+    from concurrent.futures import ThreadPoolExecutor
+
+    @contextlib.contextmanager
+    def _cm():
+        ex = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            yield ex
+        finally:
+            ex.shutdown(wait=True, cancel_futures=True)
+    return _cm()
