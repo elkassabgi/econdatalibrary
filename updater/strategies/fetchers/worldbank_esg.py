@@ -23,6 +23,7 @@ retried, data kept). A per-indicator fetch failure -> transient_unit. A real 200
 no observations -> empty_unit (a quiet year is normal for annual data). Cursors emitted (R41).
 """
 from __future__ import annotations
+import json
 import datetime as dt
 import os
 import time
@@ -77,6 +78,40 @@ def _window(path, since) -> str:
     return f"{start}:{end}"
 
 
+def _published_indicators():
+    """The indicator ids the publisher CURRENTLY lists under source 75, or None if the
+    listing itself could not be read.
+
+    This is the authoritative answer to "does this indicator still exist" — a structured
+    fact, not an error message. Returning None on failure is load-bearing: an unreadable
+    listing must never be read as "everything is archived", which would retire the whole
+    source in one run.
+    """
+    out, page = set(), 1
+    while True:
+        try:
+            j = ig.get_json(f"{ig.API}/sources/{ig.WB_SOURCE}/indicators"
+                            f"?format=json&per_page=200&page={page}")
+        except Exception:                                          # noqa: BLE001
+            return None
+        if not isinstance(j, list) or len(j) < 2 or not isinstance(j[0], dict):
+            return None
+        out |= {i.get("id") for i in (j[1] or []) if isinstance(i, dict) and i.get("id")}
+        try:
+            pages = int(j[0].get("pages", 1))
+        except (TypeError, ValueError):
+            pages = 1
+        if page >= pages:
+            return out
+        page += 1
+
+
+def _retired_path(out_dir):
+    """Indicators the publisher has archived. Blob-routed like every other sidecar (R36):
+    a local write is scratch on a CI runner and would be re-learned every single run."""
+    return os.path.join(out_dir, "_retired.json")
+
+
 def _fetch_window(ind_id, date_param):
     """Windowed pull for one indicator -> list[record]. Raises TransientError on failure."""
     url = (f"{ig.API}/country/all/indicator/{ind_id}"
@@ -92,6 +127,20 @@ def _fetch_window(ind_id, date_param):
         raise TransientError(f"worldbank_esg: {ind_id} window fetch failed: {e}")
     if not j:
         raise TransientError(f"worldbank_esg: {ind_id} window fetch failed")
+    # A message envelope is the API COMPLAINING, never data — and it is a 1-element list, so
+    # the `len(j) < 2` fallthrough below used to book it as an empty window, which the caller
+    # then recorded as `empty_unit` ("a quiet window is normal for annual data"). That is how
+    # 13 archived indicators reported healthy for weeks.
+    #
+    # It is NOT decided here whether the indicator is archived. The message id for a deleted
+    # indicator depends on the URL — 175 without `source=`, 120 ("The provided parameter value
+    # is not valid") WITH it — and 120 is also what an ordinary bad parameter returns. Keying a
+    # permanent retirement on that string would retire live indicators on a transient mistake.
+    # Retirement is decided in update() against the publisher's own indicator LIST, which is a
+    # structured fact rather than a formatted sentence (the R142 lesson).
+    if isinstance(j, list) and j and isinstance(j[0], dict) and j[0].get("message"):
+        msgs = j[0]["message"] or []
+        raise TransientError(f"worldbank_esg: {ind_id} API message {str(msgs[:1])[:110]}")
     if not isinstance(j, list) or len(j) < 2:
         # a real 200 whose envelope is not [meta, rows] -> treat as empty window, not a break
         return []
@@ -127,6 +176,47 @@ def update(unit, since) -> Result:
     #
     # Resuming past the last one worked on makes the deferral true. An unknown or empty bookmark
     # degrades to "start at the top", so a first run or a renamed indicator skips nothing.
+    # Drop indicators the publisher has ARCHIVED before anything else looks at the list.
+    # Not attempted, so they cannot be retried forever, cannot be counted as healthy-empty,
+    # and — the sharp edge — cannot trip finalize()'s "all attempted sub-units returned
+    # empty => likely a structural break" guard when a rotation slice happens to be all
+    # archived. Disclosed every run: a silently shorter work list reads as full coverage.
+    retired = set()
+    _raw = blob.read_bytes(_retired_path(out_dir))
+    if _raw:
+        try:
+            retired = set(json.loads(_raw.decode("utf-8")) or [])
+        except (ValueError, UnicodeDecodeError):
+            retired = set()
+
+    # Re-derive retirement from the publisher's CURRENT listing. Additive both ways: an
+    # indicator that reappears upstream is un-retired, so a publisher restoring something is
+    # not permanently ignored by us. If the listing cannot be read we keep the stored set and
+    # change nothing — an unreadable listing must never read as "everything is archived".
+    published = _published_indicators()
+    if published:
+        ours = {f[:-len(".parquet")] for f in files}
+        fresh = ours - published
+        back = retired & published
+        if fresh != (retired & ours) or back:
+            retired = (retired | fresh) - back
+            blob.write_bytes_atomic(
+                _retired_path(out_dir),
+                json.dumps(sorted(retired), separators=(",", ":")).encode("utf-8"))
+        if back:
+            print(f"[worldbank_esg] {len(back)} indicator(s) are published again, "
+                  f"un-retired: {sorted(back)[:6]}", flush=True)
+    else:
+        print("[worldbank_esg] source-75 indicator listing unreadable this run — keeping the "
+              "stored retired set unchanged, retiring nothing new", flush=True)
+
+    if retired:
+        before = len(files)
+        files = [f for f in files if f[:-len(".parquet")] not in retired]
+        print(f"[worldbank_esg] {before - len(files)} indicator(s) archived upstream, skipped "
+              f"(data kept, can never refresh): {sorted(retired)[:8]}"
+              + (" ..." if len(retired) > 8 else ""), flush=True)
+
     files = rotate_after(files, load_rotation(out_dir))
 
     cursors: dict[str, str] = {}
