@@ -66,7 +66,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Deadline, Tally, finalize
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+                      save_rotation)
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -508,6 +509,17 @@ def update(unit, since) -> Result:
     if not pfiles:
         raise DefinitiveError(f"no ssb group parquet files under {out_dir}")
 
+    # RESUME PAST THE LAST GROUP WORKED ON. blob.list_parquets returns sorted names, so the
+    # 40-minute budget re-walked the same alphabetical prefix every run and deferred the rest
+    # forever, while the note said "the next tick takes them first" — nothing implemented it.
+    #
+    # MEASURED 2026-08-07: 186 grp_* files on R2; a real run (2,401 s = exactly the 40-minute
+    # budget) deferred 135 sub-units beginning at Fbu03 — a table inside grp_Fb, sorted index
+    # 53 — then grp_Fe (54), grp_Fi (55), grp_Fj (56) and "+129 more". So roughly 53 of 186
+    # groups were ever reached and the other ~71% had never been fetched. The ecb and
+    # insee_melodi defect, third instance (R190 class).
+    pfiles = rotate_after(pfiles, load_rotation(out_dir))
+
     sess = requests.Session()
     today = dt.date.today()
     tally = Tally()
@@ -523,6 +535,12 @@ def update(unit, since) -> Result:
             # The vintage is still NOT advanced and the next tick takes them first.
             tally.deferred_unit(f"{fn}: budget {BUDGET_MIN:.0f} min spent, group deferred")
             continue
+        # AFTER the deferral check, never before: the bookmark names the last group this run
+        # actually WORKED ON. Stamped above the check it would record a deferred group and
+        # the next run would skip exactly what the deferral promised to return to. Saved per
+        # group rather than at the end, because the orchestrator's per-source cap KILLS a
+        # source instead of breaking its loop and an end-of-function save is lost (R273).
+        save_rotation(out_dir, fn)
         path = os.path.join(out_dir, fn)
         subj = fn[len("grp_"):-len(".parquet")]
         before = blob.row_count(path)
