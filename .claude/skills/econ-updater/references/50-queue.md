@@ -660,3 +660,29 @@ of repeating it. Only the severity was invented.
 **ssb is NOT retracted.** Its evidence is independent of run notes: 81 of 186 group files sit
 in the 35-41 day bucket and 103 are >=21 days old, with no full-pass run in its history. That
 one stands.
+
+### ssb — also corrected. Tail is STALE, not never-fetched. And what insee_melodi's evidence really is.
+
+One paragraph after retracting the ecb severity I wrote "ssb is NOT retracted — no full-pass
+run in its history", from the same filtered query. Wrong again. ssb's UNFILTERED history is 3
+runs:
+
+    dur      0.0s  failed instantly (source dir missing on the runner)
+    dur 13,853.0s  +5,121,070 new rows          <- a FULL pass, 3.85 h, far past the 40-min cap
+    dur  2,401.0s  135/1515 deferred at the cap
+
+So ssb got one complete pass and its capped runs since have only refreshed the head. The file
+ages match that exactly — 81 of 186 group files sit at 35-41 days and 103 are >=21 days old —
+so the correct claim is **the tail is STALE by roughly a month, not never fetched**. Same
+shape as ecb, milder than I said.
+
+**insee_melodi is the one whose "never fetched" holds**, and for a reason that does not
+depend on run notes at all: six flows had **ZERO ROWS** in the store — DS_SIDE_CREA_COM,
+DS_SIDE_CREA_ENT_COM, DS_SIDE_CREA_ETAB_COM, DS_SIDE_STOCKS_COM, DS_SOCIAL_ECONOMY,
+DS_TOUR_CAP — while appearing in the publisher's list. A file with no rows was not "fetched
+less recently"; it was never fetched. Its three runs are all budget-capped (15 attempted /
+130 deferred, twice) with no full pass, which explains it.
+
+**The general lesson for this whole class**: run notes tell you a sweep is truncated; they do
+NOT tell you what was never fetched. Only the store answers that — zero-row sub-units, or
+object timestamps far past the source's cadence. Ask the store before writing a severity.
