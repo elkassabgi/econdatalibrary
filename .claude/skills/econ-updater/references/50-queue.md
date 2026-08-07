@@ -1099,3 +1099,23 @@ THE CHECK, for whoever sees it first: after any scheduled run whose note reads `
 whose obs/rows moved, list `series/<src>%3A` in R2 and confirm objects carry that run's
 timestamp. insee_bdm is the best candidate — chronically partial, 101,848 series, and it is
 the source whose 43,354 parked retry ids the R361 drain was built for.
+
+### wid: I DAMAGED several thousand objects before the guard caught it — they need the re-derive
+
+Full disclosure so the next session does not read "wid untouched". Before I understood the
+two-vintage collision I ran `core/derive_csv.py --source wid` for about an hour. It writes
+through `_resolve`, which spans all 413 files, so every object it wrote carries THE SAME DATE
+TWICE with contradictory values. Its log reached "derived+put 5,000" before I killed it (for
+being slow, not because I had understood anything), so the count is between 5,000 and 9,999
+of 2,465,197 — an exact count is being scanned; treat it as "several thousand" until then.
+
+Confirmed by spot check: wid:WID:accmhni992:p0p100:992:i:KM was rewritten at 18:55 today,
+while wid:WID:thwealj992:p81p82:992:j:LB and ...:PK still carry their 2026-07-29 objects.
+
+So wid's served surface is now MIXED: mostly the coherent monolith vintage, several thousand
+in the broken duplicate-date shape. Both are fixed by the same action — retire the monolith,
+then re-derive the whole source from the shards. No separate cleanup is needed, and no partial
+fix should be attempted first: deriving the affected ids from the shards alone would leave
+wid serving two vintages side by side, which is the disease, not the cure.
+
+`tools/derive_csv_bulk.py --verify` is what stopped the other 2.4M. Do not disable that flag.
