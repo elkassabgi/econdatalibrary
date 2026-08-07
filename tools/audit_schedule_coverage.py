@@ -161,6 +161,20 @@ def catalog_counts() -> dict:
     return {r[0]: r[1] for r in rows if r[0]}
 
 
+def discontinued():
+    """{source_id: entry} for publishers that have retired a dataset we still serve.
+
+    Loaded, not hardcoded, so the evidence lives next to the claim. Returns {} if the file is
+    absent — a missing file must never silently shrink the work queue.
+    """
+    import yaml
+    p = os.path.join(ROOT, "updater", "discontinued.yaml")
+    if not os.path.exists(p):
+        return {}
+    d = yaml.safe_load(open(p, encoding="utf-8")) or {}
+    return {e["source_id"]: e for e in (d.get("sources") or [])}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--verbose", action="store_true",
@@ -185,7 +199,23 @@ def main() -> int:
     print(f"SERVED  (both)          {len(served):>6,}   {served_series:>12,} series")
     print()
     print(f"SCHEDULED of served     {len(covered):>6,}   {covered_series:>12,} series")
-    print(f"NOT scheduled           {len(gap):>6,}   {gap_series:>12,} series")
+    # SPLIT THE GAP INTO WORK AND ARCHIVAL. Both are genuinely NOT auto-updating — that total is
+    # unchanged and still printed first — but a dataset the publisher has RETIRED cannot be fixed
+    # by building a fetcher, so leaving it at the top of the work queue makes the largest apparent
+    # gap in the library a permanently un-closable one. imf_ifs alone is 100,706 series, 24% of
+    # the queue, and IMF publishes no IFS dataflow at all (measured 2026-08-07: 222 dataflows, 0
+    # matching). Entries must carry their own measurement — see updater/discontinued.yaml.
+    archival = discontinued()
+    arch = {s: archival[s] for s in gap if s in archival}
+    arch_series = sum(counts[s] for s in arch)
+    gap = gap - set(arch)
+    gap_series -= arch_series
+    print(f"NOT scheduled           {len(gap) + len(arch):>6,}   "
+          f"{gap_series + arch_series:>12,} series")
+    if arch:
+        print(f"   ARCHIVAL (retired)   {len(arch):>6,}   {arch_series:>12,} series"
+              f"   — frozen by the publisher, no fetcher is possible")
+        print(f"   ACTIONABLE work      {len(gap):>6,}   {gap_series:>12,} series")
     pct_s = 100.0 * len(covered) / len(served) if served else 0.0
     pct_o = 100.0 * covered_series / served_series if served_series else 0.0
     print(f"\n>>> {len(covered)} of {len(served)} sources / {covered_series:,} of "
@@ -224,6 +254,16 @@ def main() -> int:
               f"  ({len(gap)} sources / {gap_series:,} series):")
         for s, n in sorted(((s, counts[s]) for s in gap), key=lambda kv: -kv[1]):
             print(f"    {n:>12,}  {s}")
+
+    if arch:
+        print("")
+        print(f"ARCHIVAL — the publisher retired these; they stay served and FROZEN "
+              f"({len(arch)} sources / {arch_series:,} series). Counted as not auto-updating, "
+              f"because they are not; listed apart from the work queue because no fetcher can "
+              f"close them:")
+        for s, e in sorted(arch.items(), key=lambda kv: -counts.get(kv[0], 0)):
+            print(f"    {counts.get(s, 0):>12,}  {s:<22s} measured {e.get('measured')}")
+            print(f"                  {str(e.get('finding', '')).strip()[:150]}")
 
     if stranded:
         tot = sum(counts.get(s, 0) for s in stranded)
