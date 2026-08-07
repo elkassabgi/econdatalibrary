@@ -24,7 +24,23 @@ Unblocks, in execution order:
 Alternative if you prefer not to add the rule: run the commands yourself from
 `E:\research\econfindatalibrary` — I'll print the exact list on request.
 
-## 2. UNCTAD API key (free account — unblocks 38 source builds)
+## 2. UNCTAD — keys are IN, but the observations endpoint needs its documented shape (2 min)
+
+Your keys are saved and verified present in .env. Measured tonight: the catalogue, the
+vintage signal and every dimension table answer fine WITHOUT keys, but the observations
+endpoint (/Facts) returns 400 to any non-browser client — and returns an EMPTY body headless
+while returning a detailed validation error from the browser, which means the bot gate is
+answering before UNCTAD's own API does. Parameter guessing cannot converge against that.
+
+**What I need (you are logged in, I am not):** open any dataset page, e.g.
+https://unctadstat.unctad.org/datacentre/dataviewer/US.TradeMerchTotal → click
+**"Get selected data using the data API"** → paste me the code sample it displays (R or
+Python). It carries the real base URL and header names with `<<clientId>>`/`<<apiKey>>`
+placeholders — safe to paste; keep the actual key VALUES in .env, never in chat.
+
+Full measurement log: scratchpad/unctad_auth_findings.md
+
+## (superseded) 2. UNCTAD API key (free account — unblocks 38 source builds)
 
 1. https://unctadstat.unctad.org/datacentre/ → Login → register (free).
 2. After login: **My Home** → copy **Client ID** and **API key**.
