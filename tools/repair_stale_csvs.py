@@ -29,8 +29,14 @@ SAMPLING IS NOT PROOF OF CLEANLINESS, and the output says so: a clean sample of 
 stale rate loosely, it does not establish zero. This tool is a prioritiser for a backlog, not
 a certification — `tools/verify_source_served.py` remains the per-source verdict.
 
-    python tools/repair_stale_csvs.py --never-ok            # sample only, report
-    python tools/repair_stale_csvs.py --never-ok --apply    # re-derive the proven-stale
+WHICH SOURCES TO WALK: `--at-risk` = anything with a `partial` SINCE its last `ok`. My first
+filter was "never returned ok" and it MISSED REAL BREAKAGE — ecb has 1 ok against 12 partials,
+so it fell outside that set, and it byte-compared 0 of 25 identical (100% of served objects
+stale) immediately after a 2-hour pass rewrote 523 of its 540 store files. treasury was missed
+the same way at 3 of 14. See _at_risk().
+
+    python tools/repair_stale_csvs.py --at-risk            # sample only, report
+    python tools/repair_stale_csvs.py --at-risk --apply    # re-derive the proven-stale
 """
 from __future__ import annotations
 
@@ -49,15 +55,35 @@ sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
 BUCKET = "econ-data"
 
 
-def _never_ok() -> set[str]:
+def _at_risk() -> set[str]:
+    """Sources that have had a `partial` SINCE their last `ok`.
+
+    "Never returned ok" was my first filter and it was WRONG — it is a special case, not the
+    rule. A source that returned ok once long ago and has gone partial ever since is in
+    exactly the same position: everything merged after that last ok was never derived. ecb
+    proved it the hard way (12 partials against 1 ok, sitting OUTSIDE a never-ok sweep) and
+    byte-compared 0 of 25 identical — 100% of its served objects stale — right after a
+    2-hour pass rewrote 523 of its 540 store files. treasury, also missed, was 3 of 14 stale.
+
+    So the predicate is positional, not a set membership: find the last ok, and ask whether
+    any partial follows it.
+    """
     db = os.path.join(ROOT, "data", "_aqueduct", "state.db")
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    ok, seen = set(), set()
-    for src, status in con.execute("SELECT source_id, status FROM runs"):
-        seen.add(src)
-        if status == "ok":
-            ok.add(src)
-    return seen - ok
+    cols = [r[1] for r in con.execute("PRAGMA table_info(runs)")]
+    hist: dict[str, list[str]] = {}
+    for row in con.execute("SELECT * FROM runs ORDER BY rowid"):
+        d = dict(zip(cols, row))
+        hist.setdefault(d["source_id"], []).append(d["status"])
+    out = set()
+    for src, st in hist.items():
+        if "ok" not in st:
+            out.add(src)                       # nothing ever derived
+            continue
+        last_ok = len(st) - 1 - st[::-1].index("ok")
+        if any(x == "partial" for x in st[last_ok + 1:]):
+            out.add(src)                       # merged since the last derive
+    return out
 
 
 def _sample_ids(src: str, k: int, seed: int) -> list[str]:
@@ -99,7 +125,9 @@ def _stale_count(s3, ids: list[str]) -> tuple[int, int, list[str]]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", action="append")
-    ap.add_argument("--never-ok", action="store_true")
+    ap.add_argument("--at-risk", action="store_true",
+                    help="sources with a partial since their last ok — see _at_risk()")
+    ap.add_argument("--never-ok", action="store_true", help="deprecated alias for --at-risk")
     ap.add_argument("--sample", type=int, default=12)
     ap.add_argument("--seed", type=int, default=20260807)
     ap.add_argument("--apply", action="store_true", help="re-derive the proven-stale sources")
@@ -115,8 +143,8 @@ def main() -> int:
         "SELECT source_id, count(*) FROM series GROUP BY source_id")}
 
     targets = a.source or sorted(sizes)
-    if a.never_ok:
-        n = _never_ok()
+    if a.at_risk or a.never_ok:
+        n = _at_risk()
         targets = [t for t in targets if t in n]
     skipped = [t for t in targets if sizes.get(t, 0) > a.max_series]
     targets = [t for t in targets if sizes.get(t, 0) <= a.max_series]
