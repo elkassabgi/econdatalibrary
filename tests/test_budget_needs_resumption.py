@@ -43,9 +43,16 @@ FETCHER_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 # ADDING one requires reading the loop and recording why it is safe.
 NO_ROTATION_REVIEWED = {
     "_dbnomics", "bea", "bis", "boc", "comtrade", "cso", "dst", "eia", "ember",
-    "fed_board", "idb", "ilostat", "ksh_stadat", "snb", "stat_slovenia", "stats_nz",
-    "zillow",
+    "fed_board", "idb", "ilostat", "ksh_stadat", "snb", "stats_nz", "zillow",
 }
+# stat_slovenia is deliberately ABSENT. It rolls its OWN rotation — a `_sweep_offset.json`
+# beside the data, advanced after every group so the offset survives a mid-sweep kill (task
+# #41) — and is recognised by _OWN_ROTATION below. It passes on its own merit rather than by
+# exemption, which keeps this allowlist meaning one specific thing: "budgeted, no rotation of
+# any kind, safe ONLY because a per-sub-unit sidecar drops finished work from the next run".
+
+# Rotation need not come from _common; a fetcher may implement it itself.
+_OWN_ROTATION = re.compile(r"_sweep_offset|sweep_offset")
 
 
 def _budgeted_without_rotation() -> set[str]:
@@ -56,8 +63,9 @@ def _budgeted_without_rotation() -> set[str]:
         src = open(os.path.join(FETCHER_DIR, fn), encoding="utf-8").read()
         if "Deadline(" not in src:
             continue
-        if not re.search(r"\brotate_after\s*\(", src):
-            out.add(fn[: -len(".py")])
+        if re.search(r"\brotate_after\s*\(", src) or _OWN_ROTATION.search(src):
+            continue
+        out.add(fn[: -len(".py")])
     return out
 
 
