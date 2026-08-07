@@ -1219,3 +1219,25 @@ messages ARE the durable record, that is a real loss.
 FIX: pass the message on stdin instead of interpolating it — `git commit -F -` with a
 single-quoted heredoc — or just never use backticks in `-m`. Quote code with plain quotes.
 Checking afterwards costs one command: `git log -1 --format=%B | grep -n "  "`.
+
+### R380 repair tally — FINAL except unesco_sdg (still deriving)
+
+Every line below is a real verify_source_served byte-compare, taken AFTER confirming the
+source's local mirror was level with R2 (the R383 trap: a verify against a stale mirror only
+proves served==local, with both behind the store).
+
+    unesco_natmon   98,664   30/30      insee_bdm      101,848   30/30
+    worldbank_esg    5,473   60/60      imf_fas_direct  14,081   25/25
+    sec_edgar       17,276   25/25 *    stat_slovenia    4,111   25/25 (resynced)
+    census           2,993   25/25      dst              1,963   30/30
+    hagstofa         1,061   25/25 (resynced)            ons_uk      42   25/25
+    ecb                 35   25/25      treasury            14   14/14
+    insee_melodi       139   25/25      statcan             20   20/20 *
+    abs                 18   18/18      eia                  7   derived
+    unesco_sdg     100,997   IN FLIGHT — not done until its own byte-compare says so
+
+  * carries a separate pre-existing condition (orphaned objects), not R380 staleness.
+
+Four of these — stat_slovenia, hagstofa, imf_fas_direct, insee_bdm — were repaired TWICE:
+once from a stale local mirror (which regressed them) and again after syncing from R2. Only
+the second pass counts, and only the second verify is meaningful.
