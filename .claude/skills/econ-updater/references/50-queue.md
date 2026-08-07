@@ -913,3 +913,25 @@ today under `series/wid%3A`.
 VERIFY WHEN IT LANDS: `python tools/verify_source_served.py --source wid --sample 40` must
 report byte-compare 40/40 before this is called done. Until then wid is REPAIR IN PROGRESS,
 not repaired.
+
+### R380 repairs — VERIFIED tally (each line is a real verify_source_served byte-compare)
+
+    worldbank_esg   5,473   60/60      insee_bdm     101,848   30/30
+    insee_melodi      139   25/25      sec_edgar      17,276   25/25 *
+    stat_slovenia   4,134   30/30      imf_fas_direct 14,081   25/25
+    hagstofa        1,061   30/30 *    census          2,993   25/25
+    dst             1,963   30/30      ons_uk             42   25/25
+    ecb                35   25/25      statcan            20   20/20 *
+    treasury           14   14/14      abs                18   18/18
+    eia                 7   derived
+
+  * carries a SEPARATE pre-existing condition, not R380 staleness:
+      hagstofa   7 catalogued keys resolve to no store file (5 store files, 1,068 series)
+      statcan    71,970 orphaned objects — the multi-day statcan build, task #29
+      sec_edgar  46 orphaned objects, all legacy CIK-keyed ids (sec_edgar:CIK0000017797,
+                 sec_edgar:AILIH) with no catalogue row — the two-products history of task
+                 #81. Unreachable strays, no user path to them; left alone deliberately.
+
+STILL RUNNING at the time of writing: yale_epi (77,240), unesco_natmon (98,664),
+unesco_sdg (100,997), wid (2,465,197). None of them is repaired until its own byte-compare
+says so — do not mark them done from the derive's exit code alone.
