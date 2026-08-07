@@ -40,6 +40,68 @@ sources:
       whose crosswalk is uneven (measured in _imf_direct.py: FDI 95.3%, APDREO 100%, WHDREO 56%,
       FAS/WORLD/COFER ~0%). A replacement id is Ahmed's call, not a side effect of this file.
 
+  # THE OTHER THREE LEGACY IMF SOURCES, plus gender budgeting. Same probe as imf_ifs, same day,
+  # same catalogue of 222 published dataflows. Each was matched on its own id AND on the words in
+  # its name, and every one returned zero. Together with imf_ifs that is 148,754 series of the
+  # work queue that no fetcher could ever have closed.
+
+  - source_id: imf_gfsfalcs
+    publisher: International Monetary Fund
+    dataset: GFS Financial Assets and Liabilities by Counterpart Sector
+    measured: 2026-08-07
+    probe: >-
+      GET https://api.imf.org/external/sdmx/2.1/dataflow, matching all 222 published Dataflow ids
+      and Names against "FALCS", "Financial Assets and Liabilities" and "Counterpart".
+    finding: >-
+      0 flows match FALCS. Our store holds 232,215 rows across 20,249 series ending 2024-01-01.
+      A RELATED flow does exist - GFS_SFCP, "GFS Stocks and Flows by Counterparty" - and this
+      library already serves it first-hand as imf_gfssfcp_direct (41,751 series). Whether it is a
+      key-level successor to these series is NOT measured here and should not be assumed.
+    decision: >-
+      Served and frozen as an archival snapshot. Its counterpart data continues under a separate,
+      already-live source id, so nothing a user can reach today is being left behind.
+
+  - source_id: imf_fsire
+    publisher: International Monetary Fund
+    dataset: Financial Soundness Indicators - Reporting Entities
+    measured: 2026-08-07
+    probe: >-
+      GET https://api.imf.org/external/sdmx/2.1/dataflow, matching all 222 published Dataflow ids
+      and Names against "FSIRE", "Reporting Entit" and "Reporting".
+    finding: >-
+      0 flows match, on either the id or the word "Reporting" anywhere in a name. The three FSI
+      datasets IMF still publishes (FSIBSIS, FSIC, FSICDM) are already served first-hand here as
+      imf_fsibsis_direct, imf_fsic_direct and imf_fsicdm_direct. Our store holds 88,487 rows across
+      18,620 series ending 2025-01-01.
+    decision: Served and frozen as an archival snapshot; the live FSI datasets are served already.
+
+  - source_id: imf_pgi
+    publisher: International Monetary Fund
+    dataset: Principal Global Indicators
+    measured: 2026-08-07
+    probe: >-
+      GET https://api.imf.org/external/sdmx/2.1/dataflow, matching all 222 published Dataflow ids
+      and Names against "PGI" and "Principal Global".
+    finding: >-
+      0 flows match. Our store holds 1,077,057 rows across 8,891 series and already stopped at
+      2020-05-01 - it has been frozen for six years, which is corroborating evidence rather than
+      a symptom of anything this library did.
+    decision: Served and frozen as an archival snapshot.
+
+  - source_id: imf_gender_budgeting
+    publisher: International Monetary Fund
+    dataset: Gender Budgeting
+    measured: 2026-08-07
+    probe: >-
+      GET https://api.imf.org/external/sdmx/2.1/dataflow, matching all 222 published Dataflow ids
+      and Names against "BUDGET" and "GENDER".
+    finding: >-
+      0 flows contain "BUDGET". IMF does publish eight Gender Statistics flows (GS_LGRGHTS,
+      GS_LEPM, GS_SDO, GS_ATF, GS_CGI, GS_ED and others), five of which are already served here as
+      imf_gs*_direct, but none of them is gender budgeting. Our store holds 288 rows across 288
+      series ending 2016-01-01.
+    decision: Served and frozen as an archival snapshot.
+
   # THE FOUR UNESCO SOURCES, AND THE TRAP IN MEASURING THEM. A cycle-36 note called these
   # publisher-discontinued. Probing UIS looked at first like it REFUTED that: the live API reports
   # themes CULTURE and SCIENCE_TECHNOLOGY_INNOVATION both with a "February 2026 Data Release".
