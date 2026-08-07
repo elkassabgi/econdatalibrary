@@ -416,6 +416,15 @@ So at least two causes, needing opposite responses:
    pulls of genuine data that we simply do not have. This is the actionable half: find out
    whether they exhaust the per-flow page loop, the retry budget, or the run Deadline.
 
-Do the census before the fix: classify all 66 by a single cheap `?startPeriod=1990` probe
-(0 observations vs >0), because the empty ones will otherwise inflate every "coverage gap"
-number quoted for this source — and the gap that matters is only the second group.
+**CENSUS DONE 2026-08-07 — all 66 probed, 0 unresolved:**
+
+    publisher-empty (0 observations)  :  2   DS_FECONDITE, DS_MORTALITE
+    REAL DATA WE LACK                 : 64
+    total unheld                      : 66
+
+I expected the empty ones to materially inflate the gap. They do not — they are 2 of 66.
+The gap is real and large: **we hold 79 of the publisher's 145 dataflows, and 64 of the 66
+we are missing carry genuine data.** Quote 64, not 66, and never 66-minus-a-guess.
+
+The 2 publisher-empty flows must not be catalogued (a row with no data is the R29
+violation); check `insee_melodi:DS_FECONDITE` / `:DS_MORTALITE` and delist if present.
