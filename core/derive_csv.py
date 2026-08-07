@@ -83,13 +83,21 @@ def _put_with_backoff(s3, bucket, key, body) -> None:
             _time.sleep(wait)
 
 
-def _mirror_behind_store(sources, sample: int = 4):
+def _mirror_behind_store(sources, sample: int = 0):
     """[(source, detail)] for sources whose LOCAL parquets hold less than R2's.
 
     Compared by row count and max observation date only — see the note at the call site for
-    why timestamps and hashes are both wrong here. Samples per source to stay affordable; a
-    single behind file is enough to refuse, because we cannot know which series it feeds.
-    Any error reading either side is treated as "cannot prove it is safe" and reported.
+    why timestamps and hashes are both wrong here. A single behind file is enough to refuse,
+    because we cannot know which series it feeds. Any error reading either side is treated as
+    "cannot prove it is safe" and reported.
+
+    SAMPLE SIZE SCALES WITH THE SOURCE, and says what it checked. A fixed 4-file sample was
+    the first version and it is close to meaningless on statcan (8,207 files) — it would clear
+    a source after inspecting 0.05% of it, which is the kind of bounded check that reads as
+    coverage and is not (R190's disease, applied to a guard). Now: min(64, max(6, 5% of files)),
+    and the count is printed so a thin check cannot pass for a thorough one. Still a SAMPLE —
+    it can miss a behind file — so a clean result means "no evidence of drift in N files",
+    not "the mirror is current". Passing an explicit `sample` overrides the scaling.
     """
     import glob
     import random
@@ -126,7 +134,11 @@ def _mirror_behind_store(sources, sample: int = 4):
         files = [f for f in os.listdir(d) if f.endswith(".parquet")]
         if not files:
             continue
-        for f in random.Random(0).sample(files, min(sample, len(files))):
+        k = sample or min(64, max(6, len(files) // 20))
+        k = min(k, len(files))
+        print(f"[preflight] {src}: comparing {k} of {len(files)} parquet(s) against R2 "
+              f"by row count and max obs date", flush=True)
+        for f in random.Random(0).sample(files, k):
             rp = os.path.join(tmp, "r.parquet")
             try:
                 s3.download_file("econ-data", f"clean_full/{src}/{f}", rp)
