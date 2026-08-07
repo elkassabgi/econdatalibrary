@@ -63,8 +63,12 @@ Say "keep all", "delete all", or name them individually.
 
 ## 4. Optional / when convenient
 
-- **Stats NZ key**: the registration phone field wants digits only, no spaces or "+"
-  (e.g. `5015551234`). Low value — don't burn time.
+- ~~Stats NZ key~~ **OBSOLETE — removed 2026-08-07.** stats_nz needs NO key: it fetches the
+  publisher's public bulk CSVs (fetcher header states it explicitly; no key lookup exists in
+  the code path). MEASURED healthy: live, quarterly, 1,320 catalogued series, last run
+  2026-08-01 `ok` with +122,203 rows through 2026-03. The key was only ever needed for an
+  ALTERNATIVE portal-API route that the bulk-CSV fetcher superseded; the item should have been
+  retired when that fetcher shipped.
 - **Cloudflare tokens**: already verified — nothing expires, nothing to do (the "July 2
   token" was my error; your Jul-31 `econdatalibrary-ci` token is the live one and healthy).
 - **GitHub PAT**: done and verified (push access on both repos). Nothing more needed.
