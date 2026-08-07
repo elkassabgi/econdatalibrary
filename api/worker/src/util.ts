@@ -321,7 +321,19 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // publisher-wide, so their five cleared siblings above already covered them).
   // unesco_sci stays OUT: only 12 of its 1,230 indicator codes exist in the current UIS
   // API, so it cannot be kept current and would be a frozen 2019 snapshot.
-  "unesco_inno", "unesco_natmon", "unesco_sdg", "unhcr", "usda", "wgi", "who_hwf", "who_rs",
+  // unsdg added 2026-08-07: 396 SDG indicator series that were CATALOGUED BUT NOT RESOLVABLE —
+  // findable in search and a 501 on download, which is the worst of the three states to be in.
+  // The data plane was already complete and nobody had flipped the flag: 396 catalogue rows
+  // against 396 R2 objects (MISSING 0, ORPHANED 0), byte-compare 30/30 identical against a
+  // mirror the footer diff proved level with the store (1 of 1 parquet).
+  // D1 WAS SYNCED FIRST — 396 series rows plus the parent `source` and `un-data-terms` licence
+  // rows — because flipping this array while D1 is empty converts a 501 into a 404 and calls it
+  // progress. Verified after the sync: series 396, source row "UN SDG Indicators Database".
+  // Licence CLEARED with attribution (UNdata Terms of Use): the data "may be copied freely,
+  // duplicated and further distributed provided that UNdata is cited as the reference".
+  // Coverage is honest rather than complete: the source is live:true on a weekly check and its
+  // backfill still defers ~591 sub-units per pass, so this serves 396 indicators now and grows.
+  "unesco_inno", "unesco_natmon", "unesco_sdg", "unhcr", "unsdg", "usda", "wgi", "who_hwf", "who_rs",
   // wid added 2026-07-29 — the largest single source in the library: 2,465,197 series /
   // ~124M observations of World Inequality Database data that were held locally and
   // served to NOBODY. Added only after the derive COMPLETED and was verified
