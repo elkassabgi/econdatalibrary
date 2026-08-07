@@ -345,6 +345,27 @@ jobs:
         if: ${{ always() }}
         run: python tools/guard_heartbeat.py --check
 
+      - name: Served-bytes freshness probe (rotating sample)
+        # THE EMPIRICAL HALF OF R380. The health gate reads state.db, so a source can be green
+        # on freshness while every object a user downloads is a year old — which is exactly
+        # what happened: the CSV re-derive was gated on status=='ok', chronically partial
+        # sources never return ok, and fourteen live sources served superseded values. ecb was
+        # 0 of 25 byte-identical. tests/test_partial_runs_rederive_csvs.py pins the code SHAPE,
+        # but a test cannot notice a different path reaching the same outcome. This compares
+        # what we actually serve against what the resolver produces now.
+        #
+        # Rotating and sampled so it stays cheap: a few sources per run, bookmarked in R2 so
+        # successive runs advance rather than re-checking the same prefix forever — the R190
+        # shape, where a bounded pass with no bookmark is permanently blind to its own tail.
+        #
+        # continue-on-error DELIBERATELY for now: it is new and its false-positive rate in CI
+        # is not yet established, so it must not red a run it has not earned the right to red.
+        # Once a week of runs shows it quiet, DROP THIS FLAG — a check nobody can fail is a
+        # check nobody reads (R244).
+        if: ${{ always() }}
+        continue-on-error: true
+        run: python tools/probe_csv_freshness.py --sources 6 --sample 8
+
       - name: Daily digest email (morning report, like hfdatalibrary's)
         # Runs even when earlier steps failed so a broken morning is REPORTED,
         # not silent. Needs the RESEND_API_KEY repo secret; without it the step
