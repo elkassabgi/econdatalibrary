@@ -684,10 +684,69 @@ def is_incomplete(flow_id: str, done: set, unrec: dict) -> bool:
 
 # ──────────────────────────────── main ─────────────────────────────────────
 
+def _reachable(host: str, port: int = 443, timeout: float = 6.0) -> bool:
+    """TCP-connect probe. Cheap, and it discriminates the two ISTAT failure modes that
+    otherwise look identical in the log (both end as 'host unavailable' after minutes of
+    retries): a host that is DOWN at the network layer vs one that answers and misbehaves."""
+    import socket
+    try:
+        socket.create_connection((host, port), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
+def _preflight() -> bool:
+    """FAIL FAST when ISTAT itself is down (R62 class: the old behaviour burned 5 x 21 s
+    ladders per path on BOTH hosts — ~10 minutes per launch — and the guard relaunched
+    it forever, so an upstream outage looked like a busy crawler).
+
+    MEASURED 2026-08-07: esploradati.istat.it resolves (193.204.90.13) but TCP:443 times
+    out; sdmx.istat.it connects instantly and 302-redirects EVERY SDMX path to its own
+    root (an infinite self-redirect), so it cannot serve the catalogue either. With both
+    in that state there is nothing to crawl, and saying so in one line beats discovering
+    it again in ten minutes.
+    """
+    import urllib.parse
+    import requests
+    alive = []
+    for label, base in HOSTS:
+        host = urllib.parse.urlparse(base).hostname
+        if not _reachable(host):
+            print(f"  preflight: {label} ({host}) UNREACHABLE at TCP:443 - skipping", flush=True)
+            continue
+        # TCP-alive is not SERVING. sdmx.istat.it connects in 0.1 s and answers every SDMX
+        # path with 302 -> its own root; following that is an infinite loop and retrying it
+        # is pure waste. One un-followed request tells them apart.
+        try:
+            probe = requests.get(base + "dataflow/" + AGENCY, timeout=15,
+                                 allow_redirects=False,
+                                 headers={**UA, "Accept": STR_ACCEPT})
+        except requests.RequestException as e:
+            print(f"  preflight: {label} ({host}) probe failed ({type(e).__name__}) - skipping",
+                  flush=True)
+            continue
+        loc = (probe.headers.get("Location") or "").rstrip("/")
+        if probe.status_code in (301, 302, 303, 307, 308) and                 urllib.parse.urlparse(loc or "").hostname in (host, None):
+            print(f"  preflight: {label} ({host}) SELF-REDIRECTS {probe.status_code} -> "
+                  f"{loc or '(same host)'} - not serving SDMX, skipping", flush=True)
+            continue
+        alive.append(label)
+    if not alive:
+        print("  preflight: NO ISTAT HOST REACHABLE - upstream outage, exiting immediately "
+              "(re-probe on the next guard tick; nothing to crawl, nothing lost)", flush=True)
+        return False
+    print(f"  preflight: reachable host(s): {', '.join(alive)}", flush=True)
+    return True
+
+
 def main():
     args = sys.argv[1:]
     if args and args[0] in ("-h", "--help"):
         print(__doc__); return
+
+    if not _preflight():
+        raise SystemExit(3)          # distinct code: upstream down, not a crawler fault
 
     only_ids: set = set()
     list_only = False
