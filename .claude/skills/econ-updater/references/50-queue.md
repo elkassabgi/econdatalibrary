@@ -1306,3 +1306,24 @@ STILL OPEN (audit's list, none of it done): the other ~1,300 behind files across
 owid 58, ember 26, boe 25, statfin 23, ssb 22, dst 21, defillama 18, ksh_stadat 15,
 fed_board 13, cso 12 and more. Each needs the same treatment — sync from R2, re-derive,
 verify. ilostat was taken first because it was the worst (952).
+
+### Resync-first sweep, batch 1 — only 1 of 6 was genuinely stale
+
+Proof that "1,379 files behind R2" is NOT "1,379 stale served objects". After syncing each
+source's parquets from R2 and re-sampling against the now-correct mirror:
+
+    dst        813 parquets synced   15/15 identical   clean
+    cso         50                   15/15             clean
+    statfin    136                   15/15             clean
+    ssb        186                   15/15             clean
+    defillama  112                   15/15             clean
+    ember       64                   9/15 DIFFER       STALE -> re-derived, 60 CSVs
+
+ember is the fourth confirmed hollow verification of the day: it read 15/15 identical against
+its behind-mirror this morning and 9/15 stale against the synced one. dst is the useful
+counter-case — its earlier pass was methodologically weak but SUBSTANTIVELY CORRECT, so the
+right reading of the whole episode is "unproven", not "wrong".
+
+Method note for whoever continues: `tools/resync_and_repair.py --source X --apply` does
+sync -> sample -> re-derive-only-if-stale, which is the ordering that makes the verdict mean
+something. Batch 2 (boe, ksh_stadat, fed_board, eurostat) running.
