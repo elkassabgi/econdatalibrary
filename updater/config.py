@@ -176,7 +176,11 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 # 2026-08-06: +unsdg RE-ADDED (cycle 38, same authorization): UNdata terms grant redistribution
 #   verbatim; fetcher reworked with rotation (R190) + chunked merges (R249), self-bounds at
 #   200 codes/run; 4 rotated runs backfill all 713 (API live, release 2026.Q2.G.01). -> 176
-EXPECTED_SOURCE_COUNT = 176
+# 2026-08-07: -imf_hpdd, -imf_fiscaldecentralization RETIRED (Class A quartet, Ahmed's
+#   permission granted this hour): both fully absorbed by their EXACT-count direct successors
+#   (imf_hpd_direct 191, imf_fd_direct 8,398); data plane retired archive-first via
+#   tools/retire_source.py, D1+R2 clean. psbsfad/pctot had no registry entries. -> 174
+EXPECTED_SOURCE_COUNT = 174
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

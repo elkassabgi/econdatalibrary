@@ -250,7 +250,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // could never serve (R29); catalog + D1 rows deleted the same day, zero R2 objects existed.
   "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
   "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
-  "imf_fiscaldecentralization", "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
+  "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
   "imf_gfse", "imf_gfsfalcs", "imf_gfsibs", "imf_gfsmab", "imf_gfsssuc",
   // Four GFS *_direct sources added 2026-08-02 — 549,843 series / 8,853,880 observations that
   // did not exist before today. All four had held ZERO rows and failed every run with
@@ -266,8 +266,8 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // Each derived with put == streamed and errors 0, and titles DECODED (fallback count 0) —
   // the GFS flows still resolve their SDMX structures, unlike the retired IFS/DOT/CDIS/CPIS.
   "imf_gfsbs_direct", "imf_gfscofog_direct", "imf_gfssfcp_direct", "imf_gfssoo_direct",
-  "imf_hpdd",
-  "imf_mcdreo", "imf_namain_idc_n", "imf_pctot", "imf_pgcs", "imf_pgi", "imf_psbsfad",
+  
+  "imf_mcdreo", "imf_namain_idc_n", "imf_pgcs", "imf_pgi", 
   "imf_unsdg_imf_inputs", "imf_weo", "imf_whdreo", "imf_world",
   // Eight IMF datasets added 2026-08-01, 694,300 series over 37,971,568 observations. They held
   // real data and ZERO catalogue rows, while the correspondingly-named imf_*_direct sources the
