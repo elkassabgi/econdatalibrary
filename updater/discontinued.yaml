@@ -40,8 +40,70 @@ sources:
       whose crosswalk is uneven (measured in _imf_direct.py: FDI 95.3%, APDREO 100%, WHDREO 56%,
       FAS/WORLD/COFER ~0%). A replacement id is Ahmed's call, not a side effect of this file.
 
-# CANDIDATES — believed discontinued, NOT yet re-measured, so still counted as work.
-# unesco_clte (23,868), unesco_inno (18,909), unesco_film (8,527), unesco_cltt (6,226): a cycle-36
-# note records that the current UIS release ships no culture/film/innovation files, only pre-2022
-# archives, and that our snapshots are equal-or-newer. That note is a citation and this file takes
-# measurements, so they are deliberately left in the work queue until someone probes UIS directly.
+  # THE FOUR UNESCO SOURCES, AND THE TRAP IN MEASURING THEM. A cycle-36 note called these
+  # publisher-discontinued. Probing UIS looked at first like it REFUTED that: the live API reports
+  # themes CULTURE and SCIENCE_TECHNOLOGY_INNOVATION both with a "February 2026 Data Release".
+  # They do — with a different indicator set. The theme being alive is not our indicators being
+  # alive, and stopping at the theme list would have put 57,530 series back in the work queue as
+  # buildable when almost none of them can be refreshed. The code-level overlap is the real
+  # measurement and it supports the original verdict.
+
+  - source_id: unesco_cltt
+    publisher: UNESCO Institute for Statistics
+    dataset: Culture — international trade in cultural goods and services
+    measured: 2026-08-07
+    probe: >-
+      GET https://api.uis.unesco.org/api/public/definitions/indicators (5,063 indicator codes
+      across EDUCATION, DEMOGRAPHIC_SOCIOECONOMIC, CULTURE and SCIENCE_TECHNOLOGY_INNOVATION),
+      intersected against the distinct indicator codes parsed from our own store keys.
+    finding: >-
+      0 of our 34 indicator codes are still published — G_ALL_BAL, G_CLT_BAL, G_EXP_ALL,
+      G_EXP_AV_MED, G_EXP_CLT and the rest are all absent. Our store holds 76,793 rows across
+      6,226 series ending 2019-01-01.
+    decision: Served and frozen as an archival snapshot; no fetcher is possible for these codes.
+
+  - source_id: unesco_inno
+    publisher: UNESCO Institute for Statistics
+    dataset: Innovation statistics
+    measured: 2026-08-07
+    probe: >-
+      GET https://api.uis.unesco.org/api/public/definitions/indicators, intersected against the
+      distinct indicator codes parsed from our own store keys.
+    finding: >-
+      0 of our 638 indicator codes are still published — the whole CO.IP* family (CO.IPCLI,
+      CO.IPCOMP, CO.IPCONS, CO.IPGOV, CO.IPGRP …) is gone. The API's SCIENCE_TECHNOLOGY_INNOVATION
+      theme is alive but ships 12 unrelated codes (EXPGDP.TOT, FRESP.SP.TFTE.*). Our store holds
+      43,802 rows across 18,909 series ending 2014-01-01.
+    decision: Served and frozen as an archival snapshot; no fetcher is possible for these codes.
+
+  - source_id: unesco_film
+    publisher: UNESCO Institute for Statistics
+    dataset: Feature film statistics
+    measured: 2026-08-07
+    probe: >-
+      GET https://api.uis.unesco.org/api/public/definitions/indicators, intersected against the
+      distinct indicator codes parsed from our own store keys.
+    finding: >-
+      1 of our 76 indicator codes is still published (220174); 220000, 220002, 220003, 220004,
+      220005 and the remaining 74 are absent. Our store holds 70,467 rows across 8,527 series
+      ending 2017-01-01. A fetcher could refresh 1.3% of the source.
+    decision: >-
+      Served and frozen. The single surviving code is real but is not worth a fetcher on its own;
+      recorded here so the 1.3% is not misreported as zero.
+
+  - source_id: unesco_clte
+    publisher: UNESCO Institute for Statistics
+    dataset: Culture employment
+    measured: 2026-08-07
+    probe: >-
+      GET https://api.uis.unesco.org/api/public/definitions/indicators, intersected against the
+      distinct indicator codes parsed from our own store keys.
+    finding: >-
+      21 of our 408 indicator codes are still published (5.1%), and under a re-scheme — the
+      survivors are all the new CE.RA.* form (CE.RA.CULOCC1.1.OV.ILOSTAT.1 …) while our legacy
+      numeric codes 700146-700150 and the other 387 are absent. Our store holds 36,538 rows across
+      23,868 series ending 2016-01-01.
+    decision: >-
+      Served and frozen. The 21 live CE.RA.* codes are a genuine but small successor set under
+      different keys; building them would be a NEW source id, not a refresh of these series, and
+      re-keying existing ids is reserved for Ahmed.
