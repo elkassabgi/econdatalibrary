@@ -101,6 +101,28 @@ def _cursor_path():
     return os.path.join(_out_dir(), "_collupd.json")
 
 
+def order_changed(changed, cur_upd, held):
+    """Run order for a bounded cso batch: UNHELD matrices first, newest revision within
+    each group. Module-level and pure so the scheduling rule can be asserted directly.
+
+    Two stable passes, least-significant key first — a single tuple key cannot express it
+    because the keys need opposite directions (unheld ascending, revision descending).
+    """
+    out = list(changed)
+    out.sort(key=lambda m: (cur_upd.get(m) or ""), reverse=True)
+    out.sort(key=lambda m: m in held)
+    return out
+
+
+def _held_path():
+    """Which matrices the STORE holds — distinct from _collupd.json, which records the
+    publisher REVISION we last saw. Held answers "can we serve this at all", the cursor
+    answers "is what we hold current"; conflating them is what let a bounded run re-pull
+    held matrices while catalogued-but-empty ones waited. Seeded by
+    tools/seed_cso_held.py, extended by every successful pull."""
+    return os.path.join(_out_dir(), "_held.json")
+
+
 def _subject_key(t) -> str:
     """Reproduce the ingester's per-subject file stem EXACTLY (so revisions land in the
     same parquet the ingest wrote)."""
@@ -279,8 +301,33 @@ def update(unit, since) -> Result:
         except (ValueError, UnicodeDecodeError):
             stored = {}
     changed = [m for m, u in cur_upd.items() if stored.get(m) != u]
-    # newest revisions first so the bounded run always advances the freshest data
-    changed.sort(key=lambda m: (cur_upd.get(m) or ""), reverse=True)
+    # UNHELD MATRICES FIRST, then newest revisions.
+    #
+    # Newest-first alone is right only when the store is level with the cursor. It was not:
+    # the cursor is written through the blob layer as of 2026-08-03 (see _write_cursor) and
+    # therefore RESTARTED EMPTY, while the store already held 7,608 matrices. With 120 of
+    # the publisher's 12,908 timestamps stored, nearly everything looks "changed", so a
+    # bounded 60-matrix run spent itself re-pulling data we already had while 290 CATALOGUED
+    # matrices with zero rows in the store waited — ~213 runs away at 60/run, and a run is
+    # already at its time budget (2,017.8 s measured for 60), so MAX_TABLES cannot buy this.
+    #
+    # `_held.json` is the set of matrices the store can actually serve (seeded by
+    # tools/seed_cso_held.py, extended below by each run's successful pulls). Sorting unheld
+    # first fills real holes before re-pulls. It asserts nothing about freshness: a held
+    # matrix is still re-pulled whenever its publisher revision differs from the cursor, it
+    # merely yields priority to a matrix that has no rows at all.
+    held = set()
+    _rawh = blob.read_bytes(_held_path())
+    if _rawh:
+        try:
+            held = set(json.loads(_rawh.decode("utf-8")) or [])
+        except (ValueError, UnicodeDecodeError):
+            held = set()
+    changed = order_changed(changed, cur_upd, held)
+    if held:
+        _unheld = sum(1 for m in changed if m not in held)
+        print(f"[cso] {len(changed):,} changed; {_unheld:,} are NOT in the store and go "
+              f"first (store holds {len(held):,} matrices)", flush=True)
 
     if not changed:
         # nothing moved upstream — persist the (unchanged) cursor and report no_change honestly
@@ -435,6 +482,20 @@ def update(unit, since) -> Result:
     for mtr in pulled_ok:
         new_cursor[mtr] = cur_upd[mtr]
     _write_cursor(cur_path, new_cursor)
+
+    # 5b) Record that the store now HOLDS these matrices, so the next run's ordering does not
+    #     send it back to ground we have already covered. Same pulled_ok gate as the cursor:
+    #     a matrix we failed to pull is not claimed as held. Union, never replace — this file
+    #     is seeded from the whole store (tools/seed_cso_held.py) and a run only ever adds.
+    if pulled_ok:
+        if held:
+            held.update(pulled_ok)
+        else:
+            # No seed present: start from what this run proved, rather than writing an empty
+            # set that would assert the store holds nothing.
+            held = set(pulled_ok)
+        blob.write_bytes_atomic(
+            _held_path(), json.dumps(sorted(held), separators=(",", ":")).encode("utf-8"))
 
     if cursors_capped:
         print(f"[cso] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
