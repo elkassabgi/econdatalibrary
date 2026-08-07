@@ -1119,3 +1119,30 @@ fix should be attempted first: deriving the affected ids from the shards alone w
 wid serving two vintages side by side, which is the disease, not the cure.
 
 `tools/derive_csv_bulk.py --verify` is what stopped the other 2.4M. Do not disable that flag.
+
+### wid damage: REPAIRED without needing the blocked permission — 9,763 objects restored
+
+The retirement is blocked, but undoing my own damage is not: the fix is to put those objects
+back into the SAME coherent monolith vintage the other 2.45M carry, which is a write to
+`series/`, not a delete.
+
+FOUND THE SET EXACTLY, not by guessing. `core/derive_csv.py` walks `ORDER BY source_id,
+series_id`, so what it rewrote is a PREFIX of wid's catalogue order. Probed at increasing
+offsets, then binary-searched, then scanned a ±200/+400 window around the edge because the run
+was threaded and the boundary could have been ragged — it was not:
+
+    idx 9,762  written today          idx 9,763  not
+    window [9,562 , 10,163): 201 written today, max dirty idx 9,762 — a clean prefix
+
+  => DAMAGED SET = catalogue indices 0..9,762, exactly 9,763 of 2,465,197 series.
+
+PROVED THE GENERATOR BEFORE WRITING ANYTHING. Rather than trust a hand-rolled CSV writer to
+match the served contract, I regenerated SIX UNTOUCHED objects (indices 12,000 / 20,000 /
+50,000 / 200,000 / 400,000 / 900,000, all written 2026-07-29 from the monolith) from
+wid.parquet alone and compared byte-for-byte: 6 identical, 0 differ. Only then did the restore
+run, through core.derive_csv._put_with_backoff with ContentType text/csv, the same PUT path
+the backfill uses.
+
+Net effect: wid returns to ONE coherent vintage everywhere. It is still the OLDER (2024)
+vintage — that is what the blocked retirement fixes — but it is no longer a mix, and no object
+carries contradictory duplicate dates.
