@@ -964,3 +964,26 @@ STANDING RULE, now enforced in the tool rather than written down: before derivin
 prove the local parquet is not behind the store, BY CONTENT. LastModified is upload time, not
 change time; md5 differs on a re-encoded parquet with identical data. Five of seven genuinely
 differing files today had identical rows and identical max dates.
+
+### Use derive_csv_bulk for anything big — the per-series path is 25 DAYS on wid
+
+`core/derive_csv.py` resolves each series independently, which means a predicate scan over the
+source parquet PER SERIES. Measured on wid today: ~5,000 objects in 77 minutes = ~65/min. For
+2,465,197 catalogued series that is roughly **615 hours — 25 days**. I had it running for over
+an hour before doing the arithmetic.
+
+`tools/derive_csv_bulk.py` exists for exactly this: DuckDB streams each parquet ONCE in
+`ORDER BY series_key, obs_date` and flushes a series the moment the key changes — one pass, no
+per-series scan. It requires the parquet to carry a `series_key` column; wid does
+(series_key/obs_date/value), as do most tidy sources. Its `--verify N` compares N random series
+byte-for-byte against `core.derive_csv._series_csv_bytes` and REFUSES to run on any mismatch,
+so switching costs nothing in correctness.
+
+RULE: per-series derive for incremental work and small sources; bulk for a backfill. Before
+starting any re-derive over ~50k series, do the division first — 65/min is the number to
+divide by if you are on the per-series path.
+
+NOTE while switching: wid's parquets hold 2,858,393 distinct series against 2,465,197
+catalogued. The bulk tool derives from the PARQUET, so it will write ~393k objects that have no
+catalogue row — unreachable strays, not user-visible, but they inflate the object count and
+future orphan audits. Worth a look later; not a reason to keep the 25-day path.
