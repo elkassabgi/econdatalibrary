@@ -38,7 +38,8 @@ ROOTS = ("clean_full", "clean_grouped")
 def store_root_for(src: str) -> str | None:
     for r in ROOTS:
         d = os.path.join(ROOT, "data", r, src)
-        if os.path.isdir(d) and any(f.endswith(".parquet") for f in os.listdir(d)):
+        if os.path.isdir(d) and any(f.endswith(".parquet")
+                                    for _dp, _dn, fs in os.walk(d) for f in fs):
             return r
     return None
 
@@ -85,39 +86,55 @@ def _meta(path_or_file):
     return m.num_rows
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--source", required=True)
-    ap.add_argument("--workers", type=int, default=24)
-    ap.add_argument("--json", help="write the classified lists here")
-    a = ap.parse_args()
+def catalogued_sources():
+    import sqlite3
+    con = sqlite3.connect(
+        f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True)
+    return [r[0] for r in con.execute(
+        "select distinct source_id from series order by source_id")]
 
-    from core import r2_util
-    s3 = r2_util.client()
-    root = store_root_for(a.source)
+
+def one_source(s3, src, workers, json_path=None, quiet=False):
+    root = store_root_for(src)
     if root is None:
         # Say it, do not `continue`. A guard that goes quiet when it cannot find the store is
         # how sec_edgar's re-derive passed a preflight that had checked nothing (R383 hole 1).
-        print(f"{a.source}: NO LOCAL PARQUETS under {' or '.join(ROOTS)} — UNCHECKED, not clean")
+        if quiet:
+            return None
+        print(f"{src}: NO LOCAL PARQUETS under {' or '.join(ROOTS)} — UNCHECKED, not clean")
         return 2
-    d = os.path.join(ROOT, "data", root, a.source)
+    d = os.path.join(ROOT, "data", root, src)
 
+    # KEY ON THE RELATIVE PATH, NOT THE BASENAME, and walk the local tree. Two stores are
+    # nested: bea keeps clean_full/bea/<Dataset>/<Table>.parquet and eia
+    # clean_full/eia/<subdir>/<key>.parquet. Flattening to the basename made eia's 60 objects
+    # collapse into 30 names — each local file compared against whichever of its two namesakes
+    # the listing happened to yield last — and reported "30 files AHEAD of the store", a
+    # finding that was entirely an artefact of my own key. It also made all 588 of bea's nested
+    # objects look R2-only, because os.listdir sees only the top directory.
+    prefix = f"{root}/{src}/"
     r2 = {}
     tok = None
     while True:
-        kw = {"Bucket": BUCKET, "Prefix": f"{root}/{a.source}/", "MaxKeys": 1000}
+        kw = {"Bucket": BUCKET, "Prefix": prefix, "MaxKeys": 1000}
         if tok:
             kw["ContinuationToken"] = tok
         r = s3.list_objects_v2(**kw)
         for o in r.get("Contents", []):
-            n = o["Key"].rsplit("/", 1)[-1]
-            if n.endswith(".parquet"):
-                r2[n[:-8]] = (o["Key"], o["Size"])
+            k = o["Key"]
+            if k.endswith(".parquet"):
+                r2[k[len(prefix):-8]] = (k, o["Size"])
         if not r.get("IsTruncated"):
             break
         tok = r["NextContinuationToken"]
-    loc = {f[:-8] for f in os.listdir(d) if f.endswith(".parquet")}
-    print(f"{a.source} [{root}]  local {len(loc):,} file(s)   R2 {len(r2):,} object(s)")
+    loc = set()
+    for dirpath, _dirs, files in os.walk(d):
+        rel = os.path.relpath(dirpath, d).replace(os.sep, "/")
+        for f in files:
+            if f.endswith(".parquet"):
+                loc.add(f[:-8] if rel == "." else f"{rel}/{f[:-8]}")
+    if not quiet:
+        print(f"{src} [{root}]  local {len(loc):,} file(s)   R2 {len(r2):,} object(s)")
 
     common = sorted(loc & set(r2))
 
@@ -128,13 +145,13 @@ def main() -> int:
         except Exception as e:                                    # noqa: BLE001
             return n, None, f"R2 {type(e).__name__}"
         try:
-            ll = _meta(os.path.join(d, n + ".parquet"))
+            ll = _meta(os.path.join(d, *(n + ".parquet").split("/")))
         except Exception as e:                                    # noqa: BLE001
             return n, None, f"local {type(e).__name__}"
         return n, (ll, rr), None
 
     behind, ahead, same, errs = [], [], 0, []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         for i, (n, pair, err) in enumerate(ex.map(one, common), 1):
             if err:
                 errs.append((n, err))
@@ -144,11 +161,15 @@ def main() -> int:
                 ahead.append((n, pair[0], pair[1]))
             else:
                 same += 1
-            if i % 2000 == 0:
+            if not quiet and i % 2000 == 0:
                 print(f"   {i:,}/{len(common):,} compared", flush=True)
 
     only_r2 = sorted(set(r2) - loc)
     only_loc = sorted(loc - set(r2))
+    res = {"source": src, "root": root, "same": same, "behind": behind, "ahead": ahead,
+           "r2_only": only_r2, "local_only": only_loc, "errors": errs}
+    if quiet:
+        return res
     print(f"\nSAME            {same:,}")
     print(f"LOCAL BEHIND    {len(behind):,}   (sync these from R2)")
     print(f"LOCAL AHEAD     {len(ahead):,}   (MERGE queue — do NOT overwrite)")
@@ -160,14 +181,63 @@ def main() -> int:
     for n, e in errs[:5]:
         print(f"   ERROR  {n}: {e}")
 
+    if json_path:
+        os.makedirs(os.path.dirname(json_path), exist_ok=True)
+        json.dump(res, open(json_path, "w", encoding="utf-8"), indent=1)
+        print(f"\nwrote {json_path}")
+    return 0 if not behind and not ahead else 1
+
+
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--source", action="append", default=[])
+    ap.add_argument("--all", action="store_true",
+                    help="every catalogued source — the fleet answer, not one at a time")
+    ap.add_argument("--workers", type=int, default=24)
+    ap.add_argument("--json", help="write the classified lists here")
+    a = ap.parse_args()
+
+    from core import r2_util
+    s3 = r2_util.client()
+    if not a.all:
+        if len(a.source) != 1:
+            print("pass exactly one --source, or --all")
+            return 2
+        return one_source(s3, a.source[0], a.workers, a.json)
+
+    srcs = a.source or catalogued_sources()
+    print(f"sweeping {len(srcs):,} catalogued source(s) by parquet footer\n")
+    rows, unchecked = [], []
+    for i, src in enumerate(srcs, 1):
+        r = one_source(s3, src, a.workers, quiet=True)
+        if r is None:
+            unchecked.append(src)
+            print(f"  [{i:>3}/{len(srcs)}] {src:22s} NO LOCAL PARQUETS — UNCHECKED", flush=True)
+            continue
+        rows.append(r)
+        flag = "" if not (r["behind"] or r["ahead"]) else "  <-- "
+        print(f"  [{i:>3}/{len(srcs)}] {src:22s} same {r['same']:>6,}  behind {len(r['behind']):>5,}"
+              f"  ahead {len(r['ahead']):>4,}  r2-only {len(r['r2_only']):>5,}{flag}", flush=True)
+
+    dirty = [r for r in rows if r["behind"] or r["ahead"]]
+    print(f"\n{len(rows):,} source(s) compared, {len(unchecked):,} UNCHECKED (no local store)")
+    print(f"{len(dirty):,} diverge:  {sum(len(r['behind']) for r in rows):,} local-behind file(s), "
+          f"{sum(len(r['ahead']) for r in rows):,} local-ahead, "
+          f"{sum(len(r['r2_only']) for r in rows):,} R2-only")
+    for r in sorted(dirty, key=lambda r: -(len(r["behind"]) + len(r["ahead"]))):
+        print(f"   {r['source']:22s} behind {len(r['behind']):>5,}  ahead {len(r['ahead']):>4,}")
+    if unchecked:
+        # NOT "clean". A source with no local mirror cannot be compared, and calling that a
+        # pass is the exact hole that hid sec_edgar (R383/R386).
+        print(f"\nUNCHECKED ({len(unchecked)}): {', '.join(unchecked)}")
     if a.json:
         os.makedirs(os.path.dirname(a.json), exist_ok=True)
-        json.dump({"source": a.source, "root": root, "same": same,
-                   "behind": behind, "ahead": ahead,
-                   "r2_only": only_r2, "local_only": only_loc, "errors": errs},
+        json.dump({"sources": rows, "unchecked": unchecked},
                   open(a.json, "w", encoding="utf-8"), indent=1)
-        print(f"\nwrote {a.json}")
-    return 0 if not behind and not ahead else 1
+        print(f"wrote {a.json}")
+    return 0 if not dirty else 1
 
 
 if __name__ == "__main__":

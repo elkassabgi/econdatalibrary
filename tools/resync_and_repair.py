@@ -63,23 +63,43 @@ def store_root_for(src: str) -> str:
 
 
 def sync(src: str, workers: int = 16) -> int:
+    """Pull ONLY the files R2 is ahead on. Never the ones where local is ahead.
+
+    THIS USED TO COPY EVERY FILE. Divergence is not one-directional: an adversarial audit
+    measured ilostat as 952 files behind R2 and 41 files AHEAD of it at the same time, and this
+    function's blind copy overwrote those 41 and destroyed 967,043 rows that existed nowhere
+    else (ledger R388). Six sources diverge both ways at once. So the copy list now comes from
+    `tools/footer_diff.py`, which row-counts every file on both sides, and the ahead set is
+    reported and skipped rather than quietly flattened.
+    """
     from core import r2_util
-    from tools.store_inventory import r2_store_files
+    from tools.footer_diff import one_source
     s3 = r2_util.client()
     root = store_root_for(src)
     d = os.path.join(ROOT, "data", root, src)
     os.makedirs(d, exist_ok=True)
-    names = sorted(r2_store_files(src))
+
+    cls = one_source(s3, src, workers, quiet=True)
+    if cls is None:
+        print(f"  {src}: no local parquets — UNCHECKED, refusing to sync blind")
+        return 0
+    names = [n for n, _l, _r in cls["behind"]] + list(cls["r2_only"])
+    if cls["ahead"]:
+        print(f"  {src}: {len(cls['ahead'])} file(s) where LOCAL IS AHEAD are being LEFT ALONE "
+              f"— they need a merge, not a copy: "
+              f"{', '.join(n for n, _l, _r in cls['ahead'][:6])}")
     if not names:
-        print(f"  {src}: no parquets in R2 — nothing to sync")
+        print(f"  {src}: mirror already level with the store ({cls['same']:,} file(s))")
         return 0
 
     def one(n):
-        s3.download_file(BUCKET, f"{root}/{src}/{n}.parquet",
-                         os.path.join(d, n + ".parquet"))
+        dest = os.path.join(d, *(n + ".parquet").split("/"))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        s3.download_file(BUCKET, f"{root}/{src}/{n}.parquet", dest)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         list(ex.map(one, names))
-    print(f"  {src}: synced {len(names):,} parquet(s) from r2://econ-data/{root}/")
+    print(f"  {src}: pulled {len(names):,} of {len(names) + cls['same'] + len(cls['ahead']):,} "
+          f"parquet(s) from r2://econ-data/{root}/ (only where R2 was ahead)")
     return len(names)
 
 
