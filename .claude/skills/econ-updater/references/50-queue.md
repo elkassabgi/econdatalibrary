@@ -1154,3 +1154,19 @@ were never duplicated in the first place and are correct on the shard vintage. w
 has NO duplicate-date objects anywhere; it is uniformly the 2024 monolith vintage except for
 543 shard-only series. That residual inconsistency disappears when the monolith is retired and
 the source is re-derived from the shards.
+
+ATTEMPT 3 (insee_melodi --force): I KILLED IT MYSELF. Put a `timeout 560` on a source whose
+runs take ~27 minutes, then read the runs table and started reasoning about a row that was a
+PRE-EXISTING run, not mine — the give-away was dur=1632.7s against my 560s cap. Caught it
+before drawing a conclusion, but only just. Two rules: (a) size the timeout from the source's
+own run history before launching a proof, and (b) when reading state after a run, confirm the
+row is YOURS (count rows before and after, or check the duration against your cap) — a runs
+table is append-only and the newest row is not necessarily the one you caused.
+
+Also unexplained and NOT hand-waved: insee_melodi's run count read 3 earlier today and 2 now.
+Runs should not disappear. Someone should find out why before trusting run-history counts.
+
+Re-running in the background with no timeout. The diagnostic groundwork is done and rules
+these out: the run DOES report cursors (15, matching its 15 attempted sub-units) and all 15
+map to catalogue rows as `insee_melodi:<key>`, so neither an empty cursor set nor a mapping
+gap can explain a no-op derive.
