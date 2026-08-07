@@ -119,10 +119,23 @@ class Deadline:
         override = os.environ.get("AQUEDUCT_BUDGET_MIN_OVERRIDE")
         if override:
             try:
-                minutes = float(override)
+                effective = float(override)
             except (TypeError, ValueError):
                 pass                                         # a bad value must not un-bound a run
+            else:
+                # SAY SO. Fetchers print their own module BUDGET_MIN in the deferral message,
+                # so with an override in force a run logs "budget of 20 min spent after
+                # 3.1 min" — a flat contradiction that sent me hunting a bug that did not
+                # exist. The constant stops being the effective budget the moment this is set,
+                # so the override announces itself rather than leaving 38 call sites to
+                # quietly misreport it.
+                if effective != minutes:
+                    print(f"[budget] AQUEDUCT_BUDGET_MIN_OVERRIDE={effective:g} min replaces "
+                          f"this fetcher's {minutes:g} min — a later 'budget of {minutes:g} "
+                          f"min spent' message means {effective:g}", flush=True)
+                minutes = effective
         self.budget = minutes * 60.0
+        self.budget_min = minutes      # the EFFECTIVE budget, for callers that report it
         self.t0 = time.monotonic()
 
     def spent(self) -> bool:
