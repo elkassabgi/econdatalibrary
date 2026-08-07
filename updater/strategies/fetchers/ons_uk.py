@@ -76,6 +76,7 @@ from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import Tally, finalize
+from ._common import cancellable_pool
 from jobs import ingest_ons_uk as ig   # reuse catalog walk + THE key builder
 
 SOURCE = "ons_uk"
@@ -317,7 +318,7 @@ def update(unit, since) -> Result:
     # Every dataset still gets processed — this changes only how many are held at once.
     for wave_start in range(0, len(batch), WAVE_SIZE):
         wave = batch[wave_start:wave_start + WAVE_SIZE]
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        with cancellable_pool(MAX_WORKERS) as ex:
             futs = {ex.submit(_fetch_one, ds_id, href): (ds_id, v) for ds_id, v, href in wave}
             for fut in as_completed(futs):
                 ds_id, cur_v = futs[fut]

@@ -35,6 +35,7 @@ from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import Deadline, Tally, finalize
+from ._common import cancellable_pool
 from jobs import ingest_ksh_stadat as ig   # reuse catalog + THE table parser / key builder
 
 SOURCE = "ksh_stadat"
@@ -162,7 +163,7 @@ def update(unit, since) -> Result:
     dl = Deadline(minutes=budget_min)
     fetched = 0
     if batch:
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        with cancellable_pool(MAX_WORKERS) as ex:
             for wave_start in range(0, len(batch), TABLE_WAVE):
                 if dl.spent():
                     print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "

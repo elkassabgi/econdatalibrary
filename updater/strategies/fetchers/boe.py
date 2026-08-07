@@ -33,6 +33,7 @@ from ...errors import TransientError
 from ..base import Result
 from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
                       save_rotation)
+from ._common import cancellable_pool
 
 SOURCE = "boe"
 CSV_URL = "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
@@ -269,7 +270,7 @@ def update(unit, since) -> Result:
                 tasks.append((pf, batch, _fmt(start)))
 
         if tasks:
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            with cancellable_pool(MAX_WORKERS) as ex:
                 futs = {ex.submit(_fetch_batch_task, b, df, dateto): pf
                         for (pf, b, df) in tasks}
                 for fut in as_completed(futs):
