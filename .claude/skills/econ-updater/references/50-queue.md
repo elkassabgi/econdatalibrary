@@ -1379,3 +1379,39 @@ One real constraint: the 2026-08-07T00:39 run was interrupted by its 45-minute h
 The 396 already in the store are SERVED as of cycle 39 (D1 synced first, worker deployed
 ee394061, /v1/sources 221 including unsdg). Serving 396 while 317 are still arriving is coverage
 that is honest rather than complete — the catalogue grows as the rotation lands them.
+
+
+### Cycle 39 — the instruments were the story, not the sources
+
+Four defects found today were in the checking machinery, not the data, and each had been
+reporting success while blind:
+
+1. **The daily updater's 45-minute cap could not fire.** `with ThreadPoolExecutor(...) as ex`
+   calls `shutdown(wait=True)` while an exception propagates, so SIGALRM raised UnitTimeout at
+   10:47 and the context manager then drained owid's remaining ~100 slugs until GitHub killed the
+   step at its 250-minute cap. Memory flat at 2.5 GB throughout — a hang, not an OOM. Four
+   fetchers shared the shape (boe, ksh_stadat, ons_uk, owid); all now use
+   `_common.cancellable_pool`, which drops the queued backlog and joins only what is running.
+
+2. **The rotating freshness probe never rotated.** Its bookmark went through a store-path helper
+   that rejects `_aqueduct/` keys, so it re-checked abs..bcrp on every run and had never reached
+   a source past 'b'. It printed a warning saying exactly that, every run, under a reassuring
+   "0 stale" summary. Fixed to a plain R2 key; the first real sweep then covered 30 sources /
+   234 objects and found **eia stale 4 of 7** — repaired, 7/7 identical, verify exit 0.
+
+3. **The mirror-vs-store diff cannot see a corruption that hits both copies.** XPRO's ticker was
+   re-pointed to a new CIK, the refresher wrote the successor's FOUR facts over the store, and
+   the mirror got the same four — footer_diff printed SAME while 19,395 rows were gone. XOM was
+   visible only because its mirror happened to be stale. The witness that works is the
+   catalogue's own `metadata.n_obs`, written by a different code path at a different time:
+   sweeping all 17,274 companies against it found exactly one casualty, and it was XPRO.
+   `tools/audit_store_vs_catalogued_size.py` makes that check mechanical.
+
+4. **A verdict with a blank reason.** `verify_source_served` prints NOT REACHABLE whenever
+   `reachable` is False, but only knew two causes — so a failure of its OWN D1 probe rendered as
+   "…agree, but . Users cannot fetch these ids yet." scb showed that and returned SERVED a minute
+   later. It now distinguishes "broken" from "could not check".
+
+The common shape: an instrument that cannot tell *I did not look* from *it is fine*. Every one
+of them passed while blind, and three of the four announced their own blindness in text nobody
+read.
