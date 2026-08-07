@@ -284,7 +284,14 @@ def _record_for_catalog_sync(ids) -> None:
 
 def _derive_changed_csvs(unit, res, blob):
     """Contract step 5 — CSV/parquet coherence (§5.7): re-derive the CSV of every
-    series whose parquet changed this run. Returns (failed_series_ids, error_note).
+    series whose parquet changed this run.
+
+    Returns (failed_series_ids, error_note, deferred_series_ids). `deferred` are ids the
+    derive BUDGET never reached: they are unfinished work, so the caller queues them for
+    retry exactly like failures — but they are not breakage, so they must NOT demote the
+    run. Conflating the two demoted insee_bdm every run over "csv_derive failed
+    43354/77501", which was the 45-minute budget doing its job (ledger R372, and the same
+    disease R359 named: a check that reports its own policy as a fault).
 
     The changed set is exactly `res.series_cursors` — the per-series freshness the
     fetcher measured from rows it actually merged (never inferred from schedules).
@@ -320,8 +327,8 @@ def _derive_changed_csvs(unit, res, blob):
                   f"must report per-series cursors to satisfy CSV/parquet coherence (§5.7)",
                   flush=True)
             return [], (f"csv coherence unmet: fetcher reported no series_cursors for "
-                        f"{res.obs} merged obs — CSVs not re-derived (§5.7)")
-        return [], None
+                        f"{res.obs} merged obs — CSVs not re-derived (§5.7)"), []
+        return [], None, []
     try:
         # `changed` holds STORE series_keys; the derive/resolver layer needs
         # CATALOG series_ids. The key→id mapping is source-specific (e.g.
@@ -368,10 +375,17 @@ def _derive_changed_csvs(unit, res, blob):
                 why = (f"the catalog this run read has {n_ids:,} rows for it but none "
                        f"matched — grain/key-form mismatch")
             return [], (f"csv coherence unmet: {len(unmapped)} changed series_keys "
-                        f"have no catalog mapping for {unit.source_id}: {why} (§5.7)")
+                        f"have no catalog mapping for {unit.source_id}: {why} (§5.7)"), []
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob()) or {}
-        failed = [str(s) for s in (out.get("failed") or [])]
+        # SPLIT budget-deferral from breakage. derive.py puts unreached ids in BOTH
+        # `failed` (so the caller queues them for retry) and `deferred_ids`; its own log
+        # already subtracts them ("failed {len(failed) - deferred}"), the orchestrator did
+        # not, and every large source therefore reported its budget as a fault and demoted.
+        deferred_ids = [str(s) for s in (out.get("deferred_ids") or [])]
+        _deferred_set = set(deferred_ids)
+        failed = [str(s) for s in (out.get("failed") or [])
+                  if str(s) not in _deferred_set]
         # A derived CSV is HOSTED but not yet DISCOVERABLE: nothing in the daily
         # pipeline pushed catalog rows to D1 (sync_state_d1 syncs freshness only,
         # by design), so a new series reached R2 and never appeared in /v1/catalog.
@@ -387,6 +401,12 @@ def _derive_changed_csvs(unit, res, blob):
             shown = ", ".join(failed[:5])
             more = f", +{len(failed) - 5} more" if len(failed) > 5 else ""
             note = f"csv_derive failed {len(failed)}/{len(ids)} series [{shown}{more}]"
+        elif deferred_ids:
+            # Budget spent, nothing broken. Disclosed on the unit and queued for retry,
+            # but NOT a demotion: a source that is merely large would otherwise be
+            # permanently `partial`, which is how gates stop being read (R244/R359).
+            note = (f"csv coverage note: derive budget spent — {len(deferred_ids)} of "
+                    f"{len(ids)} id(s) deferred to csv_retry_queue, none failed")
         if not note and unmapped:
             # STATE ONLY WHAT WAS CHECKED. This used to append "(over derive-all cap)"
             # unconditionally — a hardcoded cause, never tested. riksbank emitted
@@ -429,9 +449,10 @@ def _derive_changed_csvs(unit, res, blob):
             note = (f"csv coverage note: {len(unmapped)} changed keys have no catalog "
                     f"row for {unit.source_id} ({why}) — served ids coherent")
             print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
-        return failed, note
+        return failed, note, deferred_ids
     except Exception as e:  # noqa: BLE001 — CSV failure must NEVER sink the data publish
-        return changed, (f"csv_derive crashed ({len(changed)} series queued): " + repr(e))[:300]
+        return changed, (f"csv_derive crashed ({len(changed)} series queued): "
+                         + repr(e))[:300], []
 
 
 _DERIVE_ALL_CAP = 5000
@@ -951,7 +972,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # `partial` and queues the ids — the parquet publish stands, and the
             # un-bumped vintage below makes the next run re-check + re-derive.
             if status == "ok" and not dry:
-                csv_failed, csv_err = _derive_changed_csvs(unit, res, blob)
+                csv_failed, csv_err, csv_deferred = _derive_changed_csvs(unit, res, blob)
                 # DRAIN THE RETRY QUEUE (2026-08-06). derive.py has promised since it
                 # gained a wall-clock budget that ids not reached "come back in `failed`
                 # ... so they are retried next run instead of lost" — but the queue was
@@ -980,6 +1001,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                           f"{len(_retry_rows):,} -> attempted {len(_retry_ids):,}, "
                           f"cleared {len(_cleared):,}, still queued {len(_refailed):,}",
                           flush=True)
+                if csv_deferred:
+                    store.enqueue_csv_retry(unit.source_id, csv_deferred,
+                                            "derive budget spent — deferred, not failed")
                 if csv_err and csv_err.startswith("csv coverage note:") and not csv_failed:
                     # Coverage, not coherence: every mapped (= served) changed id was
                     # re-derived; the residual keys have no catalog row to go stale.

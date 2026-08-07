@@ -134,6 +134,12 @@ def derive_and_put(series_ids: list[str], blob) -> dict:
     put = 0
     failed: list[str] = []
     deferred = 0
+    # WHICH ids were deferred, not merely how many. The caller must queue them for retry
+    # (unfinished work) while NOT counting them as failures (budget, not breakage), and it
+    # cannot tell the two apart from a count. insee_bdm reported "csv_derive failed
+    # 43354/77501" on exactly that conflation and was demoted to `partial` every run for
+    # work the budget never reached. Ledger R372.
+    deferred_ids: list[str] = []
     lock = threading.Lock()
 
     def _one(sid):
@@ -162,8 +168,9 @@ def derive_and_put(series_ids: list[str], blob) -> dict:
     if workers == 1:
         for i, sid in enumerate(ids):
             if _spent():
-                deferred = len(ids) - i
-                failed.extend(ids[i:])
+                deferred_ids = list(ids[i:])
+                deferred = len(deferred_ids)
+                failed.extend(deferred_ids)
                 break
             _record(*_one(sid))
     else:
@@ -175,6 +182,7 @@ def derive_and_put(series_ids: list[str], blob) -> dict:
             for sid in it:
                 if _spent():
                     rest = [sid] + list(it)
+                    deferred_ids = list(rest)
                     deferred = len(rest)
                     failed.extend(rest)
                     break
@@ -196,7 +204,8 @@ def derive_and_put(series_ids: list[str], blob) -> dict:
         print(f"  derive budget of {budget_min:.0f} min spent — {deferred:,} id(s) deferred "
               f"to csv_retry_queue (put {put:,}, failed {len(failed) - deferred:,})",
               flush=True)
-    return {"put": put, "failed": failed, "deferred": deferred}
+    return {"put": put, "failed": failed, "deferred": deferred,
+            "deferred_ids": deferred_ids}
 
 
 def _check(series_id: str | None) -> int:
