@@ -248,11 +248,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
 
   // hf_equities REMOVED 2026-08-06 (Ahmed: "remove hf") — 1,391 metadata-only listings econ
   // could never serve (R29); catalog + D1 rows deleted the same day, zero R2 objects existed.
-  "idb", "ilostat", "imf", "imf_afrreo", "imf_apdreo",
-  "imf_bopagg", "imf_cofer", "imf_commodity", "imf_cpi", "imf_fas", "imf_fdi",
-  "imf_fm", "imf_fsire", "imf_gender_budgeting", "imf_gender_equality", "imf_gfscofog",
-  "imf_gfse", "imf_gfsfalcs", "imf_gfsibs", "imf_gfsmab", "imf_gfsssuc",
-  // Four GFS *_direct sources added 2026-08-02 — 549,843 series / 8,853,880 observations that
+  "idb", "ilostat", "imf_commodity", "imf_fsire", "imf_gender_budgeting", "imf_gfsfalcs", // Four GFS *_direct sources added 2026-08-02 — 549,843 series / 8,853,880 observations that
   // did not exist before today. All four had held ZERO rows and failed every run with
   // OverflowError('size does not fit in an int') or ParseError('out of memory'), which I first
   // read as pyexpat's 2 GiB document ceiling. It was not: GFS_BS parses at 2,293,565,648 bytes
@@ -267,9 +263,8 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // the GFS flows still resolve their SDMX structures, unlike the retired IFS/DOT/CDIS/CPIS.
   "imf_gfsbs_direct", "imf_gfscofog_direct", "imf_gfssfcp_direct", "imf_gfssoo_direct",
   
-  "imf_mcdreo", "imf_namain_idc_n", "imf_pgcs", "imf_pgi", 
-  "imf_unsdg_imf_inputs", "imf_weo", "imf_whdreo", "imf_world",
-  // Eight IMF datasets added 2026-08-01, 694,300 series over 37,971,568 observations. They held
+  "imf_pgi", 
+  "imf_weo", // Eight IMF datasets added 2026-08-01, 694,300 series over 37,971,568 observations. They held
   // real data and ZERO catalogue rows, while the correspondingly-named imf_*_direct sources the
   // registry schedules hold nothing at all: the serving pipeline was built against the _direct
   // names and the crawler filled these. imf_fsi already served from exactly this layout, so it
@@ -283,9 +278,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // code vocabulary (the stored IRFCL key decodes A->Annual and S121->Central bank, but '4F' is
   // absent from COUNTRY because COUNTRY is now ISO-3). Fixing them needs an area-code -> ISO-3
   // crosswalk, not a flow rename. Downloadable now; searchable when that lands.
-  "imf_bop", "imf_cdis", "imf_cpis", "imf_dot",
-  "imf_gfsr", "imf_ifs", "imf_irfcl", "imf_mfs",
-  "insee_bdm", "ipea",
+  "imf_ifs", "insee_bdm", "ipea",
   // "ksh" RETIRED 2026-07-29 (Ahmed-approved). 394 of its 415 tables were already in
   // ksh_stadat, which carries MORE series for them; its fetcher could not even import
   // (jobs/ingest_ksh_hungary.py does not exist). Its 21 unique tables — 903 series — were
@@ -339,7 +332,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // licence-verified sources that were idle and catalogued nowhere. Both derived and
   // verified before listing (MISSING 0, ORPHANED 0). adb's terms are KIDB's own, not
   // the ADB Data Library's, and its attribution carries KIDB's prescribed citation.
-  "imf_fsi", "adb",
+  "adb",
   // cso (Ireland) — flow-grain per-table publish, 7,896 tables / 49,057,386 rows
   // (2026-07-29). Table grain is what makes it hostable: per SERIES it is 9,993,368 keys
   // at 4.90 obs/series because CSO publishes many short cross-sectional tables, and at

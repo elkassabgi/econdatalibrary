@@ -88,7 +88,13 @@ LEGACY_KEEP = {
     "imf_dbnomics",
     "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025",
     "wto_hs_a_0030", "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax",
-    "whr", "social_progress", "spi", "cow",
+    # whr REMOVED from the floor 2026-08-07 (Ahmed's "trim whr" order, executed in full):
+    # the Gallup/WHR WRITTEN grant (2026-07-09) covers exactly the Figure 2.1 workbook,
+    # the store+catalogue were REBUILT from the publisher's own file (whr_fig21.parquet,
+    # 1,749 FIG21:* series — the R215 OWID-provenance data never serves), and the last
+    # 178 OWID-era CSVs were purged from R2 minutes before this removal (residual 0).
+    # licence row whr-granted: reservable=1, commercial_ok=0, attribution=1.
+    "social_progress", "spi", "cow",
     # ei_statreview REMOVED from the floor 2026-07-22: the Energy Institute GRANTED
     # written permission (permission records (held privately)). Its binding exclusion --
     # "no S&P Global Platts / Commodity Insights price series" -- is satisfied by

@@ -35,7 +35,9 @@ def test_runbook_and_coverage_audit_harvest_identically_from_real_utilts():
     assert a == b, (f"served-set drift: runbook-only={sorted(a - b)[:5]} "
                     f"audit-only={sorted(b - a)[:5]}")
     # the original defect's fingerprint: packed-line ids must be present
-    assert {"imf_bop", "imf_cdis", "imf_cpis", "imf_dot"} <= a, (
+    # Canary refreshed 2026-08-07: the original four (imf_bop/cdis/cpis/dot) were RETIRED
+    # in the Class A wave; these four live on packed lines in today's util.ts.
+    assert {"idb", "ilostat", "imf_fsire", "imf_gender_budgeting"} <= a, (
         "packed-line ids missing — the one-id-per-line regex is back")
 
 
