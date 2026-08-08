@@ -102,6 +102,33 @@ def parse_time(v: str, is_year: bool) -> dt.date | None:
     return None
 
 
+def parse_period_code(v: str) -> tuple[dt.date, str | None] | None:
+    """Period-coded time axes (isTime FALSE, field 'Year', string codetype).
+
+    MEASURED on US.TradeMerchGR (52 codes): TWO families share the axis —
+      annual YoY   '19801981' (consecutive years, label '1981')  -> obs at end-year
+      multi-year   '19921995', '19952000' (span averages)        -> obs at end-year
+    and their END-YEARS COLLIDE (7 duplicates: an annual '19941995' AND the span
+    '19921995' both end 1995). So the span family carries a series-key suffix by span
+    LENGTH — '|SPAN=5Y' — which makes the six 5-year averages ONE proper time series
+    (obs at each span's end-year) instead of a flood of single-observation series,
+    while the usda-style suffix still separates a period-average from the annual
+    figure under one identity. Within a span length the end-year is unique by
+    construction (same length + same end = same code), so no collisions.
+    Returns (obs_date, suffix_or_None); None for an unparseable code.
+    """
+    s = str(v).strip()
+    if len(s) == 8 and s.isdigit():
+        y0, y1 = int(s[:4]), int(s[4:])
+        if 1500 < y0 <= y1 < 2200:
+            if y1 - y0 == 1:
+                return dt.date(y1, 12, 31), None
+            return dt.date(y1, 12, 31), f"|SPAN={y1 - y0}Y"
+    if len(s) == 4 and s.isdigit():
+        return dt.date(int(s), 12, 31), None
+    return None
+
+
 def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = None) -> str:
     form = {"$select": select, "$format": "csv"}
     if flt:
@@ -123,58 +150,96 @@ def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = N
     raise RuntimeError(f"Facts unreachable for {ds_name} after 4 tries")
 
 
-def ingest(ds_name: str, dry: bool) -> int:
-    cid, key = creds()
-    meta = report_metadata(ds_name)
+class UnsupportedLayout(RuntimeError):
+    """A dataset shape this generic machinery has not been taught. Callers decide
+    whether that is fatal (ingest) or a structural unit-failure (fetcher)."""
+
+
+def dataset_layout(meta: dict):
+    """(kfields, tfield, is_year, period_axis, measures) from reportMetadata.
+
+    Non-time dims in (rowAxe, colAxe, pageAxe) order form the series key; the single
+    time axis is the observation axis. isTime is authoritative when SET — but
+    PERIOD-CODED axes (growth-rate datasets) report isTime FALSE while still being
+    the time axis (measured: US.TradeMerchGR's colAxe is name=Periods, field=Year,
+    isTime=false, codes like '19921995'); the field name 'Year' is the API's own
+    time marker in that layout. Measures: the magnitude-1 base per observation group
+    (the variants are the same number scaled).
+    """
     defaults = meta["defaults"]
-    src = source_id_for(ds_name)
-    out_dir = os.path.join(ROOT, "data", "clean_full", src)
-
-    # Dimensions: non-time in (rowAxe, pageAxe) order forms the series key; the single
-    # isTime axis is the observation axis. colAxe is USUALLY the time axis but the flag
-    # is authoritative — refuse layouts this generic job has not been taught.
     dims = [d for axe in ("rowAxe", "colAxe", "pageAxe") for d in defaults.get(axe) or []]
-    time_dims = [d for d in dims if d.get("isTime")]
-    key_dims = [d for d in dims if not d.get("isTime")]
-    if len(time_dims) != 1:
-        raise SystemExit(f"{ds_name}: {len(time_dims)} time dims — teach the job this layout")
-    tfield = time_dims[0]["field"]
-    is_year = tfield.lower() == "year"
 
-    # Base (magnitude=1) measure per observation group.
+    def _is_time(d):
+        return bool(d.get("isTime")) or d.get("field", "").lower() == "year"
+
+    time_dims = [d for d in dims if _is_time(d)]
+    key_dims = [d for d in dims if not _is_time(d)]
+    if len(time_dims) != 1:
+        raise UnsupportedLayout(f"{meta.get('name')}: {len(time_dims)} time dims")
+    tdim = time_dims[0]
     measures = []
     for grp in defaults.get("observations") or []:
         base = next((m for m in grp.get("measures", []) if m.get("magnitude") == 1), None)
         if base:
             measures.append(base["code"])
     if not measures:
-        raise SystemExit(f"{ds_name}: no magnitude-1 measures in reportMetadata")
+        raise UnsupportedLayout(f"{meta.get('name')}: no magnitude-1 measures")
+    return ([d["field"] for d in key_dims], tdim["field"],
+            bool(tdim.get("isTime")) and tdim["field"].lower() == "year",
+            not tdim.get("isTime"), measures)
 
-    kfields = [d["field"] for d in key_dims]
-    log(f"{ds_name} -> {src}: key dims {kfields}, time {tfield}, "
-        f"measures {['M' + c for c in measures]}, version {meta.get('version')}")
 
+def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None):
+    """Fetch + parse ALL observations for one dataset. THE single row-building path —
+    the ingest below and every fetcher call this, so the parse rules cannot drift
+    between the two (the insee_bdm/eurostat parity lesson, R-ledger 2026-08-08).
+    Returns (rows_k, rows_d, rows_v)."""
+    kfields, tfield, is_year, period_axis, measures = dataset_layout(meta)
     rows_k, rows_d, rows_v = [], [], []
     for mcode in measures:
         select = ", ".join(f"{f}/Code" for f in kfields) + f", {tfield}, M{mcode}/Value"
         text = facts_csv(ds_name, select, cid, key)
-        rdr = csv.DictReader(io.StringIO(text))
         n0 = len(rows_k)
-        for rec in rdr:
+        for rec in csv.DictReader(io.StringIO(text)):
             vals = [rec.get(f"{f}_Code", "") for f in kfields]
             tv = rec.get(tfield) or rec.get(f"{tfield}_Code", "")
             vv = rec.get(f"M{mcode}_Value", "")
-            d = parse_time(tv, is_year)
+            suffix = None
+            if period_axis:
+                parsed = parse_period_code(tv)
+                if parsed is None:
+                    continue
+                d, suffix = parsed
+            else:
+                d = parse_time(tv, is_year)
             if d is None or vv in ("", None):
                 continue
             try:
                 v = float(vv)
             except ValueError:
                 continue
-            rows_k.append(".".join(vals + [f"M{mcode}"]))
+            rows_k.append(".".join(vals + [f"M{mcode}"]) + (suffix or ""))
             rows_d.append(d)
             rows_v.append(v)
-        log(f"  M{mcode}: {len(rows_k) - n0:,} obs")
+        if progress:
+            progress(f"  M{mcode}: {len(rows_k) - n0:,} obs")
+    return rows_k, rows_d, rows_v
+
+
+def ingest(ds_name: str, dry: bool) -> int:
+    cid, key = creds()
+    meta = report_metadata(ds_name)
+    src = source_id_for(ds_name)
+    out_dir = os.path.join(ROOT, "data", "clean_full", src)
+
+    try:
+        kfields, tfield, _, _, measures = dataset_layout(meta)
+    except UnsupportedLayout as e:
+        raise SystemExit(f"{e} — teach the job this layout")
+    log(f"{ds_name} -> {src}: key dims {kfields}, time {tfield}, "
+        f"measures {['M' + c for c in measures]}, version {meta.get('version')}")
+
+    rows_k, rows_d, rows_v = pull_rows(ds_name, cid, key, meta, progress=log)
 
     if not rows_k:
         log(f"  {ds_name}: 0 obs — refusing to write an empty store")
