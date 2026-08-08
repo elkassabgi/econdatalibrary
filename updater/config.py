@@ -256,7 +256,9 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   AR5 re-key REFUTED by value verification (GWP-basis change), CO2eq frozen. -> 270
 # 2026-08-08: +fao_ep (98.7% clean from RP) +fao_gy (59.6% GCE, not RFN) +fao_gr
 #   (52.4% GCE) — #19 sources 10-12. -> 273
-EXPECTED_SOURCE_COUNT = 273
+# 2026-08-08: +unctad_creativegoodsgr — GIANT #5 at depth-2 dot-grain (3,986 ids /
+#   3,597,379 series; Period-axis spans). -> 274
+EXPECTED_SOURCE_COUNT = 274
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
