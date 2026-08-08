@@ -8671,6 +8671,38 @@ sources:
       documents the measured dropped-items gap; no Source dimension in RP.
     key_env: none
     confidence: high
+- source_id: fao_ic
+  # #19 (2026-08-08): FIRST RE-KEY of the approved restructure — 403 series moved
+  # 6109->6224 / 6183->6225 (value-verified identical, LC->Standard LC); 1,506 of
+  # 2,468 ids (61.0%) now auto-update from IC. Redenominated/dropped tail frozen.
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_ic.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (2,468 series) with NO registry entry, never attempted.
+    The IC domain still exists; FAOSTAT re-coded local-currency elements to
+    redenomination-safe STANDARD local currency. 403 series verify value-identical
+    under the new codes and were re-keyed in place (tools/rekey_fao_series.py:
+    store+catalog+D1+CSVs, old ids purged); with the 1,103 raw matches the source
+    now updates 61.0% of its ids. The frozen tail is redenominated-country series
+    (SLC genuinely diverges) plus dropped current-price share/AOI elements.
+  cadence: annual
+  refresh_cost: small
+  out_dir: fao_ic
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset IC in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Investment: Credit to Agriculture (own domain; LC->SLC element re-key applied)'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_ic.json — id_floor 0.58;
+      crosswalk + re-key audit trail in fao_ic.crosswalk.json and
+      data/_aqueduct/rekey_fao_ic_old_ids.txt.
+    key_env: none
+    confidence: high
 - source_id: fao_qp
   upstream_verified:
     latest_obs: '2023-01-01'

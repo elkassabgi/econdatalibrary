@@ -1,0 +1,21 @@
+{
+ "code": "IC",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 61.0,
+  "note_pct": "44.7% raw + 403 re-keyed ids (2026-08-08 restructure apply)",
+  "published_ids": 2468,
+  "upstream_series": 2776,
+  "upstream_updated": "2025-11-20"
+ },
+ "id_floor": 0.58,
+ "key_columns": [
+  "Element Code",
+  "Area Code",
+  "Item Code"
+ ],
+ "key_prefix": "FAO_IC",
+ "note": "Credit to Agriculture - its own domain IC still exists. FAOSTAT re-coded the local-currency elements to STANDARD local currency (6109->6224, 6183->6225, redenomination-safe): 403 series whose values verify identical were RE-KEYED in place (tools/rekey_fao_series.py, Ahmed-approved restructure 2026-08-07; crosswalk in fao_ic.crosswalk.json) and now auto-update. Frozen tail: redenominated-country LC series whose SLC successor genuinely diverges (splice risk), plus dropped current-price elements (61132 share, 6159 AOI - only 2015-price variants survive upstream). No Source dimension in IC.",
+ "restrict_to_published": true,
+ "source_id": "fao_ic"
+}
