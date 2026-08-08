@@ -318,7 +318,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // 1,220 series / 81,760 obs, series_key = Economy.Flow.Mmeasure. The 38 legacy
   // DBnomics-era slugs above retire via Class A as successors land (#70).
   "unctad_trademerchtotal", "unctad_trademerchgr", "unctad_trademerchbalance",
-  "unctad_merchvolumequarterly",
+  "unctad_merchvolumequarterly", "unctad_termsoftrade",
   "unctad_wstbtocabgoea", "undp_hdr", "unesco_clte", "unesco_cltt", "unesco_dem", "unesco_film",
   // unesco_natmon + unesco_sdg added 2026-07-29: 199,661 series / 2,610,984 obs that
   // were on disk and hosted NOWHERE — no catalog rows, no R2 objects, no registry unit.
