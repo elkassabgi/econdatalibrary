@@ -1654,11 +1654,16 @@ _GENERIC_SKIP = ("__series.parquet",)
 _FLOW_GRAIN = {"stat_latvia", "stat_estonia", "ssb", "bfs", "dst",
                "statfin", "hagstofa", "stat_slovenia", "scb", "unsdg", "cso"}
 
-# UNCTAD sources served at DOT-prefix table grain (catalog id = first two dot-segments
-# of the native key; see the predicate branch below). Measured 2026-08-08: 247 + 562 +
-# 544 tables covering 376,909 + 101,079 + 144,552 series respectively.
+# UNCTAD sources served at DOT-prefix table grain (catalog id = a dot-segment PREFIX of
+# the native key — depth 2 for the first three, depth 1 for biotrademerchrca whose keys
+# are <product>.<economy>.M<m>; the predicate below is depth-agnostic). Measured
+# 2026-08-08: 247 + 562 + 544 + 2,222 tables covering 376,909 + 101,079 + 144,552 +
+# 294,674 series respectively.
 _DOT_TABLE_GRAIN = {"unctad_intratrade", "unctad_tradeservcattotal",
-                    "unctad_biotrademerchshare"}
+                    "unctad_biotrademerchshare", "unctad_biotrademerchrca",
+                    "unctad_associatedplasticstradebypartner",
+                    "unctad_hiddenplasticstradebypartner",
+                    "unctad_plasticstradebypartner"}
 
 
 def _resolve_generic_long(series_id: str, root: str) -> Resolution:

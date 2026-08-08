@@ -222,7 +222,15 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   376,909 series; tradeservcattotal 562 / 101,079; biotrademerchshare 544 /
 #   144,552 — 1,353 D1 rows for 622,540 series, so no headroom conflict with
 #   the eia->wid order). -> 252
-EXPECTED_SOURCE_COUNT = 252
+# 2026-08-08: +unctad_biotrademerchrca (depth-1 dot-grain, 2,222 ids / 294,674
+#   series) + unctad_ecommercetotal (series grain, 33,818). -> 254
+# 2026-08-08: +the final 3 gate cases (associatedplastics 809 dot-grain ids /
+#   461,427 series; hiddenplastics 1,076 / 756,314; ecommerceinternational
+#   series-grain 9,316). ALL SEVEN six-figure gates now served; only the 13
+#   true giants remain in the family. -> 257
+# 2026-08-08: +unctad_plasticstradebypartner — GIANT #1 at depth-2 dot-grain
+#   (1,615 ids / 1,177,515 series). -> 258
+EXPECTED_SOURCE_COUNT = 258
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
