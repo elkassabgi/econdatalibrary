@@ -1,0 +1,23 @@
+{
+ "code": "GLE",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 52.6,
+  "published_ids": 11813,
+  "upstream_series": 112395,
+  "upstream_updated": "2025-11-20"
+ },
+ "id_floor": 0.5,
+ "key_columns": [
+  "Area Code",
+  "Item Code",
+  "Element Code"
+ ],
+ "key_prefix": "FAO_GE",
+ "note": "Livestock (enteric fermentation) emissions, served by GLE (Climate Change: Agrifood systems emissions: Emissions from Livestock) after FAOSTAT's emissions-suite restructure. 6,209 ids (52.6%) reproduce exactly and auto-update. The 5,604-id tail decomposes to 2 DROPPED element classes (5,207 ids): per-animal CO2eq (72314) and implied emission factors (72244) - FAOSTAT now publishes native-gas CH4/N2O per animal only. No successor exists; frozen as historical (_fao_ge_decompose.log, R91/R180 method). row_filters pins Source='FAO TIER 1' (GLE also ships UNFCCC-methodology rows). restrict_to_published is essential: upstream is a 9.5x superset (112,395 series).",
+ "restrict_to_published": true,
+ "row_filters": {
+  "Source": "FAO TIER 1"
+ },
+ "source_id": "fao_ge"
+}

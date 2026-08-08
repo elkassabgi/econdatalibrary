@@ -8611,6 +8611,36 @@ sources:
       id_floor 0.48 documents the measured restructure gap.
     key_env: none
     confidence: high
+- source_id: fao_ge
+  # #19 (2026-08-08): 6,209 of 11,813 ids (52.6%) auto-update from GLE with
+  # Source='FAO TIER 1' pinned; tail = 2 DROPPED element classes (per-animal
+  # CO2eq 72314 + implied EF 72244) — no successor, frozen.
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_ge.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (11,813 series) with NO registry entry, never attempted.
+    FAOSTAT restructured the emissions suite; enteric-fermentation series now live
+    in GLE. Template Area.Item.Element reproduces 52.6% exactly; the remainder
+    decomposes to 2 dropped element classes FAOSTAT no longer publishes at any
+    grain. The reproducing majority updates (restrict_to_published — upstream is a
+    9.5x superset), the rest freezes.
+  cadence: annual
+  refresh_cost: medium
+  out_dir: fao_ge
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset GLE in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Emissions - Enteric Fermentation (served by GLE after the emissions-suite restructure)'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_ge.json — row_filters pins
+      Source='FAO TIER 1'; id_floor 0.50 documents the measured restructure gap.
+    key_env: none
+    confidence: high
 - source_id: fao_qp
   upstream_verified:
     latest_obs: '2023-01-01'
