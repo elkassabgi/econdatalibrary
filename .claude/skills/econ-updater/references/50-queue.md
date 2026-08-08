@@ -1440,3 +1440,26 @@ explained and repaired or in repair:
 
 Everything else — roughly 135 sources — served exactly what the store holds. This is the
 baseline the daily CI probe now advances from, five sources per run, bookmark persisting.
+
+
+### wid coverage audit: the catalogue was RIGHT (0 behind of 2.4M) — and the monolith is not a subset
+
+Before the wid rewrite finished I audited catalogue coverage against the shards, expecting the
+1.8M rows with end_date 2024 to be stale. They are not: joining all 2,465,197 catalogued wid ids
+against per-series max(obs_date) across the 412 shards found the catalogue BEHIND on **zero**
+series. Those series genuinely end in 2024. The hypothesis died on one read-only measurement,
+which is the cheap way for it to die.
+
+What the audit did find: **1,190 series where the catalogue promised a LATER end than the shards
+hold** (e.g. wid:WID:bfiincj992:p10p100:992:j:CN-RU — catalog 2015-12-31, shards 2014-12-31).
+The monolith holds the missing year; the shards — a full fresh crawl of the publisher — do not.
+That is a publisher retraction of the old vintage's final observation, so the SHARDS are right
+and the metadata was wrong. All 1,190 end_dates corrected in catalog.db to the shard truth;
+re-join confirms 0 remaining. D1 carries the old end_date for those 1,190 until their rows next
+sync — cosmetic at 0.05%.
+
+**FOR THE MONOLITH DELETION DECISION (reserved, Ahmed):** the monolith is NOT a pure subset of
+the shards — it holds the retracted final observations of these 1,190 series (an older vintage
+the publisher no longer ships). The size-verified archive copy preserves them either way, so
+deletion still loses nothing that is not archived; but "the shards contain everything" would
+have been a false premise, and now the decision can be made on the true one.
