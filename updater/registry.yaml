@@ -8641,6 +8641,36 @@ sources:
       Source='FAO TIER 1'; id_floor 0.50 documents the measured restructure gap.
     key_env: none
     confidence: high
+- source_id: fao_rp
+  # #19 (2026-08-08): 4,504 of 5,440 ids (82.8%) auto-update from RP (its own
+  # still-live domain); tail = dropped seed-treatment/mineral-oil ITEMS — no
+  # successors, frozen.
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_rp.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (5,440 series) with NO registry entry, never attempted.
+    The RP domain still exists upstream; template Element.Area.Item reproduces
+    82.8% exactly. The remainder is DROPPED ITEMS (seed-treatment breakdowns +
+    Mineral Oils) with all elements surviving — an item-level restructure with no
+    successors. The reproducing majority updates (restrict_to_published), the rest
+    freezes.
+  cadence: annual
+  refresh_cost: small
+  out_dir: fao_rp
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset RP in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Land, Inputs and Sustainability: Pesticides Use (own domain, item-level restructure)'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_rp.json — id_floor 0.78
+      documents the measured dropped-items gap; no Source dimension in RP.
+    key_env: none
+    confidence: high
 - source_id: fao_qp
   upstream_verified:
     latest_obs: '2023-01-01'

@@ -1,0 +1,20 @@
+{
+ "code": "RP",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 82.8,
+  "published_ids": 5440,
+  "upstream_series": 4775,
+  "upstream_updated": "2025-11-20"
+ },
+ "id_floor": 0.78,
+ "key_columns": [
+  "Element Code",
+  "Area Code",
+  "Item Code"
+ ],
+ "key_prefix": "FAO_RP",
+ "note": "Pesticides Use - its own domain RP still exists. 4,504 ids (82.8%) reproduce exactly and auto-update. The 936-id tail decomposes to DROPPED ITEMS (all 4 elements survive): FAOSTAT stopped publishing seed-treatment breakdowns (Seed Treat Fung/Insect variants 1317/1319/1339/1340/1344, aggregates 1352/1353) and Mineral Oils (1316), plus 6 dissolved areas. No successor items exist in current RP; frozen as historical (_fao_rp_decompose.log). No Source dimension in RP (single methodology - columns checked).",
+ "restrict_to_published": true,
+ "source_id": "fao_rp"
+}
