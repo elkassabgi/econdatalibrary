@@ -316,7 +316,12 @@ def dataset_layout(meta: dict):
     dims = [d for axe in ("rowAxe", "colAxe", "pageAxe") for d in defaults.get(axe) or []]
 
     def _is_time(d):
-        return bool(d.get("isTime")) or d.get("field", "").lower() == "year"
+        # UNCTAD marks most time axes isTime; some layouts instead carry a bare
+        # 'Year' field, and the growth-rate datasets (CreativeGoodsGR) a 'Period'
+        # field whose codes are the 8-digit YYYYYYYY spans parse_period_code
+        # already handles. A non-time dim named Period would fail loudly at parse.
+        return (bool(d.get("isTime"))
+                or d.get("field", "").lower() in ("year", "period"))
 
     time_dims = [d for d in dims if _is_time(d)]
     key_dims = [d for d in dims if not _is_time(d)]
@@ -336,11 +341,13 @@ def dataset_layout(meta: dict):
 
 
 def dataset_time_dim(meta: dict) -> dict:
-    """The raw time-axis dict (name/field/codetype) — needed for chunked pulls."""
+    """The raw time-axis dict (name/field/codetype) — needed for chunked pulls.
+    Same predicate as dataset_layout's _is_time (keep the two in lockstep —
+    the CreativeGoodsGR retry failed here after only _is_time learned 'period')."""
     defaults = meta["defaults"]
     dims = [d for axe in ("rowAxe", "colAxe", "pageAxe") for d in defaults.get(axe) or []]
     for d in dims:
-        if bool(d.get("isTime")) or d.get("field", "").lower() == "year":
+        if bool(d.get("isTime")) or d.get("field", "").lower() in ("year", "period"):
             return d
     raise UnsupportedLayout(f"{meta.get('name')}: no time dim")
 
