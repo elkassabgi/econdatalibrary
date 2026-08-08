@@ -5081,6 +5081,32 @@ sources:
     rate_note: Five Facts POSTs (one per measure group), ~2s each. 4-try backoff on 429/5xx.
     key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY (shared with the family)
     confidence: high
+- source_id: unctad_termsoftrade
+  # UNCTAD successor #5 (2026-08-08, #70). Core trade indices, annual isTime axis.
+  # 48,318 obs / 2,328 series at first ingest. Shared machinery _unctad.py; parse/key
+  # logic solely in jobs/ingest_unctad_ds.py.
+  live: true
+  scripts:
+  - jobs/ingest_unctad_ds.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    Same publisher-stamped version+lastUpdated vintage as its siblings; a moved token
+    re-pulls the full Facts snapshot (~48k cells) and merges never-shrink.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_termsoftrade
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TermsOfTrade/en
+      (keyless) -> f"{version}|{lastUpdated}".
+    since_param: n/a (whole-snapshot re-pull on vintage move, merged never-shrink)
+    out_paths_note: 'Single file data/clean_full/unctad_termsoftrade/unctad_termsoftrade.parquet;
+      series_key = <EconomyCode>.<FlowCode>.M<measure>, obs_date annual Dec-31.'
+    rate_note: One Facts POST per measure group, ~2s each. 4-try backoff on 429/5xx.
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY (shared with the family)
+    confidence: high
 - source_id: unhcr
   live: true
   scripts:
