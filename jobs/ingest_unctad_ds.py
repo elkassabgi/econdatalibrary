@@ -84,9 +84,38 @@ def report_metadata(ds_name: str) -> dict:
     return r.json()
 
 
+# Mechanical slugs that would COLLIDE with a legacy DBnomics-era source id get an
+# explicit override. R399: source_id_for("US.Cpi_A") produced "unctad_cpia" — the exact
+# id of a legacy source with 637 live series — and the ingest silently overwrote its
+# store (recovered exactly from the served CSVs). The guard in ingest() now refuses any
+# id that already exists in the catalog's source table unless its homepage records THIS
+# dataset, so a future collision fails loudly instead of clobbering.
+SOURCE_ID_OVERRIDES = {
+    "US.Cpi_A": "unctad_cpi_annual",
+}
+
+
 def source_id_for(ds_name: str) -> str:
     # US.TradeMerchTotal -> unctad_trademerchtotal (successor naming; legacy slugs retired)
+    if ds_name in SOURCE_ID_OVERRIDES:
+        return SOURCE_ID_OVERRIDES[ds_name]
     return "unctad_" + ds_name.split(".", 1)[1].replace("_", "").lower()
+
+
+def assert_no_source_collision(src: str, ds_name: str) -> None:
+    """Refuse to write under a source id that belongs to something else (R399)."""
+    import sqlite3
+    cat = os.path.join(ROOT, "data", "catalog.db")
+    if not os.path.exists(cat):
+        return
+    con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True, timeout=60)
+    row = con.execute("SELECT homepage FROM source WHERE source_id=?", (src,)).fetchone()
+    con.close()
+    if row and (not row[0] or f"/dataviewer/{ds_name}" not in row[0]):
+        raise SystemExit(
+            f"COLLISION: source id {src!r} already exists in the catalog and its homepage "
+            f"({row[0]!r}) does not record dataset {ds_name!r}. Add an entry to "
+            f"SOURCE_ID_OVERRIDES instead of overwriting a legacy source (R399).")
 
 
 def parse_time(v: str, is_year: bool) -> dt.date | None:
@@ -358,6 +387,7 @@ def ingest(ds_name: str, dry: bool) -> int:
     cid, key = creds()
     meta = report_metadata(ds_name)
     src = source_id_for(ds_name)
+    assert_no_source_collision(src, ds_name)
     out_dir = os.path.join(ROOT, "data", "clean_full", src)
 
     try:
