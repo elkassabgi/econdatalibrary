@@ -345,6 +345,8 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "unctad_tradefoodproccatprocrca", "unctad_popagestruct", "unctad_fleetbeneficialowners",
   "unctad_environmentalgoodstrade", "unctad_digitallydeliverableservices", "unctad_lsbci",
   "unctad_exchangeratecrosstab", "unctad_ictuseeconactivityisic4",
+  // Gate cases at DOT-prefix table grain (1,353 ids / 622,540 series, #70):
+  "unctad_intratrade", "unctad_tradeservcattotal", "unctad_biotrademerchshare",
   "unctad_wstbtocabgoea", "undp_hdr", "unesco_clte", "unesco_cltt", "unesco_dem", "unesco_film",
   // unesco_natmon + unesco_sdg added 2026-07-29: 199,661 series / 2,610,984 obs that
   // were on disk and hosted NOWHERE — no catalog rows, no R2 objects, no registry unit.
