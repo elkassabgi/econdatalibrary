@@ -313,6 +313,11 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "unctad_mtba", "unctad_mttasa", "unctad_mttgra", "unctad_neera", "unctad_reericba", "unctad_reerigdba",
   "unctad_rfia", "unctad_rgdptapcgra", "unctad_sbeaiotsvsaga", "unctad_sbtisvsaga", "unctad_soigapotta", "unctad_sotwmfvbcoboa",
   "unctad_srbca", "unctad_tabbapotta", "unctad_tabmcioeaiopa", "unctad_tabmscioeaiopa", "unctad_tabpcioeaia", "unctad_taupa",
+  // unctad_trademerchtotal added 2026-08-08: FIRST successor source on UNCTAD's own data
+  // API (unctadstat-user-api, ClientId/ClientSecret from .env — contract proven live).
+  // 1,220 series / 81,760 obs, series_key = Economy.Flow.Mmeasure. The 38 legacy
+  // DBnomics-era slugs above retire via Class A as successors land (#70).
+  "unctad_trademerchtotal",
   "unctad_wstbtocabgoea", "undp_hdr", "unesco_clte", "unesco_cltt", "unesco_dem", "unesco_film",
   // unesco_natmon + unesco_sdg added 2026-07-29: 199,661 series / 2,610,984 obs that
   // were on disk and hosted NOWHERE — no catalog rows, no R2 objects, no registry unit.
