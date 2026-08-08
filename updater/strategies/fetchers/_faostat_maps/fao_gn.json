@@ -1,0 +1,20 @@
+{
+ "code": "GN",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 83.5,
+  "published_ids": 4761,
+  "upstream_series": 4124,
+  "upstream_updated": "2025-11-20"
+ },
+ "id_floor": 0.8,
+ "key_columns": [
+  "Element Code",
+  "Area Code",
+  "Item Code"
+ ],
+ "key_prefix": "FAO_GN",
+ "note": "Energy use in agriculture emissions - its own domain GN still exists. 3,976 ids (83.5%) reproduce exactly and auto-update. The 785-id tail is AREA-level: 47 dropped/dissolved area codes (692 ids) plus 93 discontinued combos - every element and item survives (measured, _fao_gn_decompose.log). No successor areas; frozen as historical. No Source dimension in GN (columns checked).",
+ "restrict_to_published": true,
+ "source_id": "fao_gn"
+}

@@ -8752,6 +8752,35 @@ sources:
       documents the measured dropped-elements gap.
     key_env: none
     confidence: high
+- source_id: fao_gn
+  # #19 (2026-08-08): 3,976 of 4,761 ids (83.5%) auto-update from GN (own live
+  # domain); tail is AREA-level — 47 dropped area codes + discontinued combos,
+  # every element and item survives. Frozen.
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_gn.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (4,761 series) with NO registry entry, never attempted.
+    The GN domain still exists; template Element.Area.Item reproduces 83.5%
+    exactly. The remainder is purely AREA-level (47 dropped/dissolved area codes
+    plus discontinued combos) — no element or item was re-coded. The reproducing
+    majority updates (restrict_to_published), the rest freezes.
+  cadence: annual
+  refresh_cost: small
+  out_dir: fao_gn
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset GN in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Emissions - Energy Use in Agriculture (own domain, area-level trim upstream)'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_gn.json — id_floor 0.80;
+      no Source dimension in GN.
+    key_env: none
+    confidence: high
 - source_id: fao_qp
   upstream_verified:
     latest_obs: '2023-01-01'
