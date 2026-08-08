@@ -193,7 +193,12 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   1,680 series. -> 176
 # 2026-08-08: +unctad_termsoftrade — successor #5; 2,328 series. -> 177
 # 2026-08-08: +unctad_tradepriceindicesq — successor #6; 258 series. -> 178
-EXPECTED_SOURCE_COUNT = 178
+# 2026-08-08: +unctad_{concentdiversindices,concentstructindices,rca,tariff,
+#   merchtheilindices} — sized-then-served batch, 81,781 series. -> 183
+# 2026-08-08: +unctad_totandcomservicesquarterly + the 6 commodity-price datasets
+#   (ucpia/ucpim/commoditypriceindicesa/m/commoditypricea/m; monthly 'YYYYM##'
+#   format taught) — 11,793 series. -> 190
+EXPECTED_SOURCE_COUNT = 190
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
