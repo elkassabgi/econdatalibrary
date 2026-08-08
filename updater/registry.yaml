@@ -5789,6 +5789,438 @@ sources:
     rate_note: family contract (see banner)
     key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
     confidence: high
+- source_id: unctad_ictuselocation
+  # 1,076 obs / 478 series (ICT use by location, annual).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_ictuselocation
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.IctUseLocation/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_creativeservindivtot
+  # 11,427 obs / 955 series (creative services, individual economies).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_creativeservindivtot
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.CreativeServ_Indiv_Tot/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_ftri
+  # 15,432 obs / 1,110 series (freight transport reliability index).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_ftri
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.FTRI/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_seafarers
+  # 2,184 obs / 1,176 series (seafarers by nationality).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_seafarers
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.Seafarers/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_plsci
+  # 75,063 obs / 1,353 series (port liner shipping connectivity, quarterly).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_plsci
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.PLSCI/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_portcalls
+  # 6,704 obs / 1,167 series (port calls, annual).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_portcalls
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.PortCalls/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_portcallss
+  # 13,372 obs / 1,167 series (port calls, semiannual).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_portcallss
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.PortCalls_S/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_gdptotal
+  # 91,005 obs / 1,785 series (GDP totals, annual).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_gdptotal
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.GDPTotal/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_genderdomesticvalueadded
+  # 18,630 obs / 1,860 series (gender domestic value added).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_genderdomesticvalueadded
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.Gender_DomesticValueAdded/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_tradeservict
+  # 26,938 obs / 1,545 series (ICT services trade, annual).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_tradeservict
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.TradeServICT/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_wastewatertreatment
+  # 49,165 obs / 2,039 series (wastewater treatment indicators).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_wastewatertreatment
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.WastewaterTreatment/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_fdiflowsstock
+  # 66,554 obs / 2,150 series (FDI flows and stock, annual).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_fdiflowsstock
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.FdiFlowsStock/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_pci
+  # 59,085 obs / 2,403 series (productive capacities index).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_pci
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.PCI/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_seabornetrade
+  # 62,821 obs / 2,725 series (seaborne trade, annual).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_seabornetrade
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.SeaborneTrade/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_goodsandservicesbpm6
+  # 64,789 obs / 3,334 series (goods+services trade BPM6, annual).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_goodsandservicesbpm6
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.GoodsAndServicesBpm6/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_goodsandservbalancebpm6
+  # 65,247 obs / 3,352 series (goods+services balance BPM6, annual).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_goodsandservbalancebpm6
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.GoodsAndServBalanceBpm6/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_govexpenditures
+  # 50,346 obs / 3,142 series (government expenditures, annual).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_govexpenditures
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.GovExpenditures/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_gendertradableindustries
+  # 37,922 obs / 3,220 series (gender in tradable industries).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_gendertradableindustries
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.Gender_TradableIndustries/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_environmentalgoodsrca
+  # 160,194 obs / 6,593 series (environmental goods RCA).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_environmentalgoodsrca
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.EnvironmentalGoodsRCA/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_goodsandservtradeopennessbpm6
+  # 129,989 obs / 6,672 series (trade openness BPM6).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_goodsandservtradeopennessbpm6
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.GoodsAndServTradeOpennessBpm6/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_oceanservices
+  # 68,565 obs / 5,348 series (ocean services trade).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_oceanservices
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.OceanServices/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_biotrademerchmarketindices
+  # 133,255 obs / 8,888 series (biotrade market indices).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_biotrademerchmarketindices
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.BioTradeMerchMarketIndices/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_merchantfleet
+  # 245,665 obs / 9,800 series (merchant fleet by flag/type).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_merchantfleet
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.MerchantFleet/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_ictuseenterprsize
+  # 30,282 obs / 6,155 series (ICT use by enterprise size).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_ictuseenterprsize
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.IctUseEnterprSize/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
 - source_id: unhcr
   live: true
   scripts:
