@@ -8722,6 +8722,36 @@ sources:
       data/_aqueduct/rekey_fao_ic_old_ids.txt.
     key_env: none
     confidence: high
+- source_id: fao_gb
+  # #19 (2026-08-08): 2,899 of 6,980 ids (41.5%) auto-update from GCE; ids are
+  # FOUR-part (Source Code in the key, so no row_filters). Tail = 5 DROPPED
+  # element classes (per-crop CO2eq + implied EF) — no successor, frozen.
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_gb.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (6,980 series) with NO registry entry, never attempted.
+    FAOSTAT restructured the emissions suite; burning-of-crop-residues series now
+    live in GCE with a methodology Source Code that gb's four-part ids already
+    carry. Template Area.Source.Item.Element reproduces 41.5% exactly; the
+    remainder decomposes to 5 dropped element classes FAOSTAT no longer publishes.
+    The reproducing minority updates (restrict_to_published), the rest freezes.
+  cadence: annual
+  refresh_cost: medium
+  out_dir: fao_gb
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset GCE in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Emissions - Burning Crop Residues (served by GCE; four-part keys carry the methodology)'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_gb.json — id_floor 0.39
+      documents the measured dropped-elements gap.
+    key_env: none
+    confidence: high
 - source_id: fao_qp
   upstream_verified:
     latest_obs: '2023-01-01'

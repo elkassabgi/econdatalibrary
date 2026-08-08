@@ -246,7 +246,9 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   codes (value-verified); 1,506 of 2,468 ids auto-update from IC. -> 265
 # 2026-08-08: +unctad_creativegoodsvalue — GIANT #4 at depth-2 dot-grain (4,053 ids /
 #   5,487,666 series). -> 266
-EXPECTED_SOURCE_COUNT = 266
+# 2026-08-08: +fao_gb — #19 source 6: 2,899 of 6,980 ids auto-update from GCE
+#   (four-part keys carry the methodology); 5 dropped element classes frozen. -> 267
+EXPECTED_SOURCE_COUNT = 267
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
