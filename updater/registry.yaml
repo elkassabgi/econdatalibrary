@@ -8842,6 +8842,75 @@ sources:
       refuted-re-key evidence in fao_gt.crosswalk.json (7 mapped / 7,292 refused).
     key_env: none
     confidence: high
+- source_id: fao_ep
+  # #19 (2026-08-08): CLEAN repair — 512 of 519 ids (98.7%) auto-update from RP
+  # (which absorbed the old per-area/per-capita pesticide indicators).
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_ep.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (519 series) with NO registry entry, never attempted.
+    RP absorbed the EP indicator set; template Item.Element.Area reproduces 98.7%.
+  cadence: annual
+  refresh_cost: small
+  out_dir: fao_ep
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset RP in
+      https://bulks-faostat.fao.org/production/datasets_E.json (ledger R73).
+    name: 'Pesticides indicators (served by RP; clean repair)'
+    code_map: updater/strategies/fetchers/_faostat_maps/fao_ep.json
+    key_env: none
+    confidence: high
+- source_id: fao_gy
+  # #19 (2026-08-08): 1,485 of 2,491 ids (59.6%) auto-update from GCE (NOT RFN —
+  # measured 0.0% there); TIER 1 pinned; dropped CO2eq/implied-EF tail frozen.
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_gy.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (2,491 series) with NO registry entry, never attempted.
+    Synthetic-fertilizer elements live in GCE (RFN scored 0.0%, measured); template
+    Area.Item.Element reproduces 59.6%; the rest is the dropped CO2eq/implied-EF
+    family (R403 GWP-basis class), frozen.
+  cadence: annual
+  refresh_cost: small
+  out_dir: fao_gy
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset GCE in
+      https://bulks-faostat.fao.org/production/datasets_E.json (ledger R73).
+    name: 'Emissions - Synthetic Fertilizers (served by GCE)'
+    code_map: updater/strategies/fetchers/_faostat_maps/fao_gy.json
+    key_env: none
+    confidence: high
+- source_id: fao_gr
+  # #19 (2026-08-08): 323 of 617 ids (52.4%) auto-update from GCE; TIER 1 pinned;
+  # dropped implied-EF/CO2eq tail frozen (R403 class).
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_gr.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (617 series) with NO registry entry, never attempted.
+    Rice-cultivation series live in GCE; template Area.Item.Element reproduces
+    52.4% (native-gas + area harvested); the dropped implied-EF/CO2eq tail freezes.
+  cadence: annual
+  refresh_cost: small
+  out_dir: fao_gr
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset GCE in
+      https://bulks-faostat.fao.org/production/datasets_E.json (ledger R73).
+    name: 'Emissions - Rice Cultivation (served by GCE)'
+    code_map: updater/strategies/fetchers/_faostat_maps/fao_gr.json
+    key_env: none
+    confidence: high
 - source_id: fao_qp
   upstream_verified:
     latest_obs: '2023-01-01'

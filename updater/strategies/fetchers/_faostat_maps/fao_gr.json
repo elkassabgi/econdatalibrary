@@ -1,0 +1,23 @@
+{
+ "code": "GCE",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 52.4,
+  "published_ids": 617,
+  "upstream_series": 13496,
+  "upstream_updated": "2025-11-20"
+ },
+ "id_floor": 0.49,
+ "key_columns": [
+  "Area Code",
+  "Item Code",
+  "Element Code"
+ ],
+ "key_prefix": "FAO_GR",
+ "note": "Rice-cultivation emissions, served by GCE. 323 ids (52.4%) reproduce (native-gas 72255 Rice CH4 + area harvested) and auto-update. Tail: dropped implied-EF (72245) and CO2eq classes (R403 GWP-basis class). row_filters pins Source='FAO TIER 1'.",
+ "restrict_to_published": true,
+ "row_filters": {
+  "Source": "FAO TIER 1"
+ },
+ "source_id": "fao_gr"
+}
