@@ -6473,6 +6473,115 @@ sources:
     rate_note: chunked Facts POSTs (62,500-cell cap; IntraTrade measured 31 years x economy-halves)
     key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
     confidence: high
+- source_id: unctad_biotrademerchrca
+  # 2,795,159 obs / 294,674 series; served at depth-1 DOT-prefix table grain (2,222 catalog ids, _DOT_TABLE_GRAIN).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_biotrademerchrca
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.BiotradeMerchRCA/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_ecommercetotal
+  # 181,558 obs / 33,818 series (4% of dense estimate); ordinary series grain.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_ecommercetotal
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.ECommerceTotal/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_associatedplasticstradebypartner
+  # 5,456,976 obs / 461,427 series; depth-2 DOT-prefix table grain (809 catalog ids).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_associatedplasticstradebypartner
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.AssociatedPlasticsTradebyPartner/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_hiddenplasticstradebypartner
+  # 9,449,860 obs / 756,314 series; depth-2 DOT-prefix table grain (1,076 catalog ids).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_hiddenplasticstradebypartner
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.HiddenPlasticsTradebyPartner/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_ecommerceinternational
+  # 33,218 obs / 9,316 series (0.8% of dense estimate); ordinary series grain.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_ecommerceinternational
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.ECommerceInternational/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_plasticstradebypartner
+  # GIANT #1 (2026-08-08, #70): 14,864,191 obs / 1,177,515 series; depth-2 DOT-prefix
+  # table grain (1,615 catalog ids). Chunked snapshot re-pull on vintage move.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_plasticstradebypartner
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.PlasticsTradebyPartner/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
+    out_paths_note: single parquet; CATALOG grain = first two dot-segments (_DOT_TABLE_GRAIN)
+    rate_note: family contract; chunked POSTs (62,500-cell cap)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
 - source_id: unhcr
   live: true
   scripts:
