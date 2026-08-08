@@ -1,0 +1,21 @@
+{
+ "code": "GCE",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 41.5,
+  "published_ids": 6980,
+  "upstream_series": 14320,
+  "upstream_updated": "2025-11-20"
+ },
+ "id_floor": 0.39,
+ "key_columns": [
+  "Area Code",
+  "Source Code",
+  "Item Code",
+  "Element Code"
+ ],
+ "key_prefix": "FAO_GB",
+ "note": "Burning of crop residues emissions, served by GCE after FAOSTAT's emissions-suite restructure. Unlike fao_ga, gb's ids are FOUR-part - the methodology Source Code (3050=FAO TIER 1, 3051=UNFCCC) is INSIDE the key, so no row_filters are needed. 2,899 ids (41.5%) reproduce exactly and auto-update. The 4,081-id tail decomposes to 5 DROPPED element classes (4,021 ids): per-crop CO2eq (72317 total / 72437 from-N2O / 72447 from-CH4) and implied emission factors (72247 CH4 / 72297 N2O). Native-gas burning elements (72257/72307) survive. No successor at any grain; frozen (_fao_gb_decompose.log).",
+ "restrict_to_published": true,
+ "source_id": "fao_gb"
+}
