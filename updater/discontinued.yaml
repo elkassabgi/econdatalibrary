@@ -169,3 +169,89 @@ sources:
       Served and frozen. The 21 live CE.RA.* codes are a genuine but small successor set under
       different keys; building them would be a NEW source id, not a refresh of these series, and
       re-keying existing ids is reserved for Ahmed.
+
+  # THE SIX FAO NO-SUCCESSOR SOURCES (#19 campaign, all measured 2026-08-08 against FAOSTAT's
+  # own bulk index + full-dataset id/element inventories; probes in _fao_*_prove.log and the
+  # decompose logs in the repo root). The other 12 fao_* sources were promoted the same day —
+  # these six are the residue where the publisher removed the id space itself.
+
+  - source_id: fao_gl
+    publisher: FAO (FAOSTAT)
+    dataset: Emissions - Land Use total (old GL domain)
+    measured: 2026-08-08
+    probe: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json then
+      tools/prove_faostat_repair.py --source fao_gl --code GT (the only dataset carrying
+      land-use totals) — permutation-scored id reproduction over GT's full 2.5M-row bulk;
+      plus element inventories of GCE/GLE/GF/GT/GN collected the same day.
+    finding: >-
+      0.0% of 3,057 ids reproduce. Every fao_gl series is element 7217 (net CO2eq under
+      pre-AR5 GWP factors); no current FAOSTAT dataset publishes that element, and the AR5
+      successors (72xxxx family) carry a different GWP basis — value-verified refusal on the
+      same day for fao_gt (7 of 7,650 candidates, ledger R403). No continuation is lawful.
+    decision: >-
+      Stays SERVED and frozen as a prior-GWP-basis archival vintage.
+
+  - source_id: fao_es
+    publisher: FAO (FAOSTAT)
+    dataset: Environment - Soil erosion (GLASOD)
+    measured: 2026-08-08
+    probe: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json searched for environment/soil datasets; only
+      ESB (Cropland Nutrient Balance) and LC (Land Cover) exist — no soil-erosion dataset.
+    finding: >-
+      The GLASOD soil-erosion indicator set (element 7219) is published nowhere in the
+      current 69-dataset FAOSTAT bulk catalogue. FAO retired the old Environment domain.
+    decision: Stays SERVED and frozen as archival.
+
+  - source_id: fao_ew
+    publisher: FAO (FAOSTAT)
+    dataset: Environment - Water withdrawal shares
+    measured: 2026-08-08
+    probe: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json searched for water datasets — none exists; AQUASTAT left FAOSTAT's
+      bulk distribution entirely.
+    finding: >-
+      Element 7222 (% of total water withdrawal) has no carrier dataset in the current
+      catalogue.
+    decision: Stays SERVED and frozen as archival.
+
+  - source_id: fao_ec
+    publisher: FAO (FAOSTAT)
+    dataset: Environment - Ammonia emission shares
+    measured: 2026-08-08
+    probe: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json + element inventories of every current emissions dataset
+      (GT/GCE/GLE/GF/GN) collected 2026-08-08 — element 7203 (% of total NH3 emissions)
+      appears in none of them.
+    finding: >-
+      The old Environment NH3-share indicators are published nowhere in the current
+      catalogue.
+    decision: Stays SERVED and frozen as archival (49 series).
+
+  - source_id: fao_ae
+    publisher: FAO (FAOSTAT)
+    dataset: ASTI - Expenditures (old id scheme)
+    measured: 2026-08-08
+    probe: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json (AE bulk zip) via
+      tools/prove_faostat_repair.py --source fao_ae --code AE — permutation search over the
+      live AE dataset's code columns (Area/Indicator/Cost Category/Institution).
+    finding: >-
+      0.0% of 164 ids reproduce under ANY column ordering. AE was re-dimensioned from the old
+      element.area.item scheme to Indicator/Cost-Category/Institution; the old composite ids
+      have no 1:1 successors (R180 had flagged AE as restructured).
+    decision: Stays SERVED and frozen as archival.
+
+  - source_id: fao_af
+    publisher: FAO (FAOSTAT)
+    dataset: ASTI - Researchers (old id scheme)
+    measured: 2026-08-08
+    probe: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json (AF bulk zip) via
+      tools/prove_faostat_repair.py --source fao_af --code AF — permutation search over the
+      live AF dataset's code columns (Area/Indicator/Degree/Sex).
+    finding: >-
+      0.0% of 162 ids reproduce under ANY column ordering. AF was re-dimensioned; the old
+      composite ids have no 1:1 successors.
+    decision: Stays SERVED and frozen as archival.
