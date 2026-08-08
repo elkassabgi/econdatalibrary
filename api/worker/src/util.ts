@@ -323,6 +323,10 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "unctad_tariff", "unctad_merchtheilindices", "unctad_totandcomservicesquarterly",
   "unctad_ucpia", "unctad_ucpim", "unctad_commoditypriceindicesa",
   "unctad_commoditypriceindicesm", "unctad_commoditypricea", "unctad_commoditypricem",
+  "unctad_ifftrademisinvoicing", "unctad_ictproductionsector", "unctad_iffcrimesrelated",
+  "unctad_creativeservgroupe", "unctad_sdgporfvol", "unctad_contportthroughput",
+  "unctad_shipscrapping", "unctad_vesselvaluebyownership", "unctad_shipbuilding",
+  "unctad_vesselvaluebyregistration", "unctad_biotrademerchgdpshare", "unctad_sdglulfrg",
   "unctad_wstbtocabgoea", "undp_hdr", "unesco_clte", "unesco_cltt", "unesco_dem", "unesco_film",
   // unesco_natmon + unesco_sdg added 2026-07-29: 199,661 series / 2,610,984 obs that
   // were on disk and hosted NOWHERE — no catalog rows, no R2 objects, no registry unit.
