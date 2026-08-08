@@ -189,6 +189,20 @@ def main() -> int:
     paths = sorted(os.path.join(dp, f)
                    for dp, _dn, fs in os.walk(src_dir) for f in fs
                    if f.endswith(".parquet") and not f.endswith("__series.parquet"))
+    # wid ONLY: exclude the superseded legacy monolith when the per-country shards exist —
+    # the same targeted skip the resolver applies (_resolve._resolve_generic_long). wid.parquet
+    # (1.93M series to 2024) sits beside 412 shards (2.86M series to 2025); streaming both
+    # emits duplicate dates with contradictory values, which is the corruption R384 nearly
+    # published at 2.4M-object scale. NOT generalised: six sources have a same-named file
+    # beside shards (bea, fred, sipri, stats_nz, vdem, wid) and only wid's is proven
+    # superseded. The --verify gate would catch a divergence anyway, since the resolver now
+    # excludes the monolith — this keeps the two readers defined identically rather than
+    # relying on the gate to notice they are not.
+    if a.source == "wid":
+        mono = os.path.join(src_dir, "wid.parquet")
+        rest = [f for f in paths if os.path.abspath(f) != os.path.abspath(mono)]
+        if rest and len(rest) != len(paths):
+            paths = rest
     if not paths:
         print(f"no parquet in {src_dir}")
         return 2
