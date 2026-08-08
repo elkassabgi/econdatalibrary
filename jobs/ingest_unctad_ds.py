@@ -175,6 +175,13 @@ def parse_period_code(v: str) -> tuple[dt.date, str | None] | None:
     return None
 
 
+class FactsUnreachable(RuntimeError):
+    """A Facts POST kept dying transiently (stream truncation / 5xx) after all
+    retries. The chunked puller SPLITS the offending work item on this — a smaller
+    response is likelier to complete before whatever kills the stream — and only a
+    single-cell-set item re-raises."""
+
+
 class FactsSizeCap(RuntimeError):
     """The API refuses requests estimated over ~62,500 cells with HTTP 400:
     'The request exceed the maximal size. Maximal size : 62500. Estimated size : N.'
@@ -191,7 +198,7 @@ def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = N
     if flt:
         form["$filter"] = flt
     files = {k: (None, v) for k, v in form.items()}
-    for attempt in range(4):
+    for attempt in range(6):
         try:
             r = requests.post(f"{FACTS}/{ds_name}/cur/Facts?culture=en",
                               headers={"ClientId": cid, "ClientSecret": key, **UA},
@@ -208,8 +215,8 @@ def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = N
             raise RuntimeError(f"Facts HTTP {r.status_code}: {r.text[:300]}")
         except requests.RequestException as e:
             log(f"  transient {type(e).__name__}; retry {attempt + 1}")
-            time.sleep(15 * (attempt + 1))
-    raise RuntimeError(f"Facts unreachable for {ds_name} after 4 tries")
+            time.sleep(30 * (attempt + 1))
+    raise FactsUnreachable(f"Facts unreachable for {ds_name} after retries")
 
 
 def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
@@ -273,7 +280,13 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
             try:
                 out.append(facts_csv(ds_name, select, cid, key,
                                      flt=flt_for_item(tgroup, restr)))
-            except FactsSizeCap:
+            except (FactsSizeCap, FactsUnreachable) as split_err:
+                atomic = (len(tgroup) == 1
+                          and all(len(g) == 1 for g in restr)
+                          and len(restr) >= len(kdims))
+                if isinstance(split_err, FactsUnreachable) and atomic:
+                    raise    # smallest possible request still dies — real outage
+                # fall through to the split ladder below (identical for both causes)
                 if len(tgroup) > 1:
                     mid = len(tgroup) // 2
                     stack[:0] = [(tgroup[:mid], restr), (tgroup[mid:], restr)]
