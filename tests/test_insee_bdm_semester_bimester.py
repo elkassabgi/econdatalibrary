@@ -49,3 +49,21 @@ def test_out_of_range_ordinals_stay_none():
     assert parse_period("2024-S3") is None
     assert parse_period("2024-B7") is None
     assert parse_period("2024-B0") is None
+
+
+def test_fetcher_copy_agrees_with_the_ingester():
+    """The daily fetcher (updater/strategies/fetchers/insee_bdm.py) carries its OWN copy
+    of the parser under a docstring claiming they are identical — and when the ingester
+    grew S/B support the copy did not, so the two new flows would have merged 0 rows on
+    every future tick while the ingest snapshot aged. Pin the pair on every format either
+    one understands, so the next divergence fails here instead of freezing a flow."""
+    from updater.strategies.fetchers.insee_bdm import _parse_period
+    cases = [
+        "2024-Q1", "2024-Q4", "2024-S1", "2024-S2", "2024-B1", "2024-B3", "2024-B6",
+        "2024-01", "2024-12", "2024", "2024-07-15",
+        "2024-S3", "2024-B7", "2024-B0", "garbage", "",
+    ]
+    for s in cases:
+        assert parse_period(s) == _parse_period(s), (
+            f"parse_period({s!r}) diverges: ingester={parse_period(s)!r} "
+            f"fetcher={_parse_period(s)!r}")

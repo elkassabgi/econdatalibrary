@@ -79,6 +79,16 @@ def _parse_period(s):
         if re.match(r'\d{4}-Q\d', s):
             y, q = s.split("-Q")
             return dt.date(int(y), (int(q) - 1) * 3 + 1, 1)
+        # Semester/bimester, period-start like Q. Two flows (ENQ-CONJ-COM-GROS,
+        # ENQ-CONJ-TRES-IND) publish ONLY these; without them every daily tail merge
+        # parses to None and the flows silently freeze at their ingest snapshot.
+        # A parity test pins this copy against jobs/ingest_insee_bdm.parse_period.
+        if re.match(r'\d{4}-S[12]$', s):
+            y, h = s.split("-S")
+            return dt.date(int(y), (int(h) - 1) * 6 + 1, 1)
+        if re.match(r'\d{4}-B[1-6]$', s):
+            y, b = s.split("-B")
+            return dt.date(int(y), (int(b) - 1) * 2 + 1, 1)
         if re.match(r'\d{4}-\d{2}$', s):
             return dt.date(int(s[:4]), int(s[5:7]), 1)
         if re.match(r'\d{4}$', s):
