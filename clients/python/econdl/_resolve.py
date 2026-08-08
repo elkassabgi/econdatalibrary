@@ -1654,6 +1654,27 @@ def _resolve_generic_long(series_id: str, root: str) -> Resolution:
             "Refusing to silently skip it.")
     files = sorted(f for f in glob.glob(os.path.join(src_dir, "**", "*.parquet"), recursive=True)
                    if not f.endswith(_GENERIC_SKIP))
+    # wid ONLY: exclude the superseded legacy monolith when the per-country shards exist.
+    #
+    # wid is mid-migration: the store holds a legacy `wid.parquet` (1.93M series, data to 2024)
+    # BESIDE 412 per-country shards (2.86M series, to 2025). Reading both makes this resolver
+    # emit the same series TWICE with contradictory values — measured on wid:WID:npopulf402:...
+    # 2026-08-07: served CSV 75 rows / 75 distinct dates (coherent, built from the shards),
+    # resolver 151 rows / 76 distinct dates. That double-count nearly drove a 2.4M-object
+    # "repair" that would have corrupted every served wid CSV (ledger R384), and it makes the
+    # freshness probe cry STALE 8/8 on a source whose served bytes are right. Removing the
+    # monolith object itself is a data deletion and stays with Ahmed; skipping it HERE changes
+    # only what this reader reads.
+    #
+    # DELIBERATELY NOT A GENERIC "<src>/<src>.parquet beside shards" RULE. Measured across the
+    # fleet first: six sources match that shape (bea, fred, sipri, stats_nz, vdem, wid), and
+    # only for wid is the same-named file PROVEN superseded. A generic rule would silently drop
+    # data for the other five on an unmeasured assumption.
+    if src == "wid":
+        mono = os.path.join(src_dir, "wid.parquet")
+        rest = [f for f in files if os.path.abspath(f) != os.path.abspath(mono)]
+        if rest and len(rest) != len(files):
+            files = rest
     if not files:
         raise ResolveError(f"{series_id}: no parquet files under {src_dir!r}")
     cols = set(pq.read_schema(files[0]).names)
