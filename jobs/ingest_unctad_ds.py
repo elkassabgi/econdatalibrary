@@ -247,52 +247,61 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
                 return f"{tfield} in ({','.join(str(c) for c in group)})"
             return f"{tfield}/Code in ({','.join(repr(str(c)) for c in group)})"
 
-        # Second-level split: on datasets with partner/product dimensions ONE time code
+        # Multi-level split: on datasets with partner/product dimensions ONE time code
         # alone can exceed the cap (measured: US.IntraTrade, 225,424 cells in a single
-        # year vs the 62,500 cap). Split such a group further by the FIRST key dim's
-        # codes, halving recursively. Work items are (time_group, dim_codes_or_None).
+        # year vs the 62,500 cap) — and on the densest (US.NonPlasticSubstsTradeByPartner,
+        # est 167,478 for one Economy x one Year) even one time code x one first-dim code
+        # still caps, so the split recurses across EVERY key dim in axis order before
+        # giving up. Work items are (time_group, [dim_codes_group per engaged kdim]).
         kdims = [d for axe in ("rowAxe", "colAxe", "pageAxe")
                  for d in (meta["defaults"].get(axe) or [])
-                 if not (bool(d.get("isTime")) or d.get("field", "").lower() == "year")]
-        split_dim = kdims[0] if kdims else None
-        split_codes = None
+                 if not (bool(d.get("isTime"))
+                         or d.get("field", "").lower() in ("year", "period"))]
+        kdim_codes: dict[int, list] = {}   # kdim index -> full code list (lazy)
 
-        def flt_for_pair(tgroup, dgroup):
+        def flt_for_item(tgroup, restr):
             f = flt_for(tgroup)
-            if dgroup is not None:
-                f += (f" and {split_dim['field']}/Code in "
+            for di, dgroup in enumerate(restr):
+                f += (f" and {kdims[di]['field']}/Code in "
                       f"({','.join(repr(str(c)) for c in dgroup)})")
             return f
 
         out: list[str] = []
-        stack = [(codes[i:i + per], None) for i in range(0, len(codes), per)]
+        stack = [(codes[i:i + per], []) for i in range(0, len(codes), per)]
         while stack:
-            tgroup, dgroup = stack.pop(0)
+            tgroup, restr = stack.pop(0)
             try:
                 out.append(facts_csv(ds_name, select, cid, key,
-                                     flt=flt_for_pair(tgroup, dgroup)))
+                                     flt=flt_for_item(tgroup, restr)))
             except FactsSizeCap:
                 if len(tgroup) > 1:
                     mid = len(tgroup) // 2
-                    stack[:0] = [(tgroup[:mid], dgroup), (tgroup[mid:], dgroup)]
+                    stack[:0] = [(tgroup[:mid], restr), (tgroup[mid:], restr)]
                     continue
-                if split_dim is None:
-                    raise
-                if dgroup is None:
-                    if split_codes is None:
-                        split_codes = dim_codes(ds_name, meta.get("version"),
-                                                split_dim["name"])
+                # halve the deepest engaged dim group that can still split
+                for di in range(len(restr) - 1, -1, -1):
+                    if len(restr[di]) > 1:
+                        mid = len(restr[di]) // 2
+                        a = restr[:di] + [restr[di][:mid]] + restr[di + 1:]
+                        b = restr[:di] + [restr[di][mid:]] + restr[di + 1:]
+                        stack[:0] = [(tgroup, a), (tgroup, b)]
+                        break
+                else:
+                    # every engaged dim is a single code — engage the NEXT key dim
+                    nxt = len(restr)
+                    if nxt >= len(kdims):
+                        raise   # atomic cell set still too big — new layout class
+                    if nxt not in kdim_codes:
+                        kdim_codes[nxt] = dim_codes(ds_name, meta.get("version"),
+                                                    kdims[nxt]["name"])
                         if progress:
-                            progress(f"  single-{tdim['name']}-code still caps: also "
-                                     f"splitting by {split_dim['name']} "
-                                     f"({len(split_codes)} codes)")
-                    mid = len(split_codes) // 2
-                    stack[:0] = [(tgroup, split_codes[:mid]), (tgroup, split_codes[mid:])]
-                    continue
-                if len(dgroup) == 1:
-                    raise   # one time code x one dim code still too big — new layout class
-                mid = len(dgroup) // 2
-                stack[:0] = [(tgroup, dgroup[:mid]), (tgroup, dgroup[mid:])]
+                            progress(f"  still caps at single codes: also splitting "
+                                     f"by {kdims[nxt]['name']} "
+                                     f"({len(kdim_codes[nxt])} codes)")
+                    full = kdim_codes[nxt]
+                    mid = max(1, len(full) // 2)
+                    stack[:0] = [(tgroup, restr + [full[:mid]]),
+                                 (tgroup, restr + [full[mid:]])]
         return out
 
 
