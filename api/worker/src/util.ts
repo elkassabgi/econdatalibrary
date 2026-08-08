@@ -319,6 +319,10 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // DBnomics-era slugs above retire via Class A as successors land (#70).
   "unctad_trademerchtotal", "unctad_trademerchgr", "unctad_trademerchbalance",
   "unctad_merchvolumequarterly", "unctad_termsoftrade", "unctad_tradepriceindicesq",
+  "unctad_concentdiversindices", "unctad_concentstructindices", "unctad_rca",
+  "unctad_tariff", "unctad_merchtheilindices", "unctad_totandcomservicesquarterly",
+  "unctad_ucpia", "unctad_ucpim", "unctad_commoditypriceindicesa",
+  "unctad_commoditypriceindicesm", "unctad_commoditypricea", "unctad_commoditypricem",
   "unctad_wstbtocabgoea", "undp_hdr", "unesco_clte", "unesco_cltt", "unesco_dem", "unesco_film",
   // unesco_natmon + unesco_sdg added 2026-07-29: 199,661 series / 2,610,984 obs that
   // were on disk and hosted NOWHERE — no catalog rows, no R2 objects, no registry unit.

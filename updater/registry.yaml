@@ -5133,6 +5133,228 @@ sources:
     rate_note: One Facts POST, ~2s. 4-try backoff on 429/5xx.
     key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY (shared with the family)
     confidence: high
+# --- UNCTAD successors batch (2026-08-08, #70): five sized-then-served datasets. All
+# share the family contract: keyless reportMetadata vintage (version|lastUpdated),
+# keyed Facts POSTs via _unctad.py, parse/key logic solely in jobs/ingest_unctad_ds.py,
+# strategy bulk_snapshot_if_changed cadence weekly, merged never-shrink, key_env
+# UNCTAD_CLIENT_ID + UNCTAD_API_KEY. Sizes at first ingest noted per entry.
+- source_id: unctad_concentdiversindices
+  # 54,124 obs / 1,824 series — product concentration/diversification indices, annual.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_concentdiversindices
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.ConcentDiversIndices/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>, annual Dec-31
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_concentstructindices
+  # 47,492 obs / 1,532 series — market concentration/structural change indices, annual.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_concentstructindices
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.ConcentStructIndices/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>, annual Dec-31
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_rca
+  # 1,379,898 obs / 57,535 series — Revealed Comparative Advantage by economy x product,
+  # annual. Largest series-grain member served so far (~4% of D1 headroom).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: medium
+  out_dir: unctad_rca
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.RCA/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>, annual Dec-31
+    rate_note: family contract (see banner); chunked POSTs when over the 62,500-cell cap
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_tariff
+  # 358,202 obs / 19,090 series — import tariff rates, annual.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_tariff
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.Tariff/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>, annual Dec-31
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_merchtheilindices
+  # 51,654 obs / 1,800 series — Theil concentration indices, annual.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_merchtheilindices
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.MerchTheilIndices/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>, annual Dec-31
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_totandcomservicesquarterly
+  # 812,977 obs / 11,553 series — services trade by main category, quarterly.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: quarterly
+  refresh_cost: medium
+  out_dir: unctad_totandcomservicesquarterly
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.TotAndComServicesQuarterly/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
+    out_paths_note: single parquet, series_key = <dims>.M<measure>, quarter-start
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_ucpia
+  # 854 obs / 28 series — unit commodity price indices, annual.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_ucpia
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.UCPI_A/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, annual Dec-31
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_ucpim
+  # 15,694 obs / 42 series — unit commodity price indices, monthly ('1995M01' codes).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: monthly
+  refresh_cost: fast
+  out_dir: unctad_ucpim
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.UCPI_M/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, month-start
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_commoditypriceindicesa
+  # 826 obs / 28 series — commodity price indices, annual.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_commoditypriceindicesa
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.CommodityPriceIndices_A/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, annual Dec-31
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_commoditypriceindicesm
+  # 15,190 obs / 42 series — commodity price indices, monthly.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: monthly
+  refresh_cost: fast
+  out_dir: unctad_commoditypriceindicesm
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.CommodityPriceIndices_M/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, month-start
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_commoditypricea
+  # 1,361 obs / 50 series — commodity prices, annual.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_commoditypricea
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.CommodityPrice_A/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, annual Dec-31
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_commoditypricem
+  # 16,799 obs / 50 series — commodity prices, monthly.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
+  cadence: weekly
+  data_cadence: monthly
+  refresh_cost: fast
+  out_dir: unctad_commoditypricem
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.CommodityPrice_M/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot re-pull on vintage move)
+    out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, month-start
+    rate_note: family contract (see banner)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
 - source_id: unhcr
   live: true
   scripts:

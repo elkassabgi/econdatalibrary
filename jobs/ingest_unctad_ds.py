@@ -104,6 +104,11 @@ def parse_time(v: str, is_year: bool) -> dt.date | None:
             q = int(s[5:])
             if 1 <= q <= 4:
                 return dt.date(int(s[:4]), (q - 1) * 3 + 1, 1)
+        # Monthly '1995M01' (US.UCPI_M / CommodityPrice_M family's Period axis).
+        if len(s) == 7 and s[4] in "Mm" and s[:4].isdigit() and s[5:].isdigit():
+            m = int(s[5:])
+            if 1 <= m <= 12:
+                return dt.date(int(s[:4]), m, 1)
     except ValueError:
         pass
     return None
