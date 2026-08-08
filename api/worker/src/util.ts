@@ -327,6 +327,12 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "unctad_creativeservgroupe", "unctad_sdgporfvol", "unctad_contportthroughput",
   "unctad_shipscrapping", "unctad_vesselvaluebyownership", "unctad_shipbuilding",
   "unctad_vesselvaluebyregistration", "unctad_biotrademerchgdpshare", "unctad_sdglulfrg",
+  "unctad_biotrademerchprodconcent", "unctad_curraccbalance",
+  // unctad_cpi_annual, NOT "unctad_cpia": that is the LEGACY source above (R399).
+  "unctad_cpi_annual",
+  "unctad_lscim", "unctad_gni", "unctad_inclusivegrowth", "unctad_lsci",
+  "unctad_portcallsarrivals", "unctad_portcallsarrivalss", "unctad_remittances",
+  "unctad_poptotal", "unctad_popdependency",
   "unctad_wstbtocabgoea", "undp_hdr", "unesco_clte", "unesco_cltt", "unesco_dem", "unesco_film",
   // unesco_natmon + unesco_sdg added 2026-07-29: 199,661 series / 2,610,984 obs that
   // were on disk and hosted NOWHERE — no catalog rows, no R2 objects, no registry unit.
