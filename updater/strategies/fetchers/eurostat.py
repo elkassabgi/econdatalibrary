@@ -149,8 +149,12 @@ def _parse_period(s: str):
                 return _dt.date(int(s[:4]), 1 if s[6] == "1" else 7, 1)
             if s[5:].isdigit():
                 return _dt.date(int(s[:4]), int(s[5:]), 1)
-        if len(s) == 8 and s[4] == "-" and s[6] == "W":
-            return _dt.date.fromisocalendar(int(s[:4]), int(s[7:]), 1)
+        # ISO week "2024-W05": W sits at index 5. The original test read s[6] == "W" —
+        # an off-by-one that made this branch DEAD (s[6] is the first week digit), so
+        # every weekly period parsed to None while the ingester parsed it fine. Found by
+        # the fetcher-vs-ingester parity battery, same class as the insee_bdm S/B drift.
+        if len(s) == 8 and s[4] == "-" and s[5] == "W":
+            return _dt.date.fromisocalendar(int(s[:4]), int(s[6:]), 1)
         if len(s) == 10 and s[4] == "-" and s[7] == "-":
             return _dt.date.fromisoformat(s)
     except Exception:
