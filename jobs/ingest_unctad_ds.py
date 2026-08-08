@@ -109,6 +109,11 @@ def parse_time(v: str, is_year: bool) -> dt.date | None:
             m = int(s[5:])
             if 1 <= m <= 12:
                 return dt.date(int(s[:4]), m, 1)
+        # Semiannual '2018S01' (US.PortCallsArrivals_S). S1->Jan, S2->Jul (period-start).
+        if len(s) == 7 and s[4] in "Ss" and s[:4].isdigit() and s[5:].isdigit():
+            h = int(s[5:])
+            if 1 <= h <= 2:
+                return dt.date(int(s[:4]), (h - 1) * 6 + 1, 1)
     except ValueError:
         pass
     return None
