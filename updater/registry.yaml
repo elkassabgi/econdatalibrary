@@ -4963,6 +4963,41 @@ sources:
       backoff. Self-bounded at 200 series/run with a rotation bookmark.
     key_env: none
     confidence: high
+- source_id: unctad_trademerchtotal
+  # FIRST UNCTAD successor (2026-08-08, #70): the publisher's own documented data API,
+  # contract read from the app's generated code sample and PROVEN live (HTTP 200, real
+  # observations, session notes unctad_auth_findings.md). Upstream re-coded all 38 legacy
+  # DBnomics-era unctad_* dataset ids (0 of 38 match); successors land one at a time and
+  # the legacy slugs retire via Class A afterwards. SERVED same day: 1,220 series /
+  # 81,760 obs, verify exit 0, worker 2bf72f8a.
+  live: true
+  scripts:
+  - jobs/ingest_unctad_ds.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    UNCTADstat publishes whole-dataset releases with a publisher-stamped version +
+    lastUpdated in the KEYLESS reportMetadata endpoint — the best vintage signal there
+    is; a moved token re-pulls the full Facts snapshot (~82k cells) and merges
+    never-shrink (dedup series_key+obs_date, new wins on revision).
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_trademerchtotal
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchTotal/en
+      (keyless) -> f"{version}|{lastUpdated}", e.g. '10003|2026-03-11T08:15:49'.
+    since_param: n/a (whole-snapshot re-pull on vintage move, merged never-shrink)
+    out_paths_note: 'Single file data/clean_full/unctad_trademerchtotal/unctad_trademerchtotal.parquet;
+      series_key = <EconomyCode>.<FlowCode>.M<measure> (e.g. 0000.02.M0100), obs_date
+      annual Dec-31 from Year.'
+    rate_note: >-
+      Facts POST https://unctadstat-user-api.unctad.org/US.TradeMerchTotal/cur/Facts
+      needs ClientId/ClientSecret headers; one POST per measure group (2), ~2s each.
+      4-try backoff on 429/5xx.
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY (CI secrets set 2026-08-08; .env locally)
+    confidence: high
 - source_id: unhcr
   live: true
   scripts:

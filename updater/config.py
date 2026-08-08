@@ -184,7 +184,9 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   retired archive-first tonight on Ahmed's permission; only these two of the 29 batch-2/3
 #   ids had registry entries). fsi's successors = the served FSI trio; 'imf' was the
 #   never-promoted 131-id entry. -> 172
-EXPECTED_SOURCE_COUNT = 172
+# 2026-08-08: +unctad_trademerchtotal — FIRST UNCTAD successor on the publisher's own data
+#   API (#70); served 1,220 series same day, keys are CI secrets. -> 173
+EXPECTED_SOURCE_COUNT = 173
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
