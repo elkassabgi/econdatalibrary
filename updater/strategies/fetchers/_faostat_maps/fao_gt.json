@@ -1,0 +1,23 @@
+{
+ "code": "GT",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 27.2,
+  "published_ids": 10506,
+  "upstream_series": 58964,
+  "upstream_updated": "2025-11-20"
+ },
+ "id_floor": 0.25,
+ "key_columns": [
+  "Item Code",
+  "Area Code",
+  "Element Code"
+ ],
+ "key_prefix": "FAO_GT",
+ "note": "Emissions totals, served by GT. 2,858 ids (27.2%) - the NATIVE-GAS series (7225 CH4 / 7230 N2O, no GWP dependence) - reproduce exactly and auto-update. THE PLANNED AR5 RE-KEY WAS REFUTED BY VALUE VERIFICATION (2026-08-08): the R180 element crosswalk (7231->723113, 7243->724313, 7244->724413) maps KEYS 1:1 (id-reproduction 79%) but the CO2eq GWP BASIS changed (SAR/AR4 -> AR5 factors), so only 7 of 7,650 candidates value-verify (fao_gt.crosswalk.json) - re-keying would mislabel old-GWP data as AR5 data. The CO2eq tail stays frozen as a prior-GWP vintage; current AR5 CO2eq is upstream-only until served under a future dedicated source. row_filters pins Source='FAO TIER 1' (83,975 colliding UNFCCC points).",
+ "restrict_to_published": true,
+ "row_filters": {
+  "Source": "FAO TIER 1"
+ },
+ "source_id": "fao_gt"
+}

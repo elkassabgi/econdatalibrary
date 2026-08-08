@@ -252,7 +252,9 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   live domain); area-level tail (47 dropped areas) frozen. -> 268
 # 2026-08-08: +fao_gf — #19 source 8 (2nd re-key: 23 series): 819 of 2,591 ids
 #   auto-update from GF; methodology-break tail frozen. -> 269
-EXPECTED_SOURCE_COUNT = 269
+# 2026-08-08: +fao_gt — #19 source 9: 2,858 native-gas ids auto-update from GT;
+#   AR5 re-key REFUTED by value verification (GWP-basis change), CO2eq frozen. -> 270
+EXPECTED_SOURCE_COUNT = 270
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
