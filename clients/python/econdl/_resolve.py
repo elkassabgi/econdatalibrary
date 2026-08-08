@@ -1309,18 +1309,34 @@ def _resolve_census_any(series_id: str, root: str) -> Resolution:
 
 # --- eia -------------------------------------------------------------------
 def _resolve_eia(series_id: str, root: str) -> Resolution:
-    # catalog: eia:PET.RWTC.D  native file: PET.parquet  key_col: series_id  value: 'PET.RWTC.D'
-    # The eia store is one parquet per EIA flow; the flow is the first dot-segment of the
-    # EIA id (e.g. PET, NG, ELEC). The catalog id is the EIA id prefixed with 'eia:';
-    # the native 'series_id' column holds the EIA id verbatim WITHOUT that prefix. Exact match.
+    # catalog ids come in TWO grains that one predicate serves (2026-08-08, #37):
+    #   legacy series grain  eia:PET.RWTC.D        (7 hand-picked ids, exact match)
+    #   table grain          eia:COAL.PRICE        (268,495 ids = dot-prefix per
+    #                        tools/catalog_eia_tables.py's measured per-dataset depth map)
+    # Predicate: exact OR starts_with(native + '.') — an EIA id ends in a frequency
+    # segment so nothing nests below a FULL id, which makes the union safe for both
+    # grains. `|` on Expressions, NOT pc.or_ (ArrowKeyError at dataset-scan time).
+    #
+    # FILE ROUTING: first-dot-segment -> <flow>.parquet is WRONG for the vintage families
+    # (AEO.2025.* lives in AEO.2025.parquet, not AEO.parquet, which does not exist) — route
+    # by the LONGEST store filename that prefix-matches the native id. IEO.parquet is a
+    # redundant union of IEO.<year>.parquet (identical id sets, measured) and is only
+    # chosen for a bare 'eia:IEO...' id whose vintage file does not exist.
     native = series_id.split(":", 1)[1]
-    flow = native.split(".", 1)[0]
-    path = os.path.join(root, "eia", f"{flow}.parquet")
-    if not os.path.exists(path):
-        raise ResolveError(f"{series_id}: expected EIA file {path!r} not found")
+    eia_dir = os.path.join(root, "eia")
+    parts = native.split(".")
+    path = None
+    for k in range(len(parts), 0, -1):
+        cand = os.path.join(eia_dir, ".".join(parts[:k]) + ".parquet")
+        if os.path.exists(cand):
+            path = cand
+            break
+    if path is None:
+        raise ResolveError(f"{series_id}: no EIA store file prefixes {native!r}")
     return Resolution(
         series_id, "eia", path, "series_id",
-        pc.equal(ds.field("series_id"), native),
+        pc.equal(ds.field("series_id"), native)
+        | pc.starts_with(ds.field("series_id"), native + "."),
     )
 
 
