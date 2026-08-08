@@ -932,7 +932,23 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         t_unit = time.time()
 
         try:
-            vintage = strat.detect_change(unit, us)
+            # THE DEADLINE COVERS THE PROBE TOO — this call sat OUTSIDE _unit_deadline, 85
+            # lines before it, and that hole ate two entire daily runs. owid's detect_change
+            # is a per-slug HTTP HEAD over ~3,786 chart URLs; on 2026-08-07 it entered at
+            # 10:02 and again at 23:23 and produced NOTHING until GitHub's 250-minute step
+            # cap killed the whole run — 150 and then 212 minutes inside a phase no cap
+            # covered. The first fix (cancellable_pool, 388bf5d5) was real but aimed at
+            # strat.run's drain-on-exception; the run that PROVED it insufficient carried
+            # that very commit. A probe gets the same ceiling as the fetch: any vintage
+            # check that needs longer than the unit timeout is a fetch wearing a probe's
+            # name.
+            with _unit_deadline(unit.key + " (detect_change)", _unit_timeout_min()):
+                vintage = strat.detect_change(unit, us)
+        except UnitTimeout as e:
+            if not dry:
+                _record(store, unit, "transient_fail", err=f"detect:{e}")
+            results.append((unit.key, "transient_fail"))
+            continue
         except TransientError as e:
             if not dry:  # a dry run reports; it never mutates state (T-3)
                 _record(store, unit, "transient_fail", err=f"detect:{e}")
