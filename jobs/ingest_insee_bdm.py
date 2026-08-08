@@ -53,6 +53,15 @@ def parse_period(s):
     try:
         if re.match(r'\d{4}-Q\d', s):
             y, q = s.split("-Q"); return dt.date(int(y), (int(q)-1)*3+1, 1)
+        # SEMESTERS AND BIMESTERS, period-start like Q above. Measured 2026-08-08: the two BDM
+        # flows absent from our store (ENQ-CONJ-COM-GROS, ENQ-CONJ-TRES-IND) publish ONLY these
+        # frequencies — 199,558 '####-B#' obs and 11,388 '####-S#' obs, exhaustively enumerated
+        # from the live payloads — so every observation parsed to None and both flows ingested
+        # as "0 obs" while the API served them fine. S1->Jan, S2->Jul; B1->Jan .. B6->Nov.
+        if re.match(r'\d{4}-S[12]$', s):
+            y, h = s.split("-S"); return dt.date(int(y), (int(h)-1)*6+1, 1)
+        if re.match(r'\d{4}-B[1-6]$', s):
+            y, b = s.split("-B"); return dt.date(int(y), (int(b)-1)*2+1, 1)
         if re.match(r'\d{4}-\d{2}$', s): return dt.date(int(s[:4]), int(s[5:7]), 1)
         if re.match(r'\d{4}$', s): return dt.date(int(s), 12, 31)
         if re.match(r'\d{4}-\d{2}-\d{2}', s): return dt.date.fromisoformat(s[:10])
