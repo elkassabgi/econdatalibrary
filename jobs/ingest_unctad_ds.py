@@ -30,6 +30,7 @@ import csv
 import datetime as dt
 import io
 import os
+import re
 import sys
 import time
 
@@ -97,6 +98,12 @@ def parse_time(v: str, is_year: bool) -> dt.date | None:
             return dt.date.fromisoformat(s)
         if len(s) == 7 and s[4] == "-":
             return dt.date(int(s[:4]), int(s[5:7]), 1)
+        # Quarterly '2005Q01' (US.MerchVolumeQuarterly's Quarter axis, isTime=true).
+        # Period-start like Q conventions elsewhere in the repo: Q1->Jan .. Q4->Oct.
+        if len(s) == 7 and s[4] in "Qq" and s[:4].isdigit() and s[5:].isdigit():
+            q = int(s[5:])
+            if 1 <= q <= 4:
+                return dt.date(int(s[:4]), (q - 1) * 3 + 1, 1)
     except ValueError:
         pass
     return None
@@ -129,6 +136,17 @@ def parse_period_code(v: str) -> tuple[dt.date, str | None] | None:
     return None
 
 
+class FactsSizeCap(RuntimeError):
+    """The API refuses requests estimated over ~62,500 cells with HTTP 400:
+    'The request exceed the maximal size. Maximal size : 62500. Estimated size : N.'
+    (measured on US.IntraTrade, estimate 6,988,144). Carries both numbers so the
+    caller can compute how many time-chunks are needed."""
+
+    def __init__(self, cap: int, estimated: int):
+        super().__init__(f"Facts size cap {cap} < estimated {estimated}")
+        self.cap, self.estimated = cap, estimated
+
+
 def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = None) -> str:
     form = {"$select": select, "$format": "csv"}
     if flt:
@@ -143,11 +161,100 @@ def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = N
                 return r.text
             if r.status_code in (429, 502, 503, 504):
                 time.sleep(20 * (attempt + 1)); continue
+            if r.status_code == 400 and "maximal size" in r.text.lower():
+                m = re.search(r"Maximal size\s*:\s*(\d+).*?Estimated size\s*:\s*(\d+)",
+                              r.text, re.S)
+                if m:
+                    raise FactsSizeCap(int(m.group(1)), int(m.group(2)))
             raise RuntimeError(f"Facts HTTP {r.status_code}: {r.text[:300]}")
         except requests.RequestException as e:
             log(f"  transient {type(e).__name__}; retry {attempt + 1}")
             time.sleep(15 * (attempt + 1))
     raise RuntimeError(f"Facts unreachable for {ds_name} after 4 tries")
+
+
+def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
+    """Keyless dimension table -> ordered code list (for chunked Facts pulls)."""
+    r = requests.get(f"{META.replace('/api', '')}/datamart-api/{ds_name}/{version}/"
+                     f"{dim_table}?$orderby=Order&culture=en", headers=UA, timeout=120)
+    r.raise_for_status()
+    body = r.json()
+    vals = body.get("value", body) if isinstance(body, dict) else body
+    return [x["Code"] for x in vals if x.get("Code") is not None]
+
+
+def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
+                      tdim: dict, progress=None) -> list[str]:
+    """Full-dataset pull that respects the size cap: try one POST; on FactsSizeCap,
+    partition the TIME dimension's codes into groups sized from the error's own
+    numbers (cap/estimated, 15% headroom) and pull per group; a group that still
+    caps is split in half recursively (down to single codes)."""
+    try:
+        return [facts_csv(ds_name, select, cid, key)]
+    except FactsSizeCap as e:
+        codes = dim_codes(ds_name, meta.get("version"), tdim["name"])
+        if not codes:
+            raise
+        frac = max(1e-6, e.cap / e.estimated * 0.85)
+        per = max(1, int(len(codes) * frac))
+        if progress:
+            progress(f"  size cap {e.cap:,} < est {e.estimated:,}: chunking "
+                     f"{len(codes)} {tdim['name']} codes, ~{per}/chunk")
+        numeric = (tdim.get("codetype") == "number")
+        tfield = tdim["field"]
+
+        def flt_for(group):
+            if numeric:
+                return f"{tfield} in ({','.join(str(c) for c in group)})"
+            return f"{tfield}/Code in ({','.join(repr(str(c)) for c in group)})"
+
+        # Second-level split: on datasets with partner/product dimensions ONE time code
+        # alone can exceed the cap (measured: US.IntraTrade, 225,424 cells in a single
+        # year vs the 62,500 cap). Split such a group further by the FIRST key dim's
+        # codes, halving recursively. Work items are (time_group, dim_codes_or_None).
+        kdims = [d for axe in ("rowAxe", "colAxe", "pageAxe")
+                 for d in (meta["defaults"].get(axe) or [])
+                 if not (bool(d.get("isTime")) or d.get("field", "").lower() == "year")]
+        split_dim = kdims[0] if kdims else None
+        split_codes = None
+
+        def flt_for_pair(tgroup, dgroup):
+            f = flt_for(tgroup)
+            if dgroup is not None:
+                f += (f" and {split_dim['field']}/Code in "
+                      f"({','.join(repr(str(c)) for c in dgroup)})")
+            return f
+
+        out: list[str] = []
+        stack = [(codes[i:i + per], None) for i in range(0, len(codes), per)]
+        while stack:
+            tgroup, dgroup = stack.pop(0)
+            try:
+                out.append(facts_csv(ds_name, select, cid, key,
+                                     flt=flt_for_pair(tgroup, dgroup)))
+            except FactsSizeCap:
+                if len(tgroup) > 1:
+                    mid = len(tgroup) // 2
+                    stack[:0] = [(tgroup[:mid], dgroup), (tgroup[mid:], dgroup)]
+                    continue
+                if split_dim is None:
+                    raise
+                if dgroup is None:
+                    if split_codes is None:
+                        split_codes = dim_codes(ds_name, meta.get("version"),
+                                                split_dim["name"])
+                        if progress:
+                            progress(f"  single-{tdim['name']}-code still caps: also "
+                                     f"splitting by {split_dim['name']} "
+                                     f"({len(split_codes)} codes)")
+                    mid = len(split_codes) // 2
+                    stack[:0] = [(tgroup, split_codes[:mid]), (tgroup, split_codes[mid:])]
+                    continue
+                if len(dgroup) == 1:
+                    raise   # one time code x one dim code still too big — new layout class
+                mid = len(dgroup) // 2
+                stack[:0] = [(tgroup, dgroup[:mid]), (tgroup, dgroup[mid:])]
+        return out
 
 
 class UnsupportedLayout(RuntimeError):
@@ -189,18 +296,29 @@ def dataset_layout(meta: dict):
             not tdim.get("isTime"), measures)
 
 
+def dataset_time_dim(meta: dict) -> dict:
+    """The raw time-axis dict (name/field/codetype) — needed for chunked pulls."""
+    defaults = meta["defaults"]
+    dims = [d for axe in ("rowAxe", "colAxe", "pageAxe") for d in defaults.get(axe) or []]
+    for d in dims:
+        if bool(d.get("isTime")) or d.get("field", "").lower() == "year":
+            return d
+    raise UnsupportedLayout(f"{meta.get('name')}: no time dim")
+
+
 def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None):
     """Fetch + parse ALL observations for one dataset. THE single row-building path —
     the ingest below and every fetcher call this, so the parse rules cannot drift
     between the two (the insee_bdm/eurostat parity lesson, R-ledger 2026-08-08).
     Returns (rows_k, rows_d, rows_v)."""
     kfields, tfield, is_year, period_axis, measures = dataset_layout(meta)
+    tdim = dataset_time_dim(meta)
     rows_k, rows_d, rows_v = [], [], []
     for mcode in measures:
         select = ", ".join(f"{f}/Code" for f in kfields) + f", {tfield}, M{mcode}/Value"
-        text = facts_csv(ds_name, select, cid, key)
+        texts = facts_csv_chunked(ds_name, select, cid, key, meta, tdim, progress=progress)
         n0 = len(rows_k)
-        for rec in csv.DictReader(io.StringIO(text)):
+        for rec in (rec for text in texts for rec in csv.DictReader(io.StringIO(text))):
             vals = [rec.get(f"{f}_Code", "") for f in kfields]
             tv = rec.get(tfield) or rec.get(f"{tfield}_Code", "")
             vv = rec.get(f"M{mcode}_Value", "")
