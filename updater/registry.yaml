@@ -4998,6 +4998,35 @@ sources:
       4-try backoff on 429/5xx.
     key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY (CI secrets set 2026-08-08; .env locally)
     confidence: high
+- source_id: unctad_trademerchgr
+  # UNCTAD successor #2 (2026-08-08, #70). PERIOD-CODED time axis (isTime=false,
+  # codes '19921995'): annual YoY rows keep the bare key; multi-year averages carry
+  # |SPAN=<n>Y (end-years collide between families — 7 measured duplicates — see
+  # jobs/ingest_unctad_ds.parse_period_code). SERVED same day: 1,754 series /
+  # 28,863 obs, verify exit 0, worker df2d6698. Shared machinery _unctad.py.
+  live: true
+  scripts:
+  - jobs/ingest_unctad_ds.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    Same publisher-stamped version+lastUpdated vintage as its sibling; a moved token
+    re-pulls the full Facts snapshot (~29k cells) and merges never-shrink.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_trademerchgr
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchGR/en
+      (keyless) -> f"{version}|{lastUpdated}".
+    since_param: n/a (whole-snapshot re-pull on vintage move, merged never-shrink)
+    out_paths_note: 'Single file data/clean_full/unctad_trademerchgr/unctad_trademerchgr.parquet;
+      series_key = <EconomyCode>.<FlowCode>.M4017 [+ |SPAN=<n>Y for multi-year averages],
+      obs_date = period end-year Dec-31.'
+    rate_note: One Facts POST (single measure group), ~2s. 4-try backoff on 429/5xx.
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY (shared with the family)
+    confidence: high
 - source_id: unhcr
   live: true
   scripts:
