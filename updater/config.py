@@ -238,7 +238,9 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   via QCL restrict_to_published; 3,182 restructured-tail ids stay frozen (R91). -> 261
 # 2026-08-08: +fao_ga — #19 source 2: 7,712 of 15,018 ids auto-update from GCE
 #   (Source='FAO TIER 1' pinned); 4 dropped element classes frozen. -> 262
-EXPECTED_SOURCE_COUNT = 262
+# 2026-08-08: +fao_ge — #19 source 3: 6,209 of 11,813 ids auto-update from GLE
+#   (TIER 1 pinned, 9.5x superset restricted); 2 dropped element classes frozen. -> 263
+EXPECTED_SOURCE_COUNT = 263
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
