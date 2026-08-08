@@ -1663,7 +1663,8 @@ _DOT_TABLE_GRAIN = {"unctad_intratrade", "unctad_tradeservcattotal",
                     "unctad_biotrademerchshare", "unctad_biotrademerchrca",
                     "unctad_associatedplasticstradebypartner",
                     "unctad_hiddenplasticstradebypartner",
-                    "unctad_plasticstradebypartner", "unctad_ictgoods"}
+                    "unctad_plasticstradebypartner", "unctad_ictgoods",
+                    "unctad_gstptradematrix"}
 
 
 def _resolve_generic_long(series_id: str, root: str) -> Resolution:
