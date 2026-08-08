@@ -149,9 +149,23 @@ def run(source_id: str) -> Result:
         tally.structural_unit(f"{code}: key column(s) gone: {missing}")
         return finalize(tally, before, None, source=source_id)
 
+    # ROW FILTERS. Some datasets carry a methodology dimension OUTSIDE the key
+    # (GCE/GLE have Source = 'FAO TIER 1' vs 'UNFCCC', with 14k+ colliding
+    # (key, year) points between them). Building keys without filtering would let
+    # dedup pick between two methodologies non-deterministically, so a map may pin
+    # {"column": "required value"} pairs; non-matching rows are skipped.
+    row_filters = cfg.get("row_filters") or {}
+    for c in row_filters:
+        if c not in present:
+            tally.structural_unit(f"{code}: row_filters column gone: {c}")
+            return finalize(tally, before, None, source=source_id)
+
     keys, dates, vals = [], [], []
     n_bad = 0
     for row in rd:
+        if row_filters and any((row.get(c) or "").strip() != w
+                               for c, w in row_filters.items()):
+            continue
         v = (row.get("Value") or "").strip()
         y = (row.get("Year Code") or row.get("Year") or "").strip()
         if not v or not y[:4].isdigit():

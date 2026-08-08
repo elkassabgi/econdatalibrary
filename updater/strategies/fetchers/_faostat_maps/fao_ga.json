@@ -1,0 +1,23 @@
+{
+ "code": "GCE",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 51.4,
+  "published_ids": 15018,
+  "upstream_series": 13496,
+  "upstream_updated": "2025-11-20"
+ },
+ "id_floor": 0.48,
+ "key_columns": [
+  "Element Code",
+  "Item Code",
+  "Area Code"
+ ],
+ "key_prefix": "FAO_GA",
+ "note": "Agriculture crop-residue emissions, served by GCE (Climate Change: Agrifood systems emissions: Emissions from Crops) after FAOSTAT's emissions-suite restructure. 7,712 ids (51.4%) reproduce exactly and auto-update. The 7,306-id tail decomposes to exactly 4 DROPPED element classes (7,202 ids): per-crop CO2eq emissions (72312 total / 72352 direct / 72372 indirect) and implied emission factors (72292) - FAOSTAT now publishes native-gas N2O/CH4 per crop only, CO2eq only at IPCC-category level in GT. No successor exists; frozen as historical (measured in _fao_ga_decompose.log, R91/R180 method). row_filters pins Source='FAO TIER 1' - GCE also carries UNFCCC-methodology rows with 14,123 colliding (key,year) points that would otherwise reach dedup non-deterministically.",
+ "restrict_to_published": true,
+ "row_filters": {
+  "Source": "FAO TIER 1"
+ },
+ "source_id": "fao_ga"
+}
