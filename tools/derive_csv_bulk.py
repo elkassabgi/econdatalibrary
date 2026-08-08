@@ -159,6 +159,12 @@ def main() -> int:
     ap.add_argument("--prefix", default="series")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--skip-existing", action="store_true")
+    ap.add_argument("--only-catalogued", action="store_true",
+                    help="write ONLY series with a catalog.db row. Without this the stream "
+                         "writes every series_key in the parquet — R364 measured 1,927 objects "
+                         "for a 1,749-row catalogue on whr, and wid would mint 393,196 "
+                         "uncatalogued objects (2,858,393 store keys vs 2,465,197 catalogued). "
+                         "Cataloguing those is a D1-headroom decision, not a derive side effect.")
     ap.add_argument("--workers", type=int, default=24)
     ap.add_argument("--qualify-with-shard", action="store_true",
                     help="emit ids as <source>:<shard>:<series_key> — required for sources "
@@ -358,9 +364,25 @@ def main() -> int:
             t.start()
             threads.append(t)
 
+    catalogued = None
+    if a.only_catalogued:
+        import sqlite3
+        _con = sqlite3.connect(
+            f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True)
+        _con.execute("PRAGMA busy_timeout = 180000")
+        catalogued = {r[0] for r in _con.execute(
+            "select series_id from series where source_id=?", (a.source,))}
+        _con.close()
+        print(f"only-catalogued: {len(catalogued):,} id(s) eligible; store keys outside the "
+              f"catalogue are counted and skipped, not silently dropped", flush=True)
+
     seen = 0
+    uncat = 0
     for k, rows in _stream(con, paths, qualify=a.qualify_with_shard):
         seen += 1
+        if catalogued is not None and f"{a.source}:{k}" not in catalogued:
+            uncat += 1
+            continue
         key = csv_key(a.prefix, a.source, k)
         if key in existing:
             counts["skip"] += 1
@@ -376,6 +398,9 @@ def main() -> int:
         for _ in threads:
             q.put(STOP)
         q.join()
+    if uncat:
+        print(f"only-catalogued: SKIPPED {uncat:,} store series with no catalogue row "
+              f"(they are real data — cataloguing them is a separate decision)", flush=True)
     print(f"done: {seen:,} series streamed, put {counts['put']:,}, "
           f"skipped {counts['skip']:,}, errors {counts['err']:,}")
     return 1 if counts["err"] else 0
