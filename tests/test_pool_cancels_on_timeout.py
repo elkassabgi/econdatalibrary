@@ -83,3 +83,23 @@ def test_the_helper_still_joins_running_work():
     from updater.strategies.fetchers import _common
     src = inspect.getsource(_common.cancellable_pool)
     assert "shutdown(wait=True, cancel_futures=True)" in src
+
+
+def test_detect_change_runs_inside_the_unit_deadline():
+    """The second outage (run 31224822131, WITH the pool fix on board). owid entered at 23:23
+    and produced nothing until GitHub killed the step at 02:55 — 212 minutes inside
+    `strat.detect_change`, which sat 85 lines BEFORE the `_unit_deadline` block, so no cap
+    covered it. requests' timeout=180 is per-socket-op: a slow-drip response resets it on every
+    byte, making one GET effectively unbounded. The probe must sit under the same ceiling as the
+    fetch."""
+    import inspect
+    from updater import orchestrate as O
+    src = inspect.getsource(O.run_once)
+    i_detect = src.index("strat.detect_change(unit, us)")
+    # the nearest _unit_deadline entry BEFORE the call must exist (probe is wrapped)
+    head = src[:i_detect]
+    assert "_unit_deadline(" in head.rsplit("try:", 1)[-1] or            "_unit_deadline(" in head[-600:], (
+        "strat.detect_change is no longer wrapped in _unit_deadline — a hung vintage probe "
+        "eats the entire run again (212 minutes of owid, twice)")
+    assert "except UnitTimeout" in src[i_detect:i_detect + 900], (
+        "UnitTimeout from the probe is not booked as transient_fail at the detect call site")
