@@ -8580,6 +8580,37 @@ sources:
       fao_ql.crosswalk.json is documentation only, deliberately NOT applied (R91).
     key_env: none
     confidence: high
+- source_id: fao_ga
+  # #19 (2026-08-08): 7,712 of 15,018 ids (51.4%) auto-update from GCE with
+  # Source='FAO TIER 1' pinned; the 7,306-id tail = 4 element classes FAOSTAT
+  # DROPPED (per-crop CO2eq + implied EF) — no successor at any grain, frozen.
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_ga.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (15,018 series) with NO registry entry, never attempted.
+    FAOSTAT restructured the emissions suite; crop-residue series now live in GCE.
+    Template Element.Item.Area reproduces 51.4% exactly; the remainder decomposes to
+    exactly 4 dropped element classes (per-crop CO2eq 72312/72352/72372 and implied
+    emission factors 72292) that FAOSTAT no longer publishes at any grain — the
+    reproducing majority updates (restrict_to_published), the rest freezes.
+  cadence: annual
+  refresh_cost: medium
+  out_dir: fao_ga
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset GCE in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Emissions - Agriculture: Crop residues (served by GCE after the emissions-suite restructure)'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_ga.json — row_filters pins
+      Source='FAO TIER 1' (UNFCCC rows collide on 14,123 (key,year) points);
+      id_floor 0.48 documents the measured restructure gap.
+    key_env: none
+    confidence: high
 - source_id: fao_qp
   upstream_verified:
     latest_obs: '2023-01-01'
