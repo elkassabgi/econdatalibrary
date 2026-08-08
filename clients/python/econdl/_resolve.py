@@ -1665,8 +1665,28 @@ def _resolve_generic_long(series_id: str, root: str) -> Resolution:
             "it needs an explicit resolver, not the generic one.")
     path = files if len(files) > 1 else files[0]
     if src in _FLOW_GRAIN:
-        # One flow == every series whose key begins "<flow>:" (see _FLOW_GRAIN).
-        pred = pc.starts_with(ds.field(key_col), native + ":")
+        # One flow == every series whose key begins "<flow>:" (see _FLOW_GRAIN), PLUS the flow
+        # key standing alone.
+        #
+        # THE BARE KEY. When a PxWeb table's dimensions are all eliminated it holds exactly one
+        # series, and the ingester stores it under the table id with NO suffix —
+        # `...LAU04801.px` rather than `...LAU04801.px:<dims>`. `starts_with(native + ":")`
+        # cannot match that, so those catalogue ids resolved to ZERO rows while their data sat
+        # in the store: hagstofa's derive reported "7 unresolvable (store-coverage gaps)" and
+        # skipped them, run after run. The trailing ":" is still required on the prefix arm —
+        # it is what stops `AG_LND_DGRD` also matching `AG_LND_DGRD2` — so the bare case is
+        # added as an EXACT equality, which cannot reintroduce that collision.
+        #
+        # MEASURED ACROSS ALL ELEVEN _FLOW_GRAIN SOURCES BEFORE CHANGING IT, because this
+        # predicate serves every one of them: 1,860 bare-keyed rows across 7 catalogued ids,
+        # ALL in hagstofa. stat_latvia, stat_estonia, ssb, bfs, dst, statfin, stat_slovenia,
+        # scb, unsdg and cso have zero. The change is additive — it matches strictly more rows —
+        # and its entire effect is those 7 ids becoming reachable.
+        # `|` on Expressions, not pc.or_ — the latter is a kernel name pyarrow does not register
+        # for expression binding and raises ArrowKeyError("No function registered with name: or_")
+        # only when the dataset is actually scanned, i.e. at derive time rather than here.
+        pred = (pc.equal(ds.field(key_col), native)
+                | pc.starts_with(ds.field(key_col), native + ":"))
     else:
         pred = pc.equal(ds.field(key_col), native)
     return Resolution(series_id, src, path, key_col, pred)
