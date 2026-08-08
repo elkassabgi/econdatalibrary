@@ -66,6 +66,9 @@ def main() -> int:
                     help="comma list naming what each dot-segment of this source's "
                          "ids means, e.g. 'element,area,item' (from the proven "
                          "template; fao_ql=item,area,element fao_ic=element,area,item)")
+    ap.add_argument("--row-filter", default=None,
+                    help="'Column=value' rows-must-match filter, e.g. 'Source=FAO TIER 1' "
+                         "(GCE/GLE/GF ship two methodologies whose (key,year) points collide)")
     ap.add_argument("--emit")
     a = ap.parse_args()
 
@@ -86,11 +89,18 @@ def main() -> int:
     assert sorted(order) == ["area", "element", "item"], order
     area_pos = order.index("area")
 
+    rf = None
+    if a.row_filter:
+        rc, rv = a.row_filter.split("=", 1)
+        rf = (rc, rv)
+
     # bulk: key (in this source's segment order) -> {year: value}; code->name maps
     bulk = collections.defaultdict(dict)
     elem_names, item_names = {}, {}
     with z.open(name) as f:
         for row in csv.DictReader(io.TextIOWrapper(f, "utf-8-sig")):
+            if rf and (row.get(rf[0]) or "").strip() != rf[1]:
+                continue
             elem_names.setdefault(row["Element Code"], row["Element"])
             item_names.setdefault(row["Item Code"], row["Item"])
             try:

@@ -8781,6 +8781,36 @@ sources:
       no Source dimension in GN.
     key_env: none
     confidence: high
+- source_id: fao_gf
+  # #19 (2026-08-08): 819 of 2,591 ids (31.6%) auto-update from GF (796 raw + 23
+  # value-verified re-keys). The frozen tail is a METHODOLOGY break — FAOSTAT
+  # recalculated forest carbon; old values match no current key (measured).
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_gf.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (2,591 series) with NO registry entry, never attempted.
+    The GF domain exists but was heavily REVISED: only 819 ids carry forward (796
+    raw + 23 re-keyed after value verification: Forest land->Forestland item
+    re-code, CO2eq->CO2 net element re-code). The rest are a prior-methodology
+    vintage whose values match no current key — frozen rather than spliced.
+    Source='FAO TIER 1' pinned (all UNFCCC rows collide).
+  cadence: annual
+  refresh_cost: small
+  out_dir: fao_gf
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset GF in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Emissions - Forest Land (own domain; methodology recalculated upstream)'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_gf.json — id_floor 0.29;
+      re-key audit in fao_gf.crosswalk.json + rekey_fao_gf_old_ids.txt.
+    key_env: none
+    confidence: high
 - source_id: fao_qp
   upstream_verified:
     latest_obs: '2023-01-01'

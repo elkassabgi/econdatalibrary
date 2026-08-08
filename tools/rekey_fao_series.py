@@ -50,7 +50,12 @@ def main() -> int:
     ap.add_argument("--order", required=True,
                     help="what each dot-segment means, e.g. element,area,item")
     ap.add_argument("--allow", required=True,
-                    help="comma list of old=new ELEMENT pairs, e.g. 6109=6224,6183=6225")
+                    help="comma list of old=new ELEMENT pairs, e.g. 6109=6224,6183=6225; "
+                         "'same' entries allow an unchanged element")
+    ap.add_argument("--allow-items", default="",
+                    help="comma list of old=new ITEM pairs explicitly permitted to "
+                         "change (e.g. 6646=6751 for GF's Forest land->Forestland "
+                         "re-code); items not listed must be unchanged")
     ap.add_argument("--title-sub", action="append", default=[],
                     help="old=new substring substitution applied to titles (repeatable)")
     ap.add_argument("--dry-run", action="store_true")
@@ -59,7 +64,15 @@ def main() -> int:
     order = [w.strip() for w in a.order.split(",")]
     assert sorted(order) == ["area", "element", "item"], order
     ep, ip, arp = order.index("element"), order.index("item"), order.index("area")
-    allow = dict(p.split("=") for p in a.allow.split(","))
+    allow_same = False
+    allow = {}
+    for tok in a.allow.split(","):
+        if tok.strip() == "same":
+            allow_same = True
+        else:
+            k, v = tok.split("=")
+            allow[k] = v
+    allow_items = dict(p.split("=") for p in a.allow_items.split(",")) if a.allow_items else {}
     subs = [t.split("=", 1) for t in a.title_sub]
 
     cw = json.load(open(a.crosswalk, encoding="utf-8"))
@@ -80,10 +93,14 @@ def main() -> int:
     accepted, refused = {}, collections.Counter()
     for old, new in raw.items():
         op, np_ = old.split("."), new.split(".")
-        if op[ip] != np_[ip] or op[arp] != np_[arp]:
-            refused["item_or_area_changed"] += 1
+        if op[arp] != np_[arp]:
+            refused["area_changed"] += 1
             continue
-        if allow.get(op[ep]) != np_[ep]:
+        if op[ip] != np_[ip] and allow_items.get(op[ip]) != np_[ip]:
+            refused["item_pair_not_allowed"] += 1
+            continue
+        el_ok = (op[ep] == np_[ep] and allow_same) or allow.get(op[ep]) == np_[ep]
+        if not el_ok:
             refused["element_pair_not_allowed"] += 1
             continue
         tgt = f"{a.source}:{prefix}:{new}"
@@ -91,9 +108,16 @@ def main() -> int:
             refused["target_id_already_exists"] += 1
             continue
         accepted[old] = new
-    if len(set(accepted.values())) != len(accepted):
-        print("REFUSING: mapping is not a bijection on targets")
-        return 2
+    by_target = collections.defaultdict(list)
+    for o, n in accepted.items():
+        by_target[n].append(o)
+    for n, olds in by_target.items():
+        if len(olds) > 1:
+            # two old series claim one successor — at most one can be right;
+            # refuse ALL claimants rather than guess (they stay frozen).
+            for o in olds:
+                del accepted[o]
+            refused["ambiguous_shared_target"] += len(olds)
     print(f"{a.source}: {len(raw):,} crosswalk entries -> {len(accepted):,} accepted, "
           f"refused {dict(refused)}")
     if not accepted:
