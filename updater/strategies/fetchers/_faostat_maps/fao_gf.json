@@ -1,0 +1,24 @@
+{
+ "code": "GF",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 31.6,
+  "note_pct": "30.7% raw + 23 re-keyed ids (2026-08-08 restructure apply)",
+  "published_ids": 2591,
+  "upstream_series": 1680,
+  "upstream_updated": "2025-11-20"
+ },
+ "id_floor": 0.29,
+ "key_columns": [
+  "Element Code",
+  "Item Code",
+  "Area Code"
+ ],
+ "key_prefix": "FAO_GF",
+ "note": "Forest-land emissions, own domain GF (heavily REVISED upstream). 819 ids (31.6%) reproduce (796 raw + 23 value-verified re-keys: item 6646->6751 Forest land->Forestland, element 72172->72332 CO2eq->CO2 net). The large frozen tail is NOT a key problem: FAOSTAT recalculated forest-carbon accounting, so most old series' VALUES no longer match any current key (measured - only 36/1,795 candidates value-verified; crosswalk in fao_gf.crosswalk.json). Old series are a prior methodology vintage; splicing would mix methodologies. Implied-EF elements (71952) also dropped. row_filters pins Source='FAO TIER 1' (all 7,967 UNFCCC rows collide with TIER 1).",
+ "restrict_to_published": true,
+ "row_filters": {
+  "Source": "FAO TIER 1"
+ },
+ "source_id": "fao_gf"
+}
