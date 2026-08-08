@@ -213,7 +213,12 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   environmentalgoodsrca, goodsandservtradeopennessbpm6, oceanservices,
 #   biotrademerchmarketindices, merchantfleet, ictuseenterprsize) —
 #   61,632 series. -> 238
-EXPECTED_SOURCE_COUNT = 238
+# 2026-08-08: +11 wave-6 successors (gdpcomponent, ictuseeconactivity[+isic4],
+#   tradefoodproccat pair, popagestruct, fleetbeneficialowners,
+#   environmentalgoodstrade, digitallydeliverableservices, lsbci,
+#   exchangeratecrosstab) — 261,961 series; the mechanical band is fully
+#   ingested. -> 249
+EXPECTED_SOURCE_COUNT = 249
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
