@@ -1,0 +1,23 @@
+{
+ "code": "GCE",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 59.6,
+  "published_ids": 2491,
+  "upstream_series": 13496,
+  "upstream_updated": "2025-11-20"
+ },
+ "id_floor": 0.55,
+ "key_columns": [
+  "Area Code",
+  "Item Code",
+  "Element Code"
+ ],
+ "key_prefix": "FAO_GY",
+ "note": "Synthetic-fertilizers emissions/use, served by GCE (elements 5162/516201/516202 etc. live there, NOT in RFN - measured, RFN scored 0.0%). 1,485 ids (59.6%) reproduce and auto-update. Tail: dropped CO2eq/implied-EF classes (same family as fao_ga, R403 GWP-basis class). row_filters pins Source='FAO TIER 1' (14,123 colliding UNFCCC points in GCE).",
+ "restrict_to_published": true,
+ "row_filters": {
+  "Source": "FAO TIER 1"
+ },
+ "source_id": "fao_gy"
+}

@@ -1,0 +1,19 @@
+{
+ "code": "RP",
+ "date_convention": "start",
+ "derived_from": {
+  "id_reproduction_pct": 98.7,
+  "published_ids": 519,
+  "upstream_series": 4775,
+  "upstream_updated": "2025-11-20"
+ },
+ "key_columns": [
+  "Item Code",
+  "Element Code",
+  "Area Code"
+ ],
+ "key_prefix": "FAO_EP",
+ "note": "Pesticides per-area/per-capita indicators, served by RP (which absorbed the old EP indicator set). CLEAN repair: 98.7% of ids reproduce; restrict_to_published keeps the RP superset out (fao_rp serves it).",
+ "restrict_to_published": true,
+ "source_id": "fao_ep"
+}
