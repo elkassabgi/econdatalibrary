@@ -242,7 +242,9 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   (TIER 1 pinned, 9.5x superset restricted); 2 dropped element classes frozen. -> 263
 # 2026-08-08: +fao_rp — #19 source 4: 4,504 of 5,440 ids auto-update from RP (own
 #   live domain); dropped seed-treatment/mineral-oil items frozen. -> 264
-EXPECTED_SOURCE_COUNT = 264
+# 2026-08-08: +fao_ic — #19 source 5, FIRST RE-KEY: 403 series moved to Standard-LC
+#   codes (value-verified); 1,506 of 2,468 ids auto-update from IC. -> 265
+EXPECTED_SOURCE_COUNT = 265
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

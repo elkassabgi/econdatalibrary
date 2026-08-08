@@ -62,6 +62,10 @@ def main() -> int:
     ap.add_argument("--source", required=True)
     ap.add_argument("--code", required=True, help="FAOSTAT DatasetCode, e.g. QCL")
     ap.add_argument("--floor", type=float, default=0.90)
+    ap.add_argument("--order", default="item,area,element",
+                    help="comma list naming what each dot-segment of this source's "
+                         "ids means, e.g. 'element,area,item' (from the proven "
+                         "template; fao_ql=item,area,element fao_ic=element,area,item)")
     ap.add_argument("--emit")
     a = ap.parse_args()
 
@@ -77,20 +81,25 @@ def main() -> int:
     z = zipfile.ZipFile(io.BytesIO(_get(entry["FileLocation"])))
     name = next(n for n in z.namelist() if "All_Data" in n)
 
-    # bulk: key -> {year: value}; plus code->name maps
+    order = [w.strip() for w in a.order.split(",")]
+    COL = {"item": "Item Code", "area": "Area Code", "element": "Element Code"}
+    assert sorted(order) == ["area", "element", "item"], order
+    area_pos = order.index("area")
+
+    # bulk: key (in this source's segment order) -> {year: value}; code->name maps
     bulk = collections.defaultdict(dict)
     elem_names, item_names = {}, {}
     with z.open(name) as f:
         for row in csv.DictReader(io.TextIOWrapper(f, "utf-8-sig")):
-            i, ar, el = row["Item Code"], row["Area Code"], row["Element Code"]
-            elem_names.setdefault(el, row["Element"])
-            item_names.setdefault(i, row["Item"])
+            elem_names.setdefault(row["Element Code"], row["Element"])
+            item_names.setdefault(row["Item Code"], row["Item"])
             try:
                 v = float(row["Value"])
             except (TypeError, ValueError):
                 continue
-            bulk[f"{i}.{ar}.{el}"][row["Year"]] = v
-    print(f"bulk {a.code}: {len(bulk):,} keys")
+            key = ".".join(row[COL[w]] for w in order)
+            bulk[key][row["Year"]] = v
+    print(f"bulk {a.code}: {len(bulk):,} keys (order {a.order})")
 
     miss = sorted(k for k in ours if k not in bulk)
     print(f"missing ids: {len(miss):,}")
@@ -115,12 +124,11 @@ def main() -> int:
     # index bulk keys by (area) for candidate generation
     by_area = collections.defaultdict(list)
     for k in bulk:
-        i, ar, el = k.split(".")
-        by_area[ar].append(k)
+        by_area[k.split(".")[area_pos]].append(k)
 
     xwalk, report = {}, collections.Counter()
     for old in miss:
-        oi, oar, oel = old.split(".")
+        oar = old.split(".")[area_pos]
         obs = store.get(old)
         if not obs:
             report["no_store_values"] += 1
@@ -145,10 +153,10 @@ def main() -> int:
     print("\nRESULT:", dict(report))
     # consistency: do the mappings form a coherent code-level story?
     pair_counts = collections.Counter()
+    ip, ep = order.index("item"), order.index("element")
     for old, new in xwalk.items():
-        oi, _, oel = old.split(".")
-        ni, _, nel = new.split(".")
-        pair_counts[((oi, oel), (ni, nel))] += 1
+        op, np_ = old.split("."), new.split(".")
+        pair_counts[((op[ip], op[ep]), (np_[ip], np_[ep]))] += 1
     print("\ntop (item,element) -> (item,element) mappings:")
     for (o, n), c in pair_counts.most_common(15):
         print(f"  {o} -> {n}  x{c}   "
