@@ -8811,6 +8811,37 @@ sources:
       re-key audit in fao_gf.crosswalk.json + rekey_fao_gf_old_ids.txt.
     key_env: none
     confidence: high
+- source_id: fao_gt
+  # #19 (2026-08-08): 2,858 of 10,506 native-gas ids (27.2%) auto-update from GT.
+  # The planned AR5 re-key was REFUTED by value verification — keys map 1:1 but
+  # the CO2eq GWP basis changed; old CO2eq series are a prior-GWP vintage, frozen.
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_gt.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (10,506 series) with NO registry entry, never
+    attempted. Template Item.Area.Element reproduces 27.2% — exactly the
+    native-gas (CH4/N2O) series, which have no GWP dependence and continue
+    cleanly. The R180 AR5 element crosswalk reproduces 79% of KEYS but only
+    7 of 7,650 candidates value-verify: FAOSTAT moved the CO2eq basis to AR5
+    GWP factors, so old CO2eq series are a different-basis vintage — frozen
+    rather than mislabeled. Source='FAO TIER 1' pinned.
+  cadence: annual
+  refresh_cost: medium
+  out_dir: fao_gt
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset GT in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Emissions Totals (served by GT; CO2eq tail frozen on the GWP-basis break)'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_gt.json — id_floor 0.25;
+      refuted-re-key evidence in fao_gt.crosswalk.json (7 mapped / 7,292 refused).
+    key_env: none
+    confidence: high
 - source_id: fao_qp
   upstream_verified:
     latest_obs: '2023-01-01'
