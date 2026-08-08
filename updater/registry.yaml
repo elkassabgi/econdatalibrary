@@ -5027,6 +5027,32 @@ sources:
     rate_note: One Facts POST (single measure group), ~2s. 4-try backoff on 429/5xx.
     key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY (shared with the family)
     confidence: high
+- source_id: unctad_trademerchbalance
+  # UNCTAD successor #3 (2026-08-08, #70). Annual isTime axis, two measure groups
+  # (M5015 balance share, M0100 US$). SERVED same day: 610 series / 40,858 obs.
+  # Shared machinery _unctad.py; parse/key logic solely in jobs/ingest_unctad_ds.py.
+  live: true
+  scripts:
+  - jobs/ingest_unctad_ds.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    Same publisher-stamped version+lastUpdated vintage as its siblings; a moved token
+    re-pulls the full Facts snapshot (~41k cells) and merges never-shrink.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: unctad_trademerchbalance
+  review: true
+  adapter:
+    vintage_signal: >-
+      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchBalance/en
+      (keyless) -> f"{version}|{lastUpdated}".
+    since_param: n/a (whole-snapshot re-pull on vintage move, merged never-shrink)
+    out_paths_note: 'Single file data/clean_full/unctad_trademerchbalance/unctad_trademerchbalance.parquet;
+      series_key = <EconomyCode>.<FlowCode>.M<measure>, obs_date annual Dec-31.'
+    rate_note: Two Facts POSTs (one per measure group), ~2s each. 4-try backoff on 429/5xx.
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY (shared with the family)
+    confidence: high
 - source_id: unhcr
   live: true
   scripts:
