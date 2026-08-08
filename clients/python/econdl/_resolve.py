@@ -1654,6 +1654,12 @@ _GENERIC_SKIP = ("__series.parquet",)
 _FLOW_GRAIN = {"stat_latvia", "stat_estonia", "ssb", "bfs", "dst",
                "statfin", "hagstofa", "stat_slovenia", "scb", "unsdg", "cso"}
 
+# UNCTAD sources served at DOT-prefix table grain (catalog id = first two dot-segments
+# of the native key; see the predicate branch below). Measured 2026-08-08: 247 + 562 +
+# 544 tables covering 376,909 + 101,079 + 144,552 series respectively.
+_DOT_TABLE_GRAIN = {"unctad_intratrade", "unctad_tradeservcattotal",
+                    "unctad_biotrademerchshare"}
+
 
 def _resolve_generic_long(series_id: str, root: str) -> Resolution:
     """Generic resolver for any UNIFORM-LONG source: catalog id is exactly
@@ -1724,6 +1730,15 @@ def _resolve_generic_long(series_id: str, root: str) -> Resolution:
         # only when the dataset is actually scanned, i.e. at derive time rather than here.
         pred = (pc.equal(ds.field(key_col), native)
                 | pc.starts_with(ds.field(key_col), native + ":"))
+    elif src in _DOT_TABLE_GRAIN:
+        # UNCTAD gate-case sources served at DOT-prefix TABLE grain (2026-08-08, #70):
+        # catalog id = the first two dot-segments of the native key (e.g.
+        # 'unctad_intratrade:0000.1' serves every '0000.1.<flow>.<partner>.M<m>' series —
+        # 247/562/544 tables for 622,540 series, measured). Same exact|prefix union as
+        # the eia table resolver; the trailing '.' stops '0000.1' also matching
+        # '0000.10...'. `|` on Expressions, never pc.or_ (ArrowKeyError at scan time).
+        pred = (pc.equal(ds.field(key_col), native)
+                | pc.starts_with(ds.field(key_col), native + "."))
     else:
         pred = pc.equal(ds.field(key_col), native)
     return Resolution(series_id, src, path, key_col, pred)

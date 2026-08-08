@@ -6419,6 +6419,60 @@ sources:
     rate_note: family contract (see banner)
     key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
     confidence: high
+- source_id: unctad_intratrade
+  # 11,571,843 obs / 376,909 series (intra/extra-trade by partner group). DOT-prefix TABLE grain: 247 catalog ids.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies on the re-pull.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_intratrade
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.IntraTrade/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
+    out_paths_note: single parquet; CATALOG grain = first two dot-segments of series_key (_DOT_TABLE_GRAIN)
+    rate_note: chunked Facts POSTs (62,500-cell cap; IntraTrade measured 31 years x economy-halves)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_tradeservcattotal
+  # 1,695,966 obs / 101,079 series (services trade by category). DOT-prefix TABLE grain: 562 catalog ids.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies on the re-pull.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_tradeservcattotal
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.TradeServCatTotal/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
+    out_paths_note: single parquet; CATALOG grain = first two dot-segments of series_key (_DOT_TABLE_GRAIN)
+    rate_note: chunked Facts POSTs (62,500-cell cap; IntraTrade measured 31 years x economy-halves)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
+- source_id: unctad_biotrademerchshare
+  # 1,705,660 obs / 144,552 series (biotrade merchandise shares). DOT-prefix TABLE grain: 544 catalog ids.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies on the re-pull.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_biotrademerchshare
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.BiotradeMerchShare/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
+    out_paths_note: single parquet; CATALOG grain = first two dot-segments of series_key (_DOT_TABLE_GRAIN)
+    rate_note: chunked Facts POSTs (62,500-cell cap; IntraTrade measured 31 years x economy-halves)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
 - source_id: unhcr
   live: true
   scripts:

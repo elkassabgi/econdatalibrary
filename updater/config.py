@@ -218,7 +218,11 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   environmentalgoodstrade, digitallydeliverableservices, lsbci,
 #   exchangeratecrosstab) — 261,961 series; the mechanical band is fully
 #   ingested. -> 249
-EXPECTED_SOURCE_COUNT = 249
+# 2026-08-08: +3 gate cases at DOT-prefix TABLE grain (intratrade 247 ids /
+#   376,909 series; tradeservcattotal 562 / 101,079; biotrademerchshare 544 /
+#   144,552 — 1,353 D1 rows for 622,540 series, so no headroom conflict with
+#   the eia->wid order). -> 252
+EXPECTED_SOURCE_COUNT = 252
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
