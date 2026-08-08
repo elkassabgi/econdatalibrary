@@ -206,10 +206,16 @@ def run(source_id: str) -> Result:
                   f"restrict_to_published; otherwise confirm the growth is real.",
                   flush=True)
         hit = len(built & known) / len(known)
-        if hit < ID_FLOOR:
+        # A source whose gap is a MEASURED upstream restructure (not a wrong
+        # template) may carry its own floor in the map JSON, with the
+        # decomposition documented there (fao_ql: 84.3%, gap = 4 re-coded
+        # elements + 2 re-coded items, value-verified — #19/R91). A wrong
+        # template still scores near zero and is refused either way.
+        floor = float(cfg.get("id_floor", ID_FLOOR))
+        if hit < floor:
             print(f"[faostat] FAIL {source_id}: rebuilt keys match only "
                   f"{100 * hit:.1f}% of the {len(known):,} published ids "
-                  f"(floor {100 * ID_FLOOR:.0f}%). The key template is wrong or "
+                  f"(floor {100 * floor:.0f}%). The key template is wrong or "
                   f"FAOSTAT restructured — merging would MINT NEW IDS beside the "
                   f"live ones and leave every published series frozen. Refusing.",
                   flush=True)

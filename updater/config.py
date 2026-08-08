@@ -232,7 +232,11 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   (1,615 ids / 1,177,515 series). -> 258
 # 2026-08-08: +unctad_ictgoods — GIANT #2 at depth-3 dot-grain (4,608 ids /
 #   1,374,779 series). -> 259
-EXPECTED_SOURCE_COUNT = 259
+# 2026-08-08: +unctad_gstptradematrix — GIANT #3 at depth-2 dot-grain (18,714 ids /
+#   4,378,337 series). -> 260
+# 2026-08-08: +fao_ql — #19 fao campaign source 1: 16,997 of 20,179 ids auto-update
+#   via QCL restrict_to_published; 3,182 restructured-tail ids stay frozen (R91). -> 261
+EXPECTED_SOURCE_COUNT = 261
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

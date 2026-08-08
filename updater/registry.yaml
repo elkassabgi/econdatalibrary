@@ -6601,6 +6601,25 @@ sources:
     rate_note: family contract; chunked POSTs
     key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
     confidence: high
+- source_id: unctad_gstptradematrix
+  # GIANT #3 (2026-08-08, #70): 76,643,660 obs / 4,378,337 series; depth-2 DOT-prefix
+  # table grain (18,714 catalog ids).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_gstptradematrix
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.GSTP_TradeMatrix/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
+    out_paths_note: single parquet; CATALOG grain = first two dot-segments (_DOT_TABLE_GRAIN)
+    rate_note: family contract; chunked POSTs
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
 - source_id: unhcr
   live: true
   scripts:
@@ -8526,6 +8545,39 @@ sources:
       scored on exact id reproduction; key_prefix read from our published ids, NOT
       from the dataset code, because this source is served by a dataset it was
       merged into.
+    key_env: none
+    confidence: high
+- source_id: fao_ql
+  # #19 (2026-08-08): largest frozen fao_* source promoted — 16,997 of 20,179 ids
+  # (84.3%) reproduce exactly from QCL and now auto-update; the 3,182-id tail is the
+  # QCL-merge restructure whose successors fao_qcl already serves (frozen here, R91).
+  live: true
+  scripts:
+  - updater/strategies/fetchers/fao_ql.py
+  strategy: overwrite_if_changed
+  strategy_reason: >-
+    Served and downloadable (20,179 series) with NO registry entry, never attempted.
+    FAOSTAT merged Livestock Primary into QCL; template Item.Area.Element reproduces
+    84.3% of published ids exactly. The 15.7% remainder is a genuine upstream
+    restructure (re-coded Yield elements + egg items with new units), value-verified
+    against every same-area QCL candidate — successors are already live under
+    fao_qcl, so this source updates its own reproducing ids only
+    (restrict_to_published) and freezes the rest as historical.
+  cadence: annual
+  refresh_cost: large
+  out_dir: fao_ql
+  review: true
+  adapter:
+    vintage_signal: >-
+      DateUpdate + FileSize for dataset QCL in
+      https://bulks-faostat.fao.org/production/datasets_E.json — FAO's OWN release
+      field, not a relay hash (ledger R73).
+    name: 'Production: Livestock Primary (served by QCL after upstream consolidation)'
+    code_map: >-
+      updater/strategies/fetchers/_faostat_maps/fao_ql.json — template scored on
+      exact id reproduction (84.3%, decomposed: the gap is 4 re-coded elements +
+      2 re-coded items, not a wrong ordering); successor crosswalk in
+      fao_ql.crosswalk.json is documentation only, deliberately NOT applied (R91).
     key_env: none
     confidence: high
 - source_id: fao_qp
