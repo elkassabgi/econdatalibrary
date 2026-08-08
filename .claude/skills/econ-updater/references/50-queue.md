@@ -1415,3 +1415,28 @@ reporting success while blind:
 The common shape: an instrument that cannot tell *I did not look* from *it is fine*. Every one
 of them passed while blind, and three of the four announced their own blindness in text nobody
 read.
+
+
+### FIRST COMPLETE fleet served-vs-store baseline — 54 passes, 2,137 objects, 4 stale sources
+
+The fixed rotation (R393) made a full alphabet sweep possible for the first time. Two complete
+circuits on 2026-08-07/08: **54 passes, 2,137 served objects byte-compared against the store,
+across every catalogued source with a local mirror.** Four sources came back stale, every one
+explained and repaired or in repair:
+
+  eia               4/7  — mirror had lagged the store; re-derived, now 7/7 identical, SERVED
+  unctad_ciocgeaia  8/8  — served period-START dates where the store held period-END;
+                           re-derived, now 8/8 identical
+  usda              1/8  — the known ~20%% staleness (#124); the byte-exact bulk rewrite of all
+                           69,704 tables is running (verify gates 30/30 + 20/20 passed)
+  wid               8/8  — NOT what it looked like: the resolver read the superseded monolith
+                           beside the shards and double-counted (R384's collision). With the
+                           monolith excluded from both readers the real signal appeared — the
+                           served objects are behind the shards' 2025 revisions on ~half of
+                           2.4M series — and the --only-catalogued bulk rewrite is running
+                           (verify 40/40 + 120/120 byte-identical, 393,196 uncatalogued store
+                           keys skipped and counted; cataloguing them is Ahmed's D1-headroom
+                           call).
+
+Everything else — roughly 135 sources — served exactly what the store holds. This is the
+baseline the daily CI probe now advances from, five sources per run, bookmark persisting.
