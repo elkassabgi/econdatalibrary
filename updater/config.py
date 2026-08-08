@@ -258,7 +258,9 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   (52.4% GCE) — #19 sources 10-12. -> 273
 # 2026-08-08: +unctad_creativegoodsgr — GIANT #5 at depth-2 dot-grain (3,986 ids /
 #   3,597,379 series; Period-axis spans). -> 274
-EXPECTED_SOURCE_COUNT = 274
+# 2026-08-08: +unctad_oceantrade — GIANT #6 at depth-3 dot-grain (32,374 ids /
+#   8,984,193 series — the family's largest). -> 275
+EXPECTED_SOURCE_COUNT = 275
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))
