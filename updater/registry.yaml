@@ -6677,6 +6677,25 @@ sources:
     rate_note: family contract; chunked POSTs
     key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
     confidence: high
+- source_id: unctad_nonplasticsubststradebypartner
+  # GIANT #7 (2026-08-08, #70): 100,233,168 obs / 9,298,529 series — the family's
+  # largest; depth-2 DOT-prefix table grain (22,079 catalog ids).
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_nonplasticsubststradebypartner
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.NonPlasticSubstsTradeByPartner/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
+    out_paths_note: single parquet; CATALOG grain = first two dot-segments (_DOT_TABLE_GRAIN)
+    rate_note: family contract; chunked POSTs recursing across every key dim (one Economy x one Year still caps)
+    key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
+    confidence: high
 - source_id: unhcr
   live: true
   scripts:
