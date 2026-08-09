@@ -95,8 +95,11 @@ def run(flow: str, agency: str, source_id: str) -> Result:
         # class of lie as a relay-derived "no change". Half is loose enough to
         # survive legitimate revisions and withdrawals, tight enough that a
         # collapse becomes a loud structural failure instead of a quiet success.
+        # resume_token = the flow version, so a sliced pull interrupted by the unit
+        # deadline resumes from the slices it already finished instead of restarting,
+        # and slices from a superseded release are discarded rather than mixed in.
         n = ing.pull(flow, agency, source_id, out_path=stage,
-                     min_obs=before // 2)
+                     min_obs=before // 2, resume_token=ver)
     except urllib.error.HTTPError as e:
         if e.code in (400, 404):
             # Flow id or agency moved. STRUCTURAL — existing rows are kept and the
