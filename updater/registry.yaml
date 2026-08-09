@@ -6658,6 +6658,23 @@ sources:
     rate_note: family contract; chunked POSTs
     key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
     confidence: high
+- source_id: unctad_criticalmineralstradebypart
+  # GIANT #8 (2026-08-09, #70): 109,956,508 obs / 8,589,597 series; depth-2 DOT-prefix
+  # table grain (16,103 catalog ids). Measured over the full store: depth-1 = 64 prefixes
+  # at p50 1,463,126 rows (unusable), depth-3 = 29,459 at p50 2,187 — nearly double the
+  # ids for a SMALLER median table, and D1 rows are the scarce resource at 93.3%.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_criticalmineralstradebypart
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.CriticalMinerals_TradeByPart/en -> version|lastUpdated
+    since_param: n/a (whole-snapshot chunked re-pull on vintage move)
 - source_id: unctad_oceantrade
   # GIANT #6 (2026-08-08, #70): 82,384,490 obs / 8,984,193 series; depth-3 DOT-prefix
   # table grain (32,374 catalog ids — depth-2 p50 is 112,733 rows, no collapse).
