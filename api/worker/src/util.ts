@@ -352,6 +352,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "unctad_ecommerceinternational", "unctad_plasticstradebypartner", "unctad_ictgoods",
   "unctad_gstptradematrix", "unctad_creativegoodsvalue",
   "unctad_creativegoodsgr", "unctad_oceantrade",
+  "unctad_nonplasticsubststradebypartner",
   "unctad_wstbtocabgoea", "undp_hdr", "unesco_clte", "unesco_cltt", "unesco_dem", "unesco_film",
   // unesco_natmon + unesco_sdg added 2026-07-29: 199,661 series / 2,610,984 obs that
   // were on disk and hosted NOWHERE — no catalog rows, no R2 objects, no registry unit.
