@@ -1431,6 +1431,8 @@ sources:
   # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
   # Routed to the workstation per the owner's standing rule: a database the cloud
   # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
+  live: true   # promoted 2026-08-09: fetcher present, licence CONFIRMED cleared,
+                # current_vintage('_all') -> 'eia:29:88013ae02e284de2' (29/29 datasets)
   run_location: local
   scripts:
   - jobs/ingest_eia.py
