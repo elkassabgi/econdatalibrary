@@ -1,7 +1,7 @@
-"""One-shot: catalogue unctad_nonplasticsubststradebypartner at depth-2 dot grain (giant #7).
+"""One-shot: catalogue unctad_criticalmineralstradebypart at depth-2 dot grain (giant #8).
 
-100,233,168 obs / 9,298,529 series; measured grain: depth1=84 tables (p50 1,091,315),
-depth2=22,079 (p50 2,676), depth3=2,892,210 (p50 29) -> depth-2 is the collapse point.
+109,956,508 obs / 8,589,597 series; measured grain: depth1=64 (p50 1,463,126),
+depth2=16,103 (p50 3,460), depth3=29,459 (p50 2,187) -> depth-2 is the collapse point.
 """
 import collections
 import os
@@ -12,7 +12,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = "unctad_nonplasticsubststradebypartner"
+SRC = "unctad_criticalmineralstradebypart"
 
 con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=7200)
 con.execute("PRAGMA busy_timeout=7200000")  # local heavy runs hold long write txns (R400)
@@ -21,7 +21,7 @@ con.execute(
     "VALUES (?,?,?,?,?,?)",
     (SRC,
      "United Nations Conference on Trade and Development (UNCTAD) - UNCTAD Data Hub (UNCTADstat)",
-     "https://unctadstat.unctad.org/datacentre/dataviewer/US.NonPlasticSubstsTradeByPartner",
+     "https://unctadstat.unctad.org/datacentre/dataviewer/US.CriticalMinerals_TradeByPart",
      "cc-by-3.0-igo",
      "Source: United Nations Trade and Development Data Hub (UNCTADstat)",
      "https://unctadstat.unctad.org/EN/FAQ.html"))
