@@ -64,6 +64,54 @@ def _record_etag(etag: str) -> None:
         f.write(etag)
 
 
+def _live_pids() -> set[int]:
+    """PIDs currently running, or an empty set if we cannot enumerate them."""
+    import subprocess
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
+                                 capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace", timeout=30).stdout
+            return {int(p[1].strip('"')) for p in
+                    (ln.split(",") for ln in out.splitlines() if "," in ln)
+                    if p[1].strip('"').isdigit()}
+        out = subprocess.run(["ps", "-e", "-o", "pid="], capture_output=True,
+                             text=True, timeout=30).stdout
+        return {int(t) for t in out.split() if t.isdigit()}
+    except Exception:                                        # noqa: BLE001
+        return set()
+
+
+def _state_db_holders() -> list[str]:
+    """Name the likely holders of state.db: leases whose owner PID is still alive.
+
+    A lease is `orch-<pid>`; one that is past its expiry while its owner still
+    runs is a runaway, and a runaway is what blocks the replace (R406).
+    """
+    lines: list[str] = []
+    try:
+        con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=10)
+        rows = list(con.execute("select key, owner, expires_utc from leases"))
+        con.close()
+    except Exception as e:                                   # noqa: BLE001
+        return [f"(could not read leases: {str(e)[:80]})"]
+    live = _live_pids()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    for key, owner, expires in rows:
+        pid = None
+        if isinstance(owner, str) and owner.startswith("orch-"):
+            tail = owner[5:]
+            pid = int(tail) if tail.isdigit() else None
+        if pid is not None and pid in live:
+            state = "EXPIRED but owner ALIVE - RUNAWAY" if (
+                expires or "") < now else "held, not yet expired"
+            lines.append(f"pid {pid} holds lease {key} (expires {expires}) - {state}")
+    if not lines:
+        lines.append("no live lease owner found; check for any other process with "
+                     "state.db open (orphaned `updater.run`, a reader tool, a shell)")
+    return lines
+
+
 def pull_state() -> int:
     """Download R2 state.db.zst -> data/_aqueduct/state.db; record the ETag."""
     zstandard = _zstd()
@@ -93,7 +141,22 @@ def pull_state() -> int:
     try:
         with open(tmp, "wb") as f:
             f.write(raw)
-        os.replace(tmp, config.STATE_DB)  # atomic publish of the local copy
+        try:
+            os.replace(tmp, config.STATE_DB)  # atomic publish of the local copy
+        except PermissionError:
+            # Windows only: SQLite opens without FILE_SHARE_DELETE, so ANY live
+            # connection to state.db makes the replace fail. R406 - two orphaned
+            # manual updater.run processes held it for 30 h and every local-heavy
+            # launch aborted here, silently skipping all 18 heavy sources. A bare
+            # traceback hid that in a 5-minute retry loop, so name the holder.
+            print(f"[pull-state] ERROR: cannot replace {config.STATE_DB} - another "
+                  f"process holds it open.", file=sys.stderr)
+            for line in _state_db_holders():
+                print(f"[pull-state]   {line}", file=sys.stderr)
+            print("[pull-state] End those processes (an expired lease whose owner is "
+                  "still running is a runaway) and re-run --pull-state.",
+                  file=sys.stderr)
+            return 1
     finally:
         if os.path.exists(tmp):
             try:
