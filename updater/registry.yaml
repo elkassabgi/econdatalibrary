@@ -777,6 +777,10 @@ sources:
   # tools/measure_merge_peak.py: 13.0 GB peak, which fits a 16 GB runner. 242,914,764
   # rows but only 2.8 GB decoded - its columns are NUMERIC, and rows predict nothing.
   # 1.5 GB of headroom is too thin to share, so it runs in the heavy matrix.
+  live: true   # promoted 2026-08-09: fetcher present with a MEASURED vintage,
+                # current_vintage('_all') -> 'cepii_baci:4915c90e0a7efbc6'.
+                # Scheduling also fixes the staleness the fetcher header records:
+                # ingest hardcodes V202401b while CEPII now publishes V202601.
   scripts:
   - jobs/ingest_cepii_baci.py
   strategy: bulk_snapshot_if_changed
