@@ -137,6 +137,30 @@ def pull_state() -> int:
 
     raw = zstandard.ZstdDecompressor().decompress(data)
     os.makedirs(config.STATE_DIR, exist_ok=True)
+
+    # R407. os.replace swaps the .db but leaves -wal/-shm beside it, so a WAL
+    # belonging to the OLD database gets replayed against the freshly downloaded
+    # one: `PRAGMA integrity_check` came back "Rowid out of order" and every
+    # push-state then died on `VACUUM INTO`. Worse, that WAL can hold local runs
+    # that were never pushed, so deleting it blind DESTROYS work. Back the pair
+    # up first, then clear them, and say so.
+    wal, shm = config.STATE_DB + "-wal", config.STATE_DB + "-shm"
+    if os.path.exists(wal):
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        keep = os.path.join(config.STATE_DIR, "_superseded")
+        os.makedirs(keep, exist_ok=True)
+        print(f"[pull-state] WARNING: a write-ahead log is present ({os.path.getsize(wal):,} B). "
+              f"It belongs to the LOCAL database being replaced and may hold runs that were "
+              f"never pushed. Backing the local state up to {keep} before overwriting.",
+              file=sys.stderr)
+        for src in (config.STATE_DB, wal, shm):
+            if os.path.exists(src):
+                try:
+                    os.replace(src, os.path.join(keep, os.path.basename(src) + "." + stamp))
+                except OSError as e:
+                    print(f"[pull-state] ERROR: could not set aside {src}: {e}", file=sys.stderr)
+                    return 1
+
     tmp = f"{config.STATE_DB}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
     try:
         with open(tmp, "wb") as f:
@@ -201,6 +225,33 @@ def push_state() -> int:
     if remote is None:
         print(f"[push-state] seeding: r2://{r2.bucket}/{STATE_KEY} does not exist yet; "
               f"this push creates it.")
+
+    # --- R407 SHRINK GUARD. CAS only proves nobody else moved the remote; it does
+    # --- NOT prove the local copy is still the state we pulled. If state.db has
+    # --- been replaced by an empty database (a lost/moved file makes SQLite mint a
+    # --- fresh 4 KB one), CAS passes and this push WIPES the authoritative store.
+    # --- Refuse on an implausible local state; --allow-shrink is the escape hatch.
+    if not os.environ.get("AQUEDUCT_ALLOW_SHRINK"):
+        local_bytes = os.path.getsize(config.STATE_DB) if os.path.exists(config.STATE_DB) else 0
+        try:
+            _c = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=30)
+            n_src = _c.execute("SELECT COUNT(*) FROM source_state").fetchone()[0]
+            n_run = _c.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+            _c.close()
+        except Exception as e:                                   # noqa: BLE001
+            print(f"[push-state] REFUSING: cannot read {config.STATE_DB} to sanity-check "
+                  f"it before pushing ({type(e).__name__}: {str(e)[:100]}).", file=sys.stderr)
+            return 3
+        if local_bytes < 1_000_000 or n_src < 50:
+            print(f"[push-state] REFUSING to push an implausibly small state: "
+                  f"{local_bytes:,} B, {n_src} source_state rows, {n_run} runs. "
+                  f"The authoritative remote is not going to be overwritten with this. "
+                  f"Restore the real state.db (see {os.path.join(config.STATE_DIR, '_superseded')} "
+                  f"and --pull-state) and re-run. Set AQUEDUCT_ALLOW_SHRINK=1 only if you "
+                  f"genuinely intend to shrink the state store.", file=sys.stderr)
+            return 3
+        print(f"[push-state] sanity ok: local {local_bytes:,} B / {n_src} sources / "
+              f"{n_run} runs")
 
     # --- VACUUM INTO a temp copy: compact + a consistent snapshot even if some ---
     # --- other local process still holds the db open.                          ---
