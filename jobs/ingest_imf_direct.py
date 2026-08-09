@@ -236,7 +236,7 @@ def _month_end(y: int, m: int) -> dt.date:
 
 
 def pull(flow: str, agency: str, source_id: str, out_path: str | None = None,
-         min_obs: int = 0) -> int:
+         min_obs: int = 0, resume_token: str | None = None) -> int:
     """Fetch one dataflow and write it as parquet. Returns rows written, 0 on refusal.
 
     out_path lets the updater stage the pull somewhere distinct from the published
@@ -279,7 +279,7 @@ def pull(flow: str, agency: str, source_id: str, out_path: str | None = None,
                 raise
             print(f"[imf_direct] {flow}: {type(e).__name__}({str(e)[:60]}) — document exceeds "
                   f"pyexpat's 2 GiB ceiling; retrying as period slices", flush=True)
-            return _pull_sliced(flow, agency, source_id, out_path, min_obs)
+            return _pull_sliced(flow, agency, source_id, out_path, min_obs, resume_token)
     finally:
         # The staged SDMX document is multi-GB for the big flows; leaving one behind per
         # flow would fill the disk in a few runs. Removed on success, failure and exception
@@ -318,7 +318,8 @@ def _slice_windows(first: int = 1950) -> list:
     return [(str(y), str(min(y + 9, end))) for y in range(first, end + 1, 10)]
 
 
-def _pull_sliced(flow: str, agency: str, source_id: str, out_path, min_obs: int) -> int:
+def _pull_sliced(flow: str, agency: str, source_id: str, out_path, min_obs: int,
+                 resume_token: str | None = None) -> int:
     """Pull one flow as period slices and merge them, for documents past the 2 GiB ceiling.
 
     THE COMPLETENESS GATE MOVES TO THE TOTAL. _pull_streamed refuses any response carrying
@@ -335,9 +336,58 @@ def _pull_sliced(flow: str, agency: str, source_id: str, out_path, min_obs: int)
     windows = _slice_windows()
     parts, empty, total = [], 0, 0
     base = out_path or os.path.join(OUT, f"{source_id}.parquet")
+
+    # RESUME ACROSS THE ORCHESTRATOR'S KILL. The unit deadline is a SIGALRM
+    # (orchestrate.py:158) that interrupts mid-pull on CI, and this function has no
+    # try/finally, so a kill leaves the finished .sliceNN.parquet files on disk — and
+    # every later run then re-pulled them from slice 0. A flow needing longer than the
+    # 45-minute limit could therefore never converge: killed, restarted, killed again.
+    # Reusing what is already on disk turns that into forward progress.
+    #
+    # GUARDED ON THE VINTAGE, because mixing slices from two IMF releases would
+    # assemble a dataset that never existed. The sidecar records the token this slice
+    # set was pulled under; a mismatch (or no token) wipes the set and starts clean.
+    marker = f"{base}.slices.json"
+    prior = None
+    try:
+        if os.path.exists(marker):
+            prior = json.load(open(marker, encoding="utf-8"))
+    except Exception:                                        # noqa: BLE001
+        prior = None
+    reusable = bool(prior) and prior.get("token") == resume_token and resume_token is not None
+    if not reusable:
+        stale = 0
+        for i in range(len(windows) + 64):                   # +64: window count can shrink
+            p = f"{base}.slice{i:02d}.parquet"
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                    stale += 1
+                except OSError:
+                    pass
+        if stale:
+            print(f"[imf_direct] {flow}: discarded {stale} slice(s) from a different vintage "
+                  f"({(prior or {}).get('token')!r} != {resume_token!r})", flush=True)
+    try:
+        json.dump({"token": resume_token, "windows": len(windows)},
+                  open(marker, "w", encoding="utf-8"))
+    except OSError:
+        pass
+
     for i, (a, b) in enumerate(windows):
         url = f"{BASE}/data/{agency},{flow}/all?startPeriod={a}&endPeriod={b}"
         part = f"{base}.slice{i:02d}.parquet"
+        if reusable and os.path.exists(part):
+            try:
+                have = _pq.read_metadata(part).num_rows
+            except Exception:                                # noqa: BLE001
+                have = 0                                     # truncated by the kill — re-pull
+            if have:
+                print(f"[imf_direct] slice {i + 1}/{len(windows)} {a}-{b} RESUMED "
+                      f"({have:,} rows already on disk)", flush=True)
+                parts.append(part)
+                total += have
+                continue
         print(f"[imf_direct] slice {i + 1}/{len(windows)} {a}-{b}", flush=True)
         n = _pull_streamed(url, flow, agency, source_id, part, 0)
         if not n:
