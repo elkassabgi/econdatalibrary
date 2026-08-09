@@ -8282,10 +8282,36 @@ sources:
   #   GFS_SOO 667,386 series (482 s to return ONE observation each)
   #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
   #   GFS_SSUC 102,961    GFS_SOEF 15,600
-  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
-  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
-  # not a share of the daily job's ceiling. live:false keeps it out of the daily
-  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
+  # ~1.62M series across the six. live:false keeps it out of the daily run; the heavy
+  # matrix dispatches it explicitly, which bypasses the live gate.
+  #
+  # CORRECTED 2026-08-09 (all six GFS entries carried this same wrong line). It read:
+  # "_imf_direct.run() makes ONE blocking pull with no sub-units, so a between-units
+  # Deadline cannot bound it - it needs its own runner". THAT IS WRONG and reading it
+  # cost a session's reasoning. orchestrate.py:158 arms signal.setitimer; SIGALRM
+  # interrupts the pull MID-FLIGHT, so the 45-minute deadline does bound it. On CI only —
+  # the Windows workstation has no setitimer, which is why the guard looks absent when
+  # tested here (orchestrate.py:184 records the same caveat).
+  #
+  # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
+  # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
+  # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
+  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
+  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
+  # them and restarted at slice 0. Killed, restarted, killed, forever.
+  # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
+  # flow version) so slices from two IMF releases can never be assembled into a vintage
+  # that never existed. One slice fits with ~10x margin, so a flow banks several per tick
+  # and converges in one or two runs.
+  #
+  # ALSO MEASURED, and not what the counts above imply: period slicing does NOT reduce
+  # series cardinality — one decade carries 667,338 series, essentially the whole flow's
+  # 667,386 — and ~62% of the cells returned for it are EMPTY (4,333,580). The counts
+  # above describe what the API emits, not what we store.
+  #
+  # BEFORE FLIPPING live:true: the resume path has never executed on CI (no setitimer
+  # here), so the first cloud run is its first real test. Watch it resume, not restart.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -8310,10 +8336,36 @@ sources:
   #   GFS_SOO 667,386 series (482 s to return ONE observation each)
   #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
   #   GFS_SSUC 102,961    GFS_SOEF 15,600
-  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
-  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
-  # not a share of the daily job's ceiling. live:false keeps it out of the daily
-  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
+  # ~1.62M series across the six. live:false keeps it out of the daily run; the heavy
+  # matrix dispatches it explicitly, which bypasses the live gate.
+  #
+  # CORRECTED 2026-08-09 (all six GFS entries carried this same wrong line). It read:
+  # "_imf_direct.run() makes ONE blocking pull with no sub-units, so a between-units
+  # Deadline cannot bound it - it needs its own runner". THAT IS WRONG and reading it
+  # cost a session's reasoning. orchestrate.py:158 arms signal.setitimer; SIGALRM
+  # interrupts the pull MID-FLIGHT, so the 45-minute deadline does bound it. On CI only —
+  # the Windows workstation has no setitimer, which is why the guard looks absent when
+  # tested here (orchestrate.py:184 records the same caveat).
+  #
+  # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
+  # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
+  # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
+  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
+  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
+  # them and restarted at slice 0. Killed, restarted, killed, forever.
+  # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
+  # flow version) so slices from two IMF releases can never be assembled into a vintage
+  # that never existed. One slice fits with ~10x margin, so a flow banks several per tick
+  # and converges in one or two runs.
+  #
+  # ALSO MEASURED, and not what the counts above imply: period slicing does NOT reduce
+  # series cardinality — one decade carries 667,338 series, essentially the whole flow's
+  # 667,386 — and ~62% of the cells returned for it are EMPTY (4,333,580). The counts
+  # above describe what the API emits, not what we store.
+  #
+  # BEFORE FLIPPING live:true: the resume path has never executed on CI (no setitimer
+  # here), so the first cloud run is its first real test. Watch it resume, not restart.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -8341,10 +8393,36 @@ sources:
   #   GFS_SOO 667,386 series (482 s to return ONE observation each)
   #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
   #   GFS_SSUC 102,961    GFS_SOEF 15,600
-  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
-  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
-  # not a share of the daily job's ceiling. live:false keeps it out of the daily
-  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
+  # ~1.62M series across the six. live:false keeps it out of the daily run; the heavy
+  # matrix dispatches it explicitly, which bypasses the live gate.
+  #
+  # CORRECTED 2026-08-09 (all six GFS entries carried this same wrong line). It read:
+  # "_imf_direct.run() makes ONE blocking pull with no sub-units, so a between-units
+  # Deadline cannot bound it - it needs its own runner". THAT IS WRONG and reading it
+  # cost a session's reasoning. orchestrate.py:158 arms signal.setitimer; SIGALRM
+  # interrupts the pull MID-FLIGHT, so the 45-minute deadline does bound it. On CI only —
+  # the Windows workstation has no setitimer, which is why the guard looks absent when
+  # tested here (orchestrate.py:184 records the same caveat).
+  #
+  # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
+  # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
+  # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
+  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
+  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
+  # them and restarted at slice 0. Killed, restarted, killed, forever.
+  # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
+  # flow version) so slices from two IMF releases can never be assembled into a vintage
+  # that never existed. One slice fits with ~10x margin, so a flow banks several per tick
+  # and converges in one or two runs.
+  #
+  # ALSO MEASURED, and not what the counts above imply: period slicing does NOT reduce
+  # series cardinality — one decade carries 667,338 series, essentially the whole flow's
+  # 667,386 — and ~62% of the cells returned for it are EMPTY (4,333,580). The counts
+  # above describe what the API emits, not what we store.
+  #
+  # BEFORE FLIPPING live:true: the resume path has never executed on CI (no setitimer
+  # here), so the first cloud run is its first real test. Watch it resume, not restart.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -8373,10 +8451,36 @@ sources:
   #   GFS_SOO 667,386 series (482 s to return ONE observation each)
   #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
   #   GFS_SSUC 102,961    GFS_SOEF 15,600
-  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
-  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
-  # not a share of the daily job's ceiling. live:false keeps it out of the daily
-  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
+  # ~1.62M series across the six. live:false keeps it out of the daily run; the heavy
+  # matrix dispatches it explicitly, which bypasses the live gate.
+  #
+  # CORRECTED 2026-08-09 (all six GFS entries carried this same wrong line). It read:
+  # "_imf_direct.run() makes ONE blocking pull with no sub-units, so a between-units
+  # Deadline cannot bound it - it needs its own runner". THAT IS WRONG and reading it
+  # cost a session's reasoning. orchestrate.py:158 arms signal.setitimer; SIGALRM
+  # interrupts the pull MID-FLIGHT, so the 45-minute deadline does bound it. On CI only —
+  # the Windows workstation has no setitimer, which is why the guard looks absent when
+  # tested here (orchestrate.py:184 records the same caveat).
+  #
+  # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
+  # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
+  # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
+  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
+  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
+  # them and restarted at slice 0. Killed, restarted, killed, forever.
+  # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
+  # flow version) so slices from two IMF releases can never be assembled into a vintage
+  # that never existed. One slice fits with ~10x margin, so a flow banks several per tick
+  # and converges in one or two runs.
+  #
+  # ALSO MEASURED, and not what the counts above imply: period slicing does NOT reduce
+  # series cardinality — one decade carries 667,338 series, essentially the whole flow's
+  # 667,386 — and ~62% of the cells returned for it are EMPTY (4,333,580). The counts
+  # above describe what the API emits, not what we store.
+  #
+  # BEFORE FLIPPING live:true: the resume path has never executed on CI (no setitimer
+  # here), so the first cloud run is its first real test. Watch it resume, not restart.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -8401,10 +8505,36 @@ sources:
   #   GFS_SOO 667,386 series (482 s to return ONE observation each)
   #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
   #   GFS_SSUC 102,961    GFS_SOEF 15,600
-  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
-  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
-  # not a share of the daily job's ceiling. live:false keeps it out of the daily
-  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
+  # ~1.62M series across the six. live:false keeps it out of the daily run; the heavy
+  # matrix dispatches it explicitly, which bypasses the live gate.
+  #
+  # CORRECTED 2026-08-09 (all six GFS entries carried this same wrong line). It read:
+  # "_imf_direct.run() makes ONE blocking pull with no sub-units, so a between-units
+  # Deadline cannot bound it - it needs its own runner". THAT IS WRONG and reading it
+  # cost a session's reasoning. orchestrate.py:158 arms signal.setitimer; SIGALRM
+  # interrupts the pull MID-FLIGHT, so the 45-minute deadline does bound it. On CI only —
+  # the Windows workstation has no setitimer, which is why the guard looks absent when
+  # tested here (orchestrate.py:184 records the same caveat).
+  #
+  # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
+  # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
+  # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
+  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
+  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
+  # them and restarted at slice 0. Killed, restarted, killed, forever.
+  # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
+  # flow version) so slices from two IMF releases can never be assembled into a vintage
+  # that never existed. One slice fits with ~10x margin, so a flow banks several per tick
+  # and converges in one or two runs.
+  #
+  # ALSO MEASURED, and not what the counts above imply: period slicing does NOT reduce
+  # series cardinality — one decade carries 667,338 series, essentially the whole flow's
+  # 667,386 — and ~62% of the cells returned for it are EMPTY (4,333,580). The counts
+  # above describe what the API emits, not what we store.
+  #
+  # BEFORE FLIPPING live:true: the resume path has never executed on CI (no setitimer
+  # here), so the first cloud run is its first real test. Watch it resume, not restart.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
@@ -8431,10 +8561,36 @@ sources:
   #   GFS_SOO 667,386 series (482 s to return ONE observation each)
   #   GFS_COFOG 374,401   GFS_BS 297,673   GFS_SFCP 162,241
   #   GFS_SSUC 102,961    GFS_SOEF 15,600
-  # ~1.62M series across the six. _imf_direct.run() makes ONE blocking pull with no
-  # sub-units, so a between-units Deadline cannot bound it - it needs its own runner,
-  # not a share of the daily job's ceiling. live:false keeps it out of the daily
-  # run; the heavy matrix dispatches it explicitly, which bypasses the live gate.
+  # ~1.62M series across the six. live:false keeps it out of the daily run; the heavy
+  # matrix dispatches it explicitly, which bypasses the live gate.
+  #
+  # CORRECTED 2026-08-09 (all six GFS entries carried this same wrong line). It read:
+  # "_imf_direct.run() makes ONE blocking pull with no sub-units, so a between-units
+  # Deadline cannot bound it - it needs its own runner". THAT IS WRONG and reading it
+  # cost a session's reasoning. orchestrate.py:158 arms signal.setitimer; SIGALRM
+  # interrupts the pull MID-FLIGHT, so the 45-minute deadline does bound it. On CI only —
+  # the Windows workstation has no setitimer, which is why the guard looks absent when
+  # tested here (orchestrate.py:184 records the same caveat).
+  #
+  # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
+  # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
+  # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
+  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
+  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
+  # them and restarted at slice 0. Killed, restarted, killed, forever.
+  # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
+  # flow version) so slices from two IMF releases can never be assembled into a vintage
+  # that never existed. One slice fits with ~10x margin, so a flow banks several per tick
+  # and converges in one or two runs.
+  #
+  # ALSO MEASURED, and not what the counts above imply: period slicing does NOT reduce
+  # series cardinality — one decade carries 667,338 series, essentially the whole flow's
+  # 667,386 — and ~62% of the cells returned for it are EMPTY (4,333,580). The counts
+  # above describe what the API emits, not what we store.
+  #
+  # BEFORE FLIPPING live:true: the resume path has never executed on CI (no setitimer
+  # here), so the first cloud run is its first real test. Watch it resume, not restart.
   scripts:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
