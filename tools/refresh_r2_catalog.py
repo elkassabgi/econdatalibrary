@@ -26,7 +26,7 @@ Usage:
 
 Reversible: the current R2 object is server-side copied to a dated .bak key before any write.
 """
-import argparse, os, sqlite3, sys, tempfile
+import argparse, atexit, os, shutil, sqlite3, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import r2_util
@@ -80,6 +80,12 @@ def main() -> int:
 
     c = r2_util.client(write=True)
     tmpdir = tempfile.mkdtemp(prefix="refresh_cat_")
+    # This dir holds a FULL decompressed copy of catalog.db (~17 GB). Nothing removed it, and
+    # this function has several early returns, so EVERY run since 2026-08-02 leaked one: by
+    # 2026-08-09 that was 51 orphans / 691.3 GB, and the D: system drive was down to 66.8 GB
+    # free. atexit rather than try/finally so the cleanup also covers the early returns and an
+    # unhandled crash — the paths that leaked in the first place.
+    atexit.register(shutil.rmtree, tmpdir, True)
 
     # ---- superset guard -------------------------------------------------------------
     cur_db = a.against
