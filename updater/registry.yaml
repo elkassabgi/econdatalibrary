@@ -8296,8 +8296,14 @@ sources:
   # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
   # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
   # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
-  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
-  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # Ten windows = 45.7 min. WHICH LIMIT THAT MEETS DEPENDS ON THE PATH (R411 — I got this
+  # wrong first time round): the DAILY job's default is 45 min (orchestrate.py:153), which
+  # 45.7 would miss by inches — but these sources run in the HEAVY MATRIX, and
+  # .github/workflows/updater-heavy.yml:173 sets AQUEDUCT_UNIT_TIMEOUT_MIN: '180'. A whole
+  # flow fits 180 comfortably, so the family is NOT stalled on the path it actually takes.
+  # The resume support below is insurance for a flow that outgrows 180, and it removes a
+  # real restart-from-zero failure mode; it is not the thing keeping GFS from updating.
+  # _pull_sliced already wrote each decade to {base}.sliceNN.parquet
   # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
   # them and restarted at slice 0. Killed, restarted, killed, forever.
   # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
@@ -8350,8 +8356,14 @@ sources:
   # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
   # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
   # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
-  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
-  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # Ten windows = 45.7 min. WHICH LIMIT THAT MEETS DEPENDS ON THE PATH (R411 — I got this
+  # wrong first time round): the DAILY job's default is 45 min (orchestrate.py:153), which
+  # 45.7 would miss by inches — but these sources run in the HEAVY MATRIX, and
+  # .github/workflows/updater-heavy.yml:173 sets AQUEDUCT_UNIT_TIMEOUT_MIN: '180'. A whole
+  # flow fits 180 comfortably, so the family is NOT stalled on the path it actually takes.
+  # The resume support below is insurance for a flow that outgrows 180, and it removes a
+  # real restart-from-zero failure mode; it is not the thing keeping GFS from updating.
+  # _pull_sliced already wrote each decade to {base}.sliceNN.parquet
   # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
   # them and restarted at slice 0. Killed, restarted, killed, forever.
   # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
@@ -8407,8 +8419,14 @@ sources:
   # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
   # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
   # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
-  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
-  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # Ten windows = 45.7 min. WHICH LIMIT THAT MEETS DEPENDS ON THE PATH (R411 — I got this
+  # wrong first time round): the DAILY job's default is 45 min (orchestrate.py:153), which
+  # 45.7 would miss by inches — but these sources run in the HEAVY MATRIX, and
+  # .github/workflows/updater-heavy.yml:173 sets AQUEDUCT_UNIT_TIMEOUT_MIN: '180'. A whole
+  # flow fits 180 comfortably, so the family is NOT stalled on the path it actually takes.
+  # The resume support below is insurance for a flow that outgrows 180, and it removes a
+  # real restart-from-zero failure mode; it is not the thing keeping GFS from updating.
+  # _pull_sliced already wrote each decade to {base}.sliceNN.parquet
   # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
   # them and restarted at slice 0. Killed, restarted, killed, forever.
   # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
@@ -8465,8 +8483,14 @@ sources:
   # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
   # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
   # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
-  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
-  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # Ten windows = 45.7 min. WHICH LIMIT THAT MEETS DEPENDS ON THE PATH (R411 — I got this
+  # wrong first time round): the DAILY job's default is 45 min (orchestrate.py:153), which
+  # 45.7 would miss by inches — but these sources run in the HEAVY MATRIX, and
+  # .github/workflows/updater-heavy.yml:173 sets AQUEDUCT_UNIT_TIMEOUT_MIN: '180'. A whole
+  # flow fits 180 comfortably, so the family is NOT stalled on the path it actually takes.
+  # The resume support below is insurance for a flow that outgrows 180, and it removes a
+  # real restart-from-zero failure mode; it is not the thing keeping GFS from updating.
+  # _pull_sliced already wrote each decade to {base}.sliceNN.parquet
   # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
   # them and restarted at slice 0. Killed, restarted, killed, forever.
   # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
@@ -8519,8 +8543,14 @@ sources:
   # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
   # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
   # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
-  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
-  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # Ten windows = 45.7 min. WHICH LIMIT THAT MEETS DEPENDS ON THE PATH (R411 — I got this
+  # wrong first time round): the DAILY job's default is 45 min (orchestrate.py:153), which
+  # 45.7 would miss by inches — but these sources run in the HEAVY MATRIX, and
+  # .github/workflows/updater-heavy.yml:173 sets AQUEDUCT_UNIT_TIMEOUT_MIN: '180'. A whole
+  # flow fits 180 comfortably, so the family is NOT stalled on the path it actually takes.
+  # The resume support below is insurance for a flow that outgrows 180, and it removes a
+  # real restart-from-zero failure mode; it is not the thing keeping GFS from updating.
+  # _pull_sliced already wrote each decade to {base}.sliceNN.parquet
   # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
   # them and restarted at slice 0. Killed, restarted, killed, forever.
   # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
@@ -8575,8 +8605,14 @@ sources:
   # THE REAL DEFECT WAS CONVERGENCE, and it is now fixed. Measured against live
   # api.imf.org 2026-08-09 (tools/_time_gfs_slice.py), GFS_SOO decade 2010-2019:
   # 1,077,036,004 B streamed, 2,019,901 usable obs / 254,194 series, 274 s = 4.6 min.
-  # Ten windows = 45.7 min, so a WHOLE-FLOW pull misses the deadline by inches and was
-  # killed every run. _pull_sliced already wrote each decade to {base}.sliceNN.parquet
+  # Ten windows = 45.7 min. WHICH LIMIT THAT MEETS DEPENDS ON THE PATH (R411 — I got this
+  # wrong first time round): the DAILY job's default is 45 min (orchestrate.py:153), which
+  # 45.7 would miss by inches — but these sources run in the HEAVY MATRIX, and
+  # .github/workflows/updater-heavy.yml:173 sets AQUEDUCT_UNIT_TIMEOUT_MIN: '180'. A whole
+  # flow fits 180 comfortably, so the family is NOT stalled on the path it actually takes.
+  # The resume support below is insurance for a flow that outgrows 180, and it removes a
+  # real restart-from-zero failure mode; it is not the thing keeping GFS from updating.
+  # _pull_sliced already wrote each decade to {base}.sliceNN.parquet
   # and, having no try/finally, left them on disk when the SIGALRM landed — then ignored
   # them and restarted at slice 0. Killed, restarted, killed, forever.
   # jobs/ingest_imf_direct.py now RESUMES from those slices, gated on resume_token (the
