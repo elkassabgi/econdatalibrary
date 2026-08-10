@@ -63,6 +63,46 @@ def _desc(entry: dict, key: str) -> str | None:
     return best
 
 
+def _param_values_filtered(dataset: str, target: str, **filters) -> list[dict]:
+    """GetParameterValuesFiltered, parsed from its OWN envelope (R419).
+
+    jobs.ingest_bea_full.call() extracts Results.Data — correct for GetData, but
+    this method answers in Results.ParamValue, so routing it through call()
+    returned [] for every one of the 105 Regional tables and the whole Regional
+    enrichment silently degraded to fallbacks. Shape probe-verified 2026-08-10:
+    {"Key": "1", "Desc": "[CAGDP1] Real Gross Domestic Product (GDP)"}.
+    """
+    import time
+    p = {"UserID": ing.KEY, "method": "GetParameterValuesFiltered",
+         "DatasetName": dataset, "TargetParameter": target,
+         "ResultFormat": "JSON"}
+    p.update(filters)
+    s = ing._session()
+    for attempt in range(8):
+        ing._rate_limit_acquire()
+        try:
+            r = s.get(ing.API, params=p, timeout=240)
+            ing._rate_limit_record_bytes(len(r.content))
+            if r.status_code != 200:
+                time.sleep(min(60, 5 * (attempt + 1)))
+                continue
+            res = r.json().get("BEAAPI", {}).get("Results", {})
+            if isinstance(res, list):
+                res = res[0] if res else {}
+            pv = res.get("ParamValue", [])
+            return pv if isinstance(pv, list) else []
+        except Exception:                                    # noqa: BLE001
+            time.sleep(min(60, 5 * (attempt + 1)))
+    return []
+
+
+def _strip_table_tag(desc: str) -> str:
+    """'[CAGDP1] Real GDP' -> 'Real GDP' — the tag repeats the table id."""
+    if desc.startswith("[") and "]" in desc:
+        return desc.split("]", 1)[1].strip()
+    return desc
+
+
 def _lookup(pv_list) -> dict[str, str]:
     out = {}
     for e in pv_list:
@@ -242,16 +282,27 @@ def build() -> dict[str, dict[str, str]]:
         titles[ds_name] = d
 
     # ---- Regional (API linecodes + offline geo): LineCode:GeoFips -----------
+    titles["Regional"] = build_regional(pv)
+    return titles
+
+
+def build_regional(pv) -> dict[str, str]:
+    """Regional key -> title, with the full and fallback branches COUNTED APART
+    (R419: a fallback that can absorb 100% of the work must be visible)."""
     geo = _lookup(pv["Regional"]["GeoFips"])
     line_by_table: dict[str, dict[str, str]] = {}
     rtabs = [t for t in (ing._pk(e) for e in pv["Regional"]["TableName"]) if t]
     for i, t in enumerate(rtabs):
-        vals = ing.call("GetParameterValuesFiltered", DatasetName="Regional",
-                        TargetParameter="LineCode", TableName=t)
-        line_by_table[t] = _lookup(vals) if vals else {}
+        vals = _param_values_filtered("Regional", "LineCode", TableName=t)
+        line_by_table[t] = {k: _strip_table_tag(v) for k, v in _lookup(vals).items()}
         if (i + 1) % 25 == 0:
             print(f"  Regional linecodes {i+1}/{len(rtabs)} tables", flush=True)
+    empty_tables = [t for t in rtabs if not line_by_table.get(t)]
+    if empty_tables:
+        print(f"  Regional: {len(empty_tables)} table(s) returned NO linecodes: "
+              f"{empty_tables[:8]}", flush=True)
     d = {}
+    full = fallback = 0
     for stem, keys in _distinct_keys_in_order("Regional"):
         lmap = line_by_table.get(stem, {})
         for k in keys:
@@ -265,11 +316,47 @@ def build() -> dict[str, dict[str, str]]:
             ld = lmap.get(lc)
             if ld and g:
                 d[k] = f"{ld} — {g}"
+                full += 1
             elif g:
                 d[k] = f"{g} — {stem} line {lc}"
-    titles["Regional"] = d
+                fallback += 1
+    print(f"  Regional branches: {full:,} full, {fallback:,} fallback", flush=True)
+    if full == 0 and fallback > 0:
+        raise SystemExit("Regional: 100% fallback — the linecode fetch is broken "
+                         "again (R419); refusing to overwrite titles with it.")
+    return d
 
-    return titles
+
+def rerun_regional() -> int:
+    """--only-regional: replace ONLY titles that are still the code-title or the
+    EXACT fallback string the previous run would have generated — never anything
+    else. Then rebuild the local fts slice."""
+    M = ing.load_manifest()
+    d = build_regional(M["param_values"])
+    con = sqlite3.connect(CATALOG, timeout=7200)
+    con.execute("PRAGMA busy_timeout=7200000")
+    rows = con.execute("SELECT series_id, title FROM series WHERE source_id='bea'").fetchall()
+    updates, kept = [], 0
+    for sid, title in rows:
+        native = sid.split(":", 1)[1]
+        t = d.get(native)
+        if not t or t == title:
+            continue
+        parts = native.split(":")
+        # a replaceable title is: the bare code-title, or the old run's fallback
+        # '<geo> — <table> line <lc>' — recognisable by its exact tail for THIS key.
+        if title == native or (" line " in title and title.endswith(f" line {parts[0]}")):
+            updates.append((t, sid))
+        else:
+            kept += 1
+    con.executemany("UPDATE series SET title=? WHERE series_id=?", updates)
+    con.execute("DELETE FROM series_fts WHERE series_id LIKE 'bea:%'")
+    con.execute("INSERT INTO series_fts (series_id, title, geography) "
+                "SELECT series_id, title, geography FROM series WHERE source_id='bea'")
+    con.commit()
+    print(f"regional rerun: {len(updates):,} titles replaced, {kept:,} left untouched")
+    print("NOW: D1 fts delete for bea, then core/sync_catalog_d1.py --source bea")
+    return 0
 
 
 def main() -> int:
@@ -321,4 +408,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if "--only-regional" in sys.argv:
+        sys.exit(rerun_regional())
     sys.exit(main())
