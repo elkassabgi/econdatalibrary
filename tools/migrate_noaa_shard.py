@@ -186,13 +186,69 @@ def verify() -> int:
     return 0 if local == remote else 1
 
 
+def prune_primary() -> int:
+    """Delete noaa's series + series_fts rows from the PRIMARY — the LAST step.
+
+    Preconditions (all were proven before this phase was ever run):
+      verify() MATCH exact; worker routing deployed; live smoke passed on all four
+      surfaces (sources listing, shard-routed browse total 3,137,871, unscoped
+      two-DB search, authenticated CSV download).
+
+    The source/license rows STAY — /v1/sources reads them from the primary by
+    design. Batched deletes (D1 has per-query limits; one 3.1M-row DELETE is a
+    timeout risk), loop-until-zero so the phase is re-runnable and its stopping
+    condition is the DATABASE's own count, not our bookkeeping.
+    """
+    import json
+    import shutil
+    import subprocess
+    npx = shutil.which("npx")
+
+    def run_sql(sql: str) -> dict:
+        res = subprocess.run(
+            [npx, "wrangler", "d1", "execute", "econ-catalog", "--remote", "--yes",
+             "--command", sql, "--json"],
+            cwd=st.WORKER_DIR, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=600)
+        if res.returncode != 0:
+            raise SystemExit(f"FATAL: primary delete failed: {(res.stderr or res.stdout)[-300:]}")
+        return json.loads(res.stdout)[0]
+
+    total = 0
+    while True:
+        r = run_sql("DELETE FROM series WHERE rowid IN "
+                    "(SELECT rowid FROM series WHERE source_id='noaa' LIMIT 40000);")
+        w = r["meta"].get("rows_written", 0)
+        # rows_written counts index churn too; use changes-equivalent via a count probe
+        left = run_sql("SELECT COUNT(*) AS n FROM series WHERE source_id='noaa';")
+        n = left["results"][0]["n"]
+        total += w
+        print(f"  series: {n:,} noaa rows remain", flush=True)
+        if n == 0:
+            break
+    while True:
+        run_sql("DELETE FROM series_fts WHERE series_id IN "
+                "(SELECT series_id FROM series_fts WHERE series_id LIKE 'noaa:%' "
+                "LIMIT 20000);")
+        left = run_sql("SELECT COUNT(*) AS n FROM series_fts WHERE series_id LIKE 'noaa:%';")
+        n = left["results"][0]["n"]
+        print(f"  series_fts: {n:,} noaa rows remain", flush=True)
+        if n == 0:
+            break
+    src = run_sql("SELECT COUNT(*) AS n FROM source WHERE source_id='noaa';")
+    print(f"prune DONE. source row present (must be 1): {src['results'][0]['n']}")
+    return 0 if src["results"][0]["n"] == 1 else 1
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("phase", choices=["emit", "push", "verify"])
+    ap.add_argument("phase", choices=["emit", "push", "verify", "prune-primary"])
     a = ap.parse_args()
     if a.phase == "emit":
         emit()
     elif a.phase == "push":
         push()
+    elif a.phase == "prune-primary":
+        sys.exit(prune_primary())
     else:
         sys.exit(verify())
