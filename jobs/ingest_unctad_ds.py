@@ -207,6 +207,16 @@ def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = N
                 return r.text
             if r.status_code in (429, 502, 503, 504):
                 time.sleep(20 * (attempt + 1)); continue
+            if r.status_code == 401:
+                # MEASURED 2026-08-10: a 401 killed the US.BiotradeMerch pull at hour
+                # ~19 — and the SAME credentials returned 200 through this exact code
+                # path minutes later. UNCTAD's gateway emits transient 401s; treating
+                # them as instantly fatal converts a blip into a total-loss crash.
+                # Retry with long backoff; only a PERSISTENT 401 (all attempts) is a
+                # real revocation and falls through to FactsUnreachable.
+                log(f"  Facts HTTP 401 (transient gateway auth blip); "
+                    f"retry {attempt + 1} in {60 * (attempt + 1)}s")
+                time.sleep(60 * (attempt + 1)); continue
             if r.status_code == 400 and "maximal size" in r.text.lower():
                 m = re.search(r"Maximal size\s*:\s*(\d+).*?Estimated size\s*:\s*(\d+)",
                               r.text, re.S)
@@ -273,13 +283,51 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
                       f"({','.join(repr(str(c)) for c in dgroup)})")
             return f
 
+        # CHUNK SPILL + RESUME (added 2026-08-10). The US.BiotradeMerch pull died on
+        # a transient 401 at hour ~19 with EVERYTHING in memory — total loss, because
+        # this loop held every chunk's CSV in `out` until the final write. Each
+        # completed chunk now spills to disk keyed by a hash of its (tgroup, restr)
+        # work item; a restart under the SAME dataset version replays the identical
+        # deterministic split walk and reloads finished chunks instead of refetching.
+        # Version-gated exactly like the IMF sliced resume (tests/test_imf_sliced_resume):
+        # a new UNCTAD release wipes the spills — two vintages must never be assembled.
+        import hashlib
+        import shutil as _sh
+        spill_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                 "data", "_unctad_spill", source_id_for(ds_name))
+        spill_dir = os.path.abspath(spill_dir)
+        token = f"{meta.get('version')}"
+        token_path = os.path.join(spill_dir, "_token.txt")
+        if os.path.isdir(spill_dir):
+            old = (open(token_path, encoding="utf-8").read().strip()
+                   if os.path.exists(token_path) else None)
+            if old != token:
+                _sh.rmtree(spill_dir, ignore_errors=True)
+        os.makedirs(spill_dir, exist_ok=True)
+        with open(token_path, "w", encoding="utf-8") as fh:
+            fh.write(token)
+
+        reused = 0
         out: list[str] = []
         stack = [(codes[i:i + per], []) for i in range(0, len(codes), per)]
         while stack:
             tgroup, restr = stack.pop(0)
+            ck = hashlib.sha1(repr((tgroup, restr)).encode()).hexdigest()[:16]
+            sp = os.path.join(spill_dir, ck + ".csv")
+            if os.path.exists(sp):
+                try:
+                    out.append(open(sp, encoding="utf-8").read())
+                    reused += 1
+                    continue
+                except OSError:
+                    pass  # unreadable spill -> refetch it
             try:
-                out.append(facts_csv(ds_name, select, cid, key,
-                                     flt=flt_for_item(tgroup, restr)))
+                text = facts_csv(ds_name, select, cid, key,
+                                 flt=flt_for_item(tgroup, restr))
+                with open(sp + ".tmp", "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                os.replace(sp + ".tmp", sp)
+                out.append(text)
             except (FactsSizeCap, FactsUnreachable) as split_err:
                 atomic = (len(tgroup) == 1
                           and all(len(g) == 1 for g in restr)
