@@ -30,6 +30,17 @@ binding = "CATALOG"
 database_name = "econ-catalog"
 database_id = "1a6d0755-ecef-46d0-a478-46cad1cf064c"
 
+# --- D1: CLIMATE/ESG SHARD (task #45). The primary measured 9.35 GB of its 10 GB
+# per-database ceiling; Cloudflare's cap is per DATABASE (1 TB per account), so noaa's
+# 3,137,871 catalogue rows live here — an internal shard, same worker, nothing
+# user-visible. Source-scoped queries route via dbFor(); global search/browse/stats
+# merge both DBs. noaa's source+license rows stay in the PRIMARY (no cross-DB
+# /v1/sources union); only series + series_fts rows move.
+[[d1_databases]]
+binding = "CATALOG_CLIMATE"
+database_name = "econ-catalog-climate"
+database_id = "e34114f2-c0be-43d9-bcb5-798a3952414c"
+
 # --- D1: SHARED LOGIN — hfdatalibrary's users db is the family identity
 # provider (owner directive; PLAN.md §6). Same Cloudflare account; existing hf
 # api_keys work here unchanged. Econ writes ONLY to its own tables in this db
