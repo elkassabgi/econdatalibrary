@@ -307,7 +307,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "penn_world_table", "pip", "pwt", "rba", "riksbank",
   "sec_edgar", "snb", "statcan", "stats_nz",
   "swiid", "transparency_ti", "treasury", "ucdp", "unctad_bopcaba",
-  "unctad_ciocgeaia", "unctad_cioiuibbicoeair4a", "unctad_cpa", "unctad_cpia", "unctad_cpta", "unctad_fdiiaofasa",
+  "unctad_ciocgeaia", "unctad_cioiuibbicoeair4a", "unctad_cpia", "unctad_cpta", "unctad_fdiiaofasa",
   "unctad_fmcpa", "unctad_fmcpia21", "unctad_gasbeaiogasa", "unctad_gasbtbia", "unctad_gasbtoia", "unctad_gdpgbtoevbkoeatasa",
   "unctad_gdptapccac2pa", "unctad_lscia", "unctad_lsciq", "unctad_mfbcoboa", "unctad_mmcascioeaiopa", "unctad_mpcadioeaia",
   "unctad_mtba", "unctad_mttasa", "unctad_mttgra", "unctad_neera", "unctad_reericba", "unctad_reerigdba",

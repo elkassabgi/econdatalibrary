@@ -116,7 +116,18 @@ def main() -> int:
         ok = r.returncode == 0
         print(f"  D1: {stmt.split(' WHERE')[0]} -> {'ok' if ok else 'FAILED'}")
         if not ok:
-            print("   ", (r.stderr or r.stdout)[-300:])
+            # The subprocess is captured as utf-8, but THIS console is cp1252 and
+            # wrangler's output carries emoji — so printing the error raised
+            # UnicodeEncodeError and destroyed the only report of why D1 failed,
+            # leaving the source deleted from catalog.db but still live in D1.
+            # An error path that can itself crash is worse than no error path.
+            # (R363/R234, one organ further along: there it was the subprocess
+            # decode, here it is the print encode.)
+            detail = (r.stderr or r.stdout or "")[-600:]
+            sys.stdout.write(detail.encode(sys.stdout.encoding or "utf-8",
+                                           "replace").decode(sys.stdout.encoding
+                                                             or "utf-8", "replace"))
+            sys.stdout.write("\n")
             return 1
 
     # 4. R2 purge (batched deletes; re-assert the terminated prefix on every batch)
