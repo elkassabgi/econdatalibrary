@@ -6664,6 +6664,21 @@ sources:
     rate_note: family contract; chunked POSTs
     key_env: UNCTAD_CLIENT_ID + UNCTAD_API_KEY
     confidence: high
+- source_id: unctad_tradeservcatbypartner
+  # GIANT #9 (2026-08-10, #127): 14,337,747 obs / 1,304,958 series; depth-2 DOT-prefix
+  # table grain (9,243 catalog ids). Measured over the FULL store: depth-1 = 208 prefixes
+  # with a 581,450-row max (unusable), depth-3 = 18,419 at p50 42 — double the ids for
+  # HALF the median table — and depth-4 = 496,132, alone 62% of D1's remaining headroom.
+  # Series grain would overrun the whole headroom by 64%; depth-2 costs 1.2% of it.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_tradeservcatbypartner
+  review: true
 - source_id: unctad_criticalmineralstradebypart
   # GIANT #8 (2026-08-09, #70): 109,956,508 obs / 8,589,597 series; depth-2 DOT-prefix
   # table grain (16,103 catalog ids). Measured over the full store: depth-1 = 64 prefixes
