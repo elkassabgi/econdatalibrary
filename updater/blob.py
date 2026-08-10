@@ -468,6 +468,23 @@ class R2Blob:
             raise
         return (resp.get("ETag") or "").strip('"') or None
 
+    def size(self, key: str) -> int | None:
+        """Stored byte length, or None if the object does not exist.
+
+        Used by push_state's shrink guard: "is what I am about to overwrite
+        substantial?" is a question only the remote can answer, and judging the
+        local file against fixed thresholds instead got every legitimate seed
+        refused (R407 follow-up).
+        """
+        from botocore.exceptions import ClientError
+        try:
+            resp = self.client.head_object(Bucket=self.bucket, Key=key)
+        except ClientError as e:
+            if _is_404(e):
+                return None
+            raise
+        return resp.get("ContentLength")
+
     def exists(self, key: str) -> bool:
         return self.etag(key) is not None
 
