@@ -16,7 +16,7 @@
 
 import type { Env, SourceRow, LicenseRow, SeriesRow, SeriesIdRow } from "./types";
 import { SELECT_SOURCE, SELECT_LICENSE, SELECT_SERIES, SERIES_IDS_FOR_SOURCE } from "./sql";
-import { json, badRequest, licenseBlock, supportedSources, sourceOf } from "./util";
+import { json, badRequest, licenseBlock, supportedSources, sourceOf, dbFor, dbForSeries } from "./util";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
 
 const PROFILE = "tabular-data-package";
@@ -79,7 +79,7 @@ export async function handleBundle(url: URL, env: Env): Promise<Response> {
     if (NON_REDISTRIBUTABLE.has(source)) {
       return badRequest(`source '${source}' cannot be bundled: its licence forbids re-hosting (HTTP 451)`);
     }
-    const res = await env.CATALOG.prepare(SERIES_IDS_FOR_SOURCE).bind(source).all<SeriesIdRow>();
+    const res = await dbFor(env, source).prepare(SERIES_IDS_FOR_SOURCE).bind(source).all<SeriesIdRow>();
     ids = (res.results ?? []).map((r) => r.series_id);
     if (ids.length === 0) return badRequest(`no catalog series found for source '${source}'`);
   }
@@ -108,7 +108,7 @@ export async function handleBundle(url: URL, env: Env): Promise<Response> {
     }
     // Canonical order (CONTRACT.md v1.1, matches the dev shim): catalog membership
     // FIRST -> not_found for an unknown id; THEN resolver support -> not_migrated.
-    const row = await env.CATALOG.prepare(SELECT_SERIES).bind(id).first<SeriesRow>();
+    const row = await dbForSeries(env, id).prepare(SELECT_SERIES).bind(id).first<SeriesRow>();
     if (!row) {
       unresolved.push({ id, reason: "not_found: unknown series id" });
       continue;
