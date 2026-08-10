@@ -53,7 +53,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 335   # 285-min step + ~50-min tail (see Run updater's comment)
     # Write is needed only by the heartbeat step, which injects the token itself.
     permissions:
       contents: write
@@ -198,7 +198,17 @@ jobs:
         # digest, which together took about 5 minutes on that run. When this fires the
         # updater loses its tail; every source it already completed keeps its state, and the
         # unreached ones are simply not-yet-due next run. That is a normal partial pass.
-        timeout-minutes: 250
+        #
+        # RAISED 250 -> 285 on 2026-08-10 (task #130's trigger): runs 31299238892 and
+        # 31364561905 BOTH hit the 250-minute kill on consecutive days — the 08-10 run's
+        # update pass alone took ~205 min (09:59 -> 13:24) and its self-heal derive was
+        # killed 44 min in at 13,500 CSVs, still healthy (failed 0). Two data points, not
+        # one, per the second-timeout rule. The job cap moves 300 -> 335 in the same edit,
+        # preserving the ~50-minute tail margin the paragraph above reasons about. The
+        # 08-09 run's job-level cancel also cost that day's state push; a step kill (which
+        # always() survives) is strictly cheaper than a job kill, so the step must stay
+        # comfortably below the job.
+        timeout-minutes: 285
         # Inputs are passed via env (not inlined into the command) so a crafted
         # 'source' value cannot inject shell syntax, and so the boolean dry_run
         # never renders as a literal "false" argument (GH expression pitfall).
