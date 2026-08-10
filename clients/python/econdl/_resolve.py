@@ -1668,6 +1668,13 @@ _DOT_TABLE_GRAIN = {"unctad_intratrade", "unctad_tradeservcattotal",
                     "unctad_creativegoodsgr",
                     "unctad_oceantrade",
                     "unctad_criticalmineralstradebypart",
+                    # giant #9, added 2026-08-10: keys are
+                    # Economy.Partner.Flow.Category.Measure, catalogue id = Economy.Partner.
+                    # Grain measured over the FULL 14,337,747-row store: depth-1 208 ids
+                    # (max 581,450 rows — unusable), depth-2 9,243 (p50 82, max 12,675),
+                    # depth-3 18,419 (double the ids for half the table), depth-4 496,132
+                    # (62% of D1's whole remaining headroom). Depth-2 is the collapse point.
+                    "unctad_tradeservcatbypartner",
     "unctad_nonplasticsubststradebypartner"}
 
 
