@@ -50,6 +50,9 @@ MIN_SHARED = 3
 FLOOR = 0.90
 MARGIN = 0.05
 RTOL = 1e-6
+# A (period,value) pair shared by more than this many candidate series is treated as
+# non-discriminating and ignored when building the match pool. See crosswalk().
+MAX_FANOUT = 200
 
 
 def _period(dates: list) -> list:
@@ -146,6 +149,19 @@ def crosswalk(legacy: dict, cand: dict) -> dict:
     for key, obs in cand.items():
         for dt, v in obs.items():
             index[(dt, round(v, 9))].append(key)
+
+    # Drop degenerate buckets. Values like 0, 100 or -1 recur across thousands of
+    # series and carry NO identifying information, but they dominate the candidate
+    # pool: without this the first batch run over 37 pairs was still spinning after
+    # an hour, because every legacy series was scoring against tens of thousands of
+    # candidates. A (period, value) shared this widely cannot discriminate, and any
+    # true match will still be found through its OTHER, rarer observations.
+    dropped = {k: len(v) for k, v in index.items() if len(v) > MAX_FANOUT}
+    for k in dropped:
+        del index[k]
+    if dropped:
+        print(f"  [index] ignored {len(dropped):,} non-discriminating (period,value) "
+              f"buckets shared by >{MAX_FANOUT} series (largest {max(dropped.values()):,})")
 
     verdicts = {"MATCHED": [], "AMBIGUOUS": [], "UNMATCHED": [], "NO-OVERLAP": [],
                 "TOO-SHORT": []}
