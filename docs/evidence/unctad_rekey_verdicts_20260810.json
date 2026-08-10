@@ -1,0 +1,520 @@
+[
+ {
+  "legacy": "unctad_gasbtbia",
+  "candidate": "unctad_goodsandservbalancebpm6",
+  "n_legacy": 3402,
+  "n_candidate": 3352,
+  "counts": {
+   "MATCHED": 70,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 431,
+   "NO-OVERLAP": 2897,
+   "TOO-SHORT": 4
+  },
+  "verdict": "PARTIAL (70/3398 covered \u2014 legacy holds 3328 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_gasbeaiogasa",
+  "candidate": "unctad_goodsandservbalancebpm6",
+  "n_legacy": 5076,
+  "n_candidate": 3352,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 1208,
+   "NO-OVERLAP": 3859,
+   "TOO-SHORT": 9
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_sbtisvsaga",
+  "candidate": "unctad_goodsandservicesbpm6",
+  "n_legacy": 7920,
+  "n_candidate": 3334,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 7908,
+   "TOO-SHORT": 12
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_sbeaiotsvsaga",
+  "candidate": "unctad_goodsandservicesbpm6",
+  "n_legacy": 3010,
+  "n_candidate": 3334,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 1,
+   "NO-OVERLAP": 3005,
+   "TOO-SHORT": 4
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_bopcaba",
+  "candidate": "unctad_curraccbalance",
+  "n_legacy": 842,
+  "n_candidate": 558,
+  "counts": {
+   "MATCHED": 9,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 165,
+   "NO-OVERLAP": 666,
+   "TOO-SHORT": 2
+  },
+  "verdict": "PARTIAL (9/840 covered \u2014 legacy holds 831 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_cpia",
+  "candidate": "unctad_cpi_annual",
+  "n_legacy": 637,
+  "n_candidate": 560,
+  "counts": {
+   "MATCHED": 113,
+   "AMBIGUOUS": 3,
+   "UNMATCHED": 31,
+   "NO-OVERLAP": 489,
+   "TOO-SHORT": 1
+  },
+  "verdict": "PARTIAL (116/636 covered \u2014 legacy holds 520 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_cpa",
+  "candidate": "unctad_commoditypricea",
+  "n_legacy": 50,
+  "n_candidate": 50,
+  "counts": {
+   "MATCHED": 50,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 0,
+   "TOO-SHORT": 0
+  },
+  "verdict": "DUPLICATE (lossless to retire; 50/50 uniquely re-keyable)"
+ },
+ {
+  "legacy": "unctad_fmcpa",
+  "candidate": "unctad_commoditypricea",
+  "n_legacy": 50,
+  "n_candidate": 50,
+  "counts": {
+   "MATCHED": 47,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 3,
+   "NO-OVERLAP": 0,
+   "TOO-SHORT": 0
+  },
+  "verdict": "PARTIAL (47/50 covered \u2014 legacy holds 3 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_fmcpia21",
+  "candidate": "unctad_commoditypriceindicesa",
+  "n_legacy": 14,
+  "n_candidate": 28,
+  "counts": {
+   "MATCHED": 8,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 6,
+   "NO-OVERLAP": 0,
+   "TOO-SHORT": 0
+  },
+  "verdict": "PARTIAL (8/14 covered \u2014 legacy holds 6 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_cpta",
+  "candidate": "unctad_contportthroughput",
+  "n_legacy": 177,
+  "n_candidate": 202,
+  "counts": {
+   "MATCHED": 1,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 47,
+   "NO-OVERLAP": 127,
+   "TOO-SHORT": 2
+  },
+  "verdict": "PARTIAL (1/175 covered \u2014 legacy holds 174 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_lscia",
+  "candidate": "unctad_lsci",
+  "n_legacy": 344,
+  "n_candidate": 764,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 342,
+   "TOO-SHORT": 2
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_lsciq",
+  "candidate": "unctad_lscim",
+  "n_legacy": 760,
+  "n_candidate": 563,
+  "counts": {
+   "MATCHED": 12,
+   "AMBIGUOUS": 13,
+   "UNMATCHED": 115,
+   "NO-OVERLAP": 620,
+   "TOO-SHORT": 0
+  },
+  "verdict": "PARTIAL (25/760 covered \u2014 legacy holds 735 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_mfbcoboa",
+  "candidate": "unctad_fleetbeneficialowners",
+  "n_legacy": 155,
+  "n_candidate": 22680,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 0,
+   "TOO-SHORT": 155
+  },
+  "verdict": "UNJUDGEABLE (every series too short to value-verify)"
+ },
+ {
+  "legacy": "unctad_srbca",
+  "candidate": "unctad_merchantfleet",
+  "n_legacy": 414,
+  "n_candidate": 9800,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 38,
+   "NO-OVERLAP": 362,
+   "TOO-SHORT": 14
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_sotwmfvbcoboa",
+  "candidate": "unctad_vesselvaluebyownership",
+  "n_legacy": 373,
+  "n_candidate": 248,
+  "counts": {
+   "MATCHED": 179,
+   "AMBIGUOUS": 14,
+   "UNMATCHED": 59,
+   "NO-OVERLAP": 111,
+   "TOO-SHORT": 10
+  },
+  "verdict": "PARTIAL (193/363 covered \u2014 legacy holds 170 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_tabpcioeaia",
+  "candidate": "unctad_concentdiversindices",
+  "n_legacy": 308,
+  "n_candidate": 1824,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 300,
+   "TOO-SHORT": 8
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_tabmcioeaiopa",
+  "candidate": "unctad_concentstructindices",
+  "n_legacy": 4250,
+  "n_candidate": 1532,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 4250,
+   "TOO-SHORT": 0
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_tabmscioeaiopa",
+  "candidate": "unctad_concentstructindices",
+  "n_legacy": 4250,
+  "n_candidate": 1532,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 4250,
+   "TOO-SHORT": 0
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_mmcascioeaiopa",
+  "candidate": "unctad_concentstructindices",
+  "n_legacy": 86,
+  "n_candidate": 1532,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 86,
+   "TOO-SHORT": 0
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_soigapotta",
+  "candidate": "unctad_ictgoods",
+  "n_legacy": 1226,
+  "n_candidate": 1374779,
+  "counts": {
+   "MATCHED": 2,
+   "AMBIGUOUS": 10,
+   "UNMATCHED": 73,
+   "NO-OVERLAP": 1071,
+   "TOO-SHORT": 70
+  },
+  "verdict": "PARTIAL (12/1156 covered \u2014 legacy holds 1144 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_cioiuibbicoeair4a",
+  "candidate": "unctad_ictuseeconactivityisic4",
+  "n_legacy": 15,
+  "n_candidate": 20708,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 10,
+   "TOO-SHORT": 5
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_gdptapccac2pa",
+  "candidate": "unctad_gdptotal",
+  "n_legacy": 1734,
+  "n_candidate": 1785,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 1,
+   "NO-OVERLAP": 1733,
+   "TOO-SHORT": 0
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_rgdptapcgra",
+  "candidate": "unctad_gdptotal",
+  "n_legacy": 867,
+  "n_candidate": 1785,
+  "counts": {
+   "MATCHED": 43,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 113,
+   "NO-OVERLAP": 711,
+   "TOO-SHORT": 0
+  },
+  "verdict": "PARTIAL (43/867 covered \u2014 legacy holds 824 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_taupa",
+  "candidate": "unctad_poptotal",
+  "n_legacy": 898,
+  "n_candidate": 954,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 10,
+   "UNMATCHED": 3,
+   "NO-OVERLAP": 885,
+   "TOO-SHORT": 0
+  },
+  "verdict": "PARTIAL (10/898 covered \u2014 legacy holds 888 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_gdpgbtoevbkoeatasa",
+  "candidate": "unctad_gdpcomponent",
+  "n_legacy": 21158,
+  "n_candidate": 16653,
+  "counts": {
+   "MATCHED": 505,
+   "AMBIGUOUS": 10,
+   "UNMATCHED": 1890,
+   "NO-OVERLAP": 18740,
+   "TOO-SHORT": 13
+  },
+  "verdict": "PARTIAL (515/21145 covered \u2014 legacy holds 20630 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_fdiiaofasa",
+  "candidate": "unctad_fdiflowsstock",
+  "n_legacy": 5107,
+  "n_candidate": 2150,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 4,
+   "UNMATCHED": 116,
+   "NO-OVERLAP": 4960,
+   "TOO-SHORT": 27
+  },
+  "verdict": "PARTIAL (4/5080 covered \u2014 legacy holds 5076 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_mttasa",
+  "candidate": "unctad_trademerchtotal",
+  "n_legacy": 704,
+  "n_candidate": 1220,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 2,
+   "UNMATCHED": 9,
+   "NO-OVERLAP": 693,
+   "TOO-SHORT": 0
+  },
+  "verdict": "PARTIAL (2/704 covered \u2014 legacy holds 702 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_mttgra",
+  "candidate": "unctad_trademerchgr",
+  "n_legacy": 351,
+  "n_candidate": 1754,
+  "counts": {
+   "MATCHED": 212,
+   "AMBIGUOUS": 11,
+   "UNMATCHED": 64,
+   "NO-OVERLAP": 64,
+   "TOO-SHORT": 0
+  },
+  "verdict": "PARTIAL (223/351 covered \u2014 legacy holds 128 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_mtba",
+  "candidate": "unctad_trademerchbalance",
+  "n_legacy": 584,
+  "n_candidate": 610,
+  "counts": {
+   "MATCHED": 217,
+   "AMBIGUOUS": 6,
+   "UNMATCHED": 79,
+   "NO-OVERLAP": 282,
+   "TOO-SHORT": 0
+  },
+  "verdict": "PARTIAL (223/584 covered \u2014 legacy holds 361 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_mpcadioeaia",
+  "candidate": "unctad_concentdiversindices",
+  "n_legacy": 816,
+  "n_candidate": 1824,
+  "counts": {
+   "MATCHED": 161,
+   "AMBIGUOUS": 100,
+   "UNMATCHED": 555,
+   "NO-OVERLAP": 0,
+   "TOO-SHORT": 0
+  },
+  "verdict": "PARTIAL (261/816 covered \u2014 legacy holds 555 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_wstbtocabgoea",
+  "candidate": "unctad_seabornetrade",
+  "n_legacy": 8,
+  "n_candidate": 2725,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 8,
+   "TOO-SHORT": 0
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_ciocgeaia",
+  "candidate": "unctad_creativegoodsvalue",
+  "n_legacy": 8,
+  "n_candidate": 5487666,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 8,
+   "TOO-SHORT": 0
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_neera",
+  "candidate": "unctad_exchangeratecrosstab",
+  "n_legacy": 280,
+  "n_candidate": 55513,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 280,
+   "TOO-SHORT": 0
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_reericba",
+  "candidate": "unctad_exchangeratecrosstab",
+  "n_legacy": 352,
+  "n_candidate": 55513,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 351,
+   "TOO-SHORT": 1
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_reerigdba",
+  "candidate": "unctad_exchangeratecrosstab",
+  "n_legacy": 333,
+  "n_candidate": 55513,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 0,
+   "NO-OVERLAP": 333,
+   "TOO-SHORT": 0
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ },
+ {
+  "legacy": "unctad_tabbapotta",
+  "candidate": "unctad_biotrademerchshare",
+  "n_legacy": 29358,
+  "n_candidate": 144552,
+  "counts": {
+   "MATCHED": 1540,
+   "AMBIGUOUS": 823,
+   "UNMATCHED": 6041,
+   "NO-OVERLAP": 19649,
+   "TOO-SHORT": 1305
+  },
+  "verdict": "PARTIAL (2363/28053 covered \u2014 legacy holds 25690 series the candidate does not; KEEP)"
+ },
+ {
+  "legacy": "unctad_rfia",
+  "candidate": "unctad_rca",
+  "n_legacy": 24720,
+  "n_candidate": 57535,
+  "counts": {
+   "MATCHED": 0,
+   "AMBIGUOUS": 0,
+   "UNMATCHED": 3,
+   "NO-OVERLAP": 24717,
+   "TOO-SHORT": 0
+  },
+  "verdict": "REFUTED (different data \u2014 do NOT re-key)"
+ }
+]
