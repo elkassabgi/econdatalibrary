@@ -13,7 +13,7 @@ import {
   SEARCH_FTS_SOURCE, SEARCH_FTS_SOURCE_COUNT, SEARCH_LIKE_SOURCE, SEARCH_LIKE_SOURCE_COUNT,
   BROWSE_SOURCE, BROWSE_SOURCE_COUNT, BROWSE_ALL, BROWSE_ALL_COUNT,
 } from "./sql";
-import { json, clampInt, offsetInt, reqLang, localizedTitle } from "./util";
+import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor } from "./util";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
 
 const COVERAGE = "series-level for 33 sources; source-level for the rest";
@@ -42,6 +42,16 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
   let results: CatalogResultRow[] = [];
   let total = 0;
 
+  // Sharding (util.ts, task #45): source-scoped queries route to the shard that
+  // holds that source; GLOBAL queries hit BOTH databases and merge, or sharded
+  // sources silently vanish from search/browse. Merge strategy: fetch the first
+  // (offset+limit) window from each DB, concatenate primary-then-shard (browse
+  // re-sorts by series_id, the unscoped SQL's order), slice the window, and SUM
+  // the counts. Deep offsets cost proportionally on both DBs; limit is capped
+  // at 500 and real offsets are shallow, so this stays bounded.
+  const scopedDb = dbFor(env, src);
+  const window = limit + offset;
+
   if (q && q.trim()) {
     // FTS5 primary path. D1 raises on a malformed MATCH expression, so we catch
     // and fall back to LIKE -- mirroring the Python try/except OperationalError.
@@ -50,42 +60,73 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
     // silently ignored source whenever q was present.
     let ftsOk = false;
     try {
-      const res = src
-        ? await env.CATALOG.prepare(SEARCH_FTS_SOURCE).bind(q, src, limit, offset).all<CatalogResultRow>()
-        : await env.CATALOG.prepare(SEARCH_FTS).bind(q, limit, offset).all<CatalogResultRow>();
-      results = res.results ?? [];
-      if (results.length > 0) {
-        const c = src
-          ? await env.CATALOG.prepare(SEARCH_FTS_SOURCE_COUNT).bind(q, src).first<CountRow>()
-          : await env.CATALOG.prepare(SEARCH_FTS_COUNT).bind(q).first<CountRow>();
-        total = c?.n ?? results.length;
-        ftsOk = true;
+      if (src) {
+        const res = await scopedDb.prepare(SEARCH_FTS_SOURCE).bind(q, src, limit, offset).all<CatalogResultRow>();
+        results = res.results ?? [];
+        if (results.length > 0) {
+          const c = await scopedDb.prepare(SEARCH_FTS_SOURCE_COUNT).bind(q, src).first<CountRow>();
+          total = c?.n ?? results.length;
+          ftsOk = true;
+        }
+      } else {
+        const [p, sh] = await Promise.all([
+          env.CATALOG.prepare(SEARCH_FTS).bind(q, window, 0).all<CatalogResultRow>(),
+          env.CATALOG_CLIMATE.prepare(SEARCH_FTS).bind(q, window, 0).all<CatalogResultRow>(),
+        ]);
+        const merged = [...(p.results ?? []), ...(sh.results ?? [])];
+        results = merged.slice(offset, offset + limit);
+        if (results.length > 0) {
+          const [cp, cs] = await Promise.all([
+            env.CATALOG.prepare(SEARCH_FTS_COUNT).bind(q).first<CountRow>(),
+            env.CATALOG_CLIMATE.prepare(SEARCH_FTS_COUNT).bind(q).first<CountRow>(),
+          ]);
+          total = (cp?.n ?? 0) + (cs?.n ?? 0);
+          ftsOk = true;
+        }
       }
     } catch {
       ftsOk = false; // malformed FTS query -> LIKE fallback below
     }
     if (!ftsOk) {
       const like = `%${q}%`;
-      const res = src
-        ? await env.CATALOG.prepare(SEARCH_LIKE_SOURCE).bind(like, like, src, limit, offset).all<CatalogResultRow>()
-        : await env.CATALOG.prepare(SEARCH_LIKE).bind(like, like, limit, offset).all<CatalogResultRow>();
-      results = res.results ?? [];
-      const c = src
-        ? await env.CATALOG.prepare(SEARCH_LIKE_SOURCE_COUNT).bind(like, like, src).first<CountRow>()
-        : await env.CATALOG.prepare(SEARCH_LIKE_COUNT).bind(like, like).first<CountRow>();
-      total = c?.n ?? results.length;
+      if (src) {
+        const res = await scopedDb.prepare(SEARCH_LIKE_SOURCE).bind(like, like, src, limit, offset).all<CatalogResultRow>();
+        results = res.results ?? [];
+        const c = await scopedDb.prepare(SEARCH_LIKE_SOURCE_COUNT).bind(like, like, src).first<CountRow>();
+        total = c?.n ?? results.length;
+      } else {
+        const [p, sh] = await Promise.all([
+          env.CATALOG.prepare(SEARCH_LIKE).bind(like, like, window, 0).all<CatalogResultRow>(),
+          env.CATALOG_CLIMATE.prepare(SEARCH_LIKE).bind(like, like, window, 0).all<CatalogResultRow>(),
+        ]);
+        results = [...(p.results ?? []), ...(sh.results ?? [])].slice(offset, offset + limit);
+        const [cp, cs] = await Promise.all([
+          env.CATALOG.prepare(SEARCH_LIKE_COUNT).bind(like, like).first<CountRow>(),
+          env.CATALOG_CLIMATE.prepare(SEARCH_LIKE_COUNT).bind(like, like).first<CountRow>(),
+        ]);
+        total = (cp?.n ?? 0) + (cs?.n ?? 0);
+      }
     }
   } else if (src) {
-    const res = await env.CATALOG.prepare(BROWSE_SOURCE)
+    const res = await scopedDb.prepare(BROWSE_SOURCE)
       .bind(src, limit, offset).all<CatalogResultRow>();
     results = res.results ?? [];
-    const c = await env.CATALOG.prepare(BROWSE_SOURCE_COUNT).bind(src).first<CountRow>();
+    const c = await scopedDb.prepare(BROWSE_SOURCE_COUNT).bind(src).first<CountRow>();
     total = c?.n ?? results.length;
   } else {
-    const res = await env.CATALOG.prepare(BROWSE_ALL).bind(limit, offset).all<CatalogResultRow>();
-    results = res.results ?? [];
-    const c = await env.CATALOG.prepare(BROWSE_ALL_COUNT).first<CountRow>();
-    total = c?.n ?? results.length;
+    const [p, sh] = await Promise.all([
+      env.CATALOG.prepare(BROWSE_ALL).bind(window, 0).all<CatalogResultRow>(),
+      env.CATALOG_CLIMATE.prepare(BROWSE_ALL).bind(window, 0).all<CatalogResultRow>(),
+    ]);
+    // BROWSE_ALL orders by series_id; restore that order across the two windows.
+    const merged = [...(p.results ?? []), ...(sh.results ?? [])]
+      .sort((a, b) => (a.series_id < b.series_id ? -1 : a.series_id > b.series_id ? 1 : 0));
+    results = merged.slice(offset, offset + limit);
+    const [cp, cs] = await Promise.all([
+      env.CATALOG.prepare(BROWSE_ALL_COUNT).first<CountRow>(),
+      env.CATALOG_CLIMATE.prepare(BROWSE_ALL_COUNT).first<CountRow>(),
+    ]);
+    total = (cp?.n ?? 0) + (cs?.n ?? 0);
   }
 
   const mapped = results.map((r) => {

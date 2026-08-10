@@ -50,7 +50,7 @@ import type { Env, SeriesRow, SourceRow, LicenseRow } from "./types";
 import { SELECT_SERIES, SELECT_SOURCE, SELECT_LICENSE } from "./sql";
 import {
   csv, notFound, notMigrated, dataUnavailable, resolverEmpty, unsupportedFilter,
-  badRequest, supportedSources, sourceOf, licenseBlock,
+  badRequest, supportedSources, sourceOf, licenseBlock, dbForSeries,
 } from "./util";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -150,7 +150,7 @@ async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Pr
 
 export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Promise<Response> {
   // 1) catalog membership (404 if unknown).
-  const series = await env.CATALOG.prepare(SELECT_SERIES).bind(seriesId).first<SeriesRow>();
+  const series = await dbForSeries(env, seriesId).prepare(SELECT_SERIES).bind(seriesId).first<SeriesRow>();
   if (!series) return notFound(seriesId);
 
   // 2) resolver coverage (501 if the source has no at-rest resolver).

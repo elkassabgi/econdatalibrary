@@ -11,6 +11,11 @@ export interface Env {
   // See README.md "Provisioning".
   CATALOG: D1Database;
 
+  // D1 shard for SHARDED_SOURCES (util.ts, task #45): their series + series_fts
+  // rows live here because the primary hit its 10 GB per-database ceiling.
+  // source/license/unit_state/source_state rows for those sources stay in CATALOG.
+  CATALOG_CLIMATE: D1Database;
+
   // R2 bucket holding the per-series CSV objects the .csv handler streams.
   // Object key = "series/" + encodeURIComponent(series_id) + ".csv"
   // (see src/series.ts header for the honest design rationale).

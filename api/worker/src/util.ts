@@ -463,6 +463,24 @@ export function sourceOf(seriesId: string): string {
   return i === -1 ? seriesId : seriesId.slice(0, i);
 }
 
+// --- D1 SHARDING (task #45). The primary econ-catalog measured 9.35 GB of its
+// 10 GB per-database ceiling; these sources' `series` + `series_fts` rows live in
+// the CATALOG_CLIMATE shard instead. Their `source`/`license` rows stay in the
+// PRIMARY (so /v1/sources and provenance need no cross-DB union), and
+// unit_state/source_state stay primary too (the state sync only targets it).
+// Every series-table query must therefore route through dbFor()/dbForSeries();
+// GLOBAL series queries (unscoped search/browse/counts) must hit BOTH databases
+// and merge, or sharded sources silently vanish from search — see catalog.ts.
+export const SHARDED_SOURCES: ReadonlySet<string> = new Set(["noaa"]);
+
+export function dbFor(env: Env, source: string | null | undefined): D1Database {
+  return source && SHARDED_SOURCES.has(source) ? env.CATALOG_CLIMATE : env.CATALOG;
+}
+
+export function dbForSeries(env: Env, seriesId: string): D1Database {
+  return dbFor(env, sourceOf(seriesId));
+}
+
 export function supportedSources(env: Env): Set<string> {
   if (env.SUPPORTED_SOURCES && env.SUPPORTED_SOURCES.trim()) {
     return new Set(env.SUPPORTED_SOURCES.split(",").map((s) => s.trim()).filter(Boolean));

@@ -76,8 +76,14 @@ export default {
         // in code). The measured census results live in R2 at _aqueduct/stats.json
         // — a fresh census re-uploads that object and every consumer (this
         // endpoint, the sites, the MCP server) updates with zero deploys.
-        const cat = await env.CATALOG.prepare("SELECT COUNT(*) AS c FROM series")
-          .first<{ c: number }>();
+        // Catalogue entries = PRIMARY + CLIMATE SHARD (task #45): noaa's series
+        // rows live in CATALOG_CLIMATE, so a primary-only count silently drops
+        // 3.1M entries the moment the shard migration lands.
+        const [catP, catS] = await Promise.all([
+          env.CATALOG.prepare("SELECT COUNT(*) AS c FROM series").first<{ c: number }>(),
+          env.CATALOG_CLIMATE.prepare("SELECT COUNT(*) AS c FROM series").first<{ c: number }>(),
+        ]);
+        const cat = { c: (catP?.c ?? 0) + (catS?.c ?? 0) };
         const obj = await env.SERIES_BUCKET.get("_aqueduct/stats.json");
         if (obj === null) {
           return json({

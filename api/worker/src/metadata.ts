@@ -16,7 +16,7 @@
 
 import type { Env, SeriesRow, SourceRow, LicenseRow, LastUpdateRow } from "./types";
 import { SELECT_SERIES, SELECT_SOURCE, SELECT_LICENSE, UNIT_STATE_FOR_SOURCE } from "./sql";
-import { json, notFound, licenseBlock, sourceOf, localizedTitle } from "./util";
+import { json, notFound, licenseBlock, sourceOf, localizedTitle, dbForSeries } from "./util";
 
 interface SeriesMeta {
   citation?: string;
@@ -29,7 +29,7 @@ interface SeriesMeta {
 }
 
 export async function handleMetadata(seriesId: string, env: Env, lang = "en"): Promise<Response> {
-  const series = await env.CATALOG.prepare(SELECT_SERIES).bind(seriesId).first<SeriesRow>();
+  const series = await dbForSeries(env, seriesId).prepare(SELECT_SERIES).bind(seriesId).first<SeriesRow>();
   if (!series) return notFound(seriesId);
 
   const source = sourceOf(seriesId);
