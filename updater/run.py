@@ -193,6 +193,12 @@ def pull_state() -> int:
     return 0
 
 
+# Compressed bytes above which the remote state store counts as authoritative and
+# is protected from being overwritten by a shrunken local copy (R407). The real
+# store is ~10 MB compressed; test fixtures and genuine first seeds are a few KB.
+_SUBSTANTIAL_REMOTE = 200_000
+
+
 def push_state() -> int:
     """VACUUM INTO + zstd-compress state.db, compare-and-swap upload to R2.
 
@@ -231,7 +237,14 @@ def push_state() -> int:
     # --- been replaced by an empty database (a lost/moved file makes SQLite mint a
     # --- fresh 4 KB one), CAS passes and this push WIPES the authoritative store.
     # --- Refuse on an implausible local state; --allow-shrink is the escape hatch.
-    if not os.environ.get("AQUEDUCT_ALLOW_SHRINK"):
+    # The guard's real question is "am I about to destroy something SUBSTANTIAL?",
+    # and only the remote can answer it. The first version asked "is the local file
+    # small?" instead, which refused every legitimate seed (a fresh machine's
+    # state.db has no source_state table at all) and turned the `tests` workflow
+    # red. Gate on the size of what would be overwritten: a trivial remote is not
+    # worth protecting, a real one is.
+    _remote_bytes = r2.size(STATE_KEY) or 0
+    if _remote_bytes >= _SUBSTANTIAL_REMOTE and not os.environ.get("AQUEDUCT_ALLOW_SHRINK"):
         local_bytes = os.path.getsize(config.STATE_DB) if os.path.exists(config.STATE_DB) else 0
         try:
             _c = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=30)

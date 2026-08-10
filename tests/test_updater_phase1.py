@@ -255,7 +255,8 @@ class FakeS3:
     def head_object(self, Bucket, Key):
         if Key not in self.objs:
             raise _client_error("HeadObject")
-        return {"ETag": '"' + hashlib.md5(self.objs[Key]).hexdigest() + '"'}
+        return {"ETag": '"' + hashlib.md5(self.objs[Key]).hexdigest() + '"',
+                "ContentLength": len(self.objs[Key])}
 
 
 @pytest.fixture()
@@ -529,3 +530,71 @@ class TestRevisionSince:
         from updater.strategies.fetchers._common import revision_since
         assert revision_since("2026-07-03") == dt.date(2026, 6, 3)
         assert revision_since(dt.date(1900, 1, 5)) == dt.date(1900, 1, 1)  # floor
+
+
+class TestShrinkGuard:
+    """R407's guard, pinned in BOTH directions.
+
+    R407: a local state.db that had been replaced by an empty 4 KB database passed
+    compare-and-swap (CAS only proves nobody else moved the remote, not that the
+    local copy is still what we pulled) and would have wiped the authoritative
+    store. The guard added for it had no test, and its first version judged the
+    local file in ISOLATION — so it also refused every legitimate seed and turned
+    the whole `tests` workflow red until this pair was written.
+
+    One test alone cannot catch that: "refuses a tiny state" passes even if the
+    guard refuses everything, and "allows a seed" passes even if the guard is
+    deleted outright. Both are required.
+    """
+
+    def _seed_remote(self, fake_r2, monkeypatch, n_sources=200):
+        """Put a plausible authoritative state in R2 and record its etag locally.
+
+        The threshold is lowered for the test rather than inflating the fixture:
+        _SUBSTANTIAL_REMOTE is a POLICY value in production bytes (the real store is
+        ~10 MB compressed), and a fake state of any realistic row count still zstds
+        down to a few hundred bytes. Lowering it here keeps the test honest about
+        what it proves — the guard's LOGIC, not the calibration of the constant.
+        """
+        monkeypatch.setattr(runmod, "_SUBSTANTIAL_REMOTE", 100)
+        con = sqlite3.connect(fake_r2.state_db)
+        con.execute("CREATE TABLE IF NOT EXISTS source_state(source_id TEXT PRIMARY KEY)")
+        con.execute("CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY)")
+        con.executemany("INSERT OR REPLACE INTO source_state VALUES (?)",
+                        [(f"src{i}",) for i in range(n_sources)])
+        con.commit()
+        con.close()
+        assert runmod.push_state() == 0, "seeding a real state must succeed"
+
+    def test_seed_is_allowed_even_though_it_is_tiny(self, fake_r2):
+        """No remote object => nothing can be destroyed => a small state is CORRECT.
+
+        This is the case the first guard broke. The fixture's state.db has no
+        source_state table at all, which is exactly what a fresh machine has.
+        """
+        assert runmod.push_state() == 0
+        assert runmod.STATE_KEY in fake_r2.s3.objs
+
+    def test_shrink_over_a_real_remote_is_refused(self, fake_r2, monkeypatch):
+        """The R407 disaster itself: remote holds 200 sources, local is a fresh db."""
+        self._seed_remote(fake_r2, monkeypatch)
+        os.remove(fake_r2.state_db)                       # simulate the lost/moved file
+        con = sqlite3.connect(fake_r2.state_db)           # SQLite mints an empty one
+        con.execute("CREATE TABLE source_state(source_id TEXT PRIMARY KEY)")
+        con.execute("CREATE TABLE runs(id INTEGER PRIMARY KEY)")
+        con.commit()
+        con.close()
+        assert runmod.push_state() == 3, (
+            "an empty local state must NOT overwrite an authoritative remote")
+
+    def test_shrink_can_be_forced_deliberately(self, fake_r2, monkeypatch):
+        """The escape hatch has to work, or a real shrink becomes unperformable."""
+        self._seed_remote(fake_r2, monkeypatch)
+        os.remove(fake_r2.state_db)
+        con = sqlite3.connect(fake_r2.state_db)
+        con.execute("CREATE TABLE source_state(source_id TEXT PRIMARY KEY)")
+        con.execute("CREATE TABLE runs(id INTEGER PRIMARY KEY)")
+        con.commit()
+        con.close()
+        monkeypatch.setenv("AQUEDUCT_ALLOW_SHRINK", "1")
+        assert runmod.push_state() == 0
