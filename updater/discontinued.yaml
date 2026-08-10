@@ -255,3 +255,867 @@ sources:
       0.0% of 162 ids reproduce under ANY column ordering. AF was re-dimensioned; the old
       composite ids have no 1:1 successors.
     decision: Stays SERVED and frozen as archival.
+  - source_id: unctad_rfia
+    publisher: UNCTAD
+    dataset: >-
+      Number of exporters - "Long pile" knit or crochet textile fabric
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 24,720 series are covered by rca, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_gdpgbtoevbkoeatasa
+    publisher: UNCTAD
+    dataset: >-
+      Agriculture, hunting, forestry, fishing - ACP (African, Caribbean and Pacific Group of States) (Percentage of 
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 515 of 21,158 series are covered by gdpcomponent, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_sbtisvsaga
+    publisher: UNCTAD
+    dataset: >-
+      Annual – ACP (African, Caribbean and Pacific Group of States) – Memo item: Commercial services – Balance – Gro
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 7,920 series are covered by goodsandservicesbpm6, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_gasbtoia
+    publisher: UNCTAD
+    dataset: >-
+      Average of imports and exports - Total trade in goods - ACP (African, Caribbean and Pacific Group of States) (
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 12 of 6,776 series are covered by goodsandservtradeopennessbpm6, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_fdiiaofasa
+    publisher: UNCTAD
+    dataset: >-
+      Inward Flow - ACP (African, Caribbean and Pacific Group of States) (Percentage of Gross Domestic Product)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 4 of 5,107 series are covered by fdiflowsstock, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_gasbeaiogasa
+    publisher: UNCTAD
+    dataset: >-
+      Balance - Total trade in goods - ACP (African, Caribbean and Pacific Group of States) (Percentage of total tra
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 5,076 series are covered by goodsandservbalancebpm6, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_tabmcioeaiopa
+    publisher: UNCTAD
+    dataset: >-
+      Market concentration index - Exports - Acyclic alcohols
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 4,250 series are covered by concentstructindices, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_tabmscioeaiopa
+    publisher: UNCTAD
+    dataset: >-
+      Structural change index - Exports - Acyclic alcohols
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 4,250 series are covered by concentstructindices, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_gasbtbia
+    publisher: UNCTAD
+    dataset: >-
+      Balance - Total trade in goods - ACP (African, Caribbean and Pacific Group of States) (Normalized trade balanc
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 70 of 3,402 series are covered by goodsandservbalancebpm6, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_sbeaiotsvsaga
+    publisher: UNCTAD
+    dataset: >-
+      Memo item: Commercial services, Exports - ACP (African, Caribbean and Pacific Group of States) (Percentage cha
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 3,010 series are covered by goodsandservicesbpm6, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_gdptapccac2pa
+    publisher: UNCTAD
+    dataset: >-
+      US dollars at constant prices (2015) in millions - ACP (African, Caribbean and Pacific Group of States)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 1,734 series are covered by gdptotal, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_soigapotta
+    publisher: UNCTAD
+    dataset: >-
+      Exports of Total ICT goods - ACP (African, Caribbean and Pacific Group of States) (Percentage of total merchan
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 12 of 1,226 series are covered by ictgoods, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_taupa
+    publisher: UNCTAD
+    dataset: >-
+      Absolute value in thousands - ACP (African, Caribbean and Pacific Group of States)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 10 of 898 series are covered by poptotal, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_rgdptapcgra
+    publisher: UNCTAD
+    dataset: >-
+      Annual average growth rate - ACP (African, Caribbean and Pacific Group of States)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 43 of 867 series are covered by gdptotal, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_bopcaba
+    publisher: UNCTAD
+    dataset: >-
+      Balance of payments, Current account balance, annual - ACP (African, Caribbean and Pacific Group of States) (P
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 9 of 842 series are covered by curraccbalance, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_mpcadioeaia
+    publisher: UNCTAD
+    dataset: >-
+      Number of products, Exports - ACS (Association of Caribbean States)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 261 of 816 series are covered by concentdiversindices, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_lsciq
+    publisher: UNCTAD
+    dataset: >-
+      Growth rate (over previous period) - Albania
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 25 of 760 series are covered by lscim, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_mttasa
+    publisher: UNCTAD
+    dataset: >-
+      Exports - Afghanistan (Percentage of total world)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 2 of 704 series are covered by trademerchtotal, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_cpia
+    publisher: UNCTAD
+    dataset: >-
+      All items - ACP (African, Caribbean and Pacific Group of States) (Annual average growth rate)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 116 of 637 series are covered by cpi_annual, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_mtba
+    publisher: UNCTAD
+    dataset: >-
+      Merchandise: Trade balance, annual - Afghanistan (Percentage of imports)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 223 of 584 series are covered by trademerchbalance, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_srbca
+    publisher: UNCTAD
+    dataset: >-
+      Gross Tonnage - ACP (African, Caribbean and Pacific Group of States)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 414 series are covered by merchantfleet, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_sotwmfvbcoboa
+    publisher: UNCTAD
+    dataset: >-
+      Percentage of global fleet value - ACP (African, Caribbean and Pacific Group of States)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 193 of 373 series are covered by vesselvaluebyownership, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_reericba
+    publisher: UNCTAD
+    dataset: >-
+      Index Base 2005 - ACP (African, Caribbean and Pacific Group of States)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 352 series are covered by exchangeratecrosstab, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_mttgra
+    publisher: UNCTAD
+    dataset: >-
+      Exports - Africa (Annual average growth rate)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 223 of 351 series are covered by trademerchgr, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_lscia
+    publisher: UNCTAD
+    dataset: >-
+      Index (Maximum 2004=100) - Albania
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 344 series are covered by lsci, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_reerigdba
+    publisher: UNCTAD
+    dataset: >-
+      Real effective exchange rate indices (GDP deflator based), annual - ACP (African, Caribbean and Pacific Group 
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 333 series are covered by exchangeratecrosstab, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_tabpcioeaia
+    publisher: UNCTAD
+    dataset: >-
+      Product concentration index - Exports - ACP (African, Caribbean and Pacific Group of States)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 308 series are covered by concentdiversindices, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_neera
+    publisher: UNCTAD
+    dataset: >-
+      Nominal Effective Exchange Rate - ACP (African, Caribbean and Pacific Group of States) (Index Base 2000)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 280 series are covered by exchangeratecrosstab, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_cpta
+    publisher: UNCTAD
+    dataset: >-
+      Container port throughput - Albania (TEU (Twenty foot Equivalent Unit))
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 1 of 177 series are covered by contportthroughput, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_mfbcoboa
+    publisher: UNCTAD
+    dataset: >-
+      Merchant fleet by country of beneficial ownership - Albania - Total all flags
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 155 series are covered by fleetbeneficialowners, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_mmcascioeaiopa
+    publisher: UNCTAD
+    dataset: >-
+      Structural Change Index (1995=0) - Exports - Agricultural raw materials (SITC 2 less 22, 27 and 28)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 86 series are covered by concentstructindices, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_fmcpa
+    publisher: UNCTAD
+    dataset: >-
+      Prices - Bananas, Central America, Main Brands (average of US East and West Coast prices), FOR (US$/kg)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 47 of 50 series are covered by commoditypricea, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_cioiuibbicoeair4a
+    publisher: UNCTAD
+    dataset: >-
+      B10: Proportion of businesses with a local area network (LAN)
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 15 series are covered by ictuseeconactivityisic4, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_fmcpia21
+    publisher: UNCTAD
+    dataset: >-
+      Index Base 2015 - Agricultural raw materials
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 8 of 14 series are covered by commoditypriceindicesa, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_wstbtocabgoea
+    publisher: UNCTAD
+    dataset: >-
+      Crude oil loaded
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 8 series are covered by seabornetrade, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
+  - source_id: unctad_ciocgeaia
+    publisher: UNCTAD
+    dataset: >-
+      Concentration Index - All creative goods - Imports
+    measured: 2026-08-10
+    probe: >-
+      GET https://unctadstat-api.unctad.org/api/datacenter/en — UNCTADstat's own Data Centre
+      catalogue, the endpoint its SPA calls on load (found via config.js STATS_API + the page's
+      performance entries; no list endpoint is documented and every guessed path 404s). Enumerated
+      the FULL current catalogue, then diffed it against the 93 US.* dataset codes our fetchers
+      already bind. Separately value-verified this store against its closest served sibling with
+      tools/unctad_rekey_crosswalk.py (period-aligned, >=3 shared points, 0.90 agreement floor).
+    finding: >-
+      UNCTAD's entire live catalogue is 99 datasets; we already fetch 93, and the 6 unfetched are
+      the known giants (BiotradeMerch, TradeFoodCatByProc, TradeFoodProcByCat, TradeMatrix,
+      TradeServCatByPartner, TransportCosts). No current dataset carries this relay-era product,
+      so there is nothing upstream to re-key to. Values confirm the data is not redundant either:
+      only 0 of 8 series are covered by creativegoodsvalue, so retiring it would destroy unique
+      observations. UNCTAD discontinued this product in its data-hub rebuild.
+    decision: >-
+      Keep SERVED-FROZEN as archival. No fetcher can exist. Ahmed 2026-08-09 authorised a re-key
+      and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
+      day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
+      data.
