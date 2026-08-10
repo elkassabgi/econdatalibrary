@@ -140,7 +140,18 @@ def main() -> int:
         return 1
 
     # ---- skip-existing + PUT workers -------------------------------------------
-    s3 = r2_util.client(write=True)
+    # r2_util.client() leaves botocore's max_pool_connections at its default of 10,
+    # which silently caps ANY worker count at ~10 concurrent PUTs (measured ~22/s on
+    # the first launch — an 11-hour upload). Build the client here with a pool wider
+    # than the worker fleet; creds still come from the one place they live.
+    import boto3
+    from botocore.config import Config
+    _c = r2_util.creds(write=True)
+    s3 = boto3.client(
+        "s3", endpoint_url=_c["endpoint"], aws_access_key_id=_c["key"],
+        aws_secret_access_key=_c["secret"], region_name="auto",
+        config=Config(signature_version="s3v4", max_pool_connections=96,
+                      retries={"max_attempts": 5, "mode": "standard"}))
     existing: set[str] = set()
     lp = csv_key_prefix(PREFIX, SRC)
     tok = None
@@ -183,7 +194,7 @@ def main() -> int:
                 q.task_done()
 
     threads = []
-    for _ in range(24):
+    for _ in range(64):
         t = threading.Thread(target=worker, daemon=True)
         t.start(); threads.append(t)
 
