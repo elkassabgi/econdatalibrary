@@ -9239,6 +9239,39 @@ sources:
       merged into.
     key_env: none
     confidence: high
+- source_id: efw
+  # ADDED 2026-08-11 (task #131). Fraser Institute granted WRITTEN permission
+  # 2026-08-10 (DATABASE_LICENSES_VERBATIM.md "Economic Freedom of the World":
+  # NC re-host, attribution, link-back to efotw.org, ANNUAL refresh cadence).
+  # Store: clean_full/efw/efw.parquet, 2,145 series / 58,486 obs, 1970..2023.
+  # Endpoint is the one JSON the dataset page itself loads (probe-verified from
+  # the fetcher's own code path; vintage 9fda3b96... at registration).
+  # run_location: DEFAULT (cloud) on purpose — efotw.org served plain python+UA
+  # from this box; if the first CI run 403s (Cloudflare, whr's class), move to
+  # run_location: local citing the run id, not preemptively.
+  live: true
+  scripts:
+  - jobs/ingest_efw.py
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: >-
+    One API body carries the whole dataset and annual editions restate history
+    in place, so the honest change signal is a content hash of the body (the
+    endpoint exposes no reliable HTTP validators) and the correct write is a
+    full snapshot overwrite with a never-shrink guard.
+  cadence: irregular
+  # data_cadence: the EFW report is ANNUAL (each autumn); irregular polling just
+  # watches the 2.8 MB body cheaply between editions, honouring the grant's
+  # annual-refresh scope.
+  data_cadence: annual
+  refresh_cost: fast
+  out_dir: efw
+  review: true
+  adapter:
+    vintage_signal: >-
+      sha1 of GET https://efotw.org/api/v1/ftw_get_all_data — moves only when
+      Fraser revises the published dataset.
+    key_env: none
+    confidence: high
 - source_id: whr
   # RE-ADDED 2026-08-06 (cycle 35, Ahmed: "trim whr"). Removed 2026-07-22 with the
   # unpermitted-crawl purge; what re-adds it is the Gallup/WHR WRITTEN grant (2026-07-09,
