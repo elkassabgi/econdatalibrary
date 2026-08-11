@@ -25,8 +25,23 @@ EXCLUSIONS (each mirrors the serving layer, not an opinion):
 
 Writes stats.json locally (logs/stats-<date>.json kept as history), uploads to
 r2://econ-data/_aqueduct/stats.json, then verifies the LIVE endpoint flips its
-as_of. Run time is dominated by the census/eia key scans; threads capped at 24
-so concurrent pulls keep breathing room.
+as_of. Run time is dominated by the giant key scans; threads capped at 24 so
+concurrent pulls keep breathing room.
+
+R420 — TWO LESSONS THIS TOOL'S FIRST RUN PUBLISHED THE HARD WAY:
+  1. LOCAL DISK IS NOT THE COMPLETE STORE. The US census source's ~7.73B-series
+     grouped store lives on R2 ONLY (local clean_full/census is a 2.4 GB tail),
+     so a local-roots scan under-measures it by ~5 orders of magnitude. Until
+     this tool reads the R2-resident stores too, its totals are NOT comparable
+     to the 2026-07-02 census and MUST NOT be published.
+  2. statcan's keys are store-true but hero-hostile: the 2021 census-profile
+     tables carry ~32.85B one-observation coordinate cells (98100620.parquet:
+     894M rows, ~1.3B distinct keys). Whether those count as "series" in the
+     public number is the metric owner's call, not a scan default.
+PUBLISH GATE (mechanical, per R420): before uploading, fetch the CURRENTLY
+published object; if individual_series or observations moves >20%, REFUSE
+unless --force-publish. Running without --publish computes and writes history
+only — publishing is an explicit act, never a side effect of measuring.
 """
 from __future__ import annotations
 
@@ -135,7 +150,25 @@ def main() -> int:
         json.dump(detail, fh, indent=1)
     print(f"history written: {hist}")
 
+    if "--publish" not in sys.argv:
+        print("NOT PUBLISHED (measurement-only run; pass --publish to upload). "
+              "NOTE: totals exclude R2-resident stores — see the R420 header.")
+        return 0
+
+    # R420 publish gate: refuse a silent step-change against the live object.
     s3 = r2_util.client(write=True)
+    try:
+        cur = json.loads(s3.get_object(Bucket=BUCKET, Key=KEY)["Body"].read())
+    except Exception:                                        # noqa: BLE001
+        cur = None
+    if cur and "--force-publish" not in sys.argv:
+        for k in ("individual_series", "observations"):
+            old_v, new_v = cur.get(k) or 0, stats[k]
+            if old_v and abs(new_v - old_v) / old_v > 0.20:
+                print(f"REFUSING to publish: {k} moves {old_v:,} -> {new_v:,} "
+                      f"({(new_v - old_v) / old_v:+.0%}). Explain the delta, then "
+                      f"re-run with --force-publish if it is real.")
+                return 1
     s3.put_object(Bucket=BUCKET, Key=KEY, Body=json.dumps(stats).encode("utf-8"),
                   ContentType="application/json")
     print(f"uploaded r2://{BUCKET}/{KEY}")
