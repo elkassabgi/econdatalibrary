@@ -155,6 +155,42 @@ def _unit_timeout_min() -> float:
         return 45.0
 
 
+# The RUN ceiling, as an absolute wall-clock timestamp, shared by every phase.
+# Run 31466202723 (and the two 250-min kills before it) proved the phases'
+# INDIVIDUAL bounds do not compose: the start-gate stopped new units at 240 min,
+# but a unit started at minute 207 could still run 2x45 (probe+update SIGALRMs)
+# plus a 45-min derive — the sum crossed every step timeout and GitHub killed the
+# job mid-unit, turning a working-as-designed partial pass into a red run three
+# days straight. The gate now REFUSES to start a unit whose worst case would
+# cross this ceiling, and every derive call is capped by the time remaining.
+_RUN_DEADLINE_TS: float | None = None
+
+
+def _remaining_run_min() -> float | None:
+    if _RUN_DEADLINE_TS is None:
+        return None
+    return max(0.0, (_RUN_DEADLINE_TS - time.time()) / 60.0)
+
+
+def _capped_derive_budget() -> dict:
+    """kwargs for derive_and_put: budget capped by the run ceiling's remainder.
+
+    Note the clamp floor: derive.py treats budget_min=0 as 'disabled' (unbounded,
+    for deliberate backfills) — passing a raw 0 remainder would UNBOUND the derive
+    at exactly the moment it must not run at all. 0.05 min defers everything
+    immediately instead, which is the intended behaviour at the ceiling.
+    """
+    rem = _remaining_run_min()
+    if rem is None:
+        return {}
+    try:
+        env_b = float(os.environ.get("AQUEDUCT_DERIVE_BUDGET_MIN", "45") or 45)
+    except ValueError:
+        env_b = 45.0
+    cap = min(env_b, rem) if env_b > 0 else rem
+    return {"budget_min": max(0.05, cap)}
+
+
 class _unit_deadline:
     """Context manager arming SIGALRM for one unit; a no-op where unavailable."""
 
@@ -406,7 +442,8 @@ def _derive_changed_csvs(unit, res, blob):
             return [], (f"csv coherence unmet: {len(unmapped)} changed series_keys "
                         f"have no catalog mapping for {unit.source_id}: {why} (§5.7)"), []
         from . import derive  # lazy: lands with the derive work-package; missing => partial
-        out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob()) or {}
+        out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob(),
+                                    **_capped_derive_budget()) or {}
         # SPLIT budget-deferral from breakage. derive.py puts unreached ids in BOTH
         # `failed` (so the caller queues them for retry) and `deferred_ids`; its own log
         # already subtracts them ("failed {len(failed) - deferred}"), the orchestrator did
@@ -815,6 +852,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     except ValueError:
         run_budget_min = 240.0
     run_deadline = time.time() + run_budget_min * 60.0 if run_budget_min > 0 else None
+    global _RUN_DEADLINE_TS
+    _RUN_DEADLINE_TS = run_deadline
     budget_skipped = []
     protected_skipped = []
     wrong_location = []
@@ -863,8 +902,14 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         # AFTER the filters, deliberately: checked first it would count units that were
         # never in scope — a two-source dispatch reported "100 source(s) NOT ATTEMPTED".
         # A skip count is only meaningful over units that would otherwise have RUN.
-        if (run_deadline is not None and time.time() > run_deadline
+        if (run_deadline is not None
+                and time.time() + 2 * _unit_timeout_min() * 60.0 > run_deadline
                 and not (sources and len(sources) == 1)):
+            # WORST-CASE LOOKAHEAD, not a point check: a unit owns up to TWO
+            # per-unit SIGALRM windows (detect_change probe + update), so the
+            # question is "could this unit still be running past the ceiling?",
+            # not "has the ceiling passed?". worldbank_esg entered minute 207 of
+            # a 240 gate and ran 78 min into the 285-min step kill (31466202723).
             # Single-source dispatches are deliberate manual proofs — never cap those,
             # or a proof run would report success having skipped the source under test.
             budget_skipped.append(unit.source_id)
@@ -1084,7 +1129,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
                     from . import derive as _derive_mod
                     _out = _derive_mod.derive_and_put(
-                        _retry_ids, blob if blob is not None else _resolve_blob()) or {}
+                        _retry_ids, blob if blob is not None else _resolve_blob(),
+                        **_capped_derive_budget()) or {}
                     _refailed = set(str(s) for s in (_out.get("failed") or []))
                     _cleared = [s for s in _retry_ids if s not in _refailed]
                     if _cleared:
