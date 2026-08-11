@@ -51,7 +51,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // rule). verify 300/300 byte-identical through the bespoke pairs resolver before the flip.
   "cepii_baci",
   "cnb", "comtrade", "damodaran", "dbnomics", "defillama",
-  "ecb", "edgar_jrc", "ei_statreview", "eia", "ember", "epu",
+  "ecb", "edgar_jrc", "efw", "ei_statreview", "eia", "ember", "epu",
   "eurostat", "fao_ae", "fao_af", "fao_ec", "fao_ep",
   "fao_es", "fao_et", "fao_ew", "fao_fo", "fao_ga", "fao_gb",
   "fao_ge", "fao_gf", "fao_gl", "fao_gn", "fao_gr", "fao_gt",
