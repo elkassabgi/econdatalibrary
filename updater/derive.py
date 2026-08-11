@@ -71,7 +71,7 @@ def _put_with_retry(blob, key: str, body: bytes) -> bool:
     return False  # unreachable; keeps the contract explicit
 
 
-def derive_and_put(series_ids: list[str], blob) -> dict:
+def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None) -> dict:
     """Derive the contract CSV for each series id and PUT it via `blob`.
 
     blob: any updater/blob.py backend — only put_atomic(key, data: bytes) is used.
@@ -128,7 +128,12 @@ def derive_and_put(series_ids: list[str], blob) -> dict:
     #
     # 45 min matches the orchestrator's per-source cap, so a derive cannot outlive the source
     # slot that owns it. AQUEDUCT_DERIVE_BUDGET_MIN=0 disables it for a deliberate backfill.
-    budget_min = float(os.environ.get("AQUEDUCT_DERIVE_BUDGET_MIN", "45") or 45)
+    # The `budget_min` PARAMETER (run 31466202723's fix) lets the orchestrator cap this call
+    # by the RUN ceiling's remaining time — each phase was individually bounded (240 start
+    # gate + 2x45 unit SIGALRMs + 45 derive) but their SUM exceeded every step timeout, so
+    # three consecutive daily runs were step-killed mid-flight while working as designed.
+    if budget_min is None:
+        budget_min = float(os.environ.get("AQUEDUCT_DERIVE_BUDGET_MIN", "45") or 45)
     deadline = (time.monotonic() + budget_min * 60.0) if budget_min > 0 else None
 
     put = 0

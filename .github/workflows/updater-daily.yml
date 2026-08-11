@@ -119,6 +119,12 @@ jobs:
       # day in steady state. The manifest checkpoints per chunk, so a shorter budget defers
       # work rather than losing it.
       DST_BUDGET_MIN: "12"
+      # ONE ceiling for the whole run (31466202723 and the two kills before it):
+      # the orchestrator refuses to start a unit whose worst case (2x unit
+      # SIGALRM) would cross minute 270 and caps every derive by the remainder,
+      # so the run EXITS CLEANLY before the 285-min step timeout instead of
+      # being killed mid-unit. Step/job timeouts remain as backstops only.
+      AQUEDUCT_RUN_BUDGET_MIN: "270"
       AQUEDUCT_BACKEND: r2
       # Rollout perimeter: scheduled runs execute ONLY live: true sources.
       # (Learned from run 28682266857: without this, every due source with an
