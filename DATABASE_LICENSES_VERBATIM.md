@@ -29,6 +29,7 @@ The public terms the audit read may say 'permission required' for these, but we 
 - `comtrade` — GRANTED in writing (UN Comtrade): 'you can proceed'; holdings must stay <=100,000 records; cite 'UN Comtrade' + link.
 - `kof_globalization` — GRANTED in writing (Prof. Sturm, KOF/ETH Zurich): NC academic re-host; cite 'KOF, ETH Zurich' + link back.
 - `whr` — GRANTED in writing (Gallup/WHR) but SCOPED to the Figure 2.1 summary ONLY; currently re-gated pending trim to that scope.
+- `efw` — GRANTED in writing (Fraser Institute, 2026-08-10): NC re-host of the EFW index + component data with attribution + link-back. Verbatim record in the "Economic Freedom of the World" section near the end of this file. Source not yet built; grant precedes ingestion.
 
 ### ⚠️ Needs attention (restricted or unresolved) — review before serving
 
@@ -3564,3 +3565,47 @@ SUPPORTED_SOURCES, so requests answer 501. It must STAY that way. Do not catalog
 derive CSVs, do not add a fetcher or a registry entry. Whether to delete the local copy is
 Ahmed's call, not a serving question; the data is re-crawlable from the FRED API if it is ever
 needed under a different arrangement.
+
+---
+
+## Economic Freedom of the World (EFW) — Fraser Institute — `efw` (planned source)
+
+**Verdict: CLEARED by WRITTEN PERMISSION (non-commercial, attribution, link-back).**
+
+**The grant (verbatim, email on file in UCA Gmail):**
+
+> "I sincerely apologize for my delay in getting back to you. This somehow lingered in my
+> in box for WAY too long! Thank you so much for carefully reading the terms and
+> conditions. Yes; it looks to me like your plan would work. Thank you so much for
+> promoting the work and please let me know if you have any questions!"
+
+— Matthew Mitchell, Senior Fellow, Fraser Institute (matthew.mitchell@fraserinstitute.org),
+2026-08-10 16:52 UTC, Gmail message id 19fec97436898e6d, replying to Ahmed Elkassabgi's
+permission request of 2026-07-06 (message id 19f3640f49fd46a7, sent to
+freetheworld@fraserinstitute.org).
+
+**What "your plan" binds us to** (the grant approves the plan as stated in the request, so
+the request's own terms are the licence conditions):
+
+- re-host the EFW index and its component series **non-commercially** with **full
+  attribution to the Fraser Institute and the EFW project**;
+- a **prominent link back to efotw.org**, directing users to the authoritative data;
+- honour any exclusions or conditions the Institute later names (none named in the grant);
+- refresh on their **annual release cadence** (offered in the request; no objection raised).
+
+**Context from the public terms** (quoted in the request itself): the EFW citation page
+states no part of the reports or data may be reproduced without written permission — this
+email IS that written permission. The Fraser Institute's general T&C offer
+CC BY-NC-SA for educational use; the specific EFW grant above governs.
+
+**Caveat recorded honestly:** the grant is informal in register ("it looks to me like your
+plan would work") from a Senior Fellow rather than a counter-signed agreement. It is
+nonetheless a written yes from the Institute's named contact to a precisely-scoped request.
+If the library's use ever expands beyond the request's scope (commercial use, derived
+products beyond re-hosting, non-annual scraping), a fresh permission is required.
+
+**Serving consequence:** `efw` may be BUILT and SERVED under licence class
+noncommercial-attribution (reservable=1 per the no-metadata-only rule), with the citation
+"Fraser Institute, Economic Freedom of the World" + link to efotw.org on every surface that
+lists it. Data acquisition: their published annual dataset downloads (efotw.org), NOT
+crawling beyond the published files.
