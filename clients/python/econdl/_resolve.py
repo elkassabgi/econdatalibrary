@@ -1675,7 +1675,15 @@ _DOT_TABLE_GRAIN = {"unctad_intratrade", "unctad_tradeservcattotal",
                     # depth-3 18,419 (double the ids for half the table), depth-4 496,132
                     # (62% of D1's whole remaining headroom). Depth-2 is the collapse point.
                     "unctad_tradeservcatbypartner",
-    "unctad_nonplasticsubststradebypartner"}
+    "unctad_nonplasticsubststradebypartner",
+                    # giant #13, added 2026-08-12: keys are
+                    # Product.Flow.Economy.Partner.Measure, catalogue id = Product.Flow.
+                    # Grain measured over the FULL 1,063,192,830-row store (duckdb, no
+                    # sampling): depth-1 2,222, depth-2 6,666 (chosen, ~159k obs/table),
+                    # depth-3 1,362,065 (172% of D1's whole remaining headroom); series
+                    # grain 112,266,300 = 141x headroom. M4023 measure assembled from the
+                    # spill cache; M0100's campaign appends under the SAME table ids.
+                    "unctad_biotrademerch"}
 
 
 def _resolve_generic_long(series_id: str, root: str) -> Resolution:
