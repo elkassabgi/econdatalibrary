@@ -240,7 +240,10 @@ def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = N
                                     files=files)
             if r.status_code == 200:
                 return r.text
-            if r.status_code in (429, 502, 503, 504):
+            # 500 belongs here too: MEASURED 2026-08-12, a lone 500 at hour ~5.5 of
+            # the M0100 campaign killed the whole run via the RuntimeError below,
+            # same transient-gateway class as the 401 blip documented under it.
+            if r.status_code in (429, 500, 502, 503, 504):
                 time.sleep(20 * (attempt + 1)); continue
             if r.status_code == 401:
                 # MEASURED 2026-08-10: a 401 killed the US.BiotradeMerch pull at hour
