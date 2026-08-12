@@ -193,6 +193,41 @@ class FactsSizeCap(RuntimeError):
         self.cap, self.estimated = cap, estimated
 
 
+def _post_with_deadline(url, headers, files, connect_timeout=20,
+                        chunk_timeout=120, total_deadline=900):
+    """POST with a hard TOTAL wall-clock deadline.
+
+    requests' `timeout` bounds connect + BETWEEN-BYTES gaps only; a server (or
+    broken NAT path) that drips a byte every few seconds evades it forever —
+    measured 2026-08-12: one request at the M4023->M0100 measure boundary hung
+    2h40m on a dead socket while an independent probe answered the identical
+    leaf query in 0.3s. Streaming with a per-chunk timeout plus an explicit
+    total deadline caps the worst case at one 15-minute attempt, which the
+    caller's retry ladder re-issues on a fresh connection. Returns an object
+    with .status_code and .text, like the plain call.
+    """
+    t0 = time.monotonic()
+    with requests.post(url, headers=headers, files=files, stream=True,
+                       timeout=(connect_timeout, chunk_timeout)) as r:
+        chunks = []
+        for chunk in r.iter_content(chunk_size=1 << 16):
+            if chunk:
+                chunks.append(chunk)
+            if time.monotonic() - t0 > total_deadline:
+                raise requests.RequestException(
+                    f"total deadline {total_deadline}s exceeded "
+                    f"({sum(len(c) for c in chunks)} bytes in)")
+        body = b"".join(chunks)
+        status, enc = r.status_code, (r.encoding or "utf-8")
+
+    class _Resp:
+        pass
+    resp = _Resp()
+    resp.status_code = status
+    resp.text = body.decode(enc, "replace")
+    return resp
+
+
 def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = None) -> str:
     form = {"$select": select, "$format": "csv"}
     if flt:
@@ -200,9 +235,9 @@ def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = N
     files = {k: (None, v) for k, v in form.items()}
     for attempt in range(6):
         try:
-            r = requests.post(f"{FACTS}/{ds_name}/cur/Facts?culture=en",
-                              headers={"ClientId": cid, "ClientSecret": key, **UA},
-                              files=files, timeout=600)
+            r = _post_with_deadline(f"{FACTS}/{ds_name}/cur/Facts?culture=en",
+                                    headers={"ClientId": cid, "ClientSecret": key, **UA},
+                                    files=files)
             if r.status_code == 200:
                 return r.text
             if r.status_code in (429, 502, 503, 504):
