@@ -85,6 +85,7 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `ecb` | ecb | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `edgar_jrc` | EU JRC EDGAR (Emissions Database f | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `ei_statreview` | Energy Institute Statistical Revie | permission_required | CONFIRMED | RESTRICTED (keep gated) |
+| `efw` | Fraser Institute Economic Freedom of the World | written_permission | CONFIRMED | CLEARED by WRITTEN PERMISSION (non-commercial, attribution; grant recorded in the efw verbatim section) |
 | `eia` | eia | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `ember` | ember | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `epu` | Economic Policy Uncertainty Index  | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
