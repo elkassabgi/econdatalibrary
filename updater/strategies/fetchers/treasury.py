@@ -319,8 +319,8 @@ def update(unit, since) -> Result:
         # `partial` status, which is the correct report for a fetch that cannot be applied.
         # Tracked in #87 with the measurements, to be diagnosed rather than guessed at.
         if not date_field:
-            print(f"[{SOURCE}] {os.path.basename(path)}: no date field — fetched as a dateless "
-                  f"table, keyed by its dimension columns", flush=True)
+            print(f"[{unit.source_id}] {os.path.basename(path)}: no date field — fetched as a "
+                  f"dateless table, keyed by its dimension columns", flush=True)
 
         since_date = None
         if date_field and "obs_date" in all_cols:
