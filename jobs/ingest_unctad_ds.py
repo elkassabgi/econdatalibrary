@@ -347,7 +347,16 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
         stack = [(codes[i:i + per], []) for i in range(0, len(codes), per)]
         while stack:
             tgroup, restr = stack.pop(0)
-            ck = hashlib.sha1(repr((tgroup, restr)).encode()).hexdigest()[:16]
+            # The MEASURE must be part of the cache key. The select string embeds
+            # M<code>; without it, measure #2's walk cache-hits measure #1's leaf
+            # files and the row parser (which reads M<code>_Value) silently skips
+            # every row in them — a measure that quietly assembles as EMPTY.
+            # Caught 2026-08-12 on US.BiotradeMerch before any store was written.
+            # Cost of the change: spills written before it (M4023's 199,981) no
+            # longer cache-hit a resume — acceptable; that measure's store is
+            # already assembled by tools/_merge_unctad_spills.py, which keys rows
+            # by each file's own header and is unaffected by file names.
+            ck = hashlib.sha1(repr((select, tgroup, restr)).encode()).hexdigest()[:16]
             sp = os.path.join(spill_dir, ck + ".csv")
             if os.path.exists(sp):
                 try:
@@ -457,12 +466,25 @@ def dataset_time_dim(meta: dict) -> dict:
     raise UnsupportedLayout(f"{meta.get('name')}: no time dim")
 
 
-def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None):
+def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None,
+              measures_filter: list[str] | None = None):
     """Fetch + parse ALL observations for one dataset. THE single row-building path —
     the ingest below and every fetcher call this, so the parse rules cannot drift
     between the two (the insee_bdm/eurostat parity lesson, R-ledger 2026-08-08).
-    Returns (rows_k, rows_d, rows_v)."""
+    Returns (rows_k, rows_d, rows_v).
+
+    measures_filter: restrict the pull to these measure codes (e.g. ["M0100"]).
+    Used to resume ONE measure's campaign when the others are already complete
+    in the spill cache (US.BiotradeMerch 2026-08-12: M4023 done, M0100 unpulled)
+    — the spills persist either way and tools/_merge_unctad_spills.py assembles
+    the full store from all measures once each campaign has run."""
     kfields, tfield, is_year, period_axis, measures = dataset_layout(meta)
+    if measures_filter:
+        keep = {m[1:] if m.upper().startswith("M") else m for m in measures_filter}
+        measures = [m for m in measures if m in keep]
+        if not measures:
+            raise SystemExit(f"--measures matched nothing; dataset has {keep} vs "
+                             f"{dataset_layout(meta)[4]}")
     tdim = dataset_time_dim(meta)
     rows_k, rows_d, rows_v = [], [], []
     for mcode in measures:
@@ -495,7 +517,13 @@ def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None):
     return rows_k, rows_d, rows_v
 
 
-def ingest(ds_name: str, dry: bool) -> int:
+def ingest(ds_name: str, dry: bool, measures_only: list[str] | None = None) -> int:
+    if measures_only and not dry:
+        # A one-measure pull is a CACHE-FILLING campaign, never a store write: the
+        # ingest's own write would replace the canonical parquet with a partial-
+        # measure store. Assemble via tools/_merge_unctad_spills.py instead.
+        raise SystemExit("--measures pulls a subset; it must run with --dry "
+                         "(spills persist; merge with tools/_merge_unctad_spills.py)")
     cid, key = creds()
     meta = report_metadata(ds_name)
     src = source_id_for(ds_name)
@@ -509,7 +537,8 @@ def ingest(ds_name: str, dry: bool) -> int:
     log(f"{ds_name} -> {src}: key dims {kfields}, time {tfield}, "
         f"measures {['M' + c for c in measures]}, version {meta.get('version')}")
 
-    rows_k, rows_d, rows_v = pull_rows(ds_name, cid, key, meta, progress=log)
+    rows_k, rows_d, rows_v = pull_rows(ds_name, cid, key, meta, progress=log,
+                                        measures_filter=measures_only)
 
     if not rows_k:
         log(f"  {ds_name}: 0 obs — refusing to write an empty store")
@@ -533,4 +562,8 @@ if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
         raise SystemExit("usage: ingest_unctad_ds.py <US.DatasetName> [--dry]")
-    ingest(args[0], "--dry" in sys.argv)
+    measures_only = None
+    for a in sys.argv[1:]:
+        if a.startswith("--measures="):
+            measures_only = a.split("=", 1)[1].split(",")
+    ingest(args[0], "--dry" in sys.argv, measures_only)
