@@ -51,6 +51,13 @@ WORKER_DIR = os.path.join(ROOT, "api", "worker")
 
 TABLES = ["unit_state", "source_state"]  # the freshness projection — nothing else
 D1_DATABASE = "econ-catalog"             # wrangler.toml [[d1_databases]] database_name
+# Sources whose CATALOG rows live on a D1 shard, not the primary (task #45: noaa's
+# 3,137,871 rows moved to econ-catalog-climate to free primary headroom for bea/fdic;
+# the worker routes reads for them to the shard binding). Catalog sync and serving
+# verification MUST consult this map — pushing noaa's rows back to the primary would
+# silently re-consume the freed ~2.4 GB and the worker would never read them there.
+# The freshness projection (TABLES above) stays on the primary for ALL sources.
+CATALOG_SHARD_FOR = {"noaa": "econ-catalog-climate"}
 ROWS_PER_STMT = 20        # matches core/export_d1.py (D1 statement-length cap)
 MAX_FILE_BYTES = 900_000  # per-file cap under wrangler's payload limit
 
@@ -194,8 +201,10 @@ def verify_replay(state_db: str, files: list[str], counts: dict[str, int]) -> No
         mem.close()
 
 
-def execute_remote(files: list[str]) -> None:
-    """Run each chunk via wrangler from api/worker (wrangler.toml lives there)."""
+def execute_remote(files: list[str], database: str | None = None) -> None:
+    """Run each chunk via wrangler from api/worker (wrangler.toml lives there).
+
+    `database` overrides the primary for shard-routed work (CATALOG_SHARD_FOR)."""
     npx = shutil.which("npx")
     if not npx:
         raise SystemExit("FATAL: npx not on PATH — install Node.js")
@@ -216,7 +225,7 @@ def execute_remote(files: list[str]) -> None:
     # real case quiet.
     TRIES = 4
     for p in files:
-        cmd = [npx, "wrangler", "d1", "execute", D1_DATABASE,
+        cmd = [npx, "wrangler", "d1", "execute", database or D1_DATABASE,
                "--remote", "--yes", f"--file={os.path.abspath(p)}"]
         print(f"  executing {os.path.basename(p)} ...")
         res = None
