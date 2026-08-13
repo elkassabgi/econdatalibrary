@@ -1119,3 +1119,34 @@ sources:
       and the enumeration above shows a re-key is impossible; he separately ruled (UNESCO, same
       day) that fully downloadable archival sources stay listed, labelled so nobody expects fresh
       data.
+  - source_id: unctad_tabbapotta
+    publisher: UNCTAD
+    dataset: >-
+      Trade in biotrade products, percentage of total trade - Annual (29,358 series, 2010-2020,
+      reporter x partner-group)
+    measured: 2026-08-13
+    probe: >-
+      Value-verified against unctad_biotrademerchshare (US.BiotradeMerchShare, "Biotrade:
+      Bilateral trade as percentage of total trade") with tools/unctad_rekey_crosswalk.py —
+      self-match control first per R413 (control: 0 UNMATCHED, 26,426/28,053 uniquely
+      self-matched; 21 NO-OVERLAP are constant-0/100 series whose every observation falls in
+      the tool's dropped degenerate buckets). Report at
+      docs/evidence/tabbapotta_crosswalk_20260813.json. Three series then hand-verified
+      observation-level with duckdb (world.france, world.germany, world.brazil).
+    finding: >-
+      Same indicator, superseded VINTAGE — not a byte-duplicate and not re-keyable. The modern
+      served source carries the identical product under M49-coded keys (legacy world.brazil
+      2015 = 47.979332754 vs modern 076.02.0000.M5058 = 47.979332754096745, reldiff 2e-12;
+      germany reldiff 2.35e-07) but UNCTAD has since RECOMPUTED the shares from revised trade
+      data: most overlapping series differ at the 5th-6th significant digit (reldiff
+      ~1e-5..1e-6), which the crosswalk's exact-value machinery correctly refuses (1,540
+      MATCHED, 823 AMBIGUOUS, 6,041 UNMATCHED, 19,649 NO-OVERLAP of 28,053 judged =
+      "PARTIAL/KEEP"). Re-keying legacy observations into modern ids would splice two vintages
+      of a revised series (the fao_gt / R403 class). The modern edition is a superset in
+      coverage (144,552 series, 2010-2024, auto-updating); the legacy store is the
+      pre-revision 2020-vintage snapshot and the relay it came from is gone, so it is not
+      re-crawlable.
+    decision: >-
+      Keep SERVED-FROZEN as archival (distinct vintage of a superseded product; current
+      edition auto-updates as unctad_biotrademerchshare). No fetcher can exist. This settles
+      the LAST case of the legacy-38 review: 37 archival, 1 retired.

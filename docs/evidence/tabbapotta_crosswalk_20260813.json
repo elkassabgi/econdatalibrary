@@ -1,0 +1,16 @@
+[
+ {
+  "legacy": "unctad_tabbapotta",
+  "candidate": "unctad_biotrademerchshare",
+  "n_legacy": 29358,
+  "n_candidate": 144552,
+  "counts": {
+   "MATCHED": 1540,
+   "AMBIGUOUS": 823,
+   "UNMATCHED": 6041,
+   "NO-OVERLAP": 19649,
+   "TOO-SHORT": 1305
+  },
+  "verdict": "PARTIAL (2363/28053 covered \u2014 legacy holds 25690 series the candidate does not; KEEP)"
+ }
+]
