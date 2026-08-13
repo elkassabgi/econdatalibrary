@@ -45,8 +45,8 @@ import tempfile
 # the sibling import rather than relying on the caller's cwd.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
-from core.sync_state_d1 import (MAX_FILE_BYTES, ROWS_PER_STMT, ROOT, _lit,  # noqa: E402
-                                execute_remote)
+from core.sync_state_d1 import (CATALOG_SHARD_FOR, MAX_FILE_BYTES,  # noqa: E402
+                                ROWS_PER_STMT, ROOT, _lit, execute_remote)
 
 CATALOG_DB = os.path.abspath(os.environ.get("ECONDL_CATALOG")
                              or os.path.join(ROOT, "data", "catalog.db"))
@@ -231,19 +231,38 @@ def main(argv: list[str] | None = None) -> None:
         print("  none of those ids exist in the local catalog — nothing to advertise")
         return
 
+    # Partition by destination DATABASE before emitting: shard-routed sources
+    # (CATALOG_SHARD_FOR — today noaa on econ-catalog-climate, task #45) must never
+    # land on the primary. The worker reads them from the shard binding, so a
+    # primary push would both re-consume the headroom the migration freed AND be
+    # invisible to every request. The pending-ids path can mix sources, so the
+    # split is per ROW, not per invocation; parent source/license rows are emitted
+    # per group and therefore follow their series to the right database.
+    groups: dict = {}
+    for r in rows:
+        groups.setdefault(CATALOG_SHARD_FOR.get(r.get("source_id")), []).append(r)
+
     out_dir = tempfile.mkdtemp(prefix="d1catalog_")
-    # `conn` so the parent source/license rows ship with the series — without them the ids
-    # resolve but the source never appears in /v1/sources (see _parent_rows). The close MOVED
-    # below this call: it used to run immediately after _rows_for, so passing the handle here
-    # would have queried a closed connection.
-    files = emit_sql(cols, rows, out_dir, conn)
+    plans = []
+    for db, grp in sorted(groups.items(), key=lambda kv: kv[0] or ""):
+        sub = os.path.join(out_dir, db or "primary")
+        # `conn` so the parent source/license rows ship with the series — without them the
+        # ids resolve but the source never appears in /v1/sources (see _parent_rows). The
+        # close MOVED below these calls: it used to run immediately after _rows_for, so
+        # passing the handle here would have queried a closed connection.
+        plans.append((db, grp, emit_sql(cols, grp, sub, conn)))
     conn.close()
-    verify_replay(cols, rows, files)
+    for db, grp, files in plans:
+        if db:
+            print(f"  [shard] {len(grp)} row(s) route to {db}")
+        verify_replay(cols, grp, files)
     if a.dry_run:
-        for p in files:
-            print("  (dry-run)", p)
+        for _, _, files in plans:
+            for p in files:
+                print("  (dry-run)", p)
         return
-    execute_remote(files)
+    for db, _, files in plans:
+        execute_remote(files, database=db)
     if not a.source and not a.keep_pending:
         path = a.ids_file or PENDING
         open(path, "w", encoding="utf-8").close()

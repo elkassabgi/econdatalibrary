@@ -82,9 +82,13 @@ def _d1_count(source: str):
         exe = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler")
     if not os.path.exists(exe):
         return 0, "wrangler not found"
+    # Shard-routed sources (noaa) keep their catalog rows on a second D1 database;
+    # counting them on the primary reports 0 and fails an actually-served source.
+    from core.sync_state_d1 import CATALOG_SHARD_FOR
+    db = CATALOG_SHARD_FOR.get(source, "econ-catalog")
     try:
         p = subprocess.run(
-            [exe, "d1", "execute", "econ-catalog", "--remote", "--json", "--command",
+            [exe, "d1", "execute", db, "--remote", "--json", "--command",
              f"select count(*) n from series where source_id='{source}'"],
             cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True,
             timeout=300)
