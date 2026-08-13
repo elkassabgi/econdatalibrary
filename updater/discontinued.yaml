@@ -1126,12 +1126,15 @@ sources:
       reporter x partner-group)
     measured: 2026-08-13
     probe: >-
-      Value-verified against unctad_biotrademerchshare (US.BiotradeMerchShare, "Biotrade:
-      Bilateral trade as percentage of total trade") with tools/unctad_rekey_crosswalk.py —
-      self-match control first per R413 (control: 0 UNMATCHED, 26,426/28,053 uniquely
-      self-matched; 21 NO-OVERLAP are constant-0/100 series whose every observation falls in
-      the tool's dropped degenerate buckets). Report at
-      docs/evidence/tabbapotta_crosswalk_20260813.json. Three series then hand-verified
+      GET https://unctadstat-api.unctad.org/api/datacenter/en (captured to
+      docs/evidence/unctad_datacenter_catalogue_20260810.json) names six live Biotrade
+      datasets; the title match for this indicator is US.BiotradeMerchShare ("Biotrade:
+      Bilateral trade as percentage of total trade"), served as unctad_biotrademerchshare.
+      Then value-verified: python tools/unctad_rekey_crosswalk.py --legacy unctad_tabbapotta
+      --candidate unctad_biotrademerchshare, self-match control first per R413 (control:
+      0 UNMATCHED, 26,426/28,053 uniquely self-matched; 21 NO-OVERLAP are constant-0/100
+      series whose every observation falls in the tool's dropped degenerate buckets). Report
+      at docs/evidence/tabbapotta_crosswalk_20260813.json. Three series then hand-verified
       observation-level with duckdb (world.france, world.germany, world.brazil).
     finding: >-
       Same indicator, superseded VINTAGE — not a byte-duplicate and not re-keyable. The modern
