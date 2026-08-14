@@ -3517,7 +3517,13 @@ sources:
     - 'one parquet per dataset: data/clean_full/ons_uk/<dataset_id>.parquet (42 files on disk), columns series_key/obs_date/value;
       series_key built from non-time/value dimension columns.'
 - source_id: owid
-  live: true
+  # live -> false 2026-08-14: owid was DELISTED from serving 2026-08-06 (Ahmed: "remove
+  # owids"; catalog+D1 rows deleted, util.ts entry removed). With 0 catalog rows the csv
+  # coherence check (§5.7) demoted every run to partial by construction — there are no
+  # served CSVs to keep coherent — and the health gate reddened every daily on it.
+  # Store data stays intact; flip back to true only if owid is ever re-served
+  # (re-catalogue FIRST, then re-light).
+  live: false
   scripts:
   - jobs/ingest_owid.py
   strategy: bulk_snapshot_if_changed
