@@ -51,10 +51,12 @@ launch order after #14: #15, #16, #17.
   order of **~3 MONTHS**; a 2-3 headline-measure subset (e.g. M1970 expenditure +
   M5070 ad-valorem rate + M1980 per-unit rate) is **~3-4 weeks**. Store in the
   hundreds of GB either way.
-- FLAG FOR AHMED before launching: (a) full pull of all 10 measures (~3 months),
-  (b) headline subset (~3-4 weeks; ingest supports --measures per ae9fbd183 and the
-  spill cache is measure-keyed, so later measures can be added incrementally without
-  re-pulling), (c) defer. Do NOT start this pull on autopilot.
+- DECIDED — Ahmed 2026-08-14 ("full pull"): option (a), FULL pull of all 10 measures
+  (~3 months at observed rates, store in the hundreds of GB). Launch when its turn
+  arrives in the one-pull-at-a-time queue (#14 -> #15 -> #16 -> #17):
+  `python jobs\ingest_unctad_ds.py US.TransportCosts >> _ingest_transportcosts.log 2>&1`
+  The spill cache is measure-keyed (ae9fbd183), so the campaign survives restarts
+  per-measure; expect ~10 sequential measure campaigns in the log.
 
 ## Standing chain (unchanged)
 
