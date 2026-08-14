@@ -186,6 +186,7 @@ jobs:
         run: pip install -r requirements-updater.txt
 
       - name: Pull state from R2
+        id: pull_state
         run: python -m updater.run --pull-state
 
       - name: Pull catalog.db (CSV-derive dependency)
@@ -290,13 +291,35 @@ jobs:
           exit $rc
 
       - name: Push state to R2 (compare-and-swap + dated backup)
+        id: push_state
+        # always() ADDED 2026-08-14 — the daily got this on 2026-07-30 (its "Push state"
+        # comment tells the story); the heavy NEVER did, and the dedicated-runner policy
+        # above makes the updater step exit 1 on the single source's transient_fail, so
+        # a capped pass lost its whole state advance. MEASURED on imf_imts_direct: three
+        # consecutive 3-hour passes (Aug 13-14) and unit_state still read
+        # last_attempt=2026-08-05 — each pass re-fetched from zero and threw the progress
+        # away with the runner; the source could never converge by construction.
+        # Gated on the PULL succeeding (not the updater): push_state()'s compare-and-swap
+        # keys on the ETag recorded by --pull-state, so it is structurally incapable of
+        # overwriting a newer remote state; without a successful pull it would just
+        # refuse (exit 2) and turn one failure into two.
+        if: ${{ always() && steps.pull_state.outcome == 'success' }}
         run: python -m updater.run --push-state
 
       - name: Sync freshness to D1
+        # always() 2026-08-14, gated on the state push having landed — same reasoning as
+        # the daily: a non-zero updater exit doesn't undo the work the run DID commit,
+        # and freshness must describe the state store, never a run the store missed.
+        if: ${{ always() && steps.push_state.outcome == 'success' }}
         run: |
           npm ci --prefix api/worker --no-audit --no-fund
           python core/sync_state_d1.py
 
       - name: Sync new catalog series to D1
+        # always() 2026-08-14, same gate: derived series exist regardless of the updater's
+        # exit code; skipping this strands them out of /v1/catalog (the 31,259-series
+        # class the daily's 2026-07-30 fix documents). continue-on-error already ensures
+        # this can never add a second failure.
+        if: ${{ always() && steps.push_state.outcome == 'success' }}
         continue-on-error: true
         run: python core/sync_catalog_d1.py
