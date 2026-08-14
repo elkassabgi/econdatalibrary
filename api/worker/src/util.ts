@@ -347,7 +347,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "unctad_exchangeratecrosstab", "unctad_ictuseeconactivityisic4",
   // Gate cases at DOT-prefix table grain (1,353 ids / 622,540 series, #70):
   "unctad_intratrade", "unctad_tradeservcattotal", "unctad_tradeservcatbypartner", "unctad_biotrademerchshare",
-  "unctad_biotrademerchrca", "unctad_ecommercetotal",
+  "unctad_biotrademerchrca", "unctad_biotrademerch", "unctad_ecommercetotal",
   "unctad_associatedplasticstradebypartner", "unctad_hiddenplasticstradebypartner",
   "unctad_ecommerceinternational", "unctad_plasticstradebypartner", "unctad_ictgoods",
   "unctad_gstptradematrix", "unctad_creativegoodsvalue",
