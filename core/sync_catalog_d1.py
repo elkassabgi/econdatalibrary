@@ -142,6 +142,18 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
         stmts.append("INSERT INTO series_fts (series_id,title,geography) VALUES\n  "
                      f"{vals};")
 
+    # source_counts maintenance (2026-08-15 cost incident): the worker's catalog
+    # totals come from this one-row-per-source table instead of a live COUNT(*)
+    # that read 2.47M rows PER PAGE VIEW (42.2B rows / ~$34 in one day on wid
+    # alone). Refresh the row for every source this sync touched; the recount
+    # runs ONCE per sync, not once per visitor.
+    for src in sorted({r["source_id"] for r in rows}):
+        stmts.append(
+            "CREATE TABLE IF NOT EXISTS source_counts(source_id TEXT PRIMARY KEY, n INTEGER NOT NULL);")
+        stmts.append(
+            f"INSERT OR REPLACE INTO source_counts(source_id, n) "
+            f"SELECT {_lit(src)}, COUNT(*) FROM series WHERE source_id = {_lit(src)};")
+
     os.makedirs(out_dir, exist_ok=True)
     files, buf, n = [], [], 0
     for s in stmts:
