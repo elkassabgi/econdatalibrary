@@ -21,7 +21,19 @@ name: updater-daily
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # daily 06:00 UTC; weekend runs resolve to honest no_change probes
+    - cron: '0 6 * * *'   # daily 06:00 UTC; weekend runs resolve to honest no_change probes
+    # SECOND daily run ADDED 2026-08-15 — a capacity fix, measured not guessed. The
+    # expensive band's daily demand exceeds one run's 270-min budget: the 06:00 run on
+    # 2026-08-15 processed 30 units, of which stat_slovenia alone took 5,027s and
+    # insee_melodi 2,100s, and deferred 56 sources on budget — the second consecutive
+    # ~55-deferral day. At ~4-5 expensive sources per run the band's rotation period
+    # (~10+ days) exceeds 2x SLA for dozens of members, so the health gate reds on
+    # schedule arithmetic (33 ATTENTION on 2026-08-15, up from 6 the day before).
+    # The evening run's cheap band is almost entirely NOT-DUE (checked at 06:00), so
+    # its whole budget drains the expensive backlog — halving the rotation period
+    # without touching the ordering policy in orchestrate.order_units. The
+    # aqueduct-updater concurrency group still serializes it against the heavy.
+    - cron: '0 18 * * *'  # daily 18:00 UTC: expensive-band drain pass
   workflow_dispatch:
     inputs:
       source:
