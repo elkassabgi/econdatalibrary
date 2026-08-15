@@ -110,12 +110,28 @@ LIMIT ? OFFSET ?`;
 export const SEARCH_LIKE_SOURCE_COUNT = `
 SELECT COUNT(*) AS n FROM series WHERE (title LIKE ? OR series_id LIKE ?) AND source_id = ?`;
 
-/** Browse one source (q absent). */
+/** Browse one source (q absent) — PK-range form, COST-CRITICAL (2026-08-15).
+ *
+ * The old form (WHERE source_id = ? ORDER BY series_id LIMIT ? OFFSET ?) forced
+ * SQLite to read and sort the source's ENTIRE row set on every page: 4.93M rows
+ * read PER PAGE on wid, and a crawler paging through wid drove 87.3 BILLION rows
+ * read in one day (~$82 of D1 reads, measured with `wrangler d1 insights`).
+ * A composite index cannot be built — CREATE INDEX on the 9.2M-row table dies
+ * with SQLITE_NOMEM on D1 — so the fix rides the PK: every series_id begins with
+ * `source_id + ':'` (invariant VERIFIED on both DBs 2026-08-15: 0 violations in
+ * 9,214,639 + 3,137,871 rows), so the [src+':', src+';') range walks the PK
+ * autoindex already in series_id order and reads only offset+limit entries.
+ * Binds: lo (src+':'), hi (src+';'), limit, offset. */
 export const BROWSE_SOURCE = `
 SELECT series_id, source_id, title, frequency, unit, geography,
        license_id, start_date, end_date, metadata
-FROM series WHERE source_id = ? ORDER BY series_id LIMIT ? OFFSET ?`;
+FROM series WHERE series_id >= ? AND series_id < ? ORDER BY series_id LIMIT ? OFFSET ?`;
 
+/** Same incident: COUNT(*) WHERE source_id ran on EVERY catalog page view —
+ * 2.47M rows read per call, 42.2B rows in a day. source_counts (1 row per
+ * source) is populated at catalog-sync time; the live COUNT below is only the
+ * fallback for a source synced before its count row exists. */
+export const BROWSE_SOURCE_COUNT_CACHED = `SELECT n FROM source_counts WHERE source_id = ?`;
 export const BROWSE_SOURCE_COUNT = `SELECT COUNT(*) AS n FROM series WHERE source_id = ?`;
 
 /** Browse all series (no q, no source). */

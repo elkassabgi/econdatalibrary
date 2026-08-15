@@ -36,7 +36,7 @@ const CORS_PREFLIGHT: Record<string, string> = {
 };
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_PREFLIGHT });
     }
@@ -55,7 +55,24 @@ export default {
       if (path === "/v1/pv") return await handlePageview(url, env);
       if (path === "/v1/pv/report") return await handlePageviewReport(url, env);
 
-      if (path === "/v1/catalog") return await handleCatalog(url, env);
+      // /v1/catalog is edge-cached (2026-08-15 cost incident): a crawler paging
+      // one source drove 130B D1 rows read in a day. The catalog changes only at
+      // sync time, so a 6h same-URL cache makes re-crawls free without staleness
+      // anyone can observe. Only 200s are cached; the cap-400s and errors are not.
+      if (path === "/v1/catalog") {
+        const cache = caches.default;
+        const cacheKey = new Request(url.toString(), { method: "GET" });
+        const hit = await cache.match(cacheKey);
+        if (hit) return hit;
+        const fresh = await handleCatalog(url, env);
+        if (fresh.status === 200) {
+          const toCache = new Response(fresh.clone().body, fresh);
+          toCache.headers.set("cache-control", "public, max-age=300, s-maxage=21600");
+          ctx.waitUntil(cache.put(cacheKey, toCache.clone()));
+          return toCache;
+        }
+        return fresh;
+      }
       if (path === "/v1/sources") return await handleSources(env);
       if (path === "/v1/last-updates") return await handleLastUpdates(env);
       if (path === "/v1/bundle") return await handleBundle(url, env);

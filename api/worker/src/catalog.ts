@@ -11,7 +11,7 @@ import type { Env, CatalogResultRow, CountRow } from "./types";
 import {
   SEARCH_FTS, SEARCH_FTS_COUNT, SEARCH_LIKE, SEARCH_LIKE_COUNT,
   SEARCH_FTS_SOURCE, SEARCH_FTS_SOURCE_COUNT, SEARCH_LIKE_SOURCE, SEARCH_LIKE_SOURCE_COUNT,
-  BROWSE_SOURCE, BROWSE_SOURCE_COUNT, BROWSE_ALL, BROWSE_ALL_COUNT,
+  BROWSE_SOURCE, BROWSE_SOURCE_COUNT, BROWSE_SOURCE_COUNT_CACHED, BROWSE_ALL, BROWSE_ALL_COUNT,
 } from "./sql";
 import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor } from "./util";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
@@ -26,6 +26,19 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
   const src = source && source.trim() ? source : null; // null-narrowed for binds
   const limit = clampInt(url.searchParams.get("limit"), 50, 1, 500);
   const offset = offsetInt(url.searchParams.get("offset"));
+
+  // OFFSET cap (2026-08-15 cost incident): OFFSET N is O(N) rows read no matter
+  // the plan, so an unbounded crawl of a multi-million-series source costs real
+  // money per page. 100k covers every human browse; whole-source consumers get
+  // the honest pointer to the bulk surface instead of a silent bill.
+  const MAX_OFFSET = 100_000;
+  if (offset > MAX_OFFSET) {
+    return json({
+      error: "offset_too_deep",
+      detail: `offset is capped at ${MAX_OFFSET}; to enumerate a whole source use ` +
+              "/v1/bundle?source= (all series ids) or the bulk parquet downloads",
+    }, 400);
+  }
 
   // Redistribution gate: a denylisted source is not browsable at all — same
   // rule as /v1/sources (hidden), /v1/series (451), and /v1/bundle (rejected).
@@ -108,11 +121,21 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
       }
     }
   } else if (src) {
+    // PK-range browse: [src+':', src+';') — ';' is ':'+1, closing the prefix
+    // range. Reads offset+limit PK entries instead of sort-scanning the whole
+    // source (the 87.3B-rows-read/day incident; rationale in sql.ts).
     const res = await scopedDb.prepare(BROWSE_SOURCE)
-      .bind(src, limit, offset).all<CatalogResultRow>();
+      .bind(src + ":", src + ";", limit, offset).all<CatalogResultRow>();
     results = res.results ?? [];
-    const c = await scopedDb.prepare(BROWSE_SOURCE_COUNT).bind(src).first<CountRow>();
-    total = c?.n ?? results.length;
+    const cached = await scopedDb.prepare(BROWSE_SOURCE_COUNT_CACHED).bind(src).first<CountRow>();
+    if (cached && typeof cached.n === "number") {
+      total = cached.n;
+    } else {
+      // Fallback: a source synced before its source_counts row exists. Live
+      // COUNT once — the sync backfills the row and this path goes cold.
+      const c = await scopedDb.prepare(BROWSE_SOURCE_COUNT).bind(src).first<CountRow>();
+      total = c?.n ?? results.length;
+    }
   } else {
     const [p, sh] = await Promise.all([
       env.CATALOG.prepare(BROWSE_ALL).bind(window, 0).all<CatalogResultRow>(),
