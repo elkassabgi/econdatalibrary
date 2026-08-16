@@ -339,7 +339,10 @@ def _derive_changed_csvs(unit, res, blob):
     """Contract step 5 — CSV/parquet coherence (§5.7): re-derive the CSV of every
     series whose parquet changed this run.
 
-    Returns (failed_series_ids, error_note, deferred_series_ids). `deferred` are ids the
+    Returns (failed_series_ids, error_note, deferred_series_ids, failed_reasons).
+    `failed_reasons` maps series_id -> its OWN failure reason (2026-08-16: the queue
+    used to store one summary string per id, so cso's 22 census series sat queued 10
+    days with the real exception unrecorded). `deferred` are ids the
     derive BUDGET never reached: they are unfinished work, so the caller queues them for
     retry exactly like failures — but they are not breakage, so they must NOT demote the
     run. Conflating the two demoted insee_bdm every run over "csv_derive failed
@@ -380,7 +383,8 @@ def _derive_changed_csvs(unit, res, blob):
             # Measured: of 168 sources that have merged obs, 11 report no cursors, and gleif is
             # the only one whose catalogue is genuinely empty — so it alone reached this line.
             # R380 widened the reach by admitting `partial` runs here too.
-            return [], None, []
+            # (The FOURTH element is as load-bearing as the third was.)
+            return [], None, [], {}
         if res.obs:
             # Coherence is UNMET, not merely unlogged: parquet changed but the
             # changed series are unknown, so their CSVs go stale. The caller
@@ -392,8 +396,8 @@ def _derive_changed_csvs(unit, res, blob):
                   f"must report per-series cursors to satisfy CSV/parquet coherence (§5.7)",
                   flush=True)
             return [], (f"csv coherence unmet: fetcher reported no series_cursors for "
-                        f"{res.obs} merged obs — CSVs not re-derived (§5.7)"), []
-        return [], None, []
+                        f"{res.obs} merged obs — CSVs not re-derived (§5.7)"), [], {}
+        return [], None, [], {}
     try:
         # `changed` holds STORE series_keys; the derive/resolver layer needs
         # CATALOG series_ids. The key→id mapping is source-specific (e.g.
@@ -440,7 +444,7 @@ def _derive_changed_csvs(unit, res, blob):
                 why = (f"the catalog this run read has {n_ids:,} rows for it but none "
                        f"matched — grain/key-form mismatch")
             return [], (f"csv coherence unmet: {len(unmapped)} changed series_keys "
-                        f"have no catalog mapping for {unit.source_id}: {why} (§5.7)"), []
+                        f"have no catalog mapping for {unit.source_id}: {why} (§5.7)"), [], {}
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob(),
                                     **_capped_derive_budget()) or {}
@@ -515,10 +519,11 @@ def _derive_changed_csvs(unit, res, blob):
             note = (f"csv coverage note: {len(unmapped)} changed keys have no catalog "
                     f"row for {unit.source_id} ({why}) — served ids coherent")
             print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
-        return failed, note, deferred_ids
+        return failed, note, deferred_ids, dict(out.get("failed_reasons") or {})
     except Exception as e:  # noqa: BLE001 — CSV failure must NEVER sink the data publish
+        _crash = (f"csv_derive crashed: " + repr(e))[:200]
         return changed, (f"csv_derive crashed ({len(changed)} series queued): "
-                         + repr(e))[:300], []
+                         + repr(e))[:300], [], {s: _crash for s in changed}
 
 
 _DERIVE_ALL_CAP = 5000
@@ -1110,7 +1115,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             #
             # transient_fail is deliberately NOT included: nothing merged, nothing to derive.
             if _should_derive_csvs(status) and not dry:
-                csv_failed, csv_err, csv_deferred = _derive_changed_csvs(unit, res, blob)
+                csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob)
                 # DRAIN THE RETRY QUEUE (2026-08-06). derive.py has promised since it
                 # gained a wall-clock budget that ids not reached "come back in `failed`
                 # ... so they are retried next run instead of lost" — but the queue was
@@ -1124,8 +1129,17 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # Under the r2 backend a retried id derives only when its file is on
                 # this runner (written by this run) — others fast-fail on the local
                 # miss and wait for the run that next rewrites their file.
+                # NO `and not csv_err` GATE (2026-08-16). It deadlocked the exact
+                # population the queue exists for: cso's 22 census series were its
+                # source's ONLY mapped changed ids, so every run's fresh derive failed
+                # them, set csv_err, and thereby blocked the drain that would retry
+                # them — queued 10 days at attempts=1. A fresh-path error says nothing
+                # about whether OLD queued ids (often from a different failure) can
+                # derive now; the drain is already bounded (_CSV_RETRY_CAP + capped
+                # budget) and refailures stay queued without demoting, so attempting
+                # it costs little even when the environment really is broken.
                 _retry_rows = store.csv_retries(unit.source_id)
-                if _retry_rows and not csv_err:
+                if _retry_rows:
                     _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
                     from . import derive as _derive_mod
                     _out = _derive_mod.derive_and_put(
@@ -1154,7 +1168,10 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     # csv_err with no ids = coherence unmet with unknown series
                     # (no cursors reported): still `partial`, nothing queueable.
                     if csv_failed:
-                        store.enqueue_csv_retry(unit.source_id, csv_failed, csv_err)
+                        # Per-id reasons when the derive recorded them; the summary
+                        # note only as fallback (it names the batch, not the cause).
+                        store.enqueue_csv_retry(unit.source_id, csv_failed,
+                                                csv_reasons or csv_err)
                     status, ok = "partial", False
                     err_note = "; ".join(x for x in (err_note, csv_err) if x)
             # last_obs_date must never regress (a run that wrote only some units can

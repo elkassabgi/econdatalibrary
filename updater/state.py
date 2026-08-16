@@ -147,12 +147,19 @@ class StateStore:
     # parquet published demotes the run to `partial` and the series ids land here for
     # a later re-derive — never silently dropped, never rolls back the data publish) ----
     def enqueue_csv_retry(self, source_id, series_ids, error=None):
+        # `error` is one string for the whole batch, OR a {series_id: reason} dict —
+        # per-id reasons keep the actual exception on the row (a summary like
+        # "csv_derive failed 22/22" left cso's stuck ids undiagnosable for 10 days).
+        def _err(s):
+            if isinstance(error, dict):
+                return error.get(s) or error.get(str(s))
+            return error
         self.db.executemany(
             "INSERT INTO csv_retry_queue(series_id,source_id,enqueued_utc,attempts,last_error) "
             "VALUES(?,?,?,1,?) "
             "ON CONFLICT(series_id) DO UPDATE SET enqueued_utc=excluded.enqueued_utc, "
             "attempts=csv_retry_queue.attempts+1, last_error=excluded.last_error",
-            [(s, source_id, now_utc(), error) for s in series_ids])
+            [(s, source_id, now_utc(), _err(s)) for s in series_ids])
         self.db.commit()
 
     def csv_retries(self, source_id=None):

@@ -138,6 +138,11 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None)
 
     put = 0
     failed: list[str] = []
+    # Per-id failure reasons. The queue used to store one SUMMARY string for every id
+    # ("csv_derive failed 22/22 series [...]"), so when cso's 22 census series sat
+    # queued for 10 days the actual exception was gone and diagnosis required a live
+    # reproduction. The reason each id failed is known right here — keep it.
+    failed_reasons: dict[str, str] = {}
     deferred = 0
     # WHICH ids were deferred, not merely how many. The caller must queue them for retry
     # (unfinished work) while NOT counting them as failures (budget, not breakage), and it
@@ -165,6 +170,7 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None)
                           flush=True)
             else:
                 failed.append(sid)
+                failed_reasons[sid] = str(why)
                 print(f"  CSV derive FAILED {sid}: {why}", flush=True)
 
     def _spent() -> bool:
@@ -209,8 +215,10 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None)
         print(f"  derive budget of {budget_min:.0f} min spent — {deferred:,} id(s) deferred "
               f"to csv_retry_queue (put {put:,}, failed {len(failed) - deferred:,})",
               flush=True)
+    for _d in deferred_ids:
+        failed_reasons.setdefault(_d, "derive budget spent — deferred, not failed")
     return {"put": put, "failed": failed, "deferred": deferred,
-            "deferred_ids": deferred_ids}
+            "deferred_ids": deferred_ids, "failed_reasons": failed_reasons}
 
 
 def _check(series_id: str | None) -> int:
