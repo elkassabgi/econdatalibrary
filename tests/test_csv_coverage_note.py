@@ -64,7 +64,7 @@ def _run(monkeypatch, tmp_path, catalog_ids, cursors, derive_out=None, source="s
 
 
 def test_mapped_plus_uncatalogued_residue_is_coverage_note(monkeypatch, tmp_path):
-    failed, note, _deferred = _run(monkeypatch, tmp_path,
+    failed, note, _deferred, _reasons = _run(monkeypatch, tmp_path,
                         catalog_ids=["src:a", "src:b"],
                         cursors={"a": "2026-08-01", "dark1": "2026-08-01",
                                  "dark2": "2026-08-01"})
@@ -74,7 +74,7 @@ def test_mapped_plus_uncatalogued_residue_is_coverage_note(monkeypatch, tmp_path
 
 
 def test_zero_mapped_with_rows_stays_coherence_unmet(monkeypatch, tmp_path):
-    failed, note, _deferred = _run(monkeypatch, tmp_path,
+    failed, note, _deferred, _reasons = _run(monkeypatch, tmp_path,
                         catalog_ids=["src:chain_tvl:BTC"],
                         cursors={"BTC": "2026-08-01"})
     assert note and "csv coherence unmet" in note, note
@@ -85,7 +85,7 @@ def test_caller_prefix_contract(monkeypatch, tmp_path):
     # The run-loop treats exactly the 'csv coverage note:' prefix as non-demoting;
     # any drift between producer and consumer silently re-reddens the fleet, so the
     # prefix is pinned on both sides here.
-    failed, note, _deferred = _run(monkeypatch, tmp_path,
+    failed, note, _deferred, _reasons = _run(monkeypatch, tmp_path,
                         catalog_ids=["src:a"],
                         cursors={"a": "2026-08-01", "dark": "2026-08-01"})
     assert note.startswith("csv coverage note:")
@@ -99,7 +99,7 @@ def test_bfs_store_prefixed_cursor_maps_exactly(monkeypatch, tmp_path):
     # bfs catalog ids are 'bfs:BFS:{dbid}' while the fetcher used to report bare
     # dbids — 582/582 unmapped, the hard unmet demotion, every run. The fix reports
     # 'BFS:{dbid}', which the exact rule maps with no fallback needed.
-    failed, note, _deferred = _run(monkeypatch, tmp_path,
+    failed, note, _deferred, _reasons = _run(monkeypatch, tmp_path,
                         catalog_ids=["bfs:BFS:px-x-0102010000_100"],
                         cursors={"BFS:px-x-0102010000_100": "2026-08-05"},
                         source="bfs")
@@ -110,7 +110,7 @@ def test_split_part_expansion_maps_table_cursor_to_all_parts(monkeypatch, tmp_pa
     # census tables too large for one CSV are catalogued ONLY as '<table>#<part>' rows;
     # a table-grain cursor must conservatively re-derive every part, not fall through
     # to the coverage note (the parts' CSVs genuinely go stale).
-    failed, note, _deferred = _run(monkeypatch, tmp_path,
+    failed, note, _deferred, _reasons = _run(monkeypatch, tmp_path,
                         catalog_ids=["census:eits__m3#no", "census:eits__m3#yes"],
                         cursors={"eits__m3": "2026-08-05"},
                         source="census")
@@ -121,7 +121,7 @@ def test_split_part_expansion_escapes_like_wildcards(monkeypatch, tmp_path):
     # A cursor key containing % must not over-match: 'a%b' may expand only to its own
     # parts, never to 'axb#...'. With one genuinely-mapped key alongside, the wildcard
     # key must land in the coverage residue rather than derive a stranger's parts.
-    failed, note, _deferred = _run(monkeypatch, tmp_path,
+    failed, note, _deferred, _reasons = _run(monkeypatch, tmp_path,
                         catalog_ids=["src:ok", "src:axb#1"],
                         cursors={"ok": "2026-08-05", "a%b": "2026-08-05"})
     assert not failed
@@ -158,7 +158,7 @@ def test_budget_deferral_is_not_a_failure(monkeypatch, tmp_path):
     `partial` every run — insee_bdm read 43,354/77,501 on exactly this. Deferral must
     surface as a NON-demoting coverage note with the ids handed back for retry. Ledger R372.
     """
-    failed, note, deferred = _run(
+    failed, note, deferred, _reasons = _run(
         monkeypatch, tmp_path,
         catalog_ids=["src:a", "src:b", "src:c"],
         cursors={"a": "2026-08-01", "b": "2026-08-01", "c": "2026-08-01"},
@@ -173,7 +173,7 @@ def test_budget_deferral_is_not_a_failure(monkeypatch, tmp_path):
 def test_a_real_failure_alongside_deferral_still_demotes(monkeypatch, tmp_path):
     """Only the deferred ids are exonerated — a genuine failure in the same run still
     demotes, and the count names the genuine ones alone."""
-    failed, note, deferred = _run(
+    failed, note, deferred, _reasons = _run(
         monkeypatch, tmp_path,
         catalog_ids=["src:a", "src:b", "src:c"],
         cursors={"a": "2026-08-01", "b": "2026-08-01", "c": "2026-08-01"},
