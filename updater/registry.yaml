@@ -7526,6 +7526,16 @@ sources:
   # (startPeriod=2023), 359 country codes, so the full flow is plausibly several hundred
   # thousand series. Scheduled via the updater-heavy matrix beside the other _direct giants
   # (the imf_gfs* pattern), NOT the daily run's budget.
+  #
+  # run_location: local ADDED 2026-08-16 — the vdem/statcan class, measured twice:
+  # 2026-08-15 its _all unit was SIGALRMed at exactly the 180-min cap while merging
+  # (Aug 5 pass had merged 71.7M rows); 2026-08-16, WITH a 260-min cap and a dedicated
+  # runner (run 31925331846), it died at 137 min leaving NO trace in state — no attempt
+  # recorded, no push — the signature of a process-level OOM kill, matching the heavy
+  # workflow's own history note that it "hard-failed above 8 GiB" on a ~7 GB runner.
+  # More minutes cannot fix a memory wall. The workstation has the memory; the local
+  # heavy lane reads this flag from the registry (tools/_list_local_sources.py).
+  run_location: local
   live: false
   scripts:
   - jobs/ingest_imf_direct.py
