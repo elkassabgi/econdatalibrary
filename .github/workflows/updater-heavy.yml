@@ -163,14 +163,21 @@ jobs:
       # budget room to finish and still leave headroom for the teardown steps —
       # being killed at the 300-minute ceiling loses the state push, the D1 syncs
       # and the digest for work that already SUCCEEDED (batch 30277746949 died
-      # exactly that way at 354 min).
-      AQUEDUCT_RUN_BUDGET_MIN: '240'
+      # exactly that way at 354 min). Default budget 240; imts exception below.
       # The per-unit SIGALRM defaults to 45 min — right for the shared daily run, wrong for a
       # workflow whose entire purpose is ONE giant source per runner: IMTS's honest first pull
       # was 23 min but PIP's exceeds 45, and a kill here just wastes the dedicated slot.
       # 180 keeps a hung unit bounded far below the 240-min budget + 300-min job ceiling,
       # with teardown headroom (the R66b rule: bound INSIDE with room to push state).
-      AQUEDUCT_UNIT_TIMEOUT_MIN: '180'
+      #
+      # imf_imts_direct EXCEPTION (measured 2026-08-15, run 31862677851): its _all unit ran
+      # 04:41->07:41 — killed at EXACTLY the 180-min SIGALRM while making real progress
+      # (its Aug 5 pass merged 71.7M rows before a different gate). A dedicated runner
+      # killing its own only source with 2 idle hours left is the waste 180 was meant to
+      # prevent. 260/270 keeps 30 min of teardown headroom inside the 300-min ceiling.
+      # If it times out AT 260 too, the next step is chunked sub-units, not more minutes.
+      AQUEDUCT_RUN_BUDGET_MIN: ${{ matrix.source == 'imf_imts_direct' && '270' || '240' }}
+      AQUEDUCT_UNIT_TIMEOUT_MIN: ${{ matrix.source == 'imf_imts_direct' && '260' || '180' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
