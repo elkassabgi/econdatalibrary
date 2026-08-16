@@ -96,11 +96,35 @@ export default {
         // Catalogue entries = PRIMARY + CLIMATE SHARD (task #45): noaa's series
         // rows live in CATALOG_CLIMATE, so a primary-only count silently drops
         // 3.1M entries the moment the shard migration lands.
-        const [catP, catS] = await Promise.all([
-          env.CATALOG.prepare("SELECT COUNT(*) AS c FROM series").first<{ c: number }>(),
-          env.CATALOG_CLIMATE.prepare("SELECT COUNT(*) AS c FROM series").first<{ c: number }>(),
-        ]);
-        const cat = { c: (catP?.c ?? 0) + (catS?.c ?? 0) };
+        //
+        // Same-URL edge cache (2026-08-16, cost incident follow-up): this endpoint
+        // ran a full COUNT(*) over 12.3M rows PER HIT — 267M rows read/day, the
+        // same billing class as the browse incident, just smaller. The count now
+        // reads source_counts (1 row/source, sync-maintained) with the live
+        // COUNT(*) kept as fallback, and 200s are cached 6h.
+        const statsCache = caches.default;
+        const statsKey = new Request(url.toString(), { method: "GET" });
+        const statsHit = await statsCache.match(statsKey);
+        if (statsHit) return statsHit;
+        const SUM_COUNTS = "SELECT SUM(n) AS c FROM source_counts";
+        let catTotal: number | null = null;
+        try {
+          const [sp, ss] = await Promise.all([
+            env.CATALOG.prepare(SUM_COUNTS).first<{ c: number | null }>(),
+            env.CATALOG_CLIMATE.prepare(SUM_COUNTS).first<{ c: number | null }>(),
+          ]);
+          if (sp?.c != null && ss?.c != null) catTotal = sp.c + ss.c;
+        } catch {
+          catTotal = null; // table missing -> live COUNT fallback below
+        }
+        if (catTotal === null) {
+          const [catP, catS] = await Promise.all([
+            env.CATALOG.prepare("SELECT COUNT(*) AS c FROM series").first<{ c: number }>(),
+            env.CATALOG_CLIMATE.prepare("SELECT COUNT(*) AS c FROM series").first<{ c: number }>(),
+          ]);
+          catTotal = (catP?.c ?? 0) + (catS?.c ?? 0);
+        }
+        const cat = { c: catTotal };
         const obj = await env.SERIES_BUCKET.get("_aqueduct/stats.json");
         if (obj === null) {
           return json({
@@ -112,7 +136,11 @@ export default {
           }, 503);
         }
         const measured = await obj.json() as Record<string, unknown>;
-        return json({ ...measured, catalog_entries: cat?.c ?? null });
+        const statsResp = json({ ...measured, catalog_entries: cat?.c ?? null });
+        const statsToCache = new Response(statsResp.clone().body, statsResp);
+        statsToCache.headers.set("cache-control", "public, max-age=300, s-maxage=21600");
+        ctx.waitUntil(statsCache.put(statsKey, statsToCache.clone()));
+        return statsToCache;
       }
 
       // /v1/series/{id}.csv  and  /v1/series/{id}.metadata.json
