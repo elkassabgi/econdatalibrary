@@ -47,3 +47,39 @@ def test_drain_wired_into_run_loop_and_nondemoting():
     assert "csv_failed = list(dict.fromkeys" not in src, \
         "refailed retries must stay queued, never demote the run (R359)"
     assert O._CSV_RETRY_CAP > 0
+
+
+def test_enqueue_stores_per_id_reasons(tmp_path):
+    """A dict `error` stores each id's OWN reason on its row (2026-08-16: the queue
+    used to hold one summary string per id — "csv_derive failed 22/22 series [...]"
+    on all 22 of cso's rows — so the actual exception was unrecoverable and the
+    stuck set needed a live reproduction to diagnose)."""
+    from updater.state import StateStore
+    st = StateStore(path=str(tmp_path / "state.db"))
+    st.enqueue_csv_retry("src", ["src:a", "src:b"],
+                         {"src:a": "KeyError: 'geo'", "src:b": "PUT exhausted"})
+    rows = {r["series_id"]: r for r in st.csv_retries("src")}
+    assert rows["src:a"]["last_error"] == "KeyError: 'geo'"
+    assert rows["src:b"]["last_error"] == "PUT exhausted"
+    # string error still works batch-wide (the csv_deferred path uses it)
+    st.enqueue_csv_retry("src", ["src:c"], "derive budget spent")
+    assert {r["series_id"]: r for r in st.csv_retries("src")}["src:c"]["last_error"] == \
+        "derive budget spent"
+
+
+def test_derive_and_put_returns_per_id_reasons(monkeypatch):
+    """derive_and_put's failed_reasons carries WHY each id failed, keyed by id."""
+    from updater import derive
+
+    def _boom(sid):
+        raise KeyError(f"no store rows for {sid}")
+    monkeypatch.setattr(derive, "_series_csv_bytes", _boom)
+
+    class _Blob:
+        def put_atomic(self, key, body):  # pragma: no cover — derive fails first
+            raise AssertionError("unreachable")
+
+    out = derive.derive_and_put(["s:1", "s:2"], _Blob(), budget_min=0)
+    assert set(out["failed"]) == {"s:1", "s:2"}
+    assert out["failed_reasons"]["s:1"].startswith("KeyError")
+    assert out["failed_reasons"]["s:2"].startswith("KeyError")
