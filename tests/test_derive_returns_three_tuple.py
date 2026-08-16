@@ -1,4 +1,10 @@
-"""Every `return` in _derive_changed_csvs must hand back THREE values.
+"""Every `return` in _derive_changed_csvs must hand back FOUR values.
+
+WIDENED AGAIN (2026-08-16): (failed, note, deferred) -> (failed, note, deferred,
+failed_reasons) so the retry queue can store each id's OWN failure reason instead of
+one batch summary (cso's 22 census ids sat queued 10 days with the real exception
+unrecorded). This file is the enforcement the docstring below asked for: on THIS
+widening it flagged every return site, including the historically-missed gleif one.
 
 THE OUTAGE THIS PINS (2026-08-07). The function's contract widened from (failed, note) to
 (failed, note, deferred) when the derive budget's deferrals were split out from real failures
@@ -54,10 +60,10 @@ def _return_arities():
     return out
 
 
-def test_every_return_is_a_three_tuple():
+def test_every_return_is_a_four_tuple():
     arities = _return_arities()
     assert arities, "no return statements found — the parse is wrong, not the code"
-    bad = [(ln, n) for ln, n in arities if n != 3]
+    bad = [(ln, n) for ln, n in arities if n != 4]
     assert not bad, (
         f"returns with the wrong arity at (line, arity)={bad}. The caller does "
         f"`csv_failed, csv_err, csv_deferred = _derive_changed_csvs(...)`, so a 2-tuple raises "
@@ -66,12 +72,12 @@ def test_every_return_is_a_three_tuple():
         f"in full forever. That is exactly what happened to gleif and its 3,395,736 rows.")
 
 
-def test_the_caller_still_unpacks_three():
+def test_the_caller_still_unpacks_four():
     """If the caller ever goes back to two, the test above would pass while the code breaks."""
     from updater import orchestrate as O
     src = inspect.getsource(O.run_once)
-    assert "csv_failed, csv_err, csv_deferred = _derive_changed_csvs(" in src, (
-        "run_once no longer unpacks three values — re-check this contract end to end")
+    assert "csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(" in src, (
+        "run_once no longer unpacks four values — re-check this contract end to end")
 
 
 def test_the_empty_catalogue_exemption_still_exists():
