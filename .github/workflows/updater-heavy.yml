@@ -124,7 +124,12 @@ jobs:
           # is what a fetcher-less source does and this one is no longer.
           # insee_sirene stays OUT: implemented() is still False, and it is an entity registry
           # whose serving shape is an open product decision, not a missing module.
-          ALL='["un_wpp","bundesbank","cepii_baci","imf_gfsbs_direct","imf_gfscofog_direct","imf_gfssfcp_direct","imf_gfssoef_direct","imf_gfssoo_direct","imf_gfsssuc_direct","imf_imts_direct","imf_pip_direct","imf_dip_direct","imf_mfsdc_direct","imf_mfsma_direct","imf_mfsofc_direct","imf_mfsfmp_direct","imf_mfsir_direct","imf_bopagg_direct","imf_psbs_direct","imf_ctot_direct","imf_sdg_direct","imf_namain_direct","imf_icsd_direct","imf_fd_direct","imf_hpd_direct","imf_gslgrghts_direct","imf_gslepm_direct","imf_gssdo_direct","imf_gsatf_direct","imf_gsli_direct","imf_er_direct","imf_eer_direct","imf_ls_direct","imf_pi_direct","imf_piwca_direct","imf_qgfs_direct"]'
+          # imf_imts_direct REMOVED 2026-08-16 — the vdem class, measured twice: SIGALRMed at
+          # exactly 180 min on 08-15, then (with a 260-min cap, run 31925331846) died at 137 min
+          # leaving NO state trace — a process-level OOM on the ~7 GB runner ("hard-failed above
+          # 8 GiB", this workflow's own history). Isolation and minutes were both tried; it now
+          # carries run_location: local and updates from the workstation, where the memory exists.
+          ALL='["un_wpp","bundesbank","cepii_baci","imf_gfsbs_direct","imf_gfscofog_direct","imf_gfssfcp_direct","imf_gfssoef_direct","imf_gfssoo_direct","imf_gfsssuc_direct","imf_pip_direct","imf_dip_direct","imf_mfsdc_direct","imf_mfsma_direct","imf_mfsofc_direct","imf_mfsfmp_direct","imf_mfsir_direct","imf_bopagg_direct","imf_psbs_direct","imf_ctot_direct","imf_sdg_direct","imf_namain_direct","imf_icsd_direct","imf_fd_direct","imf_hpd_direct","imf_gslgrghts_direct","imf_gslepm_direct","imf_gssdo_direct","imf_gsatf_direct","imf_gsli_direct","imf_er_direct","imf_eer_direct","imf_ls_direct","imf_pi_direct","imf_piwca_direct","imf_qgfs_direct"]'
           REQ='${{ inputs.source }}'
           if [ -z "$REQ" ]; then
             echo "sources=$ALL" >> "$GITHUB_OUTPUT"
@@ -170,14 +175,11 @@ jobs:
       # 180 keeps a hung unit bounded far below the 240-min budget + 300-min job ceiling,
       # with teardown headroom (the R66b rule: bound INSIDE with room to push state).
       #
-      # imf_imts_direct EXCEPTION (measured 2026-08-15, run 31862677851): its _all unit ran
-      # 04:41->07:41 — killed at EXACTLY the 180-min SIGALRM while making real progress
-      # (its Aug 5 pass merged 71.7M rows before a different gate). A dedicated runner
-      # killing its own only source with 2 idle hours left is the waste 180 was meant to
-      # prevent. 260/270 keeps 30 min of teardown headroom inside the 300-min ceiling.
-      # If it times out AT 260 too, the next step is chunked sub-units, not more minutes.
-      AQUEDUCT_RUN_BUDGET_MIN: ${{ matrix.source == 'imf_imts_direct' && '270' || '240' }}
-      AQUEDUCT_UNIT_TIMEOUT_MIN: ${{ matrix.source == 'imf_imts_direct' && '260' || '180' }}
+      # (2026-08-16: an imts-only 260/270 override lived here for ONE run — it proved the
+      # 180-min SIGALRM was not imts's binding constraint: with 260 available it OOM-died
+      # at 137 min instead. imts is now run_location: local and out of this matrix.)
+      AQUEDUCT_RUN_BUDGET_MIN: '240'
+      AQUEDUCT_UNIT_TIMEOUT_MIN: '180'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
