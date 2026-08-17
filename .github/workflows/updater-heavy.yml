@@ -221,8 +221,10 @@ jobs:
           PY
 
       - name: Run ${{ matrix.source }} (isolated runner)
+        id: run_updater
         run: |
           set -o pipefail
+          echo "noop=false" >> "$GITHUB_OUTPUT"
           args="--source ${{ matrix.source }}"
           if [ "${{ inputs.force }}" = "true" ]; then args="${args} --force"; fi
 
@@ -261,6 +263,13 @@ jobs:
               # earlier the same night, would have failed the job for behaving correctly on
               # the next quiet night. Say so and pass.
               echo "::notice::${{ matrix.source }} processed 0 units because its cadence has not elapsed. Not a failure; dispatch with force=true to override."
+              # A cadence no-op wrote NO state, so it has nothing to push. Mark it so the
+              # push step skips: pushing an unchanged snapshot is pure CAS-conflict risk
+              # with zero payload — on 2026-08-17 (run 31992722144) imf_gfscofog_direct's
+              # healthy NOT-DUE pass reddened solely because a sibling matrix job pushed
+              # state inside its 90-second pull->push window and the CAS refused (exit 2).
+              # A real conflict where units WERE processed must still red — work was lost.
+              echo "noop=true" >> "$GITHUB_OUTPUT"
             elif grep -q 'no adapter built' /tmp/updater_out.txt; then
               echo "::error::${{ matrix.source }} processed 0 units - NO FETCHER MODULE EXISTS (updater/strategies/fetchers/${{ matrix.source }}.py). It is scheduled on paper only; this job has been burning a runner to do nothing. Build the fetcher or take it off the matrix."
             else
@@ -312,7 +321,11 @@ jobs:
         # keys on the ETag recorded by --pull-state, so it is structurally incapable of
         # overwriting a newer remote state; without a successful pull it would just
         # refuse (exit 2) and turn one failure into two.
-        if: ${{ always() && steps.pull_state.outcome == 'success' }}
+        # ALSO gated on the run not being a cadence no-op (noop output above): a NOT-DUE
+        # pass wrote no state, and pushing the unchanged snapshot loses a CAS race to any
+        # sibling matrix job for nothing (gfscofog red, run 31992722144). Skipping here
+        # also skips the D1 freshness sync below — correct, nothing changed.
+        if: ${{ always() && steps.pull_state.outcome == 'success' && steps.run_updater.outputs.noop != 'true' }}
         run: python -m updater.run --push-state
 
       - name: Sync freshness to D1
