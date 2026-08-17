@@ -1683,7 +1683,13 @@ _DOT_TABLE_GRAIN = {"unctad_intratrade", "unctad_tradeservcattotal",
                     # depth-3 1,362,065 (172% of D1's whole remaining headroom); series
                     # grain 112,266,300 = 141x headroom. M4023 measure assembled from the
                     # spill cache; M0100's campaign appends under the SAME table ids.
-                    "unctad_biotrademerch"}
+                    "unctad_biotrademerch",
+                    # giant #14, added 2026-08-16: keys are
+                    # ProcessFoodCategory.Economy.Partner.Flow.M<measure>, catalogue id =
+                    # ProcessFoodCategory.Economy (depth-2). Grain counted by the
+                    # cataloguer with an exact prefixes=inserted=total gate: 23,906 ids
+                    # over 394,118,603 obs / 26,579,759 series (~16.5k obs/table).
+                    "unctad_tradefoodcatbyproc"}
 
 
 def _resolve_generic_long(series_id: str, root: str) -> Resolution:
