@@ -3451,7 +3451,12 @@ the source.
 - **Commercial OK:** None · **Attribution required:** None · **ShareAlike:** None · **Fetch:** fetched_ok
 - **Adversarial verdict:** **RESEARCHER-ASSESSED, single pass** — two official surfaces checked,
   no independent verifier pass. Same caveat as the istat entry above.
-- **Decision tier:** NEEDS HUMAN REVIEW (keep gated)
+- **Decision tier:** ~~NEEDS HUMAN REVIEW (keep gated)~~ → **SERVE — OWNER DECISION**
+  (Ahmed, 2026-08-17). The absence-of-licence finding below was presented to the owner
+  verbatim, including this file's rejection of the untested §105 presumption and the
+  alternative of a permission email; the owner directed "serve". Recorded as an informed
+  owner decision on the 17 U.S.C. §105 federal-works basis — NOT as a licence finding;
+  the verbatim record below stands unchanged. If FDIC ever states terms, re-audit.
 
 **Verbatim quote (the only reuse-adjacent language found, and it is about THIRD-PARTY content):**
 > External sites may contain information that is copyrighted with restrictions on reuse. Permission to use copyrighted materials must be obtained from the original source and cannot be obtained from the FDIC.

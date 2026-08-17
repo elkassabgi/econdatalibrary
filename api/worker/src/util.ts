@@ -56,7 +56,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "fao_es", "fao_et", "fao_ew", "fao_fo", "fao_ga", "fao_gb",
   "fao_ge", "fao_gf", "fao_gl", "fao_gn", "fao_gr", "fao_gt",
   "fao_gy", "fao_ic", "fao_oa", "fao_pp", "fao_qa", "fao_qcl",
-  "fao_ql", "fao_qp", "fao_rp", "faostat", "fed_board", "fhfa",
+  "fao_ql", "fao_qp", "fao_rp", "faostat", "fdic", "fed_board", "fhfa",
   "frankfurter", "fsi_fundforpeace", "gcb", "ggdc", "gppd",
   // IEP (CC BY-NC-SA 4.0, granted 2026-07-06). These four were CATALOGUED and
   // searchable on the site with ZERO CSVs in R2, so every Download button on them
