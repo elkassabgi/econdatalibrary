@@ -320,7 +320,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "unctad_trademerchtotal", "unctad_trademerchgr", "unctad_trademerchbalance",
   "unctad_merchvolumequarterly", "unctad_termsoftrade", "unctad_tradepriceindicesq",
   "unctad_concentdiversindices", "unctad_concentstructindices", "unctad_rca",
-  "unctad_tariff", "unctad_merchtheilindices", "unctad_totandcomservicesquarterly",
+  "unctad_tariff", "unctad_tradefoodcatbyproc", "unctad_merchtheilindices", "unctad_totandcomservicesquarterly",
   "unctad_ucpia", "unctad_ucpim", "unctad_commoditypriceindicesa",
   "unctad_commoditypriceindicesm", "unctad_commoditypricea", "unctad_commoditypricem",
   "unctad_ifftrademisinvoicing", "unctad_ictproductionsector", "unctad_iffcrimesrelated",
