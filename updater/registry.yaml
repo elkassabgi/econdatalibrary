@@ -4975,6 +4975,23 @@ sources:
       backoff. Self-bounded at 200 series/run with a rotation bookmark.
     key_env: none
     confidence: high
+- source_id: unctad_tradefoodcatbyproc
+  # GIANT #14 (2026-08-16, #127): 394,118,603 obs / 26,579,759 series, 4 measures
+  # (M4023 growth + M0100 US$ value + M5066 %food + M5058 %merch), pulled with the
+  # measure sums matching the written parquet EXACTLY. Depth-2 DOT-prefix table grain:
+  # 23,906 catalog ids (~16.5k obs/table), exact prefixes=inserted=total gate. Grid
+  # ceiling was 673M/measure; observed density ~17% — the family pattern.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_tradefoodcatbyproc
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.TradeFoodCatByProc/en -> version|lastUpdated
 - source_id: unctad_trademerchtotal
   # FIRST UNCTAD successor (2026-08-08, #70): the publisher's own documented data API,
   # contract read from the app's generated code sample and PROVEN live (HTTP 200, real
