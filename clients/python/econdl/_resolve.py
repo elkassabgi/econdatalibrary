@@ -1707,6 +1707,14 @@ def _resolve_generic_long(series_id: str, root: str) -> Resolution:
             "Refusing to silently skip it.")
     files = sorted(f for f in glob.glob(os.path.join(src_dir, "**", "*.parquet"), recursive=True)
                    if not f.endswith(_GENERIC_SKIP))
+    # fdic ONLY (2026-08-17, owner serve decision): the store holds ONE uniform-long
+    # series file (financials.parquet — 19,918,427 rows / 298,869 keys of form
+    # CERT=<n>:<METRIC>, measured) BESIDE four relational reference tables
+    # (institutions/history/failures/summary) that have no series_key at all.
+    # Reading those would crash or corrupt the generic path; the series payload
+    # is exactly the one file.
+    if src == "fdic":
+        files = [f for f in files if os.path.basename(f) == "financials.parquet"]
     # wid ONLY: exclude the superseded legacy monolith when the per-country shards exist.
     #
     # wid is mid-migration: the store holds a legacy `wid.parquet` (1.93M series, data to 2024)
