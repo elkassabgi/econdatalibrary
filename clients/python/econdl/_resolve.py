@@ -1689,7 +1689,14 @@ _DOT_TABLE_GRAIN = {"unctad_intratrade", "unctad_tradeservcattotal",
                     # ProcessFoodCategory.Economy (depth-2). Grain counted by the
                     # cataloguer with an exact prefixes=inserted=total gate: 23,906 ids
                     # over 394,118,603 obs / 26,579,759 series (~16.5k obs/table).
-                    "unctad_tradefoodcatbyproc"}
+                    "unctad_tradefoodcatbyproc",
+                    # giant #15, added 2026-08-17: keys are
+                    # ProcessFoodCategory.Economy.Partner.Flow.M<measure>, catalogue id =
+                    # ProcessFoodCategory.Economy (depth-2). Grain measured over the FULL
+                    # 336,738,347-obs store (duckdb) and reproduced by the cataloguer's
+                    # exact prefixes=inserted=total gate: 20,578 ids over 22,682,414
+                    # series (~16.4k obs/table) — the same shape as sibling #14.
+                    "unctad_tradefoodprocbycat"}
 
 
 def _resolve_generic_long(series_id: str, root: str) -> Resolution:
