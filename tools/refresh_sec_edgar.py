@@ -361,6 +361,44 @@ def csv_bytes(metric, odate, vals):
     return buf.getvalue().encode("utf-8")
 
 
+def stamp_freshness_d1(status: str, when_utc: str) -> None:
+    """Upsert the D1 source_state row that /v1/sources reads for freshness.
+
+    This refresher lives OUTSIDE the updater (sec_edgar is `live: null`, so
+    AQUEDUCT_LIVE_ONLY never runs it) and nothing else ever wrote its
+    source_state row — measured 2026-08-18: the workflow was green daily and
+    35 companies refreshed that morning, yet /v1/sources showed
+    freshness: null. core/sync_state_d1.py is upsert-only (ON CONFLICT DO
+    UPDATE), so this row survives the daily state sync.
+
+    Success rule: 'ok' when >=95% of the day's filers fetched (measured reality:
+    1-3 transient HTTPErrors out of 37-612 filers EVERY day — 08-17: 3/612,
+    08-18: 1/37 — and the --days window retries a failed CIK on the next runs,
+    so zero-tolerance would pin the display at 'partial' forever while the
+    refresh worked). A worse day stamps status + attempt but does NOT advance
+    last_success_utc (R231's spirit: partial coverage must not look complete).
+    """
+    import subprocess
+    ok = status == "ok"
+    succ_insert = f"'{when_utc}'" if ok else "NULL"
+    succ_update = f", last_success_utc='{when_utc}'" if ok else ""
+    sql = ("INSERT INTO source_state (source_id, strategy, cadence, status, "
+           "last_success_utc, last_attempt_utc) VALUES "
+           f"('sec_edgar', 'edgar_delta', 'daily', '{status}', {succ_insert}, '{when_utc}') "
+           f"ON CONFLICT(source_id) DO UPDATE SET status='{status}', cadence='daily', "
+           f"last_attempt_utc='{when_utc}'{succ_update};")
+    r = subprocess.run(
+        ["npx", "wrangler", "d1", "execute", "econ-catalog", "--remote",
+         "--command", sql, "-y"],
+        cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", shell=(os.name == "nt"))
+    if r.returncode != 0:
+        msg = (r.stderr or "") + (r.stdout or "") or "(no output)"
+        print(f"  freshness stamp FAILED (non-fatal): {msg[-300:]}", flush=True)
+    else:
+        print(f"  freshness stamped: source_state sec_edgar {status} @ {when_utc}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--days", type=int, default=3)
@@ -514,6 +552,12 @@ def main():
         print(f"catalog coverage updated: local rows={nl:,}  D1 statements={nd:,}"
               + ("" if a.d1 else "   (D1 SKIPPED — pass --d1; the worker reads D1, "
                                  "so served metadata stays stale without it)"))
+    if a.apply and a.d1:
+        # Even a zero-span day is a completed freshness check (weekends have no
+        # filings); the stamp is what keeps /v1/sources freshness non-null.
+        ok_day = failed == 0 or failed * 20 <= len(todo)   # >=95% fetched
+        stamp_freshness_d1("ok" if ok_day else "partial",
+                           dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"))
     if not a.apply and changed:
         print("\nre-run with --apply to write parquet + CSV and upload to R2")
     return 0
