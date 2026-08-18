@@ -27,6 +27,21 @@ DBS = ("econ-catalog", "econ-catalog-climate", "hfdatalibrary-db")
 WARN_ROWS = 2_000_000_000
 ALERT_ROWS = 5_000_000_000
 
+# WRITES are 1000x the price of reads ($1.00/M vs $0.001/M) — a modest-looking
+# campaign is a real invoice line. Measured 2026-08-17: the one-day serve+drain
+# campaign metered ~14M rows written (~$14) via catalog upserts x FTS index
+# amplification (~3 internal rows per series row); steady state is ~140k/day
+# (~$0.14, hf download bookkeeping). Thresholds sit ~35x above steady state and
+# below a repeat of the campaign day.
+WARN_WRITES = 5_000_000     # ~$5/day
+ALERT_WRITES = 15_000_000   # ~$15/day
+
+# R2 storage baseline for the email's context line (measured 2026-08-18:
+# econ-data 2.37 TB + ipdatalibrary 599 GB + hfdatalibrary-data 282 GB
+# = 3.25 TB ~= $49/mo at $0.015/GB-mo). Not alerted on — it moves slowly and
+# deliberately (new sources) — but reported so the number is never a surprise.
+BUCKETS = ("econ-data", "hfdatalibrary-data", "ipdatalibrary")
+
 # Same sender identity + secret contract as updater/send_digest.py (that module
 # has no importable sender — its Resend POST is inline in main(), so the proven
 # request pattern is replicated here rather than imported).
@@ -34,18 +49,62 @@ FROM = "Econ Data Library <noreply@hfdatalibrary.com>"
 TO = os.environ.get("DIGEST_TO") or "admin@hfdatalibrary.com"
 
 
-def insights(db: str) -> int:
+def _insights_sorted(db: str, sort_by: str):
+    """Top-100 query shapes over 24h sorted by one dimension, or None on failure."""
+    # encoding pinned per R363: wrangler prints emoji; Windows' cp1252 reader
+    # thread dies mid-capture and stdout comes back None.
     out = subprocess.run(
         ["npx", "wrangler", "d1", "insights", db, "--timePeriod", "1d",
-         "--sort-by", "reads", "--count", "100", "--json"],
-        capture_output=True, text=True, timeout=300, shell=(os.name == "nt"))
+         "--sort-by", sort_by, "--count", "100", "--json"],
+        capture_output=True, text=True, timeout=300, shell=(os.name == "nt"),
+        encoding="utf-8", errors="replace")
     if out.returncode != 0:
-        print(f"  {db}: wrangler failed: {out.stderr[-300:]}")
-        return -1
+        print(f"  {db}: wrangler failed ({sort_by}): {(out.stderr or '')[-300:]}")
+        return None
     # wrangler may prefix banner lines; the JSON array starts at the first '['.
     txt = out.stdout
-    data = json.loads(txt[txt.index("["):])
-    return sum(q.get("totalRowsRead", 0) for q in data)
+    return json.loads(txt[txt.index("["):])
+
+
+def insights(db: str) -> tuple:
+    """(rows_read, rows_written) over 24h, or (-1, -1) on measurement failure.
+
+    Each dimension is summed from its OWN sorted top-100: a write-heavy shape
+    (catalog sync upserts) does virtually no reads and never surfaces in the
+    reads-sorted list — the first version summed writes from that list and
+    reported 0 against a measured 137k/day.
+    """
+    reads_data = _insights_sorted(db, "reads")
+    writes_data = _insights_sorted(db, "writes")
+    if reads_data is None or writes_data is None:
+        return -1, -1
+    return (sum(q.get("totalRowsRead", 0) for q in reads_data),
+            sum(q.get("totalRowsWritten", 0) for q in writes_data))
+
+
+def bucket_sizes() -> str:
+    """One context line per bucket: size + $/mo arithmetic. Best-effort."""
+    lines = []
+    total_gb = 0.0
+    for b in BUCKETS:
+        out = subprocess.run(["npx", "wrangler", "r2", "bucket", "info", b],
+                             capture_output=True, text=True, timeout=300,
+                             shell=(os.name == "nt"),
+                             encoding="utf-8", errors="replace")
+        size = count = "?"
+        for ln in (out.stdout or "").splitlines():
+            if "bucket_size" in ln:
+                size = ln.split(":", 1)[1].strip()
+            if "object_count" in ln:
+                count = ln.split(":", 1)[1].strip()
+        try:
+            val, unit = size.split()
+            total_gb += float(val) * (1024 if unit == "TB" else 1 if unit == "GB" else 0.001)
+        except Exception:  # noqa: BLE001 — context line only, never a gate
+            pass
+        lines.append(f"{b}: {size} ({count} objects)")
+    lines.append(f"R2 storage ~= ${total_gb * 0.015:,.0f}/mo at $0.015/GB-mo")
+    return "\n".join(lines)
 
 
 def send_alert(subject: str, body: str) -> None:
@@ -71,17 +130,22 @@ def send_alert(subject: str, body: str) -> None:
 
 
 def main() -> int:
-    total = 0
+    reads = writes = 0
     failed = []
     lines = []
     for db in DBS:
-        n = insights(db)
-        lines.append(f"{db}: {n:,} rows read (24h)" if n >= 0 else f"{db}: MEASUREMENT FAILED")
-        if n < 0:
+        r, w = insights(db)
+        if r < 0:
             failed.append(db)
-        elif n > 0:
-            total += n
-    report = "\n".join(lines) + f"\nTOTAL: {total:,} rows/day (~${total/1e9:.2f}/day)"
+            lines.append(f"{db}: MEASUREMENT FAILED")
+        else:
+            reads += r
+            writes += w
+            lines.append(f"{db}: {r:,} read / {w:,} written (24h)")
+    report = ("\n".join(lines)
+              + f"\nREADS:  {reads:,}/day (~${reads/1e9:.2f}/day at $0.001/M)"
+              + f"\nWRITES: {writes:,}/day (~${writes/1e6:.2f}/day at $1.00/M)"
+              + "\n\n" + bucket_sizes())
     print(report)
     if failed:
         # A guard that cannot see the meter must not look green — that is exactly
@@ -89,16 +153,18 @@ def main() -> int:
         # restored (e.g. the API token loses reach to a database's account).
         print(f"MEASUREMENT FAILED for {failed} — reddening the workflow (guard coverage gap)")
         return 1
-    if total > ALERT_ROWS:
-        send_alert("D1 BILLING ALERT: reads exceed emergency threshold",
-                   report + f"\n\nThreshold: {ALERT_ROWS:,}. Investigate query shapes with "
-                            "`wrangler d1 insights` immediately (see ledger R430).")
-        print(f"ALERT: total {total:,} > {ALERT_ROWS:,} — reddening the workflow")
+    if reads > ALERT_ROWS or writes > ALERT_WRITES:
+        send_alert("D1 BILLING ALERT: usage exceeds emergency threshold",
+                   report + f"\n\nThresholds: reads {ALERT_ROWS:,}, writes {ALERT_WRITES:,}. "
+                            "Investigate query shapes with `wrangler d1 insights` "
+                            "immediately (see ledger R430).")
+        print("ALERT — reddening the workflow")
         return 1
-    if total > WARN_ROWS:
-        send_alert("D1 billing warning: reads above baseline",
-                   report + f"\n\nWarn threshold: {WARN_ROWS:,}. Not an emergency; check shapes.")
-        print(f"WARN: total {total:,} > {WARN_ROWS:,}")
+    if reads > WARN_ROWS or writes > WARN_WRITES:
+        send_alert("D1 billing warning: usage above baseline",
+                   report + f"\n\nWarn thresholds: reads {WARN_ROWS:,}, writes "
+                            f"{WARN_WRITES:,}. Not an emergency; check shapes.")
+        print("WARN")
     return 0
 
 
