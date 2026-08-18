@@ -4975,6 +4975,23 @@ sources:
       backoff. Self-bounded at 200 series/run with a rotation bookmark.
     key_env: none
     confidence: high
+- source_id: unctad_tradefoodprocbycat
+  # GIANT #15 (2026-08-17, #127): 336,738,347 obs / 22,682,414 series, 4 measures
+  # (M4023 growth + M0100 US$ value + M5066 %food + M5058 %merch), pulled with the
+  # measure sums matching the written parquet EXACTLY. Depth-2 DOT-prefix table grain:
+  # 20,578 catalog ids (~16.4k obs/table), exact prefixes=inserted=total gate. Grid
+  # ceiling was 581M/measure; observed density ~14% — the family pattern.
+  live: true
+  scripts: [jobs/ingest_unctad_ds.py]
+  strategy: bulk_snapshot_if_changed
+  strategy_reason: Publisher-stamped whole-dataset releases (family contract); size-cap chunking auto-applies.
+  cadence: weekly
+  data_cadence: annual
+  refresh_cost: large
+  out_dir: unctad_tradefoodprocbycat
+  review: true
+  adapter:
+    vintage_signal: GET /api/reportMetadata/US.TradeFoodProcByCat/en -> version|lastUpdated
 - source_id: unctad_tradefoodcatbyproc
   # GIANT #14 (2026-08-16, #127): 394,118,603 obs / 26,579,759 series, 4 measures
   # (M4023 growth + M0100 US$ value + M5066 %food + M5058 %merch), pulled with the
