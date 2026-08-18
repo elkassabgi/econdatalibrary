@@ -53,8 +53,19 @@ FIRSTPASS_DIRS = {"cbs_nl", "gus_dbw", "dbnomics"}
 FAST_LANE_SECONDS = 120.0
 
 
+# The single cheap/expensive split proved insufficient on 2026-08-18: the expensive band
+# had grown to 118 sources / ~4,471 min of MAX-estimated work rotating through ~217 min of
+# post-cheap budget — a 20+ day rotation — so five DAILY sources (boc, defillama,
+# fed_board, gleif, riksbank) went 12 days unattempted and RED-SLA'd run 32170878196.
+# Inside one flat band a 3.5-min daily waited behind oecd's 6.8 hours. The ladder keeps
+# the original guarantee (cheap first) and adds graded rotation: the 120-600s rung
+# (~173 min total) still drains most days, and a mega-giant can never queue ahead of a
+# mid-cost source no matter how stale it gets.
+BAND_LADDER_SECONDS = (600.0, 3600.0)   # rungs above fast_lane_seconds
+
+
 def order_units(units, costs, staleness_key, fast_lane_seconds=FAST_LANE_SECONDS):
-    """Run order: CHEAP BAND FIRST, staleness within the band.
+    """Run order: COST-BAND LADDER first, staleness within the band.
 
     Module-level and pure so the scheduling rule can be tested directly. A test that
     re-implements the ordering proves only that the test agrees with itself — the property
@@ -66,8 +77,37 @@ def order_units(units, costs, staleness_key, fast_lane_seconds=FAST_LANE_SECONDS
     """
     def band(unit):
         est = costs.get(unit.source_id)
-        return 0 if est is None or est < fast_lane_seconds else 1
+        if est is None or est < fast_lane_seconds:
+            return 0
+        for i, ceiling in enumerate(BAND_LADDER_SECONDS):
+            if est < ceiling:
+                return i + 1
+        return len(BAND_LADDER_SECONDS) + 1
     return sorted(units, key=lambda u: (band(u), staleness_key(u)))
+
+
+CADENCE_DAYS = {"daily": 1.0, "weekly": 7.0, "monthly": 30.0,
+                "quarterly": 91.0, "annual": 365.0}
+
+
+def overdue_key(last_utc, cadence, now_utc):
+    """Ascending sort key: most CADENCE-OVERDUE first; never-run first of all.
+
+    Absolute age was the second half of the 2026-08-18 starvation: a 10-day-stale ANNUAL
+    fao source (weeks from due) outranked a 5-day-stale DAILY boc (5x past cadence) inside
+    the same band. Normalizing age by cadence makes the rotation serve the source most in
+    violation of its own promise. Unknown cadence counts as monthly — the registry default.
+    """
+    if not last_utc:
+        return float("-inf")
+    try:
+        from datetime import datetime
+        age_days = (datetime.fromisoformat(str(now_utc)) -
+                    datetime.fromisoformat(str(last_utc))).total_seconds() / 86400.0
+    except (ValueError, TypeError):
+        return float("-inf")   # unparseable = treat as never-run, give it a turn
+    days = CADENCE_DAYS.get(str(cadence or "").strip().lower(), 30.0)
+    return -(age_days / days)
 
 
 def _protected(unit) -> bool:
@@ -821,10 +861,15 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     # sorts first within it, so a brand-new source is still guaranteed a first run. That is
     # deliberate — a never-run source has no cost on record precisely because it has never had
     # a turn, and putting it last would be the starvation this whole ordering exists to undo.
+    _now = now_utc()
+
     def _staleness(unit):
         st = store.get_unit(unit.source_id, unit.unit_id) or {}
         last = st.get("last_success_utc") or st.get("last_attempt_utc")
-        return (last or "", unit.key)          # "" (never run) sorts first
+        cadence = (unit.config or {}).get("cadence")
+        # Cadence-normalized: a 5d-stale daily (5x overdue) outranks a 10d-stale
+        # annual (0.03x) — absolute age inverted exactly that on 2026-08-18.
+        return (overdue_key(last, cadence, _now), unit.key)
 
     units = order_units(units, store.run_cost_estimate(), _staleness)
 
