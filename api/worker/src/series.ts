@@ -190,7 +190,20 @@ export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Pro
     return dataUnavailable(source, seriesId);
   }
 
-  const text = await obj.text();
+  // Objects may be stored gzip-compressed (cost plan 2026-08-18: numeric CSVs
+  // compress 5-10x and R2 storage is the bill's dominant line). The worker
+  // always materializes the text anyway (date window + citation header), so
+  // stored compression is invisible to clients — the edge re-compresses the
+  // RESPONSE per each client's Accept-Encoding as it always has. Detection is
+  // by the object's own contentEncoding metadata, set at PUT time by
+  // core/derive_csv.py; plain objects keep working, so the fleet can migrate
+  // gradually with this reader deployed first.
+  const gzipped = obj.httpMetadata?.contentEncoding === "gzip";
+  const text = gzipped
+    ? await new Response(
+        obj.body.pipeThrough(new DecompressionStream("gzip")),
+      ).text()
+    : await obj.text();
   const filtered = applyDateWindow(text, from, to);
 
   // 5) zero data rows -> 502 resolver_empty (refuse an empty series silently).
