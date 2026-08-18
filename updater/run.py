@@ -304,6 +304,25 @@ def push_state() -> int:
     r2.put_atomic(backup_key, comp)
     print(f"[push-state] ok: r2://{r2.bucket}/{STATE_KEY} (etag {new_etag}) "
           f"+ backup {backup_key}")
+
+    # RETENTION (cost plan 2026-08-18): every push writes a ~540 MB backup and
+    # nothing ever deleted them — 275 had accumulated (55.8 GB, ~$0.84/mo and
+    # growing ~1.6 GB/day at 2-3 pushes). Newest 7 ≈ three days of pushes, which
+    # has covered every restore this store has ever needed. Prune failures never
+    # fail the push — the push itself already succeeded.
+    try:
+        backups = sorted(r2.list_keys("_aqueduct/backups/"))
+        # keys embed a YYYYMMDD stamp, so lexical sort is chronological within
+        # the fixed prefix; runid suffix ties same-day pushes (order irrelevant
+        # to a keep-newest-7 policy at 2-3 pushes/day).
+        for old in backups[:-7]:
+            r2.delete(old)
+        if len(backups) > 7:
+            print(f"[push-state] backup retention: pruned {len(backups) - 7} old "
+                  f"backup(s), kept 7")
+    except Exception as e:  # noqa: BLE001
+        print(f"[push-state] backup retention skipped ({type(e).__name__}: "
+              f"{str(e)[:80]}) — push itself succeeded", file=sys.stderr)
     return 0
 
 

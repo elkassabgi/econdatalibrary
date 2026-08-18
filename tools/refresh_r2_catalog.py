@@ -139,6 +139,21 @@ def main() -> int:
     bak = f"{KEY}.bak-{a.stamp}"
     c.copy_object(Bucket=BUCKET, Key=bak, CopySource={"Bucket": BUCKET, "Key": KEY})
     print(f"\n  backed up current R2 catalog -> {bak}")
+    # RETENTION (cost plan 2026-08-18): 28 .baks had accumulated (10.4 GB) with
+    # no reader ever wanting more than the last couple. Keep the newest 3 by
+    # LastModified (stamps are free-text, so mtime is the only honest order);
+    # a prune failure never fails the refresh.
+    try:
+        baks = []
+        for page in c.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=f"{KEY}.bak-"):
+            baks += page.get("Contents", [])
+        baks.sort(key=lambda o: o["LastModified"])
+        for o in baks[:-3]:
+            c.delete_object(Bucket=BUCKET, Key=o["Key"])
+        if len(baks) > 3:
+            print(f"  bak retention: pruned {len(baks) - 3}, kept 3")
+    except Exception as e:  # noqa: BLE001
+        print(f"  bak retention skipped ({type(e).__name__}: {str(e)[:80]})")
 
     # ---- compress to disk, then upload from disk -------------------------------------
     zpath = os.path.join(tmpdir, "catalog.db.zst")

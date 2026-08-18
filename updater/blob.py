@@ -497,6 +497,21 @@ class R2Blob:
     def exists(self, key: str) -> bool:
         return self.etag(key) is not None
 
+    def list_keys(self, prefix: str) -> list[str]:
+        """All keys under a prefix. Used by push_state's backup retention;
+        _aqueduct/backups/ holds tens of keys, so no pagination concerns beyond
+        what the paginator already handles."""
+        keys: list[str] = []
+        for page in self.client.get_paginator("list_objects_v2").paginate(
+                Bucket=self.bucket, Prefix=prefix):
+            keys += [o["Key"] for o in page.get("Contents", [])]
+        return keys
+
+    def delete(self, key: str) -> None:
+        """Delete one object. Deletes are free on R2; a 404 is already-gone,
+        which is the goal state, so no error mapping is needed."""
+        self.client.delete_object(Bucket=self.bucket, Key=key)
+
 
 def from_env(backend: str | None = None) -> LocalBlob | R2Blob:
     """Build the Blob selected by AQUEDUCT_BACKEND (explicit arg overrides env).
