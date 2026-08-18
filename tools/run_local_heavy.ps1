@@ -41,7 +41,7 @@ param(
     [switch]   $IfDue,
     # -Force passes --force to the updater so a MANUAL PROOF of a not-due source actually
     # exercises the fetcher (2026-08-06: `-Only census` on a monthly cadence printed
-    # "NOT DUE ... 0 unit(s) processed" and exited green having proven nothing — the exact
+    # "NOT DUE ... 0 unit(s) processed" and exited green having proven nothing - the exact
     # R35/R50 false-green this repo already documents for the CLOUD dispatch path, which
     # is why updater-daily.yml grew its own force input). Only meaningful with -Only.
     [switch]   $Force,
@@ -192,18 +192,26 @@ if (-not $env:AQUEDUCT_RUN_BUDGET_MIN)      { $env:AQUEDUCT_RUN_BUDGET_MIN      
 # simply stops early and resumes tomorrow - every fetcher here rotates (R190), so stopping
 # early defers work rather than discarding it, and the sources left over are the stalest
 # tomorrow so they go first.
-$cronOpensUtc = [DateTime]::UtcNow.Date.AddHours(5).AddMinutes(40)   # 05:40Z, cron is 06:00Z
-if ([DateTime]::UtcNow -ge $cronOpensUtc) { $cronOpensUtc = $cronOpensUtc.AddDays(1) }
+# TWO CI windows since 2026-08-15: 06:00Z (main daily) and 18:00Z (the
+# expensive-band drain pass added by the capacity fix). This clamp predated the
+# second one, so an afternoon local pass could push state right into the 18:00Z
+# run's pull->push interval and cost one of the two writers its advance (the
+# gfscofog CAS shape, run 31992722144). Clamp to whichever window opens NEXT.
+$win1 = [DateTime]::UtcNow.Date.AddHours(5).AddMinutes(40)    # 05:40Z, cron 06:00Z
+$win2 = [DateTime]::UtcNow.Date.AddHours(17).AddMinutes(40)   # 17:40Z, cron 18:00Z
+$candidates = @($win1, $win2, $win1.AddDays(1), $win2.AddDays(1)) |
+    Where-Object { $_ -gt [DateTime]::UtcNow } | Sort-Object
+$cronOpensUtc = $candidates[0]
 $marginMin = 25
 $untilCron = [int](($cronOpensUtc - [DateTime]::UtcNow).TotalMinutes) - $marginMin
 if ($untilCron -lt 20) {
-    Say ("ABORT: only " + $untilCron + " usable min before the 05:40Z CI window - " +
+    Say ("ABORT: only " + $untilCron + " usable min before the " + $cronOpensUtc.ToString("HH:mm") + "Z CI window - " +
          "too little to be worth a state pull/push cycle. Next tick will pick this up.")
     exit 0
 }
 if ([int]$env:AQUEDUCT_RUN_BUDGET_MIN -gt $untilCron) {
     Say ("whole-run budget clamped " + $env:AQUEDUCT_RUN_BUDGET_MIN + " -> " + $untilCron +
-         " min so this pass ENDS before the 05:40Z CI window (R5: one writer on the state store)")
+         " min so this pass ENDS before the " + $cronOpensUtc.ToString("HH:mm") + "Z CI window (R5: one writer on the state store)")
     $env:AQUEDUCT_RUN_BUDGET_MIN = "$untilCron"
 }
 Say ("per-source budget override: " + $env:AQUEDUCT_BUDGET_MIN_OVERRIDE +
