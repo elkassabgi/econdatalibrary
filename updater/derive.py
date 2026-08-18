@@ -176,6 +176,22 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None)
     def _spent() -> bool:
         return deadline is not None and time.monotonic() >= deadline
 
+    # HEARTBEAT (2026-08-18): run 32054925848's abs csv-phase sat SILENT for 115
+    # minutes — no checkpoint (every 500 puts), no failure line — until the
+    # 285-min step kill took the whole run. put/fail prints only fire when an id
+    # COMPLETES; ids stuck resolving print nothing. A time-based pulse makes a
+    # wedged phase visible in the log it is wedging.
+    _hb_stop = threading.Event()
+
+    def _heartbeat():
+        while not _hb_stop.wait(120):
+            with lock:
+                print(f"  [derive heartbeat] put {put:,}, failed {len(failed):,}, "
+                      f"budget {'spent' if _spent() else 'ok'}", flush=True)
+
+    _hb = threading.Thread(target=_heartbeat, daemon=True)
+    _hb.start()
+
     if workers == 1:
         for i, sid in enumerate(ids):
             if _spent():
@@ -217,6 +233,7 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None)
               flush=True)
     for _d in deferred_ids:
         failed_reasons.setdefault(_d, "derive budget spent — deferred, not failed")
+    _hb_stop.set()
     return {"put": put, "failed": failed, "deferred": deferred,
             "deferred_ids": deferred_ids, "failed_reasons": failed_reasons}
 
