@@ -67,13 +67,27 @@ def _catalog_ids(limit: int | None, source: list | None):
 
 
 def _put_with_backoff(s3, bucket, key, body) -> None:
-    """PUT one object. R2 throws transient ServiceUnavailable/SlowDown throttles that outlast
-    botocore's 5 built-in retries (that killed the 2026-07-02 run at 103k objects). Patient
-    app-level backoff: 7 tries, ~2 min total, then re-raise loudly rather than lose the object."""
+    """PUT one object, gzip-compressed. R2 throws transient ServiceUnavailable/SlowDown
+    throttles that outlast botocore's 5 built-in retries (that killed the 2026-07-02 run at
+    103k objects). Patient app-level backoff: 7 tries, ~2 min total, then re-raise loudly
+    rather than lose the object.
+
+    GZIP AT REST (cost plan 2026-08-18): numeric CSVs compress 5-10x and R2 storage is the
+    bill's dominant line. ContentEncoding='gzip' on the object is the marker the worker's
+    reader keys on (api/worker/src/series.ts decompresses before its date-window/citation
+    processing, so clients see byte-identical responses). mtime=0 in the gzip header keeps
+    the bytes deterministic — verify_source_served byte-compares served objects against
+    freshly-derived expectations, and a timestamp in the header would break equality for
+    identical CSV content."""
+    import gzip as _gzip
     import time as _time
+    if isinstance(body, str):
+        body = body.encode()
+    body = _gzip.compress(body, mtime=0)
     for attempt in range(7):
         try:
-            s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="text/csv")
+            s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="text/csv",
+                          ContentEncoding="gzip")
             return
         except Exception as e:                               # noqa: BLE001
             if attempt == 6:
