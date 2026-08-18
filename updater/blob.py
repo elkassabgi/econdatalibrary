@@ -445,6 +445,15 @@ class R2Blob:
         ct = _CONTENT_TYPES.get(os.path.splitext(key)[1].lower())
         if ct:
             kw["ContentType"] = ct
+        # GZIP AT REST, series CSVs ONLY (cost plan 2026-08-18, mirrors
+        # core/derive_csv.py's writer): ContentEncoding='gzip' is the marker the
+        # worker's reader decompresses on; mtime=0 keeps bytes deterministic for
+        # the verifier's byte-compare. Manifests/JSON stay plain — their readers
+        # (including this module's own get paths) expect raw bytes.
+        if key.startswith("series/") and key.endswith(".csv"):
+            import gzip as _gzip
+            data = _gzip.compress(data, mtime=0)
+            kw["ContentEncoding"] = "gzip"
         self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **kw)
 
     def put_file(self, key: str, src_path: str) -> None:

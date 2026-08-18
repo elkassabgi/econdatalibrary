@@ -195,6 +195,13 @@ def main() -> int:
         for sid in rnd.sample(both, min(a.sample, len(both))):
             key = f"{a.prefix}/{urllib.parse.quote(sid, safe='')}.csv"
             got = s3.get_object(Bucket=a.bucket, Key=key)["Body"].read()
+            # Objects may be stored gzip-at-rest (cost plan 2026-08-18). The
+            # serving contract is the DECOMPRESSED text (the worker inflates
+            # before its processing), so equality is judged on inflated bytes.
+            # Magic-byte detection, not metadata: it works for any client copy.
+            if got[:2] == b"\x1f\x8b":
+                import gzip as _gzip
+                got = _gzip.decompress(got)
             try:
                 want = _series_csv_bytes(sid)
             except Exception as e:                             # noqa: BLE001
