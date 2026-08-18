@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
+import gzip
 import io
 import json
 import os
@@ -267,7 +268,15 @@ def main() -> int:
                 return
             key, body = item
             try:
-                s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv")
+                # GZIP AT REST (Ahmed 2026-08-18: "bring back statcan compressed").
+                # This tool has its OWN uploader predating the fleet gzip writers —
+                # the first statcan campaign uploaded 1.37 TB uncompressed because
+                # of exactly this gap. Measured weighted ratio 5.4x -> ~257 GB.
+                # mtime=0 keeps bytes deterministic for the verifier's compare;
+                # the deployed worker inflates via ContentEncoding.
+                body = gzip.compress(body, mtime=0)
+                s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv",
+                              ContentEncoding="gzip")
                 with lock:
                     counts["put"] += 1
                     if counts["put"] % 500 == 0:
