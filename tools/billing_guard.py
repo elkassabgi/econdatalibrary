@@ -82,8 +82,22 @@ def insights(db: str) -> tuple:
             sum(q.get("totalRowsWritten", 0) for q in writes_data))
 
 
-def bucket_sizes() -> str:
-    """One context line per bucket: size + $/mo arithmetic. Best-effort."""
+def d1_storage_gb() -> float:
+    """Account-wide D1 file size in GB (context for the monthly projection).
+    Best-effort: -1.0 on failure — never a gate, the read/write measurement
+    is the guarded surface."""
+    out = subprocess.run(["npx", "wrangler", "d1", "list", "--json"],
+                         capture_output=True, text=True, timeout=300,
+                         shell=(os.name == "nt"),
+                         encoding="utf-8", errors="replace")
+    try:
+        return sum((row.get("file_size") or 0) for row in json.loads(out.stdout)) / 1e9
+    except Exception:  # noqa: BLE001
+        return -1.0
+
+
+def bucket_sizes() -> tuple:
+    """Context lines per bucket + the summed GB: (text, total_gb). Best-effort."""
     lines = []
     total_gb = 0.0
     for b in BUCKETS:
@@ -104,7 +118,7 @@ def bucket_sizes() -> str:
             pass
         lines.append(f"{b}: {size} ({count} objects)")
     lines.append(f"R2 storage ~= ${total_gb * 0.015:,.0f}/mo at $0.015/GB-mo")
-    return "\n".join(lines)
+    return "\n".join(lines), total_gb
 
 
 def send_alert(subject: str, body: str) -> None:
@@ -142,10 +156,24 @@ def main() -> int:
             reads += r
             writes += w
             lines.append(f"{db}: {r:,} read / {w:,} written (24h)")
+    bucket_text, r2_gb = bucket_sizes()
+    # THE month-to-month number (Ahmed 2026-08-18: "follow month to month").
+    # Every daily email carries the same projected-invoice line so the trend is
+    # readable from any two dated emails: base plan + R2 storage + 30x today's
+    # D1 read/write spend + D1 storage overage ($0.75/GB-mo past the 5 GB free).
+    d1_gb = d1_storage_gb()
+    d1_over = max(0.0, d1_gb - 5.0) * 0.75 if d1_gb >= 0 else 0.0
+    d1_gb_txt = f"{d1_gb:.1f} GB" if d1_gb >= 0 else "unmeasured"
+    projected = 5.0 + r2_gb * 0.015 + (reads / 1e9) * 30 + (writes / 1e6) * 30 + d1_over
+    month_line = (f"PROJECTED MONTH ~= ${projected:,.0f}/mo "
+                  f"(base $5 + R2 ${r2_gb * 0.015:,.0f} + D1 reads ${reads / 1e9 * 30:,.0f} "
+                  f"+ D1 writes ${writes / 1e6 * 30:,.0f} + D1 storage ${d1_over:,.0f} "
+                  f"[{d1_gb_txt}])")
     report = ("\n".join(lines)
               + f"\nREADS:  {reads:,}/day (~${reads/1e9:.2f}/day at $0.001/M)"
               + f"\nWRITES: {writes:,}/day (~${writes/1e6:.2f}/day at $1.00/M)"
-              + "\n\n" + bucket_sizes())
+              + "\n\n" + bucket_text
+              + "\n\n" + month_line)
     print(report)
     if failed:
         # A guard that cannot see the meter must not look green — that is exactly
