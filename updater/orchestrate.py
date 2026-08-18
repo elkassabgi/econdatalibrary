@@ -1115,7 +1115,29 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             #
             # transient_fail is deliberately NOT included: nothing merged, nothing to derive.
             if _should_derive_csvs(status) and not dry:
-                csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob)
+                # HARD FENCE around the WHOLE csv phase (2026-08-18): abs's
+                # post-merge phase ran 115 silent minutes past every soft budget
+                # (run 32054925848) until the 285-min step kill destroyed the
+                # run's state push, D1 syncs and digest. The soft budget inside
+                # derive_and_put only binds when ids complete; the id-mapping
+                # walk and a wedged resolve are outside it. SIGALRM binds them
+                # all. Sized to the run's remaining minutes (+2 grace) capped at
+                # 60 — on trip, the phase is abandoned as a budget note (the
+                # next run re-derives; cursors are already recorded) rather than
+                # the run being executed at the step ceiling.
+                _csv_fence = max(1.0, min(60.0, (_remaining_run_min() or 60.0) + 2.0))
+                try:
+                    with _unit_deadline(unit.key + " (csv phase)", _csv_fence):
+                        csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob)
+                except UnitTimeout:
+                    csv_failed, csv_deferred, csv_reasons = [], [], {}
+                    csv_err = ("csv coverage note: csv phase exceeded its "
+                               f"{_csv_fence:.0f}-min fence and was abandoned for this "
+                               "run — cursors recorded, next run re-derives")
+                    _csv_fence_tripped = True
+                    print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
+                else:
+                    _csv_fence_tripped = False
                 # DRAIN THE RETRY QUEUE (2026-08-06). derive.py has promised since it
                 # gained a wall-clock budget that ids not reached "come back in `failed`
                 # ... so they are retried next run instead of lost" — but the queue was
@@ -1138,7 +1160,10 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # derive now; the drain is already bounded (_CSV_RETRY_CAP + capped
                 # budget) and refailures stay queued without demoting, so attempting
                 # it costs little even when the environment really is broken.
-                _retry_rows = store.csv_retries(unit.source_id)
+                # The drain shares the fence's verdict: if the fresh-path csv
+                # phase already blew its time fence, retrying OLD queued ids in
+                # the same exhausted window is exactly the overrun being fenced.
+                _retry_rows = [] if _csv_fence_tripped else store.csv_retries(unit.source_id)
                 if _retry_rows:
                     _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
                     from . import derive as _derive_mod
