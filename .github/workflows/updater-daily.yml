@@ -65,7 +65,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 335   # 285-min step + ~50-min tail (see Run updater's comment)
+    timeout-minutes: 355   # 305-min step + ~50-min tail, ceiling-aware: GitHub kills jobs at 360
     # Write is needed only by the heartbeat step, which injects the token itself.
     permissions:
       contents: write
@@ -136,7 +136,7 @@ jobs:
       # SIGALRM) would cross minute 270 and caps every derive by the remainder,
       # so the run EXITS CLEANLY before the 285-min step timeout instead of
       # being killed mid-unit. Step/job timeouts remain as backstops only.
-      AQUEDUCT_RUN_BUDGET_MIN: "270"
+      AQUEDUCT_RUN_BUDGET_MIN: "290"
       AQUEDUCT_BACKEND: r2
       # Rollout perimeter: scheduled runs execute ONLY live: true sources.
       # (Learned from run 28682266857: without this, every due source with an
@@ -226,7 +226,7 @@ jobs:
         # 08-09 run's job-level cancel also cost that day's state push; a step kill (which
         # always() survives) is strictly cheaper than a job kill, so the step must stay
         # comfortably below the job.
-        timeout-minutes: 285
+        timeout-minutes: 305
         # Inputs are passed via env (not inlined into the command) so a crafted
         # 'source' value cannot inject shell syntax, and so the boolean dry_run
         # never renders as a literal "false" argument (GH expression pitfall).

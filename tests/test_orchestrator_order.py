@@ -99,8 +99,10 @@ def test_cheap_sources_are_not_starved_by_expensive_ones():
     assert got.index("cnb") < got.index("big_stale"), (
         "a 4.9-second source must not queue behind a 400-minute one")
     assert got[:2] == ["cnb", "frankfurter"], got
-    assert got[2:] == ["big_stale", "big_fresh"], (
-        "within the expensive band the old staleness order must still hold")
+    assert got[2:] == ["big_fresh", "big_stale"], (
+        "2026-08-18 ladder: a 50-min source (band 2) outranks a 400-min one (band 3) "
+        "regardless of staleness — one flat expensive band let oecd's 6.8h queue ahead "
+        "of 4-min dailies and starve them for 12 days (run 32170878196)")
 
 
 def test_never_run_source_goes_first_overall():
@@ -117,3 +119,35 @@ def test_staleness_still_orders_within_a_band():
     costs = {u: 5.0 for u in units}          # all cheap -> one band
     state = {"a": "2026-08-01", "b": "2026-06-01", "c": "2026-07-01"}
     assert _order(units, costs, state) == ["b", "c", "a"]
+
+
+def test_ladder_separates_mid_cost_from_giants():
+    """2026-08-18 (run 32170878196): the flat expensive band held 4,471 min of work
+    against ~217 min/day of post-cheap budget — a 20+ day rotation in which boc (744s,
+    DAILY) waited behind oecd (24,401s) whenever oecd was staler. The ladder guarantees
+    a giant can never precede a lighter band, however stale it gets."""
+    units = ["giant_ancient", "mid_fresh", "light_fresh", "tiny"]
+    costs = {"giant_ancient": 24000.0,   # band 3
+             "mid_fresh": 1000.0,        # band 2
+             "light_fresh": 250.0,       # band 1
+             "tiny": 5.0}                # band 0
+    state = {"giant_ancient": "2026-01-01", "mid_fresh": "2026-08-17",
+             "light_fresh": "2026-08-17", "tiny": "2026-08-17"}
+    assert _order(units, costs, state) == ["tiny", "light_fresh", "mid_fresh",
+                                           "giant_ancient"]
+
+
+def test_overdue_ratio_prefers_cadence_violation_over_absolute_age():
+    """Second half of the same incident: absolute-age staleness let a 10-day-stale
+    ANNUAL fao source (weeks from due) outrank a 5-day-stale DAILY boc (5x past
+    cadence) inside one band. The key must normalize age by cadence."""
+    from updater.orchestrate import overdue_key
+    now = "2026-08-18T00:00:00+00:00"
+    daily_5d = overdue_key("2026-08-13T00:00:00+00:00", "daily", now)     # 5x overdue
+    annual_10d = overdue_key("2026-08-08T00:00:00+00:00", "annual", now)  # 0.03x
+    assert daily_5d < annual_10d, (
+        "ascending sort must put the 5x-overdue daily before the 0.03x-overdue annual")
+    assert overdue_key(None, "daily", now) == float("-inf"), (
+        "never-run sorts first of all")
+    assert overdue_key("garbage-not-a-date", "daily", now) == float("-inf"), (
+        "unparseable timestamps degrade to a guaranteed turn, not a crash")
