@@ -79,6 +79,23 @@ def test_cost_estimate_is_max_over_recent_runs(store):
         "means rather than being handed a fabricated 'free'")
 
 
+def test_fail_streak_cannot_smuggle_expensive_source_into_fast_lane(store):
+    """2026-08-19 (run 32195120699): ecb had transient_failed since Jul 16 — each fail
+    took seconds, its 2,400s success rolled out of the 5-run window, the estimate
+    collapsed, and it infiltrated the cheap band where its next real attempt burned
+    40 minutes; the run died in band 1 with 46 sources unattempted. The estimate is
+    floored at the latest NON-FAIL run's duration."""
+    store.log_run("chronic", "_all", "ok", dur_s=2400.0)
+    for _ in range(5):
+        store.log_run("chronic", "_all", "transient_fail", dur_s=2.0)
+    assert store.run_cost_estimate()["chronic"] >= 2400.0, (
+        "five fast failures must not erase what a real attempt costs")
+    # And the floor must never LOWER an estimate: recent slow runs still dominate.
+    store.log_run("spiky2", "_all", "no_change", dur_s=3.0)
+    store.log_run("spiky2", "_all", "ok", dur_s=1800.0)
+    assert store.run_cost_estimate()["spiky2"] == 1800.0
+
+
 def test_cost_estimate_window_is_bounded(store):
     # Ancient history must fall out of the window, or a source that was once slow stays
     # branded for ever and never returns to the fast lane after it is fixed.

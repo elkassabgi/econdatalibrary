@@ -248,10 +248,29 @@ class StateStore:
 
         A source with no runs on record is absent from the mapping — the caller decides what
         never-run means, rather than having a 0 here quietly assert "free".
+
+        FLOORED at the latest NON-FAIL run's duration (2026-08-19, run 32195120699):
+        a chronic failer's fast failures (ecb: transient_fails since Jul 16, ~seconds
+        each) rolled its 2,400s success out of the window, the estimate collapsed,
+        and it infiltrated the cheap band — where its next REAL attempt detonated
+        for 40 minutes and the run died in band 1 with 46 sources unattempted.
+        Failure durations say nothing about what an attempt that gets somewhere
+        costs; the last ok/no_change/partial does. The floor only ever raises the
+        estimate — under-estimating remains the direction this function must never err.
         """
         rows = self.db.execute(
             "SELECT source_id, MAX(dur_s) FROM ("
             "  SELECT source_id, dur_s,"
             "         ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY id DESC) AS rn"
             "  FROM runs) WHERE rn <= ? GROUP BY source_id", (sample,))
-        return {sid: (d or 0.0) for sid, d in rows}
+        est = {sid: (d or 0.0) for sid, d in rows}
+        floors = self.db.execute(
+            "SELECT source_id, dur_s FROM ("
+            "  SELECT source_id, dur_s,"
+            "         ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY id DESC) AS rn"
+            "  FROM runs WHERE status IN ('ok','no_change','partial')"
+            ") WHERE rn = 1")
+        for sid, d in floors:
+            if d is not None and sid in est and d > est[sid]:
+                est[sid] = d
+        return est
