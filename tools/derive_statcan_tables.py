@@ -255,7 +255,13 @@ def main() -> int:
                 tok = r["NextContinuationToken"]
             print(f"skip-existing: {len(existing):,} already in R2", flush=True)
 
-    q: queue.Queue = queue.Queue(maxsize=1000)
+    # maxsize 64, not 1000: bodies are whole unit CSVs (up to ~100 MB raw). A
+    # 1000-slot queue is an unbounded-in-BYTES buffer — with the census giants
+    # producing units faster than 16 uploaders drained them, the 2026-08-19
+    # relaunch died of MemoryError at giant 10/8207 while the box also hosted a
+    # 63 GB imts finalize. 64 compressed bodies (~10-20 MB each after the gzip
+    # below) bound the buffer to ~1 GB and give backpressure instead of death.
+    q: queue.Queue = queue.Queue(maxsize=64)
     counts = {"put": 0, "skip": 0, "err": 0}
     lock = threading.Lock()
     STOP = object()
@@ -271,10 +277,11 @@ def main() -> int:
                 # GZIP AT REST (Ahmed 2026-08-18: "bring back statcan compressed").
                 # This tool has its OWN uploader predating the fleet gzip writers —
                 # the first statcan campaign uploaded 1.37 TB uncompressed because
-                # of exactly this gap. Measured weighted ratio 5.4x -> ~257 GB.
-                # mtime=0 keeps bytes deterministic for the verifier's compare;
-                # the deployed worker inflates via ContentEncoding.
-                body = gzip.compress(body, mtime=0)
+                # of exactly this gap. Compression normally happens at ENQUEUE
+                # (flush) so the queue buffers small bodies; the magic-byte check
+                # keeps this path safe for both compressed and raw producers.
+                if body[:2] != b"\x1f\x8b":
+                    body = gzip.compress(body, mtime=0)
                 s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv",
                               ContentEncoding="gzip")
                 with lock:
@@ -372,7 +379,10 @@ def main() -> int:
                 with lock:
                     counts["skip"] += 1
                 return
-            q.put((key, _rows_csv(rows)))
+            # Compress BEFORE enqueueing: the queue then buffers ~10-20 MB gzip
+            # bodies instead of ~100 MB raw CSVs (measured 5.4-11x on statcan).
+            # Same deterministic bytes as the worker path (mtime=0).
+            q.put((key, gzip.compress(_rows_csv(rows), mtime=0)))
 
         while True:
             batch = cur.fetchmany(200_000)
