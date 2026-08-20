@@ -54,10 +54,12 @@ export const SELECT_SOURCES = `
 SELECT s.source_id, s.name, s.homepage, s.license_id, s.attribution, s.terms_url,
        l.name AS license_name, l.url AS license_url,
        l.reservable, l.commercial_ok, l.attribution_required, l.no_modify,
-       ss.cadence, ss.status AS source_status, ss.last_success_utc AS source_last_success
+       ss.cadence, ss.status AS source_status, ss.last_success_utc AS source_last_success,
+       dt.data_through AS data_through
 FROM source s
 LEFT JOIN license l ON l.license_id = s.license_id
 LEFT JOIN source_state ss ON ss.source_id = s.source_id
+LEFT JOIN source_data_through dt ON dt.source_id = s.source_id
 WHERE EXISTS (SELECT 1 FROM series se WHERE se.source_id = s.source_id)
 ORDER BY s.source_id`;
 
