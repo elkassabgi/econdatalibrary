@@ -27,7 +27,8 @@ export async function handleSources(env: Env): Promise<Response> {
       const hasFreshness =
         r.source_status !== null ||
         r.source_last_success !== null ||
-        r.cadence !== null;
+        r.cadence !== null ||
+        r.data_through !== null;
       return {
         source: r.source_id,
         name: r.name,
@@ -48,6 +49,10 @@ export async function handleSources(env: Env): Promise<Response> {
               status: r.source_status, // null when no source_state row (honest)
               last_updated: r.source_last_success, // null when never run (never faked)
               cadence: r.cadence,
+              // Newest served observation (MAX series.end_date, stamped at sync
+              // time from the local catalog — task #138). Present even for
+              // rotating-'partial' sources whose runs never earn last_updated.
+              data_through: r.data_through ?? null,
             }
           : null,
       };

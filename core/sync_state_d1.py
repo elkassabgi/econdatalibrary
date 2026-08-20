@@ -139,6 +139,40 @@ def emit_sql(state_db: str, out_dir: str) -> tuple[list[str], dict[str, int]]:
     finally:
         conn.close()
 
+    # DATA_THROUGH (task #138, 2026-08-20): per-source newest served observation,
+    # computed FREE from the local catalog — never a D1 table scan (R430: an
+    # unindexable aggregate on the 13M-row series table bills real money; this
+    # one costs one local GROUP BY). 93 of 318 live sources rotate 'partial' by
+    # design, so R231's gate (correctly) never writes their source_state row and
+    # the public freshness read null while data merged daily. data_through
+    # answers what a user actually asks — "data through when?" — from
+    # series.end_date, which the derive/catalogue chain maintains. Its OWN tiny
+    # table (not an ALTER on source_state): CREATE IF NOT EXISTS is idempotent
+    # where ADD COLUMN is fatal-on-rerun, and a fresh D1 stays workable.
+    # verify_replay ignores it deliberately — it audits the state projection.
+    cat_path = os.environ.get("ECONDL_CATALOG") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "catalog.db")
+    if os.path.exists(cat_path):
+        cconn = sqlite3.connect(f"file:{cat_path}?mode=ro", uri=True)
+        try:
+            dt_rows = cconn.execute(
+                "SELECT source_id, MAX(end_date) FROM series "
+                "WHERE end_date IS NOT NULL GROUP BY source_id").fetchall()
+        finally:
+            cconn.close()
+        stmts.append("CREATE TABLE IF NOT EXISTS source_data_through ("
+                     "source_id TEXT PRIMARY KEY, data_through TEXT);")
+        for i in range(0, len(dt_rows), ROWS_PER_STMT):
+            chunk = dt_rows[i:i + ROWS_PER_STMT]
+            vals = ",\n".join(
+                "(" + ", ".join(_lit(v) for v in r) + ")" for r in chunk)
+            stmts.append(
+                f"INSERT INTO source_data_through (source_id, data_through) VALUES\n{vals}\n"
+                f'ON CONFLICT(source_id) DO UPDATE SET data_through=excluded.data_through;')
+        counts["source_data_through"] = len(dt_rows)
+    else:
+        print(f"  data_through SKIPPED: no catalog at {cat_path} (state tables still sync)")
+
     if sum(counts.values()) == 0:
         raise SystemExit(
             f"FATAL: {state_db} has zero unit_state/source_state rows — refusing to "
