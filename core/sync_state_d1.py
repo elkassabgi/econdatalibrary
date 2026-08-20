@@ -155,9 +155,14 @@ def emit_sql(state_db: str, out_dir: str) -> tuple[list[str], dict[str, int]]:
     if os.path.exists(cat_path):
         cconn = sqlite3.connect(f"file:{cat_path}?mode=ro", uri=True)
         try:
+            # end_date < 2900: a handful of series carry the publisher's
+            # open-ended sentinel 9999-12-31 (task #91's class) — eurostat's MAX
+            # leaked it as data_through on the first live stamp. Genuine long
+            # projection horizons (boc publishes through 2095) stay in.
             dt_rows = cconn.execute(
                 "SELECT source_id, MAX(end_date) FROM series "
-                "WHERE end_date IS NOT NULL GROUP BY source_id").fetchall()
+                "WHERE end_date IS NOT NULL AND end_date < '2900-01-01' "
+                "GROUP BY source_id").fetchall()
         finally:
             cconn.close()
         stmts.append("CREATE TABLE IF NOT EXISTS source_data_through ("
