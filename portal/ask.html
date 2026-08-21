@@ -191,6 +191,12 @@ box-shadow:0 8px 24px rgba(0,0,0,.18);display:none;z-index:120;min-width:220px}
 #ekd-menu .who{padding:.6rem 1.2rem;border-bottom:1px solid var(--gray-100,#f3f4f6);
 font-size:.82rem;color:var(--gray-500,#6b7280)}
 
+
+.nav-links .js-ekd-register{background:var(--gold);color:var(--navy)!important;
+padding:.4rem .875rem;border-radius:6px;font-size:.85rem;font-weight:600;
+white-space:nowrap;margin-left:.65rem}
+.nav-links .js-ekd-register:hover{background:#e0b955;color:var(--navy)!important}
+
 </style>
 </head><body>
 <div class="status-bar" id="status-bar">
@@ -214,7 +220,7 @@ font-size:.82rem;color:var(--gray-500,#6b7280)}
       <li><a href="https://econdatalibrary.com">Econ Data</a></li>
       <li><a href="https://ipdatalibrary.com">IP Data</a></li>
       <li><a href="ask.html">Ask the Data</a></li>
-      <li><a class="js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create free account</a></li>
+      <li><a class="js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Sign in</a></li>
     </ul>
   </div>
 </nav>
@@ -661,6 +667,27 @@ addEventListener("load", function () {
     EKD.init();
     paint();
   });
+})();
+</script>
+
+
+<script>
+(function () {
+  // The nav CTA must open the family popup in place on EVERY page, not navigate
+  // to another library's download page. href stays as the no-JS fallback.
+  function wire() {
+    document.querySelectorAll('.nav-links .js-ekd-register').forEach(function (a) {
+      if (a.dataset.ekdWired) return;
+      a.dataset.ekdWired = '1';
+      a.addEventListener('click', function (e) {
+        if (typeof EKD === 'undefined' || !EKD.login) return;   // fallback: follow href
+        e.preventDefault();
+        try { EKD.login({ tab: 'register' }); } catch (err) { EKD.login(); }
+      });
+    });
+  }
+  if (document.readyState !== 'loading') wire();
+  else document.addEventListener('DOMContentLoaded', wire);
 })();
 </script>
 
