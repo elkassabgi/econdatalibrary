@@ -650,7 +650,7 @@ def build_page_seo(records):
     candidate (the unique subtitle), and only as an unreachable last resort append
     their registry id -- which prints a warning if it ever fires."""
     from collections import defaultdict
-    suffix = f" | {SITE_NAME}"
+    suffix = f" — {SITE_NAME}"
     shared = shared_dataset_labels(records)
     state = {}
     for r in records:
@@ -1704,14 +1704,56 @@ def croissant_jsonld(rec, page_desc=None):
 #  HTML rendering
 # ---------------------------------------------------------------------------- #
 PAGE_CSS = """
-:root{--navy:#1a2332;--navy-light:#243044;--blue:#2563eb;--blue-pale:#eff6ff;
---gold:#d4a843;--gold-deep:#8a6d27;--g50:#f9fafb;--g100:#f3f4f6;--g200:#e5e7eb;
---g300:#d1d5db;--g500:#6b7280;--g600:#4b5563;--g700:#374151;--g800:#1f2937;
---green:#047857;--red:#b91c1c;--amber:#92600a;--serif:Georgia,serif;
---sans:"Inter",system-ui,sans-serif;--mono:"JetBrains Mono",monospace}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:var(--sans);color:var(--g800);background:#fff;line-height:1.6}
-.nav{background:var(--navy);color:#fff;position:sticky;top:0;z-index:50;
+:root{--navy:#1a2332;--navy-light:#243044;--blue:#2563eb;--blue-light:#3b82f6;
+--blue-pale:#eff6ff;--gold:#d4a843;--gold-light:#f0d78c;--gold-deep:#8a6d27;
+--g50:#f9fafb;--g100:#f3f4f6;--g200:#e5e7eb;--g300:#d1d5db;--g400:#9ca3af;
+--g500:#6b7280;--g600:#4b5563;--g700:#374151;--g800:#1f2937;--g900:#111827;
+--green:#047857;--red:#b91c1c;--amber:#92600a;--max-width:1200px;
+--serif:"Georgia","Times New Roman",serif;
+--sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+--mono:"JetBrains Mono","Fira Code","Consolas",monospace}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);color:var(--g800);background:#fff;line-height:1.7;
+-webkit-font-smoothing:antialiased}
+/* Base typography copied from hfdatalibrary.com css/style.css:49-79 so EVERY page
+   (not just the homepage) carries the canon's heading leading, link colour, code
+   chip, <pre> panel, table spec and button set. */
+h1,h2,h3,h4,h5,h6{font-family:var(--serif);color:var(--navy);line-height:1.3;font-weight:700}
+h3{font-size:1.375rem;margin-bottom:.75rem}
+h4{font-size:1.125rem;margin-bottom:.5rem}
+p{margin-bottom:1rem}
+a{color:var(--blue);text-decoration:none;transition:color .15s}
+a:hover{color:var(--blue-light)}
+code{font-family:var(--mono);font-size:.875em;background:var(--g100);padding:.15em .4em;
+border-radius:4px}
+pre{background:var(--navy);color:#e2e8f0;padding:1.25rem 1.5rem;border-radius:8px;
+overflow-x:auto;font-family:var(--mono);font-size:.875rem;line-height:1.6;margin:0 0 1.5rem}
+pre code{background:none;padding:0;color:inherit}
+.table-wrap{overflow-x:auto;margin-bottom:1.5rem}
+table{width:100%;border-collapse:collapse;font-size:.9rem}
+thead th{text-align:left;padding:.75rem 1rem;border-bottom:2px solid var(--g300);
+font-weight:600;color:var(--g700);white-space:nowrap}
+tbody td{padding:.625rem 1rem;border-bottom:1px solid var(--g200)}
+tbody tr:hover{background:var(--g50)}
+td.mono{font-family:var(--mono);font-size:.85rem}
+.citation-block{background:var(--g50);border:1px solid var(--g200);border-radius:8px;
+padding:1.25rem 1.5rem;position:relative;font-size:.9rem;margin-bottom:1rem}
+.citation-block p{margin:0;white-space:pre-wrap}
+.citation-block pre{margin:0}
+.citation-block .copy-btn{position:absolute;top:.75rem;right:.75rem;background:var(--blue);
+color:#fff;border:none;padding:.35rem .75rem;border-radius:4px;font-size:.8rem;cursor:pointer}
+.citation-block .copy-btn:hover{background:var(--blue-light)}
+.btn{display:inline-flex;align-items:center;gap:.5rem;padding:.75rem 1.75rem;border-radius:8px;
+font-weight:600;font-size:.95rem;cursor:pointer;border:none;transition:all .2s;text-decoration:none}
+.btn-primary{background:var(--blue);color:#fff}
+.btn-primary:hover{background:var(--blue-light);color:#fff;transform:translateY(-1px);
+box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06)}
+.btn-outline{background:transparent;color:#fff;border:2px solid rgba(255,255,255,.3)}
+.btn-outline:hover{border-color:#fff;color:#fff}
+.btn-gold{background:var(--gold);color:var(--navy)}
+.btn-gold:hover{background:var(--gold-light);color:var(--navy)}
+.btn-group{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap}
+.nav{background:var(--navy);color:#fff;position:sticky;top:0;z-index:100;
 box-shadow:0 2px 8px rgba(0,0,0,.15)}
 .nav-in{max-width:1200px;margin:0 auto;padding:0 1.5rem;height:64px;display:flex;
 align-items:center;justify-content:space-between}
@@ -1719,18 +1761,30 @@ align-items:center;justify-content:space-between}
 .brand .d{color:var(--gold)}.brand a{color:#fff;text-decoration:none}
 /* nav links mirror hfdatalibrary.com exactly: padded pills, hover + active
    highlight (rgba white .1 background), same rhythm and bar height (64px). */
-.nav-links{display:flex;gap:.1rem;align-items:center;white-space:nowrap}
+.nav-links{display:flex;gap:.1rem;list-style:none;align-items:center;white-space:nowrap}
 .nav-links a{color:rgba(255,255,255,.8);text-decoration:none;padding:.5rem .75rem;
 border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-space:nowrap}
 .nav-links a:hover,.nav-links a.active{color:#fff;background:rgba(255,255,255,.1)}
+.nav-toggle{display:none;background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer}
+/* hf css/style.css:382-400 -- collapse the link row before it crowds the bar. */
+@media (max-width:1120px){
+.nav-links{display:none}
+.nav-links.open{display:flex;flex-direction:column;position:absolute;top:64px;left:0;right:0;
+background:var(--navy);padding:1rem;box-shadow:0 10px 15px rgba(0,0,0,.1),0 4px 6px rgba(0,0,0,.05)}
+.nav-toggle{display:block}
+}
+.container{max-width:var(--max-width);margin:0 auto;padding:0 1.5rem}
+.container-narrow{max-width:920px;margin:0 auto;padding:0 1.5rem}
+.section{padding:5rem 0}
+.section-alt{background:var(--g50)}
 .wrap{max-width:920px;margin:0 auto;padding:2rem 1.5rem}
 .crumb{font-size:.82rem;color:var(--g500);margin-bottom:1rem}
 .crumb a{color:var(--blue);text-decoration:none}
-h1{font-family:var(--serif);color:var(--navy);font-size:2rem;line-height:1.2}
+h1{font-size:2.5rem}
 .pid{font-family:var(--mono);color:var(--gold-deep);font-size:.85rem;margin-bottom:.3rem}
 .badges{margin:.9rem 0 1.2rem;display:flex;gap:.5rem;flex-wrap:wrap}
-.badge{display:inline-block;font-size:.74rem;font-weight:600;padding:.2rem .6rem;
-border-radius:999px}
+.badge{display:inline-block;font-size:.75rem;font-weight:700;letter-spacing:.05em;
+padding:.2em .6em;border-radius:4px}
 .badge.open{background:#ecfdf5;color:var(--green)}
 .badge.meta{background:#fffbeb;color:var(--amber)}
 .badge.lic{background:var(--blue-pale);color:var(--blue)}
@@ -1742,11 +1796,8 @@ border-radius:999px}
 ul.notes{margin:.4rem 0 1rem;padding-left:1.1rem;color:var(--g700)}
 ul.notes li{margin:.35rem 0;font-size:.92rem;line-height:1.5}
 ul.notes li:first-child{font-weight:600;color:var(--navy)}
-blockquote.cite{margin:.4rem 0;padding:.7rem 1rem;border-left:3px solid var(--gold);
-background:var(--g50,#f9fafb);font-family:var(--mono);font-size:.85rem;color:var(--g700);white-space:pre-wrap}
 p.proc{font-size:.85rem;color:var(--g600);margin:.4rem 0 1rem}
-h2{font-family:var(--serif);color:var(--navy);font-size:1.2rem;margin:1.8rem 0 .5rem;
-border-bottom:1px solid var(--g200);padding-bottom:.3rem}
+h2{font-size:1.875rem;margin:1.8rem 0 1rem}
 .kv{display:grid;grid-template-columns:190px 1fr;gap:.45rem 1rem;font-size:.92rem}
 .kv dt{color:var(--g500);font-weight:600}
 .kv dd{color:var(--g800);word-break:break-word}
@@ -1754,23 +1805,29 @@ border-bottom:1px solid var(--g200);padding-bottom:.3rem}
 .mono{font-family:var(--mono);font-size:.85rem}
 details{margin-top:1rem;border:1px solid var(--g200);border-radius:8px;background:var(--g50)}
 summary{cursor:pointer;padding:.7rem 1rem;font-weight:600;color:var(--g700);font-size:.9rem}
-details pre{margin:0;padding:1rem;overflow:auto;font-family:var(--mono);font-size:.78rem;
-line-height:1.5;border-top:1px solid var(--g200);background:#fff;color:var(--g800)}
-.foot{color:var(--g500);font-size:.8rem;text-align:center;padding:2.5rem 1rem;
-border-top:1px solid var(--g200);margin-top:2.5rem}
-.foot a{color:var(--blue)}
-.dhero{background:var(--navy);margin:-2rem -1.5rem 1.6rem;padding:2.1rem 1.5rem 1.7rem;
-border-bottom:3px solid var(--gold)}
+details pre{margin:0;font-size:.78rem;line-height:1.5;border-radius:0 0 8px 8px}
+.dhero{background:var(--navy);margin:-2rem -1.5rem 1.6rem;padding:3rem 1.5rem}
 .dhero .crumb{color:rgba(255,255,255,.55);margin-bottom:.7rem}
 .dhero .crumb a{color:var(--gold);text-decoration:none}
 .dhero .pid{color:var(--gold);margin-bottom:.35rem}
-.dhero h1{color:#fff;font-size:1.9rem}
+.dhero h1{color:#fff;font-size:2.5rem;margin-bottom:.5rem}
 .dhero .badges{margin:.9rem 0 0}
-.dhero .lead{color:rgba(255,255,255,.78);margin:.8rem 0 0;font-size:1rem}
+.dhero .lead{color:rgba(255,255,255,.7);margin:.8rem 0 0;font-size:1.1rem}
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:.7rem;margin:.5rem 0 1rem}
 .metric{background:var(--g50);border:1px solid var(--g200);border-radius:10px;padding:.75rem .9rem}
 .metric .mlabel{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g500)}
-.metric .mval{font-family:var(--serif);font-size:1.15rem;color:var(--navy);margin-top:.25rem;word-break:break-word}
+.metric .mval{font-family:var(--mono);font-weight:700;font-size:1.15rem;color:var(--navy);
+margin-top:.25rem;word-break:break-word}
+/* hf css/style.css:402-416 -- the one shared mobile block, now on every page. */
+@media (max-width:768px){
+h1,.hero h1,.dhero h1{font-size:2rem}
+.stats-bar{grid-template-columns:repeat(2,1fr);gap:1rem}
+.stat-number{font-size:1.5rem}
+.grid-2,.grid-3,.grid-4{grid-template-columns:1fr}
+.feature-row,.feature-row.reverse{grid-template-columns:1fr;gap:2rem;direction:ltr}
+.kv{grid-template-columns:1fr}
+.metrics{grid-template-columns:1fr 1fr}
+}
 """
 
 HEAD = """<!DOCTYPE html>
@@ -1779,20 +1836,21 @@ HEAD = """<!DOCTYPE html>
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
 <title>{title}</title>
 <meta name="description" content="{meta_desc}">
+<meta name="author" content="Ahmed Elkassabgi">
 <link rel="canonical" href="{canonical}">
 {social}
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>{css}
 /* status bar + nav (hfdatalibrary.com parity) */
 .status-bar{{background:var(--g50);border-bottom:1px solid var(--g200);font-size:.8rem;
-color:var(--g500);min-height:32px;line-height:32px;padding:0 1.5rem}}
-.status-bar .sb-in{{max-width:1200px;margin:0 auto;display:flex;justify-content:space-between;
-align-items:center;flex-wrap:wrap;gap:.25rem}}
+color:var(--g500);min-height:32px;line-height:32px}}
+.status-bar .sb-in{{max-width:var(--max-width);margin:0 auto;padding:0 1.5rem;height:100%;
+display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.25rem}}
 .nav .signin{{background:var(--gold);color:var(--navy)!important;padding:.4rem .875rem;
-border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:.65rem}}
+border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:.75rem}}
 .nav .signin:hover{{background:#e0b955}}
 .nav .brand{{display:inline-flex;align-items:center;gap:.55rem}}
 .nav .fam-tag{{font-size:.62rem;color:var(--gold)!important;border:1px solid rgba(212,168,67,.5);
@@ -1800,6 +1858,27 @@ border-radius:999px;padding:.12rem .5rem;white-space:nowrap;font-family:var(--sa
 letter-spacing:.01em;text-decoration:none;line-height:1.4}}
 .nav .fam-tag:hover{{background:rgba(212,168,67,.15)}}
 @media (max-width:680px){{.nav .fam-tag{{display:none}}}}
+/* family band + footer (hfdatalibrary.com parity, R438: on EVERY page) */
+.ekd-band{{background:linear-gradient(135deg,var(--navy) 0%,var(--navy-light,#243044) 100%);
+text-align:center;padding:3.5rem 0}}
+.ekd-band .in{{max-width:1200px;margin:0 auto;padding:0 1.5rem}}
+.ekd-band .tag{{color:rgba(255,255,255,.85);font-size:1.15rem;margin:1.2rem 0 .3rem;font-family:var(--serif)}}
+.ekd-band .fam{{color:rgba(255,255,255,.55);font-size:.9rem;max-width:640px;margin:0 auto}}
+.ekd-band .fam a{{color:var(--gold);text-decoration:none}}
+.site-footer{{background:var(--navy);color:rgba(255,255,255,.7);padding:3rem 0 2rem;font-size:.9rem}}
+.site-footer .in{{max-width:1200px;margin:0 auto;padding:0 1.5rem}}
+.site-footer .grid{{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:2rem;margin-bottom:2rem}}
+.site-footer h4{{color:#fff;font-family:var(--sans);margin-bottom:.75rem}}
+.site-footer a{{color:rgba(255,255,255,.7);text-decoration:none;transition:color .15s}}
+.site-footer a:hover{{color:#fff}}
+.site-footer ul{{list-style:none;margin:0;padding:0}}
+.site-footer li{{margin-bottom:.4rem}}
+.site-footer p{{margin-bottom:.75rem}}
+.site-footer .bottom{{border-top:1px solid rgba(255,255,255,.1);padding-top:1.5rem;
+display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem}}
+.site-footer .orcid{{font-family:var(--mono);font-size:.8rem}}
+@media (max-width:768px){{.site-footer .grid{{grid-template-columns:1fr 1fr}}
+.site-footer .bottom{{flex-direction:column;text-align:center}}}}
 </style>
 {jsonld}
 <!-- sso.js pin: bump this string whenever assets/sso.js changes. It is a cache-buster,
@@ -1811,10 +1890,11 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}}
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
-<span style="display:flex;gap:1.5rem;white-space:nowrap"><span id="sb-site"></span><span id="sb-data"></span></span>
+<span style="display:flex;gap:1.5rem"><span id="sb-site"></span><span id="sb-data"></span></span>
 </div></div>
-<div class="nav"><div class="nav-in"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" class="fam-tag" title="Part of the ElkassabgiData family — one account, every library">part of ElkassabgiData</a></div>
-<div class="nav-links"><a href="catalog.html">Catalog</a><a href="docs.html">Documentation</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">AI Tools</a><a href="cite.html">Cite</a><a href="stats.html">Stats</a><a href="status.html">Status</a><a href="contact.html">Contact</a><a href="account.html" class="signin">Sign in</a></div></div></div>
+<nav class="nav"><div class="nav-in"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" class="fam-tag" title="Part of the ElkassabgiData family — one account, every library">part of ElkassabgiData</a></div>
+<button class="nav-toggle" onclick="document.querySelector('.nav-links').classList.toggle('open')" aria-label="Toggle navigation">&#9776;</button>
+<ul class="nav-links"><li><a href="catalog.html">Catalog</a></li><li><a href="docs.html">Documentation</a></li><li><a href="api.html">API</a></li><li><a href="download.html">Download</a></li><li><a href="mcp.html">AI Tools</a></li><li><a href="cite.html">Cite</a></li><li><a href="stats.html">Stats</a></li><li><a href="status.html">Status</a></li><li><a href="contact.html">Contact</a></li><li><a href="https://hfdatalibrary.com">HF Data</a></li><li><a href="https://ipdatalibrary.com">IP Data</a></li><li><a href="account.html" class="signin">Sign in</a></li></ul></div></nav>
 <script>
 (function(){{
   var API="https://econdl-api.elkassabgi.workers.dev";
@@ -1823,11 +1903,23 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}}
     var d=m?new Date(+m[1],+m[2]-1,+m[3]):new Date(s); /* date-only: local, no UTC shift */
     if(isNaN(d))return s;
     return d.toLocaleDateString('en-US',{{year:'numeric',month:'long',day:'numeric'}});}}catch(e){{return s;}}}}
+  /* hf js/site.js:125-134 -- the strip's second field is a relative age, not a bare date. */
+  function tago(s){{try{{
+    var m=/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})/.exec(s);
+    var t=m?new Date(+m[1],+m[2]-1,+m[3]):new Date(s);
+    if(isNaN(t))return '';
+    var diff=Math.floor((new Date()-t)/1000);
+    if(diff<60)return 'just now';
+    if(diff<3600)return Math.floor(diff/60)+' minutes ago';
+    if(diff<86400)return Math.floor(diff/3600)+' hours ago';
+    if(diff<604800)return Math.floor(diff/86400)+' days ago';
+    return '';}}catch(e){{return '';}}}}
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){{if(!r.ok)throw 0;return r.json();}}).then(function(d){{
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
     document.getElementById('sb-site').textContent='Website updated: '+fdate('__SITE_UPDATED__');
-    if(d.as_of)document.getElementById('sb-data').textContent='Data measured: '+fdate(d.as_of);
+    if(d.as_of){{var _ag=tago(d.as_of);
+      document.getElementById('sb-data').textContent='Data updated: '+fdate(d.as_of)+(_ag?' ('+_ag+')':'');}}
   }}).catch(function(){{
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -1842,18 +1934,67 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}}
 # pages, linked to the family portal. Asset path is site-root-relative (every
 # generated page lives at the site root).
 FAMILY_BAND = """
-<div style="background:#141c2e;border-top:1px solid rgba(212,168,67,.28);text-align:center;padding:2.5rem 1.5rem">
-  <a href="https://elkassabgidata.com" title="ElkassabgiData — one account, every library">
-    <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="300" height="80" style="max-width:78%;height:auto">
-  </a>
-  <p style="color:rgba(255,255,255,.82);font-family:Georgia,serif;font-size:1.05rem;margin:1.1rem 0 .35rem">One account. Every library.</p>
-  <p style="color:rgba(255,255,255,.5);font-size:.85rem;margin:0">
-    <a href="https://hfdatalibrary.com/" style="color:#d4a843;text-decoration:none">HF Data Library</a>
-    &nbsp;&middot;&nbsp;
-    <a href="https://econdatalibrary.com/" style="color:#d4a843;text-decoration:none">Econ Data Library</a>
-    &nbsp;&middot;&nbsp;<span style="color:rgba(255,255,255,.4)">more to come</span>
-  </p>
-</div>
+<section class="ekd-band">
+  <div class="in">
+    <a href="https://elkassabgidata.com" title="ElkassabgiData &mdash; one account, every library">
+      <img src="assets/elkassabgidata-logo.svg" alt="ElkassabgiData" width="340" height="91" style="max-width:90%;height:auto">
+    </a>
+    <p class="tag">One account. Every library.</p>
+    <p class="fam">Your free ElkassabgiData key unlocks the whole family:
+      <strong style="color:#fff">Econ Data Library</strong> (this site) and
+      <a href="https://hfdatalibrary.com">HF Data Library</a> &mdash; 1-minute intraday U.S. equity data &mdash; and
+      <a href="https://ipdatalibrary.com">IP Data Library</a> &mdash; patent &amp; innovation measures.</p>
+  </div>
+</section>
+"""
+
+# Canonical footer, hf-structured, appended by _write() BELOW the band on EVERY
+# page. Before R438 only the homepage had a footer; 243 pages simply ended.
+# __SITE_UPDATED__ (not __GEN__) because _write() already substitutes it, after
+# the lastmod fingerprint is taken.
+FOOTER = """
+<footer class="site-footer">
+  <div class="in">
+    <div class="grid">
+      <div>
+        <h4>Econ Data Library</h4>
+        <p>Econ Data Library is the largest totally free online database in the world &mdash; dedicated to bringing all of the world&rsquo;s freely available data into a single, easily accessible location, with the help of cutting-edge AI tools. Built and maintained by Ahmed Elkassabgi at the University of Central Arkansas.</p>
+        <p>Part of the ElkassabgiData family &mdash; one free account for every library.</p>
+      </div>
+      <div>
+        <h4>Data</h4>
+        <ul>
+          <li><a href="catalog.html">Browse the Catalog</a></li>
+          <li><a href="download.html">Download</a></li>
+          <li><a href="status.html">Source Status</a></li>
+          <li><a href="stats.html">Stats</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Documentation</h4>
+        <ul>
+          <li><a href="docs.html">Methodology</a></li>
+          <li><a href="api.html">API Reference</a></li>
+          <li><a href="mcp.html">MCP Server (AI)</a></li>
+          <li><a href="cite.html">How to Cite</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>About</h4>
+        <ul>
+          <li><a href="https://elkassabgidata.com/about">Our Story</a></li>
+          <li><a href="https://hfdatalibrary.com">HF Data Library</a></li>
+          <li><a href="https://ipdatalibrary.com">IP Data Library</a></li>
+          <li><a href="contact.html">Contact</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="bottom">
+      <p>&copy; 2026 Ahmed Elkassabgi. University of Central Arkansas.</p>
+      <p class="orcid">ORCID: <a href="https://orcid.org/0000-0002-5926-7493">0000-0002-5926-7493</a></p>
+    </div>
+  </div>
+</footer>
 """
 
 
@@ -1884,7 +2025,7 @@ def jsonld_script(obj):
 def social_meta(title, description, canonical, og_type="website"):
     """Open Graph + Twitter card tags for one page. Takes RAW (unescaped) text."""
     og_title = title
-    for _sep in (f" | {SITE_NAME}", f" — {SITE_NAME}"):
+    for _sep in (f" — {SITE_NAME}",):
         if og_title.endswith(_sep):
             # og:site_name already carries the brand; repeating it inside og:title
             # just eats the ~60 characters an unfurl shows before it truncates.
@@ -1896,6 +2037,7 @@ def social_meta(title, description, canonical, og_type="website"):
         ("property", "og:type", og_type),
         ("property", "og:url", canonical),
         ("property", "og:site_name", SITE_NAME),
+        ("property", "og:locale", "en_US"),
         ("name", "twitter:card", "summary"),
         ("name", "twitter:title", og_title),
         ("name", "twitter:description", description),
@@ -2158,7 +2300,7 @@ def render_dataset_page(rec):
     if rec["citation_long"] or rec["citation_short"]:
         cite = rec["citation_long"] or rec["citation_short"]
         body.append("<h2>How to cite</h2>")
-        body.append(f'<blockquote class="cite">{esc(cite)}</blockquote>')
+        body.append(f'<div class="citation-block"><p>{esc(cite)}</p></div>')
         if rec["description_processing"]:
             body.append(f'<p class="proc"><b>Processing:</b> {esc(rec["description_processing"])}</p>')
 
@@ -2180,15 +2322,6 @@ def render_dataset_page(rec):
         f'<pre>{esc(json.dumps(cr_ld, ensure_ascii=False, indent=2))}</pre></details>'
     )
 
-    body.append(
-        f'<div class="foot">Part of the {SITE_NAME} catalog &middot; '
-        # Was an f-string TODAY baked straight into the page: it made every dataset
-        # page's bytes differ on every calendar day, which would have defeated the
-        # content-hash lastmod below. The placeholder is substituted by _write()
-        # AFTER the fingerprint is taken, so the rendered text is unchanged.
-        'metadata generated __SITE_UPDATED__ from the central registry &middot; '
-        '<a href="index.html">browse all datasets</a></div>'
-    )
     body.append("</div></body></html>")
     html = "\n".join(body)
     if not rec["reservable"]:
@@ -2360,7 +2493,7 @@ def _catalog_idx(records):
 
 # Card-grid + filter-bar CSS for catalog.html (moved off the homepage).
 CATALOG_UI_CSS = """
-.wrapc{max-width:960px;margin:0 auto;padding:2.2rem 1.5rem 4rem}
+.wrapc{max-width:var(--max-width);margin:0 auto;padding:2.2rem 1.5rem 4rem}
 .controls{display:flex;gap:.75rem;flex-wrap:wrap;margin:0 0 .9rem}
 .controls input,.controls select{padding:.7rem .9rem;border:1px solid var(--g300);
 border-radius:10px;font-size:.95rem;font-family:var(--sans);background:#fff}
@@ -2374,23 +2507,22 @@ border-radius:999px;cursor:pointer;transition:all .12s}
 .chip:hover{border-color:var(--gold);color:var(--navy)}
 .chip.active{background:var(--navy);border-color:var(--navy);color:#fff}
 .card{display:block;border:1px solid var(--g200);border-radius:12px;padding:1.1rem 1.2rem;
-margin-bottom:.75rem;text-decoration:none;color:inherit;background:#fff;
-transition:box-shadow .14s,border-color .14s,transform .14s}
-.card:hover{box-shadow:0 6px 22px rgba(26,35,50,.10);border-color:var(--gold);transform:translateY(-1px)}
+margin-bottom:.75rem;text-decoration:none;color:inherit;background:#fff;transition:all .2s}
+.card:hover{box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06);border-color:var(--g300)}
 .card .cid{font-family:var(--mono);font-size:.76rem;color:var(--gold-deep)}
-.card h3{font-family:var(--serif);color:var(--navy);font-size:1.16rem;margin:.15rem 0 .3rem}
+.card h3{font-family:var(--sans);color:var(--navy);font-size:1.125rem;margin:.15rem 0 .3rem}
 .card p{font-size:.88rem;color:var(--g600);margin:.2rem 0 .6rem;line-height:1.5;
 display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .card .row{display:flex;gap:.4rem;flex-wrap:wrap;align-items:center}
 .count{color:var(--g500);font-size:.82rem;margin-left:auto;font-family:var(--mono)}
-.cat-hero{background:linear-gradient(135deg,var(--navy) 0%,var(--navy-light) 100%);
-color:#fff;padding:2.6rem 0 2.4rem;text-align:center;border-bottom:3px solid var(--gold)}
-.cat-hero h1{font-family:var(--serif);color:#fff;font-size:2.1rem;margin:0 0 .35rem}
-.cat-hero p{color:rgba(255,255,255,.75);margin:0}
+/* hf's list-page masthead (pages/tickers.html:77-82): flat navy, left-aligned,
+   3rem 0, no gold rule -- identical to every other hf subpage band. */
+.cat-hero{background:var(--navy);color:#fff;padding:3rem 0}
+.cat-hero h1{color:#fff;margin:0 0 .5rem}
+.cat-hero p{color:rgba(255,255,255,.7);font-size:1.1rem;margin:0}
 [dir=rtl] .count{margin-left:0;margin-right:auto}
 [dir=rtl] .card .row{flex-direction:row-reverse}
 [dir=rtl] .card{text-align:right}
-[dir=rtl] .card h3{font-family:var(--sans)}
 """
 
 
@@ -2461,8 +2593,12 @@ def render_index(records, generated):
                     "affiliation": {"@type": "Organization",
                                     "name": "University of Central Arkansas"},
                 },
-                "sameAs": ["https://hfdatalibrary.com/",
-                           "https://orcid.org/0000-0002-5926-7493"],
+                "parentOrganization": {
+                    "@type": "Organization",
+                    "name": "ElkassabgiData",
+                    "url": "https://elkassabgidata.com/",
+                },
+                "sameAs": ["https://orcid.org/0000-0002-5926-7493"],
             },
             {
                 "@type": "WebSite",
@@ -2495,65 +2631,41 @@ def render_index(records, generated):
         css=PAGE_CSS
         + """
 /* ── HF-landing replica (mirrors hfdatalibrary.com css/style.css) ── */
-.container{max-width:1200px;margin:0 auto;padding:0 1.5rem}
-.container-narrow{max-width:920px;margin:0 auto;padding:0 1.5rem}
-.section{padding:5rem 0}
-.section-alt{background:var(--g50)}
 .hero{background:linear-gradient(135deg,var(--navy) 0%,var(--navy-light) 100%);
-color:#fff;padding:6rem 0 5rem;text-align:center;border-bottom:3px solid var(--gold)}
-.hero h1{font-family:var(--serif);color:#fff;font-size:3rem;line-height:1.2;margin-bottom:.5rem}
+color:#fff;padding:6rem 0 5rem;text-align:center}
+.hero h1{font-family:var(--serif);color:#fff;font-size:3rem;margin-bottom:.5rem}
 .hero h1 span{color:var(--gold)}
-.hero .subtitle{font-size:1.25rem;color:rgba(255,255,255,.75);max-width:720px;margin:0 auto 2.5rem;font-weight:400}
-.stats-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:1.5rem;max-width:900px;margin:0 auto 3rem}
+.hero .subtitle{font-size:1.25rem;color:rgba(255,255,255,.75);max-width:700px;margin:0 auto 2.5rem;font-weight:400}
+.hero-note{font-size:.78rem;color:rgba(255,255,255,.5);margin-top:2rem}
+/* the boxed Observations cell holds a 14-character count; widening its track is
+   what lets the number stay at the canonical 2rem instead of being shrunk. */
+.stats-bar{display:grid;grid-template-columns:1fr 1.4fr 1fr 1fr;gap:1.5rem;max-width:900px;margin:0 auto 3rem}
 .stat-item{text-align:center}
 .stat-item.hl{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);
 border-radius:12px;padding:1.25rem 1rem;box-shadow:0 4px 20px rgba(0,0,0,.3);margin-top:-.75rem}
 .stat-number{font-family:var(--mono);font-size:2rem;font-weight:700;color:var(--gold);display:block}
 .stat-label{font-size:.85rem;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.05em}
-.btn{display:inline-flex;align-items:center;gap:.5rem;padding:.75rem 1.75rem;border-radius:8px;
-font-weight:600;font-size:.95rem;cursor:pointer;border:none;transition:all .2s;text-decoration:none}
-.btn-primary{background:var(--blue);color:#fff}
-.btn-primary:hover{background:#3b82f6;color:#fff;transform:translateY(-1px);box-shadow:0 4px 6px rgba(0,0,0,.07)}
-.btn-outline{background:transparent;color:#fff;border:2px solid rgba(255,255,255,.3)}
-.btn-outline:hover{border-color:#fff;color:#fff}
-.btn-group{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap}
 .feature-row{display:grid;grid-template-columns:1fr 1fr;gap:4rem;align-items:center}
+/* without this the code panel sets a ~530px minimum and blows out the mobile track */
+.feature-row > *{min-width:0}
 .feature-text h2{font-family:var(--serif);color:var(--navy);font-size:1.875rem;margin:0 0 .75rem;border:none;padding:0}
 .feature-text p{color:var(--g600);margin-bottom:1rem}
 .feature-visual{background:var(--g50);border:1px solid var(--g200);border-radius:12px;padding:2rem}
-.feature-visual pre{background:var(--navy);color:#e2e8f0;padding:1.25rem 1.5rem;border-radius:8px;
-overflow-x:auto;font-size:.82rem;line-height:1.6;margin:0;font-family:var(--mono)}
+.feature-visual pre{margin:0;font-size:.82rem}
 .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.5rem}
 .acard{background:#fff;border:1px solid var(--g200);border-radius:12px;padding:2rem;transition:all .2s}
-.acard:hover{box-shadow:0 4px 6px rgba(0,0,0,.07);border-color:var(--g300)}
+.acard:hover{box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06);border-color:var(--g300)}
 .acard .card-icon{width:48px;height:48px;background:var(--blue-pale);border-radius:10px;
 display:flex;align-items:center;justify-content:center;font-size:1.5rem;margin-bottom:1rem}
 .acard h3{font-family:var(--sans);color:var(--navy);font-size:1.125rem;margin-bottom:.75rem}
 .acard p{color:var(--g600);font-size:.95rem;margin-bottom:0}
 .section-title{font-family:var(--serif);color:var(--navy);font-size:1.875rem;text-align:center;
 margin:0 0 2.5rem;border:none;padding:0}
-.table-wrap{overflow-x:auto;margin-bottom:1.5rem}
-.cmp{width:100%;border-collapse:collapse;font-size:.9rem}
-.cmp thead th{text-align:left;padding:.75rem 1rem;border-bottom:2px solid var(--g300);
-font-weight:600;color:var(--g700);white-space:nowrap}
-.cmp tbody td{padding:.625rem 1rem;border-bottom:1px solid var(--g200)}
-.cmp tbody tr:hover{background:var(--g50)}
+.section-sub{text-align:center;color:var(--g500);margin-bottom:2.5rem}
 .comparison-highlight{background:var(--blue-pale)!important}
 .comparison-check{color:var(--green);font-weight:700}
 .comparison-x{color:var(--g300)}
-.faq-item h3{font-family:var(--serif);color:var(--navy);font-size:1.1rem;margin-bottom:.35rem}
-.faq-item p{color:var(--g700);font-size:.95rem}
 .faq-item{margin-bottom:1.5rem}
-.footer{background:var(--navy);color:rgba(255,255,255,.7);padding:3rem 0 2rem;font-size:.9rem;margin-top:0}
-.footer-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:2rem;margin-bottom:2rem}
-.footer h4{color:#fff;font-family:var(--sans);font-size:1rem;margin-bottom:.75rem}
-.footer a{color:rgba(255,255,255,.7);text-decoration:none}
-.footer a:hover{color:#fff}
-.footer ul{list-style:none}
-.footer li{margin-bottom:.4rem}
-.footer-bottom{border-top:1px solid rgba(255,255,255,.1);padding-top:1.5rem;
-display:flex;justify-content:space-between;align-items:center}
-.footer-bottom .orcid{font-family:var(--mono);font-size:.8rem}
 /* catalog search section (existing machinery) */
 .controls{display:flex;gap:.75rem;flex-wrap:wrap;margin:0 0 1.2rem}
 .controls input,.controls select{padding:.7rem .9rem;border:1px solid var(--g300);
@@ -2562,11 +2674,10 @@ border-radius:10px;font-size:.95rem;font-family:var(--sans);background:#fff}
 .controls input:focus,.controls select:focus{outline:none;border-color:var(--blue);
 box-shadow:0 0 0 3px var(--blue-pale)}
 .card{display:block;border:1px solid var(--g200);border-radius:12px;padding:1.1rem 1.2rem;
-margin-bottom:.75rem;text-decoration:none;color:inherit;background:#fff;
-transition:box-shadow .14s,border-color .14s,transform .14s}
-.card:hover{box-shadow:0 6px 22px rgba(26,35,50,.10);border-color:var(--gold);transform:translateY(-1px)}
+margin-bottom:.75rem;text-decoration:none;color:inherit;background:#fff;transition:all .2s}
+.card:hover{box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06);border-color:var(--g300)}
 .card .cid{font-family:var(--mono);font-size:.76rem;color:var(--gold-deep)}
-.card h3{font-family:var(--serif);color:var(--navy);font-size:1.16rem;margin:.15rem 0 .3rem}
+.card h3{font-family:var(--sans);color:var(--navy);font-size:1.125rem;margin:.15rem 0 .3rem}
 .card p{font-size:.88rem;color:var(--g600);margin:.2rem 0 .6rem;line-height:1.5;
 display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .card .row{display:flex;gap:.4rem;flex-wrap:wrap;align-items:center}
@@ -2574,20 +2685,10 @@ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hi
 [dir=rtl] .count{margin-left:0;margin-right:auto}
 [dir=rtl] .card .row{flex-direction:row-reverse}
 [dir=rtl] .hero,[dir=rtl] .card{text-align:right}
-[dir=rtl] .card h3{font-family:var(--sans)}
 /* pillar tiles are links into catalog.html */
 a.tile-link{display:block;text-decoration:none;color:inherit}
-a.tile-link:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(26,35,50,.12);border-color:var(--gold)}
+a.tile-link:hover{box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06);border-color:var(--g300)}
 a.tile-link .tile-go{display:inline-block;margin-top:.9rem;color:var(--blue);font-weight:600;font-size:.86rem}
-@media (max-width:768px){
-.hero h1{font-size:2rem}
-.stats-bar{grid-template-columns:repeat(2,1fr);gap:1rem}
-.stat-number{font-size:1.5rem}
-.grid-3{grid-template-columns:1fr}
-.feature-row{grid-template-columns:1fr;gap:2rem}
-.footer-grid{grid-template-columns:1fr 1fr}
-.footer-bottom{flex-direction:column;gap:.5rem;text-align:center}
-}
 """,
         jsonld=jsonld_script(catalog_ld),
     )
@@ -2599,7 +2700,7 @@ a.tile-link .tile-go{display:inline-block;margin-top:.9rem;color:var(--blue);fon
 <div role="status" style="background:linear-gradient(90deg,#d4a843,#e8c368);color:#14203a;text-align:center;padding:1rem 1.2rem;font-size:1.08rem;font-weight:600;line-height:1.5;border-bottom:4px solid #14203a;letter-spacing:.01em">&#128679; <strong>Under Construction</strong> &mdash; the Econ Data Library is being finalized. Datasets and their licensing are still being verified and may change. <strong>Automated updates are being wired database by database</strong>: a source joins the daily refresh only once its updater has been built and proven against the publisher. Until then its data is the verified initial load, not pretended current &mdash; the <a href="status.html" style="color:#14203a;text-decoration:underline">Source Status board</a> says which is which, per database, live.</div>
 <section class="hero">
   <div class="container">
-    <h1 style="font-size:2.6rem">Economic Data Library: Free Economic &amp; Financial Data</h1>
+    <h1>Economic Data Library: Free <span>Economic &amp; Financial</span> Data</h1>
     <p class="subtitle">Free, research-grade macro &amp; financial data — one namespace over the world's statistical sources. Every series carries its license, provenance, and producer-first citation. Reproducible, snapshot-pinned, and <strong>continuously updated</strong>.</p>
 
     <div class="stats-bar">
@@ -2608,7 +2709,7 @@ a.tile-link .tile-go{display:inline-block;margin-top:.9rem;color:var(--blue);fon
         <span class="stat-label">Individual Series</span>
       </div>
       <div class="stat-item hl">
-        <span class="stat-number" id="obs-counter" style="font-size:1.55rem">&mdash;</span>
+        <span class="stat-number" id="obs-counter">&mdash;</span>
         <span class="stat-label">Observations</span>
       </div>
       <div class="stat-item">
@@ -2626,7 +2727,7 @@ a.tile-link .tile-go{display:inline-block;margin-top:.9rem;color:var(--blue);fon
       <a href="docs.html" class="btn btn-outline">Read the Docs</a>
       <a href="api.html" class="btn btn-outline">API Access</a>
     </div>
-    <p style="font-size:.78rem;color:rgba(255,255,255,.5);margin-top:2rem">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded. Years of history: the earliest catalogued series (Maddison Project / GGDC) begin in year 1&nbsp;CE.</p>
+    <p class="hero-note">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded. Years of history: the earliest catalogued series (Maddison Project / GGDC) begin in year 1&nbsp;CE.</p>
   </div>
 </section>
 
@@ -2639,7 +2740,7 @@ a.tile-link .tile-go{display:inline-block;margin-top:.9rem;color:var(--blue);fon
         <p>A single, citable library over __N__ economic and financial data sources — national statistical offices, central banks, international organizations, trade, development, energy, and research datasets.</p>
         <p>Every series lives in one namespace (<code>source:series:geography</code>), resolves over a free REST API, and ships with its license, attribution requirements, and a producer-first citation. Bundles are snapshot-pinned so your results reproduce exactly.</p>
         <p>Everything in the library is real, downloadable data — if we can’t host a source, we don’t list it.</p>
-        <p>No subscription. No paywall. One free key for the whole ElkassabgiData family, including <a href="https://hfdatalibrary.com/">HF Data Library</a>.</p>
+        <p>No subscription. No paywall. One free key for the whole ElkassabgiData family, including <a href="https://hfdatalibrary.com">HF Data Library</a> and <a href="https://ipdatalibrary.com">IP Data Library</a>.</p>
       </div>
       <div class="feature-visual">
         <pre><code># Python — any series in a few lines
@@ -2678,7 +2779,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
 <section class="section">
   <div class="container">
     <h2 class="section-title" style="margin-bottom:.5rem">What the library covers</h2>
-    <p style="text-align:center;color:var(--g500);margin-bottom:2.5rem">__N__ sources across the pillars of empirical economics and finance — click a pillar to browse its sources.</p>
+    <p class="section-sub">__N__ sources across the pillars of empirical economics and finance — click a pillar to browse its sources.</p>
     <div class="grid-3">
       <a class="acard tile-link" href="catalog.html?pillar=macro"><div class="card-icon">&#128200;</div><h3>Macro &amp; National Accounts</h3><p>GDP, employment, production — national statistical offices (ABS, INSEE, ISTAT, StatCan, Eurostat) and the IMF/World Bank.</p><span class="tile-go">Browse sources &rarr;</span></a>
       <a class="acard tile-link" href="catalog.html?pillar=money"><div class="card-icon">&#128176;</div><h3>Prices, Money &amp; Central Banks</h3><p>Inflation, interest rates, FX — ECB, Fed Board, BIS, Bundesbank, and dozens of national central banks.</p><span class="tile-go">Browse sources &rarr;</span></a>
@@ -2722,7 +2823,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
 <section class="section" id="catalog" style="padding:3.5rem 0">
   <div class="container-narrow" style="text-align:center">
     <h2 class="section-title" style="margin-bottom:.5rem">Browse the catalog</h2>
-    <p style="color:var(--g500);margin-bottom:1.5rem">All __N__ sources — searchable and filterable by pillar, region, topic, and access tier; series search in 6 languages.</p>
+    <p class="section-sub" style="margin-bottom:1.5rem">All __N__ sources — searchable and filterable by pillar, region, topic, and access tier; series search in 6 languages.</p>
     <a href="catalog.html" class="btn btn-primary" style="font-size:1.05rem;padding:.85rem 2.2rem">Open the Data Catalog &rarr;</a>
   </div>
 </section>
@@ -2732,7 +2833,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
   <div class="container">
     <h2 class="section-title">How this compares</h2>
     <div class="table-wrap">
-      <table class="cmp">
+      <table>
         <thead>
           <tr>
             <th>Feature</th>
@@ -2821,47 +2922,6 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
   </div>
 </section>
 
-<!-- ── Footer (hf-style) ── -->
-<footer class="footer">
-  <div class="container">
-    <div class="footer-grid">
-      <div>
-        <h4>Econ Data Library</h4>
-        <p>Econ Data Library is the largest totally free online database in the world — dedicated to bringing all of the world's freely available data into a single, easily accessible location, with the help of cutting-edge AI tools. Built and maintained by Ahmed Elkassabgi at the University of Central Arkansas.</p>
-        <p style="margin-top:.75rem">Part of the <a href="https://hfdatalibrary.com/">ElkassabgiData</a> family — one free account for every library.</p>
-      </div>
-      <div>
-        <h4>Data</h4>
-        <ul>
-          <li><a href="catalog.html">Browse the Catalog</a></li>
-          <li><a href="download.html">Download</a></li>
-          <li><a href="status.html">Source Status</a></li>
-        </ul>
-      </div>
-      <div>
-        <h4>Access</h4>
-        <ul>
-          <li><a href="download.html#api">REST API</a></li>
-          <li><a href="mcp.html">MCP Server</a></li>
-          <li><a href="account.html">Account</a></li>
-        </ul>
-      </div>
-      <div>
-        <h4>About</h4>
-        <ul>
-          <li><a href="https://elkassabgidata.com/about">Our Story</a></li>
-          <li><a href="cite.html">How to Cite</a></li>
-          <li><a href="https://hfdatalibrary.com/">HF Data Library</a></li>
-          <li><a href="sitemap.xml">Sitemap</a></li>
-        </ul>
-      </div>
-    </div>
-    <div class="footer-bottom">
-      <p>&copy; 2026 Ahmed Elkassabgi. University of Central Arkansas. &middot; Generated __GEN__</p>
-      <p class="orcid">ORCID: <a href="https://orcid.org/0000-0002-5926-7493">0000-0002-5926-7493</a></p>
-    </div>
-  </div>
-</footer>
 <script>
 const API="https://econdl-api.elkassabgi.workers.dev";
 // Animated counter (ported from hfdatalibrary.com js/site.js): counts up over
@@ -2968,7 +3028,7 @@ def render_catalog(records, generated):
         head
         + """
 <section class="cat-hero">
-  <div style="max-width:960px;margin:0 auto;padding:0 1.5rem">
+  <div class="container">
     <h1>Data Catalog</h1>
     <p>__N__ sources, all downloadable &middot; search datasets in English, or series in 6 languages via the live API</p>
   </div>
@@ -3134,28 +3194,51 @@ render();
     )
 
 
+# Only what is genuinely page-local: <pre>, <table>, <code> and the headings all
+# come from PAGE_CSS now (hf keeps exactly one spec for each, css/style.css:60-79
+# and :270-289), which is what removed econ's four rival <pre> designs and its
+# second table design.
 _INFO_CSS = """
 .wrap h2{margin-top:2rem}
-.wrap pre{background:var(--navy);color:#e2e8f0;padding:1.1rem 1.3rem;border-radius:8px;
-overflow-x:auto;font-size:.82rem;line-height:1.6;font-family:var(--mono);margin:.8rem 0 1.2rem}
-.wrap table{width:100%;border-collapse:collapse;font-size:.88rem;margin:.8rem 0 1.2rem}
-.wrap th{text-align:left;padding:.6rem .8rem;border-bottom:2px solid var(--g300);color:var(--g700)}
-.wrap td{padding:.55rem .8rem;border-bottom:1px solid var(--g200);vertical-align:top}
-.wrap td code{background:var(--g100);padding:.1em .35em;border-radius:4px;font-family:var(--mono);font-size:.85em}
+.wrap table{margin:.8rem 0 1.2rem}
+.wrap td{vertical-align:top}
 """
 
 
-def _info_page(title, meta_desc, page, body):
+_LEAD_RE = re.compile(r'\s*<p class="lead">(.*?)</p>\s*', re.S)
+
+
+def _info_page(title, meta_desc, page, body, og_type="website"):
+    """One subpage shell: hf's navy masthead band, then the reading column.
+
+    hfdatalibrary.com opens EVERY subpage with the same band (pages/docs.html:51-54)
+    -- `background: var(--navy); color:#fff; padding: 3rem 0`, a white h1 and a
+    rgba(255,255,255,.7) 1.1rem lead. econ used to render the h1 navy-on-white
+    inside .wrap, which is why its subpages read as a different site. The page's
+    own opening `<p class="lead">` becomes the band's subtitle (it is the same
+    sentence, just promoted); pages without one fall back to their meta
+    description, which is existing hand-written copy for that page.
+    """
     head = render_head(
         title=f"{title} — {SITE_NAME}",
         meta_desc=meta_desc,
         canonical=site_url(page),  # /docs, not /docs.html (which 308-redirects)
         css=PAGE_CSS + _INFO_CSS,
         jsonld="",
+        og_type=og_type,
     )
+    m = _LEAD_RE.match(body)
+    if m:
+        lead, body = m.group(1), body[m.end():]
+    else:
+        lead = esc(meta_desc)
     return (head
-            + f'<div class="wrap"><h1>{title}</h1>\n{body}\n'
-            + f'<div class="foot">Generated __SITE_UPDATED__ &middot; <a href="index.html">Catalog</a> &middot; <a href="sitemap.xml">sitemap.xml</a></div></div></body></html>')
+            + '<section style="background: var(--navy); color: #fff; padding: 3rem 0;">\n'
+            + '  <div class="container-narrow">\n'
+            + f'    <h1 style="color:#fff; margin-bottom:0.5rem;">{title}</h1>\n'
+            + f'    <p style="color: rgba(255,255,255,0.7); font-size:1.1rem; margin:0;">{lead}</p>\n'
+            + '  </div>\n</section>\n'
+            + f'<div class="wrap">\n{body}\n</div></body></html>')
 
 
 def render_docs():
@@ -3172,7 +3255,7 @@ def render_docs():
 <h2>Multilingual titles</h2>
 <p>Series search is available in six languages (English, Arabic, Spanish, French, Russian, Chinese) using only the sources' official translations — titles are never machine-translated.</p>
 <h2>One account, one family</h2>
-<p>The free ElkassabgiData key works across the family — this library and <a href="https://hfdatalibrary.com/">HF Data Library</a> (1-minute U.S. equity data). Get a key from the <a href="download.html">Download page</a>.</p>
+<p>The free ElkassabgiData key works across the family — this library, <a href="https://hfdatalibrary.com">HF Data Library</a> (1-minute U.S. equity data) and <a href="https://ipdatalibrary.com">IP Data Library</a> (patent &amp; innovation measures). Get a key from the <a href="download.html">Download page</a>.</p>
 """
     return _info_page("Documentation", "How Econ Data Library works: namespace, licensing tiers, reproducible bundles, update pipeline.", "docs.html", body)
 
@@ -3184,8 +3267,10 @@ def render_api():
 <h2>Base URL</h2>
 <pre>{api}</pre>
 <h2>Endpoints</h2>
+<div class="table-wrap">
 <table>
-<tr><th>Endpoint</th><th>What it returns</th><th>Key</th></tr>
+<thead><tr><th>Endpoint</th><th>What it returns</th><th>Key</th></tr></thead>
+<tbody>
 <tr><td><code>GET /v1/catalog</code></td><td>Series search. Params: <code>q</code>, <code>source</code>, <code>limit</code>, <code>offset</code>, <code>lang</code> (en/ar/es/fr/ru/zh).</td><td>No</td></tr>
 <tr><td><code>GET /v1/series/{{id}}.csv</code></td><td>The series as tidy <code>date,value</code> CSV with license + citation header. Params: <code>from</code>, <code>to</code>, <code>raw=1</code> (bare CSV).</td><td>Yes</td></tr>
 <tr><td><code>GET /v1/series/{{id}}.metadata.json</code></td><td>Full metadata: title, frequency, geography, unit, license (incl. commercial-use flag), attribution, coverage.</td><td>No</td></tr>
@@ -3193,7 +3278,9 @@ def render_api():
 <tr><td><code>GET /v1/bundle</code></td><td>Snapshot-pinned bundle manifest (Frictionless datapackage). Params: <code>ids=</code> or <code>source=</code>, <code>snapshot=</code>.</td><td>No</td></tr>
 <tr><td><code>GET /v1/stats</code></td><td>Live store-measured counts (series, observations, as-of date).</td><td>No</td></tr>
 <tr><td><code>GET /v1/last-updates</code></td><td>Per-source freshness board (the data behind <a href="status.html">Status</a>).</td><td>No</td></tr>
+</tbody>
 </table>
+</div>
 <p>Requests for series we are not licensed to redistribute return HTTP <code>451</code> with the publisher's link — see <a href="docs.html">Documentation</a>.</p>
 <h2>Quick start</h2>
 <pre># curl — one series as CSV
@@ -3224,9 +3311,9 @@ __LIB_CITATION__
     # permanent DOI becomes the canonical citation (same pattern as hf's cite page).
     if ZENODO_DOI:
         doi_url = f"https://doi.org/{ZENODO_DOI}"
-        lib = f"""<blockquote class="cite">Elkassabgi, A. (2026). <em>Economic Data Library: Free Economic and Financial Data</em> (version 1.0) [Data set]. Zenodo. <a href="{doi_url}">{doi_url}</a></blockquote>
+        lib = f"""<div class="citation-block"><button class="copy-btn" onclick="copyBlock(this)">Copy</button><p>Elkassabgi, A. (2026). <em>Economic Data Library: Free Economic and Financial Data</em> (version 1.0) [Data set]. Zenodo. <a href="{doi_url}">{doi_url}</a></p></div>
 <h2>BibTeX</h2>
-<pre>@dataset{{econdatalibrary,
+<div class="citation-block"><button class="copy-btn" onclick="copyBlock(this)">Copy</button><pre><code>@dataset{{econdatalibrary,
   author    = {{Elkassabgi, Ahmed}},
   title     = {{{{Economic Data Library: Free Economic and Financial Data}}}},
   year      = {{2026}},
@@ -3234,20 +3321,33 @@ __LIB_CITATION__
   publisher = {{Zenodo}},
   doi       = {{{ZENODO_DOI}}},
   url       = {{https://econdatalibrary.com}}
-}}</pre>
+}}</code></pre></div>
 <h2>Permanent DOI</h2>
-<p><a href="{doi_url}" style="font-family:var(--mono, monospace);">{ZENODO_DOI}</a></p>"""
+<div class="citation-block"><button class="copy-btn" onclick="copyBlock(this)">Copy</button><p><a href="{doi_url}" style="font-family:var(--mono)">{ZENODO_DOI}</a></p></div>"""
     else:
-        lib = """<blockquote class="cite">Elkassabgi, A. (2026). Economic Data Library: Free Economic and Financial Data. https://econdatalibrary.com</blockquote>
+        lib = """<div class="citation-block"><button class="copy-btn" onclick="copyBlock(this)">Copy</button><p>Elkassabgi, A. (2026). Economic Data Library: Free Economic and Financial Data. https://econdatalibrary.com</p></div>
 <h2>BibTeX</h2>
-<pre>@misc{econdatalibrary,
+<div class="citation-block"><button class="copy-btn" onclick="copyBlock(this)">Copy</button><pre><code>@misc{econdatalibrary,
   author = {Elkassabgi, Ahmed},
   title  = {Economic Data Library: Free Economic and Financial Data},
   year   = {2026},
   url    = {https://econdatalibrary.com}
-}</pre>"""
+}</code></pre></div>"""
     body = body.replace("__LIB_CITATION__", lib)
-    return _info_page("How to Cite", "Producer-first citations for every series, plus how to cite the Econ Data Library itself.", "cite.html", body)
+    body += """
+<script>
+function copyBlock(btn) {
+  const block = btn.parentElement;
+  const code = block.querySelector('pre code');
+  const text = code ? code.innerText : block.querySelector('p').innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
+  });
+}
+</script>
+"""
+    return _info_page("How to Cite", "Producer-first citations for every series, plus how to cite the Econ Data Library itself.", "cite.html", body, og_type="article")
 
 
 def render_contact():
@@ -3428,6 +3528,23 @@ load();
                       "stats.html", body)
 
 
+# hfdatalibrary.com sets a <priority> on every sitemap URL; econ set none, so the
+# hubs and the 232 source pages were indistinguishable to a crawler. Same scale.
+SITEMAP_PRIORITY = {
+    "": "1.0",
+    "catalog": "0.9", "download": "0.9",
+    "docs": "0.8", "api": "0.8", "mcp": "0.8",
+    "cite": "0.7",
+    "stats": "0.6",
+    "contact": "0.5",
+}
+
+
+def sitemap_priority(loc):
+    """Priority for one sitemap URL; per-source dataset pages get 0.6."""
+    return SITEMAP_PRIORITY.get(loc[len(SITE_BASE):].strip("/"), "0.6")
+
+
 def render_sitemap(entries):
     """Serialize the sitemap from already-decided (loc, lastmod, changefreq) rows.
 
@@ -3450,6 +3567,7 @@ def render_sitemap(entries):
         parts.append(f"    <loc>{xml_esc(loc)}</loc>")
         parts.append(f"    <lastmod>{xml_esc(lastmod)}</lastmod>")
         parts.append(f"    <changefreq>{xml_esc(changefreq)}</changefreq>")
+        parts.append(f"    <priority>{sitemap_priority(loc)}</priority>")
         parts.append("  </url>")
     parts.append("</urlset>")
     return "\n".join(parts) + "\n"
@@ -3497,7 +3615,7 @@ def main():
         # single post-process point: stamp the generation date, and append the
         # ElkassabgiData family plate at the very bottom of EVERY page (below the
         # page's own footer), just before </body>.
-        html = html.replace("</body>", FAMILY_BAND + "</body>", 1)
+        html = html.replace("</body>", FAMILY_BAND + FOOTER + "</body>", 1)
         # Fingerprint HERE -- after the family plate (a change to it IS a change to
         # the page) but BEFORE __SITE_UPDATED__ is substituted. That placeholder is
         # the one piece of every page that moves with the calendar rather than with
