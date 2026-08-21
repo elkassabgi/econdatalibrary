@@ -158,7 +158,31 @@
       var nm = (localStorage.getItem(N) || '').trim();
       var first = nm ? nm.split(/\s+/)[0] : '';
       if (first.length > 14) first = first.slice(0, 13) + '…';
-      a.textContent = first || 'Account';
+      // hf-canonical avatar chip (family uniformity, Ahmed 2026-08-20): gold
+      // initial circle + first name + caret on a navy pill. Built with DOM
+      // nodes, never innerHTML — the name is user-typed profile data. CSS is
+      // injected here once so all 244 static pages get it from this one file.
+      if (!document.getElementById('ekd-chip-css')) {
+        var st = document.createElement('style'); st.id = 'ekd-chip-css';
+        st.textContent = '.nav a.signin.chip{background:var(--navy-light,#243044)!important;' +
+          'color:#fff!important;display:inline-flex;align-items:center;gap:.5rem;' +
+          'padding:.3rem .7rem .3rem .35rem!important;font-weight:600}' +
+          '.nav a.signin.chip:hover{background:#2c3a52!important}' +
+          '.nav a.signin.chip .init{background:var(--gold,#d4a843);color:var(--navy,#1a2332);' +
+          'width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;' +
+          'justify-content:center;font-weight:800;font-size:.85rem}' +
+          '.nav a.signin.chip .caret{font-size:.6rem;opacity:.7}';
+        (document.head || document.documentElement).appendChild(st);
+      }
+      a.classList.add('chip');
+      a.textContent = '';
+      var init = document.createElement('span'); init.className = 'init';
+      init.textContent = (first || 'A').charAt(0).toUpperCase();
+      a.appendChild(init);
+      a.appendChild(document.createTextNode(first || 'Account'));
+      var caret = document.createElement('span'); caret.className = 'caret';
+      caret.textContent = '▼';
+      a.appendChild(caret);
       if (nm) a.title = 'Signed in as ' + nm;
     }
     if (document.body) document.body.setAttribute('data-signed-in', '1');
