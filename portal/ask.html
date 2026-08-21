@@ -691,4 +691,36 @@ addEventListener("load", function () {
 })();
 </script>
 
+
+<script>
+(function () {
+  // Strip-only resolver: same wording/glyphs/colours as hf js/site.js buildStatusBar.
+  // Nothing is asserted about health until the API answers; on failure we say so
+  // rather than claiming "operational".
+  var API = 'https://econdl-api.elkassabgi.workers.dev';
+  function el(id) { return document.getElementById(id); }
+  function fdate(s) {
+    try {
+      var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+      var d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(s);
+      if (isNaN(d)) return s;
+      return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    } catch (e) { return s; }
+  }
+  fetch(API + '/v1/stats?t=' + Date.now())
+    .then(function (r) { if (!r.ok) throw 0; return r.json(); })
+    .then(function (d) {
+      var dot = el('sb-dot'), txt = el('sb-text'), data = el('sb-data');
+      if (dot) dot.style.color = '#059669';
+      if (txt) txt.textContent = 'All systems operational';
+      if (data && d && d.as_of) data.textContent = 'Data measured: ' + fdate(d.as_of);
+    })
+    .catch(function () {
+      var dot = el('sb-dot'), txt = el('sb-text');
+      if (dot) dot.style.color = '#d97706';
+      if (txt) txt.textContent = 'Status check unavailable';
+    });
+})();
+</script>
+
 </body></html>
