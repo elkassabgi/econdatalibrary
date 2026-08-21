@@ -337,7 +337,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
 <div role="status" style="background:linear-gradient(90deg,#d4a843,#e8c368);color:#14203a;text-align:center;padding:1rem 1.2rem;font-size:1.08rem;font-weight:600;line-height:1.5;border-bottom:4px solid #14203a;letter-spacing:.01em">&#128679; <strong>Under Construction</strong> &mdash; the Econ Data Library is being finalized. Datasets and their licensing are still being verified and may change. <strong>Automated updates are being wired database by database</strong>: a source joins the daily refresh only once its updater has been built and proven against the publisher. Until then its data is the verified initial load, not pretended current &mdash; the <a href="status.html" style="color:#14203a;text-decoration:underline">Source Status board</a> says which is which, per database, live.</div>
 <section class="hero">
   <div class="container">
-    <h1 style="font-size:2.6rem">Economic Data Library: Free Economic &amp; Financial Data</h1>
+    <h1 style="font-size:2.6rem">Econ Data Library: Free Economic &amp; Financial Data</h1>
     <p class="subtitle">Free, research-grade macro &amp; financial data — one namespace over the world's statistical sources. Every series carries its license, provenance, and producer-first citation. Reproducible, snapshot-pinned, and <strong>continuously updated</strong>.</p>
 
     <div class="stats-bar">
@@ -363,6 +363,7 @@ letter-spacing:.01em;text-decoration:none;line-height:1.4}
       <a href="download.html" class="btn btn-primary">Download Data</a>
       <a href="docs.html" class="btn btn-outline">Read the Docs</a>
       <a href="api.html" class="btn btn-outline">API Access</a>
+      <a href="mcp.html" class="btn btn-outline">AI &amp; MCP</a>
     </div>
     <p style="font-size:.78rem;color:rgba(255,255,255,.5);margin-top:2rem">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded. Years of history: the earliest catalogued series (Maddison Project / GGDC) begin in year 1&nbsp;CE.</p>
   </div>
@@ -571,7 +572,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
       <div>
         <h4>Econ Data Library</h4>
         <p>Econ Data Library is the largest totally free online database in the world — dedicated to bringing all of the world's freely available data into a single, easily accessible location, with the help of cutting-edge AI tools. Built and maintained by Ahmed Elkassabgi at the University of Central Arkansas.</p>
-        <p style="margin-top:.75rem">Part of the <a href="https://hfdatalibrary.com/">ElkassabgiData</a> family — one free account for every library.</p>
+        <p style="margin-top:.75rem">Part of the <a href="https://elkassabgidata.com">ElkassabgiData</a> family — one free account for every library.</p>
       </div>
       <div>
         <h4>Data</h4>
@@ -595,6 +596,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
           <li><a href="https://elkassabgidata.com/about">Our Story</a></li>
           <li><a href="cite.html">How to Cite</a></li>
           <li><a href="https://hfdatalibrary.com/">HF Data Library</a></li>
+          <li><a href="https://ipdatalibrary.com/">IP Data Library</a></li>
           <li><a href="sitemap.xml">Sitemap</a></li>
         </ul>
       </div>
@@ -646,7 +648,7 @@ fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (
     <a href="https://hfdatalibrary.com/" style="color:#d4a843;text-decoration:none">HF Data Library</a>
     &nbsp;&middot;&nbsp;
     <a href="https://econdatalibrary.com/" style="color:#d4a843;text-decoration:none">Econ Data Library</a>
-    &nbsp;&middot;&nbsp;<span style="color:rgba(255,255,255,.4)">more to come</span>
+    &nbsp;&middot;&nbsp;<a href="https://ipdatalibrary.com/" style="color:#d4a843;text-decoration:none">IP Data Library</a>
   </p>
 </div>
 </body></html>
