@@ -6734,6 +6734,13 @@ sources:
   cadence: weekly
   data_cadence: annual
   refresh_cost: large
+  # 2026-08-21: OOM-killed the daily runner (run 32513187917) — memory climbed 2.4 GB ->
+  # 15.3 GB with 709 MB left and GitHub destroyed the runner mid-merge, taking the state,
+  # freshness and D1 syncs of every source that had already succeeded that night with it
+  # (the ons_uk failure mode documented in orchestrate._wrong_location). At 1.06 BILLION
+  # obs this is the family's largest store and its merge peak simply does not fit a 16 GB
+  # runner; it updates from the workstation, where the memory exists.
+  run_location: local
   out_dir: unctad_biotrademerch
   review: true
 - source_id: unctad_criticalmineralstradebypart
