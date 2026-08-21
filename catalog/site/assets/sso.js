@@ -293,6 +293,18 @@
     var rTries = parseInt(sessionStorage.getItem(RESUME_TRIES_K) || '0', 10) || 0;
     // '1' is what the first build wrote — treat it as "checked, time unknown" and let it expire
     // at once rather than stranding this visitor until they close the browser.
+    // ekd_signed_out is the THIRD flag in this file to need the no-expiry fix (after §3b
+    // and ekd_silent_done): sign out on econ (durable marker) -> later sign in DELIBERATELY
+    // on hf -> return here, and the marker suppressed the resume forever; the nav said
+    // "Sign in" while account.html's own server check showed "Signed in as Ahmed". Reported
+    // exactly that way 2026-08-20. A FAMILY REFERRER is the one signal that distinguishes
+    // "just signed in over there" from resurrection-after-sign-out (the visitor has just
+    // SEEN their signed-in state on the other site), so it - and only it - retires the
+    // marker. A typed URL or bookmark still honours the sign-out.
+    if (document.referrer && famRef.test(document.referrer)) {
+      try { sessionStorage.removeItem('ekd_signed_out'); } catch (e) {}
+      try { localStorage.removeItem('ekd_signed_out'); } catch (e) {}
+    }
     if (doneAt && rTries < RESUME_MAX_TRIES &&
         ((document.referrer && famRef.test(document.referrer)) || doneAt === 1 || (Date.now() - doneAt) > RESUME_RECHECK_MS)) {
       sessionStorage.removeItem('ekd_silent_done');
