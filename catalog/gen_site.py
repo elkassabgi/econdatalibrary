@@ -1988,6 +1988,13 @@ FOOTER = """
           <li><a href="contact.html">Contact</a></li>
         </ul>
       </div>
+      <div>
+        <h4>Legal</h4>
+        <ul>
+          <li><a href="https://hfdatalibrary.com/pages/terms">Terms of Service</a></li>
+          <li><a href="https://hfdatalibrary.com/pages/privacy">Privacy Policy</a></li>
+        </ul>
+      </div>
     </div>
     <div class="bottom">
       <p>&copy; 2026 Ahmed Elkassabgi. University of Central Arkansas.</p>
@@ -2642,7 +2649,7 @@ color:#fff;padding:6rem 0 5rem;text-align:center}
 .stats-bar{display:grid;grid-template-columns:1fr 1.4fr 1fr 1fr;gap:1.5rem;max-width:900px;margin:0 auto 3rem}
 .stat-item{text-align:center}
 .stat-item.hl{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);
-border-radius:12px;padding:1.25rem 1rem;box-shadow:0 4px 20px rgba(0,0,0,.3);margin-top:-.75rem}
+border-radius:12px;padding:1.25rem 1rem;box-shadow:0 4px 20px rgba(0,0,0,.3);margin-top:-1.3125rem}
 .stat-number{font-family:var(--mono);font-size:2rem;font-weight:700;color:var(--gold);display:block}
 .stat-label{font-size:.85rem;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.05em}
 .feature-row{display:grid;grid-template-columns:1fr 1fr;gap:4rem;align-items:center}
@@ -2653,6 +2660,18 @@ border-radius:12px;padding:1.25rem 1rem;box-shadow:0 4px 20px rgba(0,0,0,.3);mar
 .feature-visual{background:var(--g50);border:1px solid var(--g200);border-radius:12px;padding:2rem}
 .feature-visual pre{margin:0;font-size:.82rem}
 .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.5rem}
+@media (max-width:768px){
+.stats-bar{grid-template-columns:repeat(2,1fr);gap:1rem}
+.grid-3{grid-template-columns:1fr}
+.feature-row{grid-template-columns:1fr;gap:2rem}
+.hero h1{font-size:2rem}
+.hero .sub,.hero p{font-size:1rem}
+pre,code{max-width:100%;overflow-x:auto;word-break:break-word}
+.acard,.tile-link{min-width:0}
+}
+@media (max-width:480px){
+.stats-bar{grid-template-columns:1fr}
+}
 .acard{background:#fff;border:1px solid var(--g200);border-radius:12px;padding:2rem;transition:all .2s}
 .acard:hover{box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06);border-color:var(--g300)}
 .acard .card-icon{width:48px;height:48px;background:var(--blue-pale);border-radius:10px;

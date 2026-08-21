@@ -30,7 +30,81 @@ a{color:var(--blue)}
 .back{display:inline-block;margin-top:2rem;color:var(--blue);text-decoration:none;font-weight:600}
 .footer{background:var(--navy);color:rgba(255,255,255,.7);text-align:center;padding:2rem 0;font-size:.9rem}
 .footer a{color:var(--gold)}
+
+/* family chrome, copied from index.html (hf-canonical) */
+.status-bar{background:var(--gray-50);border-bottom:1px solid var(--gray-200);font-size:.8rem;color:var(--gray-500);height:32px;line-height:32px}
+.navbar{background:var(--navy);position:sticky;top:0;z-index:100;box-shadow:0 2px 8px rgba(0,0,0,0.15)}
+.navbar .container{display:flex;align-items:center;justify-content:space-between;height:64px}
+.navbar-brand{display:flex;align-items:center;gap:.5rem;color:#fff;font-family:var(--font-serif);font-size:1.2rem;font-weight:700;text-decoration:none;white-space:nowrap;flex-shrink:0}
+.navbar-brand-group{display:inline-flex;align-items:center;gap:.55rem;flex-shrink:0}
+.nav-links{display:flex;gap:.1rem;list-style:none;align-items:center;white-space:nowrap}
+.nav-links{display:none}
+.nav-links a{color:rgba(255,255,255,0.8);padding:.5rem .75rem;border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-space:nowrap}
+.nav-links a:hover,.nav-links a.active{color:#fff;background:rgba(255,255,255,0.1)}
+.nav-toggle{display:none;background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer}
+.nav-toggle{display:block}
+.footer{background:var(--navy);color:rgba(255,255,255,0.7);padding:3rem 0 2rem;font-size:.9rem}
+.footer-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:2rem;margin-bottom:2rem}
+.footer-grid{grid-template-columns:1fr 1fr}
+.footer h4{color:#fff;font-family:var(--font-sans);margin-bottom:.75rem}
+.footer a{color:rgba(255,255,255,0.7)}
+.footer a:hover{color:#fff}
+.footer ul{list-style:none}
+.footer li{margin-bottom:.4rem}
+.footer-bottom{border-top:1px solid rgba(255,255,255,0.1);padding-top:1.5rem;display:flex;justify-content:space-between;align-items:center}
+.footer-bottom .orcid{font-family:var(--font-mono);font-size:.8rem}
+.footer-bottom{flex-direction:column;gap:.5rem;text-align:center}
+.container{max-width:var(--max-width);margin:0 auto;padding:0 1.5rem}
+.container{display:flex;align-items:center;justify-content:space-between;height:64px}
+.btn{display:inline-flex;align-items:center;gap:.5rem;padding:.75rem 1.75rem;border-radius:var(--radius);font-weight:600;font-size:.95rem;cursor:pointer;border:none;transition:all .2s;text-decoration:none}
+.btn-primary{background:var(--blue);color:#fff}
+.btn-outline{background:transparent;color:#fff;border:2px solid rgba(255,255,255,0.3)}
+.btn-gold{background:var(--gold);color:var(--navy)}
+.btn-group{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap}
+.btn{align-self:flex-start}
+.btn{margin-top:1.1rem}
+@media (max-width:1120px){
+.nav-links{display:none}
+.nav-links.open{display:flex;flex-direction:column;position:absolute;top:64px;left:0;right:0;background:var(--navy);padding:1rem;box-shadow:var(--shadow-lg)}
+.nav-toggle{display:block}
+}
+@media (max-width:768px){
+.hero h1{font-size:2rem}
+.stats-bar{grid-template-columns:repeat(2,1fr);gap:1rem}
+.stat-number{font-size:1.5rem}
+.grid-2,.grid-3,.grid-4{grid-template-columns:1fr}
+.footer-grid{grid-template-columns:1fr 1fr}
+.footer-bottom{flex-direction:column;gap:.5rem;text-align:center}
+.numgrid{grid-template-columns:1fr}
+.numlist dt{font-size:1.1rem}
+}
 </style></head><body>
+<div class="status-bar" id="status-bar">
+  <div class="container" style="display:flex; justify-content:space-between; align-items:center; height:100%; flex-wrap:wrap; gap:0.25rem;">
+    <span style="display:flex; align-items:center; gap:0.5rem;">
+      <span id="sb-dot" style="color:var(--gray-400); font-size:0.7rem;">&#9679;</span>
+      <span id="sb-text">Checking systems&hellip;</span>
+    </span>
+    <span style="display:flex; gap:1.5rem;">
+      <span>Website updated: August 21, 2026</span>
+    </span>
+  </div>
+</div>
+<nav class="navbar">
+  <div class="container">
+    <span class="navbar-brand-group"><a href="/" class="navbar-brand">Elkassabgi<span>Data</span></a></span>
+    <button class="nav-toggle" onclick="document.querySelector('.nav-links').classList.toggle('open')" aria-label="Toggle navigation">&#9776;</button>
+    <ul class="nav-links">
+      <li><a href="about.html">About</a></li>
+      <li><a href="https://hfdatalibrary.com">HF Data</a></li>
+      <li><a href="https://econdatalibrary.com">Econ Data</a></li>
+      <li><a href="https://ipdatalibrary.com">IP Data</a></li>
+      <li><a href="ask.html">Ask the Data</a></li>
+      <li><a class="js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create free account</a></li>
+    </ul>
+  </div>
+</nav>
+
 
 <section class="hero">
   <svg class="logo" viewBox="0 0 560 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ElkassabgiData">
@@ -100,9 +174,50 @@ a{color:var(--blue)}
 </div>
 
 <footer class="footer">
-  <p>&copy; 2026 ElkassabgiData &middot; Ahmed Elkassabgi, University of Central Arkansas &middot;
-  <a href="https://hfdatalibrary.com">HF Data Library</a> &middot;
-  <a href="https://econdatalibrary.com">Econ Data Library</a></p>
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <h4>ElkassabgiData</h4>
+        <p>A family of free, research-grade data libraries. Built and maintained by Ahmed Elkassabgi at the University of Central Arkansas.</p>
+        <p style="margin-top:0.75rem;">Licensed under <a href="https://hfdatalibrary.com/pages/license">CC BY 4.0</a></p>
+      </div>
+      <div>
+        <h4>Libraries</h4>
+        <ul>
+          <li><a href="https://hfdatalibrary.com">HF Data Library</a></li>
+          <li><a href="https://econdatalibrary.com">Econ Data Library</a></li>
+          <li><a href="https://ipdatalibrary.com">IP Data Library</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Account</h4>
+        <ul>
+          <li><a class="js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create Free Account</a></li>
+          <li><a href="ask.html">Ask the Data</a></li>
+          <li><a href="https://hfdatalibrary.com/pages/mcp">MCP Server (AI)</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>About</h4>
+        <ul>
+          <li><a href="about.html">Our Story</a></li>
+          <li><a href="https://hfdatalibrary.com/pages/cite">How to Cite</a></li>
+          <li><a href="https://hfdatalibrary.com/pages/contact">Contact</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Legal</h4>
+        <ul>
+          <li><a href="https://hfdatalibrary.com/pages/terms">Terms of Service</a></li>
+          <li><a href="https://hfdatalibrary.com/pages/privacy">Privacy Policy</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>&copy; 2026 Ahmed Elkassabgi. University of Central Arkansas.</p>
+      <p class="orcid">ORCID: <a href="https://orcid.org/0000-0002-5926-7493">0000-0002-5926-7493</a></p>
+    </div>
+  </div>
 </footer>
 <!-- Hidden page-view counter. Records ONLY the path and the UTC date in our own
      D1 (no cookie, no IP, no identifier), which is why the site needs no consent
