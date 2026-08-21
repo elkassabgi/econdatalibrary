@@ -139,6 +139,7 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
       <a class="btn btn-primary js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create your free account</a>
       <a class="btn btn-outline" href="https://hfdatalibrary.com">HF Data Library</a>
       <a class="btn btn-outline" href="https://econdatalibrary.com">Econ Data Library</a>
+      <a class="btn btn-outline" href="https://ipdatalibrary.com">IP Data Library</a>
     </div>
   </div>
 </section>
@@ -192,10 +193,12 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
         <div class="what">Global <strong>economic &amp; financial data</strong>: billions of individual series from the worlds statistical sources — national accounts, prices, trade, labor, energy, markets — in one namespace, with per-series licensing and producer-first citations, auto-updated.</div>
         <a class="go" href="https://econdatalibrary.com">econdatalibrary.com →</a>
       </div>
-      <div class="lib soon">
-        <span class="tag">Coming soon</span>
-        <h2>The next library</h2>
-        <div class="what">The family keeps growing. Every future ElkassabgiData library plugs into the same account on day one — if you're registered, you already have access.</div>
+      <div class="lib">
+        <span class="tag">Patents &amp; innovation &middot; live</span>
+        <h2>IP Data Library</h2>
+        <div class="metric">9.4M+ patents &middot; innovation measures</div>
+        <div class="what">Research-grade <strong>innovation measures</strong> computed from the complete US patent record — citations, originality &amp; generality, firm patent panels — free, citable, reproducible, with honest methodology. US patent data is public domain.</div>
+        <a class="go" href="https://ipdatalibrary.com">ipdatalibrary.com →</a>
       </div>
     </div>
 
@@ -209,7 +212,7 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
 
     <div class="panel">
       <h3>One account. Every library. Forever.</h3>
-      <p>Register once — here, on hfdatalibrary.com, or on econdatalibrary.com — and you're an
+      <p>Register once — here, on hfdatalibrary.com, econdatalibrary.com, or ipdatalibrary.com — and you're an
       <strong>ElkassabgiData registered user</strong>: the same free API key downloads data from every
       current and future library. No re-registration, ever.</p>
       <a class="btn btn-primary js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create your free account</a>
@@ -277,5 +280,20 @@ font-weight:600;font-size:.95rem;border:none;transition:all .2s;text-decoration:
     });
   });
 })();
+</script>
+<!-- Hidden page-view counter. Records ONLY the path and the UTC date in our own
+     D1 (no cookie, no IP, no identifier), which is why the site needs no consent
+     banner. Fires after load so it can never delay or break rendering, and any
+     failure is swallowed silently. Read the totals at
+     /v1/pv/report on the econdl-api worker. -->
+<script>
+addEventListener("load", function () {
+  try {
+    // An Image beacon rather than fetch(): no CORS preflight, no promise left
+    // pending if the request is blocked, and nothing rendered either way.
+    new Image().src = "https://econdl-api.elkassabgi.workers.dev/v1/pv?p=" +
+      encodeURIComponent(location.pathname) + "&t=" + Date.now();
+  } catch (e) { /* a counter must never affect the page */ }
+});
 </script>
 </body></html>
