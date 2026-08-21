@@ -66,6 +66,15 @@ border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-sp
 color:var(--g500);min-height:32px;line-height:32px}
 .status-bar .sb-in{max-width:var(--max-width);margin:0 auto;padding:0 1.5rem;height:100%;
 display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.25rem}
+
+.nav-toggle{display:none;background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer}
+@media (max-width:1120px){
+.nav-links{display:none}
+.nav-links.open{display:flex;flex-direction:column;position:absolute;top:64px;left:0;right:0;
+background:#1a2332;padding:1rem;box-shadow:0 10px 15px rgba(0,0,0,.1),0 4px 6px rgba(0,0,0,.05);z-index:60}
+.nav-toggle{display:block}
+}
+
 </style><script src="assets/sso.js?v=20260802a"></script>
 <!-- REMOVED 2026-07-31: the inline "clicking Sign in is explicit intent" block that
      ran location.replace() to api.hfdatalibrary.com/v1/auth/sso on page load.
@@ -83,7 +92,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <span style="display:flex;gap:1.5rem"><span id="sb-site"></span><span id="sb-data"></span></span>
 </div></div>
 <div class="nav"><div class="nav-in"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" title="Part of the ElkassabgiData family" style="font-size:.62rem;color:#d4a843;border:1px solid rgba(212,168,67,.5);border-radius:999px;padding:.12rem .5rem;margin-left:.55rem;white-space:nowrap;font-weight:600;text-decoration:none;vertical-align:middle">part of ElkassabgiData</a></div>
-<div class="nav-links"><a href="catalog.html">Catalog</a><a href="docs.html">Documentation</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">AI Tools</a><a href="cite.html">Cite</a><a href="stats.html">Stats</a><a href="status.html">Status</a><a href="contact.html">Contact</a><a href="account.html" style="background:#d4a843;color:#1a2332;padding:.4rem .875rem;border-radius:6px;font-weight:600">Sign in</a></div></div>
+<button class="nav-toggle" onclick="document.querySelector('.nav-links').classList.toggle('open')" aria-label="Toggle navigation">&#9776;</button><div class="nav-links"><a href="catalog.html">Catalog</a><a href="docs.html">Documentation</a><a href="api.html">API</a><a href="download.html">Download</a><a href="mcp.html">AI Tools</a><a href="cite.html">Cite</a><a href="stats.html">Stats</a><a href="status.html">Status</a><a href="contact.html">Contact</a><a href="account.html" style="background:#d4a843;color:#1a2332;padding:.4rem .875rem;border-radius:6px;font-weight:600">Sign in</a></div></div>
 </div><div class="wrap">
 <h1>One account. Every library.</h1>
 <p class="sub">Your free <strong>ElkassabgiData</strong> account works across every Elkassabgi
