@@ -2023,12 +2023,11 @@ def jsonld_script(obj):
 # Every value comes from the SAME real per-page strings as <title> and
 # <meta description>, so an OG tag can never disagree with the page it describes.
 #
-# NO og:image. site/assets/ holds only SVGs (elkassabgidata-logo.svg, favicon.svg)
-# and Facebook/LinkedIn/X do not render SVG -- pointing og:image at one produces a
-# BROKEN card, worse than none. For the same reason twitter:card is "summary" and
-# not "summary_large_image", which requires an image. The moment a raster preview
-# (PNG/JPG, >=1200x630) exists under assets/, add it here as an ABSOLUTE
-# {SITE_BASE}/... URL and switch the card type -- those are the only two changes.
+# og:image is a real PNG (assets/og-image.png, 1200x630). It used to be absent
+# on purpose: site/assets held only SVGs and Facebook/LinkedIn/X do not render
+# SVG, so pointing og:image at one produces a BROKEN card, worse than none.
+# That reasoning stands - the fix was to render a PNG, not to relax it. With a
+# real raster card the family can carry summary_large_image honestly.
 def social_meta(title, description, canonical, og_type="website"):
     """Open Graph + Twitter card tags for one page. Takes RAW (unescaped) text."""
     og_title = title
@@ -2045,7 +2044,11 @@ def social_meta(title, description, canonical, og_type="website"):
         ("property", "og:url", canonical),
         ("property", "og:site_name", SITE_NAME),
         ("property", "og:locale", "en_US"),
-        ("name", "twitter:card", "summary"),
+        ("property", "og:image", f"{SITE_BASE}/assets/og-image.png"),
+        ("property", "og:image:width", "1200"),
+        ("property", "og:image:height", "630"),
+        ("name", "twitter:card", "summary_large_image"),
+        ("name", "twitter:image", f"{SITE_BASE}/assets/og-image.png"),
         ("name", "twitter:title", og_title),
         ("name", "twitter:description", description),
     ]
@@ -2662,6 +2665,7 @@ border-radius:12px;padding:1.25rem 1rem;box-shadow:0 4px 20px rgba(0,0,0,.3);mar
 .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.5rem}
 @media (max-width:768px){
 .stats-bar{grid-template-columns:repeat(2,1fr);gap:1rem}
+.stat-number{font-size:1.5rem}
 .grid-3{grid-template-columns:1fr}
 .feature-row{grid-template-columns:1fr;gap:2rem}
 .hero h1{font-size:2rem}
@@ -2669,9 +2673,7 @@ border-radius:12px;padding:1.25rem 1rem;box-shadow:0 4px 20px rgba(0,0,0,.3);mar
 pre,code{max-width:100%;overflow-x:auto;word-break:break-word}
 .acard,.tile-link{min-width:0}
 }
-@media (max-width:480px){
-.stats-bar{grid-template-columns:1fr}
-}
+
 .acard{background:#fff;border:1px solid var(--g200);border-radius:12px;padding:2rem;transition:all .2s}
 .acard:hover{box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06);border-color:var(--g300)}
 .acard .card-icon{width:48px;height:48px;background:var(--blue-pale);border-radius:10px;
@@ -2744,7 +2746,7 @@ a.tile-link .tile-go{display:inline-block;margin-top:.9rem;color:var(--blue);fon
     <div class="btn-group">
       <a href="download.html" class="btn btn-primary">Download Data</a>
       <a href="docs.html" class="btn btn-outline">Read the Docs</a>
-      <a href="api.html" class="btn btn-outline">API Access</a>
+      <a href="api.html" class="btn btn-outline">API Access</a><a class="btn btn-outline" href="mcp.html">AI &amp; MCP</a>
     </div>
     <p class="hero-note">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded. Years of history: the earliest catalogued series (Maddison Project / GGDC) begin in year 1&nbsp;CE.</p>
   </div>
