@@ -27,6 +27,7 @@ interface Env {
 type Props = { apiKey: string | null };
 
 const ECON = "https://econdl-api.elkassabgi.workers.dev";
+const IP_API = "https://api.ipdatalibrary.com";
 const HF_API = "https://api.hfdatalibrary.com";
 const HF_SITE = "https://hfdatalibrary.com";
 const ACCOUNT_URL = "https://hfdatalibrary.com/pages/download";
@@ -330,6 +331,67 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       annotations: { readOnlyHint: true },
     }, async () => text(VARIABLES_25));
 
+    // ═════════════════ IP (patents & innovation) ═════════════════
+    s.registerTool("list_ip_bundles", {
+      title: "IP Data Library Bundles",
+      description:
+        "List the IP Data Library's snapshot-pinned patent/innovation bundles " +
+        "(patent-level measures on 9.4M+ US patents; assignee-year panels) with " +
+        "sizes, vintages and download paths. Free, no key needed.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    }, async () => {
+      const r = await upstream(`${IP_API}/v1/bundles`);
+      if (!r.ok) return relayError(r, "list_ip_bundles");
+      const d = await r.json() as { bundles: Array<Record<string, any>>; citation: string };
+      const rows = d.bundles.map(b =>
+        `- ${b.vintage}/${b.file} (${(Number(b.bytes) / 1e6).toFixed(0)} MB)` +
+        (b.description ? `\n    ${b.description}` : ""));
+      return text(
+        `IP Data Library bundles (ipdatalibrary.com):\n${rows.join("\n")}\n\n` +
+        `Download with get_ip_download_link(file, vintage).\nCitation: ${d.citation}`);
+    });
+
+    s.registerTool("get_ip_download_link", {
+      title: "IP Patent Data Download Link",
+      description:
+        "Authenticated download instructions for an IP Data Library bundle — " +
+        "patent-level innovation measures (citations, originality/generality, " +
+        "grant lag, team size) or the assignee-year panel. Parquet, full-history " +
+        "files fetched by YOUR code, not returned inline. Works with the same " +
+        "ElkassabgiData key as every family library.",
+      inputSchema: {
+        file: z.enum(["patent_measures.parquet", "assignee_year.parquet"]),
+        vintage: z.string().regex(/^v[\w.-]+$/).optional()
+          .describe("Snapshot vintage from list_ip_bundles; omit for the newest"),
+      },
+      annotations: { readOnlyHint: true },
+    }, async ({ file, vintage }) => {
+      let v = vintage;
+      if (!v) {
+        const r = await upstream(`${IP_API}/v1/bundles`);
+        if (!r.ok) return relayError(r, "get_ip_download_link");
+        const d = await r.json() as { bundles: Array<{ vintage: string; file: string }> };
+        v = d.bundles.filter(b => b.file === file).map(b => b.vintage).sort().pop();
+        if (!v) return text(`No bundle named ${file} is currently served — run list_ip_bundles.`);
+      }
+      const url = `${IP_API}/v1/bundles/${v}/${file}`;
+      const keyNote = this.key()
+        ? "A key is configured on this MCP server — the SAME key authorizes this URL."
+        : `No key is configured on this MCP server. ${NO_KEY_MSG}`;
+      return text(
+        `${file} · vintage ${v}\n\n` +
+        `URL: ${url}\n` +
+        `Auth: send your ElkassabgiData key as the X-API-Key header (do NOT paste keys into chat):\n` +
+        `  curl -L -H "X-API-Key: $ELKASSABGIDATA_KEY" -o ${file} "${url}"\n` +
+        `  # or pandas: pd.read_parquet(io.BytesIO(requests.get(url, headers={"X-API-Key": KEY}).content))\n\n` +
+        `${keyNote}\n\n` +
+        `Caveats that MUST accompany analysis: forward-citation counts are right-censored for ` +
+        `recent patents (fixed-window counts carry truncation flags); originality/generality use ` +
+        `CPC subclasses, so levels are not comparable to the USPC-based 2001 NBER files. ` +
+        `Responses carry x-citation and x-snapshot-vintage headers.`);
+    });
+
     // ═════════════════ FAMILY ═════════════════
     s.registerTool("get_family_status", {
       title: "ElkassabgiData Family Status",
@@ -360,6 +422,16 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
             `(measured ${sst.as_of}; method: ${sst.method}).`);
         } else out.push("Econ Data Library: stats endpoint unreachable right now.");
       } catch { out.push("Econ Data Library: stats endpoint unreachable right now."); }
+      try {
+        const r = await upstream(`${IP_API}/v1/stats`);
+        if (r.ok) {
+          const ip = await r.json() as Record<string, any>;
+          out.push(
+            `IP Data Library (ipdatalibrary.com): ${ip.bundles} patent/innovation bundles ` +
+            `(${(Number(ip.total_bytes) / 1e6).toFixed(0)} MB) across vintages ${ip.vintages.join(", ")}; ` +
+            `source: ${ip.source}.`);
+        } else out.push("IP Data Library: stats endpoint unreachable right now.");
+      } catch { out.push("IP Data Library: stats endpoint unreachable right now."); }
       out.push(`\nOne free account covers every library: ${ACCOUNT_URL}`);
       return text(out.join("\n"));
     });
