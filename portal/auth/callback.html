@@ -20,6 +20,47 @@
   <div class="m"><p><strong>ElkassabgiData</strong><br>Completing sign-in…</p><p class="ret"><a href="/">Return to the site</a></p></div>
   <script>
   (function () {
+    'use strict';
+    var ACCOUNTS = 'https://accounts.elkassabgidata.com';
+    var SS = { v: 'ekd_silent_v', s: 'ekd_silent_s', r: 'ekd_silent_r', done: 'ekd_silent_done' };
+    function ss(k){ try { return sessionStorage.getItem(k); } catch(e){ return null; } }
+    function ssSet(k,v){ try { sessionStorage.setItem(k,v); } catch(e){} }
+    function ssDel(k){ try { sessionStorage.removeItem(k); } catch(e){} }
+    function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+    function safeReturn(u){ if (typeof u!=='string'||u.charAt(0)!=='/'||u.charAt(1)==='/') return '/'; return u; }
+    var hasOpener = false;
+    try { hasOpener = !!(window.opener && !window.opener.closed); } catch(e) {}
+    if (!hasOpener) {
+      var q, code, state, err;
+      try { q = new URLSearchParams(location.hash.slice(1)); } catch(e) { q = new URLSearchParams(''); }
+      code = q.get('code') || ''; state = q.get('state') || ''; err = q.get('error') || '';
+      try { history.replaceState(null,'',location.pathname); } catch(e) {}
+      // Spend the attempt BEFORE anything can fail, as a timestamp so the bouncer
+      // can re-arm it once stale. Any path leaving it unset is a redirect loop.
+      ssSet(SS.done, String(Date.now()));
+      var back = function () {
+        var dest = safeReturn(ss(SS.r) || '/');
+        ssDel(SS.v); ssDel(SS.s); ssDel(SS.r);
+        try { location.replace(dest); } catch(e) { location.href = dest; }
+      };
+      if (err || !code) { back(); return; }
+      var ver = ss(SS.v), want = ss(SS.s);
+      if (!ver || !want || state !== want) { back(); return; }
+      fetch(ACCOUNTS + '/token/exchange', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code, code_verifier: ver, client_origin: location.origin })
+      }).then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(d){
+          if (!d || !d.access_token) return null;
+          if (d.refresh_token) lsSet('ekd_rt', d.refresh_token);
+          lsSet('ekd_at', JSON.stringify({ t: d.access_token, e: Date.now() + (Number(d.expires_in||900)*1000) }));
+        }).catch(function(){}).then(back);
+      return;
+    }
+  })();
+  </script>
+  <script>
+  (function () {
     // The IdP 303'd here with the family code + state in the URL FRAGMENT (never
     // sent to any server). Hand it back to the opener (same origin) and close.
     try {

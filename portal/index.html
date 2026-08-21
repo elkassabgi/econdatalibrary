@@ -188,6 +188,22 @@ code{font-family:var(--font-mono);font-size:.875em;background:var(--gray-100);pa
 .numgrid{grid-template-columns:1fr}
 .numlist dt{font-size:1.1rem}
 }
+
+#ekd-chip{background:var(--navy-light,#243044);color:#fff!important;font-weight:600;
+display:inline-flex;align-items:center;gap:.5rem;padding:.35rem .8rem .35rem .4rem!important;
+border-radius:8px;text-decoration:none}
+#ekd-chip:hover{background:#2c3a52}
+#ekd-chip .init{background:var(--gold);color:var(--navy);width:26px;height:26px;border-radius:50%;
+display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem}
+#ekd-chip .caret{font-size:.6rem;opacity:.7}
+#ekd-menu{position:absolute;right:1.5rem;top:96px;background:#fff;
+border:1px solid var(--gray-200,#e5e7eb);border-radius:8px;
+box-shadow:0 8px 24px rgba(0,0,0,.18);display:none;z-index:120;min-width:220px}
+#ekd-menu a{display:block;padding:.6rem 1.2rem;color:var(--navy);font-size:.9rem;text-decoration:none}
+#ekd-menu a:hover{background:var(--gray-50,#f9fafb)}
+#ekd-menu .who{padding:.6rem 1.2rem;border-bottom:1px solid var(--gray-100,#f3f4f6);
+font-size:.82rem;color:var(--gray-500,#6b7280)}
+
 </style></head><body>
 
 <!-- Status strip — the same shared region hf paints on every page (js/site.js
@@ -484,4 +500,126 @@ addEventListener("load", function () {
   } catch (e) { /* a counter must never affect the page */ }
 });
 </script>
+
+<script>
+(function () {
+  'use strict';
+  // Silent family-session resume, ported from econ/ip. The portal is the family HUB,
+  // so arriving here from any library while signed in must be recognised without a
+  // click. A TOP-LEVEL prompt=none trip is required: ekd_session is SameSite=Lax,
+  // which a framed request would not carry.
+  var RECHECK = 10 * 60 * 1000, MAX = 3, TRIES = 'ekd_silent_tries';
+  try {
+    var fam = /^https:\/\/(www\.)?(hfdatalibrary|econdatalibrary|ipdatalibrary)\.com(\/|$)/;
+    var doneAt = parseInt(sessionStorage.getItem('ekd_silent_done') || '0', 10) || 0;
+    var tries = parseInt(sessionStorage.getItem(TRIES) || '0', 10) || 0;
+    if (document.referrer && fam.test(document.referrer)) {
+      try { sessionStorage.removeItem('ekd_signed_out'); } catch (e) {}
+      try { localStorage.removeItem('ekd_signed_out'); } catch (e) {}
+    }
+    if (doneAt && tries < MAX &&
+        ((document.referrer && fam.test(document.referrer)) || doneAt === 1 ||
+         (Date.now() - doneAt) > RECHECK)) {
+      sessionStorage.removeItem('ekd_silent_done');
+    }
+  } catch (e) {}
+  try {
+    if (!localStorage.getItem('ekd_rt')
+        && !sessionStorage.getItem('ekd_signed_out') && !localStorage.getItem('ekd_signed_out')
+        && !sessionStorage.getItem('ekd_silent_done')
+        && /^(www\.)?elkassabgidata\.com$/.test(location.hostname)) {
+      var ua = navigator.userAgent || '';
+      var bot = navigator.webdriver || /bot|crawl|spider|slurp|bingpreview|duckduckbot|baiduspider|yandex|facebookexternalhit|slackbot|discordbot|telegrambot|whatsapp|applebot|petalbot|semrush|ahrefs|mj12bot|dotbot|lighthouse|headless/i.test(ua);
+      if (!bot && window.isSecureContext !== false && window.crypto && crypto.subtle && crypto.getRandomValues) {
+        sessionStorage.setItem(TRIES, String((parseInt(sessionStorage.getItem(TRIES) || '0', 10) || 0) + 1));
+        var b64 = function (b) { var s = ''; for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+        var rand = function () { return b64(crypto.getRandomValues(new Uint8Array(32))); };
+        var ver = rand(), st = rand();
+        crypto.subtle.digest('SHA-256', new TextEncoder().encode(ver)).then(function (dg) {
+          sessionStorage.setItem('ekd_silent_v', ver);
+          sessionStorage.setItem('ekd_silent_s', st);
+          sessionStorage.setItem('ekd_silent_r', location.pathname + location.search + location.hash);
+          location.replace('https://accounts.elkassabgidata.com/authorize?response_type=code&prompt=none'
+            + '&client_id=' + encodeURIComponent(location.origin)
+            + '&redirect_uri=' + encodeURIComponent(location.origin + '/auth/callback')
+            + '&state=' + encodeURIComponent(st)
+            + '&code_challenge=' + encodeURIComponent(b64(new Uint8Array(dg)))
+            + '&code_challenge_method=S256');
+        }).catch(function () {});
+        return;
+      }
+    }
+  } catch (e) {}
+
+  function ready(fn) {
+    if (document.readyState !== 'loading') fn();
+    else document.addEventListener('DOMContentLoaded', fn);
+  }
+  ready(function () {
+    var cta = document.querySelector('.js-ekd-register');
+    if (!cta || typeof EKD === 'undefined') return;
+    var menu = document.createElement('div');
+    menu.id = 'ekd-menu';
+    menu.innerHTML = '<div class="who" id="ekd-who"></div>'
+      + '<a href="https://hfdatalibrary.com/pages/download">My downloads</a>'
+      + '<a href="#" id="ekd-signout" style="color:#b91c1c">Sign out</a>';
+    document.body.appendChild(menu);
+
+    function paint() {
+      if (!EKD.isLoggedIn()) return;
+      EKD.getAccessToken().then(function (tok) {
+        if (!tok) return null;
+        return fetch('https://api.hfdatalibrary.com/v1/me',
+                     { headers: { Authorization: 'Bearer ' + tok } })
+          .then(function (r) { return r.ok ? r.json() : null; });
+      }).then(function (me) {
+        var label = (me && (me.name || me.email)) || 'Account';
+        var first = label.split(/[ @]/)[0];
+        var chip = document.createElement('a');
+        chip.id = 'ekd-chip';
+        chip.href = '#';
+        var init = document.createElement('span');
+        init.className = 'init';
+        init.textContent = first.charAt(0).toUpperCase();
+        var caret = document.createElement('span');
+        caret.className = 'caret';
+        caret.textContent = '\u25BC';
+        chip.appendChild(init);
+        chip.appendChild(document.createTextNode(first));
+        chip.appendChild(caret);
+        var who = document.getElementById('ekd-who');
+        if (who) who.textContent = label;
+        if (cta.parentNode) cta.parentNode.replaceChild(chip, cta);
+        chip.addEventListener('click', function (e) {
+          e.preventDefault();
+          menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+        });
+      }).catch(function () {});
+    }
+
+    document.addEventListener('click', function (e) {
+      var c = document.getElementById('ekd-chip');
+      if (c && !c.contains(e.target) && !menu.contains(e.target)) menu.style.display = 'none';
+    });
+    var so = document.getElementById('ekd-signout');
+    if (so) so.addEventListener('click', function (e) {
+      e.preventDefault();
+      menu.style.display = 'none';
+      try { sessionStorage.setItem('ekd_signed_out', '1'); } catch (err) {}
+      try { localStorage.setItem('ekd_signed_out', '1'); } catch (err) {}
+      EKD.logout();
+      setTimeout(function () { location.reload(); }, 250);
+    });
+    EKD.on('login', function () {
+      try { sessionStorage.removeItem('ekd_signed_out'); } catch (e) {}
+      try { localStorage.removeItem('ekd_signed_out'); } catch (e) {}
+      paint();
+    });
+    EKD.on('logout', function () { location.reload(); });
+    EKD.init();
+    paint();
+  });
+})();
+</script>
+
 </body></html>
