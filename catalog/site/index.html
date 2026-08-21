@@ -12,7 +12,11 @@
 <meta property="og:url" content="https://econdatalibrary.com/">
 <meta property="og:site_name" content="Econ Data Library">
 <meta property="og:locale" content="en_US">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="https://econdatalibrary.com/assets/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://econdatalibrary.com/assets/og-image.png">
 <meta name="twitter:title" content="Economic Data Library: Free Economic and Financial Data">
 <meta name="twitter:description" content="Free, research-grade economic &amp; financial data: 319 sources in one namespace, with licenses, provenance, and producer-first citations on every series.">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
@@ -170,6 +174,7 @@ border-radius:12px;padding:1.25rem 1rem;box-shadow:0 4px 20px rgba(0,0,0,.3);mar
 .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.5rem}
 @media (max-width:768px){
 .stats-bar{grid-template-columns:repeat(2,1fr);gap:1rem}
+.stat-number{font-size:1.5rem}
 .grid-3{grid-template-columns:1fr}
 .feature-row{grid-template-columns:1fr;gap:2rem}
 .hero h1{font-size:2rem}
@@ -177,9 +182,7 @@ border-radius:12px;padding:1.25rem 1rem;box-shadow:0 4px 20px rgba(0,0,0,.3);mar
 pre,code{max-width:100%;overflow-x:auto;word-break:break-word}
 .acard,.tile-link{min-width:0}
 }
-@media (max-width:480px){
-.stats-bar{grid-template-columns:1fr}
-}
+
 .acard{background:#fff;border:1px solid var(--g200);border-radius:12px;padding:2rem;transition:all .2s}
 .acard:hover{box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06);border-color:var(--g300)}
 .acard .card-icon{width:48px;height:48px;background:var(--blue-pale);border-radius:10px;
@@ -436,7 +439,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
     <div class="btn-group">
       <a href="download.html" class="btn btn-primary">Download Data</a>
       <a href="docs.html" class="btn btn-outline">Read the Docs</a>
-      <a href="api.html" class="btn btn-outline">API Access</a>
+      <a href="api.html" class="btn btn-outline">API Access</a><a class="btn btn-outline" href="mcp.html">AI &amp; MCP</a>
     </div>
     <p class="hero-note">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded. Years of history: the earliest catalogued series (Maddison Project / GGDC) begin in year 1&nbsp;CE.</p>
   </div>
