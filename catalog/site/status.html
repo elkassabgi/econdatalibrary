@@ -60,6 +60,8 @@ background:#1a2332;padding:1rem;box-shadow:0 10px 15px rgba(0,0,0,.1),0 4px 6px 
 .nav-toggle{display:block}
 }
 
+
+.table-wrap{overflow-x:auto;max-width:100%;margin-bottom:1.5rem}
 </style><script src="assets/sso.js?v=20260802a"></script></head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
@@ -74,10 +76,10 @@ freshness the API serves at <code>/v1/last-updates</code>. Sources join the auto
 rollout in phases; until a source joins, its data is the verified initial load and it is
 listed here honestly as “initial load” rather than pretended current.</p>
 <div class="count" id="summary">Loading…</div>
-<table id="tbl" hidden>
+<div class="table-wrap"><table id="tbl" hidden>
 <thead><tr><th></th><th>Database</th><th>Status</th><th>Latest period</th><th>Last checked</th><th>Next expected</th></tr></thead>
 <tbody id="rows"></tbody>
-</table>
+</table></div>
 <p class="legend">
 <span class="dot ok"></span> updated &amp; current (or an honest <code>no_change</code> probe) &nbsp;·&nbsp;
 <span class="dot warn"></span> partial / transient issue — retries automatically next run &nbsp;·&nbsp;
