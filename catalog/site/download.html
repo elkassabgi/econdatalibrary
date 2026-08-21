@@ -108,6 +108,8 @@ background:#1a2332;padding:1rem;box-shadow:0 10px 15px rgba(0,0,0,.1),0 4px 6px 
 .nav-toggle{display:block}
 }
 
+
+.table-wrap{overflow-x:auto;max-width:100%;margin-bottom:1.5rem}
 </style>
 <script src="assets/sso.js?v=20260802a"></script></head>
 <body>
@@ -153,13 +155,13 @@ background:#1a2332;padding:1rem;box-shadow:0 10px 15px rgba(0,0,0,.1),0 4px 6px 
   </div>
   <div class="meta-line" id="meta">Type above to search the catalog.</div>
 
-  <table id="tbl" style="display:none">
+  <div class="table-wrap"><table id="tbl" style="display:none">
     <thead><tr>
       <th style="width:32px"><input type="checkbox" class="chk" id="chkall" title="Select all on this page"></th>
       <th>Series</th><th style="width:130px">Coverage</th><th style="width:90px">License</th><th style="width:110px"></th>
     </tr></thead>
     <tbody id="rows"></tbody>
-  </table>
+  </table></div>
   <div class="empty" id="empty" style="display:none"></div>
   <button class="morebtn" id="more" style="display:none">Load more</button>
 </div>

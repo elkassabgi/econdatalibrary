@@ -77,6 +77,8 @@ background:#1a2332;padding:1rem;box-shadow:0 10px 15px rgba(0,0,0,.1),0 4px 6px 
 .nav-toggle{display:block}
 }
 
+
+.table-wrap{overflow-x:auto;max-width:100%;margin-bottom:1.5rem}
 </style><script src="assets/sso.js?v=20260802a"></script></head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
@@ -253,7 +255,7 @@ background:#1a2332;padding:1rem;box-shadow:0 10px 15px rgba(0,0,0,.1),0 4px 6px 
 
 
   <h2>The tools your AI gets</h2>
-  <table>
+  <div class="table-wrap"><table>
     <thead><tr><th>Tool</th><th>What it does</th><th>Key?</th></tr></thead>
     <tbody>
     <tr><td><code>search_econ_series</code></td><td>Search billions of series across every catalogued source</td><td>—</td></tr>
@@ -268,7 +270,7 @@ background:#1a2332;padding:1rem;box-shadow:0 10px 15px rgba(0,0,0,.1),0 4px 6px 
     <tr><td><code>get_family_status</code></td><td>Live stats + data currency for all three libraries</td><td>—</td></tr>
     <tr><td><code>get_auth_status</code></td><td>Whether a key is configured on this connection (masked)</td><td>—</td></tr>
     </tbody>
-  </table>
+  </table></div>
   <p>The server also publishes MCP <strong>resources</strong> (a <em>data-honesty charter</em> — survivorship caveats,
   the 2022 HF source break, per-source licensing, freshness semantics — plus the variables dictionary and a family
   overview) and guided <strong>prompts</strong> (<code>analyze_econ_series</code>, <code>compare_countries</code>,
