@@ -1765,6 +1765,8 @@ align-items:center;justify-content:space-between}
 .nav-links a{color:rgba(255,255,255,.8);text-decoration:none;padding:.5rem .75rem;
 border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-space:nowrap}
 .nav-links a:hover,.nav-links a.active{color:#fff;background:rgba(255,255,255,.1)}
+@media (max-width:1240px){.nav-links a{padding:.5rem .45rem;font-size:.82rem}}
+@media (max-width:1160px){.nav-links a{padding:.5rem .3rem;font-size:.8rem}}
 .nav-toggle{display:none;background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer}
 /* hf css/style.css:382-400 -- collapse the link row before it crowds the bar. */
 @media (max-width:1120px){
@@ -1806,7 +1808,8 @@ h2{font-size:1.875rem;margin:1.8rem 0 1rem}
 details{margin-top:1rem;border:1px solid var(--g200);border-radius:8px;background:var(--g50)}
 summary{cursor:pointer;padding:.7rem 1rem;font-weight:600;color:var(--g700);font-size:.9rem}
 details pre{margin:0;font-size:.78rem;line-height:1.5;border-radius:0 0 8px 8px}
-.dhero{background:var(--navy);margin:-2rem -1.5rem 1.6rem;padding:3rem 1.5rem}
+.dhero{background:var(--navy);padding:3rem 0;margin:0 0 1.6rem}
+.dhero>*{max-width:920px;margin-left:auto;margin-right:auto;padding:0 1.5rem}
 .dhero .crumb{color:rgba(255,255,255,.55);margin-bottom:.7rem}
 .dhero .crumb a{color:var(--gold);text-decoration:none}
 .dhero .pid{color:var(--gold);margin-bottom:.35rem}
@@ -2271,15 +2274,15 @@ def render_dataset_page(rec):
         return "\n".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in rows)
 
     body = [head]
-    body.append('<div class="wrap">')
-    body.append('<div class="dhero">')
+    body.append('<section class="dhero">')
     body.append(f'<div class="crumb"><a href="index.html">Catalog</a> / {esc(rec["name"])}</div>')
     body.append(f'<div class="pid">{esc(rec["id"])}</div>')
     body.append(f"<h1>{esc(rec['name'])}</h1>")
     body.append(f'<div class="badges">{"".join(badges)}</div>')
     if rec["desc_short"]:
         body.append(f'<p class="lead">{esc(rec["desc_short"])}</p>')
-    body.append('</div>')  # /dhero
+    body.append('</section>')  # /dhero -- full-bleed, outside .wrap
+    body.append('<div class="wrap">')
     body.append(callout)
 
     # Provider-granted embed (see SOURCE_EMBEDS — written permission required).
