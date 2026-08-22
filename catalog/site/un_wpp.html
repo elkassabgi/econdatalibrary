@@ -85,6 +85,8 @@ align-items:center;justify-content:space-between}
 .nav-links a{color:rgba(255,255,255,.8);text-decoration:none;padding:.5rem .75rem;
 border-radius:6px;font-size:.875rem;font-weight:500;transition:all .15s;white-space:nowrap}
 .nav-links a:hover,.nav-links a.active{color:#fff;background:rgba(255,255,255,.1)}
+@media (max-width:1240px){.nav-links a{padding:.5rem .45rem;font-size:.82rem}}
+@media (max-width:1160px){.nav-links a{padding:.5rem .3rem;font-size:.8rem}}
 .nav-toggle{display:none;background:none;border:none;color:#fff;font-size:1.5rem;cursor:pointer}
 /* hf css/style.css:382-400 -- collapse the link row before it crowds the bar. */
 @media (max-width:1120px){
@@ -126,7 +128,8 @@ h2{font-size:1.875rem;margin:1.8rem 0 1rem}
 details{margin-top:1rem;border:1px solid var(--g200);border-radius:8px;background:var(--g50)}
 summary{cursor:pointer;padding:.7rem 1rem;font-weight:600;color:var(--g700);font-size:.9rem}
 details pre{margin:0;font-size:.78rem;line-height:1.5;border-radius:0 0 8px 8px}
-.dhero{background:var(--navy);margin:-2rem -1.5rem 1.6rem;padding:3rem 1.5rem}
+.dhero{background:var(--navy);padding:3rem 0;margin:0 0 1.6rem}
+.dhero>*{max-width:920px;margin-left:auto;margin-right:auto;padding:0 1.5rem}
 .dhero .crumb{color:rgba(255,255,255,.55);margin-bottom:.7rem}
 .dhero .crumb a{color:var(--gold);text-decoration:none}
 .dhero .pid{color:var(--gold);margin-bottom:.35rem}
@@ -328,14 +331,14 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 })();
 </script>
 
-<div class="wrap">
-<div class="dhero">
+<section class="dhero">
 <div class="crumb"><a href="index.html">Catalog</a> / United Nations, Department of Economic and Social Affairs, Population Division (World Population Prospects)</div>
 <div class="pid">un_wpp</div>
 <h1>United Nations, Department of Economic and Social Affairs, Population Division (World Population Prospects)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 3.0 IGO (CC BY 3.0 IGO)</span><span class="badge cat">Population &amp; Demographics</span></div>
 <p class="lead">Source: United Nations, DESA, Population Division, World Population Prospects 2024, licensed under CC BY 3.0 IGO</p>
-</div>
+</section>
+<div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">334,236</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1950-07-01 – 2101-07-01</div></div><div class="metric"><div class="mlabel">Distinct geographies</div><div class="mval">553</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Population & Demographics</div></div></div>
