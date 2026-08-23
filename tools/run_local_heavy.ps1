@@ -99,7 +99,25 @@ if ($IfDue) {
                 $stale = $false
             }
         } catch { }
-        if (-not $stale) { exit 0 }
+        if (-not $stale) {
+            # A LIVE LOCK IS NOT AUTOMATICALLY A HEALTHY ONE. A pass clamps itself to the
+            # next CI window (<= ~274 min) and the per-source cap is 360 min, so NO
+            # legitimate run can hold this lock for many hours. On 2026-08-23 a manual
+            # `-Only <giant> -Force` run livelocked and held it for NINETEEN HOURS: the guard
+            # stood down every 5 minutes, silently, and the whole local route - statcan,
+            # census, oecd, bea, eia - did not run at all. Nothing anywhere reported it,
+            # because updater/health.py's route_silence needs THREE DAYS and its own
+            # docstring says a short outage on a ~20h cadence is invisible by construction.
+            # So say it here, loudly, where the lock actually is (ledger R446).
+            $lockAgeH = ((Get-Date) - (Get-Item $lockFile).LastWriteTime).TotalHours
+            if ($lockAgeH -gt 8) {
+                Say ('WEDGED: local_heavy lock held by pid ' + $lockPid + ' for ' +
+                     [math]::Round($lockAgeH,1) + ' h - longer than any legitimate pass ' +
+                     '(run budget <= 274 min, per-source cap 360 min). The local route is ' +
+                     'NOT updating. Investigate that pid, then delete ' + $lockFile)
+            }
+            exit 0
+        }
         # A crashed or rebooted run leaves the lock behind; a stale lock must never wedge this
         # permanently, so fall through and take it over.
     }
