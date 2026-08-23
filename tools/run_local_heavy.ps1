@@ -242,7 +242,7 @@ Set-Content -Path $lockFile -Value (
 ) -Encoding ascii
 
 Say "pull-state ..."
-& python -m updater.run --pull-state
+& $pythonExe -m updater.run --pull-state
 if ($LASTEXITCODE -ne 0) {
     Say ("pull-state FAILED (" + $LASTEXITCODE + ") - aborting before any write")
     Remove-Item $lockFile -ErrorAction SilentlyContinue
@@ -254,7 +254,7 @@ $srcArgs = @()
 foreach ($t in $targets) { $srcArgs += '--source'; $srcArgs += $t }
 if ($Force) { $srcArgs += '--force'; Say 'FORCE: cadence gate overridden (manual proof)' }
 Say ("running updater for " + $targets.Count + " source(s) ...")
-& python -m updater.run @srcArgs
+& $pythonExe -m updater.run @srcArgs
 $rc = $LASTEXITCODE
 Say ("updater exit code: " + $rc)
 
@@ -263,7 +263,7 @@ Say ("updater exit code: " + $rc)
 # contract. push_state's compare-and-swap is what makes this safe - it cannot overwrite a
 # newer remote state, it refuses with exit 2.
 Say "push-state ..."
-& python -m updater.run --push-state
+& $pythonExe -m updater.run --push-state
 $pushRc = $LASTEXITCODE
 if ($pushRc -ne 0) {
     Say ("push-state FAILED (" + $pushRc + ") - state NOT committed")
