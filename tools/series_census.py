@@ -195,6 +195,18 @@ def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[
         # to read whole.
         kept[src] = ([_S3 + k for _f, k in keep] if mismatched
                      else [f for f, _k in keep])
+    # A source the worker WILL answer for, whose parquet is entirely absent from R2, is
+    # still reachable through the per-series CSV surface (series/<id>.csv) - that is a
+    # second serving surface this tool does not measure. statcan is the live case: its
+    # parquet was deleted on 2026-08-18 as a cost decision and 213,916 gzipped CSVs are
+    # served in its place. Counting the CSVs here would double-count every source that has
+    # both, so they stay out - but staying silent about it reads as "not served", which is
+    # how I came to tell Ahmed statcan was a gap and quote him money for it (R452).
+    csv_only = sorted(sid for sid in resolvable
+                      if sid not in kept and dropped.get(sid, 0) > 0)
+    if csv_only:
+        print("  served through the per-series CSV surface only, so NOT counted in these "
+              "totals (their parquet is absent from R2): " + ", ".join(csv_only), flush=True)
     if unresolvable:
         worst = sorted(unresolvable.items(), key=lambda kv: -kv[1])[:8]
         print("  in the bucket but NOT resolvable by the worker (gated, mid-backfill or "
