@@ -17,11 +17,23 @@ R2 DELETEs are free. Run:
   python tools/_delete_statcan_r2.py
 """
 import os
-import boto3
-from dotenv import load_dotenv
+import sys
 
-os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-load_dotenv(".env.local"); load_dotenv(".env")
+import boto3
+
+# Use the repo's own loader, not python-dotenv. The dependency preflight walks every module
+# reachable from the fetchers and fails on anything imported but undeclared, because a
+# runner missing it skips the source silently as "no adapter built". This file added
+# `from dotenv import load_dotenv` on 2026-08-23 and turned main's preflight red; nothing
+# else in the repo uses dotenv, and core.config.load_env already does the same job.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(_ROOT)
+sys.path.insert(0, _ROOT)
+
+from core import config                                             # noqa: E402
+
+config.load_env(".env.local")
+config.load_env(".env")
 s3 = boto3.client("s3", endpoint_url=os.environ["R2_WRITE_ENDPOINT"],
                   aws_access_key_id=os.environ["R2_WRITE_ACCESS_KEY_ID"],
                   aws_secret_access_key=os.environ["R2_WRITE_SECRET_ACCESS_KEY"])
