@@ -293,6 +293,14 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // while ksh_stadat is current to 2026-07-29 with 1,260,990 rows over 98,423 series — four
   // times the data and actually updating. Serving ksh published a stale duplicate of a source
   // the library already owns properly.
+  // RESIDUE, MEASURED 2026-08-23: the withdrawn 2026-08-02 re-add left 25,057 CSVs on R2
+  // under series/ksh%3A (35 MB, all written 2026-08-02). They are ORPHANS, not a serving
+  // bug: ksh has no catalogue rows, /v1/sources omits it, and a ksh series request 404s —
+  // all verified. Cost is ~$0.0005/mo, so this is tidiness, not urgency. Deleting them is
+  // safe and reversible (clean_full/ksh/ parquets are kept, and the 903 unique series were
+  // migrated into ksh_stadat before removal) but the bulk R2 delete needs an approved
+  // operator run. Recorded here so the next session does not re-investigate from scratch:
+  // finding orphaned R2 data under a retired prefix is EXPECTED here and already explained.
   // What misled me: broaden_catalog's hostability gate passed it (the licence IS cc-by-4.0
   // CLEARED), and a key-overlap sample showed 0 of 109 ksh keys inside ksh_stadat, which I read
   // as "distinct data" when it only meant "different key convention" — the same trap ilo/ilostat
