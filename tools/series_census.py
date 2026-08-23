@@ -185,6 +185,34 @@ def _wire_r2(con) -> None:
     con.execute("SET s3_url_style='path'")
 
 
+def _retry_remote(fn, what: str, tries: int = 4):
+    """Run a remote DuckDB query, retrying transient R2 connection failures.
+
+    One dropped TCP connection out of tens of thousands of range reads killed a run that
+    had already measured 162 of 334 sources, including every giant (2026-08-23:
+    "IO Error: Could not connect to server ... HTTP HEAD" on one sec_edgar object out of
+    17,322). A network blip is not a measurement result, and a census that cannot survive
+    one is a census that never finishes. R222: an identical call succeeding moments later
+    means the first failure was transient, not a wall.
+    """
+    import time as _time                                            # noqa: PLC0415
+    for attempt in range(1, tries + 1):
+        try:
+            return fn()
+        except Exception as e:                                      # noqa: BLE001
+            msg = str(e)
+            transient = ("Could not connect" in msg or "HTTP HEAD" in msg
+                         or "timeout" in msg.lower() or "Connection" in msg
+                         or "503" in msg or "500" in msg)
+            if not transient or attempt == tries:
+                raise
+            back = 5 * attempt
+            print(f"    transient on {what} (attempt {attempt}/{tries}): "
+                  f"{msg.splitlines()[0][:110]} - retrying in {back}s", flush=True)
+            _time.sleep(back)
+    raise AssertionError("unreachable")
+
+
 def _rows_and_key_batch(con, files: list[str]) -> tuple[int, list[str], int]:
     """(total rows, files carrying series_key, files without) for one source's file list.
 
@@ -211,10 +239,14 @@ def _rows_and_key_batch(con, files: list[str]) -> tuple[int, list[str], int]:
             else:
                 unkeyed += 1
         return obs, keyed, unkeyed
-    cols = [d[0] for d in con.execute(
-        "SELECT * FROM read_parquet(?, union_by_name=true) LIMIT 0", [files]).description]
-    obs = con.execute(
-        "SELECT COUNT(*) FROM read_parquet(?, union_by_name=true)", [files]).fetchone()[0]
+    cols = [d[0] for d in _retry_remote(
+        lambda: con.execute(
+            "SELECT * FROM read_parquet(?, union_by_name=true) LIMIT 0", [files]),
+        "schema probe").description]
+    obs = _retry_remote(
+        lambda: con.execute(
+            "SELECT COUNT(*) FROM read_parquet(?, union_by_name=true)", [files]),
+        "row count").fetchone()[0]
     if "series_key" in cols:
         return obs, files, 0
     return obs, [], len(files)
@@ -249,9 +281,11 @@ def main() -> int:
         no_key_files += _unkeyed
         obs_by_src[src] = obs
         if keyed:
-            ser_by_src[src] = con.execute(
-                "SELECT approx_count_distinct(series_key) FROM read_parquet(?, "
-                "union_by_name=true)", [keyed]).fetchone()[0]
+            ser_by_src[src] = _retry_remote(
+                lambda: con.execute(
+                    "SELECT approx_count_distinct(series_key) FROM read_parquet(?, "
+                    "union_by_name=true)", [keyed]),
+                f"{src} distinct keys").fetchone()[0]
         else:
             ser_by_src[src] = 0
         print(f"  [{i}/{len(srcs)}] {src}: {obs:,} obs, "
