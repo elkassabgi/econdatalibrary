@@ -36,6 +36,20 @@ sys.path.insert(0, ROOT)
 
 from core import r2_util  # noqa: E402
 
+def _console_safe(text: str) -> str:
+    """Make subprocess output printable on ANY console (R415).
+
+    A failure/report branch that formats external text must be non-throwing by
+    construction: wrangler and several fetchers emit emoji, and Windows' cp1252
+    stdout raises UnicodeEncodeError on them, so the line that REPORTS a problem
+    becomes a worse problem. Encode through the console's own codec and replace
+    what it cannot represent.
+    """
+    import sys as _sys
+    enc = getattr(_sys.stdout, "encoding", None) or "utf-8"
+    return (text or "").encode(enc, "replace").decode(enc, "replace")
+
+
 D1_NAME = "econ-catalog"
 
 
@@ -106,7 +120,7 @@ def main() -> int:
         ok = r.returncode == 0
         print(f"  D1: {stmt.split(' WHERE')[0]} -> {'ok' if ok else 'FAILED'}")
         if not ok:
-            print("   ", (r.stderr or r.stdout)[-300:])
+            print("   ", _console_safe((r.stderr or r.stdout)[-300:]))
             return 1
 
     print(f"{src}: DELISTED (catalog + D1). Now: util.ts removal + deploy + live absence check "

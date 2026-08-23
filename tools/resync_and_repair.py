@@ -37,6 +37,20 @@ import subprocess
 import sys
 import urllib.parse
 
+def _console_safe(text: str) -> str:
+    """Make subprocess output printable on ANY console (R415).
+
+    A failure/report branch that formats external text must be non-throwing by
+    construction: wrangler and several fetchers emit emoji, and Windows' cp1252
+    stdout raises UnicodeEncodeError on them, so the line that REPORTS a problem
+    becomes a worse problem. Encode through the console's own codec and replace
+    what it cannot represent.
+    """
+    import sys as _sys
+    enc = getattr(_sys.stdout, "encoding", None) or "utf-8"
+    return (text or "").encode(enc, "replace").decode(enc, "replace")
+
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
@@ -168,7 +182,7 @@ def main() -> int:
                             "--bucket", BUCKET, "--workers", "12"],
                            cwd=ROOT, env=env, capture_output=True, text=True)
         tail = [l for l in (r.stdout or "").splitlines() if l.strip()][-2:]
-        print("\n".join(tail) or (r.stderr or "")[-300:], flush=True)
+        print(_console_safe("\n".join(tail) or (r.stderr or "")[-300:]), flush=True)
     return 0
 
 

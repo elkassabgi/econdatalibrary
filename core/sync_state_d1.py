@@ -178,7 +178,14 @@ def emit_sql(state_db: str, out_dir: str) -> tuple[list[str], dict[str, int]]:
     else:
         print(f"  data_through SKIPPED: no catalog at {cat_path} (state tables still sync)")
 
-    if sum(counts.values()) == 0:
+    # GUARD ON THE STATE TABLES ONLY. source_data_through is read from the
+    # CATALOG, a different database, so counting it here let a completely empty
+    # state.db sail past this check the moment a catalog existed — which is
+    # exactly the condition the guard is for (a skipped --pull-state). Caught by
+    # tests/test_updater_phase1.py::test_zero_row_projection_refused after the
+    # data_through emission was added, 2026-08-23.
+    state_rows = counts.get("unit_state", 0) + counts.get("source_state", 0)
+    if state_rows == 0:
         raise SystemExit(
             f"FATAL: {state_db} has zero unit_state/source_state rows — refusing to "
             "sync an empty freshness projection (was --pull-state skipped?)")
