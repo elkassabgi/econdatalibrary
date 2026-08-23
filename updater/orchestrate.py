@@ -212,6 +212,27 @@ def _remaining_run_min() -> float | None:
     return max(0.0, (_RUN_DEADLINE_TS - time.time()) / 60.0)
 
 
+def _unit_window_min() -> float:
+    """One unit's SIGALRM window, CLAMPED by what is left of the run ceiling.
+
+    The derive call has been capped by the remainder since run 31466202723; the unit's own
+    two windows never were, and that asymmetry is what forced the start-gate to reserve a
+    flat worst case against every unit (see the gate). Clamping here makes the reserve a
+    per-unit question instead of a fleet-wide one.
+
+    The arithmetic is what makes the gate safe: with each window capped at half the
+    remainder, probe + update <= R/2 + (R - probe)/2 <= R, so a unit that starts inside the
+    budget CANNOT outlive it however badly it overruns its estimate. That is strictly
+    stronger than the old rule, under which a unit starting with exactly 90 min left could
+    consume exactly 90.
+    """
+    t = _unit_timeout_min()
+    rem = _remaining_run_min()
+    if rem is None:
+        return t
+    return max(0.0, min(t, rem / 2.0))
+
+
 def _capped_derive_budget() -> dict:
     """kwargs for derive_and_put: budget capped by the run ceiling's remainder.
 
@@ -871,7 +892,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         # annual (0.03x) — absolute age inverted exactly that on 2026-08-18.
         return (overdue_key(last, cadence, _now), unit.key)
 
-    units = order_units(units, store.run_cost_estimate(), _staleness)
+    _costs = store.run_cost_estimate()
+    units = order_units(units, _costs, _staleness)
 
     results = []
     pending_live, pending_other = [], []  # no-adapter sources, split by live tier
@@ -952,8 +974,23 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         # AFTER the filters, deliberately: checked first it would count units that were
         # never in scope — a two-source dispatch reported "100 source(s) NOT ATTEMPTED".
         # A skip count is only meaningful over units that would otherwise have RUN.
+        _est_s = _costs.get(unit.source_id)
+        _worst_min = 2 * _unit_timeout_min()
+        if _est_s is None:
+            # Never run, so no cost on record and no basis for a smaller reserve.
+            _need_min = _worst_min
+        else:
+            # Room for 1.5x this unit's MEASURED cost in each of its two windows. The old
+            # rule reserved the fleet worst case (2 x 45 = 90 min) against every unit, so
+            # the effective scheduling horizon was 200 of the 290 budgeted minutes and boc
+            # - measured at 14.6 min - was refused a turn with 89 minutes still on the
+            # clock. It went RED-SLA at 4 days on a DAILY cadence for that reason alone,
+            # alongside dst and riksbank, and those three failed the health gate on five
+            # consecutive runs. A reserve is meant to bound THIS unit's overrun; sizing it
+            # by the slowest unit in the fleet is what starved the cheap ones.
+            _need_min = min(_worst_min, max(2 * 1.5 * (_est_s / 60.0), 10.0))
         if (run_deadline is not None
-                and time.time() + 2 * _unit_timeout_min() * 60.0 > run_deadline
+                and time.time() + _need_min * 60.0 > run_deadline
                 and not (sources and len(sources) == 1)):
             # WORST-CASE LOOKAHEAD, not a point check: a unit owns up to TWO
             # per-unit SIGALRM windows (detect_change probe + update), so the
@@ -1037,7 +1074,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # that very commit. A probe gets the same ceiling as the fetch: any vintage
             # check that needs longer than the unit timeout is a fetch wearing a probe's
             # name.
-            with _unit_deadline(unit.key + " (detect_change)", _unit_timeout_min()):
+            with _unit_deadline(unit.key + " (detect_change)", _unit_window_min()):
                 vintage = strat.detect_change(unit, us)
         except UnitTimeout as e:
             if not dry:
@@ -1128,7 +1165,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             #
             # None means "no usable lower bound", which every fetcher already handles: it is
             # what a first run passes.
-            with _unit_deadline(unit.key, _unit_timeout_min()):
+            with _unit_deadline(unit.key, _unit_window_min()):
                 res = strat.run(unit, since=sane_since((us or {}).get("last_obs_date")))
             status = res.status
             ok = status in ("ok", "no_change")
