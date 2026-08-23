@@ -94,6 +94,39 @@ def served_keys() -> dict[str, int]:
     return out
 
 
+def resolvable_sources() -> set:
+    """Source ids the WORKER will actually answer for, read from api/worker/src/util.ts.
+
+    The second half of the same lesson as served_keys(). Being on R2 is necessary and not
+    sufficient: a source can sit in the bucket and still be unreachable because the worker
+    has no entry for it, which is exactly how a deliberately GATED source is held back.
+    owid is the clearest case - 3,791 objects and 72.7M observations on R2, licence
+    DISPUTED, removed from the catalogue on 2026-08-06, absent from util.ts, and correctly
+    404 to any user who asks. Counting it in a public total would advertise data nobody can
+    download.
+
+    Measured 2026-08-23: 15 sources in the bucket are not resolvable, worth 2.83B
+    observations and 177M series. cbs_nl and gus_dbw are mid-backfill, owid is gated,
+    edgar_13f/edgar_insider/cftc carry no series_key at all.
+
+    The extraction is validated against known-served controls on every run rather than
+    trusted: if eurostat, oecd, bls, bea and worldbank do not all appear, the parse has
+    drifted and the number it would produce is worthless (R112 - a matcher that silently
+    stops matching looks exactly like data that disappeared).
+    """
+    import re                                                       # noqa: PLC0415
+    path = os.path.join(ROOT, "api", "worker", "src", "util.ts")
+    with open(path, encoding="utf-8") as f:
+        ids = set(re.findall(r'"([a-z0-9_]+)"', f.read()))
+    controls = {"eurostat", "oecd", "bls", "bea", "worldbank"}
+    missing = controls - ids
+    if missing:
+        raise SystemExit(
+            f"FATAL: util.ts parse looks broken - known-served {sorted(missing)} absent "
+            f"from {len(ids)} extracted ids. Refusing to report a served total built on it.")
+    return ids
+
+
 def _r2_key(path: str) -> str:
     """Local parquet path -> the object key the worker would resolve it from."""
     ap = os.path.abspath(path)
@@ -121,9 +154,16 @@ def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[
     Identical size -> read the local copy; the bytes are the same and local is faster.
     """
     on_r2 = served_keys()
+    resolvable = resolvable_sources()
     kept: dict[str, list[str]] = {}
     dropped: dict[str, int] = {}
+    unresolvable: dict[str, int] = {}
     for src, files in srcs.items():
+        if src not in resolvable:
+            # In the bucket but the worker will not answer for it - gated, mid-backfill,
+            # or retired. Not downloadable, so not counted.
+            unresolvable[src] = len(files)
+            continue
         keep, mismatched = [], False
         for f in files:
             key = _r2_key(f)
@@ -143,6 +183,11 @@ def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[
         # to read whole.
         kept[src] = ([_S3 + k for _f, k in keep] if mismatched
                      else [f for f, _k in keep])
+    if unresolvable:
+        worst = sorted(unresolvable.items(), key=lambda kv: -kv[1])[:8]
+        print("  in the bucket but NOT resolvable by the worker (gated, mid-backfill or "
+              "retired), so not counted: "
+              + ", ".join(f"{k} {v:,}" for k, v in worst), flush=True)
     return kept, dropped
 
 
