@@ -63,6 +63,7 @@ from core import r2_util           # noqa: E402
 ROOTS = [os.path.join(ROOT, "data", "clean_full"),
          os.path.join(ROOT, "data", "clean_grouped")]
 BUCKET = "econ-data"
+_REMOTE_CHUNK = 750   # objects per remote query; bounds concurrent connections to R2
 _S3 = f"s3://{BUCKET}/"
 KEY = "_aqueduct/stats.json"
 
@@ -183,6 +184,15 @@ def _wire_r2(con) -> None:
     con.execute(f"SET s3_access_key_id='{creds.access_key}'")
     con.execute(f"SET s3_secret_access_key='{creds.secret_key}'")
     con.execute("SET s3_url_style='path'")
+    # HTTP-level resilience, which is where the failure actually lives. Retrying the whole
+    # QUERY (as _retry_remote does) cannot help when one object out of 17,322 refuses a
+    # connection - the retry just re-runs all 17,322 and trips again, which is exactly what
+    # happened twice on sec_edgar. DuckDB retries the individual request instead, so a single
+    # refused HEAD costs one backoff rather than the entire source.
+    con.execute("SET http_retries=8")
+    con.execute("SET http_retry_backoff=4")
+    con.execute("SET http_timeout=120")
+    con.execute("SET http_keep_alive=true")
 
 
 def _retry_remote(fn, what: str, tries: int = 4):
@@ -239,14 +249,30 @@ def _rows_and_key_batch(con, files: list[str]) -> tuple[int, list[str], int]:
             else:
                 unkeyed += 1
         return obs, keyed, unkeyed
+    # Probe a SPREAD SAMPLE, not every object and not just the first. Opening all of them
+    # merely to learn column names is what overwhelmed the connection pool; trusting one
+    # would silently zero a source whose schema drifts partway through its file list.
+    # union_by_name over a handful returns the union of their columns, which is the
+    # question being asked. (sec_edgar legitimately has no series_key at all - its columns
+    # are metric/obs_date/value/vintage_date - and is counted for observations only, which
+    # is the tool's documented behaviour for keyless files.)
+    n = len(files)
+    probe = sorted({0, n // 4, n // 2, (3 * n) // 4, n - 1})
+    sample = [files[i] for i in probe]
     cols = [d[0] for d in _retry_remote(
         lambda: con.execute(
-            "SELECT * FROM read_parquet(?, union_by_name=true) LIMIT 0", [files]),
+            "SELECT * FROM read_parquet(?, union_by_name=true) LIMIT 0", [sample]),
         "schema probe").description]
-    obs = _retry_remote(
-        lambda: con.execute(
-            "SELECT COUNT(*) FROM read_parquet(?, union_by_name=true)", [files]),
-        "row count").fetchone()[0]
+    # COUNT is summable, so chunk it. A single read_parquet over 17,322 remote objects opens
+    # far more concurrent connections than R2 will hold, and the failure is a refused HEAD
+    # rather than anything wrong with the data.
+    obs = 0
+    for i in range(0, len(files), _REMOTE_CHUNK):
+        part = files[i:i + _REMOTE_CHUNK]
+        obs += _retry_remote(
+            lambda p=part: con.execute(
+                "SELECT COUNT(*) FROM read_parquet(?, union_by_name=true)", [p]),
+            f"row count [{i}:{i+len(part)}]").fetchone()[0]
     if "series_key" in cols:
         return obs, files, 0
     return obs, [], len(files)
