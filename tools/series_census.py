@@ -66,6 +66,69 @@ BUCKET = "econ-data"
 KEY = "_aqueduct/stats.json"
 
 
+def served_keys() -> dict[str, int]:
+    """Every parquet object on R2 under the served roots -> its size.
+
+    WHY THIS EXISTS (R449/R450). This tool measured LOCAL DISK and its output is what
+    /v1/stats publishes to the public. Those are not the same store. On 2026-08-23 the
+    local scan reported 36.9B series / 93.3B observations while statcan - 175.1 GB, 8,207
+    files, 56.8B of those observations - had ZERO bytes uploaded, and cbs_nl and gus_dbw
+    were 15% and 8% uploaded. A reader who believed the published figure and tried to
+    download statcan would have found nothing there.
+
+    "We computed it" and "a user can download it" are different claims, and only the
+    second one belongs on a public page. The served surface is the bucket, so the bucket
+    is what gets counted.
+    """
+    from updater.blob import R2Blob                                   # noqa: PLC0415
+    r2 = R2Blob()
+    out: dict[str, int] = {}
+    pag = r2.client.get_paginator("list_objects_v2")
+    for prefix in ("clean_full/", "clean_grouped/"):
+        for page in pag.paginate(Bucket=r2.bucket, Prefix=prefix):
+            for o in page.get("Contents", []):
+                if o["Key"].endswith(".parquet"):
+                    out[o["Key"]] = o["Size"]
+    return out
+
+
+def _r2_key(path: str) -> str:
+    """Local parquet path -> the object key the worker would resolve it from."""
+    ap = os.path.abspath(path)
+    for root in ROOTS:
+        ar = os.path.abspath(root)
+        if ap.startswith(ar + os.sep):
+            return os.path.basename(ar) + "/" + os.path.relpath(ap, ar).replace(os.sep, "/")
+    return ""
+
+
+def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[str, int]]:
+    """Drop every local file that is not on R2 at the same size; report what was dropped.
+
+    Size equality is the check, not mere presence: a stale, smaller object on R2 is the
+    version users actually receive, so counting the fuller local file would overstate the
+    served store just as surely as counting an absent one.
+    """
+    on_r2 = served_keys()
+    kept: dict[str, list[str]] = {}
+    dropped: dict[str, int] = {}
+    for src, files in srcs.items():
+        keep = []
+        for f in files:
+            key = _r2_key(f)
+            try:
+                served = bool(key) and on_r2.get(key) == os.path.getsize(f)
+            except OSError:
+                served = False
+            if served:
+                keep.append(f)
+            else:
+                dropped[src] = dropped.get(src, 0) + 1
+        if keep:
+            kept[src] = keep
+    return kept, dropped
+
+
 def source_files() -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for root in ROOTS:
@@ -94,8 +157,21 @@ def source_files() -> dict[str, list[str]]:
 
 def main() -> int:
     srcs = source_files()
-    print(f"{sum(len(v) for v in srcs.values()):,} parquet files across "
-          f"{len(srcs)} store sources", flush=True)
+    _local_n = sum(len(v) for v in srcs.values())
+    if "--include-unserved" in sys.argv:
+        print(f"{_local_n:,} parquet files across {len(srcs)} store sources "
+              f"(--include-unserved: counting LOCAL disk, NOT publishable)", flush=True)
+    else:
+        srcs, dropped = keep_served(srcs)
+        n_drop = sum(dropped.values())
+        print(f"{sum(len(v) for v in srcs.values()):,} SERVED parquet files across "
+              f"{len(srcs)} sources "
+              f"({n_drop:,} local file(s) skipped - absent from R2 or a different size)",
+              flush=True)
+        if dropped:
+            worst = sorted(dropped.items(), key=lambda kv: -kv[1])[:8]
+            print("  serving gap (computed locally, NOT downloadable): "
+                  + ", ".join(f"{k} {v:,}" for k, v in worst), flush=True)
 
     con = duckdb.connect()
     con.execute("PRAGMA threads=24")
