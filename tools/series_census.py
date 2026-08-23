@@ -63,6 +63,7 @@ from core import r2_util           # noqa: E402
 ROOTS = [os.path.join(ROOT, "data", "clean_full"),
          os.path.join(ROOT, "data", "clean_grouped")]
 BUCKET = "econ-data"
+_S3 = f"s3://{BUCKET}/"
 KEY = "_aqueduct/stats.json"
 
 
@@ -103,29 +104,44 @@ def _r2_key(path: str) -> str:
 
 
 def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[str, int]]:
-    """Drop every local file that is not on R2 at the same size; report what was dropped.
+    """Keep only what R2 serves, reading from R2 itself wherever it differs from local.
 
-    Size equality is the check, not mere presence: a stale, smaller object on R2 is the
-    version users actually receive, so counting the fuller local file would overstate the
-    served store just as surely as counting an absent one.
+    ABSENT from R2 -> dropped. It is not downloadable, so it is not ours to count.
+
+    PRESENT but a different size -> the R2 object wins and the whole source is read over
+    s3://. Do NOT read the local copy and do NOT drop the file. For every cloud-run source
+    CI updates R2 and the local mirror lags: sampled on 2026-08-23, R2 was newer in 8 of 8
+    mismatches and local newer in none (ilostat 08-19 vs 08-07, ecb 08-23 vs 08-07,
+    treasury 19:09 vs 08-03). Counting local would report stale data; dropping the file
+    would discard 4,417 files that are served perfectly well and are FRESHER than the copy
+    on this disk. Egress from R2 is free and DuckDB reads the objects directly, so
+    correctness here costs nothing.
+
+    Identical size -> read the local copy; the bytes are the same and local is faster.
     """
     on_r2 = served_keys()
     kept: dict[str, list[str]] = {}
     dropped: dict[str, int] = {}
     for src, files in srcs.items():
-        keep = []
+        keep, mismatched = [], False
         for f in files:
             key = _r2_key(f)
+            if not key or key not in on_r2:
+                dropped[src] = dropped.get(src, 0) + 1      # absent: not downloadable
+                continue
+            keep.append((f, key))
             try:
-                served = bool(key) and on_r2.get(key) == os.path.getsize(f)
+                if on_r2[key] != os.path.getsize(f):
+                    mismatched = True
             except OSError:
-                served = False
-            if served:
-                keep.append(f)
-            else:
-                dropped[src] = dropped.get(src, 0) + 1
-        if keep:
-            kept[src] = keep
+                mismatched = True
+        if not keep:
+            continue
+        # One filesystem per source: mixing local paths and s3:// in a single
+        # read_parquet list is not worth relying on, and a source is small enough
+        # to read whole.
+        kept[src] = ([_S3 + k for _f, k in keep] if mismatched
+                     else [f for f, _k in keep])
     return kept, dropped
 
 
@@ -155,6 +171,35 @@ def source_files() -> dict[str, list[str]]:
     return out
 
 
+def _wire_r2(con) -> None:
+    """Point DuckDB at the bucket so read_parquet can take s3:// keys."""
+    from updater.blob import R2Blob                                   # noqa: PLC0415
+    r2 = R2Blob()
+    creds = r2.client._request_signer._credentials
+    ep = r2.client.meta.endpoint_url.split("//", 1)[-1]
+    con.execute("INSTALL httpfs; LOAD httpfs;")
+    con.execute(f"SET s3_endpoint='{ep}'")
+    con.execute("SET s3_region='auto'")
+    con.execute(f"SET s3_access_key_id='{creds.access_key}'")
+    con.execute(f"SET s3_secret_access_key='{creds.secret_key}'")
+    con.execute("SET s3_url_style='path'")
+
+
+def _rows_and_key(con, f: str) -> tuple[int, bool]:
+    """(row count, has series_key) for a local path OR an s3:// key.
+
+    Local goes through parquet metadata - the footer only, no data read. Remote goes
+    through DuckDB, which range-reads the same footer.
+    """
+    if not f.startswith("s3://"):
+        md = pq.read_metadata(f)
+        return md.num_rows, "series_key" in md.schema.names
+    n = con.execute("SELECT COUNT(*) FROM read_parquet(?)", [f]).fetchone()[0]
+    cols = [d[0] for d in con.execute(
+        "SELECT * FROM read_parquet(?) LIMIT 0", [f]).description]
+    return n, "series_key" in cols
+
+
 def main() -> int:
     srcs = source_files()
     _local_n = sum(len(v) for v in srcs.values())
@@ -175,6 +220,7 @@ def main() -> int:
 
     con = duckdb.connect()
     con.execute("PRAGMA threads=24")
+    _wire_r2(con)
     obs_by_src: dict[str, int] = {}
     ser_by_src: dict[str, int] = {}
     no_key_files = 0
@@ -182,9 +228,9 @@ def main() -> int:
         obs = 0
         keyed: list[str] = []
         for f in files:
-            md = pq.read_metadata(f)
-            obs += md.num_rows
-            if "series_key" in md.schema.names:
+            n_rows, has_key = _rows_and_key(con, f)
+            obs += n_rows
+            if has_key:
                 keyed.append(f)
             else:
                 no_key_files += 1
