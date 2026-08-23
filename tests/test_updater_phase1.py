@@ -383,11 +383,17 @@ def _scratch_state_db(path: str, n_units: int = 5) -> None:
 
 
 class TestD1Sync:
-    def test_emitted_sql_is_d1_legal_and_replays_equal(self, tmp_path):
+    def test_emitted_sql_is_d1_legal_and_replays_equal(self, tmp_path, monkeypatch):
         db = str(tmp_path / "state.db")
         _scratch_state_db(db)
         out = str(tmp_path / "sql")
         os.makedirs(out)
+        # PIN THE CATALOG AWAY FROM THE DEVELOPER'S REAL ONE. emit_sql also
+        # projects source_data_through, read from ECONDL_CATALOG (default: the
+        # repo's data/catalog.db). Without this the assertion below depends on
+        # whether the machine happens to have a catalog and how many sources it
+        # holds — green in CI, red on a workstation, for no code reason.
+        monkeypatch.setenv("ECONDL_CATALOG", str(tmp_path / "no_such_catalog.db"))
         files, counts = d1sync.emit_sql(db, out)
         assert counts == {"unit_state": 5, "source_state": 1}
         for p in files:

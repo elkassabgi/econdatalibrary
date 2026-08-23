@@ -59,7 +59,17 @@ def _insights_sorted(db: str, sort_by: str):
         capture_output=True, text=True, timeout=300, shell=(os.name == "nt"),
         encoding="utf-8", errors="replace")
     if out.returncode != 0:
-        print(f"  {db}: wrangler failed ({sort_by}): {(out.stderr or '')[-300:]}")
+        # NON-THROWING BY CONSTRUCTION (R415). The subprocess capture is already
+        # utf-8 (R363 above), but this line then hands wrangler's emoji-bearing
+        # stderr to print(), and on a cp1252 console THAT raises
+        # UnicodeEncodeError — so the branch that REPORTS the failure becomes the
+        # failure, and a billing run dies with a traceback instead of a number.
+        # Measured 2026-08-23: '🪵' from wrangler killed the whole run.
+        # An error handler that can raise is worse than no error handler.
+        detail = (out.stderr or "")[-300:]
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print("  %s: wrangler failed (%s): %s"
+              % (db, sort_by, detail.encode(enc, "replace").decode(enc, "replace")))
         return None
     # wrangler may prefix banner lines; the JSON array starts at the first '['.
     txt = out.stdout

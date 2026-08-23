@@ -24,6 +24,20 @@ import subprocess
 import sys
 import time
 
+def _console_safe(text: str) -> str:
+    """Make subprocess output printable on ANY console (R415).
+
+    A failure/report branch that formats external text must be non-throwing by
+    construction: wrangler and several fetchers emit emoji, and Windows' cp1252
+    stdout raises UnicodeEncodeError on them, so the line that REPORTS a problem
+    becomes a worse problem. Encode through the console's own codec and replace
+    what it cannot represent.
+    """
+    import sys as _sys
+    enc = getattr(_sys.stdout, "encoding", None) or "utf-8"
+    return (text or "").encode(enc, "replace").decode(enc, "replace")
+
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 RUNNER = os.path.join(ROOT, "jobs", "run_connector.py")
 STATE_FILE = os.path.join(ROOT, "data", "_last_run.json")
@@ -131,10 +145,10 @@ def run_connector(source, since_date, dry):
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     dur = time.time() - t0
     if result.returncode == 0:
-        print(f"  [{source}] OK ({dur:.0f}s): {result.stdout.strip()[-120:]}", flush=True)
+        print("  [%s] OK (%.0fs): %s" % (source, dur, _console_safe(result.stdout.strip()[-120:])), flush=True)
         return True
     else:
-        print(f"  [{source}] FAIL: {result.stderr.strip()[-200:]}", flush=True)
+        print("  [%s] FAIL: %s" % (source, _console_safe(result.stderr.strip()[-200:])), flush=True)
         return False
 
 
