@@ -237,12 +237,21 @@ def test_metadata_has_category_and_csv_url(base_url):
 def test_metadata_task5_keys_present(base_url):
     # Task #5 is APPLIED: curated sources carry description_key + producer-first
     # citation_short/long + description_processing (core/build_series_metadata.py).
-    # OWID is curated, so the metadata endpoint must emit the Task#5 path here.
-    ex = "owid:annual-co2-emissions-per-country:USA"
+    #
+    # This asserted against OWID until 2026-08-23. OWID was REMOVED on 2026-08-06 on
+    # Ahmed's instruction ("remove owids") because its licence is DISPUTED - its 64 listed
+    # rows were deleted from the catalogue and D1 and it is absent from util.ts, so the
+    # endpoint has correctly answered 404 ever since and this test has been red for 17
+    # days against a working system. A conformance test must point at something the system
+    # still serves; pinning it to a retired source turns a deliberate gating decision into
+    # a permanent false alarm.
+    # bls is curated (2 description_key entries in configs/series_metadata.yaml),
+    # catalogued and resolvable, and CUUR0000SA0 (CPI-U, all items) is its most stable id.
+    ex = "bls:CUUR0000SA0"
     code, m = _get_json(base_url, f"/v1/series/{_enc(ex)}.metadata.json")
     assert code == 200
     assert isinstance(m.get("description_key"), list) and m["description_key"], m
-    assert m["citation_short"] == "Our World in Data."          # PRODUCER first
+    assert m["citation_short"] == "U.S. Bureau of Labor Statistics (BLS)."   # PRODUCER first
     assert m["citation_long"] and "Elkassabgi Data Library" in m["citation_long"]
     assert m.get("description_processing")
     # producer-first citation is universal (every series got one); never fabricated empty.
