@@ -20,6 +20,7 @@ on real anomalies, not noise. $1 per billion rows read.
 import json
 import os
 import subprocess
+import time
 import sys
 import urllib.request
 
@@ -49,7 +50,10 @@ FROM = "Econ Data Library <noreply@hfdatalibrary.com>"
 TO = os.environ.get("DIGEST_TO") or "admin@hfdatalibrary.com"
 
 
-def _insights_sorted(db: str, sort_by: str):
+_TRIES = 3            # wrangler transients are common; see R222
+
+
+def _insights_sorted(db: str, sort_by: str, attempt: int = 1):
     """Top-100 query shapes over 24h sorted by one dimension, or None on failure."""
     # encoding pinned per R363: wrangler prints emoji; Windows' cp1252 reader
     # thread dies mid-capture and stdout comes back None.
@@ -68,8 +72,22 @@ def _insights_sorted(db: str, sort_by: str):
         # An error handler that can raise is worse than no error handler.
         detail = (out.stderr or "")[-300:]
         enc = getattr(sys.stdout, "encoding", None) or "utf-8"
-        print("  %s: wrangler failed (%s): %s"
-              % (db, sort_by, detail.encode(enc, "replace").decode(enc, "replace")))
+        safe = detail.encode(enc, "replace").decode(enc, "replace")
+        # RETRY BEFORE DECLARING FAILURE (R222). On 2026-08-23 econ-catalog - the LARGEST
+        # database - came back "Authentication error [code: 10000]" while the other two
+        # measured fine on the same OAuth session, and an immediate manual retry returned
+        # 109,615,101 reads / 224,465 writes. A transient wrangler hiccup therefore dropped
+        # the biggest contributor out of the bill: the run printed $28/mo when the measured
+        # figure was nearer $37. An identical call succeeding moments later was never a
+        # permission wall.
+        if attempt < _TRIES:
+            wait = 5 * attempt
+            print("  %s: wrangler failed (%s), retrying in %ds: %s"
+                  % (db, sort_by, wait, safe.splitlines()[0][:110] if safe.strip() else "no stderr"))
+            time.sleep(wait)
+            return _insights_sorted(db, sort_by, attempt + 1)
+        print("  %s: wrangler failed (%s) after %d attempts: %s"
+              % (db, sort_by, _TRIES, safe))
         return None
     # wrangler may prefix banner lines; the JSON array starts at the first '['.
     txt = out.stdout
@@ -175,10 +193,20 @@ def main() -> int:
     d1_over = max(0.0, d1_gb - 5.0) * 0.75 if d1_gb >= 0 else 0.0
     d1_gb_txt = f"{d1_gb:.1f} GB" if d1_gb >= 0 else "unmeasured"
     projected = 5.0 + r2_gb * 0.015 + (reads / 1e9) * 30 + (writes / 1e6) * 30 + d1_over
-    month_line = (f"PROJECTED MONTH ~= ${projected:,.0f}/mo "
+    # A total that silently omits a database is not a projection, it is a floor, and it
+    # must not be readable as the bill. On 2026-08-23 econ-catalog failed to measure and
+    # the run printed "PROJECTED MONTH ~= $28/mo"; econ-catalog alone carries 109.6M
+    # reads and 224k writes a day, which puts the real figure nearer $37. The number was
+    # wrong by a third and nothing in that line said so - the coverage gap was disclosed
+    # four lines earlier and in the exit code, both easy to skim past when a dollar figure
+    # is sitting right there.
+    label = "PROJECTED MONTH" if not failed else "PARTIAL MONTH FLOOR"
+    caveat = "" if not failed else (
+        f" -- EXCLUDES {', '.join(failed)}, which did not measure; the real bill is HIGHER")
+    month_line = (f"{label} ~= ${projected:,.0f}/mo "
                   f"(base $5 + R2 ${r2_gb * 0.015:,.0f} + D1 reads ${reads / 1e9 * 30:,.0f} "
                   f"+ D1 writes ${writes / 1e6 * 30:,.0f} + D1 storage ${d1_over:,.0f} "
-                  f"[{d1_gb_txt}])")
+                  f"[{d1_gb_txt}]){caveat}")
     report = ("\n".join(lines)
               + f"\nREADS:  {reads:,}/day (~${reads/1e9:.2f}/day at $0.001/M)"
               + f"\nWRITES: {writes:,}/day (~${writes/1e6:.2f}/day at $1.00/M)"
