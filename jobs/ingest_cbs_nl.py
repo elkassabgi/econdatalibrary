@@ -31,13 +31,24 @@ PAGE  = 10000
 def log(m): print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
 
 
+LAST_ERROR: dict = {}      # why the most recent get_json gave up; read by the caller
+
+
 def get_json(url: str, retries: int = 4) -> dict | list | None:
+    LAST_ERROR.clear()
     for attempt in range(retries):
         try:
             r = requests.get(url, headers=UA, timeout=120)
             if r.status_code == 200:
                 return r.json()
             if r.status_code in (400, 404, 500):  # 500 is permanent for CBS NL dead tables
+                body = " ".join((r.text or "").split())[:200]
+                LAST_ERROR.clear()
+                LAST_ERROR.update(status=r.status_code, body=body, url=url)
+                # Say WHY. This returned None silently, so a permanent upstream fault
+                # surfaced only as "fetch failed at skip=N" with no reason, and the same
+                # request was reissued every 68 minutes for 315 consecutive runs.
+                log(f"  HTTP {r.status_code} (permanent): {body}")
                 return None
             if r.status_code in (503, 429):
                 log(f"  {r.status_code} throttle, sleeping 60s")
@@ -47,6 +58,60 @@ def get_json(url: str, retries: int = 4) -> dict | list | None:
             log(f"  ERR attempt {attempt+1}: {e}")
         time.sleep(8 * (attempt + 1))
     return None
+
+
+BROKEN_FILE = "_upstream_broken.json"
+BROKEN_RECHECK_DAYS = 7    # CBS may repair a table; never write it off permanently
+
+
+def _broken_path(out_dir: str) -> str:
+    return os.path.join(out_dir, BROKEN_FILE)
+
+
+def load_broken(out_dir: str) -> dict:
+    try:
+        with open(_broken_path(out_dir), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:                                               # noqa: BLE001
+        return {}
+
+
+def mark_broken(out_dir: str, table_id: str, status: int, reason: str) -> None:
+    """Record an upstream fault so the next run does not reissue the same request.
+
+    CBS serves HTTP 500 with its own diagnostic for tables whose stored data it cannot
+    read - "Fout bij het lezen van kolom 'New0': Unable to read beyond the end of the
+    stream". That is corruption on their side and no amount of retrying fixes it. Before
+    this, 37830 and 70745ned failed identically on every run since 2026-07-28: 315 passes,
+    each re-walking 5,951 already-crawled tables for roughly 68 minutes, each ending with
+    "checkpointed for resume next run" against a checkpoint that never moved.
+
+    Recorded with a timestamp rather than a permanent blacklist, so a table CBS repairs is
+    picked up again after BROKEN_RECHECK_DAYS instead of being written off forever.
+    """
+    reg = load_broken(out_dir)
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    entry = reg.get(table_id) or {"first_seen": now}
+    entry.update(status=status, reason=reason, last_seen=now)
+    reg[table_id] = entry
+    with open(_broken_path(out_dir), "w", encoding="utf-8") as f:
+        json.dump(reg, f, indent=1, sort_keys=True)
+    log(f"  {table_id}: recorded as upstream-broken ({status}); "
+        f"will not be retried for {BROKEN_RECHECK_DAYS} days")
+
+
+def broken_recently(out_dir: str, table_id: str) -> str | None:
+    e = load_broken(out_dir).get(table_id)
+    if not e:
+        return None
+    try:
+        seen = dt.datetime.fromisoformat(e["last_seen"])
+    except Exception:                                               # noqa: BLE001
+        return None
+    age = (dt.datetime.now(dt.timezone.utc) - seen).days
+    if age >= BROKEN_RECHECK_DAYS:
+        return None
+    return f"{e.get('status')} {str(e.get('reason'))[:90]} ({age}d ago)"
 
 
 def get_catalog() -> list[dict]:
@@ -352,7 +417,11 @@ def ingest_table(table_id: str, title: str, out_dir: str) -> int:
                f"?$top={PAGE}&$skip={skip}{flt}")
         data = get_json(url)
         if not data:
-            if skip > 0 or pidx > 0:
+            if LAST_ERROR.get("status") == 500:
+                # Upstream corruption, not an interrupted download. Calling this a
+                # resumable checkpoint is what produced the 315-run loop.
+                mark_broken(out_dir, table_id, 500, LAST_ERROR.get("body", ""))
+            elif skip > 0 or pidx > 0:
                 fetch_error = True   # died mid-table, not a dead table
             break
         rows = data.get("value", []) if isinstance(data, dict) else data
@@ -529,6 +598,10 @@ def main():
         if not tid:
             continue
         log(f"[{i}/{len(tables)}] {tid}: {title[:60]}")
+        why = broken_recently(OUT, tid)
+        if why:
+            log(f"  skip {tid}: upstream-broken {why}")
+            continue
         total += ingest_table(tid, title, OUT)
         time.sleep(0.3)
 
