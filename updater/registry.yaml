@@ -6671,6 +6671,13 @@ sources:
 - source_id: unctad_gstptradematrix
   # GIANT #3 (2026-08-08, #70): 76,643,660 obs / 4,378,337 series; depth-2 DOT-prefix
   # table grain (18,714 catalog ids).
+  # 2026-08-23 cloud-infeasible by PRECEDENT, not extrapolation. Largest single file
+  # 76,643,660 rows (~5.4 GB decoded, audit_cloud_capacity). bls (est 4.6 GB) and
+  # cepii_gravity (est 4.8 GB) were both routed to a 16 GB runner on smaller estimates
+  # than this and both DESTROYED it, at 15.8 and 15.5 GB — measure_merge_peak's own
+  # docstring records that, and warns its numbers are a LOWER BOUND because it omits
+  # the new data and the combined merge. usda repeated the failure on 2026-08-22.
+  run_location: local
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed
@@ -6690,6 +6697,13 @@ sources:
 - source_id: unctad_creativegoodsvalue
   # GIANT #4 (2026-08-08, #70): 75,560,775 obs / 5,487,666 series; depth-2 DOT-prefix
   # table grain (4,053 catalog ids).
+  # 2026-08-23 cloud-infeasible by PRECEDENT, not extrapolation. Largest single file
+  # 75,560,775 rows (~5.3 GB decoded, audit_cloud_capacity). bls (est 4.6 GB) and
+  # cepii_gravity (est 4.8 GB) were both routed to a 16 GB runner on smaller estimates
+  # than this and both DESTROYED it, at 15.8 and 15.5 GB — measure_merge_peak's own
+  # docstring records that, and warns its numbers are a LOWER BOUND because it omits
+  # the new data and the combined merge. usda repeated the failure on 2026-08-22.
+  run_location: local
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed
@@ -6769,6 +6783,13 @@ sources:
   # table grain (16,103 catalog ids). Measured over the full store: depth-1 = 64 prefixes
   # at p50 1,463,126 rows (unusable), depth-3 = 29,459 at p50 2,187 — nearly double the
   # ids for a SMALLER median table, and D1 rows are the scarce resource at 93.3%.
+  # 2026-08-23 cloud-infeasible by PRECEDENT, not extrapolation. Largest single file
+  # 109,956,508 rows (~7.7 GB decoded, audit_cloud_capacity). bls (est 4.6 GB) and
+  # cepii_gravity (est 4.8 GB) were both routed to a 16 GB runner on smaller estimates
+  # than this and both DESTROYED it, at 15.8 and 15.5 GB — measure_merge_peak's own
+  # docstring records that, and warns its numbers are a LOWER BOUND because it omits
+  # the new data and the combined merge. usda repeated the failure on 2026-08-22.
+  run_location: local
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed
@@ -6784,6 +6805,13 @@ sources:
 - source_id: unctad_oceantrade
   # GIANT #6 (2026-08-08, #70): 82,384,490 obs / 8,984,193 series; depth-3 DOT-prefix
   # table grain (32,374 catalog ids — depth-2 p50 is 112,733 rows, no collapse).
+  # 2026-08-23 cloud-infeasible by PRECEDENT, not extrapolation. Largest single file
+  # 82,384,490 rows (~5.8 GB decoded, audit_cloud_capacity). bls (est 4.6 GB) and
+  # cepii_gravity (est 4.8 GB) were both routed to a 16 GB runner on smaller estimates
+  # than this and both DESTROYED it, at 15.8 and 15.5 GB — measure_merge_peak's own
+  # docstring records that, and warns its numbers are a LOWER BOUND because it omits
+  # the new data and the combined merge. usda repeated the failure on 2026-08-22.
+  run_location: local
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed
@@ -6803,6 +6831,13 @@ sources:
 - source_id: unctad_nonplasticsubststradebypartner
   # GIANT #7 (2026-08-08, #70): 100,233,168 obs / 9,298,529 series — the family's
   # largest; depth-2 DOT-prefix table grain (22,079 catalog ids).
+  # 2026-08-23 cloud-infeasible by PRECEDENT, not extrapolation. Largest single file
+  # 100,233,168 rows (~7.0 GB decoded, audit_cloud_capacity). bls (est 4.6 GB) and
+  # cepii_gravity (est 4.8 GB) were both routed to a 16 GB runner on smaller estimates
+  # than this and both DESTROYED it, at 15.8 and 15.5 GB — measure_merge_peak's own
+  # docstring records that, and warns its numbers are a LOWER BOUND because it omits
+  # the new data and the combined merge. usda repeated the failure on 2026-08-22.
+  run_location: local
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed
