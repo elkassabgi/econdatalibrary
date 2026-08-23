@@ -129,7 +129,13 @@ jobs:
           # leaving NO state trace — a process-level OOM on the ~7 GB runner ("hard-failed above
           # 8 GiB", this workflow's own history). Isolation and minutes were both tried; it now
           # carries run_location: local and updates from the workstation, where the memory exists.
-          ALL='["un_wpp","bundesbank","cepii_baci","imf_gfsbs_direct","imf_gfscofog_direct","imf_gfssfcp_direct","imf_gfssoef_direct","imf_gfssoo_direct","imf_gfsssuc_direct","imf_pip_direct","imf_dip_direct","imf_mfsdc_direct","imf_mfsma_direct","imf_mfsofc_direct","imf_mfsfmp_direct","imf_mfsir_direct","imf_bopagg_direct","imf_psbs_direct","imf_ctot_direct","imf_sdg_direct","imf_namain_direct","imf_icsd_direct","imf_fd_direct","imf_hpd_direct","imf_gslgrghts_direct","imf_gslepm_direct","imf_gssdo_direct","imf_gsatf_direct","imf_gsli_direct","imf_er_direct","imf_eer_direct","imf_ls_direct","imf_pi_direct","imf_piwca_direct","imf_qgfs_direct"]'
+          # cepii_baci REMOVED FROM THE CLOUD MATRIX 2026-08-23: it now carries
+          # run_location: local. audit_cloud_capacity measured its largest single file at
+          # 266,028,708 rows (~18.6 GB decoded) — more than the whole 16 GB runner, and
+          # merge_and_write holds one file live at once. Leaving it here would dispatch a
+          # job that orchestrate._wrong_location skips, i.e. a green run that did nothing
+          # (R35/R50). It updates on the workstation via tools/run_local_heavy.ps1.
+          ALL='["un_wpp","bundesbank","imf_gfsbs_direct","imf_gfscofog_direct","imf_gfssfcp_direct","imf_gfssoef_direct","imf_gfssoo_direct","imf_gfsssuc_direct","imf_pip_direct","imf_dip_direct","imf_mfsdc_direct","imf_mfsma_direct","imf_mfsofc_direct","imf_mfsfmp_direct","imf_mfsir_direct","imf_bopagg_direct","imf_psbs_direct","imf_ctot_direct","imf_sdg_direct","imf_namain_direct","imf_icsd_direct","imf_fd_direct","imf_hpd_direct","imf_gslgrghts_direct","imf_gslepm_direct","imf_gssdo_direct","imf_gsatf_direct","imf_gsli_direct","imf_er_direct","imf_eer_direct","imf_ls_direct","imf_pi_direct","imf_piwca_direct","imf_qgfs_direct"]'
           REQ='${{ inputs.source }}'
           if [ -z "$REQ" ]; then
             echo "sources=$ALL" >> "$GITHUB_OUTPUT"
