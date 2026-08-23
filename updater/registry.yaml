@@ -6850,11 +6850,20 @@ sources:
   # across two fetches), and detect_change fetches on a first run, skips on a match and re-
   # fetches when stale.
   #
-  # run_location deliberately UNSET, so this runs in the cloud. Its refresh is genuinely large -
-  # five gzipped dumps and a re-parse of 57.6M rows - and that wall clock has NOT been measured
-  # against the 300-minute ceiling. Routing it to the workstation on a guess is what put `abs`
-  # there wrongly; the orchestrator's per-source deadline caps an overrun and reports partial,
-  # which is the honest outcome and strictly better than pre-emptively exiling it.
+  # run_location WAS deliberately unset (see below) on the reasoning that the per-source
+  # deadline caps an overrun and reports partial. That reasoning was about WALL CLOCK and it
+  # does not cover what actually happened: MEMORY. Run 32590277003 (2026-08-22 18:17Z) sat at
+  # ~3.0 GB for the whole usda fetch and then climbed 3.0 -> 7.1 -> 9.2 -> 15.5 -> 15.9 GB with
+  # 46 MB left in ~60 seconds at the parse/merge, and GitHub destroyed the runner. A deadline
+  # cannot cap that, and an OOM is not "partial" - it takes the state, freshness and D1 syncs of
+  # every source that had already succeeded that night with it (the ons_uk failure mode in
+  # orchestrate._wrong_location). This is not the `abs` mistake of exiling on a guess: the
+  # memory trace is measured and in the run log. Original note kept for the record:
+  #   "run_location deliberately UNSET, so this runs in the cloud. Its refresh is genuinely
+  #    large - five gzipped dumps and a re-parse of 57.6M rows - and that wall clock has NOT
+  #    been measured against the 300-minute ceiling. Routing it to the workstation on a guess
+  #    is what put `abs` there wrongly."
+  run_location: local
   live: true
   scripts:
   - jobs/ingest_usda.py
