@@ -28,12 +28,24 @@ r2://econ-data/_aqueduct/stats.json, then verifies the LIVE endpoint flips its
 as_of. Run time is dominated by the giant key scans; threads capped at 24 so
 concurrent pulls keep breathing room.
 
+SCOPE (settled 2026-08-23, superseding the R420 caveat below): this counts what a user can
+actually DOWNLOAD - objects present on R2 that api/worker/src/util.ts will resolve. Local
+disk is not the product (statcan has 175 GB here and 0 bytes on R2), and presence in the
+bucket is not the product either (owid is gated and 404s). Where R2 and local differ the
+R2 object wins and is read over s3://, because for cloud-run sources CI updates R2 and the
+local mirror lags. The R2-resident blind spot described below is CLOSED; the note is kept
+because the reasoning still explains why the number moved.
+
 R420 — TWO LESSONS THIS TOOL'S FIRST RUN PUBLISHED THE HARD WAY:
   1. LOCAL DISK IS NOT THE COMPLETE STORE. The US census source's ~7.73B-series
      grouped store lives on R2 ONLY (local clean_full/census is a 2.4 GB tail),
      so a local-roots scan under-measures it by ~5 orders of magnitude. Until
      this tool reads the R2-resident stores too, its totals are NOT comparable
      to the 2026-07-02 census and MUST NOT be published.
+     [RESOLVED 2026-08-23: the tool reads R2 directly, and the giant grouped census store
+     this warned about no longer exists - the bucket holds 81 objects / 2.54 GB for census,
+     essentially the same as local. The 7.73B figure it refers to is not reproducible from
+     the current store and should not be requoted.]
   2. statcan's keys are store-true but hero-hostile: the 2021 census-profile
      tables carry ~32.85B one-observation coordinate cells (98100620.parquet:
      894M rows, ~1.3B distinct keys). Whether those count as "series" in the
@@ -392,7 +404,8 @@ def main() -> int:
 
     if "--publish" not in sys.argv:
         print("NOT PUBLISHED (measurement-only run; pass --publish to upload). "
-              "NOTE: totals exclude R2-resident stores — see the R420 header.")
+              "Totals cover the SERVED store: objects present on R2 that the worker "
+              "will resolve.")
         return 0
 
     # R420 publish gate: refuse a silent step-change against the live object.
