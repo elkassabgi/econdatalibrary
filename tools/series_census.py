@@ -185,19 +185,39 @@ def _wire_r2(con) -> None:
     con.execute("SET s3_url_style='path'")
 
 
-def _rows_and_key(con, f: str) -> tuple[int, bool]:
-    """(row count, has series_key) for a local path OR an s3:// key.
+def _rows_and_key_batch(con, files: list[str]) -> tuple[int, list[str], int]:
+    """(total rows, files carrying series_key, files without) for one source's file list.
 
-    Local goes through parquet metadata - the footer only, no data read. Remote goes
-    through DuckDB, which range-reads the same footer.
+    Local files are read one footer at a time through parquet metadata - no data read and
+    no network, so per-file is already optimal.
+
+    Remote files are counted in ONE query over the whole list. Per-file was the obvious
+    first shape and it is unusably slow: two round trips per object means 34,644 queries
+    for sec_edgar's 17,322 files, and the first attempt sat on cbs_nl for the better part
+    of an hour without finishing a single source. DuckDB reads the same footers in
+    parallel when handed the list, and union_by_name tolerates the schema drift that
+    accumulates across a source's vintages.
     """
-    if not f.startswith("s3://"):
-        md = pq.read_metadata(f)
-        return md.num_rows, "series_key" in md.schema.names
-    n = con.execute("SELECT COUNT(*) FROM read_parquet(?)", [f]).fetchone()[0]
+    if not files:
+        return 0, [], 0
+    if not files[0].startswith("s3://"):
+        obs = 0
+        keyed, unkeyed = [], 0
+        for f in files:
+            md = pq.read_metadata(f)
+            obs += md.num_rows
+            if "series_key" in md.schema.names:
+                keyed.append(f)
+            else:
+                unkeyed += 1
+        return obs, keyed, unkeyed
     cols = [d[0] for d in con.execute(
-        "SELECT * FROM read_parquet(?) LIMIT 0", [f]).description]
-    return n, "series_key" in cols
+        "SELECT * FROM read_parquet(?, union_by_name=true) LIMIT 0", [files]).description]
+    obs = con.execute(
+        "SELECT COUNT(*) FROM read_parquet(?, union_by_name=true)", [files]).fetchone()[0]
+    if "series_key" in cols:
+        return obs, files, 0
+    return obs, [], len(files)
 
 
 def main() -> int:
@@ -225,15 +245,8 @@ def main() -> int:
     ser_by_src: dict[str, int] = {}
     no_key_files = 0
     for i, (src, files) in enumerate(sorted(srcs.items()), 1):
-        obs = 0
-        keyed: list[str] = []
-        for f in files:
-            n_rows, has_key = _rows_and_key(con, f)
-            obs += n_rows
-            if has_key:
-                keyed.append(f)
-            else:
-                no_key_files += 1
+        obs, keyed, _unkeyed = _rows_and_key_batch(con, files)
+        no_key_files += _unkeyed
         obs_by_src[src] = obs
         if keyed:
             ser_by_src[src] = con.execute(
