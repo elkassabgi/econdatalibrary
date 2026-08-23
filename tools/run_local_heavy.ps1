@@ -1,4 +1,4 @@
-<#
+﻿<#
     run_local_heavy.ps1 - update the databases the cloud cannot process, on this workstation.
 
     ASCII ONLY, DELIBERATELY. Windows PowerShell 5.1 reads a .ps1 that has no BOM using the
@@ -226,26 +226,59 @@ if (-not $env:AQUEDUCT_RUN_BUDGET_MIN)      { $env:AQUEDUCT_RUN_BUDGET_MIN      
 # simply stops early and resumes tomorrow - every fetcher here rotates (R190), so stopping
 # early defers work rather than discarding it, and the sources left over are the stalest
 # tomorrow so they go first.
-# TWO CI windows since 2026-08-15: 06:00Z (main daily) and 18:00Z (the
-# expensive-band drain pass added by the capacity fix). This clamp predated the
-# second one, so an afternoon local pass could push state right into the 18:00Z
-# run's pull->push interval and cost one of the two writers its advance (the
-# gfscofog CAS shape, run 31992722144). Clamp to whichever window opens NEXT.
-$win1 = [DateTime]::UtcNow.Date.AddHours(5).AddMinutes(40)    # 05:40Z, cron 06:00Z
-$win2 = [DateTime]::UtcNow.Date.AddHours(17).AddMinutes(40)   # 17:40Z, cron 18:00Z
-$candidates = @($win1, $win2, $win1.AddDays(1), $win2.AddDays(1)) |
-    Where-Object { $_ -gt [DateTime]::UtcNow } | Sort-Object
-$cronOpensUtc = $candidates[0]
+# FOUR CI state writers, not two. Every one of them runs --pull-state ... --push-state, so a
+# local pass must not let its own pull->push interval overlap ANY of them:
+#     updater-heavy.yml  cron 03:00Z and 15:00Z
+#     updater-daily.yml  cron 06:00Z and 18:00Z
+# The previous model listed only the two DAILY crons and stored them ALREADY GUARD-ADJUSTED
+# (05:40 standing for a 06:00 cron). Two defects followed from that. It was blind to the heavy
+# workflow entirely, and because the stored value was the guard rather than the cron, crossing
+# 17:40 made it conclude the window had PASSED while the 18:00Z run had not yet started: at
+# 17:41:37 on 2026-08-23 it announced "CI idle - safe to proceed" and launched an 11.5 h pass
+# against a run that fired at 18:17. Two writers on one state store, one of them guaranteed to
+# lose its entire bookkeeping to the compare-and-swap - R5, the very thing this clamp exists to
+# prevent. That pass was also budgeted to 05:15Z, straight through the 03:00Z heavy window, so
+# no scenario existed in which it could have pushed successfully.
+#
+# A window is an INTERVAL, not an instant. Ends MEASURED from the last six runs of each
+# workflow (gh run list, 2026-08-23) and expressed as minutes AFTER THE CRON so the model
+# absorbs GitHub's start lag, which is routinely 13-55 min:
+#     heavy  03:55->05:05, 15:13->16:30, 03:47->04:51, 15:12->16:11   worst 125 min after cron
+#     daily  06:21->10:07, 18:17->21:09, 06:19->10:10, 06:25->09:55   worst 250 min after cron
+# Rounded up to 150 and 270 for headroom. This leaves two usable slots a day, ~10:30-14:40Z and
+# ~22:30-02:40Z, each ~250 min. That is genuinely less runway than the old model believed it
+# had, and it is the honest number: the giants resume part-by-part (R190), so a pass that stops
+# on budget defers work rather than discarding it.
+$LEAD_MIN = 20      # never START this close to a cron - CI pulls state almost immediately
+$blackouts = @()
+foreach ($d in 0, 1) {
+    $base = [DateTime]::UtcNow.Date.AddDays($d)
+    $blackouts += , @($base.AddHours(3).AddMinutes(-$LEAD_MIN),  $base.AddHours(3).AddMinutes(150),  '03:00Z heavy')
+    $blackouts += , @($base.AddHours(6).AddMinutes(-$LEAD_MIN),  $base.AddHours(6).AddMinutes(270),  '06:00Z daily')
+    $blackouts += , @($base.AddHours(15).AddMinutes(-$LEAD_MIN), $base.AddHours(15).AddMinutes(150), '15:00Z heavy')
+    $blackouts += , @($base.AddHours(18).AddMinutes(-$LEAD_MIN), $base.AddHours(18).AddMinutes(270), '18:00Z daily')
+}
+$nowUtc = [DateTime]::UtcNow
+$inside = @($blackouts | Where-Object { $nowUtc -ge $_[0] -and $nowUtc -lt $_[1] })[0]
+if ($inside) {
+    Say ("ABORT: inside the " + $inside[2] + " CI window, which holds the state store until ~" +
+         $inside[1].ToString("HH:mm") + "Z. A pass started now would lose its whole run's " +
+         "bookkeeping to the compare-and-swap (R5). Next tick will pick this up.")
+    exit 0
+}
+$next = @($blackouts | Where-Object { $_[0] -gt $nowUtc } | Sort-Object { $_[0] })[0]
+$cronOpensUtc = $next[0]
+$cronLabel    = $next[2]
 $marginMin = 25
-$untilCron = [int](($cronOpensUtc - [DateTime]::UtcNow).TotalMinutes) - $marginMin
+$untilCron = [int](($cronOpensUtc - $nowUtc).TotalMinutes) - $marginMin
 if ($untilCron -lt 20) {
-    Say ("ABORT: only " + $untilCron + " usable min before the " + $cronOpensUtc.ToString("HH:mm") + "Z CI window - " +
+    Say ("ABORT: only " + $untilCron + " usable min before the " + $cronLabel + " CI window - " +
          "too little to be worth a state pull/push cycle. Next tick will pick this up.")
     exit 0
 }
 if ([int]$env:AQUEDUCT_RUN_BUDGET_MIN -gt $untilCron) {
     Say ("whole-run budget clamped " + $env:AQUEDUCT_RUN_BUDGET_MIN + " -> " + $untilCron +
-         " min so this pass ENDS before the " + $cronOpensUtc.ToString("HH:mm") + "Z CI window (R5: one writer on the state store)")
+         " min so this pass ENDS before the " + $cronLabel + " CI window (R5: one writer on the state store)")
     $env:AQUEDUCT_RUN_BUDGET_MIN = "$untilCron"
 }
 Say ("per-source budget override: " + $env:AQUEDUCT_BUDGET_MIN_OVERRIDE +
