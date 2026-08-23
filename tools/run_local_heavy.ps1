@@ -122,7 +122,23 @@ Say "local heavy updater starting; log -> $log"
 
 # --- which sources are routed here? read the registry, never a second copy of the list ---
 $lister = Join-Path $repo 'tools\_list_local_sources.py'
-$routed = (& python $lister | Out-String).Trim()
+# PINNED INTERPRETER, same value and reason as RELAUNCH_GUARD.ps1: bare "python"
+# resolves through PATH and can land on a 3.11 with no pyyaml (measured 2026-08-23),
+# or on the WindowsApps store shim.
+$pythonExe = "C:\Users\aelkassabgi\AppData\Local\Programs\Python\Python314\python.exe"
+if (-not (Test-Path $pythonExe)) { $pythonExe = 'python' }
+$routed = (& $pythonExe $lister 2>&1 | Out-String).Trim()
+$listerRc = $LASTEXITCODE
+# A CRASHING LISTER MUST NOT LOOK LIKE AN EMPTY REGISTRY. Before this gate an
+# ImportError printed a traceback, produced no stdout, and fell straight into the
+# branch below - so the guard announced "nothing to do" and exited 0 while all 21
+# local-routed sources silently stopped updating, reporting success for ever.
+# Ledger R261's class: a listing that returns [] instead of failing.
+if ($listerRc -ne 0) {
+    Say "FATAL: _list_local_sources.py exited $listerRc - refusing to treat that as an empty registry"
+    Say ('  output: ' + ($routed -replace '\s+', ' '))
+    exit 1
+}
 if (-not $routed) {
     Say "no sources carry run_location: local - nothing to do"
     exit 0
