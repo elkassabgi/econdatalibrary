@@ -88,7 +88,20 @@ CSV_ACCEPT = "application/vnd.sdmx.data+csv;version=1.0.0"
 XML_ACCEPT = "application/vnd.sdmx.genericdata+xml;version=2.1"
 
 RATE = 1.0            # seconds between flows (polite; the ingester used 1.5)
-TIMEOUT = 120         # per request (the ingester allows up to 300 for esploradati)
+TIMEOUT = 120         # per request, default
+
+# PER-HOST TIMEOUT, BECAUSE THE SURVIVING HOST IS THE SLOW ONE. sdmx.istat.it is
+# redirect-looping (see _get), so every request now lands on esploradati - and esploradati
+# is slow, not broken. Measured 2026-08-24, three GETs of
+# https://esploradati.istat.it/SDMXWS/rest/dataflow/IT1: 76.0s, 102.6s and 123.7s, each
+# answering 200 with 13,618,919 bytes and zero redirects. At a flat 120s the third of those
+# is a timeout that the caller would record as `transient` - a working host reported as
+# failing, which is how a slow source gets misdiagnosed as a dead one. 300s is the
+# allowance jobs/ingest_istat_sliced.py already gives this host, and this only raises the
+# CEILING: a fast reply still returns as fast as it arrives.
+HOST_TIMEOUT = {
+    "https://esploradati.istat.it/SDMXWS/rest/": 300,
+}
 RETRIES = 3           # per host, for transient (timeout/5xx/conn) errors
 TRANSIENT_HTTP = (429, 500, 502, 503, 504)
 
@@ -126,6 +139,11 @@ def _get(sess, url, accept, timeout=TIMEOUT) -> _Resp:
       transient  -> timeout / 5xx / 429 / conn drop (retryable on this host)
     """
     hdrs = {**UA, "Accept": accept}
+    if timeout == TIMEOUT:                       # caller took the default -> host may raise it
+        for _base, _t in HOST_TIMEOUT.items():
+            if url.startswith(_base):
+                timeout = _t
+                break
     try:
         r = sess.get(url, headers=hdrs, timeout=timeout)
     except requests.TooManyRedirects:
