@@ -54,54 +54,57 @@ _ALLOW_STREAM = False   # see _derive_and_put; streaming cannot sort yet
 
 
 def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
-    """Stream one FILE-GRAIN series to a gzipped CSV, globally sorted, bounded memory.
+    """Write one FILE-GRAIN series to a gzipped CSV, globally sorted, bounded memory.
 
-    The contract CSV is sorted by (series_id, obs_date) because native_table_to_tidy ends
-    with sort_values on those columns. A per-batch writer cannot reproduce that (R466), so
-    the sort has to happen BEFORE the batches: DuckDB does an external ORDER BY, spilling to
-    disk, and hands back batches already in final order. Verified 2026-08-24 that DuckDB's
-    ORDER BY on the key column matches Python's sorted() exactly over 3,000 sampled keys.
+    DuckDB does the whole job in C++: read the parquet, ORDER BY (spilling to disk), and
+    WRITE THE CSV. Nothing crosses into Python, which matters twice over:
 
-    RESTRICTED TO FILE-GRAIN SOURCES ON PURPOSE. res.predicate is a pyarrow Expression and
-    cannot be handed to SQL; for file-grain the whole file IS the series set, so the filter
-    is just "the key is present" and translates safely. Any other source keeps the in-memory
-    path rather than get a predicate silently dropped.
+      SPEED  cbs_nl:71892ned (599,257,804 bytes) takes 4s here against 50s when the same
+             sorted rows were pulled through Arrow and formatted row-by-row in Python.
+      SAFETY the Arrow path SEGFAULTED (exit 139) on large sorts - it killed five of six
+             derive processes and a standalone test before this replaced it. COPY never
+             materialises a batch on the Python side, so there is nothing to crash.
+
+    The CSV is then gzipped in a streaming pass with mtime=0 and no filename in the header,
+    so the object matches gzip.compress(csv, mtime=0) exactly.
+
+    FILE-GRAIN ONLY: res.predicate is a pyarrow Expression that cannot be handed to SQL. For
+    file-grain the whole file is the series set, so "key IS NOT NULL" is the same filter.
+    Anything else keeps the in-memory path rather than have its predicate silently dropped.
     """
     from econdl import _resolve                                      # noqa: PLC0415
     import duckdb as _ddb                                            # noqa: PLC0415
     import gzip as _gzip                                             # noqa: PLC0415
+    import shutil as _shutil                                         # noqa: PLC0415
     import tempfile as _tf                                           # noqa: PLC0415
     res = _resolve.resolve(series_id)
     if res.dedup_on or res.stamp_id or not res.tidy_ok:
         raise ValueError(f"{series_id}: not eligible for sorted streaming")
-    con = _ddb.connect()
-    con.execute("SET memory_limit='6GB'")
-    con.execute("PRAGMA threads=4")
-    con.execute("SET temp_directory='%s'" % _tf.gettempdir().replace("\\", "/"))
-    q = (f'SELECT CAST("{res.key_col}" AS VARCHAR) AS k, obs_date, value '
-         f'FROM read_parquet(?) WHERE "{res.key_col}" IS NOT NULL '
-         f'ORDER BY k, obs_date')
-    rdr = con.execute(q, [res.parquet_path]).fetch_record_batch(131_072)
-    rows = 0
-    with open(out_path, "wb") as raw,             _gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="") as gz,             io.TextIOWrapper(gz, encoding="utf-8", newline="") as fh:
-        w = csv.writer(fh, lineterminator=chr(10))
-        w.writerow(["series_id", "obs_date", "value"])
-        while True:
-            try:
-                b = rdr.read_next_batch()
-            except StopIteration:
-                break
-            if b.num_rows == 0:
-                continue
-            ks = b.column("k").to_pylist()
-            ds_ = b.column("obs_date").to_pylist()
-            vs = b.column("value").to_pylist()
-            for i in range(b.num_rows):
-                w.writerow([ks[i], ds_[i], vs[i]])
-            rows += b.num_rows
-    con.close()
-    if rows == 0:
-        raise _ResolveZero(f"{series_id}: zero rows")
+    src = str(res.parquet_path).replace("\\", "/").replace("'", "''")
+    key = res.key_col.replace('"', '""')
+    fd, plain = _tf.mkstemp(suffix=".csv", prefix="ddb_")
+    os.close(fd)
+    plain_q = plain.replace("\\", "/").replace("'", "''")
+    try:
+        con = _ddb.connect()
+        con.execute("SET memory_limit='12GB'")
+        con.execute("PRAGMA threads=4")
+        con.execute("SET temp_directory='%s'" % _tf.gettempdir().replace("\\", "/"))
+        con.execute(
+            f'COPY (SELECT CAST("{key}" AS VARCHAR) AS series_id, obs_date, value '
+            f"FROM read_parquet('{src}') WHERE \"{key}\" IS NOT NULL "
+            f"ORDER BY series_id, obs_date) "
+            f"TO '{plain_q}' (FORMAT CSV, HEADER, DELIMITER ',')")
+        con.close()
+        if os.path.getsize(plain) == 0:
+            raise _ResolveZero(f"{series_id}: zero rows")
+        with open(plain, "rb") as fin, open(out_path, "wb") as raw,                 _gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="") as gz:
+            _shutil.copyfileobj(fin, gz, length=8 * 1024 * 1024)
+    finally:
+        try:
+            os.remove(plain)
+        except OSError:
+            pass
     return os.path.getsize(out_path)
 
 
