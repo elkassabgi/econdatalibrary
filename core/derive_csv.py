@@ -357,21 +357,26 @@ def main() -> None:
         # Scope the listing to the source when exactly one is named. The unscoped
         # `series/` prefix spans every source (millions of objects), so a resume of one
         # source would spend its first many minutes paging through other sources' keys.
-        listing_prefix = f"{a.prefix}/"
-        if a.source and len(a.source) == 1:
-            listing_prefix = f"{a.prefix}/{urllib.parse.quote(a.source[0] + ':', safe='')}"
+        # One scoped listing PER named source, not one unscoped listing when there are
+        # several. The single-source case was already scoped; passing two --source flags
+        # fell through to the bare `series/` prefix and paged all ~12.9M objects in the
+        # bucket at 1,000 a call. Measured 2026-08-24: fifteen minutes in, zero CSVs
+        # written, because it was still walking other sources' keys.
+        prefixes = ([f"{a.prefix}/{urllib.parse.quote(src + ':', safe='')}" for src in a.source]
+                    if a.source else [f"{a.prefix}/"])
+        for listing_prefix in prefixes:
             print(f"skip-existing scoped to {listing_prefix}", flush=True)
-        tok = None
-        while True:
-            kw = {"Bucket": a.bucket, "Prefix": listing_prefix, "MaxKeys": 1000}
-            if tok:
-                kw["ContinuationToken"] = tok
-            resp = s3.list_objects_v2(**kw)
-            for o in resp.get("Contents", []):
-                existing.add(o["Key"])
-            if not resp.get("IsTruncated"):
-                break
-            tok = resp.get("NextContinuationToken")
+            tok = None
+            while True:
+                kw = {"Bucket": a.bucket, "Prefix": listing_prefix, "MaxKeys": 1000}
+                if tok:
+                    kw["ContinuationToken"] = tok
+                resp = s3.list_objects_v2(**kw)
+                for o in resp.get("Contents", []):
+                    existing.add(o["Key"])
+                if not resp.get("IsTruncated"):
+                    break
+                tok = resp.get("NextContinuationToken")
         print(f"skip-existing: {len(existing):,} objects already in R2", flush=True)
 
     todo = []
