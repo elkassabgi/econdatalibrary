@@ -203,8 +203,20 @@ def _parse_rows(rows, dataset: str, sheet_name: str) -> tuple[list, list, list]:
         if _is_metadata_row(row):
             continue
         non_null = [c for c in (row or []) if c is not None]
-        # col 0 must be a non-empty string (real header labels are text, not numbers)
-        if not non_null or not isinstance(non_null[0], str) or not non_null[0].strip():
+        # COLUMN 0 must be a non-empty string — and that means row[0], not non_null[0].
+        #
+        # This tested non_null[0], the first non-null cell ANYWHERE in the row, which is a
+        # different question. margin.xls 'Industry Averages' carries a group-header at row 7
+        # whose column 0 is EMPTY and whose later cells read "Gross Income Based", "Net Income
+        # Based", "EBITDA Based". That row passed as the header, so entity_ci resolved to the
+        # first column with a label — a VALUE column — and all 384 margins series were keyed by
+        # a gross-margin number instead of an industry: DAMODARAN:margins:Net_Income_Based:
+        # 0_36242944995377313, which is row 9's Gross Margin. The industry name was lost
+        # entirely, making the series unidentifiable rather than merely untitled.
+        #
+        # Testing row[0] skips that group-header and lands on row 8, "Industry Name".
+        c0 = row[0] if row else None
+        if not non_null or not isinstance(c0, str) or not c0.strip():
             continue
         # Must have at least 3 non-None cells (wacc.xls real header is at row 18)
         if len(non_null) >= 3:
