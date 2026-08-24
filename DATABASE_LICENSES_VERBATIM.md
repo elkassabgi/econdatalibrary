@@ -75,6 +75,7 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `boe` | boe | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `bundesbank` | Deutsche Bundesbank time series | non_redistributable — use-only grant. Personal/professional use, forwarding, and reproduction are permitted with mandatory attribution ("Source: Deutsche Bundesbank") and no alteration (no-derivatives). The terms grant NO right to republish, redistribute, or make the data publicly available to third parties, so a library re-hosting the data for public download is not covered. Treat as metadata-only / link-out unless the Bundesbank grants prior written permission for redistribution. | DISPUTED | NEEDS HUMAN REVIEW |
 | `cboe` | cboe | permission_required | CONFIRMED | RESTRICTED (keep gated) |
+| `cbs_nl` | CBS (Statistics Netherlands) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `census` | census | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `cnb` | Czech National Bank (CNB) ARAD | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `comtrade` | UN Comtrade | permission_required | CONFIRMED | CLEARED by WRITTEN PERMISSION |
@@ -125,6 +126,7 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `gcb` | Global Carbon Budget / Global Carb | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `ggdc` | Groningen Growth and Development C | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `gppd` | Global Power Plant Database (WRI) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
+| `gus_dbw` | GUS (Statistics Poland) Knowledge Databases | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution + PSI disclosure) |
 | `hf_equities` | hf_equities | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `idb` | Inter-American Development Bank (I | noncommercial_no_derivatives (CC BY-NC-ND: NonCommercial AND NoDerivatives). Only verbatim, non-commercial, attributed copies may be redistributed. Separately, per the finding's own license_name note, ~86% of IDB datasets carry NO declared license (no redistribution grant) and a minority are CC BY 4.0 — so a single source-level bucket is not accurate; the unlicensed majority should be treated as not-redistributable / needs-review, not noncommercial. | DISPUTED | NEEDS HUMAN REVIEW |
 | `ilostat` | ilostat | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
