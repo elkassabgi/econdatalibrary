@@ -3615,3 +3615,63 @@ noncommercial-attribution (reservable=1 per the no-metadata-only rule), with the
 "Fraser Institute, Economic Freedom of the World" + link to efotw.org on every surface that
 lists it. Data acquisition: their published annual dataset downloads (efotw.org), NOT
 crawling beyond the published files.
+
+---
+
+## Addendum 2026-08-24 — cbs_nl and gus_dbw assessed
+
+Both were being crawled and stored while carrying NO licence verdict, no `license_id` and no
+`reservable` flag (cbs_nl additionally carried `review: True`). They were therefore correctly
+un-servable: `catalog_complete.py` refuses to catalogue a source whose licence has no row, and
+the standing rule is to gate rather than serve without a verdict. Assessed here so the
+publish decision rests on evidence rather than on the absence of an objection.
+
+| source | publisher | classification | status | verdict |
+|---|---|---|---|---|
+| `cbs_nl` | CBS (Statistics Netherlands) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
+| `gus_dbw` | GUS (Statistics Poland) Knowledge Databases | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution + PSI disclosure) |
+
+### cbs_nl — VERBATIM, https://www.cbs.nl/en-gb/about-us/website/copyright (fetched 2026-08-24)
+
+> "Unless otherwise stated, the content of this website is subject to Creative Commons
+> Attribution (CC BY 4.0)."
+
+> "The re-use of the content of this site is permitted, provided Statistics Netherlands is
+> cited as the source."
+
+> "Naming of the source is mandatory whenever website content is being reproduced. This means
+> that you are obliged to state that the data were sourced from CBS."
+
+> "The re-use and citation of the content must not create the impression that CBS endorses the
+> purport of the derivative work or that CBS agrees with the content of your work."
+
+**One honest caveat, recorded rather than smoothed over.** Our data comes from
+`opendata.cbs.nl` (the OData catalogue), and CBS's own open-data page states NO licence at
+all — checked 2026-08-24, it defines open data as "data that can freely be used and is made
+available in a machine-readable format" and says nothing about reuse rights. The CC BY 4.0
+grant above is the site-wide one and applies by its own "unless otherwise stated" clause,
+the portal having stated nothing otherwise. That is a sound reading, not an API-specific
+grant. Exclusions named by CBS and NOT covered: site design, trademarks including the CBS
+logo, third-party rights, and copyrighted photographs - none of which we hold.
+
+Serving obligation: attribute "Statistics Netherlands (CBS)" on every served series, and do
+not imply CBS endorsement.
+
+### gus_dbw — VERBATIM, https://stat.gov.pl/en/copyright/ (fetched 2026-08-24)
+
+> "There is no objection connected with copywriting of data and websites and printing
+> including personal changes and summaries on condition that the source is given."
+
+> "There is no objection connected with connections through links with website address, on
+> condition that the source of the files or data is given."
+
+> "It is not liable for the content of websites connected by links with Statistics Poland and
+> for presenting personal summaries (changes in the text) based on Statistics Poland data."
+
+GUS names no formal licence. The grant is explicit permission to copy and reuse - including
+modified summaries - conditioned on citing the source. Poland's public-sector-information
+rules add a disclosure duty on the re-user: state the source, the time the information was
+created and obtained from Statistics Poland, and that it has been processed.
+
+Serving obligation: attribute "Statistics Poland (GUS)", carry the acquisition date, and mark
+the data as processed by this library.
