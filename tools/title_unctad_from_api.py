@@ -114,10 +114,14 @@ def titles_for(source_id: str, ds: str):
     con.close()
 
     keep = _catalogued(source_id)
+    # TITLE WHAT THE CATALOGUE LISTS, NOT WHAT THE STORE HOLDS. Filtering store keys by the
+    # catalogue works only while the two share a grain. Sixteen sources catalogue COARSER
+    # than their store - oceantrade lists "0000.01.O_A" (Economy/Flow/Product, Partner summed
+    # out) against store keys like "0000.01.O_A.004.M5040" - so every store key was filtered
+    # away and the source titled zero rows. The catalogue ids ARE the thing being titled.
+    targets = sorted(c.split(":", 1)[1] for c in keep) if keep else sorted(str(k) for k in keys)
     out, skipped = {}, 0
-    for k in keys:
-        if keep and f"{source_id}:{k}" not in keep:
-            continue
+    for k in targets:
         ks = str(k)
         # PARSE FROM THE RIGHT, AND DO NOT ASSUME "." SEPARATES DIMENSIONS. A dimension CODE
         # can itself contain a dot - US.CommodityPrice_A keys read "090100.01.M7110", where
@@ -125,19 +129,18 @@ def titles_for(source_id: str, ds: str):
         # threw away every series in those datasets. Only the trailing ".M<measure>" is a
         # reliable delimiter; the remaining prefix is resolved against the published code
         # lists, longest match first, so a code with a dot is matched as the code it is.
+        # TWO KEY SHAPES, BOTH REAL. Most sources catalogue at full grain and end in the
+        # measure ("076.M1900"); the coarser sixteen carry only leading dimensions and no
+        # measure at all ("A01.0000" = Category/Economy, Partner and Flow summed out).
+        # Requiring the ".M" suffix skipped every one of the latter.
         i = ks.rfind(".M")
-        if i < 0:
-            skipped += 1
-            continue
-        prefix, mcode = ks[:i], ks[i + 2:]
-        ml = mlab.get(mcode)
-        if not ml:
-            skipped += 1
-            continue
+        ml = mlab.get(ks[i + 2:]) if i >= 0 else None
+        prefix = ks[:i] if ml else ks
+        n_dims = min(len(kfields), prefix.count(".") + 1)
         parts, rest, ok = [], prefix, True
-        for di in range(len(kfields)):
+        for di in range(n_dims):
             lut = labels[di]
-            if di == len(kfields) - 1:            # last dim takes the whole remainder
+            if di == n_dims - 1:                  # last PRESENT dim takes the whole remainder
                 lab = lut.get(rest)
                 if not lab:
                     ok = False
@@ -157,7 +160,8 @@ def titles_for(source_id: str, ds: str):
         if not ok or rest:
             skipped += 1
             continue
-        out[f"{source_id}:{k}"] = f"{report} - {', '.join(parts)} ({ml})"
+        title = f"{report} - {', '.join(parts)}" + (f" ({ml})" if ml else "")
+        out[f"{source_id}:{k}"] = title
     return out, {"keys": len(keys), "skipped": skipped, "dims": tables, "report": report}
 
 
