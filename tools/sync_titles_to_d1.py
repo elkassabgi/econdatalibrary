@@ -74,12 +74,18 @@ def d1(sql: str, as_json: bool = True, db: str = "econ-catalog"):
         return None
 
 
-def raw_ids_in_d1(source: str) -> list[str]:
+def raw_ids_in_d1(source: str):
     """Ids D1 still serves as their own key — the exact drift set."""
     sql = ("SELECT series_id FROM series WHERE source_id=" + q(source) +
            " AND (title IS NULL OR title='' OR title = substr(series_id, instr(series_id,':')+1))")
     rows = d1(sql, db=db_for(source))
-    return [r["series_id"] for r in (rows or [])]
+    # A FAILED QUERY IS NOT AN EMPTY RESULT. `rows or []` collapsed the two, so a query that
+    # errored or timed out reported "0 raw in D1" - which reads exactly like "nothing to do"
+    # and silently skipped the source. insee_bdm was reported as 0 while D1 held 59 raw rows.
+    # Propagate None so the caller can say it could not read, instead of claiming success.
+    if rows is None:
+        return None
+    return [r["series_id"] for r in rows]
 
 
 def main() -> int:
