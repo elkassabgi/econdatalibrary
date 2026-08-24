@@ -393,6 +393,12 @@ def main() -> None:
                          "be (every key already exists, so it would skip everything).")
     ap.add_argument("--skip-existing", action="store_true",
                     help="list existing <prefix>/ keys once and skip them (resumable multi-day run)")
+    ap.add_argument("--shard", default=None, metavar="I/N",
+                    help="process only every Nth series (shard I of N, I from 0). Lets several "
+                         "independent PROCESSES split one source: the CSV projection is a "
+                         "pure-Python row loop, so threads serialise on the GIL and adding "
+                         "workers past a handful buys nothing (measured 2026-08-24: 11.7 MB/20s "
+                         "with 6 threads vs 10.0 MB/20s with 25). Separate processes do scale.")
     ap.add_argument("--max-rows", type=int, default=0,
                     help="skip (and name) any series whose store file exceeds this many "
                          "rows; the CSV is built in memory, so a giant table can exhaust "
@@ -464,6 +470,20 @@ def main() -> None:
     if not a.bucket:
         ap.error("--bucket is required for a real run")
     s3 = r2_util.client(write=True)
+
+    if a.shard:
+        try:
+            _i, _n = (int(x) for x in a.shard.split("/", 1))
+        except ValueError:
+            print(f"--shard expects I/N, got {a.shard!r}"); return 2
+        if not (0 <= _i < _n):
+            print(f"--shard {a.shard}: need 0 <= I < N"); return 2
+        before = len(rows)
+        # Stable, order-independent split so every shard sees a disjoint set no matter what
+        # order the catalogue returned. Hash the id, not the index.
+        import zlib                                                  # noqa: PLC0415
+        rows = [r for r in rows if zlib.crc32(r[0].encode()) % _n == _i]
+        print(f"shard {_i}/{_n}: {len(rows):,} of {before:,} series", flush=True)
 
     if a.smallest_first:
         by_src: dict = {}
