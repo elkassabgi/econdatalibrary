@@ -246,6 +246,7 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `whr` | whr | unclear_not_found | CONFIRMED | CLEARED by WRITTEN PERMISSION (scoped/conditional) |
 | `wikidata` | wikidata | redistributable_open | CONFIRMED | CLEARED - re-host OK |
 | `worldbank` | World Bank Open Data | redistributable_attribution_with_exceptions — CC BY 4.0 applies to the World Bank's own compiled data, but third-party-sourced datasets/indicators embedded in World Bank Open Data (e.g., WDI series from UN Population Division, IMF, WHO, ILO, IEA, UNESCO) may NOT be redistributed without the original provider's consent. A library that re-hosts data for public download must exclude or separately clear all third-party-sourced series rather than treat the whole source as blanket-redistributable. | DISPUTED | NEEDS HUMAN REVIEW |
+| `vdem` | V-Dem Institute (Varieties of Democracy), University of Gothenburg | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `worldbank_esg` | worldbank_esg | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `worldbank_pink` | worldbank_pink | restricted / needs-review (NOT blanket CC BY 4.0). The Pink Sheet is not wholly "produced by the World Bank itself" — a large share of its series come from third-party proprietary providers: London Metal Exchange (LME) settlement prices for aluminum, copper, lead, nickel, tin, zinc; Cotlook "A index" for cotton; SICOM for rubber; ICCO/ICO for cocoa/coffee. Under the terms' own third-party carve-out these "may not be redistributed or reused without the consent of the original data provider." For a public re-hosting library, treat worldbank_pink as NEEDS-REVIEW / non-redistributable pending per-series rights clearance (LME in particular prohibits redistribution of its price data without a license), rather than redistributable_attribution. | DISPUTED | NEEDS HUMAN REVIEW |
 | `worldbank_wdi` | World Bank World Development Indic | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
@@ -3525,6 +3526,58 @@ no value. It cannot be catalogued in the current series model at any grain, so c
 licence does not by itself make it servable. Serving it needs an entity-lookup surface, which is
 a product decision rather than a compliance one.
 
+### V-Dem (Varieties of Democracy) — Institute at the University of Gothenburg
+
+- **Databases (1):** `vdem`
+- **Official terms URL:** https://www.v-dem.net/about/faq/ (and the identical statement at
+  https://www.v-dem.net/data/the-v-dem-dataset/)
+- **License:** CC BY-SA 4.0 (Creative Commons Attribution-ShareAlike)
+- **Classification:** redistributable_attribution
+- **Commercial OK:** True · **Attribution required:** True · **ShareAlike:** YES · **Fetch:** fetched_ok
+- **Adversarial verdict:** **CONFIRMED** — the identical sentence appears on two independent
+  official surfaces (the dataset page and the site-wide FAQ), fetched separately.
+- **Decision tier:** CLEARED - re-host OK (attribution)
+
+**Verbatim quote** (v-dem.net FAQ and dataset page, fetched 2026-08-24, identical wording on both):
+> The V-Dem Dataset is publicly available and published under a Creative Commons
+> Attribution-ShareAlike (CC BY-SA) 4.0 license. This means that anyone is free to use, adapt,
+> and share the data, including for commercial purposes, provided that appropriate attribution
+> is given and that any derivative products are distributed under the same license terms.
+
+*Researcher reasoning:* Assessed 2026-08-24 because `vdem` is REGISTERED, scheduled on the
+workstation route, holds 77,371,121 observations across 783,100 series on disk, and had NO row
+in this file — so it was being refreshed indefinitely while gated. It appears in
+`denylist.ts` NON_REDISTRIBUTABLE, but that file is GENERATED from `license.reservable`, and
+its own header says a source lands there when its licence row is unverified: "fix the license
+row and regenerate, don't special-case them here". The gate was therefore the ABSENCE of this
+assessment, not a decision against serving it.
+
+**Two corrections this assessment makes.**
+
+1. `jobs/ingest_vdem.py` has carried the header comment "CC BY 4.0 for most indices" since it
+   was written. That is wrong twice: the licence is **ShareAlike**, which CC BY is not, and the
+   hedge "most indices" has no counterpart in anything V-Dem publishes — their statement is
+   unqualified and covers the dataset. An unsourced licence claim in a code comment is exactly
+   what this file exists to replace.
+2. The R package that delivers the data (`vdeminstitute/vdemdata`) declares `License: GPL-3` in
+   its DESCRIPTION and ships no LICENSE file. GPL-3 is the licence of the PACKAGE CODE; the
+   data licence is the CC BY-SA 4.0 above, stated by the publisher on its own site. We
+   redistribute the data, not the package, so GPL-3 does not reach our distribution.
+
+**ShareAlike obligation, and how it is met.** CC BY-SA requires derivative products to carry the
+same terms. This library already serves seven CC BY-SA sources (the `unesco_*` family) through
+per-source licence rows, so the mechanism exists: `vdem` gets its own row `cc-by-sa-4.0-vdem`
+with `reservable=1`, and every download carries that licence id, so the SA term travels with
+the data rather than being asserted in prose.
+
+**SCOPE LIMIT — V-Party is NOT cleared by this entry.** `data/clean_full/vdem/` holds TWO
+files: `vdem.parquet` (77,371,121 rows) and `vparty.parquet` (2,218,990 rows). The quote above
+names "The V-Dem Dataset". V-Party is published as a separate dataset — its own page
+(https://www.v-dem.net/data/v-party-dataset/, fetched 2026-08-24) carries NO licence language
+at all, and the FAQ statement does not name it. Nothing entitles us to extend one dataset's
+terms to another simply because they share a publisher and a directory. **Catalogue
+`vdem.parquet` only; `vparty.parquet` stays unserved pending its own evidence.** This is the
+R472 shape in advance — two things under one id whose licences can differ.
 ### fred
 
 - **Databases (1):** `fred`
