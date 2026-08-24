@@ -76,7 +76,26 @@ from core import r2_util           # noqa: E402
 ROOTS = [os.path.join(ROOT, "data", "clean_full"),
          os.path.join(ROOT, "data", "clean_grouped")]
 BUCKET = "econ-data"
-EXACT_MAX_ROWS = 500_000_000   # above this, COUNT(DISTINCT) spills for hours
+EXACT_MAX_ROWS = 500_000_000      # above this, COUNT(DISTINCT) spills for hours...
+EXACT_MAX_DISTINCT = 50_000_000   # ...unless the source is known to be NARROW (see below)
+
+
+def _load_prior_series() -> dict:
+    """Last run's per-source series counts, used only to predict cardinality."""
+    import glob as _glob                                            # noqa: PLC0415
+    files = sorted(_glob.glob(os.path.join(ROOT, "logs", "stats-*.json")))
+    for p in reversed(files):
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+            if d.get("per_source_series"):
+                return d["per_source_series"]
+        except Exception:                                           # noqa: BLE001
+            continue
+    return {}
+
+
+_PRIOR_SERIES: dict = {}
 _REMOTE_CHUNK = 750   # objects per remote query; bounds concurrent connections to R2
 _S3 = f"s3://{BUCKET}/"
 KEY = "_aqueduct/stats.json"
@@ -320,7 +339,16 @@ def _distinct_keys(con, files, src, obs=0):
     # below catches an exact count that FAILS; it cannot catch one that merely never
     # finishes. So the handful of giants take the estimate by choice, labelled as such,
     # and everything else - the great majority of sources - is counted exactly.
-    if obs > EXACT_MAX_ROWS:
+    # THE COST IS DISTINCT CARDINALITY, NOT ROWS. COUNT(DISTINCT) builds a hash table of
+    # every distinct value: rows drive scan time, distinct values drive memory. Gating on
+    # rows alone misclassified noaa - 550M rows but only 3.1M distinct keys, whose exact
+    # count measured 99 SECONDS - so it took the estimate and kept a +261,047 error for no
+    # reason. The previous run's per-source figure is the best cheap predictor of
+    # cardinality available before counting, so a source known to be narrow is counted
+    # exactly however many rows it has.
+    prior = _PRIOR_SERIES.get(src)
+    narrow = prior is not None and prior <= EXACT_MAX_DISTINCT
+    if obs > EXACT_MAX_ROWS and not narrow:
         print(f"    {src}: {obs:,} rows exceeds the exact-count ceiling "
               f"({EXACT_MAX_ROWS:,}); using HyperLogLog", flush=True)
         n = _retry_remote(
@@ -423,6 +451,8 @@ def main() -> int:
                   + ", ".join(f"{k} {v:,}" for k, v in worst), flush=True)
 
     con = duckdb.connect()
+    global _PRIOR_SERIES
+    _PRIOR_SERIES = _load_prior_series()
     con.execute("PRAGMA threads=24")
     # BOUND THE EXACT COUNT. COUNT(DISTINCT) over hundreds of millions of string keys
     # builds a hash table of every distinct value; unbounded across ~330 stores that is the
