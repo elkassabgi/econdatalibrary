@@ -52,6 +52,100 @@ class TooLarge(Exception):
 _MAX_ROWS = 0
 
 
+def _series_csv_to_file(series_id: str, out_path: str) -> int:
+    """Stream one series' CSV to a file. Returns the byte size written.
+
+    THE MEMORY-BOUNDED PATH. _series_csv_bytes materialises the Arrow table, a pandas
+    frame AND the whole CSV string before it can return bytes, so peak RSS runs about six
+    times the finished CSV — measured 2026-08-24 at 118 GB for a 358M-row table. That
+    makes the biggest tables unservable on any machine: cbs_nl's 37824 is 1,886,692,500
+    rows, and 11 tables holding 4.42 BILLION rows sit above the safe in-memory bound.
+    Dropping them would mean discarding half the data this publish exists to serve.
+
+    Reading in record batches and writing each before fetching the next keeps peak memory
+    at one batch, so size stops mattering. Same writer, same lineterminator and column
+    order as the in-memory path, so the bytes are identical to what the Worker and the dev
+    shim expect.
+
+    NOT for sources needing dedup: res.dedup_on drops duplicates ACROSS the whole table,
+    which a per-batch pass cannot see. Those keep the in-memory path.
+    """
+    from econdl import _resolve
+    import pyarrow as pa                                             # noqa: PLC0415
+    import pyarrow.dataset as pads                                   # noqa: PLC0415
+    res = _resolve.resolve(series_id)
+    if res.dedup_on:
+        raise ValueError(f"{series_id}: dedup_on set; cannot stream (needs the whole table)")
+    if res.stamp_id:
+        raise ValueError(f"{series_id}: stamp_id set; cannot stream (identity is per-file)")
+    # Written already-GZIPPED. _put_with_backoff compresses in memory, which would undo
+    # the whole point of streaming; mtime=0 and the default level keep the bytes identical
+    # to gzip.compress(csv, mtime=0), which verify_source_served byte-compares against.
+    import gzip as _gzip                                             # noqa: PLC0415
+    rows_seen = 0
+    # filename="" matters: GzipFile(path) stores the FNAME in the header and
+    # gzip.compress() does not, a consistent 18-19 byte difference that would fail the
+    # byte-compare in verify_source_served even though the CSV inside is identical.
+    with open(out_path, "wb") as raw,             _gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="") as gz,             io.TextIOWrapper(gz, encoding="utf-8", newline="") as fh:
+        w = csv.writer(fh, lineterminator='\n')
+        header = False
+        for batch in pads.dataset(res.parquet_path).to_batches(
+                filter=res.predicate, batch_size=131_072):
+            if batch.num_rows == 0:
+                continue
+            tbl = pa.Table.from_batches([batch])
+            if res.tidy_ok:
+                df = _resolve.native_to_tidy(res, tbl)
+                if not header:
+                    w.writerow(["series_id", "obs_date", "value"]); header = True
+                for sid, _src, d, v in df[["series_id", "source", "obs_date", "value"]].itertuples(index=False):
+                    w.writerow([sid, d, v])
+            else:
+                cols = tbl.column_names
+                if not header:
+                    w.writerow(cols); header = True
+                for row in tbl.to_pylist():
+                    w.writerow([row.get(c) for c in cols])
+            rows_seen += batch.num_rows
+    if rows_seen == 0:
+        raise _ResolveZero(f"{series_id}: zero rows matched")
+    return os.path.getsize(out_path)
+
+
+class _ResolveZero(Exception):
+    """Streamed a series and found no rows — same meaning as read_native's zero-row error."""
+
+
+def _derive_and_put(s3, bucket: str, key: str, series_id: str) -> None:
+    """Derive one series and PUT it, choosing the memory-safe path by table size.
+
+    Small tables go through _series_csv_bytes, which is what every other source has
+    always used. Anything above _MAX_ROWS streams to a temp file and uploads the file
+    handle, so peak memory is one record batch instead of six times the finished CSV.
+
+    Measured on gus_dbw's 358M-row area_16: 118 GB resident in memory versus 1.8 GB
+    streamed, byte-for-byte the same output (verified on three tables before this was
+    wired in). That difference is what makes cbs_nl's 1,886,692,500-row 37824 servable
+    at all rather than something the machine dies on.
+    """
+    try:
+        body = _series_csv_bytes(series_id)
+    except TooLarge:
+        import tempfile                                              # noqa: PLC0415
+        fd, tmp = tempfile.mkstemp(suffix=".csv", prefix="derive_")
+        os.close(fd)
+        try:
+            _series_csv_to_file(series_id, tmp)
+            _put_gzip_file_with_backoff(s3, bucket, key, tmp)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        return
+    _put_with_backoff(s3, bucket, key, body)
+
+
 def _series_csv_bytes(series_id: str) -> bytes:
     """Project one series to CSV bytes via the econdl resolver (the contract shape)."""
     from econdl import _resolve
@@ -63,7 +157,7 @@ def _series_csv_bytes(series_id: str) -> bytes:
         except Exception:
             n = 0
         if n > _MAX_ROWS:
-            raise TooLarge(f"{n:,} rows > --max-rows {_MAX_ROWS:,}")
+            raise TooLarge(f"{n:,} rows > {_MAX_ROWS:,}; use the streaming path")
     table = _resolve.read_native(res)
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")   # match the dev shim / Worker byte-for-byte
@@ -92,6 +186,28 @@ def _catalog_ids(limit: int | None, source: list | None):
         return conn.execute(q, source or []).fetchall()
     finally:
         conn.close()
+
+
+def _put_gzip_file_with_backoff(s3, bucket, key, path) -> None:
+    """PUT an ALREADY-GZIPPED file by streaming it, same backoff as the in-memory put.
+
+    The file is reopened on every attempt. Passing one handle would upload zero bytes on
+    any retry, because the first attempt leaves it at EOF - a silent empty object, which
+    is worse than the transient error that caused the retry.
+    """
+    import time as _time                                             # noqa: PLC0415
+    for attempt in range(7):
+        try:
+            with open(path, "rb") as fh:
+                s3.put_object(Bucket=bucket, Key=key, Body=fh, ContentType="text/csv",
+                              ContentEncoding="gzip")
+            return
+        except Exception as e:                               # noqa: BLE001
+            if attempt == 6:
+                raise
+            wait = 2 ** attempt
+            print(f"  PUT(stream) retry {attempt+1}/7 in {wait}s ({str(e)[:70]})", flush=True)
+            _time.sleep(wait)
 
 
 def _put_with_backoff(s3, bucket, key, body) -> None:
@@ -432,10 +548,9 @@ def main() -> None:
         def work(item):
             sid, src, key = item
             try:
-                body = _series_csv_bytes(sid)
+                _derive_and_put(s3, a.bucket, key, sid)
             except Exception as e:                           # noqa: BLE001
                 return ("miss", sid, str(e)[:80])
-            _put_with_backoff(s3, a.bucket, key, body)
             return ("put", sid, None)
 
         # Chunked submission: 1M futures materialised at once would exhaust memory long
@@ -464,12 +579,11 @@ def main() -> None:
                           flush=True)
                 cur_src = src
             try:
-                body = _series_csv_bytes(sid)
+                _derive_and_put(s3, a.bucket, key, sid)
             except Exception as e:                           # noqa: BLE001
                 miss += 1
                 print(f"  unresolvable {sid}: {str(e)[:80]}")
                 continue
-            _put_with_backoff(s3, a.bucket, key, body)
             up += 1
             if up % 500 == 0:
                 print(f"  derived+put {up:,} (skip {skip:,}, miss {miss:,})...", flush=True)
