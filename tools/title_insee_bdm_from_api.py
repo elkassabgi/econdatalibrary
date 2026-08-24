@@ -30,6 +30,28 @@ import requests
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 URL = "https://api.insee.fr/series/BDM/V1/data/SERIES_BDM/%s"
+def _series_elements(xml: str):
+    """Yield each complete <Series ...> start tag, ignoring > inside quoted attributes."""
+    out, i = [], 0
+    while True:
+        i = xml.find("<Series", i)
+        if i < 0:
+            break
+        j, quote = i, None
+        while j < len(xml):
+            c = xml[j]
+            if quote:
+                if c == quote:
+                    quote = None
+            elif c in (chr(34), chr(39)):
+                quote = c
+            elif c == ">":
+                break
+            j += 1
+        out.append(xml[i:j + 1])
+        i = j + 1
+    return out
+
 CODED = re.compile(r"^[0-9A-Z_.\-]+$")
 BATCH = 40
 
@@ -61,7 +83,14 @@ def main() -> int:
         if r.status_code != 200:
             print("  batch %d HTTP %s" % (i // BATCH, r.status_code), flush=True)
             continue
-        for el in re.findall(r"<Series\b[^>]*>", r.text):
+        # ATTRIBUTE-AWARE ELEMENT SCAN. The old pattern stopped at the first '>' in the tag,
+        # and INSEE puts a literal '>' INSIDE attribute values:
+        #     TITLE_FR="... Superphosphates triples : >38% - Serie arretee" TITLE_EN="..."
+        # That is legal XML (only < and & must be escaped in an attribute), so the match was
+        # truncated before TITLE_EN and the series was counted as having only a placeholder.
+        # The tool then reported that INSEE does not name it - for 61 series INSEE names in
+        # full. Skipping over quoted spans fixes it.
+        for el in _series_elements(r.text):
             m = re.search(r'IDBANK="([^"]+)"', el)
             if not m or m.group(1) not in by_id:
                 continue
