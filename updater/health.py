@@ -26,6 +26,7 @@ SLA_TOLERANCE = 2.0
 # Extra slack (in periods) for DATA recency, since a publication can legitimately lag a period.
 DATA_SLACK_PERIODS = 1.0
 ATTENTION_STATUSES = ("partial", "definitive_fail", "transient_fail", "running")
+STUCK_TRANSIENT_DAYS = 14   # actively attempted, failing, and this far from a success
 # How long an `upstream_verified` claim is trusted before it must be re-probed. A
 # dataset that is finished today can resume publishing tomorrow, so the exemption it
 # buys is deliberately perishable rather than permanent.
@@ -113,6 +114,47 @@ def _business_age_days(iso, now) -> "float | None":
     # others. Compared against a whole-day threshold that made the gate flap by the HOUR —
     # red at 13:00 Sunday, green at 02:00 and 23:00 the same day, on identical data.
     return round(max(0.0, cal - weekend), 6)
+
+
+def _stuck_transient(units, succ_age, sla_days, attempt_age) -> bool:
+    """True when a "transient" failure has outlived any honest reading of the word.
+
+    ATTENTION is evaluated BEFORE the age branches, so a status in ATTENTION_STATUSES
+    pinned a source at amber no matter how long it had been failing. istat sat there for
+    40 DAYS: attempted on every run, recorded transient_fail every time, never escalating,
+    while its only working host had been dead since 2026-07-14. A label that predicts
+    recovery must expire when recovery does not arrive, or it is just a way of not looking.
+
+    Deliberately narrow, and the narrowness is the point:
+
+      * only `transient_fail`, never `partial`. A big multi-unit source is permanently
+        partial by design and NEVER sets last_success, so escalating on age would redden
+        ecb, defillama, eia, ssb, sec_edgar, norgesbank, insee_melodi and stat_estonia -
+        all eight measured FRESH on R2 today, ecb having written to the bucket this
+        morning while its last_success read 38 days old. That is the wolf-crying this
+        file already warns about, and it would bury the one real signal.
+
+      * only when a real last_success EXISTS and is past SLA. A source that has never
+        succeeded keeps its current handling; "never" is a different diagnosis from
+        "stopped", and it is not this branch's job to conflate them.
+
+    Measured blast radius when added: 4 sources carry transient_fail (istat, census,
+    hagstofa, imf_imts_direct) and only istat has a real last_success, so exactly one
+    classification changes.
+    """
+    if not any(u.get("status") == "transient_fail" for u in units):
+        return False
+    if succ_age is None:
+        return False        # never succeeded is a different diagnosis; not this branch
+    # Past its own SLA: unambiguous.
+    if sla_days is not None and succ_age > sla_days:
+        return True
+    # Or: being ATTEMPTED and failing on every pass. This is the case cadence hides.
+    # istat is monthly, so 2x SLA is 60 days and 40 days of continuous nightly failure
+    # was still "within tolerance" - the clock said waiting, the reality was failing. A
+    # source touched in the last two days that has not succeeded in fourteen is not
+    # waiting for its cadence, it is broken.
+    return attempt_age is not None and attempt_age <= 2 and succ_age > STUCK_TRANSIENT_DAYS
 
 
 def assess(store=None) -> dict:
@@ -240,6 +282,11 @@ def assess(store=None) -> dict:
             # never produced state: RED only if its adapter is built (should have run);
             # PENDING if the adapter isn't built yet (expected during the rollout).
             health = "RED-UNRUN" if _adapter_ready(e) else "PENDING"
+        elif _stuck_transient(units, succ_age, sla_days, attempt_age):
+            # Explicitly RED, not merely "not ATTENTION". Bypassing the amber branch let
+            # istat fall through every age check and land on OK - 40 days broken and
+            # reading green, which is worse than the amber it replaced.
+            health = "RED-SLA"
         elif attention:
             health = "ATTENTION"
         elif succ_age is None:
