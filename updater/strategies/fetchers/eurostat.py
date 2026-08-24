@@ -125,6 +125,11 @@ def _parse_csv(content: bytes):
     # ef_oga_main is 67,622,364 gzip bytes -> 1,324,771,242 bytes of clean CSV ->
     # 9,009,130 observations, the exact count Eurostat's own TOC advertises.
     #
+    # Confirmed end-to-end against the live publisher 2026-08-24: migr_asyrescra returns
+    # 661,045,036 bytes, Content-Encoding None, body gzip, filename estat_migr_asyrescra_en
+    # .csv.gz. The pre-fix path raises on it; this path parses 213,650,346 observations.
+    # That is one flow - the one that aborted a 400-flow sweep after 50.
+    #
     # Decompress on the MAGIC BYTES, and leave csv's newline handling alone. Normalising
     # or stripping CRs, or pre-splitting the lines, was measured against the real failing
     # bytes: each recovers 0 of those 9,009,130 rows and converts the loud crash into the
