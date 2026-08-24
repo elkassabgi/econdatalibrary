@@ -473,6 +473,11 @@ def main() -> None:
                          "be (every key already exists, so it would skip everything).")
     ap.add_argument("--skip-existing", action="store_true",
                     help="list existing <prefix>/ keys once and skip them (resumable multi-day run)")
+    ap.add_argument("--allow-stream", action="store_true",
+                    help="derive tables above --max-rows by streaming them through a DuckDB "
+                         "external ORDER BY instead of skipping them. Off by default: an "
+                         "earlier unsorted streamer wrote the right rows in the wrong order "
+                         "(R466), so this path is opt-in and byte-verified.")
     ap.add_argument("--shard", default=None, metavar="I/N",
                     help="process only every Nth series (shard I of N, I from 0). Lets several "
                          "independent PROCESSES split one source: the CSV projection is a "
@@ -494,8 +499,9 @@ def main() -> None:
                     help="derive even if the local parquet mirror is BEHIND R2. Only for a "
                          "deliberate rebuild from an older vintage — see the guard below.")
     a = ap.parse_args()
-    global _MAX_ROWS
+    global _MAX_ROWS, _ALLOW_STREAM
     _MAX_ROWS = a.max_rows
+    _ALLOW_STREAM = a.allow_stream
 
     # PREFLIGHT (ledger R383). This tool WRITES to R2 but READS through the econdl resolver,
     # which reads data/clean_full/ — the LOCAL mirror. Under AQUEDUCT_BACKEND=r2 that is a
