@@ -9181,6 +9181,20 @@ sources:
     emission factors 72292) that FAOSTAT no longer publishes at any grain — the
     reproducing majority updates (restrict_to_published), the rest freezes.
   cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
+  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
+  # reports DateUpdate 2025-10-28 for dataset GCE, which backs this source. Our last
+  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
+  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
+  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
+  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
+  # data but say nothing about recency, so they are excluded from the recency signal.)
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2023-01-01'
+    checked: '2026-08-24'
   refresh_cost: medium
   out_dir: fao_ga
   review: true
@@ -9212,6 +9226,20 @@ sources:
     grain. The reproducing majority updates (restrict_to_published — upstream is a
     9.5x superset), the rest freezes.
   cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
+  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
+  # reports DateUpdate 2025-10-28 for dataset GLE, which backs this source. Our last
+  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
+  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
+  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
+  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
+  # data but say nothing about recency, so they are excluded from the recency signal.)
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2023-01-01'
+    checked: '2026-08-24'
   refresh_cost: medium
   out_dir: fao_ge
   review: true
@@ -9304,6 +9332,20 @@ sources:
     remainder decomposes to 5 dropped element classes FAOSTAT no longer publishes.
     The reproducing minority updates (restrict_to_published), the rest freezes.
   cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
+  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
+  # reports DateUpdate 2025-10-28 for dataset GCE, which backs this source. Our last
+  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
+  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
+  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
+  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
+  # data but say nothing about recency, so they are excluded from the recency signal.)
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2023-01-01'
+    checked: '2026-08-24'
   refresh_cost: medium
   out_dir: fao_gb
   review: true
@@ -9333,6 +9375,20 @@ sources:
     plus discontinued combos) — no element or item was re-coded. The reproducing
     majority updates (restrict_to_published), the rest freezes.
   cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
+  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
+  # reports DateUpdate 2025-10-28 for dataset GN, which backs this source. Our last
+  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
+  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
+  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
+  # not a stalled fetch. (This source also carries projections out to 2023-01-01; those are real
+  # data but say nothing about recency, so they are excluded from the recency signal.)
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2023-01-01'
+    checked: '2026-08-24'
   refresh_cost: small
   out_dir: fao_gn
   review: true
@@ -9394,6 +9450,20 @@ sources:
     GWP factors, so old CO2eq series are a different-basis vintage — frozen
     rather than mislabeled. Source='FAO TIER 1' pinned.
   cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
+  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
+  # reports DateUpdate 2025-10-28 for dataset GT, which backs this source. Our last
+  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
+  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
+  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
+  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
+  # data but say nothing about recency, so they are excluded from the recency signal.)
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2023-01-01'
+    checked: '2026-08-24'
   refresh_cost: medium
   out_dir: fao_gt
   review: true
@@ -9443,6 +9513,20 @@ sources:
     Area.Item.Element reproduces 59.6%; the rest is the dropped CO2eq/implied-EF
     family (R403 GWP-basis class), frozen.
   cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
+  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
+  # reports DateUpdate 2025-10-28 for dataset GCE, which backs this source. Our last
+  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
+  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
+  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
+  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
+  # data but say nothing about recency, so they are excluded from the recency signal.)
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2023-01-01'
+    checked: '2026-08-24'
   refresh_cost: small
   out_dir: fao_gy
   review: true
@@ -9466,6 +9550,20 @@ sources:
     Rice-cultivation series live in GCE; template Area.Item.Element reproduces
     52.4% (native-gas + area harvested); the dropped implied-EF/CO2eq tail freezes.
   cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
+  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
+  # reports DateUpdate 2025-10-28 for dataset GCE, which backs this source. Our last
+  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
+  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
+  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
+  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
+  # data but say nothing about recency, so they are excluded from the recency signal.)
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2023-01-01'
+    checked: '2026-08-24'
   refresh_cost: small
   out_dir: fao_gr
   review: true
