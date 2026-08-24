@@ -47,7 +47,16 @@ from .errors import TransientError, DefinitiveError
 # would sit live and frozen forever while the health gate reported RED-UNRUN and
 # nothing looked broken. A protection that outlives the operation it protects becomes
 # the outage.
-FIRSTPASS_DIRS = {"cbs_nl", "gus_dbw", "dbnomics"}
+# cbs_nl removed 2026-08-24: its first pass is COMPLETE. Every run reaches [5953/5953] and
+# prints DONE, consecutive run logs are byte-identical, and the only two unreachable tables
+# (37830, 70745ned) fail with CBS's own HTTP 500 "Fout bij het lezen van kolom" and are now
+# recorded in _upstream_broken.json. The protection had become permanent: 3,342 of 5,529
+# files (60.4%) were never uploaded and nothing had reached R2 since 2026-06-30, because
+# the updater is what publishes and this set told it to skip the source.
+# Its guard job is retired via logs/cbs_nl.DONE at the same time - registry `scripts` for
+# cbs_nl IS jobs/ingest_cbs_nl.py, so the updater now runs the same crawler on cadence and
+# both changes are required together: either alone leaves the source unupdated or unserved.
+FIRSTPASS_DIRS = {"gus_dbw", "dbnomics"}
 
 # A unit whose recent runs all finish inside this is "cheap" and rides the fast lane.
 FAST_LANE_SECONDS = 120.0
