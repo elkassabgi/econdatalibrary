@@ -50,6 +50,7 @@ class TooLarge(Exception):
 # 11 tables (0.2%) are over 100M rows. Skipping them costs 0.2% of the tables and protects
 # the 99.8% that derive cleanly, which is the opposite trade from letting the run die.
 _MAX_ROWS = 0
+_ALLOW_STREAM = False   # see _derive_and_put; streaming cannot sort yet
 
 
 def _series_csv_to_file(series_id: str, out_path: str) -> int:
@@ -89,8 +90,17 @@ def _series_csv_to_file(series_id: str, out_path: str) -> int:
     with open(out_path, "wb") as raw,             _gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="") as gz,             io.TextIOWrapper(gz, encoding="utf-8", newline="") as fh:
         w = csv.writer(fh, lineterminator='\n')
         header = False
-        for batch in pads.dataset(res.parquet_path).to_batches(
-                filter=res.predicate, batch_size=131_072):
+        # ORDER MUST MATCH THE IN-MEMORY PATH. dataset.to_batches() reads fragments in
+        # parallel, so its row order differs from to_table()'s - the streamed CSV then holds
+        # exactly the same LINES in a different sequence. Measured 2026-08-24 on
+        # cbs_nl:71892ned: identical byte count (599,257,804), identical line count
+        # (5,536,832), set(lines) equal, and the two files still differ from line 1. The data
+        # is right and the bytes are wrong, which is the shape that quietly fails
+        # verify_source_served's byte-compare forever.
+        _scanner = pads.Scanner.from_dataset(
+            pads.dataset(res.parquet_path), filter=res.predicate,
+            batch_size=131_072, use_threads=False)
+        for batch in _scanner.to_batches():
             if batch.num_rows == 0:
                 continue
             tbl = pa.Table.from_batches([batch])
@@ -128,6 +138,21 @@ def _derive_and_put(s3, bucket: str, key: str, series_id: str) -> None:
     wired in). That difference is what makes cbs_nl's 1,886,692,500-row 37824 servable
     at all rather than something the machine dies on.
     """
+    # STREAMING IS OFF BY DEFAULT AND MUST STAY OFF UNTIL IT SORTS.
+    # native_table_to_tidy ends with .sort_values(["series_id","obs_date"]), so the contract
+    # CSV is globally sorted. A per-batch writer sorts each batch alone, which yields the
+    # same LINES in a different sequence: measured 2026-08-24 on cbs_nl:71892ned, identical
+    # 599,257,804 bytes, identical 5,536,832 lines, set(lines) equal, and still different
+    # from line 1. Data correct, bytes wrong - the shape that fails verify_source_served's
+    # byte-compare forever while looking fine.
+    # use_threads=False does NOT fix it; the reordering is the missing GLOBAL sort, not
+    # fragment parallelism. Streaming needs an external sort (DuckDB ORDER BY spilling to
+    # disk) before it can be trusted, so until then a too-large table is SKIPPED and named,
+    # never silently mis-ordered.
+    if not _ALLOW_STREAM:
+        body = _series_csv_bytes(series_id)      # raises TooLarge, which the caller reports
+        _put_with_backoff(s3, bucket, key, body)
+        return
     try:
         body = _series_csv_bytes(series_id)
     except TooLarge:
