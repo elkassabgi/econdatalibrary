@@ -9,12 +9,33 @@
 // ---------------------------------------------------------------------------
 
 import type { Env, SourceJoinedRow } from "./types";
-import { SELECT_SOURCES } from "./sql";
-import { json } from "./util";
+import { SELECT_SOURCES, SELECT_SOURCE_JOINED } from "./sql";
+import { json, SHARDED_SOURCES, dbFor } from "./util";
 
 export async function handleSources(env: Env): Promise<Response> {
   const res = await env.CATALOG.prepare(SELECT_SOURCES).all<SourceJoinedRow>();
   const rows = res.results ?? [];
+
+  // SHARDED SOURCES ARE SERVED BUT WERE INVISIBLE HERE. SELECT_SOURCES keeps a source
+  // only if the PRIMARY database holds series rows for it, and noaa's 3.1M rows live in
+  // CATALOG_CLIMATE. So /v1/sources reported 318 while noaa was fully served: catalogued,
+  // in D1, 3,138,211 CSVs on R2, resolving through /v1/series and findable through
+  // /v1/catalog — just absent from the list a person browses to discover it.
+  // index.ts already carries this correction for /v1/stats ("a primary-only count
+  // silently drops 3.1M entries"); the same shard has to be consulted here.
+  // D1 cannot join across databases, so the existence test runs on the shard and the
+  // descriptive row is then read from the primary with the same joins, unfiltered.
+  const present = new Set(rows.map((r) => r.source_id));
+  for (const src of SHARDED_SOURCES) {
+    if (present.has(src)) continue;
+    const shard = dbFor(env, src);
+    const hit = await shard.prepare(
+      "SELECT 1 AS ok FROM series WHERE source_id = ? LIMIT 1").bind(src).first<{ ok: number }>();
+    if (!hit) continue;
+    const row = await env.CATALOG.prepare(SELECT_SOURCE_JOINED).bind(src).first<SourceJoinedRow>();
+    if (row) rows.push(row);
+  }
+  rows.sort((a, b) => (a.source_id < b.source_id ? -1 : a.source_id > b.source_id ? 1 : 0));
 
   // CANONICAL v1.1 NESTED shape (CONTRACT.md "Canonical response shapes"):
   //   { source, name, homepage, license:{...}|null, freshness:{...}|null }
