@@ -48,10 +48,48 @@ _spec.loader.exec_module(iu)
 DATAMART = "https://unctadstat-api.unctad.org/datamart-api"
 
 
+_DATACENTER = "https://unctadstat-api.unctad.org/api/datacenter/en"
+_REPORTS: list = []
+
+
+def _advertised_reports() -> list:
+    """Every reportName UNCTAD's own datacenter advertises (cached for the process)."""
+    if not _REPORTS:
+        try:
+            j = requests.get(_DATACENTER, headers=iu.UA, timeout=180).json()
+        except Exception:                                        # noqa: BLE001
+            return _REPORTS
+        def walk(o):
+            if isinstance(o, dict):
+                if o.get("reportName"):
+                    _REPORTS.append(o["reportName"])
+                for v in o.values():
+                    walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    walk(v)
+        walk(j)
+    return _REPORTS
+
+
 def _ds_for(source_id: str, reg: dict):
     vs = str(((reg.get(source_id) or {}).get("adapter") or {}).get("vintage_signal", ""))
     m = re.search(r"reportMetadata/([A-Za-z0-9_.]+)/", vs)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1)
+    # FALL BACK TO UNCTAD'S OWN CATALOGUE WHEN THE REGISTRY NAMES NO DATASET. Some entries
+    # describe their vintage signal without a reportMetadata URL, so there is nothing to
+    # regex - and the source then silently titles nothing. unctad_tradeservcatbypartner
+    # (9,243 rows) and unctad_biotrademerch (6,666) were exactly that. Their ids ARE the
+    # dataset name modulo case and underscores, so match against what UNCTAD advertises and
+    # accept ONLY an unambiguous hit; a source that matches two datasets is skipped rather
+    # than guessed at.
+    key = source_id[len("unctad_"):].replace("_", "").lower() if source_id.startswith("unctad_") else ""
+    if not key:
+        return None
+    hits = [r for r in _advertised_reports()
+            if r.lower().replace("us.", "", 1).replace("_", "") == key]
+    return hits[0] if len(hits) == 1 else None
 
 
 def _dim_labels(ds: str, version, table: str) -> dict:
