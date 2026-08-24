@@ -1545,6 +1545,11 @@ _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     # file from another. Both are therefore file-grain, and needed no new resolver.
     "cbs_nl": _resolve_file_grain,
     "gus_dbw": _resolve_file_grain,
+    # ilo: one parquet per SDMX DATAFLOW (DF_CLD_2POP_SEX_AGE_NB.parquet), and the
+    # dataflow id appears nowhere in the keys, which are full SDMX coordinates
+    # ("REF_AREA=AGO:FREQ=A:MEASURE=CLD_2POP_NB:SEX=SEX_F:..."). File-grain again.
+    # Series grain would be ~19M catalogue rows for one source, against a 12.7M catalogue.
+    "ilo": _resolve_file_grain,
     "bls": _resolve_bls,
     "cepii_baci": _resolve_cepii_baci,
     "imf_imts_direct": _resolve_imf_imts_direct,

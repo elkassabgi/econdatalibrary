@@ -43,6 +43,9 @@ _EXCL_DIRS = {"parts", "_cache", "_tmp"}
 SOURCES = {
     "cbs_nl":  ("cc-by-4.0",   "data/_cbs_titles.json"),
     "gus_dbw": ("gus-pl-open", "data/_gus_titles.json"),
+    # ilo: CC BY 4.0 (ILO organization-wide grant, DATABASE_LICENSES_VERBATIM 2026-08-24).
+    # No title map - the SDMX dataflow id IS the published name, so it stands as the title.
+    "ilo": ("cc-by-4.0", "data/_ilo_titles.json"),
 }
 
 
