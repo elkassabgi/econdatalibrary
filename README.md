@@ -10,6 +10,21 @@ R2 Parquet + D1 catalog → Cloudflare Worker API + Pages), so it runs itself an
 costs single-digit dollars/month. See `PLAN.md` for the full build plan and
 `configs/sources.yaml` for the licensed source set.
 
+## Licensing
+
+This project uses different licences for code and for data.
+
+- **Code** — the updater, connectors, Cloudflare Worker API, tools, and clients:
+  **MIT** (see [`LICENSE`](LICENSE))
+- **Data** — **not** covered by that licence, and deliberately so. Every dataset stays
+  under the terms of the statistical agency that published it. Those terms are recorded
+  verbatim per source in [`DATABASE_LICENSES_VERBATIM.md`](DATABASE_LICENSES_VERBATIM.md)
+  and enforced in code by the `reservable` flag in `configs/sources.yaml`.
+
+The library asserts no blanket licence over the data it redistributes and cannot grant one:
+the rights belong to the publishers. Check a source's own terms before redistributing
+anything you obtain here.
+
 ## Layout
 ```
 connectors/   one folder per data source (the only thing that grows)
