@@ -88,8 +88,13 @@ def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
     plain_q = plain.replace("\\", "/").replace("'", "''")
     try:
         con = _ddb.connect()
-        con.execute("SET memory_limit='12GB'")
-        con.execute("PRAGMA threads=4")
+        # Deliberately small. Large sorts were segfaulting DuckDB outright - silent death,
+        # no traceback, five of six shards each time - and a lower ceiling forces it to
+        # spill to disk sooner rather than push its in-memory sort as far as it can. Also
+        # lets many shards run at once without their limits summing past the machine.
+        con.execute("SET memory_limit='3GB'")
+        con.execute("PRAGMA threads=2")
+        con.execute("SET preserve_insertion_order=false")
         con.execute("SET temp_directory='%s'" % _tf.gettempdir().replace("\\", "/"))
         con.execute(
             f'COPY (SELECT CAST("{key}" AS VARCHAR) AS series_id, obs_date, value '
