@@ -31,7 +31,10 @@ import requests
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.environ.get("FAO_BULK_CACHE") or r"D:\temp\claude\fao"
 MANIFEST = "https://bulks-faostat.fao.org/production/datasets_E.json"
-SOURCES = {"fao_fo": "FO", "fao_qcl": "QCL", "fao_pp": "PP"}
+# fao_et added 2026-08-24: its 13 untitled rows are element 6078 (Standard Deviation)
+# against area codes absent from the maps built for the other domains. FAO's bulk
+# manifest lists ET as "Land, Inputs and Sustainability: Temperature change on land".
+SOURCES = {"fao_fo": "FO", "fao_qcl": "QCL", "fao_pp": "PP", "fao_et": "ET"}
 
 
 def _file_location(code: str):
@@ -98,12 +101,23 @@ def main() -> int:
         for (sid,) in rows:
             key = sid.split(":", 2)[-1]            # after "<source>:<PREFIX>:"
             parts = key.split(".")
-            if len(parts) != 3:
-                unnamed += 1
-                continue
-            e, a, i = (el.get(parts[0]), ar.get(parts[1]), it.get(parts[2]))
-            if e and a and i:
-                titles[sid] = "%s, %s - %s" % (e, i, a)
+            # TWO KEY SHAPES, because not every FAO domain has an Item dimension. FO/QCL/PP are
+            # element.area.item; ET (Temperature change on land) has no Item column at all, so
+            # its keys are element.area - 6078.186. Rejecting anything that is not 3 parts made
+            # all 13 fao_et rows report as unnamed_codes while FAO named every one of them:
+            # element 6078 is Standard Deviation, area 274 is Guernsey, area 283 is Jersey.
+            if len(parts) == 3:
+                e, a, i = (el.get(parts[0]), ar.get(parts[1]), it.get(parts[2]))
+                if e and a and i:
+                    titles[sid] = "%s, %s - %s" % (e, i, a)
+                else:
+                    unnamed += 1
+            elif len(parts) == 2:
+                e, a = (el.get(parts[0]), ar.get(parts[1]))
+                if e and a:
+                    titles[sid] = "%s - %s" % (e, a)      # matches the titled rows exactly
+                else:
+                    unnamed += 1
             else:
                 unnamed += 1
         print("  %-9s untitled=%-8s titled=%-8s unnamed_codes=%s  (element/area/item maps: %d/%d/%d)"
