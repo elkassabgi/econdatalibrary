@@ -248,7 +248,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
 
   // hf_equities REMOVED 2026-08-06 (Ahmed: "remove hf") — 1,391 metadata-only listings econ
   // could never serve (R29); catalog + D1 rows deleted the same day, zero R2 objects existed.
-  "idb", "ilostat", "imf_commodity", "imf_fsire", "imf_gender_budgeting", "imf_gfsfalcs", // Four GFS *_direct sources added 2026-08-02 — 549,843 series / 8,853,880 observations that
+  "idb", "ilo", "ilostat", "imf_commodity", "imf_fsire", "imf_gender_budgeting", "imf_gfsfalcs", // Four GFS *_direct sources added 2026-08-02 — 549,843 series / 8,853,880 observations that
   // did not exist before today. All four had held ZERO rows and failed every run with
   // OverflowError('size does not fit in an int') or ParseError('out of memory'), which I first
   // read as pyexpat's 2 GiB document ceiling. It was not: GFS_BS parses at 2,293,565,648 bytes
