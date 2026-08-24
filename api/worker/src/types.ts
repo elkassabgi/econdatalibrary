@@ -109,6 +109,10 @@ export interface SourceJoinedRow {
   cadence: string | null;
   source_status: string | null;
   source_last_success: string | null;
+  // SELECT_SOURCES has returned this since task #138 and sources.ts reads it; the
+  // interface never declared it, so `npx tsc --noEmit` has been failing on two lines
+  // of working code. Runtime was fine (D1 returns the column) - the type was wrong.
+  data_through: string | null;
 }
 
 export interface LastUpdateRow {

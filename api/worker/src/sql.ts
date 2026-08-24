@@ -63,6 +63,24 @@ LEFT JOIN source_data_through dt ON dt.source_id = s.source_id
 WHERE EXISTS (SELECT 1 FROM series se WHERE se.source_id = s.source_id)
 ORDER BY s.source_id`;
 
+/** One source row, joined exactly like SELECT_SOURCES but WITHOUT the
+ *  `EXISTS (series)` filter. Needed for SHARDED sources: noaa's series rows live in
+ *  CATALOG_CLIMATE, so the EXISTS check against the PRIMARY database is false and the
+ *  source vanishes from /v1/sources even while 3.1M of its series are served. The
+ *  existence test for those is done against the shard, in the handler, and then the
+ *  descriptive row is fetched with this. `?` is the source_id. */
+export const SELECT_SOURCE_JOINED = `
+SELECT s.source_id, s.name, s.homepage, s.license_id, s.attribution, s.terms_url,
+       l.name AS license_name, l.url AS license_url,
+       l.reservable, l.commercial_ok, l.attribution_required, l.no_modify,
+       ss.cadence, ss.status AS source_status, ss.last_success_utc AS source_last_success,
+       dt.data_through AS data_through
+FROM source s
+LEFT JOIN license l ON l.license_id = s.license_id
+LEFT JOIN source_state ss ON ss.source_id = s.source_id
+LEFT JOIN source_data_through dt ON dt.source_id = s.source_id
+WHERE s.source_id = ?`;
+
 /** FTS5 search. Identical to core/catalog.py + _catalog.py::search (primary path).
  *  `?` is the MATCH query, `?` is the limit. */
 export const SEARCH_FTS = `
