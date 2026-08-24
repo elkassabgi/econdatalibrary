@@ -1539,6 +1539,12 @@ def _resolve_file_grain(series_id: str, root: str) -> Resolution:
 _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "ons_uk": _resolve_file_grain,
     "insee_melodi": _resolve_file_grain,
+    # cbs_nl / gus_dbw: same shape exactly. cbs_nl keys are dimension-only
+    # ("Geslacht=3:Leeftijd=15:Deelnemers_1") and the CBS table id lives only in the
+    # filename; gus_dbw keys all begin "GUSDBW:" so no prefix rule can separate one area
+    # file from another. Both are therefore file-grain, and needed no new resolver.
+    "cbs_nl": _resolve_file_grain,
+    "gus_dbw": _resolve_file_grain,
     "bls": _resolve_bls,
     "cepii_baci": _resolve_cepii_baci,
     "imf_imts_direct": _resolve_imf_imts_direct,
