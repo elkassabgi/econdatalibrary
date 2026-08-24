@@ -21,6 +21,26 @@ from updater import config, blob
 CAT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "catalog.db")
 KEY_COLS = ("series_key", "idbank")   # detection order — the parquet's series-identity column
 
+# FILES INSIDE A SOURCE DIRECTORY THAT MUST NOT INHERIT THAT SOURCE'S LICENCE.
+#
+# This tool COPIES the source's licence onto every key it finds, and it finds keys by
+# globbing the whole source directory. That is fine while one directory means one licence,
+# and silently wrong the moment it does not. A directory is a filesystem fact; a licence is a
+# publisher's grant, and nothing keeps them aligned.
+#
+# vdem is the measured case. data/clean_full/vdem/ holds vdem.parquet (77,371,121 rows) and
+# vparty.parquet (2,218,990 rows). V-Dem states CC BY-SA 4.0 for "The V-Dem Dataset" on two
+# official surfaces; V-Party is a separate publication whose own page carries no licence
+# language at all and which that statement never names. Cataloguing the directory would have
+# stamped 2.2M V-Party observations with a grant nobody gave - the same failure as the FAO
+# incident in the comment above, arriving through the directory rather than through the rows.
+#
+# Entries here are exclusions of EVIDENCE, not of interest: remove one by evidencing that
+# file's licence, never by assuming it shares its neighbour's.
+SOURCE_FILE_EXCLUSIONS = {
+    "vdem": ("vparty.parquet",),
+}
+
 
 def complete(con, source):
     existing = {r[0] for r in con.execute("SELECT series_id FROM series WHERE source_id=?", (source,))}
@@ -90,6 +110,17 @@ def complete(con, source):
               f"not on this backend — upload it first, or re-run against the backend "
               f"that holds it.")
         return 0
+    excluded = SOURCE_FILE_EXCLUSIONS.get(source, ())
+    if excluded:
+        skipped = [f for f in files if os.path.basename(f) in excluded]
+        files = [f for f in files if os.path.basename(f) not in excluded]
+        # Say what was dropped. A coverage limit nobody prints reads as full coverage.
+        print(f"  {source}: EXCLUDING {len(skipped)} file(s) whose licence is not this "
+              f"source's: {[os.path.basename(f) for f in skipped]} — see "
+              f"DATABASE_LICENSES_VERBATIM.md")
+        if not files:
+            print(f"  {source}: every parquet was excluded; nothing to catalogue.")
+            return 0
     key_col = None
     for f in files:
         path = os.path.join(config.source_dir(source), f)
