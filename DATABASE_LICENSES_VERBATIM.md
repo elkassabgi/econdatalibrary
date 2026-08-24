@@ -3713,3 +3713,40 @@ do not automatically benefit from a Creative Commons licence." That is aimed at 
 these are continuously-updated database extracts, which the second quote covers explicitly.
 
 Serving obligation: attribute the International Labour Organization on every served series.
+
+---
+
+## Correction applied 2026-08-24 — imf-terms was served as commercially usable
+
+The `imf-terms` licence row carried `commercial_ok = 1` in both catalog.db and D1, while
+every IMF entry in this file records **Commercial OK: False**. The API therefore told users
+that IMF data could be used commercially, on **386,687 series across 19 sources**
+(imf_gfscofog_direct 124,237, imf_ifs 100,706, imf_gfsssuc_direct 45,019, imf_cpi_direct
+27,094, imf_gfsfalcs, imf_weo, imf_fsire, imf_fas_direct, imf_pgi, imf_world_direct,
+imf_fdi_direct, imf_afrreo_direct and others). The licence row covers 1,286,901 series in
+total.
+
+The audit is what the terms actually say:
+
+> "For any potential commercial reuse of IMF Data, please email copyright@imf.org to request
+> permission."
+
+CHECKED FIRST that the audit was not the thing in error: both IMF blocks here
+(`### imf` and `### International Monetary Fund (IMF)`) independently record
+Commercial OK: False, so they agree with each other and the served flag was the outlier.
+
+Set `commercial_ok = 0` in catalog.db and in D1 (econ-catalog), verified live: /v1/sources
+now reports imf_ifs and imf_weo as commercial_ok=False, attribution_required=True.
+
+A NOTE ON HOW NEARLY THIS WAS MISSED: the first scan compared audit ids to served source ids
+by exact name and found only 5 sources / 67,290 series. This file lists `imf_afrreo`; the
+served source is `imf_afrreo_direct`. Normalising the suffix took the true count to 19
+sources / 386,687 series — five times larger. Any future audit-vs-served comparison must
+normalise those suffixes.
+
+STILL OPEN, deliberately not changed: twelve sources / 129,241 series run the other way —
+served `commercial_ok = false` where this file says commercial use is permitted (barro_lee
+43,362; unesco_clte 23,868; unesco_inno 18,909; boc 12,862; unesco_film 8,527; unesco_dem
+7,264; bundesbank 6,872; unesco_cltt 6,226; ipea 1,241; cnb 58; bis 49; bcrp 3). Correcting
+those GRANTS rights rather than restricting them, which is the owner's call. The present
+state understates what users may do, which is the safe direction to be wrong in.
