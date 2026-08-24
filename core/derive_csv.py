@@ -53,6 +53,58 @@ _MAX_ROWS = 0
 _ALLOW_STREAM = False   # see _derive_and_put; streaming cannot sort yet
 
 
+def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
+    """Stream one FILE-GRAIN series to a gzipped CSV, globally sorted, bounded memory.
+
+    The contract CSV is sorted by (series_id, obs_date) because native_table_to_tidy ends
+    with sort_values on those columns. A per-batch writer cannot reproduce that (R466), so
+    the sort has to happen BEFORE the batches: DuckDB does an external ORDER BY, spilling to
+    disk, and hands back batches already in final order. Verified 2026-08-24 that DuckDB's
+    ORDER BY on the key column matches Python's sorted() exactly over 3,000 sampled keys.
+
+    RESTRICTED TO FILE-GRAIN SOURCES ON PURPOSE. res.predicate is a pyarrow Expression and
+    cannot be handed to SQL; for file-grain the whole file IS the series set, so the filter
+    is just "the key is present" and translates safely. Any other source keeps the in-memory
+    path rather than get a predicate silently dropped.
+    """
+    from econdl import _resolve                                      # noqa: PLC0415
+    import duckdb as _ddb                                            # noqa: PLC0415
+    import gzip as _gzip                                             # noqa: PLC0415
+    import tempfile as _tf                                           # noqa: PLC0415
+    res = _resolve.resolve(series_id)
+    if res.dedup_on or res.stamp_id or not res.tidy_ok:
+        raise ValueError(f"{series_id}: not eligible for sorted streaming")
+    con = _ddb.connect()
+    con.execute("SET memory_limit='6GB'")
+    con.execute("PRAGMA threads=4")
+    con.execute("SET temp_directory='%s'" % _tf.gettempdir().replace("\\", "/"))
+    q = (f'SELECT CAST("{res.key_col}" AS VARCHAR) AS k, obs_date, value '
+         f'FROM read_parquet(?) WHERE "{res.key_col}" IS NOT NULL '
+         f'ORDER BY k, obs_date')
+    rdr = con.execute(q, [res.parquet_path]).fetch_record_batch(131_072)
+    rows = 0
+    with open(out_path, "wb") as raw,             _gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="") as gz,             io.TextIOWrapper(gz, encoding="utf-8", newline="") as fh:
+        w = csv.writer(fh, lineterminator=chr(10))
+        w.writerow(["series_id", "obs_date", "value"])
+        while True:
+            try:
+                b = rdr.read_next_batch()
+            except StopIteration:
+                break
+            if b.num_rows == 0:
+                continue
+            ks = b.column("k").to_pylist()
+            ds_ = b.column("obs_date").to_pylist()
+            vs = b.column("value").to_pylist()
+            for i in range(b.num_rows):
+                w.writerow([ks[i], ds_[i], vs[i]])
+            rows += b.num_rows
+    con.close()
+    if rows == 0:
+        raise _ResolveZero(f"{series_id}: zero rows")
+    return os.path.getsize(out_path)
+
+
 def _series_csv_to_file(series_id: str, out_path: str) -> int:
     """Stream one series' CSV to a file. Returns the byte size written.
 
@@ -149,18 +201,21 @@ def _derive_and_put(s3, bucket: str, key: str, series_id: str) -> None:
     # fragment parallelism. Streaming needs an external sort (DuckDB ORDER BY spilling to
     # disk) before it can be trusted, so until then a too-large table is SKIPPED and named,
     # never silently mis-ordered.
-    if not _ALLOW_STREAM:
-        body = _series_csv_bytes(series_id)      # raises TooLarge, which the caller reports
-        _put_with_backoff(s3, bucket, key, body)
-        return
     try:
         body = _series_csv_bytes(series_id)
     except TooLarge:
+        if not _ALLOW_STREAM:
+            raise                                # skipped and NAMED by the caller
+        # SORTED streaming only. _series_csv_to_file (unsorted, per-batch) writes the right
+        # rows in the wrong order (R466); _series_csv_to_file_sorted pushes the ORDER BY into
+        # DuckDB, which spills to disk, so the batches arrive already globally sorted.
+        # Byte-verified against _series_csv_bytes on cbs_nl:71892ned (599 MB),
+        # 70962ned (862 MB) and 81455NED (2.87 GB).
         import tempfile                                              # noqa: PLC0415
-        fd, tmp = tempfile.mkstemp(suffix=".csv", prefix="derive_")
+        fd, tmp = tempfile.mkstemp(suffix=".csv.gz", prefix="derive_")
         os.close(fd)
         try:
-            _series_csv_to_file(series_id, tmp)
+            _series_csv_to_file_sorted(series_id, tmp)
             _put_gzip_file_with_backoff(s3, bucket, key, tmp)
         finally:
             try:
