@@ -3675,3 +3675,41 @@ created and obtained from Statistics Poland, and that it has been processed.
 
 Serving obligation: attribute "Statistics Poland (GUS)", carry the acquisition date, and mark
 the data as processed by this library.
+
+### ilo (SDMX endpoint) — assessed 2026-08-24
+
+- **Databases (1):** `ilo`
+- **Official terms URL:** https://www.ilo.org/rights-and-permissions
+- **License:** CC BY 4.0
+- **Classification:** redistributable_attribution
+- **Decision tier:** CLEARED - re-host OK (attribution)
+
+| source | publisher | classification | status | verdict |
+|---|---|---|---|---|
+| `ilo` | International Labour Organization (SDMX) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
+
+**Why this inherits ilostat's verdict rather than needing its own fetch.** The terms already
+quoted verbatim and adversarially confirmed for `ilostat` are ILO ORGANIZATION-WIDE, not
+product-specific:
+
+> "As of 3 May 2023, unless otherwise indicated, ILO publications are licensed under a
+> Creative Commons Attribution BY 4.0 licence (CC BY 4.0)."
+
+> "databases and datasets together with the accompanying referential metadata are covered by
+> the Creative Commons CC BY 4.0 licence."
+
+PROVENANCE CHECKED, not assumed: `data/clean_full/ilo` is written by
+`updater/strategies/fetchers/sdmx_nso.py` against **https://sdmx.ilo.org/rest/** — the ILO's
+own SDMX service. Same publisher, same rights page, so the same grant covers it.
+
+NOT A DUPLICATE OF ilostat, measured 2026-08-24: `ilo` carries SDMX-keyed series
+(`REF_AREA=AGO:FREQ=A:MEASURE=CLD_2POP_NB:SEX=SEX_F:...`, child-labour measures) while
+ilostat's catalogue ids are of the form `ilostat:UNE_DEAP_SEX_AGE_RT:AGE_YTHADULT_YGE15:AUS`
+(unemployment rates). Zero of five sampled `ilo` keys matched any ilostat row. 1,157 parquet
+files / 1.4 GB of genuinely distinct data, currently stored and served to nobody.
+
+CAVEAT CARRIED FORWARD from the ilostat entry: "ILO publications produced prior to 3 May 2023
+do not automatically benefit from a Creative Commons licence." That is aimed at publications;
+these are continuously-updated database extracts, which the second quote covers explicitly.
+
+Serving obligation: attribute the International Labour Organization on every served series.
