@@ -32,10 +32,38 @@ CATALOG = os.path.join(ROOT, "data", "catalog.db")
 DEFAULT_PREFIX = "series"
 
 
+class TooLarge(Exception):
+    """This series' native store is too big to project in memory at the current limit."""
+
+
+# Set from --max-rows. 0 disables. A series whose STORE FILE holds more rows than this is
+# skipped and NAMED, never attempted.
+#
+# WHY: _series_csv_bytes builds the whole CSV in a StringIO before returning bytes, so peak
+# memory is the Arrow table plus a pandas frame plus the full CSV string. Measured
+# 2026-08-24 on the cbs_nl/gus_dbw publish: one worker on gus_dbw's 358M-row area_16 held
+# 118 GB RSS, roughly six times the CSV it was producing. cbs_nl's 37824 is 1,886,692,500
+# rows - about 600 GB by that ratio, on a 382 GB machine, with four workers able to start
+# several giants at once. That does not fail politely; it thrashes the box and takes the
+# crawlers with it.
+#
+# 11 tables (0.2%) are over 100M rows. Skipping them costs 0.2% of the tables and protects
+# the 99.8% that derive cleanly, which is the opposite trade from letting the run die.
+_MAX_ROWS = 0
+
+
 def _series_csv_bytes(series_id: str) -> bytes:
     """Project one series to CSV bytes via the econdl resolver (the contract shape)."""
     from econdl import _resolve
     res = _resolve.resolve(series_id)
+    if _MAX_ROWS and isinstance(res.parquet_path, str):
+        try:
+            import pyarrow.parquet as _pq
+            n = _pq.read_metadata(res.parquet_path).num_rows
+        except Exception:
+            n = 0
+        if n > _MAX_ROWS:
+            raise TooLarge(f"{n:,} rows > --max-rows {_MAX_ROWS:,}")
     table = _resolve.read_native(res)
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")   # match the dev shim / Worker byte-for-byte
@@ -249,6 +277,10 @@ def main() -> None:
                          "be (every key already exists, so it would skip everything).")
     ap.add_argument("--skip-existing", action="store_true",
                     help="list existing <prefix>/ keys once and skip them (resumable multi-day run)")
+    ap.add_argument("--max-rows", type=int, default=0,
+                    help="skip (and name) any series whose store file exceeds this many "
+                         "rows; the CSV is built in memory, so a giant table can exhaust "
+                         "the machine. 0 disables.")
     ap.add_argument("--smallest-first", action="store_true",
                     help="process sources in ascending entry count so whole sources go live early")
     ap.add_argument("--workers", type=int, default=1,
@@ -260,6 +292,8 @@ def main() -> None:
                     help="derive even if the local parquet mirror is BEHIND R2. Only for a "
                          "deliberate rebuild from an older vintage — see the guard below.")
     a = ap.parse_args()
+    global _MAX_ROWS
+    _MAX_ROWS = a.max_rows
 
     # PREFLIGHT (ledger R383). This tool WRITES to R2 but READS through the econdl resolver,
     # which reads data/clean_full/ — the LOCAL mirror. Under AQUEDUCT_BACKEND=r2 that is a
