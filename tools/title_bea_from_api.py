@@ -105,6 +105,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--max-tables", type=int, default=0, help="0 = every table")
+    # THE SWEEP CANNOT DETECT ITS OWN COMPLETION, so it must be opt-in after the first run.
+    # The loop breaks when every wanted code has a name, and 126 of the 1,281 codes are ones
+    # BEA does not name anywhere — so `want - names` is never empty, the break never fires, and
+    # every invocation re-walks all ~420 tables at ~2,900 API calls. Harmless the first time and
+    # pure waste afterwards, including on the --apply run, which needs nothing but the cache.
+    ap.add_argument("--refresh", action="store_true",
+                    help="re-sweep BEA even when the cache exists (default: use the cache)")
     a = ap.parse_args()
 
     key = _key()
@@ -121,7 +128,10 @@ def main() -> int:
         print(f"  cache: {len(names):,} code->description already harvested")
 
     calls = 0
-    for dataset, freqs in DATASETS.items():
+    sweep = a.refresh or not names
+    if not sweep:
+        print("  using the cached descriptions; pass --refresh to re-sweep BEA")
+    for dataset, freqs in (DATASETS.items() if sweep else ()):
         tables = _tables(key, dataset)
         if a.max_tables:
             tables = tables[:a.max_tables]
