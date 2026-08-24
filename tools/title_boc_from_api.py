@@ -48,9 +48,14 @@ def main() -> int:
     titles, missing = {}, 0
     for sid in coded:
         code = sid.split(":", 1)[1]
-        d = (series.get(code) or {}).get("description")
-        if d and str(d).strip():
-            titles[sid] = str(d).strip()
+        d = str((series.get(code) or {}).get("description") or "").strip()
+        # A DESCRIPTION IS NOT AUTOMATICALLY A TITLE. Valet answers '-' for ECUCAA01 and a
+        # bare 'GDP' for every MPR_<vintage>_AARGG_CAN_ series - 42 of the 543 matches.
+        # Replacing a code with '-' is worse than leaving the code, and one 'GDP' shared by
+        # a dozen distinct Monetary Policy Report vintages is actively misleading. Require
+        # something that reads as a phrase: 8+ characters and not itself code-shaped.
+        if len(d) >= 8 and not (CODED.match(d) and " " not in d):
+            titles[sid] = d
         else:
             missing += 1
     print("titled %s of %s coded rows (%s not described by Valet)"
