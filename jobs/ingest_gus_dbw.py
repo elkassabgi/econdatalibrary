@@ -31,9 +31,16 @@ obs_date:   annual → Dec 31; quarter → quarter start; month/half/week → st
 Run: python jobs/ingest_gus_dbw.py
 """
 from __future__ import annotations
-import datetime as dt, glob, json, os, re, time
+import datetime as dt, glob, json, os, re, sys, time
 from email.utils import parsedate_to_datetime
-import pyarrow as pa, pyarrow.parquet as pq
+
+# The guard launches this as `python jobs/ingest_gus_dbw.py` from the repo root, so sys.path[0]
+# is jobs/ and the repo root is NOT importable — `from jobs import ...` raises
+# ModuleNotFoundError before main() is ever reached. Put the root on the path first, so the
+# same import works whether this is run as a script or imported by the tests.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from jobs import gus_dbw_refresh as R                                        # noqa: E402
+import pyarrow as pa, pyarrow.parquet as pq                                  # noqa: E402
 import requests
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
@@ -398,7 +405,8 @@ def fetch_year(var: int, sec: int, year: int, cands: list[int], pmap: dict,
 
 def fetch_section(aid: int, var: int, sec: int, yr: tuple[int, int] | None,
                   cands: list[int], pmap: dict, ck: dict,
-                  done_year_sections: set) -> int:
+                  done_year_sections: set, section_dir: str | None = None,
+                  ckpt_key: str = "done_year_sections") -> int:
     """Sweep years × candidate periods and WRITE the section's data, returning the
     total rows written this call.
 
@@ -416,7 +424,13 @@ def fetch_section(aid: int, var: int, sec: int, yr: tuple[int, int] | None,
     whole-section part: its 'stop after 4 empty years' heuristic relies on a live
     empty-streak that can't be reconstructed from a year checkpoint, and these
     sections are small/rare, so per-year checkpointing buys little there."""
-    section_dir = os.path.join(PARTS, f"area_{aid}")
+    # section_dir and ckpt_key are parameterised for the REFRESH pass, which must write its
+    # tail parts somewhere the area merge will not mistake for backfill parts, and must
+    # checkpoint under its own key. Passing the refresh's year set under the backfill's key
+    # would overwrite "done_year_sections" in the shared checkpoint - the backfill and the
+    # refresh would then read each other's progress as their own.
+    section_dir = section_dir or os.path.join(PARTS, f"area_{aid}")
+    os.makedirs(section_dir, exist_ok=True)
     skey = f"v{var}:s{sec}"
     # ever_hit is WITHIN-RUN only (not persisted): a resumed run re-probes the full
     # candidate set on its first fresh year and can re-widen coverage, instead of
@@ -442,7 +456,7 @@ def fetch_section(aid: int, var: int, sec: int, yr: tuple[int, int] | None,
                 write_part(os.path.join(section_dir, f"v{var}_s{sec}_y{y}.parquet"), rows)
                 total += len(rows)
             done_year_sections.add(ykey)
-            ck["done_year_sections"] = sorted(done_year_sections)
+            ck[ckpt_key] = sorted(done_year_sections)
             save_ckpt(ck)
         return total
 
@@ -481,6 +495,109 @@ def write_part(path: str, rows: list[tuple]):
         if os.path.exists(tmp):
             os.remove(tmp)
 
+
+# ---------------------------------------------------------------- refresh
+REFRESH_PARTS = os.path.join(PARTS, "_refresh")
+
+# Wall-clock budget for one refresh pass, checked BETWEEN AREAS. Between units and not
+# inside them because that is the only place it can be honoured: SIGALRM is a no-op on
+# Windows and a fetch already in flight cannot be interrupted safely (R456). A pass that
+# runs out of budget stops cleanly; per-area state is durable, so the next run continues.
+REFRESH_BUDGET_H = 6.0
+
+
+def refresh_pass(var_areas: list, entries, pmap: dict, ck: dict) -> None:
+    """Re-sweep the recent-year tail of every area that is due, and upsert it.
+
+    This is what makes gus_dbw auto-update. The backfill gate is `if os.path.exists(final):
+    skip`, so an area crawled once was frozen forever, and on completion the crawler wrote
+    logs/gus_dbw.DONE - which RELAUNCH_GUARD.ps1 reads as 'never relaunch' - so the source
+    retired itself with 1,237,766,278 rows and no update path at all (R475).
+
+    GUS publishes no last-modified, so freshness cannot be asked for the way CBS is asked.
+    The registry's own strategy_reason prescribes the alternative and this implements it:
+    re-fetch the latest years and replace them wholesale. An area is rebuilt ONLY if its
+    sweep completed with zero transient failures - a partial fetch must never be mistaken
+    for the publisher having withdrawn data.
+    """
+    state = R.load_state(OUT)
+    tail_start = R.tail_start_year()
+    deadline = time.time() + REFRESH_BUDGET_H * 3600
+    due = [a for a in var_areas
+           if os.path.exists(os.path.join(OUT, f"area_{a.get('id')}.parquet"))
+           and R.area_due(a.get('id'), state)]
+    log(f"REFRESH: {len(due)} of {len(var_areas)} areas due (tail from {tail_start}, "
+        f"cadence {R.REFRESH_DAYS}d, budget {REFRESH_BUDGET_H}h)")
+
+    refreshed = skipped = 0
+    for a in due:
+        if time.time() > deadline:
+            log(f"REFRESH: budget spent; {len(due) - refreshed - skipped} area(s) left "
+                f"for the next run (per-area state is durable)")
+            break
+        aid = a.get("id")
+        final = os.path.join(OUT, f"area_{aid}.parquet")
+        try:
+            vlist = cached_get(f"vars_{aid}", f"/area/area-variable?id-obszaru={aid}&lang=en") or []
+        except TransientError as e:
+            log(f"REFRESH area {aid}: variable list failed transiently ({e}); next run")
+            skipped += 1
+            continue
+        var_ids = sorted({int(e['id-zmienna']) for e in vlist
+                          if isinstance(e, dict) and e.get('id-zmienna') is not None})
+        area_dir = os.path.join(REFRESH_PARTS, f"area_{aid}")
+        area_ok = True
+        ryears: set = set()
+        fetched = 0
+        for var in var_ids:
+            try:
+                meta = cached_get(f"meta_{var}", f"/variable/variable-meta?id-zmiennej={var}&lang=en")
+            except TransientError as e:
+                log(f"  REFRESH var {var}: metadata failed transiently ({e})")
+                area_ok = False
+                continue
+            if not isinstance(meta, dict):
+                continue
+            for pz in (meta.get('przekroje') or []):
+                sec = pz.get('id-przekroj')
+                if sec is None:
+                    continue
+                cands = candidate_periods(pz.get('id-czestotliwosc'), entries, pmap)
+                if not cands:
+                    continue
+                yr = year_range(pz)
+                hi = yr[1] if yr else THIS_YEAR
+                if hi < tail_start:
+                    continue          # this section has no data in the tail window at all
+                try:
+                    fetched += fetch_section(aid, var, sec, (tail_start, hi), cands, pmap,
+                                             ck, ryears, section_dir=area_dir,
+                                             ckpt_key='refresh_year_sections')
+                except Exception as e:               # noqa: BLE001
+                    log(f"  REFRESH var {var} sec {sec} ERR: {e}")
+                    area_ok = False
+
+        if not area_ok:
+            log(f"REFRESH area {aid}: INCOMPLETE sweep - NOT rebuilt, retried next run "
+                f"(a partial fetch must never look like an upstream withdrawal)")
+            skipped += 1
+            continue
+        parts = R.tail_parts_for_area(aid, REFRESH_PARTS)
+        try:
+            res = R.rebuild_with_tail(final, parts, tail_start)
+        except Exception as e:                       # noqa: BLE001
+            log(f"REFRESH area {aid}: rebuild failed ({e}); the served copy is untouched")
+            skipped += 1
+            continue
+        R.clear_tail_parts(aid, REFRESH_PARTS)
+        R.mark_refreshed(aid, state, rows_before=res['rows_before'], rows_after=res['rows_after'])
+        R.save_state(state, OUT)
+        delta = res['rows_after'] - res['rows_before']
+        log(f"REFRESH area {aid}: {res['rows_before']:,} -> {res['rows_after']:,} obs "
+            f"({delta:+,}; kept {res['kept']:,} below {tail_start}, replaced "
+            f"{res['dropped']:,} with {res['added']:,})")
+        refreshed += 1
+    log(f"REFRESH: {refreshed} area(s) rebuilt, {skipped} left for the next run")
 
 # ---------------------------------------------------------------- main
 def main():
@@ -667,15 +784,24 @@ def main():
         save_ckpt(ck)
 
     if all_complete:
-        log(f"DONE: {total_obs:,} total GUS DBW observations — all areas complete")
-        # Signal the watchdog to stop relaunching this job.
+        log(f"BACKFILL COMPLETE: {total_obs:,} total GUS DBW observations — all areas done")
+        # NOT logs/gus_dbw.DONE. That filename is RELAUNCH_GUARD.ps1's retire flag, meaning
+        # 'never start this job again' - so writing it on a successful pass retired the
+        # source outright, freezing 1.24 billion rows with no update path (R475). A success
+        # sentinel and a retire flag must not be the same file. This one is a record only;
+        # nothing schedules off it.
         try:
-            done_path = os.path.join(ROOT, "logs", "gus_dbw.DONE")
+            done_path = os.path.join(ROOT, "logs", "gus_dbw.BACKFILL_COMPLETE")
             os.makedirs(os.path.dirname(done_path), exist_ok=True)
             with open(done_path, "w", encoding="utf-8") as fh:
-                fh.write(f"{total_obs} obs at {dt.datetime.now().isoformat()}\n")
+                fh.write(f"{total_obs} obs at {dt.datetime.now().isoformat()}" + chr(10))
         except OSError:
             pass
+        # The backfill is done, so from here the job's purpose is keeping it current.
+        try:
+            refresh_pass(var_areas, entries, pmap, ck)
+        except Exception as e:                       # noqa: BLE001
+            log(f"REFRESH pass aborted: {type(e).__name__}: {e}")
     else:
         log(f"PASS COMPLETE WITH GAPS: {total_obs:,} obs so far; some areas had "
             f"transient failures and were left for the next run (no .DONE written).")
