@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 
 from . import r2_util
 
@@ -23,12 +24,33 @@ STORE = os.path.join(ROOT, "data", "clean_full")
 DEFAULT_PREFIX = "clean_full"
 
 
+# INTERMEDIATES ARE NOT THE STORE. A bare *.parquet walk uploads a crawler's working
+# files as though they were finished tables. Measured 2026-08-24 before the cbs_nl/gus_dbw
+# publish: gus_dbw keeps 1,366 files (3.05 GB) under parts/ and _cache/, and cbs_nl holds
+# 373 flushed .partN.parquet plus __series sidecars (0.21 GB). Uploading those costs money
+# for data nobody can use and, worse, puts objects in clean_full/<source>/ that the
+# resolver and the CSV derive would treat as real tables.
+_PART_RE = re.compile(r"\.part\d*\.parquet$", re.I)
+_EXCL_DIRS = {"parts", "_cache", "_tmp"}
+
+
+def _is_intermediate(rel: str) -> bool:
+    """rel is the store-relative POSIX path (e.g. 'gus_dbw/parts/area_16/v1.parquet')."""
+    segs = rel.split("/")
+    if _EXCL_DIRS.intersection(segs[:-1]):     # any DIRECTORY segment, not the filename
+        return True
+    fn = segs[-1]
+    return bool(_PART_RE.search(fn)) or fn.endswith("__series.parquet") or "ckpt" in fn.lower()
+
+
 def _iter_parquet(store: str):
     for dirpath, _dirs, files in os.walk(store):
         for fn in files:
             if fn.endswith(".parquet"):
                 full = os.path.join(dirpath, fn)
                 rel = os.path.relpath(full, store).replace(os.sep, "/")
+                if _is_intermediate(rel):
+                    continue
                 yield full, rel
 
 
