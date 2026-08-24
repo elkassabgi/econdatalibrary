@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Derive ONE series to R2, in its own process. Isolation is the whole point.
+"""Derive ONE series to R2, in its own process.
 
-WHY THIS EXISTS. The sorted-streaming path (DuckDB COPY + external sort) works perfectly on
-a single table in a fresh process — cbs_nl:83999NED, 39.5M rows, 124,325,147 bytes,
-byte-identical, twice. Inside core/derive_csv.py's loop it SEGFAULTS: bash reports
-"Segmentation fault" and the process dies with no traceback, taking the rest of that shard's
-queue with it. Twelve shards died producing nothing; three shards died the same way; the
-crash is not memory (3GB and 12GB limits both), not the S3 client (tested loaded first), and
-not the table (derives fine alone).
+WHY THIS EXISTS. This was written to contain a crash I had misdiagnosed: the sorted-streaming
+derive kept dying with no traceback, and I concluded the fault was unexplainable and could only
+be isolated. It was not. Every DuckDB connection was spilling its external sort to the same
+shared temp path, so concurrent sorts collided on one filename - "Access is denied" between
+processes, a silent native crash between threads. That is fixed at the source in
+core/derive_csv.py (`_duck_spill_dir`, one spill directory per process). See ledger R467.
 
-An unexplained native crash inside a long-lived process is not something to keep guessing at
-while 86 tables stay unserved. One process per table turns a fatal crash into a single
-failed table that the next run retries, and --skip-existing means retries cost nothing.
+The per-process model is kept anyway because it earns its place independently: --skip-existing
+makes retries free, one bad table cannot take a queue with it, and shard count is a shell loop
+rather than a threading argument. It is no longer a workaround for a mystery.
 
 Prints one line per outcome so a wrapper loop can count successes without parsing tracebacks.
 """
@@ -62,6 +61,12 @@ def main() -> int:
         try:
             os.remove(tmp)
         except OSError:
+            pass
+        # This process's private DuckDB spill dir; pids get reused, so don't leave it.
+        try:
+            import shutil
+            shutil.rmtree(d._duck_spill_dir().replace("/", os.sep), ignore_errors=True)
+        except Exception:
             pass
 
 

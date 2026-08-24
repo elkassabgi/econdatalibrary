@@ -54,6 +54,22 @@ _ALLOW_STREAM = False   # see _derive_and_put
 _STREAM_MAX = 0        # upper bound for the streaming path; 0 = none
 
 
+
+def _duck_spill_dir() -> str:
+    """A spill directory private to this process (see the collision note in the sorter).
+
+    Lives beside the store rather than in %TEMP%: an external sort of a billion-row table
+    can spill tens of GB, and %TEMP% is on the small drive.
+    """
+    base = os.environ.get("ECONDL_DUCKDB_TMP")
+    if not base:
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base = os.path.join(repo, "data", "_duckdb_spill")
+    d = os.path.join(base, "pid%d" % os.getpid())
+    os.makedirs(d, exist_ok=True)
+    return d.replace("\\", "/").replace("'", "''")
+
+
 def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
     """Write one FILE-GRAIN series to a gzipped CSV, globally sorted, bounded memory.
 
@@ -88,14 +104,20 @@ def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
     plain_q = plain.replace("\\", "/").replace("'", "''")
     try:
         con = _ddb.connect()
-        # Deliberately small. Large sorts were segfaulting DuckDB outright - silent death,
-        # no traceback, five of six shards each time - and a lower ceiling forces it to
-        # spill to disk sooner rather than push its in-memory sort as far as it can. Also
-        # lets many shards run at once without their limits summing past the machine.
+        # Deliberately small so many sorts can run at once without their limits summing
+        # past the machine, and so each spills to disk rather than pushing its in-memory
+        # sort as far as it can.
         con.execute("SET memory_limit='3GB'")
         con.execute("PRAGMA threads=2")
         con.execute("SET preserve_insertion_order=false")
-        con.execute("SET temp_directory='%s'" % _tf.gettempdir().replace("\\", "/"))
+        # Every connection MUST get its OWN spill directory. DuckDB names its external-sort
+        # spill file `duckdb_temp_storage_DEFAULT-<n>.tmp`, and that name is identical in
+        # every process, so pointing them all at one shared temp dir makes concurrent sorts
+        # fight over the same file: the loser raises "Access is denied" on Windows, and the
+        # same collision inside one multi-threaded process is a native crash with no
+        # traceback. That crash is what cost hours of wrong guesses at memory limits, the
+        # S3 client and the table itself - none of which were ever the cause.
+        con.execute("SET temp_directory='%s'" % _duck_spill_dir())
         con.execute(
             f'COPY (SELECT CAST("{key}" AS VARCHAR) AS series_id, obs_date, value '
             f"FROM read_parquet('{src}') WHERE \"{key}\" IS NOT NULL "
