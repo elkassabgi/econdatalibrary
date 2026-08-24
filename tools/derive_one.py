@@ -26,7 +26,13 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
 
 
-MAX_ROWS = 500_000_000
+# Largest PROVEN-servable table: gus_dbw:area_46, 529,322,150 rows -> a 3.11 GB gzipped
+# object (area_16, 358,524,120 rows -> 1.34 GB). The ceiling sits above those and far below
+# the two cbs_nl monsters (1,886,692,500 and 1,056,918,900 rows), which at the measured
+# ~190 bytes/row are ~360 GB and ~200 GB of plain CSV - more than the staging drive holds.
+# Set from what has actually been derived, not from a round number: my first guess of
+# 500,000,000 would have refused area_46, which serves fine.
+MAX_ROWS = 750_000_000
 
 
 def _row_count(sid: str):
