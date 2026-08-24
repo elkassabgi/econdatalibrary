@@ -67,6 +67,41 @@ FETCHER_BACKED = {"extend_by_date", "overwrite_if_changed", "sdmx_delta",
                   "manual_vintage", "bulk_snapshot_if_changed"}
 
 
+# A THIRD RUN PATH, AND WHY IT NEEDS EVIDENCE RATHER THAN A REGISTRY FIELD.
+#
+# cbs_nl and gus_dbw have no fetcher module and never will: they are crawled by long-running
+# scripts that RELAUNCH_GUARD.ps1 relaunches, not by the orchestrator. Until 2026-08-25 that
+# distinction did not matter, because neither script could refresh anything it already held -
+# both gated on `if os.path.exists(final): skip`, so this audit calling them STRANDED was
+# correct in outcome even though its stated reason (no fetcher module) was not the whole
+# story. They now re-crawl: cbs_nl on CBS's published per-table Modified, gus_dbw by
+# re-sweeping the recent-year tail (R475).
+#
+# The temptation is to add a registry field saying so. That would repeat the exact error this
+# module was written to stop - matrix membership was a declaration too, and two sources in
+# the matrix were structurally incapable of running. So the route counts only when the
+# mechanism has left a trace that CANNOT exist unless it actually operated: a manifest of
+# ingested vintages, or per-area refresh state. A source whose refresh has never once run has
+# no artifact and stays stranded, which is the honest answer.
+SCRIPT_REFRESH_EVIDENCE = {
+    # cbs_nl writes one entry per table as it confirms or replaces that table's vintage.
+    "cbs_nl": os.path.join("data", "clean_full", "cbs_nl", "_modified.json"),
+    # gus_dbw writes one entry per area, with the row counts before and after the upsert.
+    "gus_dbw": os.path.join("data", "clean_full", "gus_dbw", "_refresh_state.json"),
+}
+
+
+def _script_refresh_proven(sid: str) -> str | None:
+    """The artifact proving this source refreshes by guard-run script, or None.
+
+    Existence is the whole test, because these files are only ever written AFTER a refresh
+    decision has been made and acted on. Neither is created by the backfill.
+    """
+    rel = SCRIPT_REFRESH_EVIDENCE.get(sid)
+    if not rel:
+        return None
+    return rel if os.path.exists(os.path.join(ROOT, rel)) else None
+
 def _adapter_missing(entry) -> bool:
     """True when this entry can never run: fetcher-backed strategy with no fetcher module.
 
@@ -96,7 +131,11 @@ def scheduled_sources() -> tuple:
     for s in reg["sources"]:
         if s.get("live"):
             if _adapter_missing(s):
-                stranded[s["source_id"]] = f"registry live ({s.get('cadence','?')})"
+                _ev = _script_refresh_proven(s["source_id"])
+                if _ev:
+                    why.setdefault(s["source_id"], f"guard-run script (refresh proven by {_ev})")
+                else:
+                    stranded[s["source_id"]] = f"registry live ({s.get('cadence','?')})"
                 continue
             why[s["source_id"]] = f"registry live ({s.get('cadence', '?')})"
 
@@ -137,7 +176,11 @@ def scheduled_sources() -> tuple:
             continue
         sid = s["source_id"]
         if _adapter_missing(s):
-            stranded.setdefault(sid, "workstation route (run_location: local)")
+            _ev = _script_refresh_proven(sid)
+            if _ev:
+                why.setdefault(sid, f"guard-run script (refresh proven by {_ev})")
+            else:
+                stranded.setdefault(sid, "workstation route (run_location: local)")
             continue
         why.setdefault(sid, "workstation route (run_location: local)")
 
