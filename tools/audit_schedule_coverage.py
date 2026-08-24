@@ -91,6 +91,17 @@ SCRIPT_REFRESH_EVIDENCE = {
 }
 
 
+# WHY EACH SCHEDULED-BUT-UNSERVED SOURCE IS UNSERVED — adjudicated, with the evidence.
+#
+# This section used to print three ids and the instruction "verify each", which meant
+# verifying them again every time anyone looked. Each cost real investigation to settle and
+# none of the answers lived in the audit, so they live here now. An id with no entry is
+# genuinely unadjudicated and should be investigated; an id WITH one has been.
+UNSERVED_REASONS = {
+    "gleif": "CLEARED (CC0) but blocked on SHAPE, not licence - it is an ENTITY REGISTRY (LEI, LegalName, jurisdiction, status), carrying no series_key/obs_date/value, so it cannot be catalogued in the series model at any grain. Serving it needs an entity-lookup surface, which is a product decision rather than a compliance one. See DATABASE_LICENSES_VERBATIM.md.",
+    "sec_edgar_xbrl": "RESERVED FOR AHMED - one id, two products. The registry entry named sec_edgar is the UNSERVED 13F/insider giant; the SERVED XBRL product is catalogued under sec_edgar but registry-named sec_edgar_xbrl, kept fresh by .github/workflows/sec-edgar-daily.yml. Repairing the crossing changes PUBLIC ids, so it is Ahmed's call (R275/R276, and the econ-updater landmines table).",
+}
+
 def _script_refresh_proven(sid: str) -> str | None:
     """The artifact proving this source refreshes by guard-run script, or None.
 
@@ -318,10 +329,19 @@ def main() -> int:
 
     orphan = sched - served
     if orphan:
-        print(f"\nSCHEDULED BUT NOT SERVED ({len(orphan)}) — refreshed on disk, reaches nobody."
-              f" Gated-by-licence is a legitimate reason; verify each:")
+        import textwrap
+        unexplained = [s for s in orphan if s not in UNSERVED_REASONS]
+        print(f"\nSCHEDULED BUT NOT SERVED ({len(orphan)}) — refreshed on disk, reaches "
+              f"nobody. {len(orphan) - len(unexplained)} adjudicated, {len(unexplained)} not:")
         for s in sorted(orphan):
             print(f"    {s:<24s} {why[s]}  (catalog rows: {counts.get(s, 0):,})")
+            reason = UNSERVED_REASONS.get(s)
+            if reason:
+                for line in textwrap.wrap(reason, 100):
+                    print(f"        {line}")
+            else:
+                print("        NOT ADJUDICATED — investigate, then record the answer in "
+                      "UNSERVED_REASONS so nobody derives it twice.")
 
     if args.verbose:
         print("\nSCHEDULED, by mechanism:")
