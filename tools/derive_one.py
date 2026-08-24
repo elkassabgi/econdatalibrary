@@ -26,6 +26,28 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
 
 
+MAX_ROWS = 500_000_000
+
+
+def _row_count(sid: str):
+    """Rows in this series' store file, from parquet footer metadata only (no data read).
+
+    Returns None when the count cannot be established — an unknown size must not silently
+    pass a ceiling check, but neither should it block a derive that would otherwise work,
+    so the caller treats None as "no evidence" and proceeds.
+    """
+    try:
+        import pyarrow.parquet as pq
+        from clients.python.econdl import _resolve
+        r = _resolve.resolve(sid)
+        path = getattr(r, "parquet_path", None)
+        if not path or not os.path.exists(str(path)):
+            return None
+        return pq.read_metadata(str(path)).num_rows
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("usage: derive_one.py <series_id> [--bucket econ-data]")
@@ -37,6 +59,18 @@ def main() -> int:
 
     from core import derive_csv as d
     from updater.blob import R2Blob
+
+    # SIZE CEILING LIVES HERE, NOT IN THE QUEUE FILE (R469). Two cbs_nl tables are ~1.9B and
+    # ~1.1B rows; at the measured ~190 bytes/row they are ~360 GB and ~200 GB as a single CSV -
+    # unservable, and bigger than the free space on the drive they stage to. I excluded them
+    # from one queue file, then rebuilt that file from a fresh reconciliation, which of course
+    # listed them again, and a 4-hour-timeout pass started writing both. A ceiling the caller
+    # can forget is not a ceiling.
+    n_rows = _row_count(sid)
+    if n_rows and n_rows > MAX_ROWS:
+        print(f"REFUSE {sid} {n_rows:,} rows exceeds the {MAX_ROWS:,}-row single-CSV ceiling; "
+              f"needs the #part split convention")
+        return 0
 
     key = "series/" + urllib.parse.quote(sid, safe="") + ".csv"
     r2 = R2Blob()
