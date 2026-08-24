@@ -143,15 +143,23 @@ def titles_for(source_id: str, ds: str):
     if not files:
         return {}, {"reason": "no store file"}
 
-    import duckdb
-    con = duckdb.connect()
-    con.execute("SET temp_directory='%s'" %
-                os.path.join(ROOT, "data", "_duckdb_spill", "titles").replace("\\", "/"))
-    keys = [r[0] for r in con.execute(
-        "SELECT DISTINCT series_key FROM read_parquet(%r)" % files[0]).fetchall()]
-    con.close()
-
+    # DO NOT SCAN THE STORE WHEN THE CATALOGUE ALREADY NAMES THE TARGETS. This query
+    # materialises every distinct series_key in the file, and the giants have hundreds of
+    # millions: on unctad_biotrademerch it took the process to a 79 GB resident set before
+    # it was killed, to build a list that is then thrown away, because the loop below
+    # iterates the CATALOGUE ids. The store is only needed when a source has no catalogue
+    # rows at all, which is the --write-a-new-source case.
     keep = _catalogued(source_id)
+    keys = []
+    if not keep:
+        import duckdb
+        con = duckdb.connect()
+        con.execute("SET temp_directory='%s'" %
+                    os.path.join(ROOT, "data", "_duckdb_spill", "titles").replace("\\", "/"))
+        keys = [r[0] for r in con.execute(
+            "SELECT DISTINCT series_key FROM read_parquet(%r)" % files[0]).fetchall()]
+        con.close()
+
     # TITLE WHAT THE CATALOGUE LISTS, NOT WHAT THE STORE HOLDS. Filtering store keys by the
     # catalogue works only while the two share a grain. Sixteen sources catalogue COARSER
     # than their store - oceantrade lists "0000.01.O_A" (Economy/Flow/Product, Partner summed
