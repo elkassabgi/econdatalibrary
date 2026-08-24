@@ -63,6 +63,7 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -292,6 +293,46 @@ def _retry_remote(fn, what: str, tries: int = 4):
     raise AssertionError("unreachable")
 
 
+def _distinct_keys(con, files, src):
+    """(distinct series_key, method) - EXACT where it completes, HLL only as a fallback.
+
+    This tool used approx_count_distinct everywhere and published "HyperLogLog estimate,
+    ~1% error; conservative floor" on /v1/stats. Measured against exact COUNT(DISTINCT)
+    over the same files on 2026-08-24, neither half held:
+
+        whr      2,086 vs     1,749  +19.3%      faostat 16,515,284 vs 15,760,362  +4.8%
+        wid  3,307,575 vs 2,858,393  +15.7%      insee   21,861,356 vs 21,266,215  +2.8%
+        noaa 3,399,206 vs 3,138,159   +8.3%      usda    13,360,904 vs 15,538,000  -14.0%
+
+    The error is far larger than 1% and runs in BOTH directions, so the figure was neither
+    accurate nor a floor. Reproduced on one file to rule out file selection: over
+    whr_fig21.parquet, COUNT(DISTINCT) gives 1,749 and approx_count_distinct gives 2,086.
+
+    Exact is affordable: with a memory limit and a temp directory DuckDB spills instead of
+    growing, and 29.4M distinct keys counted in 99s, 21.3M in 45s. Only the handful of
+    billion-key giants need the estimate, and now the output SAYS which was used per source
+    instead of labelling everything an estimate.
+    """
+    try:
+        n = _retry_remote(
+            lambda: con.execute(
+                "SELECT COUNT(DISTINCT series_key) FROM read_parquet(?, union_by_name=true)",
+                [files]),
+            f"{src} exact distinct").fetchone()[0]
+        return n, "exact"
+    except Exception as e:                                          # noqa: BLE001
+        # Out of memory / spill exhausted on a giant. Say so rather than silently
+        # downgrading: a number's provenance is part of the number.
+        print(f"    {src}: exact distinct failed ({type(e).__name__}), "
+              f"falling back to HyperLogLog", flush=True)
+        n = _retry_remote(
+            lambda: con.execute(
+                "SELECT approx_count_distinct(series_key) FROM read_parquet(?, "
+                "union_by_name=true)", [files]),
+            f"{src} approx distinct").fetchone()[0]
+        return n, "approx"
+
+
 def _rows_and_key_batch(con, files: list[str]) -> tuple[int, list[str], int]:
     """(total rows, files carrying series_key, files without) for one source's file list.
 
@@ -367,20 +408,26 @@ def main() -> int:
 
     con = duckdb.connect()
     con.execute("PRAGMA threads=24")
+    # BOUND THE EXACT COUNT. COUNT(DISTINCT) over hundreds of millions of string keys
+    # builds a hash table of every distinct value; unbounded across ~330 stores that is the
+    # whole machine. tools/audit_store_vs_catalog.py learned this the hard way - "two hours
+    # in it held 128 GB of RAM, had produced not one line of output, and was starving the
+    # three jobs that actually mattered". With a limit and a temp directory DuckDB SPILLS
+    # instead of growing, and a giant that still cannot finish falls back to HyperLogLog and
+    # says so.
+    con.execute("SET memory_limit='6GB'")
+    con.execute(f"SET temp_directory='{tempfile.gettempdir()}'".replace("\\", "/"))
     _wire_r2(con)
     obs_by_src: dict[str, int] = {}
     ser_by_src: dict[str, int] = {}
+    method_by_src: dict[str, str] = {}
     no_key_files = 0
     for i, (src, files) in enumerate(sorted(srcs.items()), 1):
         obs, keyed, _unkeyed = _rows_and_key_batch(con, files)
         no_key_files += _unkeyed
         obs_by_src[src] = obs
         if keyed:
-            ser_by_src[src] = _retry_remote(
-                lambda: con.execute(
-                    "SELECT approx_count_distinct(series_key) FROM read_parquet(?, "
-                    "union_by_name=true)", [keyed]),
-                f"{src} distinct keys").fetchone()[0]
+            ser_by_src[src], method_by_src[src] = _distinct_keys(con, keyed, src)
         else:
             ser_by_src[src] = 0
         print(f"  [{i}/{len(srcs)}] {src}: {obs:,} obs, "
@@ -392,24 +439,37 @@ def main() -> int:
     cat.close()
 
     today = dt.date.today().isoformat()
+    _n_exact = sum(1 for v in method_by_src.values() if v == "exact")
+    _n_approx = sum(1 for v in method_by_src.values() if v == "approx")
     stats = {
         "individual_series": int(sum(ser_by_src.values())),
         "observations": int(sum(obs_by_src.values())),
         "sources_catalogued": n_sources,
         "as_of": today,
-        "method": ("individual_series = sum over sources of globally distinct "
-                   "series keys, measured on the complete data store (HyperLogLog "
-                   "estimate, ~1% error; conservative floor). observations = exact "
-                   "parquet row counts. Refresh by re-running the census "
-                   "(tools/series_census.py) and re-uploading this object."),
+        "series_method_exact_sources": _n_exact,
+        "series_method_approx_sources": _n_approx,
+        # SAY WHICH METHOD PRODUCED THE NUMBER. The previous wording - "HyperLogLog
+        # estimate, ~1% error; conservative floor" - was wrong in both halves: measured
+        # against exact counts the error ran from -14.0% to +19.3%, in both directions, so
+        # it was neither ~1% nor a floor. A published figure carries its published method,
+        # and an accuracy claim nobody has tested is worse than no claim.
+        "method": ("individual_series = sum over sources of globally distinct series keys "
+                   f"on the served store. EXACT COUNT(DISTINCT) for {_n_exact} source(s); "
+                   f"HyperLogLog for {_n_approx} source(s) too large to count exactly "
+                   "within the memory limit (per-source method in "
+                   "per_source_series_method). observations = exact parquet row counts. "
+                   "Refresh by re-running the census (tools/series_census.py) and "
+                   "re-uploading this object."),
     }
     print(f"\nTOTALS: {stats['individual_series']:,} series / "
           f"{stats['observations']:,} obs / {n_sources} catalogued sources "
-          f"({no_key_files} files had no series_key column)", flush=True)
+          f"({no_key_files} files had no series_key column; "
+          f"{_n_exact} source(s) counted EXACTLY, {_n_approx} estimated)", flush=True)
 
     os.makedirs(os.path.join(ROOT, "logs"), exist_ok=True)
     hist = os.path.join(ROOT, "logs", f"stats-{today}.json")
-    detail = {**stats, "per_source_obs": obs_by_src, "per_source_series": ser_by_src}
+    detail = {**stats, "per_source_obs": obs_by_src, "per_source_series": ser_by_src,
+              "per_source_series_method": method_by_src}
     with open(hist, "w", encoding="utf-8") as fh:
         json.dump(detail, fh, indent=1)
     print(f"history written: {hist}")
