@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import csv
 import datetime as _dt
+import gzip
 import io
 import json
 import os
@@ -45,6 +46,7 @@ from ._giant import http_get
 TOC_URL = "https://ec.europa.eu/eurostat/api/dissemination/catalogue/toc/txt"
 DATA_URL = ("https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/"
             "{code}/?format=SDMX-CSV")
+GZIP_MAGIC = bytes([0x1F, 0x8B])   # a .csv.gz body served with a CSV Content-Type
 CSV_ACCEPT = "text/html,*/*"   # Eurostat ignores Accept; format is in the query
 RATE = 1.0
 TIMEOUT = 600
@@ -106,8 +108,36 @@ def _build_key(row: dict, dim_cols: list[str]) -> str:
 def _parse_csv(content: bytes):
     """Parse Eurostat SDMX-CSV -> (keys, dates, values) with a STABLE series_key.
     Returns (None, "structural") if a non-trivial body parsed 0 usable rows."""
-    text = content.decode("utf-8-sig", errors="replace")
-    reader = csv.DictReader(io.StringIO(text))
+    # EUROSTAT SOMETIMES SERVES A .csv.gz AND DOES NOT SAY SO. For large extractions the
+    # API hands back the pre-generated bulk file: HTTP 200, Content-Type
+    # application/vnd.sdmx.data+csv, Content-Disposition naming estat_<code>_en.csv.gz,
+    # and NO Content-Encoding header - so requests does not decompress and the body
+    # arrives as raw DEFLATE. Decoding that as utf-8 yields binary, and a lone CR inside
+    # it is exactly the "new-line character seen in unquoted field" that killed the
+    # 2026-08-24 run at flow ~51 of 400, abandoning the other ~350.
+    #
+    # The quieter half of the same bug matters more: whether it RAISES depends on whether
+    # the first LF or the first lone CR comes first in the compressed stream, because
+    # DictReader.fieldnames reads only to the first LF. migr_asyrescra (CR at 46, LF at
+    # 366) raises; ef_oga_main (LF at 334, CR at 559) does not - it yields junk
+    # fieldnames, finds no TIME_PERIOD column, returns (None, None, None) and the caller
+    # marks the flow `structural` PERMANENTLY, with no error line anywhere. Measured:
+    # ef_oga_main is 67,622,364 gzip bytes -> 1,324,771,242 bytes of clean CSV ->
+    # 9,009,130 observations, the exact count Eurostat's own TOC advertises.
+    #
+    # Decompress on the MAGIC BYTES, and leave csv's newline handling alone. Normalising
+    # or stripping CRs, or pre-splitting the lines, was measured against the real failing
+    # bytes: each recovers 0 of those 9,009,130 rows and converts the loud crash into the
+    # silent `structural` mislabel above. Stream it rather than gzip.decompress() - these
+    # bodies expand ~20x and materialising both a 1.3 GB bytes and a 1.3 GB str is
+    # gratuitous. newline="" is correctness, not decoration: TextIOWrapper's default would
+    # translate CR to LF inside quoted fields and alter values.
+    if content[:2] == GZIP_MAGIC:
+        reader = csv.DictReader(io.TextIOWrapper(
+            gzip.GzipFile(fileobj=io.BytesIO(content)),
+            encoding="utf-8-sig", errors="replace", newline=""))
+    else:
+        reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig", errors="replace")))
     if not reader.fieldnames:
         return None, None, None
     fields = reader.fieldnames
