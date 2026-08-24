@@ -69,7 +69,6 @@ export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([
   "tcmb",
   "unesco_sci",
   "unicef",
-  "vdem",
   "who_gho",
   "wto_hs_a_0010",
   "wto_hs_a_0015",

@@ -399,7 +399,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // duplicated and further distributed provided that UNdata is cited as the reference".
   // Coverage is honest rather than complete: the source is live:true on a weekly check and its
   // backfill still defers ~591 sub-units per pass, so this serves 396 indicators now and grows.
-  "unesco_inno", "unesco_natmon", "unesco_sdg", "unhcr", "unsdg", "usda", "wgi", "who_hwf", "who_rs",
+  "unesco_inno", "unesco_natmon", "unesco_sdg", "unhcr", "unsdg", "usda", "vdem", "wgi", "who_hwf", "who_rs",
   // wid added 2026-07-29 — the largest single source in the library: 2,465,197 series /
   // ~124M observations of World Inequality Database data that were held locally and
   // served to NOBODY. Added only after the derive COMPLETED and was verified
