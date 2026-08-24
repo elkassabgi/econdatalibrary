@@ -305,8 +305,46 @@ $srcArgs = @()
 foreach ($t in $targets) { $srcArgs += '--source'; $srcArgs += $t }
 if ($Force) { $srcArgs += '--force'; Say 'FORCE: cadence gate overridden (manual proof)' }
 Say ("running updater for " + $targets.Count + " source(s) ...")
-& $pythonExe -m updater.run @srcArgs
-$rc = $LASTEXITCODE
+
+# HARD WALL CLOCK. The budget above is a REQUEST, not a limit: the orchestrator checks it
+# BETWEEN units, and its per-unit SIGALRM is a documented no-op on Windows ("POSIX only ...
+# where this is a no-op by design"). So one long unit runs as long as it likes and the pass
+# sails past the window the clamp was calculated to respect. Measured 2026-08-24: a pass
+# clamped to 220 min was still running 45 minutes past its deadline, mid-unit, with the
+# 03:00Z heavy cron about to fire - the exact collision R448 exists to prevent, defeated by
+# the budget being unenforceable rather than by the arithmetic being wrong.
+#
+# Killing mid-unit is safe for DATA: merge_and_write publishes through write_table_atomic,
+# so a half-written store is unreachable. And stopping here is strictly better than running
+# on, because push-state still executes afterwards - the pass records what it actually
+# finished instead of losing the whole run's bookkeeping to a compare-and-swap it was always
+# going to lose.
+$graceMin = 10
+$hardDeadline = (Get-Date).AddMinutes([int]$env:AQUEDUCT_RUN_BUDGET_MIN + $graceMin)
+$hardStopped = $false
+$proc = Start-Process -FilePath $pythonExe -ArgumentList (@('-m','updater.run') + $srcArgs) `
+        -PassThru -NoNewWindow
+while (-not $proc.HasExited) {
+    if ((Get-Date) -gt $hardDeadline) {
+        Say ("HARD STOP: the updater passed its " + $env:AQUEDUCT_RUN_BUDGET_MIN +
+             "-min budget by " + $graceMin + " min and is still running. Terminating so " +
+             "push-state happens BEFORE the CI window (R448). Data is safe - stores are " +
+             "written atomically - and every fetcher resumes.")
+        & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null
+        Start-Sleep -Seconds 5
+        $hardStopped = $true
+        break
+    }
+    Start-Sleep -Seconds 15
+}
+# Set 124 EXPLICITLY on a hard stop. A process terminated by taskkill reports HasExited
+# true but leaves ExitCode unpopulated, so reading it yields $null - the run would then
+# print "updater exit code: " with nothing after it and hand $null to every downstream
+# comparison. Caught by testing the kill path rather than only the timer.
+if ($hardStopped) { $rc = 124 }
+elseif ($proc.HasExited) { $proc.Refresh(); $rc = $proc.ExitCode }
+else { $rc = 124 }
+if ($null -eq $rc) { $rc = 124 }
 Say ("updater exit code: " + $rc)
 
 # Push state even on a non-zero exit: the updater is built to fail one source while having
