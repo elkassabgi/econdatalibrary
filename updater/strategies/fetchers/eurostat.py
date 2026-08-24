@@ -47,6 +47,24 @@ TOC_URL = "https://ec.europa.eu/eurostat/api/dissemination/catalogue/toc/txt"
 DATA_URL = ("https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/"
             "{code}/?format=SDMX-CSV")
 GZIP_MAGIC = bytes([0x1F, 0x8B])   # a .csv.gz body served with a CSV Content-Type
+
+# A FLOW THIS BIG CANNOT BE PARSED ON A 16 GB RUNNER, AND FINDING OUT BY TRYING KILLS THE RUN.
+# Un-breaking the gzip bodies (below) made the giants parse for the first time, and the very
+# first forced run OOM-died on one: [mem] avail fell 1221MB -> 26MB and GitHub cancelled the
+# job at flow ~125 of 400, discarding 12.3M rows of real progress because an OOM kill skips
+# save_state. migr_asyrescra alone is 213,650,346 observations.
+#
+# tools/audit_cloud_capacity.py calibrates this from OBSERVED CI deaths, not theory: bis
+# destroyed a runner at a 36,379,671-row file and bls at 66,161,839, while abs and adb
+# survived at ~3M. The ceiling here sits well under the smallest observed kill and above
+# ef_oga_main (9,009,130 observations), which parses fine.
+#
+# The count is taken by STREAMING the decompressed bytes and counting newlines - bounded
+# memory, no arrays - so the decision costs time on a giant flow and nothing on a normal one.
+# It has to PREVENT the parse: _giant's per-flow handler catches exceptions, and a process
+# that is killed raises nothing. Ledger R473.
+NEWLINE_BYTE = bytes([0x0A])
+MAX_FLOW_ROWS = 20_000_000
 CSV_ACCEPT = "text/html,*/*"   # Eurostat ignores Accept; format is in the query
 RATE = 1.0
 TIMEOUT = 600
@@ -105,6 +123,26 @@ def _build_key(row: dict, dim_cols: list[str]) -> str:
     return ":".join(f"{c}={row[c]}" for c in dim_cols if row.get(c))
 
 
+class TooBigForRunner(Exception):
+    """This flow's decompressed body is past what a 16 GB runner can hold (R473)."""
+
+
+def _gz_line_count(content: bytes) -> int:
+    """Rows in a gzip body, counted by STREAMING - constant memory, no arrays built.
+
+    Counting costs a second decompression on flows we go on to parse, which is cheap
+    relative to parsing them, and nothing at all on the giants we defer.
+    """
+    n = 0
+    with gzip.GzipFile(fileobj=io.BytesIO(content)) as fh:
+        while True:
+            chunk = fh.read(8 << 20)
+            if not chunk:
+                break
+            n += chunk.count(NEWLINE_BYTE)
+    return max(0, n - 1)          # minus the header line
+
+
 def _parse_csv(content: bytes):
     """Parse Eurostat SDMX-CSV -> (keys, dates, values) with a STABLE series_key.
     Returns (None, "structural") if a non-trivial body parsed 0 usable rows."""
@@ -138,6 +176,11 @@ def _parse_csv(content: bytes):
     # gratuitous. newline="" is correctness, not decoration: TextIOWrapper's default would
     # translate CR to LF inside quoted fields and alter values.
     if content[:2] == GZIP_MAGIC:
+        rows = _gz_line_count(content)
+        if rows > MAX_FLOW_ROWS:
+            raise TooBigForRunner(
+                f"gzip body holds ~{rows:,} rows, over the {MAX_FLOW_ROWS:,} ceiling for a "
+                f"16 GB runner; deferred rather than parsed (R473)")
         reader = csv.DictReader(io.TextIOWrapper(
             gzip.GzipFile(fileobj=io.BytesIO(content)),
             encoding="utf-8-sig", errors="replace", newline=""))
