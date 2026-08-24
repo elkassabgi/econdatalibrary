@@ -66,6 +66,24 @@ def _dim_labels(ds: str, version, table: str) -> dict:
             if x.get("Code") is not None and x.get("Label")}
 
 
+def _catalogued(source_id: str) -> set:
+    """The ids this source actually HAS a catalogue row for.
+
+    The store holds far more series keys than the catalogue lists (oceantrade: a 2.4 GB
+    title file against ~32k catalogued rows), and apply_title_wave loads each file whole,
+    so an unfiltered file is both useless weight and an out-of-memory risk. Titling what is
+    not listed changes nothing a user can see.
+    """
+    import sqlite3
+    db = os.path.join(ROOT, "data", "catalog.db").replace("\\", "/")
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=120)
+    try:
+        return {r[0] for r in con.execute(
+            "SELECT series_id FROM series WHERE source_id=?", (source_id,))}
+    finally:
+        con.close()
+
+
 def titles_for(source_id: str, ds: str):
     meta = iu.report_metadata(ds)
     ver = meta.get("version")
@@ -95,21 +113,48 @@ def titles_for(source_id: str, ds: str):
         "SELECT DISTINCT series_key FROM read_parquet(%r)" % files[0]).fetchall()]
     con.close()
 
+    keep = _catalogued(source_id)
     out, skipped = {}, 0
     for k in keys:
-        segs = str(k).split(".")
-        if len(segs) != len(kfields) + 1 or not segs[-1].startswith("M"):
+        if keep and f"{source_id}:{k}" not in keep:
+            continue
+        ks = str(k)
+        # PARSE FROM THE RIGHT, AND DO NOT ASSUME "." SEPARATES DIMENSIONS. A dimension CODE
+        # can itself contain a dot - US.CommodityPrice_A keys read "090100.01.M7110", where
+        # "090100.01" is ONE commodity code - so splitting on "." over-segments the key and
+        # threw away every series in those datasets. Only the trailing ".M<measure>" is a
+        # reliable delimiter; the remaining prefix is resolved against the published code
+        # lists, longest match first, so a code with a dot is matched as the code it is.
+        i = ks.rfind(".M")
+        if i < 0:
             skipped += 1
             continue
-        parts, ok = [], True
-        for i, seg in enumerate(segs[:-1]):
-            lab = labels[i].get(seg)
-            if not lab:
+        prefix, mcode = ks[:i], ks[i + 2:]
+        ml = mlab.get(mcode)
+        if not ml:
+            skipped += 1
+            continue
+        parts, rest, ok = [], prefix, True
+        for di in range(len(kfields)):
+            lut = labels[di]
+            if di == len(kfields) - 1:            # last dim takes the whole remainder
+                lab = lut.get(rest)
+                if not lab:
+                    ok = False
+                    break
+                parts.append(lab)
+                rest = ""
+                break
+            cand = None
+            for c in lut:                          # longest published code that prefixes rest
+                if rest.startswith(c + ".") and (cand is None or len(c) > len(cand)):
+                    cand = c
+            if cand is None:
                 ok = False
                 break
-            parts.append(lab)
-        ml = mlab.get(segs[-1][1:])
-        if not ok or not ml:
+            parts.append(lut[cand])
+            rest = rest[len(cand) + 1:]
+        if not ok or rest:
             skipped += 1
             continue
         out[f"{source_id}:{k}"] = f"{report} - {', '.join(parts)} ({ml})"
