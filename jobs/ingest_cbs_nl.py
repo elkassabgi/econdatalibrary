@@ -114,6 +114,161 @@ def broken_recently(out_dir: str, table_id: str) -> str | None:
     return f"{e.get('status')} {str(e.get('reason'))[:90]} ({age}d ago)"
 
 
+MODIFIED_FILE = "_modified.json"
+DEFERRED_FILE = "_repull_deferred.json"
+
+# A revised table is re-pulled automatically only up to this size. Set from the MEASURED
+# distribution of the 329 tables CBS had revised on 2026-08-24, not from a round number:
+# median 22,560 rows, p90 2,044,848, and then five outliers (25.2M, 59.9M, 93.7M, 106.2M,
+# 119.2M) holding 404.1M of the 680.0M total. 25M sits far above the body and below every
+# outlier, so 324 of the 329 re-pull by themselves and the five expensive ones are RECORDED
+# for an explicit decision rather than silently churning the crawler for days. R469: a
+# ceiling the caller can forget is not a ceiling, so it lives here, not in the caller.
+REPULL_MAX_ROWS = 25_000_000
+
+
+def _mod_path(out_dir: str) -> str:
+    return os.path.join(out_dir, MODIFIED_FILE)
+
+
+def load_modified(out_dir: str) -> dict:
+    try:
+        with open(_mod_path(out_dir), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def record_modified(out_dir: str, table_id: str, modified: str) -> None:
+    """Record the vintage we just ingested. Written per table, atomically.
+
+    Per table rather than per run because this crawler is killed and relaunched routinely
+    (the guard restarts it; reboots interrupt it). A manifest flushed only at the end of a
+    pass would lose a run of work every time and re-pull what it had already done.
+    """
+    if not modified:
+        return
+    m = load_modified(out_dir)
+    if m.get(table_id) == modified:
+        return
+    m[table_id] = modified
+    tmp = _mod_path(out_dir) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(m, f, indent=0, sort_keys=True)
+    os.replace(tmp, _mod_path(out_dir))
+
+
+def note_deferred_repull(out_dir: str, table_id: str, modified: str, rows: int) -> None:
+    """Record a revision we are NOT acting on, so it is visible rather than forgotten."""
+    p = os.path.join(out_dir, DEFERRED_FILE)
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+    if d.get(table_id, {}).get("upstream_modified") == modified:
+        return
+    d[table_id] = {"upstream_modified": modified, "rows": rows,
+                   "ceiling": REPULL_MAX_ROWS,
+                   "noted": dt.datetime.now().isoformat(timespec="seconds")}
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=1, sort_keys=True)
+    os.replace(tmp, p)
+
+
+def repull_verdict(out_dir: str, table_id: str, modified: str, out_path: str, rows: int):
+    """Should this already-held table be crawled again? None means skip.
+
+    THIS IS THE AUTO-UPDATE. Before it the gate was `os.path.exists(out_path)`, so a table
+    crawled once was never looked at again: the crawler completed a full 5,953-table pass
+    every ~68 minutes and could not, by construction, pick up a single upstream revision.
+    That is the shape of R453 — every liveness signal green on a job producing nothing.
+    CBS publishes a per-table Modified timestamp in its own catalogue; comparing it against
+    the vintage we hold is the entire mechanism.
+
+    The vintage we hold comes from the manifest when there is an entry, and otherwise from
+    the parquet mtime. The mtime fallback exists because 5,156 tables were crawled before
+    this manifest did, and it is the honest default: it catches a table revised AFTER we
+    wrote our copy on the very first run. Seeding every entry as current instead would go
+    permanently blind to the 329 revisions that have already happened.
+
+    Returns None (current), "TOO_BIG" (revised but over the ceiling), or the vintage string
+    being replaced (re-pull).
+    """
+    if not modified:
+        return None
+    try:
+        mdt = dt.datetime.fromisoformat(modified)
+    except ValueError:
+        return None
+    held = load_modified(out_dir).get(table_id)
+    hdt = None
+    if held:
+        try:
+            hdt = dt.datetime.fromisoformat(held)
+        except ValueError:
+            hdt = None
+    if hdt is None:
+        hdt = dt.datetime.fromtimestamp(os.path.getmtime(out_path))
+        held = hdt.isoformat(timespec="seconds") + " (mtime)"
+    if mdt <= hdt:
+        return None
+    if rows > REPULL_MAX_ROWS:
+        return "TOO_BIG"
+    return held
+
+
+def _repull_marker(out_dir: str, table_id: str) -> str:
+    return os.path.join(out_dir, table_id + ".repull.json")
+
+
+def repull_in_flight(out_dir: str, table_id: str) -> str:
+    """Which upstream vintage the in-progress re-pull of this table is aiming at.
+
+    WITHOUT THIS THE RE-PULL CANNOT FINISH. record_modified only runs on success, so a
+    re-pull interrupted part way (the guard relaunches this crawler routinely, and a big
+    table takes many hours) still looks un-re-pulled on the next run. The gate would
+    decide RE-PULL again and clear_partials would delete the checkpoint the previous
+    attempt just wrote — restarting from zero every run, forever, which is precisely the
+    livelock of R453 rebuilt in new code. The marker lets the next run recognise its own
+    unfinished work and resume it.
+    """
+    try:
+        with open(_repull_marker(out_dir, table_id), encoding="utf-8") as f:
+            return json.load(f).get("target") or ""
+    except Exception:
+        return ""
+
+
+def begin_repull(out_dir: str, table_id: str, modified: str) -> None:
+    tmp = _repull_marker(out_dir, table_id) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"target": modified,
+                   "started": dt.datetime.now().isoformat(timespec="seconds")}, f)
+    os.replace(tmp, _repull_marker(out_dir, table_id))
+
+
+def end_repull(out_dir: str, table_id: str) -> None:
+    try:
+        os.remove(_repull_marker(out_dir, table_id))
+    except OSError:
+        pass
+
+def clear_partials(out_dir: str, table_id: str) -> None:
+    """Remove any checkpoint and part files before a re-pull.
+
+    Without this the resume branch would find the PREVIOUS crawl checkpoint and continue a
+    stale walk, merging old rows into the new copy. A re-pull must start clean.
+    """
+    ck = os.path.join(out_dir, table_id + ".ckpt.json")
+    if os.path.exists(ck):
+        os.remove(ck)
+    for i in range(1000):
+        pp = os.path.join(out_dir, table_id + ".part" + str(i) + ".parquet")
+        if os.path.exists(pp):
+            os.remove(pp)
+
 def get_catalog() -> list[dict]:
     """Get all CBS tables from the OData catalog."""
     url = f"{CAT}?$format=json&$top=10000"
@@ -299,7 +454,7 @@ def _find_period_col(table_id: str, cols: list[str]) -> str | None:
     return None
 
 
-def ingest_table(table_id: str, title: str, out_dir: str) -> int:
+def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") -> int:
     """Download all observations for one CBS table. Returns obs count.
 
     PARTITIONING: `$skip` on this API is O(offset) — measured on 71493ned,
@@ -314,8 +469,25 @@ def ingest_table(table_id: str, title: str, out_dir: str) -> int:
     out_path = os.path.join(out_dir, f"{table_id}.parquet")
     if os.path.exists(out_path):
         n = pq.read_metadata(out_path).num_rows
-        log(f"  skip {table_id} ({n:,} rows)")
-        return n
+        verdict = repull_verdict(out_dir, table_id, modified, out_path, n)
+        if verdict is None:
+            log(f"  skip {table_id} ({n:,} rows)")
+            record_modified(out_dir, table_id, modified)
+            return n
+        if verdict == "TOO_BIG":
+            note_deferred_repull(out_dir, table_id, modified, n)
+            log(f"  skip {table_id} ({n:,} rows) - CBS revised it {modified}, but it is "
+                f"over the {REPULL_MAX_ROWS:,}-row automatic re-pull ceiling; recorded "
+                f"in {DEFERRED_FILE} for an explicit decision")
+            return n
+        if repull_in_flight(out_dir, table_id) == modified:
+            log(f"  RE-PULL {table_id}: resuming the in-flight re-pull to {modified} "
+                f"(keeping its checkpoint; the {n:,}-row copy is still serving)")
+        else:
+            log(f"  RE-PULL {table_id}: CBS revised it {modified}; we hold {verdict}. "
+                f"The {n:,}-row copy stays in place until the new crawl completes.")
+            clear_partials(out_dir, table_id)
+            begin_repull(out_dir, table_id, modified)
 
     # Discover columns from first row
     cols = get_table_columns(table_id)
@@ -569,6 +741,8 @@ def ingest_table(table_id: str, title: str, out_dir: str) -> int:
     if os.path.exists(ckpt_path):
         os.remove(ckpt_path)
     n = pq.read_metadata(out_path).num_rows
+    record_modified(out_dir, table_id, modified)
+    end_repull(out_dir, table_id)
     log(f"  {table_id}: DONE {n:,} obs  [{title[:50]}]")
     return n
 
@@ -602,7 +776,7 @@ def main():
         if why:
             log(f"  skip {tid}: upstream-broken {why}")
             continue
-        total += ingest_table(tid, title, OUT)
+        total += ingest_table(tid, title, OUT, tbl.get("Modified") or "")
         time.sleep(0.3)
 
     log(f"DONE: {total:,} total CBS Netherlands observations")
