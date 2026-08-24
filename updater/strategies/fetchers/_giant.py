@@ -301,6 +301,24 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             state[fid] = flow_st
             time.sleep(rate)
             continue
+        except Exception as e:                      # noqa: BLE001
+            # NEITHER OF THE TWO HANDLERS ABOVE CATCHES AN UNEXPECTED ERROR, AND ONE FLOW
+            # THEN KILLS THE SWEEP. On 2026-08-24 a single Eurostat flow raised _csv.Error
+            # - not a TransientError, not a DefinitiveError - so it escaped run_giant,
+            # skipped save_state below, and surfaced in orchestrate.py's blanket handler as
+            # "UNEXPECTED:..." with NO flow id. 50 of 400 flows had been merged; the other
+            # ~350 were abandoned, and the log never named the culprit.
+            #
+            # Transient, not structural, deliberately: the vintage is NOT advanced, so the
+            # flow is reselected next tick, and _common.finalize does not downgrade the
+            # whole source on a transient count the way it can on a structural one. This
+            # recovers no rows by itself - it converts a run-killing crash into one named,
+            # retryable flow.
+            tally.transient_unit(f"{fid}: UNEXPECTED {type(e).__name__}: {str(e)[-60:]}")
+            flow_st.update(status="transient_fail")
+            state[fid] = flow_st
+            time.sleep(rate)
+            continue
 
         if status == "transient":
             tally.transient_unit(f"{fid}: fetch_flow reported transient")
