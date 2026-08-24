@@ -76,6 +76,7 @@ from core import r2_util           # noqa: E402
 ROOTS = [os.path.join(ROOT, "data", "clean_full"),
          os.path.join(ROOT, "data", "clean_grouped")]
 BUCKET = "econ-data"
+EXACT_MAX_ROWS = 500_000_000   # above this, COUNT(DISTINCT) spills for hours
 _REMOTE_CHUNK = 750   # objects per remote query; bounds concurrent connections to R2
 _S3 = f"s3://{BUCKET}/"
 KEY = "_aqueduct/stats.json"
@@ -293,7 +294,7 @@ def _retry_remote(fn, what: str, tries: int = 4):
     raise AssertionError("unreachable")
 
 
-def _distinct_keys(con, files, src):
+def _distinct_keys(con, files, src, obs=0):
     """(distinct series_key, method) - EXACT where it completes, HLL only as a fallback.
 
     This tool used approx_count_distinct everywhere and published "HyperLogLog estimate,
@@ -313,6 +314,21 @@ def _distinct_keys(con, files, src):
     billion-key giants need the estimate, and now the output SAYS which was used per source
     instead of labelling everything an estimate.
     """
+    # SIZE GUARD. Exact is affordable up to a point and ruinous past it: eurostat holds
+    # 8.6 BILLION rows, and COUNT(DISTINCT) over that builds a hash table of every distinct
+    # key, spilling for hours and starving the derives sharing this machine. The fallback
+    # below catches an exact count that FAILS; it cannot catch one that merely never
+    # finishes. So the handful of giants take the estimate by choice, labelled as such,
+    # and everything else - the great majority of sources - is counted exactly.
+    if obs > EXACT_MAX_ROWS:
+        print(f"    {src}: {obs:,} rows exceeds the exact-count ceiling "
+              f"({EXACT_MAX_ROWS:,}); using HyperLogLog", flush=True)
+        n = _retry_remote(
+            lambda: con.execute(
+                "SELECT approx_count_distinct(series_key) FROM read_parquet(?, "
+                "union_by_name=true)", [files]),
+            f"{src} approx distinct").fetchone()[0]
+        return n, "approx"
     try:
         n = _retry_remote(
             lambda: con.execute(
@@ -427,7 +443,7 @@ def main() -> int:
         no_key_files += _unkeyed
         obs_by_src[src] = obs
         if keyed:
-            ser_by_src[src], method_by_src[src] = _distinct_keys(con, keyed, src)
+            ser_by_src[src], method_by_src[src] = _distinct_keys(con, keyed, src, obs)
         else:
             ser_by_src[src] = 0
         print(f"  [{i}/{len(srcs)}] {src}: {obs:,} obs, "
