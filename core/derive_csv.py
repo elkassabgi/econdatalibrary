@@ -50,7 +50,8 @@ class TooLarge(Exception):
 # 11 tables (0.2%) are over 100M rows. Skipping them costs 0.2% of the tables and protects
 # the 99.8% that derive cleanly, which is the opposite trade from letting the run die.
 _MAX_ROWS = 0
-_ALLOW_STREAM = False   # see _derive_and_put; streaming cannot sort yet
+_ALLOW_STREAM = False   # see _derive_and_put
+_STREAM_MAX = 0        # upper bound for the streaming path; 0 = none
 
 
 def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
@@ -209,6 +210,15 @@ def _derive_and_put(s3, bucket: str, key: str, series_id: str) -> None:
     except TooLarge:
         if not _ALLOW_STREAM:
             raise                                # skipped and NAMED by the caller
+        if _STREAM_MAX:
+            import pyarrow.parquet as _pq2                           # noqa: PLC0415
+            from econdl import _resolve as _rs                       # noqa: PLC0415
+            _p = _rs.resolve(series_id).parquet_path
+            if isinstance(_p, str):
+                _n = _pq2.read_metadata(_p).num_rows
+                if _n > _STREAM_MAX:
+                    raise TooLarge(f"{_n:,} rows > --stream-max-rows {_STREAM_MAX:,}; "
+                                   f"a single CSV this size is not a usable download")
         # SORTED streaming only. _series_csv_to_file (unsorted, per-batch) writes the right
         # rows in the wrong order (R466); _series_csv_to_file_sorted pushes the ORDER BY into
         # DuckDB, which spills to disk, so the batches arrive already globally sorted.
@@ -476,6 +486,12 @@ def main() -> None:
                          "be (every key already exists, so it would skip everything).")
     ap.add_argument("--skip-existing", action="store_true",
                     help="list existing <prefix>/ keys once and skip them (resumable multi-day run)")
+    ap.add_argument("--stream-max-rows", type=int, default=0,
+                    help="upper bound for the streaming path; a table above this is skipped "
+                         "and named rather than attempted. 0 = no bound. Two cbs_nl tables "
+                         "(1.89B and 1.06B rows) would each produce a single CSV of 20.8 GB "
+                         "and 11.6 GB - not a usable download at any speed - and a crash "
+                         "there takes a whole shard's queue with it.")
     ap.add_argument("--allow-stream", action="store_true",
                     help="derive tables above --max-rows by streaming them through a DuckDB "
                          "external ORDER BY instead of skipping them. Off by default: an "
@@ -505,6 +521,8 @@ def main() -> None:
     global _MAX_ROWS, _ALLOW_STREAM
     _MAX_ROWS = a.max_rows
     _ALLOW_STREAM = a.allow_stream
+    global _STREAM_MAX
+    _STREAM_MAX = a.stream_max_rows
 
     # PREFLIGHT (ledger R383). This tool WRITES to R2 but READS through the econdl resolver,
     # which reads data/clean_full/ — the LOCAL mirror. Under AQUEDUCT_BACKEND=r2 that is a
