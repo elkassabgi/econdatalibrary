@@ -141,7 +141,13 @@ SERVED_TIER_DRIFT: frozenset[str] = frozenset({
 DENYLIST_UNMATCHED: frozenset[str] = frozenset({
     "central_banks", "fraser_efw", "fred", "fred_releases", "fsi", "gus", "ibge",
     "imf_dbnomics", "ine_spain", "pxweb_bfs", "qog", "sdmx_nso", "sipri_polity",
-    "social_progress", "spi", "stat_austria", "unesco_sci", "unicef", "vdem",
+    "social_progress", "spi", "stat_austria", "unesco_sci", "unicef",
+    # vdem REMOVED from this baseline 2026-08-24: it is no longer in denylist.ts. Its
+    # licence was assessed (CC BY-SA 4.0, CONFIRMED, quoted verbatim from two official
+    # surfaces), it carries `cc-by-sa-4.0-vdem` with reservable=1, and it came off
+    # gen_denylist LEGACY_KEEP on Ahmed's explicit instruction. It is now a SERVED
+    # source with a recorded verdict, which is what this baseline exists to shrink
+    # towards.
     "who_gho", "wiid", "wto_bat_bv_m", "wto_bat_bv_x", "wto_hs_0010", "wto_hs_0015",
     "wto_hs_0020", "wto_hs_0025", "wto_hs_0030", "wto_hs_0040",
 })

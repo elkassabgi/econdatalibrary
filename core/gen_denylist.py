@@ -159,7 +159,24 @@ LEGACY_KEEP = {
     # was REBUILT from the publisher (3,768,215 rows, run 31129475260) — the purged
     # data never resurfaces; freshly-fetched data serves.
     "fred", "fred_releases", "gus", "ibge", "ine_spain",
-    "unesco_sci", "unicef", "unsdg", "vdem", "who_gho",
+    "unesco_sci", "unicef", "unsdg", "who_gho",
+    # vdem REMOVED from the floor 2026-08-24, on Ahmed's explicit instruction, and for the
+    # barro_lee reason: it was on this floor because NOBODY HAD ASSESSED ITS LICENCE, not
+    # because anyone decided against serving it. DATABASE_LICENSES_VERBATIM.md now records the
+    # assessment — CC BY-SA 4.0, quoted verbatim from two independently fetched official
+    # surfaces (the V-Dem dataset page and the site-wide FAQ), classified
+    # redistributable_attribution / CONFIRMED / "CLEARED - re-host OK (attribution)". It carries
+    # its own licence row `cc-by-sa-4.0-vdem` (reservable=1, commercial_ok=1, which the quote
+    # supports in as many words) so the shared `cc-by-sa-4.0` row stays reservable=0 for
+    # anything still unassessed. The floor's purpose — don't un-gate an unconfirmed source — no
+    # longer applies. This is a deliberate, human-authorised un-gate, NOT a silent regeneration
+    # drop.
+    #
+    # SCOPE: this clears the V-DEM DATASET only. data/clean_full/vdem/ also holds
+    # vparty.parquet (2,218,990 rows); V-Party is a separate publication whose own page states
+    # no licence and which the FAQ never names, so it is excluded from cataloguing by
+    # tools/catalog_complete.py's SOURCE_FILE_EXCLUSIONS and stays unserved pending its own
+    # evidence.
     # barro_lee REMOVED from the floor 2026-07-22. It was originally gated as
     # "unclear -- gate until confirmed"; DATABASE_LICENSES_VERBATIM.md has since
     # CONFIRMED it `redistributable_attribution` / "CLEARED - re-host OK (attribution)",
