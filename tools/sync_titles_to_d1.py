@@ -130,6 +130,7 @@ def main() -> int:
     if not a.push:
         print("  PLAN ONLY — re-run with --push")
         return 0
+    failed: list[tuple[str, str]] = []
     for p in files:
         src_of = os.path.basename(p).rsplit("_", 1)[0].replace("_zz", "")
         r = subprocess.run(
@@ -137,10 +138,20 @@ def main() -> int:
             cwd=WORKER, capture_output=True, text=True, shell=True,
             encoding="utf-8", errors="replace")
         if r.returncode != 0:
-            print(f"    FAIL {os.path.basename(p)}: {(r.stderr or r.stdout)[-200:].strip()[:180]}")
-            return 1
-    print(f"  pushed {len(files)} file(s)")
-    return 0
+            # DO NOT abort the run. One transient "Authentication error [code: 10000]" on file
+            # 41 of 211 previously skipped every file after it - unhcr, bea, eia and noaa were
+            # all reported as pushed and none of them were. Collect the failures, finish the
+            # rest, and report; the whole operation is idempotent, so a re-run picks up only
+            # what is still raw.
+            failed.append((os.path.basename(p), (r.stderr or r.stdout)[-180:].strip()[:160]))
+            continue
+    ok = len(files) - len(failed)
+    print(f"  pushed {ok} of {len(files)} file(s)")
+    for name, err in failed:
+        print(f"    FAILED {name}: {err}")
+    if failed:
+        print(f"  {len(failed)} file(s) failed — re-run to retry only what is still raw")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
