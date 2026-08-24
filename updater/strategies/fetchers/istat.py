@@ -80,6 +80,10 @@ HOSTS = [
     ("sdmx",    "https://sdmx.istat.it/SDMXWS/rest/"),
     ("esplora", "https://esploradati.istat.it/SDMXWS/rest/"),
 ]
+# Bases found redirect-looping during THIS run. Per-run, not persisted: a host ISTAT
+# repairs must come back on the next run without anyone editing a list.
+_DEAD_HOSTS: set = set()
+
 CSV_ACCEPT = "application/vnd.sdmx.data+csv;version=1.0.0"
 XML_ACCEPT = "application/vnd.sdmx.genericdata+xml;version=2.1"
 
@@ -124,6 +128,22 @@ def _get(sess, url, accept, timeout=TIMEOUT) -> _Resp:
     hdrs = {**UA, "Accept": accept}
     try:
         r = sess.get(url, headers=hdrs, timeout=timeout)
+    except requests.TooManyRedirects:
+        # A HOST-level fault, not a flow-level one. sdmx.istat.it began answering every
+        # /SDMXWS/rest/ path with a 302 back to its own homepage - measured 2026-08-23,
+        # 12 hops and still looping, while esploradati.istat.it returns 200 with no
+        # redirect at all. TooManyRedirects was not in the except clause below, so it
+        # escaped as UNEXPECTED and killed the whole source BEFORE the working host was
+        # tried. istat last succeeded 2026-07-14 and had been attempted on every run for
+        # 40 days, recorded transient_fail each time.
+        for _lbl, _base in HOSTS:
+            if url.startswith(_base):
+                if _base not in _DEAD_HOSTS:
+                    print(f"[istat] {_base} is redirect-looping; skipping it for the rest "
+                          f"of this run", flush=True)
+                _DEAD_HOSTS.add(_base)
+                break
+        return _Resp(kind="transient")
     except (requests.Timeout, requests.ConnectionError):
         return _Resp(kind="transient")
     if r.status_code == 200:
@@ -212,6 +232,8 @@ def _fetch_flow(sess, flow_id, start_period, had_prior: bool):
     saw_gone = False
     saw_empty = False
     for _label, base in HOSTS:
+        if base in _DEAD_HOSTS:
+            continue          # redirect-looping this run; do not pay for it per flow
         k, d, v, kind = _try_host(sess, base, flow_id, start_period)
         if kind == "ok":
             return k, d, v, "ok"
