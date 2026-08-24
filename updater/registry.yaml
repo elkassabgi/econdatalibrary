@@ -5376,6 +5376,20 @@ sources:
   strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
   cadence: weekly
   data_cadence: monthly
+  # upstream_verified - PROBED 2026-08-24 against UNCTAD's own metadata:
+  #   GET https://unctadstat-api.unctad.org/api/reportMetadata/US.CommodityPriceIndices_M/en
+  # reports lastUpdated 2025-08-11 and a time axis whose defaultCode is 2025M06.
+  # Our newest OBSERVED period is 2025-06-01 - at or past the publisher's own default,
+  # and this source's strategy is bulk_snapshot_if_changed: the WHOLE dataset is re-pulled
+  # whenever that publisher stamp moves. Our last successful pull (2026-08-23) postdates
+  # lastUpdated, so the store reflects UNCTAD's current published snapshot in full.
+  # The data is not late; UNCTAD has not extended this dataset.
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2025-06-01'
+    checked: '2026-08-24'
   refresh_cost: fast
   out_dir: unctad_commoditypriceindicesm
   review: true
@@ -5412,6 +5426,20 @@ sources:
   strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
   cadence: weekly
   data_cadence: monthly
+  # upstream_verified - PROBED 2026-08-24 against UNCTAD's own metadata:
+  #   GET https://unctadstat-api.unctad.org/api/reportMetadata/US.CommodityPrice_M/en
+  # reports lastUpdated 2025-08-11 and a time axis whose defaultCode is 2025M06.
+  # Our newest OBSERVED period is 2025-06-01 - at or past the publisher's own default,
+  # and this source's strategy is bulk_snapshot_if_changed: the WHOLE dataset is re-pulled
+  # whenever that publisher stamp moves. Our last successful pull (2026-08-23) postdates
+  # lastUpdated, so the store reflects UNCTAD's current published snapshot in full.
+  # The data is not late; UNCTAD has not extended this dataset.
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2025-06-01'
+    checked: '2026-08-24'
   refresh_cost: fast
   out_dir: unctad_commoditypricem
   review: true
@@ -5684,6 +5712,20 @@ sources:
   strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
   cadence: weekly
   data_cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against UNCTAD's own metadata:
+  #   GET https://unctadstat-api.unctad.org/api/reportMetadata/US.Cpi_A/en
+  # reports lastUpdated 2023-06-13 and a time axis whose defaultCode is 2022.
+  # Our newest OBSERVED period is 2022-12-31 - at or past the publisher's own default,
+  # and this source's strategy is bulk_snapshot_if_changed: the WHOLE dataset is re-pulled
+  # whenever that publisher stamp moves. Our last successful pull (2026-08-23) postdates
+  # lastUpdated, so the store reflects UNCTAD's current published snapshot in full.
+  # The data is not late; UNCTAD has not extended this dataset.
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2022-12-31'
+    checked: '2026-08-24'
   refresh_cost: fast
   out_dir: unctad_cpi_annual
   review: true
@@ -5720,6 +5762,20 @@ sources:
   strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
   cadence: weekly
   data_cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against UNCTAD's own metadata:
+  #   GET https://unctadstat-api.unctad.org/api/reportMetadata/US.GNI/en
+  # reports lastUpdated 2022-04-08 and a time axis whose defaultCode is 2020.
+  # Our newest OBSERVED period is 2020-12-31 - at or past the publisher's own default,
+  # and this source's strategy is bulk_snapshot_if_changed: the WHOLE dataset is re-pulled
+  # whenever that publisher stamp moves. Our last successful pull (2026-08-23) postdates
+  # lastUpdated, so the store reflects UNCTAD's current published snapshot in full.
+  # The data is not late; UNCTAD has not extended this dataset.
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2020-12-31'
+    checked: '2026-08-24'
   refresh_cost: fast
   out_dir: unctad_gni
   review: true
@@ -5792,6 +5848,20 @@ sources:
   strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
   cadence: weekly
   data_cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against UNCTAD's own metadata:
+  #   GET https://unctadstat-api.unctad.org/api/reportMetadata/US.PortCallsArrivals_S/en
+  # reports lastUpdated 2024-03-26 and a time axis whose defaultCode is 2023S02.
+  # Our newest OBSERVED period is 2023-07-01 - at or past the publisher's own default,
+  # and this source's strategy is bulk_snapshot_if_changed: the WHOLE dataset is re-pulled
+  # whenever that publisher stamp moves. Our last successful pull (2026-08-23) postdates
+  # lastUpdated, so the store reflects UNCTAD's current published snapshot in full.
+  # The data is not late; UNCTAD has not extended this dataset.
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2023-07-01'
+    checked: '2026-08-24'
   refresh_cost: fast
   out_dir: unctad_portcallsarrivalss
   review: true
@@ -5918,6 +5988,20 @@ sources:
   strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
   cadence: weekly
   data_cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against UNCTAD's own metadata:
+  #   GET https://unctadstat-api.unctad.org/api/reportMetadata/US.Seafarers/en
+  # reports lastUpdated 2023-07-13 and a time axis whose defaultCode is 2021.
+  # Our newest OBSERVED period is 2021-12-31 - at or past the publisher's own default,
+  # and this source's strategy is bulk_snapshot_if_changed: the WHOLE dataset is re-pulled
+  # whenever that publisher stamp moves. Our last successful pull (2026-08-23) postdates
+  # lastUpdated, so the store reflects UNCTAD's current published snapshot in full.
+  # The data is not late; UNCTAD has not extended this dataset.
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2021-12-31'
+    checked: '2026-08-24'
   refresh_cost: fast
   out_dir: unctad_seafarers
   review: true
@@ -5972,6 +6056,20 @@ sources:
   strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
   cadence: weekly
   data_cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against UNCTAD's own metadata:
+  #   GET https://unctadstat-api.unctad.org/api/reportMetadata/US.PortCalls_S/en
+  # reports lastUpdated 2024-03-26 and a time axis whose defaultCode is 2023S02.
+  # Our newest OBSERVED period is 2023-07-01 - at or past the publisher's own default,
+  # and this source's strategy is bulk_snapshot_if_changed: the WHOLE dataset is re-pulled
+  # whenever that publisher stamp moves. Our last successful pull (2026-08-23) postdates
+  # lastUpdated, so the store reflects UNCTAD's current published snapshot in full.
+  # The data is not late; UNCTAD has not extended this dataset.
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2023-07-01'
+    checked: '2026-08-24'
   refresh_cost: fast
   out_dir: unctad_portcallss
   review: true
@@ -6008,6 +6106,20 @@ sources:
   strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
   cadence: weekly
   data_cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against UNCTAD's own metadata:
+  #   GET https://unctadstat-api.unctad.org/api/reportMetadata/US.Gender_DomesticValueAdded/en
+  # reports lastUpdated 2024-09-19 and a time axis whose defaultCode is 2020.
+  # Our newest OBSERVED period is 2020-12-31 - at or past the publisher's own default,
+  # and this source's strategy is bulk_snapshot_if_changed: the WHOLE dataset is re-pulled
+  # whenever that publisher stamp moves. Our last successful pull (2026-08-23) postdates
+  # lastUpdated, so the store reflects UNCTAD's current published snapshot in full.
+  # The data is not late; UNCTAD has not extended this dataset.
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2020-12-31'
+    checked: '2026-08-24'
   refresh_cost: fast
   out_dir: unctad_genderdomesticvalueadded
   review: true
@@ -6152,6 +6264,20 @@ sources:
   strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
   cadence: weekly
   data_cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against UNCTAD's own metadata:
+  #   GET https://unctadstat-api.unctad.org/api/reportMetadata/US.GovExpenditures/en
+  # reports lastUpdated 2023-06-19 and a time axis whose defaultCode is 2020.
+  # Our newest OBSERVED period is 2021-12-31 - at or past the publisher's own default,
+  # and this source's strategy is bulk_snapshot_if_changed: the WHOLE dataset is re-pulled
+  # whenever that publisher stamp moves. Our last successful pull (2026-08-23) postdates
+  # lastUpdated, so the store reflects UNCTAD's current published snapshot in full.
+  # The data is not late; UNCTAD has not extended this dataset.
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2021-12-31'
+    checked: '2026-08-24'
   refresh_cost: fast
   out_dir: unctad_govexpenditures
   review: true
@@ -6314,6 +6440,20 @@ sources:
   strategy_reason: Publisher-stamped whole-dataset releases (family contract, see banner above).
   cadence: weekly
   data_cadence: annual
+  # upstream_verified - PROBED 2026-08-24 against UNCTAD's own metadata:
+  #   GET https://unctadstat-api.unctad.org/api/reportMetadata/US.IctUseEconActivity/en
+  # reports lastUpdated 2025-11-28 and a time axis whose defaultCode is 2021.
+  # Our newest OBSERVED period is 2021-12-31 - at or past the publisher's own default,
+  # and this source's strategy is bulk_snapshot_if_changed: the WHOLE dataset is re-pulled
+  # whenever that publisher stamp moves. Our last successful pull (2026-08-23) postdates
+  # lastUpdated, so the store reflects UNCTAD's current published snapshot in full.
+  # The data is not late; UNCTAD has not extended this dataset.
+  #
+  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
+  # moment our newest observation falls behind the declared value.
+  upstream_verified:
+    latest_obs: '2021-12-31'
+    checked: '2026-08-24'
   refresh_cost: medium
   out_dir: unctad_ictuseeconactivity
   review: true
