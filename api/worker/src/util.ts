@@ -37,6 +37,18 @@ export const SUPPORTED_SOURCES: readonly string[] = [
 
   "abs", "barro_lee", "bcb", "bcrp", "bea", "bis",
   "bls", "boc", "boe", "bundesbank", "census",
+  // cbs_nl added 2026-08-24: 5,154 TABLE-grain ids — one catalogue row per store file, the
+  // imf_imts_direct precedent. cbs_nl holds 9,063,913,608 rows across those tables, so series
+  // grain would put billions of rows in the catalogue; the served CSV carries the dimension
+  // keys in its own series_id column. Licence cc-by-4.0, CONFIRMED redistributable_attribution
+  // (CBS's own copyright page, quoted verbatim in DATABASE_LICENSES_VERBATIM.md, fetched
+  // 2026-08-24). Verified both directions against a full R2 listing: MISSING 0, ORPHANED 0.
+  //
+  // Two tables are deliberately NOT listed: 37824 (1,886,692,500 rows) and 37731
+  // (1,056,918,900), which at the measured ~190 bytes/row are ~360 GB and ~200 GB as single
+  // CSVs — more than the staging drive holds. They stay in the store and return once the
+  // #part split convention is applied. Nothing here lists what it cannot deliver.
+  "cbs_nl",
   // cepii_gravity added 2026-07-30: 1,143,250 series were catalogued and SEARCHABLE but
   // absent from this list, so every one of them answered 501 not_migrated. The derive is
   // complete and verified both directions (MISSING 0, ORPHANED 0 against a full listing
@@ -58,6 +70,12 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "fao_gy", "fao_ic", "fao_oa", "fao_pp", "fao_qa", "fao_qcl",
   "fao_ql", "fao_qp", "fao_rp", "faostat", "fdic", "fed_board", "fhfa",
   "frankfurter", "fsi_fundforpeace", "gcb", "ggdc", "gppd",
+  // gus_dbw added 2026-08-24: 194 table-grain ids, all derived and verified (MISSING 0,
+  // ORPHANED 0). The two largest are area_46 (529,322,150 rows -> 3.11 GB gzipped) and
+  // area_16 (358,524,120 -> 1.34 GB). Licence gus-pl-open, CONFIRMED
+  // redistributable_attribution (Statistics Poland copyright page + PSI disclosure, quoted
+  // verbatim, fetched 2026-08-24).
+  "gus_dbw",
   // IEP (CC BY-NC-SA 4.0, granted 2026-07-06). These four were CATALOGUED and
   // searchable on the site with ZERO CSVs in R2, so every Download button on them
   // failed — 12,282 series advertised with nothing behind them. Derived 2026-07-27
