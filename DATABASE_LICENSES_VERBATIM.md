@@ -3750,3 +3750,34 @@ served `commercial_ok = false` where this file says commercial use is permitted 
 7,264; bundesbank 6,872; unesco_cltt 6,226; ipea 1,241; cnb 58; bis 49; bcrp 3). Correcting
 those GRANTS rights rather than restricting them, which is the owner's call. The present
 state understates what users may do, which is the safe direction to be wrong in.
+
+---
+
+## `imf` (the bare SDMX store) — DO NOT SERVE: duplicate of the imf_*_direct family (2026-08-24)
+
+`tools/reconcile_serving.py` lists `imf` as stored-but-unserved (764 parquet / 620 MB) and its
+licence is CLEARED, so it reads like an easy addition. It is not: it holds the SAME SERIES as
+the served `imf_*_direct` sources, in an older key ordering.
+
+    served    imf_afrreo_direct:AFRREO:AGO.A.BFD_GDP_BP6.BPM6
+    imf store                        AGO.BFD_GDP_BP6.A
+
+Same country, same indicator, same annual frequency — the components are simply ordered
+differently, and the served form carries the methodology segment.
+
+MEASURED on component sets (order-independent), 2026-08-24:
+    imf/AFRREO  200 of 200 sampled keys are a component-subset of a served imf_afrreo_direct series
+    imf/COFER   140 of 140  "                                          imf_cofer_direct
+    imf/FDI     200 of 200  "                                          imf_fdi_direct
+
+TWO EARLIER TESTS SAID "NOT A DUPLICATE" AND BOTH WERE WRONG, which is why this note exists:
+  * comparing FILE NAMES to source ids matched only 12 of 764 — the served ids carry a
+    `_direct` suffix the store does not.
+  * comparing key SUBSTRINGS found 0 of 18 — the substrings differ because the component
+    ORDER differs, not because the data does.
+Only a component-SET comparison answers the question. Any future "is this source a duplicate?"
+check must normalise both sides before comparing, or it will report data that already exists as new.
+
+Serving it would have added 764 catalogue entries pointing at data already served under
+different ids — the worst kind of growth, because it inflates the counts while making the
+catalogue harder to search.
