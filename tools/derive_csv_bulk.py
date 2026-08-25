@@ -206,10 +206,17 @@ def main() -> int:
     # whose stated remedy is to separate them BEFORE any whole-directory tool runs. Honouring
     # the same list here makes the protection a property of the CODE rather than of remembering
     # a flag.
+    # NO SILENT FALLBACK. This was `except Exception: SOURCE_FILE_EXCLUSIONS = {}`, which turns
+    # a broken import into ZERO exclusions - a fallback that absorbs 100% of the protection it
+    # guards, and the failure would be invisible (R419). An import error here means the licence
+    # list is unavailable, and deriving a whole directory without it is exactly what publishes
+    # V-Party. Refuse instead.
     try:
         from tools.catalog_complete import SOURCE_FILE_EXCLUSIONS
-    except Exception:                                        # noqa: BLE001
-        SOURCE_FILE_EXCLUSIONS = {}
+    except Exception as _e:                                  # noqa: BLE001
+        print(f"REFUSING: cannot import the licence exclusion list ({_e}). A whole-directory "
+              f"derive without it can publish files this source is not licensed to serve.")
+        return 2
     _excl = set(SOURCE_FILE_EXCLUSIONS.get(a.source, ()))
     if _excl:
         _skipped = [p for p in paths if os.path.basename(p) in _excl]

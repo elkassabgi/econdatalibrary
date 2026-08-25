@@ -51,11 +51,24 @@ def _parse_denylist(text: str) -> set:
     return set(re.findall(r'"([^"]+)"', body))
 
 
-def test_resolvable_subtracts_the_denylist():
+def test_the_denylist_gates_the_field_that_decides_the_download_offer():
+    """It must gate `reservable`, which is what the download block reads.
+
+    The first version of this test asserted `RESOLVABLE = load_resolvable() - DENYLISTED`, and
+    PASSED on a fix that did nothing: RESOLVABLE has one unrelated consumer (gen_site.py:2269),
+    while the download offer is decided by `rec["reservable"]` at :622, :1655, :1719 and :2160.
+    The site was rebuilt and unsdg still carried seven "Free download" offers. A test that pins
+    a code shape instead of the deciding field passes on the wrong fix.
+    """
     s = _gen_src()
-    assert re.search(r"RESOLVABLE\s*=\s*load_resolvable\(\)\s*-\s*DENYLISTED", s), (
-        "RESOLVABLE no longer subtracts the worker denylist — a denylisted source will get a "
-        "page offering a download the API refuses with 451")
+    lines = [ln for ln in s.splitlines()
+             if ln.strip().startswith("reservable = bool(lrow.get(")]
+    assert len(lines) == 1, (
+        f"expected exactly one `reservable = bool(lrow.get(...)` assignment, found "
+        f"{len(lines)} — re-locate the gate before trusting this test")
+    assert "DENYLISTED" in lines[0], (
+        "`reservable` is set without consulting the worker denylist, so a denylisted source "
+        "will render a download offer the API refuses with 451")
 
 
 def test_the_denylist_loader_exists_and_reads_the_workers_own_file():
