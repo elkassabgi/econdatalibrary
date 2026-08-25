@@ -15,7 +15,13 @@ never deletes, never rewrites existing rows.
 """
 import os, sys, sqlite3
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("AQUEDUCT_BACKEND", "r2")
+# The backend default is set in main(), NOT here. Setting it at module scope means merely
+# IMPORTING this file mutates the process environment for everything that runs afterwards.
+# tests/test_catalog_file_exclusions.py imports it at module level, pytest imports every
+# test module during collection, and so the whole suite flipped to backend=r2 - 12 blob
+# tests then failed with 'cannot derive an R2 key ... no /data/ segment' and CI went red
+# for 22 consecutive pushes. config.source_dir() does not read BACKEND and blob reads the
+# env per call, so deferring it changes nothing for the script itself.
 from updater import config, blob
 
 CAT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "catalog.db")
@@ -154,6 +160,7 @@ def complete(con, source):
 
 
 def main(sources):
+    os.environ.setdefault("AQUEDUCT_BACKEND", "r2")   # see the note beside the import
     con = sqlite3.connect(CAT)
     total = 0
     for s in sources:
