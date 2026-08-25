@@ -130,12 +130,31 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
         ch = rows[i:i + ROWS_PER_STMT]
         vals = ",\n  ".join("(%s)" % ", ".join(_lit(r[c]) for c in cols) for r in ch)
         stmts.append(f"INSERT OR REPLACE INTO series ({collist}) VALUES\n  {vals};")
-    # FTS is a contentless-style mirror here: delete-then-insert would need a
-    # matching delete command per row, so we mirror export_d1's approach and just
-    # insert. Duplicate FTS rows only ever cost a repeated search hit, whereas a
-    # MISSING one makes the series unfindable — the asymmetry favours inserting.
+    # DELETE-THEN-INSERT. This block was a bare INSERT, with a comment adopting the
+    # duplication as an acceptable trade: "Duplicate FTS rows only ever cost a repeated
+    # search hit, whereas a MISSING one makes the series unfindable - the asymmetry favours
+    # inserting." Both halves of that cost model are wrong, and this is the file that
+    # actually produced the damage. Measured on the live D1:
+    #
+    #   boc            102,882 fts rows / 12,862 ids = exactly 8.00 copies of every id
+    #   cepii_gravity  every id >= 3 copies, plus exactly 50,000 ids with a 4th - the
+    #                  signature of three full passes and one that stopped on a
+    #                  ROWS_PER_STMT boundary, and that chunking lives in THIS function
+    #   global         23,934,659 fts rows / 10,348,125 series = 2.31x
+    #
+    # The user-facing cost is not 'a repeated search hit': GET /v1/catalog?q=Lynx returns
+    # 100 rows containing 16 distinct ids, and every `total` is inflated by the same factor.
+    # The storage cost is ~13.6M rows in a database at 8.36 GB against a HARD 10 GB ceiling,
+    # which the comment never weighed. See R482 / R486 / R487.
+    #
+    # The stated objection - 'delete-then-insert would need a matching delete command per
+    # row' - is answered by deleting the CHUNK in one statement before inserting it, which is
+    # what this does. INSERT OR IGNORE cannot help: an FTS5 virtual table has no unique
+    # constraint to ignore.
     for i in range(0, len(rows), ROWS_PER_STMT):
         ch = rows[i:i + ROWS_PER_STMT]
+        _ids = ",".join(_lit(r["series_id"]) for r in ch)
+        stmts.append(f"DELETE FROM series_fts WHERE series_id IN ({_ids});")
         vals = ",\n  ".join(
             "(%s,%s,%s)" % (_lit(r["series_id"]), _lit(r.get("title")),
                             _lit(r.get("geography"))) for r in ch)

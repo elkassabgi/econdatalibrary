@@ -8,8 +8,10 @@ key column, finds keys with no '<source>:<key>' catalog row, and INSERTs minimal
 Run tools/refresh_r2_catalog.py afterward to push the updated catalog to R2.
 
 Minimal rows mirror broaden_catalog's schema; a later full broaden_catalog re-run backfills real
-titles/dates. SAFE for the NAMED source(s) only; never touches other sources,
-never deletes, never rewrites existing rows.
+titles/dates. Scoped to the NAMED source(s) only; never touches other sources. It does
+DELETE this source's own series_fts rows before re-inserting them - FTS5 cannot enforce
+uniqueness, so that is the only way to stay idempotent. The `series` table is only ever
+INSERT OR IGNORE'd.
 
   python tools/catalog_complete.py insee_bdm scb ssb ...
 """
@@ -150,21 +152,33 @@ def complete(con, source):
         "category,license_id,start_date,end_date,last_updated,metadata) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         rows)
     # DELETE-THEN-INSERT, because FTS5 CANNOT ENFORCE UNIQUENESS. This was a bare INSERT while
-    # the `series` insert two lines above is INSERT OR IGNORE, so re-running this tool on a
-    # source added ANOTHER FULL COPY of its rows to the search index every time. Measured on
-    # the live D1: boc 102,882 fts rows for 12,862 ids - exactly 8.00 copies of every id - plus
-    # wid at 4.00x and cepii_gravity at 3.04x, and 23,934,659 fts rows against 10,348,125 series
-    # overall. A user searching boc got a page that was 84% repeats (R486). `INSERT OR IGNORE`
-    # would not help: an FTS5 virtual table has no unique constraint to ignore, so the id must be
-    # deleted first.
+    # the `series` insert above is INSERT OR IGNORE, so an id that is deleted from `series` and
+    # later re-inserted gained a SECOND index row - damodaran's 384 malformed ids sat at exactly
+    # 2.00 rows each.
+    #
+    # ATTRIBUTION, CORRECTED. An earlier version of this comment blamed this tool for the
+    # fleet-wide duplication (boc 8.00x, wid 4.00x, cepii_gravity 3.04x, 23.9M index rows
+    # against 10.3M series). It cannot be: `missing` is the set of keys with NO series row and
+    # the function returns early when that set is empty, so a re-run on a fully-catalogued
+    # source inserts nothing. Maximum contribution is ONE extra copy per re-inserted id. The
+    # whole-source duplication comes from core/sync_catalog_d1.py, which re-inserts every row
+    # on every sync; it is fixed there. Stating a plausible mechanism as a measured one is
+    # R482's own disease, and I wrote it into the fix for R482 (R487).
+    # THE COMMIT BELONGS INSIDE THE TRY. With it outside, a DELETE that succeeds followed by
+    # an INSERT that fails would COMMIT the deletion and destroy this source's search index,
+    # while the function went on to print 'inserted N rows'. `database is locked` is a live
+    # condition on this machine, so that path is reachable. On failure the pair is rolled back
+    # together and the reason is printed rather than swallowed (R415).
     try:
         con.executemany("DELETE FROM series_fts WHERE series_id=?",
                         [(f"{source}:{k}",) for k in missing])
         con.executemany("INSERT INTO series_fts(series_id,title,geography) VALUES (?,?,?)",
                         [(f"{source}:{k}", k, None) for k in missing])
-    except sqlite3.OperationalError:
-        pass
-    con.commit()
+        con.commit()
+    except sqlite3.OperationalError as e:
+        con.rollback()
+        print(f"  {source}: series_fts refresh FAILED and was rolled back ({e}); the series rows are NOT committed either. Re-run when the writer clears.")
+        return 0
     print(f"                 -> inserted {len(missing):,} rows (title=native key, license={lic})")
     return len(missing)
 
