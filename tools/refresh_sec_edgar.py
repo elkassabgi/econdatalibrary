@@ -196,6 +196,10 @@ def update_catalog(spans, apply_d1):
                 # FTS is a standalone table and does not track `series`; skipping it
                 # would leave the new company unsearchable even once catalogued.
                 try:
+                    # DELETE FIRST: an FTS5 table has no unique constraint, so a re-run that
+                    # reaches this branch for an id already indexed would add a second row
+                    # rather than replace it. Bounded today by the `else`, not by the SQL.
+                    con.execute("DELETE FROM series_fts WHERE series_id = ?", (sid,))
                     con.execute("INSERT INTO series_fts (series_id, title, geography) "
                                 "VALUES (?,?,?)", (sid, title, "US"))
                 except Exception:                             # noqa: BLE001
@@ -225,7 +229,13 @@ def update_catalog(spans, apply_d1):
                 f"geography, category, license_id, start_date, end_date) VALUES "
                 f"('{sid}','sec_edgar','{esc(title)}','Q','US','fundamentals',"
                 f"'us-public-domain','{lo}','{hi}');")
-            stmts.append(f"INSERT OR IGNORE INTO series_fts (series_id, title, geography) "
+            # DELETE then INSERT. `OR IGNORE` is a NO-OP on an FTS5 virtual table -- it has
+            # no unique constraint for the conflict resolution to act on -- so this line read
+            # as idempotent while adding another copy of every company on EVERY refresh. The
+            # same misreading put 8.00 copies of each boc series in the live index. The
+            # `series` statement above is genuinely OR IGNORE; only this one needed the delete.
+            stmts.append(f"DELETE FROM series_fts WHERE series_id = '{sid}';")
+            stmts.append(f"INSERT INTO series_fts (series_id, title, geography) "
                          f"VALUES ('{sid}','{esc(title)}','US');")
             stmts.append(f"UPDATE series SET start_date='{lo}', end_date='{hi}' "
                          f"WHERE series_id='{sid}';")
