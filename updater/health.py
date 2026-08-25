@@ -116,6 +116,52 @@ def _business_age_days(iso, now) -> "float | None":
     return round(max(0.0, cal - weekend), 6)
 
 
+def _recency_signal(obs_vals, now, has_uv_claim=False) -> "tuple[str | None, str | None]":
+    """(frontier, newest_obs) from per-series cursors + unit last_obs dates.
+
+    frontier   = max over everything, projections included — display only.
+    newest_obs = the recency signal: max over values <= today — EXCEPT in the
+    dead-minority-beside-projections shape, where it becomes None (UNKNOWN).
+
+    A per-series cursor holds only that series' LAST period, so in a source
+    whose living MAJORITY ends in a projection, the <=-today population is the
+    DEAD series — and max() over them reports the death date of retired history
+    as the store's currency. Measured 2026-08-25 (run 32816867502):
+    unctad_poptotal held 918 live cursors at 2050-12-31 beside 36 dead ones
+    ending 2011-12-31; the store carries every year 1950..2050, yet the gate
+    printed newest_obs=2011-12-31 and RED-DATA'd three complete, current
+    sources — the R244 crying-wolf class.
+
+    The suppression fires ONLY when all three hold (adversarial review
+    2026-08-25 — the first cut fired on 11 sources and broke two shapes):
+      1. the frontier is forward-dated, AND
+      2. the <=-today max is discontinued-old (> STALE_SERIES_DAYS), AND
+      3. the <=-today cursors are a MINORITY (< half) of all values — the
+         composition test that separates the artifact from a REAL freeze. In a
+         true freeze every series' cursor is <= today (observed ~100%), so the
+         red stands at any age and cannot self-clear by getting older;
+         imf_psbs_direct (13,933 of 14,019 cursors <= today, max 2021 = the
+         store's genuine currency, 86 projection cursors) keeps its honest max.
+    And NEVER when the registry entry carries a structured `upstream_verified`
+    claim (has_uv_claim): those sources (fao_ga/gb/ge/gr/gt/gy) earn their OK
+    through a probed, EXPIRING claim (UPSTREAM_RECHECK_DAYS) — a structural,
+    permanent suppression would silently revoke that deliberate perishability.
+
+    Unchanged shapes: all-forward stays UNKNOWN; a finished dataset with no
+    forward frontier (imf_hpd ends 2015) keeps its old max so RED-DATA still
+    fires; a mixed store with a fresh <=-today max (abs) keeps its signal."""
+    today_iso = now.date().isoformat() if hasattr(now, "date") else str(now)[:10]
+    observed = [v for v in obs_vals if str(v)[:10] <= today_iso]
+    frontier = max(obs_vals) if obs_vals else None      # incl. projections, display only
+    newest_obs = max(observed) if observed else None    # recency signal
+    if (not has_uv_claim
+            and newest_obs and frontier and str(frontier)[:10] > today_iso
+            and len(observed) * 2 < len(obs_vals)
+            and (_age_days(newest_obs, now) or 0) > STALE_SERIES_DAYS):
+        newest_obs = None
+    return frontier, newest_obs
+
+
 def _stuck_transient(units, succ_age, sla_days, attempt_age) -> bool:
     """True when a "transient" failure has outlived any honest reading of the word.
 
@@ -259,10 +305,12 @@ def assess(store=None) -> dict:
         # a fabricated "ahead of schedule" - last_success_utc still governs whether it ran.
         obs_vals = [v for v in cursors.values() if v]
         obs_vals += [u.get("last_obs_date") for u in units if u.get("last_obs_date")]
-        today_iso = now.date().isoformat() if hasattr(now, "date") else str(now)[:10]
-        observed = [v for v in obs_vals if str(v)[:10] <= today_iso]
-        frontier = max(obs_vals) if obs_vals else None          # incl. projections, display only
-        newest_obs = max(observed) if observed else None        # recency signal
+        # _recency_signal also refuses a dead-MINORITY max as the recency signal when the
+        # frontier is forward-dated (unctad_pop*: the gate read retired series' 2011 end
+        # date as the store's currency and RED-DATA'd three complete sources). Sources
+        # with a structured upstream_verified claim keep the claim's expiring machinery.
+        frontier, newest_obs = _recency_signal(
+            obs_vals, now, has_uv_claim=isinstance(e.get("upstream_verified"), dict))
         obs_age = _age_days(newest_obs, now)
         # staleness is judged in BUSINESS days for daily sources (FX/market feeds
         # publish nothing Sat/Sun — calendar age red-flagged every Monday morning);
