@@ -62,11 +62,22 @@ for dirpath, _dn, files in os.walk(ROOT):
             continue
         if not INSERT.search(src):
             continue
+        # FOURTH instrument correction. The audit walked its own docstring and the two test
+        # files, all three of which QUOTE the bad shape in order to describe or assert it --
+        # test_sync_catalog_d1_fts_idempotent.py's negative control exists precisely to prove
+        # a bare insert reaches 4.00x. Counting those as production writers made the RISK
+        # figure 5 when the real number was 2, and a count that cries wolf is how a real one
+        # gets waved through. Tests never write production D1; this file writes nothing.
+        rel = os.path.relpath(p, ROOT).replace(chr(92), "/")
+        if rel.startswith("tests/") or rel == "tools/audit_fts_writers.py":
+            continue
         lines = src.split(chr(10))
         # function boundaries
         bounds = [i for i, l in enumerate(lines) if DEFLINE.match(l)] + [len(lines)]
         verdicts = []
         for i, l in enumerate(lines):
+            if l.lstrip().startswith("#"):
+                continue                      # a comment describing the shape is not a write
             if not INSERT.search(l):
                 continue
             if REBUILD_CMD.search(l):        # a rebuild directive, not a row insert

@@ -134,6 +134,12 @@ def main() -> int:
                 "geography,category,license_id,start_date,end_date,last_updated,metadata) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
             try:
+                # DELETE FIRST. `series` above is INSERT OR IGNORE, but an FTS5 virtual table
+                # has NO unique constraint, so OR IGNORE has no equivalent here: an id that
+                # `series` ignores still gets a SECOND row in the index. That mismatch is the
+                # shape that put 8.00 copies of every boc series in the live index.
+                con.executemany("DELETE FROM series_fts WHERE series_id=?",
+                                [(r[0],) for r in rows])
                 con.executemany("INSERT INTO series_fts(series_id,title,geography) VALUES (?,?,?)",
                                 [(r[0], r[2], None) for r in rows])
             except sqlite3.OperationalError:

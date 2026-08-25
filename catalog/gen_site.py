@@ -974,7 +974,15 @@ SOURCE_SUBTITLES = {
 
 
 def load_registry():
-    con = sqlite3.connect(DB_PATH)
+    # READ-ONLY, and wait for the writers (2026-08-25). The site generator never writes
+    # this database - it has no INSERT/UPDATE/DELETE and no commit() - but it opened it
+    # read-write with no busy timeout, so a regen during a live crawl died with
+    # "database is locked" and three SERVED sources (vdem, cbs_nl, gus_dbw) had no landing
+    # page at all while the API served 783,100 / 5,154 / 194 series. The fleet writes
+    # continuously by design, so "run it when nothing is writing" is not a real window.
+    # mode=ro also makes it impossible for a page build to corrupt the catalogue.
+    con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=120)
+    con.execute("PRAGMA busy_timeout=120000")
     con.row_factory = sqlite3.Row
 
     licenses = {r["license_id"]: dict(r) for r in con.execute("SELECT * FROM license")}
@@ -2352,7 +2360,9 @@ def _earliest_data_year():
     historical GDP series genuinely begin in year 1 CE. Floored to a century so
     the claim always understates ('2,000+'). Returns None if unmeasurable."""
     try:
-        db = sqlite3.connect(os.path.join(HERE, "..", "data", "catalog.db"))
+        _p = os.path.join(HERE, "..", "data", "catalog.db")
+        db = sqlite3.connect(f"file:{_p}?mode=ro", uri=True, timeout=120)
+        db.execute("PRAGMA busy_timeout=120000")
         row = db.execute(
             "SELECT MIN(start_date) FROM series "
             "WHERE start_date IS NOT NULL AND start_date != '' AND start_date >= '0001'"
