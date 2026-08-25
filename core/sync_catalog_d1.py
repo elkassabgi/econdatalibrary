@@ -137,9 +137,10 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
     # actually produced the damage. Measured on the live D1:
     #
     #   boc            102,882 fts rows / 12,862 ids = exactly 8.00 copies of every id
-    #   cepii_gravity  every id >= 3 copies, plus exactly 50,000 ids with a 4th - the
-    #                  signature of three full passes and one that stopped on a
-    #                  ROWS_PER_STMT boundary, and that chunking lives in THIS function
+    #   cepii_gravity  every id >= 3 copies, plus exactly 50,000 ids carrying a 4th -
+    #                  three full passes and one partial. The round 50,000 is NOT a
+    #                  ROWS_PER_STMT boundary (that is 20); its cause is unidentified,
+    #                  and only the multiplicity is evidence here.
     #   global         23,934,659 fts rows / 10,348,125 series = 2.31x
     #
     # The user-facing cost is not 'a repeated search hit': GET /v1/catalog?q=Lynx returns
