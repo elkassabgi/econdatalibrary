@@ -195,6 +195,32 @@ def main() -> int:
     paths = sorted(os.path.join(dp, f)
                    for dp, _dn, fs in os.walk(src_dir) for f in fs
                    if f.endswith(".parquet") and not f.endswith("__series.parquet"))
+
+    # LICENCE EXCLUSIONS ARE STRUCTURAL, NOT A FLAG. tools/catalog_complete.py refuses to
+    # catalogue files whose licence is not the directory's source licence, and until now this
+    # tool did not know about that list. data/clean_full/vdem/ holds vparty.parquet beside
+    # vdem.parquet: V-Dem publishes CC BY-SA 4.0 for "The V-Dem Dataset", V-Party is a separate
+    # publication whose own page states no licence, and its 682,659 keys do not overlap vdem's
+    # so the duplicate-shard guard below cannot fire either. Running this tool on vdem without
+    # --only-catalogued would therefore mint 682,659 unlicensed CSVs onto R2 - R364 verbatim,
+    # whose stated remedy is to separate them BEFORE any whole-directory tool runs. Honouring
+    # the same list here makes the protection a property of the CODE rather than of remembering
+    # a flag.
+    try:
+        from tools.catalog_complete import SOURCE_FILE_EXCLUSIONS
+    except Exception:                                        # noqa: BLE001
+        SOURCE_FILE_EXCLUSIONS = {}
+    _excl = set(SOURCE_FILE_EXCLUSIONS.get(a.source, ()))
+    if _excl:
+        _skipped = [p for p in paths if os.path.basename(p) in _excl]
+        paths = [p for p in paths if os.path.basename(p) not in _excl]
+        # Say what was dropped: a coverage limit nobody prints reads as full coverage.
+        print(f"  {a.source}: EXCLUDING {len(_skipped)} file(s) whose licence is not this "
+              f"source's: {[os.path.basename(p) for p in _skipped]} - see "
+              f"DATABASE_LICENSES_VERBATIM.md")
+        if not paths:
+            print(f"  {a.source}: every parquet was excluded; nothing to derive.")
+            return 2
     # wid ONLY: exclude the superseded legacy monolith when the per-country shards exist —
     # the same targeted skip the resolver applies (_resolve._resolve_generic_long). wid.parquet
     # (1.93M series to 2024) sits beside 412 shards (2.86M series to 2025); streaming both
