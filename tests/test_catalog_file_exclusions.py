@@ -77,3 +77,20 @@ def test_the_map_is_documented_where_it_is_defined():
 def test_the_cleared_file_is_never_itself_excluded(bad):
     """A guard against the obvious editing accident: excluding the source's own dataset."""
     assert bad not in C.SOURCE_FILE_EXCLUSIONS.get("vdem", ())
+
+def test_the_bulk_derive_honours_the_same_exclusions():
+    """The exclusion must be a property of the CODE, not of remembering a flag.
+
+    tools/derive_csv_bulk.py walks a source directory. vdem's directory holds vparty.parquet,
+    whose 682,659 keys do not overlap vdem's, so the duplicate-shard guard cannot fire. Without
+    honouring the exclusion list, a run without --only-catalogued would mint 682,659 unlicensed
+    CSVs onto R2 - R364 verbatim. Verified live: the dry run reports EXCLUDING vparty.parquet
+    and streams 783,100 series, not 1,465,759."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src = open(os.path.join(root, "tools", "derive_csv_bulk.py"), encoding="utf-8").read()
+    assert "SOURCE_FILE_EXCLUSIONS" in src, (
+        "derive_csv_bulk does not know the licence exclusions — a whole-directory run on vdem "
+        "would publish V-Party")
+    i = src.index("SOURCE_FILE_EXCLUSIONS")
+    window = src[i:i + 900]
+    assert "EXCLUDING" in window, "the exclusion must be announced, not silent"
