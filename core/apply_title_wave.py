@@ -84,6 +84,14 @@ def apply_local(titles: dict[str, str]) -> list[tuple[str, str]]:
     return landed
 
 
+# A title that never reaches series_fts leaves the series findable only by its raw key. The
+# index is the ONLY consumer of series_fts.title; /v1/catalog DISPLAYS series.title, so this
+# failure is invisible on the page and total on the query path.
+FTS_HEADER = ("-- series_fts refresh for the ids in part_*.sql (DELETE + INSERT...SELECT per\n"
+              "-- id). Emitted by core/apply_title_wave.py. Not optional: without it the new\n"
+              "-- titles display correctly and match nothing.\n")
+
+
 def emit_delta(landed: list[tuple[str, str]]) -> list[str]:
     os.makedirs(OUT_DIR, exist_ok=True)
     for f in os.listdir(OUT_DIR):
@@ -112,8 +120,43 @@ def emit_delta(landed: list[tuple[str, str]]) -> list[str]:
         buf.append(stmt)
         bb += sb
     flush()
+
+    # EMIT THE INDEX REFRESH TOO -- do not print a suggestion and call it done.
+    #
+    # DELETE-then-INSERT per id, never a whole-source DELETE: an FTS5 virtual table has no
+    # unique constraint, so INSERT alone appends a second copy (R487/R489), and a whole-source
+    # delete opens a window in which the entire source is unfindable (AR-004). INSERT...SELECT
+    # rather than a title literal, so the title is never re-quoted -- 34,670 bea titles contain
+    # an apostrophe -- which also makes a wrong title structurally impossible here.
+    fts_files: list[str] = []
+    fpart, fbuf, fbb = 0, [], 0
+
+    def flush_fts():
+        nonlocal fpart, fbuf, fbb
+        if not fbuf:
+            return
+        fp = os.path.join(OUT_DIR, "fts_%03d.sql" % fpart)
+        with open(fp, "w", encoding="utf-8") as fh:
+            fh.write(FTS_HEADER + "\n".join(fbuf) + "\n")
+        fts_files.append(fp)
+        fpart, fbuf, fbb = fpart + 1, [], 0
+
+    for sid, _title in landed:
+        stmt = ("DELETE FROM series_fts WHERE series_id=%s;\n"
+                "INSERT INTO series_fts(series_id,title,geography) "
+                "SELECT series_id,title,geography FROM series WHERE series_id=%s;"
+                % (_lit(sid), _lit(sid)))
+        sb = len(stmt.encode("utf-8")) + 1
+        if fbuf and (fbb + sb > MAX_BYTES or len(fbuf) * 2 >= MAX_STMTS):
+            flush_fts()
+        fbuf.append(stmt)
+        fbb += sb
+    flush_fts()
+
     print(f"wrote {len(files)} D1 title-delta file(s) to {OUT_DIR} ({len(landed):,} UPDATEs)")
-    return files
+    print(f"wrote {len(fts_files)} series_fts refresh file(s) -- push these TOO, or the new "
+          f"titles display but cannot be searched")
+    return files + fts_files
 
 
 def main(argv: list[str]) -> None:
@@ -129,7 +172,10 @@ def main(argv: list[str]) -> None:
     landed = apply_local(titles)
     print("== emitting D1 delta ==")
     emit_delta(landed)
-    print("DONE. Next: push dist/d1/titles/part_*.sql to D1, then rebuild D1 series_fts.")
+    print("DONE. Next: push BOTH dist/d1/titles/part_*.sql and fts_*.sql to D1. The fts\n"
+          "      files are not optional -- without them the new titles display but\n"
+          "      match nothing. Verify with a MATCH on a word from a new title,\n"
+          "      scoped to that series_id.")
 
 
 if __name__ == "__main__":
