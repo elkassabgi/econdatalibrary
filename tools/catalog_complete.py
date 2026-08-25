@@ -8,7 +8,7 @@ key column, finds keys with no '<source>:<key>' catalog row, and INSERTs minimal
 Run tools/refresh_r2_catalog.py afterward to push the updated catalog to R2.
 
 Minimal rows mirror broaden_catalog's schema; a later full broaden_catalog re-run backfills real
-titles/dates. SAFE: only INSERT OR IGNORE for the NAMED source(s); never touches other sources,
+titles/dates. SAFE for the NAMED source(s) only; never touches other sources,
 never deletes, never rewrites existing rows.
 
   python tools/catalog_complete.py insee_bdm scb ssb ...
@@ -149,7 +149,17 @@ def complete(con, source):
         "INSERT OR IGNORE INTO series (series_id,source_id,title,frequency,unit,geography,"
         "category,license_id,start_date,end_date,last_updated,metadata) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         rows)
+    # DELETE-THEN-INSERT, because FTS5 CANNOT ENFORCE UNIQUENESS. This was a bare INSERT while
+    # the `series` insert two lines above is INSERT OR IGNORE, so re-running this tool on a
+    # source added ANOTHER FULL COPY of its rows to the search index every time. Measured on
+    # the live D1: boc 102,882 fts rows for 12,862 ids - exactly 8.00 copies of every id - plus
+    # wid at 4.00x and cepii_gravity at 3.04x, and 23,934,659 fts rows against 10,348,125 series
+    # overall. A user searching boc got a page that was 84% repeats (R486). `INSERT OR IGNORE`
+    # would not help: an FTS5 virtual table has no unique constraint to ignore, so the id must be
+    # deleted first.
     try:
+        con.executemany("DELETE FROM series_fts WHERE series_id=?",
+                        [(f"{source}:{k}",) for k in missing])
         con.executemany("INSERT INTO series_fts(series_id,title,geography) VALUES (?,?,?)",
                         [(f"{source}:{k}", k, None) for k in missing])
     except sqlite3.OperationalError:
