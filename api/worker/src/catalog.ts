@@ -13,7 +13,7 @@ import {
   SEARCH_FTS_SOURCE, SEARCH_FTS_SOURCE_COUNT, SEARCH_LIKE_SOURCE, SEARCH_LIKE_SOURCE_COUNT,
   BROWSE_SOURCE, BROWSE_SOURCE_COUNT, BROWSE_SOURCE_COUNT_CACHED, BROWSE_ALL, BROWSE_ALL_COUNT,
 } from "./sql";
-import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor } from "./util";
+import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor, supportedSources } from "./util";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
 
 const COVERAGE = "series-level for 33 sources; source-level for the rest";
@@ -21,9 +21,32 @@ const COVERAGE = "series-level for 33 sources; source-level for the rest";
 export async function handleCatalog(url: URL, env: Env): Promise<Response> {
   const { lang, error } = reqLang(url);
   if (error) return error; // unsupported ?lang= -> honest 400, never silent English
-  const q = url.searchParams.get("q");
+  const qRaw = url.searchParams.get("q");
   const source = url.searchParams.get("source");
-  const src = source && source.trim() ? source : null; // null-narrowed for binds
+  let src = source && source.trim() ? source : null; // null-narrowed for binds
+
+  // A query that IS a source id resolves to that source (2026-08-25).
+  //
+  // `ftsOk` is set from `results.length > 0`, which means "FTS returned
+  // something", NOT "FTS answered this query". Unscoped, `MATCH 'wid'` also
+  // matched 10 unrelated unctad_rfia rows, so a non-empty-from-anywhere result
+  // suppressed the LIKE fallback for everyone else. It was masked only because
+  // wid's index still held 7,395,591 code-as-title rows -- `q=wid` returned
+  // total=7,395,601 and looked fine. Deduplicating that index would have turned
+  // the most obvious query for the source into 10 rows of a different source.
+  //
+  // Matching the id up front is cheaper and more correct than either path: it
+  // routes to the PK-range browse instead of a leading-wildcard LIKE scan over
+  // millions of rows, and it fixes every source at once rather than whichever
+  // ones happen to have code-titled rows left in the index.
+  let q = qRaw;
+  if (q && q.trim() && !src) {
+    const cand = q.trim().toLowerCase();
+    if (supportedSources(env).has(cand)) {
+      src = cand;
+      q = null; // browse the source; do not also MATCH its own name
+    }
+  }
   const limit = clampInt(url.searchParams.get("limit"), 50, 1, 500);
   const offset = offsetInt(url.searchParams.get("offset"));
 
