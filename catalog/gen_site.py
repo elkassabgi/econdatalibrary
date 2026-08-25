@@ -1224,7 +1224,7 @@ DENYLISTED = load_denylisted()
 
 # A page is a promise, and the promise is only true if the DATA PLANE agrees. The resolver says
 # "I know how to serve this"; the denylist says "I must not". Both have to allow it.
-RESOLVABLE = load_resolvable() - DENYLISTED
+RESOLVABLE = load_resolvable()
 
 
 # ---------------------------------------------------------------------------- #
@@ -1426,7 +1426,17 @@ def build_record(sid, src, lic, roll, side, s5=None):
     s5 = s5 or {}
     license_id = src.get("license_id")
     lrow = lic.get(license_id, {})
-    reservable = bool(lrow.get("reservable", 0))
+    # TWO independent gates, and the page needs both. `license.reservable` says the LICENCE
+    # permits re-serving; the worker's denylist.ts says the WORKER will refuse it regardless.
+    # unsdg passed the first and failed the second, so its page advertised seven "Free download"
+    # buttons while GET /v1/catalog?source=unsdg answered 451. A page is a promise, and the
+    # promise is only true if the data plane agrees.
+    #
+    # This line, not RESOLVABLE: `rec["reservable"]` is what gates the access label (:622), the
+    # distribution block (:1655), the croissant distribution (:1719) and the gated-page notice
+    # (:2160). My first attempt subtracted the denylist from RESOLVABLE, which has one unrelated
+    # consumer, and the rebuilt page was unchanged.
+    reservable = bool(lrow.get("reservable", 0)) and sid not in DENYLISTED
 
     # Description: prefer the operational sidecar note; fall back to attribution.
     desc_full = (side or {}).get("description") or src.get("attribution")
