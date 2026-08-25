@@ -1195,7 +1195,36 @@ def load_resolvable():
     return set(re.findall(r'"([^"]+)"', body))
 
 
-RESOLVABLE = load_resolvable()
+def load_denylisted():
+    """Source ids the worker REFUSES with 451 — NON_REDISTRIBUTABLE in api/worker/src/denylist.ts.
+
+    Separate from the resolver list on purpose: a source can be in SUPPORTED_SOURCES (the worker
+    knows how to serve it) and still be denylisted (the worker must not). `load_resolvable`
+    checked only the first, so `unsdg` shipped a page saying "Redistributable." with seven "Free
+    download" buttons while `/v1/catalog?source=unsdg` answered 451. Verified live 2026-08-25.
+
+    Same empty-set contract as load_resolvable: unreadable or unparsable => empty => subtract
+    NOTHING. An unreadable gate must never silently strip the download offer from every page.
+    """
+    path = os.path.join(os.path.dirname(HERE), "api", "worker", "src", "denylist.ts")
+    if not os.path.exists(path):
+        return set()
+    src = open(path, encoding="utf-8").read()
+    m = re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new\s+Set\s*\(\s*\[(.*?)\]\s*\)", src, re.S)
+    if not m:
+        m = re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*\[(.*?)\]\s*;", src, re.S)
+    if not m:
+        return set()
+    body = re.sub(r"//.*", "", m.group(1))
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    return set(re.findall(r'"([^"]+)"', body))
+
+
+DENYLISTED = load_denylisted()
+
+# A page is a promise, and the promise is only true if the DATA PLANE agrees. The resolver says
+# "I know how to serve this"; the denylist says "I must not". Both have to allow it.
+RESOLVABLE = load_resolvable() - DENYLISTED
 
 
 # ---------------------------------------------------------------------------- #
