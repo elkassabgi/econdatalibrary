@@ -38,6 +38,13 @@ DELETE_ALL = re.compile(r"DELETE\s+FROM\s+series_fts\s*(?:;|\"|')", re.I)
 # A DROP TABLE + CREATE VIRTUAL TABLE is also a full rebuild and is SAFE. My first pass
 # looked only for DELETE and flagged core/export_d1.py as a duplication source when it
 # actually drops and recreates the table. Checking before reporting the count.
+# FTS5's REBUILD DIRECTIVE IS NOT A ROW INSERT. `INSERT INTO series_fts(series_fts)
+# VALUES('rebuild')` is the FTS5 command that reconstructs the index from its content table -
+# it DEDUPLICATES rather than duplicates. My first two passes matched it as a RISK insert and
+# reported 18 cataloguers as duplication sources; every one of them was issuing a rebuild. That
+# would have been a large, risky, pointless change. Third instrument error in this one audit,
+# which is why the count is printed only after this exclusion.
+REBUILD_CMD = re.compile(r"INSERT\s+INTO\s+series_fts\s*\(\s*series_fts\s*\)", re.I)
 DROP_FTS = re.compile(r"DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?series_fts", re.I)
 DEFLINE = re.compile(r"^\s*(?:def|class)\s+\w+")
 
@@ -61,6 +68,9 @@ for dirpath, _dn, files in os.walk(ROOT):
         verdicts = []
         for i, l in enumerate(lines):
             if not INSERT.search(l):
+                continue
+            if REBUILD_CMD.search(l):        # a rebuild directive, not a row insert
+                verdicts.append(("SAFE-REBUILD", i + 1))
                 continue
             start = max([b for b in bounds if b <= i] or [0])
             end = min([b for b in bounds if b > i] or [len(lines)])

@@ -11,9 +11,9 @@ deliberate, and the comment adopting it stated a cost model that was wrong in bo
 Measured on the live D1 before the fix:
 
     boc            102,882 fts rows / 12,862 ids  = exactly 8.00 copies of every id
-    cepii_gravity  every id >= 3 copies, plus exactly 50,000 ids carrying a 4th — the signature
-                   of three full passes and one that stopped on a ROWS_PER_STMT boundary, and
-                   that chunking lives in this very function
+    cepii_gravity  every id >= 3 copies, plus exactly 50,000 ids carrying a 4th — three full
+                   passes and one partial. The round 50,000 is NOT a ROWS_PER_STMT boundary
+                   (that is 20); its cause is unidentified. Only the multiplicity is evidence.
     global         23,934,659 fts rows / 10,348,125 series = 2.31x
 
 A user searching `Lynx` got 100 rows containing 16 distinct ids, and every reported `total` was
@@ -126,10 +126,12 @@ def test_the_delete_is_scoped_to_the_chunk_not_the_source(sync):
 
 
 def test_a_chunk_boundary_does_not_leave_a_partial_extra_copy(sync):
-    """cepii_gravity's 3.04x was three full passes plus one that stopped after 50,000 ids.
+    """cepii_gravity's 3.04x is three full passes plus one partial.
 
-    That fractional ratio is only producible by repeated whole-source insertion with one
-    truncated pass, so a boundary-crossing row count is the case to pin.
+    A fractional ratio is only producible by repeated whole-source insertion with one
+    truncated pass, so a row count that crosses a chunk boundary is worth pinning — even
+    though the specific 50,000 stopping point is NOT a ROWS_PER_STMT boundary (that is 20)
+    and remains unexplained.
     """
     con = sqlite3.connect(":memory:")
     con.executescript(SCHEMA)
