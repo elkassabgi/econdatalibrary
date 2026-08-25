@@ -14,6 +14,8 @@ nobody prints reads as full coverage.
 """
 from __future__ import annotations
 
+import re
+
 import os
 
 import pytest
@@ -91,6 +93,15 @@ def test_the_bulk_derive_honours_the_same_exclusions():
     assert "SOURCE_FILE_EXCLUSIONS" in src, (
         "derive_csv_bulk does not know the licence exclusions — a whole-directory run on vdem "
         "would publish V-Party")
-    i = src.index("SOURCE_FILE_EXCLUSIONS")
-    window = src[i:i + 900]
-    assert "EXCLUDING" in window, "the exclusion must be announced, not silent"
+    # BEHAVIOURAL, not positional. This was `window = src[i:i+900]` and it went red when a
+    # comment was added above the announcement, pushing the gap to 1,044 characters while both
+    # facts it checks stayed true. A guard a comment can break invites someone to delete the
+    # comment, and its failure says nothing about the property being protected.
+    assert re.search(r"_skipped\s*=\s*\[", src), (
+        "derive_csv_bulk no longer computes the list of files it skipped, so it cannot report "
+        "them - the exclusion would apply silently")
+    m = re.search(r"print\(([^)]*EXCLUDING[^)]*)\)", src, re.S)
+    assert m, "the exclusion is applied but never announced - a silent skip is R364's shape"
+    assert "_skipped" in m.group(1), (
+        "the EXCLUDING message does not reference the skipped files, so it cannot say WHICH "
+        "files were left out")
