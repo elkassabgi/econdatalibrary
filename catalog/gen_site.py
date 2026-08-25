@@ -1757,7 +1757,7 @@ box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06)}
 box-shadow:0 2px 8px rgba(0,0,0,.15)}
 .nav-in{max-width:1200px;margin:0 auto;padding:0 1.5rem;height:64px;display:flex;
 align-items:center;justify-content:space-between}
-.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}
+.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}.brand,.nav .brand{white-space:nowrap;flex-shrink:0}
 .brand .d{color:var(--gold)}.brand a{color:#fff;text-decoration:none}
 /* nav links mirror hfdatalibrary.com exactly: padded pills, hover + active
    highlight (rgba white .1 background), same rhythm and bar height (64px). */
@@ -1855,7 +1855,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 .nav .signin{{background:var(--gold);color:var(--navy)!important;padding:.4rem .875rem;
 border-radius:6px;font-size:.85rem;font-weight:600;white-space:nowrap;margin-left:.75rem}}
 .nav .signin:hover{{background:#e0b955}}
-.nav .brand{{display:inline-flex;align-items:center;gap:.55rem}}
+.nav .brand{{display:inline-flex;align-items:center;gap:.55rem;white-space:nowrap;flex-shrink:0}}
 .nav .fam-tag{{font-size:.62rem;color:var(--gold)!important;border:1px solid rgba(212,168,67,.5);
 border-radius:999px;padding:.12rem .5rem;white-space:nowrap;font-family:var(--sans);font-weight:600;
 letter-spacing:.01em;text-decoration:none;line-height:1.4}}
