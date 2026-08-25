@@ -459,6 +459,7 @@ def _derive_changed_csvs(unit, res, blob):
             return [], (f"csv coherence unmet: fetcher reported no series_cursors for "
                         f"{res.obs} merged obs — CSVs not re-derived (§5.7)"), [], {}
         return [], None, [], {}
+    ids: list = []   # pre-bound: the except below queues ONLY mapped catalog ids
     try:
         # `changed` holds STORE series_keys; the derive/resolver layer needs
         # CATALOG series_ids. The key→id mapping is source-specific (e.g.
@@ -582,9 +583,20 @@ def _derive_changed_csvs(unit, res, blob):
             print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
         return failed, note, deferred_ids, dict(out.get("failed_reasons") or {})
     except Exception as e:  # noqa: BLE001 — CSV failure must NEVER sink the data publish
+        # Queue only MAPPED CATALOG ids — never `changed`, which holds raw STORE keys.
+        # This branch used to return `changed` verbatim; the caller fed it into
+        # csv_retry_queue, and ember accumulated 161,843 colon-free store keys
+        # ('01 Apr 2025 (Tue)|Daily (2 years)|Hard coal') that every later drain
+        # re-failed on `series_id.split(":", 1)` — 20,000 ValueErrors and ~1h wasted
+        # per run, forever, with the queue never draining (run 32816867502). A crash
+        # before mapping queues nothing: the run still demotes to `partial` on the
+        # note, the vintage stays un-bumped, and the next run re-derives the same
+        # changed set — nothing is lost by an empty queue here.
         _crash = (f"csv_derive crashed: " + repr(e))[:200]
-        return changed, (f"csv_derive crashed ({len(changed)} series queued): "
-                         + repr(e))[:300], [], {s: _crash for s in changed}
+        _q = [s for s in ids
+              if isinstance(s, str) and s.startswith(unit.source_id + ":")]
+        return _q, (f"csv_derive crashed ({len(_q)} of {len(changed)} changed series "
+                    f"queued): " + repr(e))[:300], [], {s: _crash for s in _q}
 
 
 _DERIVE_ALL_CAP = 5000
@@ -593,6 +605,27 @@ _DERIVE_ALL_CAP = 5000
 # Bounded so a large parked backlog (insee_bdm: 43,354) cannot monopolise the derive
 # budget that fresh changes need; the rest stays queued for later runs.
 _CSV_RETRY_CAP = 20_000
+
+
+def _split_retry_rows(source_id: str, rows: list) -> "tuple[list, list[str]]":
+    """Partition csv_retry_queue rows into (retryable_rows, malformed_ids).
+
+    A queue row is retryable only when its series_id is a CATALOG id — always
+    `<source>:<native>` by construction (broaden_catalog and every per-family
+    cataloguer build ids that way). Raw STORE keys carry no source prefix and can
+    never resolve: `_resolve.resolve()` splits on the first ':' and a bare key
+    either crashes (ValueError on unpack) or routes to a nonexistent source. The
+    old crash path in _derive_changed_csvs queued store keys verbatim, so ember
+    parked 161,843 of them and re-failed 20,000 per run without ever draining
+    (run 32816867502). The caller PURGES the malformed ids, loudly — retrying
+    them is pure cost with a mechanically impossible success."""
+    pre = source_id + ":"
+    good: list = []
+    junk: "list[str]" = []
+    for r in rows:
+        sid = str(r["series_id"])
+        (good.append(r) if sid.startswith(pre) else junk.append(sid))
+    return good, junk
 
 
 # Sources whose flow id is the FIRST ':'-segment of the store key rather than the
@@ -1246,6 +1279,17 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # phase already blew its time fence, retrying OLD queued ids in
                 # the same exhausted window is exactly the overrun being fenced.
                 _retry_rows = [] if _csv_fence_tripped else store.csv_retries(unit.source_id)
+                # Purge rows that are not catalog ids BEFORE spending budget on them —
+                # raw store keys (the old crash path's residue) fail every attempt by
+                # construction and would otherwise sit in the queue forever, eating the
+                # whole _CSV_RETRY_CAP each run (ember: 20,000 ValueErrors/run).
+                _retry_rows, _junk_ids = _split_retry_rows(unit.source_id, _retry_rows)
+                if _junk_ids:
+                    store.clear_csv_retries(_junk_ids)
+                    print(f"[orchestrator] {unit.source_id}: purged {len(_junk_ids):,} "
+                          f"malformed csv-retry id(s) — raw store keys (no "
+                          f"'{unit.source_id}:' prefix) queued by the old crash path; "
+                          f"they can never resolve", flush=True)
                 if _retry_rows:
                     _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
                     from . import derive as _derive_mod
