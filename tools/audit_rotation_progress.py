@@ -88,6 +88,13 @@ def main() -> int:
         # judging its store by the polling cadence is the R327-family confusion.
         cad_key = reg[sid].get("data_cadence") or reg[sid].get("cadence", "monthly")
         cadence = CADENCE_DAYS.get(cad_key, 28) if isinstance(cad_key, str) else float(cad_key)
+        # CADENCE_DAYS maps 'irregular' to 7 — that is the CHECK cadence (poll often, in
+        # case). As a STALENESS horizon it reads a quarterly-publishing office as stuck
+        # (ksh_stadat fired at 64% on the 21d floor while actively writing). An irregular
+        # publisher earns the lateness clock health.py gives it: ~a year; use 90d here as
+        # the horizon base so 3x lands at 270d.
+        if cad_key == "irregular":
+            cadence = 90.0
         ages = []
         token = None
         while True:
