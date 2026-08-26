@@ -2,12 +2,12 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>Stocks, Chickens; Stocks, Poultry Birds; Area harvested, Fruit Primary — FAOSTAT — Econ Data Library</title>
-<meta name="description" content="Stocks, Chickens; Stocks, Poultry Birds; Area harvested, Fruit Primary. FAOSTAT. 79,315 series, 1961–2024. Free download under Redistributable, non-commercial.">
+<title>Production, Hen eggs in shell, fresh; Production, Meat, Total; Stocks, Chickens — FAOSTAT — Econ Data Library</title>
+<meta name="description" content="Production, Hen eggs in shell, fresh; Production, Meat, Total; Stocks, Chickens. FAOSTAT. 79,315 series, 1961–2024. Free download.">
 <meta name="author" content="Ahmed Elkassabgi">
 <link rel="canonical" href="https://econdatalibrary.com/fao_qcl">
-<meta property="og:title" content="Stocks, Chickens; Stocks, Poultry Birds; Area harvested, Fruit Primary — FAOSTAT">
-<meta property="og:description" content="Stocks, Chickens; Stocks, Poultry Birds; Area harvested, Fruit Primary. FAOSTAT. 79,315 series, 1961–2024. Free download under Redistributable, non-commercial.">
+<meta property="og:title" content="Production, Hen eggs in shell, fresh; Production, Meat, Total; Stocks, Chickens — FAOSTAT">
+<meta property="og:description" content="Production, Hen eggs in shell, fresh; Production, Meat, Total; Stocks, Chickens. FAOSTAT. 79,315 series, 1961–2024. Free download.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://econdatalibrary.com/fao_qcl">
 <meta property="og:site_name" content="Econ Data Library">
@@ -17,8 +17,8 @@
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://econdatalibrary.com/assets/og-image.png">
-<meta name="twitter:title" content="Stocks, Chickens; Stocks, Poultry Birds; Area harvested, Fruit Primary — FAOSTAT">
-<meta name="twitter:description" content="Stocks, Chickens; Stocks, Poultry Birds; Area harvested, Fruit Primary. FAOSTAT. 79,315 series, 1961–2024. Free download under Redistributable, non-commercial.">
+<meta name="twitter:title" content="Production, Hen eggs in shell, fresh; Production, Meat, Total; Stocks, Chickens — FAOSTAT">
+<meta name="twitter:description" content="Production, Hen eggs in shell, fresh; Production, Meat, Total; Stocks, Chickens. FAOSTAT. 79,315 series, 1961–2024. Free download.">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -77,7 +77,7 @@ box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06)}
 box-shadow:0 2px 8px rgba(0,0,0,.15)}
 .nav-in{max-width:1200px;margin:0 auto;padding:0 1.5rem;height:64px;display:flex;
 align-items:center;justify-content:space-between}
-.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}
+.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}.brand,.nav .brand{white-space:nowrap;flex-shrink:0}
 .brand .d{color:var(--gold)}.brand a{color:#fff;text-decoration:none}
 /* nav links mirror hfdatalibrary.com exactly: padded pills, hover + active
    highlight (rgba white .1 background), same rhythm and bar height (64px). */
@@ -193,7 +193,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   "@context": "https://schema.org/",
   "@type": "Dataset",
   "name": "FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QCL (Crops and livestock products)",
-  "description": "Stocks, Chickens; Stocks, Poultry Birds; Area harvested, Fruit Primary. FAOSTAT. 79,315 series, 1961–2024. Free download under Redistributable, non-commercial.",
+  "description": "Production, Hen eggs in shell, fresh; Production, Meat, Total; Stocks, Chickens. FAOSTAT. 79,315 series, 1961–2024. Free download.",
   "url": "https://econdatalibrary.com/fao_qcl",
   "identifier": "fao_qcl",
   "isAccessibleForFree": true,
@@ -257,7 +257,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "name": "fao_qcl",
-  "description": "Stocks, Chickens; Stocks, Poultry Birds; Area harvested, Fruit Primary. FAOSTAT. 79,315 series, 1961–2024. Free download under Redistributable, non-commercial.",
+  "description": "Production, Hen eggs in shell, fresh; Production, Meat, Total; Stocks, Chickens. FAOSTAT. 79,315 series, 1961–2024. Free download.",
   "url": "https://econdatalibrary.com/fao_qcl",
   "creator": {
     "@type": "sc:Organization",
@@ -323,7 +323,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-21');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-26');
     if(d.as_of){var _ag=tago(d.as_of);
       document.getElementById('sb-data').textContent='Data updated: '+fdate(d.as_of)+(_ag?' ('+_ag+')':'');}
   }).catch(function(){
@@ -366,7 +366,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
   &quot;name&quot;: &quot;FAOSTAT (Food and Agriculture Organization of the United Nations) - domain QCL (Crops and livestock products)&quot;,
-  &quot;description&quot;: &quot;Stocks, Chickens; Stocks, Poultry Birds; Area harvested, Fruit Primary. FAOSTAT. 79,315 series, 1961–2024. Free download under Redistributable, non-commercial.&quot;,
+  &quot;description&quot;: &quot;Production, Hen eggs in shell, fresh; Production, Meat, Total; Stocks, Chickens. FAOSTAT. 79,315 series, 1961–2024. Free download.&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/fao_qcl&quot;,
   &quot;identifier&quot;: &quot;fao_qcl&quot;,
   &quot;isAccessibleForFree&quot;: true,
@@ -428,7 +428,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
   &quot;name&quot;: &quot;fao_qcl&quot;,
-  &quot;description&quot;: &quot;Stocks, Chickens; Stocks, Poultry Birds; Area harvested, Fruit Primary. FAOSTAT. 79,315 series, 1961–2024. Free download under Redistributable, non-commercial.&quot;,
+  &quot;description&quot;: &quot;Production, Hen eggs in shell, fresh; Production, Meat, Total; Stocks, Chickens. FAOSTAT. 79,315 series, 1961–2024. Free download.&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/fao_qcl&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,

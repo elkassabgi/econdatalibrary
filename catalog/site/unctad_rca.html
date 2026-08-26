@@ -2,12 +2,12 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>001.004.M6700; 001.008.M6700; 001.012.M6700 — UNCTAD — Econ Data Library</title>
-<meta name="description" content="001.004.M6700; 001.008.M6700; 001.012.M6700. UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.">
+<title>Revealed comparative advantage index, annual (analytical) — UNCTAD — Econ Data Library</title>
+<meta name="description" content="Revealed comparative advantage index, annual (analytical). UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.">
 <meta name="author" content="Ahmed Elkassabgi">
 <link rel="canonical" href="https://econdatalibrary.com/unctad_rca">
-<meta property="og:title" content="001.004.M6700; 001.008.M6700; 001.012.M6700 — UNCTAD">
-<meta property="og:description" content="001.004.M6700; 001.008.M6700; 001.012.M6700. UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.">
+<meta property="og:title" content="Revealed comparative advantage index, annual (analytical) — UNCTAD">
+<meta property="og:description" content="Revealed comparative advantage index, annual (analytical). UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://econdatalibrary.com/unctad_rca">
 <meta property="og:site_name" content="Econ Data Library">
@@ -17,8 +17,8 @@
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://econdatalibrary.com/assets/og-image.png">
-<meta name="twitter:title" content="001.004.M6700; 001.008.M6700; 001.012.M6700 — UNCTAD">
-<meta name="twitter:description" content="001.004.M6700; 001.008.M6700; 001.012.M6700. UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.">
+<meta name="twitter:title" content="Revealed comparative advantage index, annual (analytical) — UNCTAD">
+<meta name="twitter:description" content="Revealed comparative advantage index, annual (analytical). UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -77,7 +77,7 @@ box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06)}
 box-shadow:0 2px 8px rgba(0,0,0,.15)}
 .nav-in{max-width:1200px;margin:0 auto;padding:0 1.5rem;height:64px;display:flex;
 align-items:center;justify-content:space-between}
-.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}
+.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}.brand,.nav .brand{white-space:nowrap;flex-shrink:0}
 .brand .d{color:var(--gold)}.brand a{color:#fff;text-decoration:none}
 /* nav links mirror hfdatalibrary.com exactly: padded pills, hover + active
    highlight (rgba white .1 background), same rhythm and bar height (64px). */
@@ -193,7 +193,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   "@context": "https://schema.org/",
   "@type": "Dataset",
   "name": "United Nations Conference on Trade and Development (UNCTAD) — UNCTAD Data Hub (UNCTADstat)",
-  "description": "001.004.M6700; 001.008.M6700; 001.012.M6700. UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.",
+  "description": "Revealed comparative advantage index, annual (analytical). UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.",
   "url": "https://econdatalibrary.com/unctad_rca",
   "identifier": "unctad_rca",
   "isAccessibleForFree": true,
@@ -218,6 +218,9 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   "keywords": [
     "International Trade",
     "unctad_rca"
+  ],
+  "variableMeasured": [
+    "Revealed comparative advantage index, annual (analytical)"
   ],
   "creditText": "Source: United Nations Trade and Development Data Hub (UNCTADstat)",
   "sameAs": [
@@ -256,7 +259,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   "@type": "sc:Dataset",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "name": "unctad_rca",
-  "description": "001.004.M6700; 001.008.M6700; 001.012.M6700. UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.",
+  "description": "Revealed comparative advantage index, annual (analytical). UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.",
   "url": "https://econdatalibrary.com/unctad_rca",
   "creator": {
     "@type": "sc:Organization",
@@ -321,7 +324,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-21');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-26');
     if(d.as_of){var _ag=tago(d.as_of);
       document.getElementById('sb-data').textContent='Data updated: '+fdate(d.as_of)+(_ag?' ('+_ag+')':'');}
   }).catch(function(){
@@ -361,7 +364,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
   &quot;name&quot;: &quot;United Nations Conference on Trade and Development (UNCTAD) — UNCTAD Data Hub (UNCTADstat)&quot;,
-  &quot;description&quot;: &quot;001.004.M6700; 001.008.M6700; 001.012.M6700. UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.&quot;,
+  &quot;description&quot;: &quot;Revealed comparative advantage index, annual (analytical). UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/unctad_rca&quot;,
   &quot;identifier&quot;: &quot;unctad_rca&quot;,
   &quot;isAccessibleForFree&quot;: true,
@@ -386,6 +389,9 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   &quot;keywords&quot;: [
     &quot;International Trade&quot;,
     &quot;unctad_rca&quot;
+  ],
+  &quot;variableMeasured&quot;: [
+    &quot;Revealed comparative advantage index, annual (analytical)&quot;
   ],
   &quot;creditText&quot;: &quot;Source: United Nations Trade and Development Data Hub (UNCTADstat)&quot;,
   &quot;sameAs&quot;: [
@@ -422,7 +428,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   &quot;@type&quot;: &quot;sc:Dataset&quot;,
   &quot;conformsTo&quot;: &quot;http://mlcommons.org/croissant/1.0&quot;,
   &quot;name&quot;: &quot;unctad_rca&quot;,
-  &quot;description&quot;: &quot;001.004.M6700; 001.008.M6700; 001.012.M6700. UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.&quot;,
+  &quot;description&quot;: &quot;Revealed comparative advantage index, annual (analytical). UNCTAD. 57,535 series. Free download under CC BY 3.0 IGO.&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/unctad_rca&quot;,
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
