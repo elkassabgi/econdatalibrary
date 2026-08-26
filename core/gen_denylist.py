@@ -158,8 +158,17 @@ LEGACY_KEEP = {
     # 2026-08-06. A deliberate, human-authorised un-gate, executed only after the store
     # was REBUILT from the publisher (3,768,215 rows, run 31129475260) — the purged
     # data never resurfaces; freshly-fetched data serves.
+    # unsdg REMOVED from the floor 2026-08-26, the barro_lee/norgesbank/vdem pattern:
+    # pinned as "no reply to the permission request / never assessed", but the licence
+    # audit has since CLEARED it (UNdata terms, catalog row un-data-terms reservable=1)
+    # and Ahmed authorized the un-gate (TODO Phase-1 #3, approved 2026-08-26). Executed
+    # only after the data plane was verified COMPLETE: 396 catalogue rows = 396 R2 CSVs
+    # (adversarial review probed first/mid/last ids live beside present+absent controls),
+    # D1 synced, store rebuilt from the publisher post-purge — the R167 flag-first trap
+    # (451 -> 404) is measured absent. A deliberate, human-authorised un-gate, NOT a
+    # silent regeneration drop.
     "fred", "fred_releases", "gus", "ibge", "ine_spain",
-    "unesco_sci", "unicef", "unsdg", "who_gho",
+    "unesco_sci", "unicef", "who_gho",
     # vdem REMOVED from the floor 2026-08-24, on Ahmed's explicit instruction, and for the
     # barro_lee reason: it was on this floor because NOBODY HAD ASSESSED ITS LICENCE, not
     # because anyone decided against serving it. DATABASE_LICENSES_VERBATIM.md now records the

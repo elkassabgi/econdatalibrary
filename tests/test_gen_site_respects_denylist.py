@@ -84,9 +84,15 @@ def test_the_real_denylist_parses_and_is_not_empty():
     with open(DENY, encoding="utf-8") as fh:
         ids = _parse_denylist(fh.read())
     assert len(ids) >= 10, f"parsed only {len(ids)} denylisted ids — the expression has drifted"
-    assert "unsdg" in ids, (
-        "unsdg is the source that exposed this defect; if it has left the denylist, re-check "
-        "whether the page and the API now agree before assuming this test is stale")
+    # unsdg (the source that exposed this defect) LEFT the denylist 2026-08-26 by Ahmed's
+    # authorised un-gate — the re-check its old assertion demanded was done: the data plane
+    # serves 396/396 verified CSVs and the page is regenerated in the same bundle, so page
+    # and API agree in the SERVING direction now. The canary duty passes to `cow`, whose
+    # verdict is permanently RESTRICTED (purged store, R8 residue) and which can only leave
+    # the denylist through the same deliberate human decision this comment records for unsdg.
+    assert "cow" in ids, (
+        "cow is permanently restricted; if it has left the denylist, re-check whether the "
+        "page and the API still agree before assuming this test is stale")
 
 
 def test_an_unreadable_denylist_subtracts_nothing():

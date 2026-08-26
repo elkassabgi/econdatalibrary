@@ -77,7 +77,7 @@ box-shadow:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06)}
 box-shadow:0 2px 8px rgba(0,0,0,.15)}
 .nav-in{max-width:1200px;margin:0 auto;padding:0 1.5rem;height:64px;display:flex;
 align-items:center;justify-content:space-between}
-.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}
+.brand{font-family:var(--serif);font-weight:700;font-size:1.2rem}.brand,.nav .brand{white-space:nowrap;flex-shrink:0}
 .brand .d{color:var(--gold)}.brand a{color:#fff;text-decoration:none}
 /* nav links mirror hfdatalibrary.com exactly: padded pills, hover + active
    highlight (rgba white .1 background), same rhythm and bar height (64px). */
@@ -322,7 +322,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-21');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-26');
     if(d.as_of){var _ag=tago(d.as_of);
       document.getElementById('sb-data').textContent='Data updated: '+fdate(d.as_of)+(_ag?' ('+_ag+')':'');}
   }).catch(function(){
@@ -347,7 +347,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dl class="kv"><dt>License</dt><dd>IMF Terms of Use (redistribution with attribution)</dd>
 <dt>Required attribution</dt><dd>Source: International Monetary Fund, Consumer Price Index. Retrieved directly from the IMF SDMX API (api.imf.org).</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
-<dt>Commercial use</dt><dd>Yes</dd>
+<dt>Commercial use</dt><dd>Restricted / no</dd>
 <dt>Modification</dt><dd>Permitted</dd>
 <dt>Provider homepage</dt><dd><a href="https://www.imf.org/en/data">https://www.imf.org/en/data</a></dd>
 <dt>Provider terms</dt><dd><a href="https://www.imf.org/en/about/copyright-and-terms">https://www.imf.org/en/about/copyright-and-terms</a></dd></dl>

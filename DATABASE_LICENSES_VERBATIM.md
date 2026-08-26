@@ -3406,10 +3406,17 @@ ever identified as third-party sourced it must be excluded individually.
 - **License:** Creative Commons Attribution 4.0 (CC BY 4.0)
 - **Classification:** redistributable_attribution
 - **Commercial OK:** True · **Attribution required:** True · **ShareAlike:** None · **Fetch:** fetched_ok
-- **Adversarial verdict:** **RESEARCHER-ASSESSED, single pass** — quote verified verbatim on TWO
-  official surfaces (English legal notice and the Italian original). NOT yet run through an
-  independent verifier pass, unlike the entries above; treat the classification as sound and the
-  verdict field as pending that second reader.
+- **Adversarial verdict:** **CONFIRMED** (second reading 2026-08-25) — an independent second
+  reader re-fetched BOTH official surfaces live and re-verified the quote verbatim: the English
+  legal notice carries "Unless otherwise stated, content on this website is licensed under a
+  Creative Commons License – Attribution – 4.0." with "for any purpose, even commercially" on
+  both the Share and Adapt grants, and the Italian original matches ("Salvo diversa indicazione
+  ... Creative Commons – Attribuzione – versione 4.0", "per qualsiasi fine, anche commerciale").
+  Adversarial stricter-clause search found only the images/logos/trademarks/third-party carve-out
+  (does not reach the statistical data); the SDMX data surfaces publish no overriding terms
+  (esploradati.istat.it connection-timeout, sdmx.istat.it redirect loop — no terms page exists
+  anywhere reachable, so the site-wide legal notice governs). Earlier single-pass caveat
+  (2026-07-29) superseded by this two-reader verdict.
 - **Decision tier:** CLEARED - re-host OK (attribution)
 
 **Verbatim quote:**

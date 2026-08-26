@@ -131,7 +131,9 @@ SERVED_TIER_DRIFT: frozenset[str] = frozenset({
     "faostat",         # DISPUTED verdict; the 13 fao_* domains carry verified-nc licence rows
     "frankfurter",     # ECB-derived rates; verdict never finalised
     "worldbank",       # third-party-series carve-out IS implemented in SERIES_CARVEOUTS
-    "worldbank_pink",  # same carve-out family as worldbank
+    # worldbank_pink DELETED from this baseline 2026-08-26: its catalog.db row moved to
+    # audit-restricted (reservable=0) and it entered denylist.ts, so it no longer drifts —
+    # the ratchet below demands baseline deletion in the same commit as the regen.
 })
 
 # Denylist ids matching neither the served surface nor a verdict row. The wto_* entries are the
