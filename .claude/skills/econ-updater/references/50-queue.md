@@ -1463,3 +1463,62 @@ the shards — it holds the retracted final observations of these 1,190 series (
 the publisher no longer ships). The size-verified archive copy preserves them either way, so
 deletion still loses nothing that is not archived; but "the shards contain everything" would
 have been a false premise, and now the decision can be made on the true one.
+
+### TABLE-GRAIN coherence mapping FIXED (2026-08-26) — and what it does NOT fix
+
+`_catalog_ids_for` had no rule for the 14 `imf_*_direct` sources catalogued at TABLE grain
+over SERIES-grain stores, so 100% of every changed key missed, §5.7 booked "csv coherence
+unmet", and the run demoted to `partial` — which never sets `last_success_utc` (R231), so the
+served CSVs never re-derived either. The fingerprint was R221/R245: unmapped equalled the
+source's own distinct-key count EXACTLY (imf_mfsma_direct 3,016 == 3,016).
+
+Fixed in c414c1a35 by a per-source POSITION SPEC (`_TABLE_GRAIN`) mirroring each source's own
+resolver in `clients/python/econdl/_resolve.py`. Measured after, backend printed as r2, full
+stores: mfsma 3,016->468 ids/0 unmapped; mfsir 3,423->510/5; mfsfmp 284->207/2; mfsofc
+4,704->231/0; mfsdc 36,620->539/22; bopagg 7,839->208/0; psbs 14,018->86/0; ctot 4,320->360/0;
+er 10,474->681/0; gsli 80,398->233/0; qgfs 20,502->267/0; imts 472,238->2,937/0. dip
+776,752->5,180/0 and pip 3,126,127->8,876/0 proven by round-trip.
+
+TWO THINGS THE NEXT SESSION SHOULD KNOW:
+
+1. **It is NOT proven in production.** No run has exercised it. Confirm on the next scheduled
+   updater-daily that these sources' notes stop reading "csv coherence unmet" — and that
+   imf_mfsofc_direct stops blowing its 60-minute csv fence. Its mapping now takes 0.2 s where
+   4,704 unmapped keys previously cost ~2.9 s EACH in the `LIKE ? ESCAPE` full-scan branch
+   (measured: mfsir's 5 residual keys alone cost 14.6 s), i.e. ~3.8 h — that is the fence's
+   likely cause, now explained by measurement rather than asserted.
+2. **The D1 amplification was the real hazard, not the mapper.** Mapping ids queues them for
+   `core/sync_catalog_d1.py`, whose FTS delete was chunked at ROWS_PER_STMT=20. `series_fts` is
+   `fts5(series_id UNINDEXED, ...)`, so one statement full-scans it: MEASURED on live D1
+   2026-08-26, `SELECT COUNT(*) FROM series_fts WHERE series_id IN (<20 ids>)` reads
+   **23,843,482 rows in 16.4 s**. Newly mapping 20,783 ids at 20/stmt = 1,040 statements =
+   2.48e10 rows ~ **$25 PER RUN, recurring**. `FTS_DELETE_PER_STMT = 500` makes it 42
+   statements ~ $1. Anything that increases the number of ids the sync touches must re-do that
+   arithmetic FIRST (R492).
+
+### 4 uncatalogued MFS tables — a cataloguer defect, not a data property (2026-08-26)
+
+The residue the mapper now reports honestly. Two different causes, which is why "4 misses" was
+not an acceptable way to leave it:
+
+- **`MFS_DC:G759.M` — REAL GAP, worth fixing.** 6,490 store rows / 22 series, current to
+  **2026-06-30**, and its siblings `MFS_DC:G759.A` and `MFS_DC:G759.Q` ARE catalogued. Live
+  data at a frequency no user can reach.
+- **`MFS_FMP:SYR.A` (2 rows to 2010), `MFS_IR:DJI.A` (4 rows to 2003), `MFS_IR:SYR.A` (108 rows
+  to 2010)** — countries with NO catalogued siblings at all. Dead IMF tails; leaving them
+  uncatalogued is correct.
+
+### istat — still upstream-dead at day 19 (re-probed 2026-08-26T15:11Z)
+
+The runbook's 2026-08-07 note says "when ISTAT restores the host the preflight passes". That is
+a PREDICTION, and R475 says measure it rather than wait. Re-probed with a control:
+
+    sdmx.istat.it         302 self-redirect -> https://sdmx.istat.it/   (TCP open)
+    esploradati.istat.it  TCP 443 timeout
+    www.istat.it          HTTP 200                                      <- control passes
+
+So it is ISTAT, not our egress, and the outage measured on 2026-08-07 is unchanged. Its daily
+`transient_fail` is `UNEXPECTED:TooManyRedirects('Exceeded 30 redirects.')` rather than the
+clean preflight abort the module documents — the 302-self-redirect shape is not caught by
+`_preflight()`. Small, source-local, and worth doing so the verdict reads honestly; it does not
+change the outcome. Nothing else to build here.
