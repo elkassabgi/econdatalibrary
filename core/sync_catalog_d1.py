@@ -48,6 +48,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(
 from core.sync_state_d1 import (CATALOG_SHARD_FOR, MAX_FILE_BYTES,  # noqa: E402
                                 ROWS_PER_STMT, ROOT, _lit, execute_remote)
 
+# Ids per `DELETE FROM series_fts WHERE series_id IN (...)`. Deliberately NOT ROWS_PER_STMT:
+# that column is UNINDEXED, so the cost is one full table scan PER STATEMENT regardless of
+# the list length (measured 23,843,482 rows_read for a 20-id list, 2026-08-26). See the
+# rationale block at the emit site in emit_sql.
+FTS_DELETE_PER_STMT = 500
+
 CATALOG_DB = os.path.abspath(os.environ.get("ECONDL_CATALOG")
                              or os.path.join(ROOT, "data", "catalog.db"))
 # Written by the orchestrator: one series_id per line, appended whenever a CSV is
@@ -152,15 +158,36 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
     # row' - is answered by deleting the CHUNK in one statement before inserting it, which is
     # what this does. INSERT OR IGNORE cannot help: an FTS5 virtual table has no unique
     # constraint to ignore.
-    for i in range(0, len(rows), ROWS_PER_STMT):
-        ch = rows[i:i + ROWS_PER_STMT]
-        _ids = ",".join(_lit(r["series_id"]) for r in ch)
+    # ...but the DELETE gets its OWN, much larger arity. `series_fts` is
+    # fts5(series_id UNINDEXED, ...), so `WHERE series_id IN (...)` has NO index and every
+    # such statement FULL-SCANS the table. MEASURED on live D1 2026-08-26, one statement
+    # with a 20-id IN list:
+    #
+    #   SELECT COUNT(*) FROM series_fts WHERE series_id IN (<20 ids>)
+    #     -> rows_read 23,843,482, sql_duration 16.4 s
+    #
+    # The cost is per STATEMENT, not per id — a 500-id list reads the same 23.8M rows — so
+    # the remedy is ARITY, never more statements (hfdatalibrary/CLAUDE.md; R492, where a
+    # 164,705-statement plan priced at ~$2,500). At 20 ids/stmt a 20,783-id sync is 1,040
+    # statements = 2.48e10 rows ~ $25 PER RUN and recurring; at 500 it is 42 statements
+    # = 1.0e9 rows ~ $1. These are literals via _lit, not bound parameters, so D1's 100
+    # bound-variable cap (R224) does not apply; 500 ids is ~20 KB against MAX_FILE_BYTES.
+    #
+    # The DELETE stays ADJACENT to the inserts it covers rather than being hoisted into one
+    # leading pass: an FTS delete whose matching insert never executes leaves the series
+    # unfindable, so the window between them must stay as small as the arity allows (R487 —
+    # a failed INSERT after a committed DELETE silently destroys the index).
+    for i in range(0, len(rows), FTS_DELETE_PER_STMT):
+        block = rows[i:i + FTS_DELETE_PER_STMT]
+        _ids = ",".join(_lit(r["series_id"]) for r in block)
         stmts.append(f"DELETE FROM series_fts WHERE series_id IN ({_ids});")
-        vals = ",\n  ".join(
-            "(%s,%s,%s)" % (_lit(r["series_id"]), _lit(r.get("title")),
-                            _lit(r.get("geography"))) for r in ch)
-        stmts.append("INSERT INTO series_fts (series_id,title,geography) VALUES\n  "
-                     f"{vals};")
+        for j in range(0, len(block), ROWS_PER_STMT):
+            ch = block[j:j + ROWS_PER_STMT]
+            vals = ",\n  ".join(
+                "(%s,%s,%s)" % (_lit(r["series_id"]), _lit(r.get("title")),
+                                _lit(r.get("geography"))) for r in ch)
+            stmts.append("INSERT INTO series_fts (series_id,title,geography) VALUES\n  "
+                         f"{vals};")
 
     # source_counts maintenance (2026-08-15 cost incident): the worker's catalog
     # totals come from this one-row-per-source table instead of a live COUNT(*)
