@@ -345,6 +345,47 @@ def route(ds_id: str, df: pd.DataFrame) -> tuple[str, list[dict]]:
     cols = set(df.columns)
     name = ds_id.lower()
 
+    # -------- per-DATASET overrides (scoped fixes; see test_ember_route_overrides) ----
+    # Each corrects ONE file whose branch-assigned keying under-keyed it, sealing
+    # duplicate (series_key, obs_date) pairs into the store so every later snapshot
+    # merge collapsed below the 97% never-shrink floor and transient-failed forever
+    # (run 32816867502: 4/53). The fix is per dataset id, NEVER per branch — widening a
+    # branch's keys re-grains every other dataset it routes (R333).
+    if ds_id == "methane_chart_satellite_emissions":
+        # Event-grain plume detections. Without LATITUDE/LONGITUDE the key carries no
+        # event identity: 9,325 melted rows held only 3,013 distinct keys (69 detections
+        # under ONE key on 2025-06-22 alone). Lat/lon ARE the identity of a detection.
+        return "satellite_events", parse_generic_long(
+            df, "DATE", ["EMISSION_RATE__KGH", "UNCERTAINTY__KGH"],
+            ["CODE", "SENSOR", "PLATFORM", "REGIONNAME", "LATITUDE", "LONGITUDE"])
+    if ds_id == "necp_Ember_NECP_data_2024":
+        # Branch E1 matched this file incidentally (YEAR + VALUE) and its keys[:6] cap
+        # dropped COUNTRY_NAME and WEM_WAM — a 27-country x scenario panel collapsed
+        # from 4,813 value rows to 471 keys. The key list is PINNED, not derived from
+        # dtypes (adversarial review 2026-08-26): a dynamic `dtype==object` list
+        # silently re-grains on any upstream column add/drop/dtype flip (WEM_WAM is
+        # 13,852 nulls away from typing float64 in an emptier snapshot), and a
+        # snapshot-source re-grain is invisible to every existing guard because old
+        # and new keys never collide (R333). A missing pinned column RAISES, which
+        # the orchestrator books as a visible permanent transient — this codebase's
+        # honest state for schema drift. The redundant columns (FUEL_LOWER,
+        # SHORT_COUNTRY_CODE) are harmless for uniqueness and preserve today's keys.
+        _NECP_KEYS = ["CATEGORY", "KPI", "UNIT", "SECTOR", "FUEL_GROUP", "FUEL_CODE",
+                      "FUEL_LOWER", "COUNTRY_NAME", "SHORT_COUNTRY_CODE", "WEM_WAM"]
+        missing = [c for c in _NECP_KEYS if c not in df.columns]
+        if missing:
+            raise ValueError(
+                f"necp_Ember_NECP_data_2024: pinned key column(s) {missing} absent — "
+                f"upstream schema changed; re-grain decision required, refusing to parse")
+        return "year_value", parse_generic_long(df, "YEAR", ["VALUE"], _NECP_KEYS)
+    if ds_id == "turkiye_data_tool_tur_data_tool_srmc_chart":
+        # Branch F2 melted with idvars=[DATETIME] only, so every series_key was the
+        # literal string "VALUE" (195 rows -> 65 keys). MEASURE_ENG is the identity
+        # (3 fuels); MEASURE_TUR is its translation, not a second dimension.
+        return "tidy_measures", parse_generic_long(
+            df, "DATETIME", ["VALUE"], ["MEASURE_ENG"])
+    # ----------------------------------------------------------------------------------
+
     # A. global / europe long-format release (Area, ISO 3 code, Year/Date, Category...)
     if {"Category", "Subcategory", "Variable", "Unit", "Value"} <= cols and \
        "ISO 3 code" in cols and ("Year" in cols or "Date" in cols):
