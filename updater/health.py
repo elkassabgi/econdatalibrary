@@ -14,6 +14,7 @@ freshness is judged on DATA recency (last_obs drift), not just on last_success.
 """
 from __future__ import annotations
 import json
+import re as _re
 import sys
 from datetime import datetime, time as dtime, timedelta, timezone
 
@@ -160,6 +161,65 @@ def _recency_signal(obs_vals, now, has_uv_claim=False) -> "tuple[str | None, str
             and (_age_days(newest_obs, now) or 0) > STALE_SERIES_DAYS):
         newest_obs = None
     return frontier, newest_obs
+
+
+# The EXACT note finalize() emits for a zero-failure budgeted sweep, anchored end to end:
+# 'N sub-unit(s) attempted, none failed; M deferred by budget and taken next tick[ ids...]'.
+# attempted must be >= 1 ([1-9]) — a ZERO-attempt deferral note is a wedged rotator wearing
+# the deferral costume (class-D breakage), never healthy rotation. Anything appended beyond
+# the optional _named() id suffix — 'csv_derive crashed', a transient tail, a clipped note
+# (orchestrate._clip_err announces truncation mid-string) — fails the anchor and the source
+# stays ATTENTION: the WHITELIST direction, demanded by adversarial review 2026-08-26 after
+# the first cut's substring BLACKLIST accepted unsdg's live note '46 sub-unit(s) attempted,
+# none failed; 667 deferred by budget and taken next tick; csv_derive crashed (50564 series
+# queued): UnitTimeout(...)' — a demoting tail the blacklist simply had no entry for (R382:
+# a filter picked from the examples, not the mechanism).
+_DEFERRAL_BASE = _re.compile(
+    r"^[1-9]\d* sub-unit\(s\) attempted, none failed; "
+    r"\d+ deferred by budget and taken next tick(?: \[[^\]]*\])?$")
+
+
+def _deferral_only(units) -> bool:
+    """True when EVERY attention-status unit is a pure budget-deferral partial —
+    the note finalize() emits when a bounded sweep ran out of slice with ZERO
+    failures ('N sub-unit(s) attempted, none failed; M deferred by budget and
+    taken next tick', _common.py finalize; the drift test pins matcher to
+    emitter, R349).
+
+    WHY A CLASS OF ITS OWN. finalize books `partial` on any deferral because the
+    tick did not cover everything — honest for the VINTAGE, but the gate turned
+    that honesty into a permanent failure: a budget-bounded source (ecb 540
+    files / 35 min, abs 1,222 units / 45 min...) can NEVER run deferral-free,
+    so it is ATTENTION by construction, and on 2026-08-26 the CI gate carried
+    22 such sources red on EVERY run — 40+ consecutive failures nobody could
+    act on, which is exactly how gates stop being read (R244, R359: a check the
+    median healthy source cannot pass measures its own policy, not the fleet).
+
+    SAID PLAINLY, NOT OVERSOLD: ROTATING certifies that nothing FAILED and the
+    budget stopped the sweep — it does NOT certify the rotation is advancing or
+    that the un-reached tail is fresh. Neither did ATTENTION: tail-rot is
+    invisible to every signal this module reads (newest_obs is a MAX, so one
+    fresh head series keeps it green — the R379/R190 ecb episode). The honest
+    instrument for rotation PROGRESS is a run-over-run position check
+    (R377/R285: does run N+1 start where run N did not), which reads the runs
+    table, not a state snapshot — still owed, tracked in TODO. Anything mixed
+    in with the deferrals — a transient, a csv_derive failure, coherence unmet,
+    missing cursors — keeps the source in ATTENTION and the gate."""
+    att = [u for u in units if u.get("status") in ATTENTION_STATUSES]
+    if not att:
+        return False
+    for u in att:
+        if u.get("status") != "partial":
+            return False
+        err = str(u.get("last_error") or "")
+        # 'csv coverage note:' tails are NON-failures by design (R372: budget-deferred
+        # derive ids, proven-uncatalogued residue, an abandoned csv fence — none demote)
+        # and may be joined onto the deferral note; strip them, then the remainder must
+        # match the anchored emitter grammar EXACTLY.
+        base = err.split("; csv coverage note:")[0].strip()
+        if not _DEFERRAL_BASE.match(base):
+            return False
+    return True
 
 
 def _stuck_transient(units, succ_age, sla_days, attempt_age) -> bool:
@@ -326,6 +386,18 @@ def assess(store=None) -> dict:
         discontinued = sorted(k for k, v in cursors.items()
                               if (a := _age_days(v, now)) is not None and a > STALE_SERIES_DAYS)
 
+        # Pure budget-deferral partials rotate by design and are not failures — see
+        # _deferral_only. A rotator SKIPS the attention/RED-UNRUN/RED-SLA branches (a
+        # partial never sets last_success_utc, R231, so the age branches would re-redden
+        # every healthy rotator and rebuild the disease) but deliberately FALLS THROUGH
+        # to the data-recency branch below: the one real alarm the old undifferentiated
+        # red carried was the TOTAL-FREEZE case, and a rotator whose newest observation
+        # ages past its data clock must go RED-DATA, not ROTATING-green (adversarial
+        # review 2026-08-26 — measured live: abs at 238d and ilostat at 147d against
+        # 90-day clocks re-redden under exactly this rule). The upstream_verified
+        # machinery in that branch applies to rotators unchanged — one predicate, one
+        # place (R10).
+        rotating = bool(attention) and _deferral_only(units)
         if src is None and not units:
             # never produced state: RED only if its adapter is built (should have run);
             # PENDING if the adapter isn't built yet (expected during the rollout).
@@ -335,11 +407,11 @@ def assess(store=None) -> dict:
             # istat fall through every age check and land on OK - 40 days broken and
             # reading green, which is worse than the amber it replaced.
             health = "RED-SLA"
-        elif attention:
+        elif attention and not rotating:
             health = "ATTENTION"
-        elif succ_age is None:
+        elif succ_age is None and not rotating:
             health = "RED-UNRUN"   # has state rows but never succeeded -> surface it
-        elif succ_age > sla_days:
+        elif not rotating and succ_age > sla_days:
             health = "RED-SLA"            # job hasn't succeeded within tolerance
         elif eff_obs_age is not None and eff_obs_age > data_days:
             # "Our newest observation is old" answers a question about US. The
@@ -393,6 +465,13 @@ def assess(store=None) -> dict:
         else:
             health = "OK"
 
+        # A rotator that survived the data clock (or holds a live upstream_verified
+        # claim) reads ROTATING, never a bare OK — the deferral state stays visible in
+        # the table, the summary and the digest. NOTE: like the gate, `--red` excludes
+        # ROTATING (it means "needs attention", and gate parity is deliberate).
+        if rotating and health == "OK":
+            health = "ROTATING"
+
         rows.append({
             "source": sid, "strategy": e.get("strategy"), "cadence": cadence,
             # rollout perimeter flag (registry `live: true`) — the --fail-past-2x-sla
@@ -422,7 +501,8 @@ def assess(store=None) -> dict:
             "attention": attention[:10],
         })
 
-    order = {"RED-SLA": 0, "RED-DATA": 1, "RED-UNRUN": 2, "ATTENTION": 3, "PENDING": 4, "OK": 5}
+    order = {"RED-SLA": 0, "RED-DATA": 1, "RED-UNRUN": 2, "ATTENTION": 3, "PENDING": 4,
+             "ROTATING": 5, "OK": 6}
     rows.sort(key=lambda r: (order.get(r["health"], 9), r["source"]))
     summary = {}
     for r in rows:
