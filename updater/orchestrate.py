@@ -639,6 +639,85 @@ def _split_retry_rows(source_id: str, rows: list) -> "tuple[list, list[str]]":
 _FIRST_SEGMENT_FLOW = {"unsdg"}
 
 
+# TABLE-GRAIN sources: ONE catalog id is a whole TABLE, and the store keys inside it carry
+# extra dimensions the id omits. The catalog native id is a fixed SELECTION OF POSITIONS from
+# the store key's dot-parts, so neither the exact rule nor `_flow_of`'s `=`-stripping can
+# bridge them and EVERY changed key misses. That is the R221/R245 fingerprint — unmapped
+# equals the source's own distinct-key count — and because zero-mapped-with-rows still
+# demotes (§5.7), the source is `partial` forever, never sets last_success_utc (R231) and its
+# served CSVs never re-derive. Measured 2026-08-26 on run 32970841711:
+#   imf_mfsma_direct 3,016 unmapped == 3,016 distinct store keys
+#   imf_mfsir_direct 3,423 == 3,423     imf_mfsfmp_direct 284 == 284
+#
+# Each entry MIRRORS that source's resolver in clients/python/econdl/_resolve.py — the code
+# that SERVES it. Derive and serve must share ONE key-encoding definition (R192), so
+# tests/test_table_grain_mapping.py round-trips every entry through the REAL resolver
+# predicate and fails if a position, a part count or a resolver regex moves. Do not add an
+# entry from a docstring alone; measure the store first (R269).
+#
+#   positions  indices into the dot-parts AFTER the flow, in catalog-id order
+#   n_parts    exact number of dot-parts required, or None to leave it unpinned
+#   tail_flow  the resolver ALSO asserts the last part == the flow (imts's ends_with)
+#   nonempty   the resolver's wildcards are `[^.]+`, so a key with an EMPTY part must not map
+#
+# Reducing more permissively than the resolver matches is not a near-miss: it maps a key the
+# resolver would refuse, so the id derives from a predicate that never selects that key and
+# the changed series stays stale while `unmapped` reports clean (R380's shape). `tail_flow`
+# and `nonempty` exist only to keep this reduction no weaker than the predicate it mirrors.
+_TABLE_GRAIN = {
+    # _resolve_imf_mfs_tables — starts_with(f"{flow}:{country}.{freq}."); part count varies
+    # by flow (measured: 4 for MFS_IR, 5 for MFS_DC), so it stays unpinned.
+    "imf_mfsdc_direct":  ((0, 1), None, False, False),
+    "imf_mfsma_direct":  ((0, 1), None, False, False),
+    "imf_mfsofc_direct": ((0, 1), None, False, False),
+    "imf_mfsfmp_direct": ((0, 1), None, False, False),
+    "imf_mfsir_direct":  ((0, 1), None, False, False),
+    "imf_bopagg_direct": ((0, 1), None, False, False),
+    "imf_psbs_direct":   ((0, 1), None, False, False),
+    "imf_ctot_direct":   ((0, 1), None, False, False),
+    "imf_er_direct":     ((0, 1), None, False, False),
+    # _resolve_imf_imts_direct — starts_with(flow:country.) & ends_with(.freq.ind.flow),
+    # so the FIFTH part is the flow repeated; `(0,2,3) of 5` alone would not assert that.
+    "imf_imts_direct":   ((0, 2, 3), 5, True, False),
+    # _resolve_imf_pip_direct / _dip_direct — position-exact regex whose wildcards are
+    # `[^.]+`, so an empty part must not map (BOP_AGG shows empty parts exist in this family).
+    "imf_pip_direct":    ((3, 4, 5), 7, False, True),
+    "imf_dip_direct":    ((1, 3, 4), 5, False, True),
+    # _resolve_imf_gsli_direct / _qgfs_direct — same class, wildcards are `[^.]*`.
+    "imf_gsli_direct":   ((2, 3), 11, False, False),
+    "imf_qgfs_direct":   ((1, 2), 7, False, False),
+}
+
+
+def _table_grain_native(source_id: str, key: str) -> "str | None":
+    """Reduce a TABLE-GRAIN store key to its catalog NATIVE id, or None if it cannot be.
+
+    None means "this key is not the shape its resolver serves" and the caller must leave it
+    UNMAPPED — never guess. Returning a plausible-but-wrong id is strictly worse than
+    reporting the miss, because the miss is visible in the note and the wrong id is not.
+    """
+    spec = _TABLE_GRAIN.get(source_id)
+    if spec is None or ":" not in key:
+        return None
+    positions, n_parts, tail_flow, nonempty = spec
+    flow, rest = key.split(":", 1)
+    parts = rest.split(".")
+    if n_parts is not None and len(parts) != n_parts:
+        return None
+    if n_parts is None and len(parts) < max(positions) + 2:
+        # Unpinned specs still need a TAIL: the mfs resolver's trailing dot means the
+        # catalog id's own parts can never be the whole key (`MFS_MA:AFG.A` is an id, not
+        # a series). Without this, a catalog-shaped key would map to itself.
+        return None
+    if max(positions) >= len(parts):
+        return None
+    if nonempty and any(p == "" for p in parts):
+        return None
+    if tail_flow and parts[-1] != flow:
+        return None
+    return flow + ":" + ".".join(parts[i] for i in positions)
+
+
 def _flow_of(key: str, source_id: str | None = None) -> str:
     """FLOW-grain id for a series-grain store key.
 
@@ -761,6 +840,23 @@ def _catalog_ids_for(source_id: str, changed_keys):
                                (fcand,)).fetchone():
                     seen.add(fcand)
                     exact.append(fcand)
+                    continue
+            # TABLE-GRAIN reduction. Deliberately placed BEFORE the split-part LIKE below:
+            # that query is `LIKE ? ESCAPE '\'`, and ESCAPE defeats sqlite's LIKE
+            # optimisation, so it FULL-SCANS the 11.9 GB / 10.8M-row catalogue once per
+            # unmapped key. For these sources every key is unmapped today, which is
+            # 3,126,127 full scans for imf_pip_direct and is the likely cause of
+            # imf_mfsofc_direct blowing its 60-minute csv fence at only 4,704 keys.
+            # Reducing first turns those scans into one indexed PK seek per TABLE.
+            tg = _table_grain_native(source_id, k)
+            if tg is not None:
+                tcand = f"{source_id}:{tg}"
+                if tcand in seen:
+                    continue          # many series collapse onto one table — derive it once
+                if con.execute("SELECT 1 FROM series WHERE series_id=?",
+                               (tcand,)).fetchone():
+                    seen.add(tcand)
+                    exact.append(tcand)
                     continue
             # SPLIT-PART expansion (2026-08-05, the census cycle). A table too large for
             # one CSV is catalogued as `<source>:<table>#<part>` rows with NO base id
