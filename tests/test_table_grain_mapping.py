@@ -162,9 +162,13 @@ def _resolver_fns():
 
 
 def test_no_source_binds_a_table_grain_resolver_without_a_spec():
-    """Inverted default. Every source bound to a resolver that ANY _TABLE_GRAIN member uses
-    must itself be in _TABLE_GRAIN. A 10th source binding to _resolve_imf_mfs_tables fails
-    here instead of quietly reporting 100% unmapped for weeks."""
+    """A 10th source binding to an EXISTING table-grain resolver (e.g. _resolve_imf_mfs_tables)
+    fails here instead of quietly reporting 100% unmapped for weeks.
+
+    Scope, stated honestly: this catches drift in an existing binding ONLY. It cannot see a
+    brand-new table-grain resolver, because it derives its function set from _TABLE_GRAIN —
+    proven by mutation, not assumed. `test_no_new_resolver_appears_without_being_classified`
+    is the guard that covers that case."""
     R = _resolver_fns()
     table_grain_fns = {R[s] for s in _TABLE_GRAIN if s in R}
     offenders = sorted(s for s, fn in R.items()
@@ -175,20 +179,45 @@ def test_no_source_binds_a_table_grain_resolver_without_a_spec():
     )
 
 
-def test_the_set_of_table_grain_resolvers_is_pinned():
-    """The test above derives its function set FROM _TABLE_GRAIN, so a brand-new SEVENTH
-    table-grain resolver would be invisible to it. Pinning the names closes that: adding one
-    fails here until a human classifies the sources it serves."""
+# Every resolver function `_RESOLVERS` binds, pinned. THE DEFAULT IS INVERTED ON PURPOSE:
+# adding ANY new resolver fails this test until a human puts its name here, and the act of
+# doing so is the moment to ask "is this source TABLE grain? does it need a _TABLE_GRAIN
+# spec?". Anything keyed off _TABLE_GRAIN itself cannot ask that question, because a resolver
+# no spec references is invisible to it.
+#
+# THIS REPLACES A GUARD THAT DID NOT WORK. The first version asserted the names of the
+# resolvers _TABLE_GRAIN's own members bind to and claimed a seventh table-grain resolver
+# would fail CI. It would not: the adversarial reviewer added a genuinely new seventh
+# resolver plus a source bound to it, with no spec, and all 46 tests passed silently. A guard
+# whose population is derived from the thing it is guarding has no independent grip (R414 —
+# it needs a case it must BLOCK, and this one had none).
+_PINNED_RESOLVERS = [
+    "_resolve_abs", "_resolve_bea", "_resolve_bis", "_resolve_bls", "_resolve_boe",
+    "_resolve_census_any", "_resolve_cepii_baci", "_resolve_dbnomics", "_resolve_defillama",
+    "_resolve_ecb", "_resolve_eia", "_resolve_ember", "_resolve_eurostat", "_resolve_faostat",
+    "_resolve_fed_board", "_resolve_fhfa", "_resolve_file_grain", "_resolve_frankfurter",
+    "_resolve_hf_equities", "_resolve_ilostat_any", "_resolve_imf",
+    "_resolve_imf_dip_direct", "_resolve_imf_gsli_direct", "_resolve_imf_imts_direct",
+    "_resolve_imf_mfs_tables", "_resolve_imf_pip_direct", "_resolve_imf_qgfs_direct",
+    "_resolve_istat", "_resolve_noaa", "_resolve_oecd", "_resolve_owid", "_resolve_pwt",
+    "_resolve_sec_edgar", "_resolve_statcan_any", "_resolve_treasury", "_resolve_usda",
+    "_resolve_wdi", "_resolve_wikidata", "_resolve_worldbank", "_resolve_worldbank_esg",
+    "_resolve_worldbank_pink", "_resolve_zillow",
+]
+
+
+def test_no_new_resolver_appears_without_being_classified():
+    """A NEW resolver of any kind fails here — including a seventh TABLE-GRAIN one, which is
+    precisely the case the previous version of this guard let through."""
     R = _resolver_fns()
-    names = sorted({R[s].__name__ for s in _TABLE_GRAIN if s in R})
-    assert names == [
-        "_resolve_imf_dip_direct",
-        "_resolve_imf_gsli_direct",
-        "_resolve_imf_imts_direct",
-        "_resolve_imf_mfs_tables",
-        "_resolve_imf_pip_direct",
-        "_resolve_imf_qgfs_direct",
-    ], names
+    names = sorted({fn.__name__ for fn in R.values()})
+    new = sorted(set(names) - set(_PINNED_RESOLVERS))
+    gone = sorted(set(_PINNED_RESOLVERS) - set(names))
+    assert not new, (
+        f"new resolver(s) {new}: decide whether each serves a TABLE-GRAIN source and needs a "
+        f"_TABLE_GRAIN spec in updater/orchestrate.py, then add the name to _PINNED_RESOLVERS"
+    )
+    assert not gone, f"resolver(s) {gone} disappeared; update _PINNED_RESOLVERS deliberately"
 
 
 def test_every_spec_names_a_source_the_resolver_knows():
@@ -306,14 +335,25 @@ def test_emit_sql_deletes_every_id_it_inserts(tmp_path):
             stmts.extend(s + ";" for s in fh.read().split(";\n") if s.strip())
 
     deleted_before_insert, deleted = set(), set()
+    # ADJACENCY, not merely order. `open_block` is the ids deleted by the MOST RECENT delete;
+    # every FTS insert must draw only from it. Asserting "deleted at some earlier point"
+    # instead would pass just as happily if every DELETE were hoisted into one leading pass —
+    # which is exactly the wide deleted-but-not-reinserted window the code comment says it
+    # closes, so the test has to be able to fail on it (R487, R414).
+    open_block: set[str] = set()
     for s in stmts:
         s = s.lstrip()
         if s.startswith("DELETE FROM series_fts"):
-            deleted.update(re.findall(r"'(src:\d+)'", s))
+            ids = set(re.findall(r"'(src:\d+)'", s))
+            deleted |= ids
+            open_block = ids
         elif s.startswith("INSERT INTO series_fts"):
-            for sid in re.findall(r"'(src:\d+)'", s):
-                if sid in deleted:
-                    deleted_before_insert.add(sid)
+            ins = set(re.findall(r"'(src:\d+)'", s))
+            assert ins <= open_block, (
+                "an FTS insert carried ids outside the most recent DELETE block — the delete "
+                "is no longer adjacent to the inserts it covers"
+            )
+            deleted_before_insert |= ins
     want = {r["series_id"] for r in rows}
     assert deleted == want, "some ids were inserted into series_fts with no matching DELETE"
     assert deleted_before_insert == want, "an FTS insert preceded its own DELETE"
