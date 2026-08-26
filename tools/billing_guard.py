@@ -302,6 +302,25 @@ query($acct: String!, $start: Date!, $end: Date!) {
         if out else "ACCOUNT ANALYTICS: token present but every query failed — see lines above"
 
 
+def hf_registrations_24h() -> int:
+    """New-user registrations in the last 24h (hfdatalibrary-db users table, ~1.3k rows —
+    a trivial read). 2026-08-26: registrations dipped ~85% for seven hours and AHMED was
+    the alarm — the endpoint was healthy the whole time, so only a rate meter could have
+    caught it. Zero-in-24h triggers a WARN email below (baseline is ~20-30/day; a true
+    zero day has never occurred in the recorded series). -1 = unmeasured, printed as such
+    and never alarmed on (a meter that cannot see must say so, not cry wolf)."""
+    out = subprocess.run(
+        ["npx", "wrangler", "d1", "execute", "hfdatalibrary-db", "--remote", "--json",
+         "--command", "SELECT COUNT(*) n FROM users WHERE created_at >= datetime('now','-1 day')"],
+        capture_output=True, text=True, timeout=300, shell=(os.name == "nt"),
+        encoding="utf-8", errors="replace")
+    try:
+        txt = out.stdout
+        return json.loads(txt[txt.index("["):])[0]["results"][0]["n"]
+    except Exception:  # noqa: BLE001 — a meter, never a gate
+        return -1
+
+
 def main() -> int:
     reads = writes = 0
     failed = []
@@ -338,13 +357,25 @@ def main() -> int:
                   f"(base $5 + R2 ${r2_gb * 0.015:,.0f} + D1 reads ${reads / 1e9 * 30:,.0f} "
                   f"+ D1 writes ${writes / 1e6 * 30:,.0f} + D1 storage ${d1_over:,.0f} "
                   f"[{d1_gb_txt}]){caveat}")
+    n_reg = hf_registrations_24h()
+    reg_line = ("hf registrations (24h): " + (f"{n_reg:,}" if n_reg >= 0 else "UNMEASURED"))
     report = ("\n".join(lines)
               + f"\nREADS:  {reads:,}/day (~${reads/1e9:.2f}/day at $0.001/M)"
               + f"\nWRITES: {writes:,}/day (~${writes/1e6:.2f}/day at $1.00/M)"
+              + "\n" + reg_line
               + "\n\n" + bucket_text
               + "\n\n" + account_analytics()
               + "\n\n" + month_line)
     print(report)
+    if n_reg == 0:
+        # Not a workflow-red (billing is this guard's gated surface); a WARN email is the
+        # meter Ahmed asked for after being the alarm himself on 2026-08-26.
+        send_alert("hf registrations: ZERO in the last 24h",
+                   report + "\n\nZero new users in a full day against a ~20-30/day baseline. "
+                            "Check the register funnel: the Turnstile widget on "
+                            "hfdatalibrary.com/pages/download, then POST /v1/auth/register "
+                            "with a garbage token (a 400 'CAPTCHA verification failed' means "
+                            "the endpoint is healthy and the break is client-side).")
     if failed:
         # A guard that cannot see the meter must not look green — that is exactly
         # how the previous alert was "ineffective". Red the run until coverage is
