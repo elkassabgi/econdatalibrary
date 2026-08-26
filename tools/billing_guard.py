@@ -171,6 +171,137 @@ def send_alert(subject: str, body: str) -> None:
         print(f"  alert email failed ({e}) — relying on the red-workflow notification")
 
 
+def _load_env_token() -> str:
+    """CF_ANALYTICS_TOKEN from env or the repo .env (never printed)."""
+    tok = os.environ.get("CF_ANALYTICS_TOKEN", "").strip()
+    if tok:
+        return tok
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for line in open(os.path.join(root, ".env"), encoding="utf-8"):
+            line = line.strip()
+            if line.startswith("CF_ANALYTICS_TOKEN=") :
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def _account_id() -> str:
+    """Account tag, derivable from the R2 endpoint host (no secret involved)."""
+    ep = os.environ.get("R2_WRITE_ENDPOINT", "")
+    if not ep:
+        try:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            for line in open(os.path.join(root, ".env"), encoding="utf-8"):
+                if line.startswith("R2_WRITE_ENDPOINT="):
+                    ep = line.split("=", 1)[1].strip()
+                    break
+        except OSError:
+            pass
+    return ep.split("//")[1].split(".")[0] if "//" in ep else ""
+
+
+# R2 operation classes per Cloudflare's pricing page (Class A $4.50/M past 1M/mo
+# free, Class B $0.36/M past 10M/mo free). Anything unknown is counted CLASS A —
+# the guard must fail toward the expensive reading, never the cheap one.
+_R2_CLASS_B = {"GetObject", "HeadObject", "HeadBucket", "UsageSummary"}
+
+
+def _graphql(token: str, query: str, variables: dict):
+    """One GraphQL call; None on any failure (never raises — this is a meter,
+    not a gate, and its absence must degrade to a LOUD 'unmetered' line)."""
+    try:
+        body = json.dumps({"query": query, "variables": variables}).encode()
+        req = urllib.request.Request(
+            "https://api.cloudflare.com/client/v4/graphql", data=body,
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"})
+        d = json.load(urllib.request.urlopen(req, timeout=60))
+        if d.get("errors"):
+            enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+            msg = json.dumps(d["errors"])[:200]
+            print("  account analytics: GraphQL error: "
+                  + msg.encode(enc, "replace").decode(enc, "replace"))
+            return None
+        return d["data"]["viewer"]["accounts"][0]
+    except Exception as e:  # noqa: BLE001 — meter, not gate
+        print(f"  account analytics: fetch failed ({type(e).__name__})")
+        return None
+
+
+def account_analytics() -> str:
+    """R2 operations + Workers requests + TRUE D1 totals for the last 2 complete
+    days — the lines D1 insights cannot see. THE 2026-08-26 GAP: Ahmed saw $7+/day
+    on the invoice while every instrument here summed to ~$3; R2 Class A ops and
+    Workers were simply unmetered (R430 rule 2: metered infrastructure needs a
+    meter-watcher — the invoice must never be the first alarm). Also detects the
+    insights top-100 truncation: GraphQL's rowsRead is the true total, insights
+    sums only 100 query shapes.
+
+    Requires CF_ANALYTICS_TOKEN (read-only 'Account Analytics: Read' token).
+    Without it, returns the loud UNMETERED line — visibility of the blind spot is
+    the point; silence here is how the $7/day surprise happened."""
+    import datetime as _dt
+    tok = _load_env_token()
+    acct = _account_id()
+    if not tok or not acct:
+        return ("ACCOUNT ANALYTICS: UNMETERED — R2 operations and Workers usage are "
+                "invisible to this guard. Set CF_ANALYTICS_TOKEN (read-only "
+                "Analytics token) in .env / CI secrets to close the gap.")
+    end = _dt.date.today().isoformat()
+    start = (_dt.date.today() - _dt.timedelta(days=2)).isoformat()
+    out = []
+    a = _graphql(tok, """
+query($acct: String!, $start: Date!, $end: Date!) {
+  viewer { accounts(filter: {accountTag: $acct}) {
+    r2OperationsAdaptiveGroups(limit: 2000, filter: {date_geq: $start, date_leq: $end}) {
+      dimensions { date actionType } sum { requests } } } } }""",
+                 {"acct": acct, "start": start, "end": end})
+    if a is not None:
+        per = {}
+        for r in a.get("r2OperationsAdaptiveGroups") or []:
+            dd = r["dimensions"]
+            cls = "B" if dd["actionType"] in _R2_CLASS_B else "A"
+            per.setdefault(dd["date"], {"A": 0, "B": 0})
+            per[dd["date"]][cls] += r["sum"]["requests"]
+        for date in sorted(per):
+            ca, cb = per[date]["A"], per[date]["B"]
+            out.append(f"R2 ops {date}: ClassA {ca:,} (~${ca / 1e6 * 4.50:.2f}) "
+                       f"ClassB {cb:,} (~${cb / 1e6 * 0.36:.2f})")
+    w = _graphql(tok, """
+query($acct: String!, $start: Date!, $end: Date!) {
+  viewer { accounts(filter: {accountTag: $acct}) {
+    workersInvocationsAdaptive(limit: 100, filter: {date_geq: $start, date_leq: $end}) {
+      dimensions { date } sum { requests } } } } }""",
+                 {"acct": acct, "start": start, "end": end})
+    if w is not None:
+        per = {}
+        for r in w.get("workersInvocationsAdaptive") or []:
+            per[r["dimensions"]["date"]] = per.get(r["dimensions"]["date"], 0) + r["sum"]["requests"]
+        for date in sorted(per):
+            n = per[date]
+            out.append(f"Workers requests {date}: {n:,} (~${n / 1e6 * 0.30:.2f} past free tier)")
+    d1 = _graphql(tok, """
+query($acct: String!, $start: Date!, $end: Date!) {
+  viewer { accounts(filter: {accountTag: $acct}) {
+    d1AnalyticsAdaptiveGroups(limit: 500, filter: {date_geq: $start, date_leq: $end}) {
+      dimensions { date } sum { rowsRead rowsWritten } } } } }""",
+                 {"acct": acct, "start": start, "end": end})
+    if d1 is not None:
+        per = {}
+        for r in d1.get("d1AnalyticsAdaptiveGroups") or []:
+            p = per.setdefault(r["dimensions"]["date"], [0, 0])
+            p[0] += r["sum"]["rowsRead"]
+            p[1] += r["sum"]["rowsWritten"]
+        for date in sorted(per):
+            rr, rw = per[date]
+            out.append(f"D1 TRUE totals {date}: {rr:,} read (~${rr / 1e9:.2f}) / "
+                       f"{rw:,} written (~${rw / 1e6:.2f}) — GraphQL, not top-100")
+    return "ACCOUNT ANALYTICS (last 2 complete days + today):\n  " + "\n  ".join(out) \
+        if out else "ACCOUNT ANALYTICS: token present but every query failed — see lines above"
+
+
 def main() -> int:
     reads = writes = 0
     failed = []
@@ -211,6 +342,7 @@ def main() -> int:
               + f"\nREADS:  {reads:,}/day (~${reads/1e9:.2f}/day at $0.001/M)"
               + f"\nWRITES: {writes:,}/day (~${writes/1e6:.2f}/day at $1.00/M)"
               + "\n\n" + bucket_text
+              + "\n\n" + account_analytics()
               + "\n\n" + month_line)
     print(report)
     if failed:
