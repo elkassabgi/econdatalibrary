@@ -1522,3 +1522,18 @@ So it is ISTAT, not our egress, and the outage measured on 2026-08-07 is unchang
 clean preflight abort the module documents — the 302-self-redirect shape is not caught by
 `_preflight()`. Small, source-local, and worth doing so the verdict reads honestly; it does not
 change the outcome. Nothing else to build here.
+
+### dst: 275 of 333 recently-active store tables have NO catalog row (measured 2026-08-27)
+
+The daily's "csv coherence unmet: 2 changed series_keys have no catalog mapping" is the
+visible tip: joining ALL 333 dst cursor keys (cloud state.db) against catalog.db, 275 miss.
+The catalog holds 1,963 ids, every one shaped `dst:DST:<TABLE>`; the misses are store keys
+like `DST:ABST` / `DST:AED` / `DST:AFG` whose exact form `dst:DST:ABST` has no row — real
+tables the store updates that no user can discover (the R60/R213 hosted-but-invisible
+class), NOT a key-form defect (58 of 333 map exact-form fine, e.g. DST:AED10A).
+
+Work item, in pipeline order (Checklist B): catalogue the missing tables (broaden_catalog /
+catalog_complete dst — licence CLEARED, verify against DATABASE_LICENSES_VERBATIM.md first),
+derive their CSVs, R2 catalog refresh (NOTE: refresh_r2_catalog is classifier-blocked for
+Claude sessions — R250 — hand Ahmed the exact command if still blocked), D1 sync, verify.
+Until then dst's occasional 2-key demotes are THIS gap, not a fetcher bug.
