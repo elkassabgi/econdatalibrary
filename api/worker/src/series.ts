@@ -49,9 +49,11 @@
 import type { Env, SeriesRow, SourceRow, LicenseRow } from "./types";
 import { SELECT_SERIES, SELECT_SOURCE, SELECT_LICENSE } from "./sql";
 import {
-  csv, notFound, notMigrated, dataUnavailable, resolverEmpty, unsupportedFilter,
+  csv, json, notFound, notMigrated, dataUnavailable, resolverEmpty, unsupportedFilter,
   badRequest, supportedSources, sourceOf, licenseBlock, dbForSeries,
 } from "./util";
+import { isGated } from "./denylist";
+import { GEO_PROJECTION_SOURCES, geoAlias, normalizeGeoParam, filterGeoRows } from "./geoProjection";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -149,23 +151,62 @@ async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Pr
 }
 
 export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Promise<Response> {
-  // 1) catalog membership (404 if unknown).
-  const series = await dbForSeries(env, seriesId).prepare(SELECT_SERIES).bind(seriesId).first<SeriesRow>();
-  if (!series) return notFound(seriesId);
+  const requestedId = seriesId;
+  let geoFilter: string | null = null;
+
+  // 1) catalog membership (404 if unknown) — with per-geo projection fallback
+  //    (geoProjection.ts): an uncatalogued 3-part alias like
+  //    worldbank:DT.DOD.DECT.CD:LMY resolves to the CLEARED grouped
+  //    worldbank_wdi:<CODE> object filtered to that economy. index.ts already
+  //    gated the ALIAS spelling; the canonical spelling is gated here too (R32).
+  let series = await dbForSeries(env, seriesId).prepare(SELECT_SERIES).bind(seriesId).first<SeriesRow>();
+  if (!series) {
+    const alias = geoAlias(seriesId);
+    if (alias && !isGated(alias.canonical)) {
+      const canon = await dbForSeries(env, alias.canonical)
+        .prepare(SELECT_SERIES).bind(alias.canonical).first<SeriesRow>();
+      if (canon) { series = canon; seriesId = alias.canonical; geoFilter = alias.geo; }
+    }
+    if (!series) return notFound(requestedId);
+  }
 
   // 2) resolver coverage (501 if the source has no at-rest resolver).
   const source = sourceOf(seriesId);
   if (!supportedSources(env).has(source)) return notMigrated(source, seriesId);
 
-  // 3) filters. Date window is server-honoured; geo/freq/unit are NOT columns in
-  //    the derived CSV yet -> any such filter is 400 unsupported_filter (never a
+  // 3) filters. Date window is server-honoured. `?geo=` is honoured for grouped
+  //    projection sources (their row ids end in the economy code); freq/unit are
+  //    NOT columns in the derived CSV -> 400 unsupported_filter (never a
   //    silently-unfiltered 200). format=full|filtered accepted (both currently
   //    yield the same long CSV; filtered is reserved).
-  for (const dim of ["geo", "freq", "unit"]) {
+  for (const dim of ["freq", "unit"]) {
     if (url.searchParams.has(dim)) {
       return unsupportedFilter(
         `filter '${dim}=' is not honored yet: the derived per-series CSV has no ` +
           `${dim} column. Refusing to return a silently-unfiltered series.`,
+      );
+    }
+  }
+  const geoParam = url.searchParams.get("geo");
+  if (geoParam !== null) {
+    const src0 = sourceOf(seriesId);
+    if (geoFilter !== null) {
+      // Alias id AND ?geo= together must agree — never silently prefer one.
+      if (normalizeGeoParam(geoParam) !== geoFilter) {
+        return badRequest(
+          `conflicting geo: the id names '${geoFilter}' but ?geo= says '${geoParam}'`);
+      }
+    } else if (GEO_PROJECTION_SOURCES[src0] === src0) {
+      const g = normalizeGeoParam(geoParam);
+      if (g === null) {
+        return badRequest(
+          "geo must be a 2-3 character World Bank economy code, e.g. USA, LMY, WLD");
+      }
+      geoFilter = g;
+    } else {
+      return unsupportedFilter(
+        "filter 'geo=' is not honored yet: the derived per-series CSV has no " +
+          "geo column. Refusing to return a silently-unfiltered series.",
       );
     }
   }
@@ -204,7 +245,24 @@ export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Pro
         obj.body.pipeThrough(new DecompressionStream("gzip")),
       ).text()
     : await obj.text();
-  const filtered = applyDateWindow(text, from, to);
+
+  // 4b) per-geo projection: keep only this economy's rows. Zero matches is an
+  //     honest 404 that names real alternatives, never an empty 200.
+  let projected = text;
+  if (geoFilter !== null) {
+    const r = filterGeoRows(text, geoFilter);
+    if (r.rows === 0) {
+      return json({
+        error: "geo_not_found",
+        detail: `no rows for geo '${geoFilter}' in ${seriesId} — this grouped ` +
+          `series holds ${r.geos.length} economies (e.g. ` +
+          `${r.geos.slice(0, 8).join(", ")}). Request the full set at ` +
+          `/v1/series/${encodeURIComponent(seriesId)}.csv`,
+      }, 404);
+    }
+    projected = r.text;
+  }
+  const filtered = applyDateWindow(projected, from, to);
 
   // 5) zero data rows -> 502 resolver_empty (refuse an empty series silently).
   if (countDataRows(filtered) === 0) return resolverEmpty(seriesId);
@@ -215,8 +273,14 @@ export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Pro
   //    only pass it through on the raw path.
   const rawParam = url.searchParams.get("raw");
   const bare = rawParam === "1" || rawParam === "true";
-  if (bare) return csv(filtered, { etag: obj.httpEtag });
-  return csv((await citationHeader(seriesId, series, env)) + filtered);
+  // The R2 ETag describes the FULL stored object — never attach it to a
+  // geo-projected subset.
+  if (bare) return csv(filtered, geoFilter === null ? { etag: obj.httpEtag } : undefined);
+  const note = geoFilter !== null
+    ? `# Projection: rows for geo=${geoFilter} of grouped series ${seriesId}` +
+      (requestedId !== seriesId ? ` (requested as ${requestedId})` : "") + "\n"
+    : "";
+  return csv((await citationHeader(seriesId, series, env)) + note + filtered);
 }
 
 /** Keep the header + rows whose obs_date is within [from, to] (inclusive).
