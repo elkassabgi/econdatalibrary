@@ -468,6 +468,18 @@ sources:
       series_key, obs_date(date32), value(float64), freq. Note this writes WS_*.parquet into the SAME data/clean_full/bis
       dir that ingest_bis_cbs_lbs.py writes CBS.parquet/LBS.parquet to.'
 - source_id: bls
+  # data_cadence — MEASURED 2026-08-27: ce.parquet (CES, the store's freshest survey)
+  # holds 38 distinct obs_date in the trailing 3 years = MONTHLY reference periods,
+  # while `cadence: weekly` is only how often we POLL. Judged on the weekly clock the
+  # gate red-flagged bls at obs 87d — but the store max (2026-07-01) equals BLS's own
+  # latest (api.bls.gov CES0000000001 latest=true -> 2026 July, probed 2026-08-27):
+  # we are LEVEL with the publisher; monthly reference periods + ~5-week publication
+  # arrears simply cycle the newest-obs age between ~30 and ~70 days. The monthly
+  # lateness clock (28d x 3 = 84d) keeps a real freeze alarm one missed cycle out.
+  # KNOWN state artifacts, not data facts (do not re-diagnose): unit_state carries
+  # last_obs 2026-06-01 from the last productive run, and 50,000 cap-saturated
+  # cursors all frozen at 2024-12-31 — the store, not state, is the truth (R326).
+  data_cadence: monthly
   # BACK TO THE WORKSTATION 2026-07-31. I moved this to the cloud on a MEASUREMENT
   # THAT MEASURED THE WRONG THING: tools/measure_merge_peak.py ran _dedup+_sort on the
   # EXISTING file only, giving 11 GB, but a real run also downloads and parses the NEW
