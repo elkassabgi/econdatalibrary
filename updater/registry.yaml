@@ -7802,6 +7802,16 @@ sources:
       calling the module's own current_vintage(): IMTS -> IMTS:1.0.0.
     name: International Trade in Goods by partner country (IMTS, formerly DOTS)
 - source_id: imf_dip_direct
+  # upstream_verified — PROBED 2026-08-27. Two measured facts: (1) the last run
+  # (2026-08-11) earned no_change — the fetcher requested observations newer than
+  # 2024-12-31 from the current DIP release and the API returned none (an earned
+  # no_change records success only when the probe found nothing new); (2) the live
+  # api.imf.org /dataflow catalogue, probed 2026-08-27, lists DIP v12.0.1. Annual survey data; a ~20-month lag is DIP's own publication rhythm.
+  # Expiring claim: lapses to ATTENTION after 180 days, and stops applying if our
+  # data ever falls behind 2024-12-31.
+  upstream_verified:
+    latest_obs: '2024-12-31'
+    checked: '2026-08-27'
   # ADDED 2026-08-05 (cycle 4 of the econ-updater loop). `imf_cdis` holds 97,723 relay-era
   # series — catalogued, SERVED, frozen. IMF RENAMED the dataset: no CDIS flow exists; DIP
   # (IMF.STA v12.0.1) is named "Direct Investment Positions by Counterpart Economy (formerly
@@ -7958,6 +7968,16 @@ sources:
       calling the module's own current_vintage(): MFS_FMP -> MFS_FMP:3.0.0.
     name: Monetary and Financial Statistics — Financial Markets and Positions (MFS_FMP)
 - source_id: imf_bopagg_direct
+  # upstream_verified — PROBED 2026-08-27. Two measured facts: (1) the last run
+  # (2026-08-12) earned no_change — the fetcher requested observations newer than
+  # 2024-12-31 from the current BOP_AGG release and the API returned none (an earned
+  # no_change records success only when the probe found nothing new); (2) the live
+  # api.imf.org /dataflow catalogue, probed 2026-08-27, lists BOP_AGG v9.0.1.
+  # Expiring claim: lapses to ATTENTION after 180 days, and stops applying if our
+  # data ever falls behind 2024-12-31.
+  upstream_verified:
+    latest_obs: '2024-12-31'
+    checked: '2026-08-27'
   # ADDED 2026-08-05 (cycle 6 of the econ-updater loop). `imf_bopagg` holds 7,801 relay-era
   # series — catalogued, SERVED, frozen. IMF RENAMED the dataset: no BOPAGG flow exists;
   # BOP_AGG (IMF.STA, 'BOP and IIP Statistics') is the successor, found by NAME in the
@@ -7984,6 +8004,16 @@ sources:
       calling the module's own current_vintage(): BOP_AGG -> BOP_AGG:9.0.1.
     name: BOP and IIP Statistics aggregates (BOP_AGG, formerly BOPAGG)
 - source_id: imf_psbs_direct
+  # upstream_verified — PROBED 2026-08-27. Two measured facts: (1) the last run
+  # (2026-08-12) earned no_change — the fetcher requested observations newer than
+  # 2021-12-31 from the current PSBS release and the API returned none (an earned
+  # no_change records success only when the probe found nothing new); (2) the live
+  # api.imf.org /dataflow catalogue, probed 2026-08-27, lists PSBS v2.0.0. Newest OBSERVED period; the store's 2027 frontier is IMF projection rows, which the gate rightly excludes from recency.
+  # Expiring claim: lapses to ATTENTION after 180 days, and stops applying if our
+  # data ever falls behind 2021-12-31.
+  upstream_verified:
+    latest_obs: '2021-12-31'
+    checked: '2026-08-27'
   # ADDED 2026-08-05 (cycle 7 of the econ-updater loop). `imf_psbsfad` holds 14,018
   # relay-era series — catalogued, SERVED, frozen. IMF RENAMED the dataset: PSBS
   # (agency IMF.FAD — not IMF.STA) is the successor, found by NAME in the rename audit
@@ -8086,6 +8116,16 @@ sources:
       calling the module's own current_vintage(): NA_MAIN -> NA_MAIN:1.0.0.
     name: National Accounts Main Aggregates (NA_MAIN, formerly NAMAIN_IDC_N)
 - source_id: imf_icsd_direct
+  # upstream_verified — PROBED 2026-08-27. Two measured facts: (1) the last run
+  # (2026-08-12) earned no_change — the fetcher requested observations newer than
+  # 2019-12-31 from the current ICSD release and the API returned none (an earned
+  # no_change records success only when the probe found nothing new); (2) the live
+  # api.imf.org /dataflow catalogue, probed 2026-08-27, lists ICSD v1.0.0. Corporate-sector debt dataset ends 2019 — the publisher's own end.
+  # Expiring claim: lapses to ATTENTION after 180 days, and stops applying if our
+  # data ever falls behind 2019-12-31.
+  upstream_verified:
+    latest_obs: '2019-12-31'
+    checked: '2026-08-27'
   # ADDED 2026-08-05 (cycle 12 of the econ-updater loop). `imf_pgcs` holds 2,262
   # relay-era series — catalogued, SERVED, frozen. No PGCS flow exists; ICSD
   # (IMF.FAD, 'Investment and Capital Stock Dataset') is the successor by name AND
@@ -8112,6 +8152,16 @@ sources:
       calling the module's own current_vintage(): ICSD -> ICSD:1.0.0.
     name: Investment and Capital Stock Dataset (ICSD, successor to PGCS)
 - source_id: imf_fd_direct
+  # upstream_verified — PROBED 2026-08-27. Two measured facts: (1) the last run
+  # (2026-08-12) earned no_change — the fetcher requested observations newer than
+  # 2020-12-31 from the current FD release and the API returned none (an earned
+  # no_change records success only when the probe found nothing new); (2) the live
+  # api.imf.org /dataflow catalogue, probed 2026-08-27, lists FD v6.0.0. Financial Development index ends 2020 — the publisher's own end.
+  # Expiring claim: lapses to ATTENTION after 180 days, and stops applying if our
+  # data ever falls behind 2020-12-31.
+  upstream_verified:
+    latest_obs: '2020-12-31'
+    checked: '2026-08-27'
   # ADDED 2026-08-05 (cycle 13 of the econ-updater loop). `imf_fiscaldecentralization`
   # holds 8,398 relay-era series — catalogued, SERVED, frozen. IMF RENAMED the dataset:
   # FD (IMF.STA) is the successor, matched in the rename audit at an IDENTICAL count
@@ -8137,6 +8187,16 @@ sources:
       calling the module's own current_vintage(): FD -> FD:6.0.0.
     name: Fiscal Decentralization (FD, formerly FISCALDECENTRALIZATION)
 - source_id: imf_hpd_direct
+  # upstream_verified — PROBED 2026-08-27. Two measured facts: (1) the last run
+  # (2026-08-12) earned no_change — the fetcher requested observations newer than
+  # 2015-12-31 from the current HPD release and the API returned none (an earned
+  # no_change records success only when the probe found nothing new); (2) the live
+  # api.imf.org /dataflow catalogue, probed 2026-08-27, lists HPD v1.0.0. Historical Public Debt ends 2015 — the publisher's own end (same fact as legacy imf_hpdd, R84).
+  # Expiring claim: lapses to ATTENTION after 180 days, and stops applying if our
+  # data ever falls behind 2015-12-31.
+  upstream_verified:
+    latest_obs: '2015-12-31'
+    checked: '2026-08-27'
   # ADDED 2026-08-05 (cycle 14 of the econ-updater loop). `imf_hpdd` holds 191 relay-era
   # series — catalogued, SERVED, frozen. IMF RENAMED the dataset: HPD (IMF.FAD) is the
   # successor, matched in the rename audit at an IDENTICAL count (R75). current_vintage()
@@ -8361,6 +8421,16 @@ sources:
       calling the module's own current_vintage(): LS -> LS:9.0.0.
     name: Labor Statistics (LS)
 - source_id: imf_pi_direct
+  # upstream_verified — PROBED 2026-08-27. Two measured facts: (1) the last run
+  # (2026-08-12) earned no_change — the fetcher requested observations newer than
+  # 2026-04-30 from the current PI release and the API returned none (an earned
+  # no_change records success only when the probe found nothing new); (2) the live
+  # api.imf.org /dataflow catalogue, probed 2026-08-27, lists PI v2.0.0.
+  # Expiring claim: lapses to ATTENTION after 180 days, and stops applying if our
+  # data ever falls behind 2026-04-30.
+  upstream_verified:
+    latest_obs: '2026-04-30'
+    checked: '2026-08-27'
   # ADDED 2026-08-05 (cycle 19 of the econ-updater loop). NEW COVERAGE: production
   # indexes — the successor home of dismembered IFS's AIP-type family. PI (IMF.STA)
   # found by the IFS-families sweep. current_vintage() CALLED live 2026-08-05:
@@ -8386,6 +8456,16 @@ sources:
       calling the module's own current_vintage(): PI -> PI:2.0.0.
     name: Production Indexes (PI)
 - source_id: imf_piwca_direct
+  # upstream_verified — PROBED 2026-08-27. Two measured facts: (1) the last run
+  # (2026-08-12) earned no_change — the fetcher requested observations newer than
+  # 2026-04-30 from the current PI_WCA release and the API returned none (an earned
+  # no_change records success only when the probe found nothing new); (2) the live
+  # api.imf.org /dataflow catalogue, probed 2026-08-27, lists PI_WCA v1.0.0.
+  # Expiring claim: lapses to ATTENTION after 180 days, and stops applying if our
+  # data ever falls behind 2026-04-30.
+  upstream_verified:
+    latest_obs: '2026-04-30'
+    checked: '2026-08-27'
   # ADDED 2026-08-05 (cycle 20 of the econ-updater loop). NEW COVERAGE: production-index
   # world/country-group aggregates, sibling of imf_pi_direct. current_vintage() CALLED
   # live 2026-08-05: PI_WCA -> PI_WCA:1.0.0. live:false + heavy matrix, sized at the
@@ -8435,6 +8515,16 @@ sources:
       calling the module's own current_vintage(): QGFS -> QGFS:12.0.0.
     name: Quarterly Government Finance Statistics (QGFS)
 - source_id: imf_pip_direct
+  # upstream_verified — PROBED 2026-08-27. Two measured facts: (1) the last run
+  # (2026-08-11) earned no_change — the fetcher requested observations newer than
+  # 2025-06-30 from the current PIP release and the API returned none (an earned
+  # no_change records success only when the probe found nothing new); (2) the live
+  # api.imf.org /dataflow catalogue, probed 2026-08-27, lists PIP v5.0.0. CPIS-successor semi-annual survey; ~14-month lag matches CPIS's own rhythm.
+  # Expiring claim: lapses to ATTENTION after 180 days, and stops applying if our
+  # data ever falls behind 2025-06-30.
+  upstream_verified:
+    latest_obs: '2025-06-30'
+    checked: '2026-08-27'
   # ADDED 2026-08-05 (cycle 3 of the econ-updater loop). `imf_cpis` holds 100,783 relay-era
   # series — catalogued, SERVED, frozen: no fetcher, no registry entry. IMF RENAMED the
   # dataset: no CPIS flow exists; PIP (IMF.STA v5.0.0) says "formerly Coordinated Portfolio
