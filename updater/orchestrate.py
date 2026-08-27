@@ -396,6 +396,70 @@ def _should_derive_csvs(status: str) -> bool:
     return status in ("ok", "partial")
 
 
+_REG_ENTRIES: "dict | None" = None
+
+
+def _catalog_scope(source_id: str) -> str:
+    """Registry `catalog_scope` for one source: 'subset' declares that the catalogue
+    is a DELIBERATE curated slice of a much larger store (eia: 268,502 of ~3.8M), so
+    changed store keys outside it are expected residue, not a coherence failure.
+    Default 'full'. Read with the R276 accessor — a top-level .get(id) on the loaded
+    registry answers None for every source in existence."""
+    global _REG_ENTRIES
+    if _REG_ENTRIES is None:
+        try:
+            from . import registry as _reg
+            _REG_ENTRIES = {e["source_id"]: e
+                            for e in _reg.load().get("sources", [])}
+        except Exception:                            # noqa: BLE001 — never sink a run
+            _REG_ENTRIES = {}
+    return str((_REG_ENTRIES.get(source_id) or {}).get("catalog_scope", "full"))
+
+
+def _classify_zero_mapped(source_id: str, scope: str, n_ids: "int | None",
+                          sample_hits: "int | None", sample_n: int,
+                          n_unmapped: int, cap_saturated: bool = False,
+                          ) -> "tuple[str, bool]":
+    """(note, demote) when the mapper matched ZERO changed keys.
+
+    Pure — the tested core. The demote default is deliberate (R359): zero-mapped-
+    with-rows fingerprints a key-form mismatch. The ONE exception is a declared
+    `catalog_scope: subset` source whose sampled changed keys are PROVEN unserved:
+    0 hits under the exact form AND every dot-prefix (table-grain resolvers serve a
+    catalogued PREFIX of the leaf — R497), from a NON-truncated changed-set (a
+    cap-saturated cursor set proves nothing about what else changed — R497). Then
+    nothing served changed and the run must not sit `partial` forever (R231/R244).
+    Any sampled hit voids the exception — the mapper missed a served id."""
+    if n_ids is None:
+        why = "catalog id count unavailable"
+    elif n_ids == 0:
+        why = ("the catalog this run read has NO rows for it — not catalogued, "
+               "purged, or the coherence catalog is stale")
+    else:
+        why = (f"the catalog this run read has {n_ids:,} rows for it but none "
+               f"matched — grain/key-form mismatch")
+        if scope == "subset" and sample_hits is not None and sample_n > 0:
+            if cap_saturated:
+                why += (f"; catalog_scope=subset exception REFUSED: the changed-set "
+                        f"is cursor-cap-saturated ({n_unmapped}) — truncated evidence "
+                        f"cannot prove nothing served changed")
+            elif sample_hits == 0:
+                note = (f"csv coverage note: {n_unmapped} changed keys are outside "
+                        f"{source_id}'s curated catalogue subset (catalog_scope: "
+                        f"subset; 0 of {sample_n} sampled keys catalogued at any "
+                        f"prefix) — nothing served changed, served ids coherent")
+                assert note.startswith("csv coverage note:")  # the caller's green gate
+                return note, False
+            else:
+                why += (f"; catalog_scope=subset exception REFUSED: {sample_hits} of "
+                        f"{sample_n} sampled changed keys ARE served (exact or "
+                        f"prefix) — the mapper missed served ids")
+    note = (f"csv coherence unmet: {n_unmapped} changed series_keys "
+            f"have no catalog mapping for {source_id}: {why} (§5.7)")
+    assert not note.startswith("csv coverage note:")  # demote ⇔ prefix, kept in lockstep
+    return note, True
+
+
 def _derive_changed_csvs(unit, res, blob):
     """Contract step 5 — CSV/parquet coherence (§5.7): re-derive the CSV of every
     series whose parquet changed this run.
@@ -487,6 +551,9 @@ def _derive_changed_csvs(unit, res, blob):
             # no rows at all (not catalogued / purged / the reference is stale) versus rows
             # present but none matched (a grain or key-form mismatch).
             n_ids = None
+            sample_hits = None
+            sample_n = 0
+            scope = _catalog_scope(unit.source_id)
             try:
                 import sqlite3 as _sq
                 _cat = (os.environ.get("ECONDL_CATALOG")
@@ -495,18 +562,41 @@ def _derive_changed_csvs(unit, res, blob):
                     n_ids = _c.execute(
                         "SELECT COUNT(*) FROM series WHERE source_id=?",
                         (unit.source_id,)).fetchone()[0]
+                    # DECLARED SUBSET (registry `catalog_scope: subset`, e.g. eia: the
+                    # store holds ~3.8M grid/scenario series, the catalogue a curated
+                    # 268,502): a bulk merge touching only uncatalogued families maps to
+                    # zero, and that is COVERAGE, not a coherence failure. Two guards
+                    # from the R497 review, both refusing toward the demote:
+                    #   * the sample is PREFIX-AWARE — table-grain resolvers serve a
+                    #     catalogued prefix of the leaf key (eia: dot-prefix), so
+                    #     "uncatalogued exact form" is NOT "unserved"; any catalogued
+                    #     dot-prefix of a sampled key voids the exception (the mapper
+                    #     missed a served id — the R359 class this branch must catch);
+                    #   * a cap-saturated cursor set (>= CURSOR_CAP) is an INCOMPLETE
+                    #     changed-set and can prove nothing about what else changed —
+                    #     the exception is never granted from truncated evidence.
+                    if scope == "subset" and n_ids:
+                        sample = list(unmapped)[:500]
+                        sample_n = len(sample)
+                        sample_hits = 0
+                        for k in sample:
+                            segs = str(k).split(".")
+                            forms = [f"{unit.source_id}:{k}"] + [
+                                f"{unit.source_id}:" + ".".join(segs[:d])
+                                for d in range(len(segs) - 1, 0, -1)]
+                            if any(_c.execute(
+                                    "SELECT 1 FROM series WHERE series_id=?",
+                                    (f,)).fetchone() for f in forms):
+                                sample_hits += 1
             except Exception:                       # noqa: BLE001 — a note must never raise
                 n_ids = None
-            if n_ids is None:
-                why = "catalog id count unavailable"
-            elif n_ids == 0:
-                why = ("the catalog this run read has NO rows for it — not catalogued, "
-                       "purged, or the coherence catalog is stale")
-            else:
-                why = (f"the catalog this run read has {n_ids:,} rows for it but none "
-                       f"matched — grain/key-form mismatch")
-            return [], (f"csv coherence unmet: {len(unmapped)} changed series_keys "
-                        f"have no catalog mapping for {unit.source_id}: {why} (§5.7)"), [], {}
+            from .strategies.fetchers._common import CURSOR_CAP as _CCAP
+            note, demote = _classify_zero_mapped(
+                unit.source_id, scope, n_ids, sample_hits, sample_n, len(unmapped),
+                cap_saturated=len(unmapped) >= _CCAP)
+            if not demote:
+                print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
+            return [], note, [], {}
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob(),
                                     **_capped_derive_budget()) or {}
@@ -689,6 +779,41 @@ _TABLE_GRAIN = {
 }
 
 
+# eia's dot-prefix table grain: dataset -> prefix depth. SOURCE OF TRUTH is
+# tools/catalog_eia_tables.py::DEPTH (the measured map the cataloguer used to mint
+# the 268,495 table ids); tests/test_catalog_scope_subset.py asserts the two maps
+# are EQUAL so they cannot drift apart silently (R349 class). The resolver serves
+# a table id with `(series_id == prefix) | starts_with(series_id, prefix + '.')`
+# (_resolve_eia), so a changed leaf key belongs to exactly the table id given by
+# its dataset's measured depth. R497: before this rule the mapper had no eia path,
+# every changed key sat unmapped, and the run demoted forever while 598 served EBA
+# CSVs went stale.
+_EIA_DEPTH = {
+    "AEO.2014": 3, "AEO.2015": 3, "AEO.2016": 3, "AEO.2017": 3, "AEO.2018": 3,
+    "AEO.2019": 3, "AEO.2020": 3, "AEO.2021": 3, "AEO.2022": 3, "AEO.2023": 3,
+    "AEO.2025": 3, "AEO.2026": 3, "AEO.IEO2": 3,
+    "ELEC": 3, "IEO.2017": 3, "IEO.2019": 3, "IEO.2021": 3, "IEO.2023": 3,
+    "NUC_STATUS": 3,
+    "COAL": 2, "EBA": 2, "EMISS": 2, "INTL": 2, "NG": 2, "PET": 2,
+    "PET_IMPORTS": 2, "SEDS": 2, "STEO": 2, "TOTAL": 2,
+}
+
+
+def _eia_table_prefix(key: str) -> "str | None":
+    """eia leaf key -> its catalogued table prefix, or None (unknown dataset /
+    already at-or-above table grain — the exact-match path owns those)."""
+    segs = key.split(".")
+    if len(segs) < 2:
+        return None
+    ds = segs[0]
+    if ds in ("AEO", "IEO") and len(segs) >= 3:
+        ds = f"{segs[0]}.{segs[1]}"
+    depth = _EIA_DEPTH.get(ds)
+    if depth is None or len(segs) <= depth:
+        return None
+    return ".".join(segs[:depth])
+
+
 def _table_grain_native(source_id: str, key: str) -> "str | None":
     """Reduce a TABLE-GRAIN store key to its catalog NATIVE id, or None if it cannot be.
 
@@ -696,6 +821,8 @@ def _table_grain_native(source_id: str, key: str) -> "str | None":
     UNMAPPED — never guess. Returning a plausible-but-wrong id is strictly worse than
     reporting the miss, because the miss is visible in the note and the wrong id is not.
     """
+    if source_id == "eia":
+        return _eia_table_prefix(key)
     spec = _TABLE_GRAIN.get(source_id)
     if spec is None or ":" not in key:
         return None
