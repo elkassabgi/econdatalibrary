@@ -1437,6 +1437,14 @@ sources:
       obs_date (date32, Dec-31 annual), value (float64). No raw cache, no per-variable files. Side logs _ei_statreview_log.txt
       / _ei_statreview_err.txt.'
 - source_id: eia
+  # catalog_scope — DECLARED 2026-08-27. The store holds ~3.8M series while the
+  # catalogue serves a curated 268,502 (PET 93,159 / NG 13,180 / STEO 1,478 /
+  # TOTAL 1,090 / EBA 598 / ...). A bulk merge touching only uncatalogued
+  # families (measured: +235,050,106 rows, 0 of 800 sampled cursors — all
+  # hourly EBA.* — catalogued) maps to zero and must be a non-demoting
+  # coverage note, not "csv coherence unmet" forever (R231/R244). The
+  # orchestrator still demotes if any sampled changed key IS catalogued.
+  catalog_scope: subset
   # CLOUD-INFEASIBLE - measured 147,555,304 rows in a single file (EBA.parquet),
   # about 10.3 GB once decoded into Arrow. merge_and_write materialises the whole
   # existing parquet per call, so that is the peak for ONE merge against a 16 GB runner.
