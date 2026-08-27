@@ -374,18 +374,21 @@ def _data_url(flow: dict, path_key: str | None, start: str | None, end: str | No
 # CSV parse
 # --------------------------------------------------------------------------- #
 def _parse_csv(raw: bytes):
-    """Parse SDMX-CSV (csvdata) -> (keys, dates, values, freqs, n_body_rows).
-    n_body_rows counts non-header lines seen (to distinguish a real-but-unparseable
-    body from a legitimately empty tail)."""
+    """Parse SDMX-CSV (csvdata) -> (keys, dates, values, freqs, n_body_rows,
+    n_null_vals). n_body_rows counts non-header lines seen; n_null_vals counts
+    body rows whose OBS_VALUE cell is EMPTY — ECB pre-lists the next period with
+    blank values before publishing (RESV 2026-Q1: 108 rows, every value empty,
+    measured 2026-08-27), and an all-null body is a legitimately quiet tail at
+    ANY size, not a schema break (the stat_slovenia 2221405S class)."""
     import csv
     import io
     text = raw.decode("utf-8-sig", "replace")
     rd = csv.reader(io.StringIO(text))
     hdr = next(rd, None)
     if not hdr:
-        return [], [], [], [], 0
+        return [], [], [], [], 0, 0
     if "TIME_PERIOD" not in hdr or "OBS_VALUE" not in hdr:
-        return [], [], [], [], 0
+        return [], [], [], [], 0, 0
     ki = hdr.index("KEY") if "KEY" in hdr else 0
     tpi = hdr.index("TIME_PERIOD")
     ovi = hdr.index("OBS_VALUE")
@@ -393,9 +396,13 @@ def _parse_csv(raw: bytes):
         hdr.index("FREQUENCY") if "FREQUENCY" in hdr else -1)
     keys, dates, vals, freqs = [], [], [], []
     n_body = 0
+    n_null_vals = 0
     for row in rd:
         n_body += 1
         if len(row) <= tpi or len(row) <= ovi:
+            continue
+        if not row[ovi].strip():
+            n_null_vals += 1
             continue
         v = _to_float(row[ovi])
         if v is None:
@@ -407,7 +414,7 @@ def _parse_csv(raw: bytes):
         dates.append(od)
         vals.append(v)
         freqs.append(row[fri] if (0 <= fri < len(row)) else "")
-    return keys, dates, vals, freqs, n_body
+    return keys, dates, vals, freqs, n_body, n_null_vals
 
 
 # --------------------------------------------------------------------------- #
@@ -591,20 +598,26 @@ def update(unit, since) -> Result:
             total += before
             continue
 
-        keys, dates, vals, freqs, n_body = _parse_csv(raw)
+        keys, dates, vals, freqs, n_body, n_null_vals = _parse_csv(raw)
 
         if not dates:
             # 200 but nothing parseable. finalize() raises DefinitiveError on the FIRST
             # structural sub-unit, so be conservative: only call it structural when a
-            # SUBSTANTIAL body (>=STRUCT_MIN_BODY rows) parsed to zero — that is a real
-            # schema/structure break. A tiny boundary window returning a few rows with
-            # suppressed/blank values is a legitimately quiet tail, not a break, so it
-            # must NOT nuke the whole source. (The all-empty floor still catches a
-            # wholesale outage where EVERY file goes empty.)
-            if n_body >= STRUCT_MIN_BODY:
+            # SUBSTANTIAL body (>=STRUCT_MIN_BODY rows) parsed to zero AND some of those
+            # rows actually CARRIED values — that is a real schema/structure break. Two
+            # legitimately quiet shapes must NOT nuke the whole source: a tiny boundary
+            # window (< STRUCT_MIN_BODY), and an ALL-NULL body of any size — ECB
+            # pre-lists the next period with blank OBS_VALUEs before publishing
+            # (RESV 2026-Q1: 108 placeholder rows, reproduced 2026-08-27; the
+            # stat_slovenia 2221405S class). Rows that carry values which fail to
+            # parse keep the structural verdict — that pair is pinned in
+            # tests/test_ecb_placeholder_tail.py.
+            if n_body >= STRUCT_MIN_BODY and n_null_vals < n_body:
                 # Carry the body size: it is the number the STRUCT_MIN_BODY decision turned on,
                 # so a reader can see why this was called structural rather than a quiet tail.
-                tally.structural_unit(f"{flow}: {n_body} body rows parsed to 0 dates")
+                tally.structural_unit(
+                    f"{flow}: {n_body} body rows parsed to 0 dates "
+                    f"({n_null_vals} null-valued)")
             else:
                 tally.empty_unit()
             total += before
