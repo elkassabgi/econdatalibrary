@@ -104,7 +104,13 @@ OVERVIEW_JOBS = [
 # -- the day a real body comes back, added_unit() picks it up with no code change --
 # while a permanently-retired metric stops holding the whole source at `partial`.
 #   Confirmed retired 2026-07-27; last real observation 2026-06-24.
-RETIRED_UPSTREAM = {"fees_dailyBribesRevenue.parquet"}
+#
+# fees_dailyTokenTaxes joined the same class: probed 2026-08-27 with the same
+# tell — totalAllTime: 0, protocols: [], empty totalDataChart. Our store keeps
+# 1,690 rows, 2023-06-14 to 2026-06-15 (where it stopped). Same recovery
+# property: the probe continues, and a real body resumes ingestion untouched.
+RETIRED_UPSTREAM = {"fees_dailyBribesRevenue.parquet",
+                    "fees_dailyTokenTaxes.parquet"}
 
 
 # --------------------------------------------------------------------------- #
