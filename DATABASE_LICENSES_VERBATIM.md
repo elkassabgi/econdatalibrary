@@ -847,6 +847,34 @@ then-deploy flow; confirmation reply to the Bundesbank restates our reading and
 compliance). Un-gated + LIVE 2026-07-15, verified 451→401 with the exact credit on
 every page. Full verbatim + status in permission records (held privately).
 
+**PER-DATASET PASS RUN 2026-08-28 — the condition-(2) check this entry says `idb` stays
+gated until.** Method: for EVERY one of the 21 datasets our catalogue actually serves
+(distinct slug from the 18,838 catalogued `idb:IDB:<slug>:<geo>` ids), a live
+`data.iadb.org/api/3/action/package_show?id=<slug>` read of `license_id`. Full population,
+no sampling; results in `D:/temp/claude/idb_licence_pass.json`. RESULT:
+
+    cc-by-nc-nd   16 datasets
+    cc-by         5 datasets
+    NO LICENCE    0 datasets
+
+So the portal-wide ~86%-unlicensed majority that drove the DISPUTED verdict **does not
+touch what we serve**: every dataset we host carries an affirmative CC grant. That closes
+the metadata condition for these 21.
+
+TWO THINGS THIS PASS DOES *NOT* SETTLE, stated rather than glossed:
+ 1. **ND still applies to the 16 `cc-by-nc-nd` datasets.** We serve reformatted parquet/CSV,
+    which the adversarial verifier above calls a derivative. The written grant asserts
+    CC-BY 4.0 for IDB open data and says re-hosting is permitted, so the grant and the
+    per-dataset label disagree for those 16 — an OWNER decision, not a measurement.
+ 2. `license_id` is the CKAN field the permission names, but it does not itself prove no
+    SERIES inside a dataset came from a proprietary third-party provider. No dataset we
+    serve declares one; that is the strongest statement this method supports.
+
+MATERIAL FOR THE 2026-08-28 REPAIR: all 379 under-keyed files belong to ONE dataset,
+`social-indicators-of-latin-america-and-the-caribbean`, whose licence is **cc-by**
+(CC BY 4.0 — derivatives permitted with attribution). The under-keying repair is therefore
+licence-clear on its own terms and does not touch any ND dataset.
+
 Caveat: this review covers only the general website terms at the cited URL. Bundesbank time series are also distributed via its SDMX/statistics API, which may carry its own separate terms; if the library ingests data through that channel, those terms should be reviewed separately rather than relying on this page.
 
 *Researcher reasoning:* The Bundesbank time-series database's own help/terms pages now return HTTP 404 (the classic time series database is being retired ~30 June 2026), so the governing legal document is the Bundesbank's site-wide "Conditions for the general use of the website," which applies to all "information produced ... by the Deutsche Bundesbank" — this expressly includes the macroeconomic/ESCB time series offered as free "public use files" for CSV/SDMX download. Two independent WebFetch reads of that page returned identical wording for the core clauses.
