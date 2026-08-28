@@ -1537,3 +1537,26 @@ catalog_complete dst — licence CLEARED, verify against DATABASE_LICENSES_VERBA
 derive their CSVs, R2 catalog refresh (NOTE: refresh_r2_catalog is classifier-blocked for
 Claude sessions — R250 — hand Ahmed the exact command if still blocked), D1 sync, verify.
 Until then dst's occasional 2-key demotes are THIS gap, not a fetcher bug.
+
+### WORKSTATION STARVATION — the local pass reaches almost nothing (measured 2026-08-28, AR-017)
+
+The nightly `run_local_heavy.ps1` pass has ended `rc=124` (hard stop) on 08-24, 08-25, 08-26
+and 08-27, writing ZERO run rows each time, because `istat` took its lease 3 seconds after
+launch and held it for the whole 221-minute budget. istat's dead-host fix (this session)
+stops that WHILE ISTAT IS DOWN, but the class is systemic and returns the day it recovers:
+
+- `orchestrate.py:180-182` makes the per-unit SIGALRM timeout a NO-OP on Windows, justified
+  by "the workstation job runs with a 2,880-minute budget and no hard kill" — BOTH clauses
+  are now false: the ps1 clamps to ~221 min and taskkills at +10.
+- istat's cost estimate is **16.2s** (`state.run_cost_estimate` = MAX of the last 5 runs:
+  15.1/15.7/16.2/0.0 — all aborts) against `FAST_LANE_SECONDS = 120`, so it lands in band 0
+  and runs FIRST every night. The estimate is self-perpetuating: every run aborts fast.
+- istat's `update()` has NO budget cooperation at all (no `Deadline`, no `deferred_unit`);
+  2,442 local flows x >=1.0s `RATE` alone is >=41 min, realistically 2.8-4h under r2.
+- Already starved, last ATTEMPT: noaa 2026-08-03, fhfa 2026-08-06, census 2026-08-06,
+  bls 2026-08-18, oecd 2026-08-18, bea/eia/statcan 2026-08-22. bea/bls/fhfa/statcan are
+  exactly the RED-DATA rows the cloud gate reports.
+
+FIX OPTIONS (not chosen — needs a decision): implement the wall clock on Windows (a watchdog
+thread, since `setitimer` is absent) AND/OR give istat a real per-source `Deadline`, AND/OR
+stop `run_cost_estimate` trusting durations from aborted/killed runs.
