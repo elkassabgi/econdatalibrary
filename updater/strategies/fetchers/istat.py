@@ -80,9 +80,88 @@ HOSTS = [
     ("sdmx",    "https://sdmx.istat.it/SDMXWS/rest/"),
     ("esplora", "https://esploradati.istat.it/SDMXWS/rest/"),
 ]
-# Bases found redirect-looping during THIS run. Per-run, not persisted: a host ISTAT
-# repairs must come back on the next run without anyone editing a list.
+# Bases found UNUSABLE during THIS run (redirect loop, or unreachable transport).
+# Per-run, not persisted: a host ISTAT repairs must come back on the next run without
+# anyone editing a list.
 _DEAD_HOSTS: set = set()
+
+# TRANSPORT DEATH IS A HOST FAULT TOO — and it was the expensive one. Until 2026-08-28
+# only TooManyRedirects marked a base dead; a timeout or refused connection returned a
+# bare `transient`, so a base that is dead AT THE SOCKET cost its full timeout on EVERY
+# flow, forever. Measured that morning, with a control: esploradati.istat.it TCP 443
+# times out (15s connect probe) while sdmx.istat.it and www.istat.it both open in 0.2s —
+# ISTAT's outage, not our egress. esploradati carries HOST_TIMEOUT 300s and RETRIES 3,
+# so one flow cost ~900s; istat has 2,483 flows and the workstation pass has a ~221-min
+# budget, so istat consumed the ENTIRE nightly local-heavy budget and was hard-killed
+# before recording a single run row. That starved the other 28 local sources: bls, eia,
+# bea, statcan and fhfa were last ATTEMPTED 2026-08-18..22 and sat RED-DATA for it.
+#
+# Two guards, cheapest first, and both must respect the lesson HOST_TIMEOUT records —
+# esploradati was measured SLOW BUT WORKING (76.0s/102.6s/123.7s full-body 200s on
+# 2026-08-24), so slowness must never be read as death:
+#   1. a TCP-connect probe (short, cached per run) — it separates "unreachable" from
+#      "slow to serve a body", which a request timeout alone cannot do;
+#   2. a consecutive-transport-failure counter as the backstop for a base that accepts
+#      the connection and then hangs. ANY completed reply on that base resets it — a
+#      404 NoRecordsFound proves the transport just as well as a 200 does.
+_TCP_PROBE_TIMEOUT = 10      # connect only; a healthy-but-slow host still connects fast
+# _HOST_DEAD_AFTER is defined below, next to RETRIES, because it must EXCEED it.
+_TRANSPORT_FAILS: dict = {}
+_TCP_PROBED: dict = {}
+
+
+def _base_of(url: str) -> "str | None":
+    """The HOSTS base a URL belongs to, or None."""
+    for _lbl, base in HOSTS:
+        if url.startswith(base):
+            return base
+    return None
+
+
+def _mark_dead(base: str, why: str) -> None:
+    if base not in _DEAD_HOSTS:
+        print(f"[istat] {base} {why}; skipping it for the rest of this run", flush=True)
+    _DEAD_HOSTS.add(base)
+
+
+def _note_transport_failure(base: "str | None") -> None:
+    """Count a timeout/conn-drop against a base; mark it dead at the threshold."""
+    if not base:
+        return
+    n = _TRANSPORT_FAILS.get(base, 0) + 1
+    _TRANSPORT_FAILS[base] = n
+    if n >= _HOST_DEAD_AFTER:
+        _mark_dead(base, f"failed transport {n}x consecutively with no success")
+
+
+def _note_success(base: "str | None") -> None:
+    """ANY completed HTTP response proves the TRANSPORT is alive — clear the streak.
+
+    Called on every reply, not only 200s: a 404 "NoRecordsFound" is this fetcher's
+    documented quiet-tail case and a whole run of them is a legitimate no_change, so
+    scoring only 200s would let a host serving nothing but empty windows accrue
+    transport failures until it was wrongly declared dead (review 2026-08-28).
+    """
+    if base:
+        _TRANSPORT_FAILS[base] = 0
+
+
+def _tcp_reachable(base: str) -> bool:
+    """One cached TCP-connect probe per base per run. True when the socket opens."""
+    if base in _TCP_PROBED:
+        return _TCP_PROBED[base]
+    import socket
+    from urllib.parse import urlparse
+    u = urlparse(base)
+    host = u.hostname or ""
+    port = u.port or (443 if u.scheme == "https" else 80)
+    try:
+        socket.create_connection((host, port), timeout=_TCP_PROBE_TIMEOUT).close()
+        ok = True
+    except OSError:
+        ok = False
+    _TCP_PROBED[base] = ok
+    return ok
 
 CSV_ACCEPT = "application/vnd.sdmx.data+csv;version=1.0.0"
 XML_ACCEPT = "application/vnd.sdmx.genericdata+xml;version=2.1"
@@ -103,6 +182,16 @@ HOST_TIMEOUT = {
     "https://esploradati.istat.it/SDMXWS/rest/": 300,
 }
 RETRIES = 3           # per host, for transient (timeout/5xx/conn) errors
+
+# THRESHOLD > ONE FLOW'S RETRIES, OR THE RETRY LOOP KILLS A LIVE HOST BY ITSELF. The first
+# cut set this to 3 — exactly RETRIES — and _fetch_flow's own backoff loop calls _try_host
+# once per attempt against the same base, so ONE slow flow produced 3 increments and marked
+# a WORKING host dead (adversarial review 2026-08-28, reproduced: esploradati serving its
+# 13.6 MB body in >300s, a 2.4x slow day against the 123.7s measured 2026-08-24, suffices).
+# That is exactly the misdiagnosis HOST_TIMEOUT's own comment forbids. Sustained failure
+# across SEVERAL flows is the signal; one slow flow is not. Pinned by
+# tests/test_istat_dead_host.py, which drives the REAL retry loop rather than the counter.
+_HOST_DEAD_AFTER = 3 * RETRIES + 1
 TRANSIENT_HTTP = (429, 500, 502, 503, 504)
 
 # Files in the istat dir that are NOT dataflow parquets.
@@ -146,6 +235,7 @@ def _get(sess, url, accept, timeout=TIMEOUT) -> _Resp:
                 break
     try:
         r = sess.get(url, headers=hdrs, timeout=timeout)
+        _note_success(_base_of(url))   # a reply of ANY status proves the transport
     except requests.TooManyRedirects:
         # A HOST-level fault, not a flow-level one. sdmx.istat.it began answering every
         # /SDMXWS/rest/ path with a 302 back to its own homepage - measured 2026-08-23,
@@ -154,15 +244,13 @@ def _get(sess, url, accept, timeout=TIMEOUT) -> _Resp:
         # escaped as UNEXPECTED and killed the whole source BEFORE the working host was
         # tried. istat last succeeded 2026-07-14 and had been attempted on every run for
         # 40 days, recorded transient_fail each time.
-        for _lbl, _base in HOSTS:
-            if url.startswith(_base):
-                if _base not in _DEAD_HOSTS:
-                    print(f"[istat] {_base} is redirect-looping; skipping it for the rest "
-                          f"of this run", flush=True)
-                _DEAD_HOSTS.add(_base)
-                break
+        _b = _base_of(url)
+        if _b:
+            _mark_dead(_b, "is redirect-looping")
         return _Resp(kind="transient")
     except (requests.Timeout, requests.ConnectionError):
+        # Transport, not protocol: count it against the base (see _TRANSPORT_FAILS).
+        _note_transport_failure(_base_of(url))
         return _Resp(kind="transient")
     if r.status_code == 200:
         return _Resp(content=r.content, kind="ok", status=200)
@@ -251,7 +339,14 @@ def _fetch_flow(sess, flow_id, start_period, had_prior: bool):
     saw_empty = False
     for _label, base in HOSTS:
         if base in _DEAD_HOSTS:
-            continue          # redirect-looping this run; do not pay for it per flow
+            continue          # dead this run; do not pay its timeout per flow
+        # Cheapest possible discriminator, once per base per run: a base whose SOCKET
+        # will not open cannot serve anything, and a healthy-but-slow host still
+        # connects fast (HOST_TIMEOUT's 76-124s were full-body reads). Without this the
+        # first flow alone pays RETRIES x HOST_TIMEOUT (~900s on esploradati).
+        if not _tcp_reachable(base):
+            _mark_dead(base, f"is unreachable (TCP connect failed in {_TCP_PROBE_TIMEOUT}s)")
+            continue
         k, d, v, kind = _try_host(sess, base, flow_id, start_period)
         if kind == "ok":
             return k, d, v, "ok"
@@ -270,6 +365,9 @@ def _fetch_flow(sess, flow_id, start_period, had_prior: bool):
     have_conclusive = saw_structural or saw_gone or saw_empty
     if not have_conclusive:
         for attempt in range(1, RETRIES):
+            # DEAD MEANS DEAD EVERYWHERE: a base marked dead during the first pass
+            # must not be retried here (reviewer NOTE 3, AR-017).
+            transient_bases = [b for b in transient_bases if b not in _DEAD_HOSTS]
             if not transient_bases:
                 break
             time.sleep(min(4 * attempt, 30))
@@ -357,6 +455,12 @@ def update(unit, since) -> Result:
     cursors: dict[str, str] = {}   # flow_id -> max obs_date written/known
     total = 0
     last_obs = None
+    flows_done = 0                 # flows actually ATTEMPTED against the publisher
+    # These caches describe THIS run's hosts. Reset them here so the property is true by
+    # construction rather than by istat happening to have one unit per process (R276-class).
+    _DEAD_HOSTS.clear()
+    _TRANSPORT_FAILS.clear()
+    _TCP_PROBED.clear()
 
     # Optional bounded subset for a tractable one-shot test (env-only). The PRODUCTION
     # orchestrator never sets this, so the full ~755-flow sweep runs in production.
@@ -378,8 +482,37 @@ def update(unit, since) -> Result:
             if last_obs is None or max_d.isoformat() > last_obs:
                 last_obs = max_d.isoformat()
 
+        # WHOLE-PUBLISHER OUTAGE: once every base is dead there is nothing left to ask,
+        # and walking the remaining flows would still pay RATE (1.0s x 2,483 = ~41 min)
+        # to learn the same fact 2,483 times. Stop and say so. The run books `partial`
+        # (see the break below), so the vintage does not advance and the rest of the
+        # nightly workstation budget goes to the other 28 local sources.
+        #
+        # THIS DOES NOT CLOSE THE STARVATION CLASS — it only stops istat paying for a
+        # DOWN publisher. istat still has no Deadline of its own and sits in the 120s
+        # fast lane on a cost estimate built from its own aborted runs, so the day ISTAT
+        # recovers, ~2,442 flows x >=1.0s RATE (plus two R2 reads each) will overrun the
+        # pass again. That fix is queued separately (50-queue.md, AR-017 SHOULD-FIX 3).
+        if all(b in _DEAD_HOSTS for _l, b in HOSTS):
+            # BREAK, NEVER RAISE. A TransientError here would book `transient_fail`, and
+            # _should_derive_csvs admits only {ok, partial} — so a host dying at flow 801
+            # would strand 800 flows' already-merged parquet rows with no CSV re-derive
+            # and no series_cursors, the exact regression R380 closed (review 2026-08-28).
+            # Breaking with this flow tallied transient makes finalize() return `partial`:
+            # coverage incomplete, vintage NOT advanced, merged rows published.
+            # Side effect worth knowing: obs_count then carries the PARTIAL sum of the
+            # flows walked, not the whole store — state.py already documents obs_count as
+            # not comparable across runs, and no gate reads it, so a shrinking number in
+            # istat's runbook is this stop, not data loss.
+            tally.transient_unit(f"{flow_id}: every ISTAT host unusable this run")
+            print(f"[istat] every host unusable ({', '.join(sorted(_DEAD_HOSTS))}) — "
+                  f"stopping after {flows_done} flow(s) attempted; merged rows keep their "
+                  f"derive, vintage not advanced", flush=True)
+            break
+
         sp = _start_period(max_d)
         keys, dates, vals, outcome = _fetch_flow(sess, flow_id, sp, had_prior=before > 0)
+        flows_done += 1
         time.sleep(RATE)
 
         if outcome == "transient":
