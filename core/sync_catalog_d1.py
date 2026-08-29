@@ -122,7 +122,8 @@ def _parent_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[str]:
 
 
 def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
-             conn: sqlite3.Connection | None = None) -> list[str]:
+             conn: sqlite3.Connection | None = None,
+             fts_range_source: str | None = None) -> list[str]:
     """Chunked INSERT OR REPLACE for `series`, plus matching `series_fts` rows.
 
     Given `conn`, the parent `source`/`license` rows are emitted FIRST — see _parent_rows for
@@ -177,8 +178,40 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
     # leading pass: an FTS delete whose matching insert never executes leaves the series
     # unfindable, so the window between them must stay as small as the arity allows (R487 —
     # a failed INSERT after a committed DELETE silently destroys the index).
-    for i in range(0, len(rows), FTS_DELETE_PER_STMT):
-        block = rows[i:i + FTS_DELETE_PER_STMT]
+    # ARITY TAKEN TO ITS LIMIT: one RANGE predicate covers the whole source (2026-08-29).
+    # Every id-list DELETE costs one full scan of series_fts REGARDLESS of list length, so
+    # for a whole-source reconcile the cheapest correct form is a single statement bounded
+    # by the id prefix — series_id >= 'src:' AND series_id < 'src;' (';' is the codepoint
+    # after ':'), the same range form used elsewhere in the repo. MEASURED alternative:
+    # cataloguing idb Option B's 957,011 ids at 500/stmt is 1,915 statements x 23,843,482
+    # rows = 4.56e10 rows ~ $45.60, against ONE statement ~ $0.024 here — a ~1,900x
+    # reduction with an identical end state for the index.
+    #
+    # WHY IT IS OPT-IN, and the R487 tension it does NOT escape: a range delete removes the
+    # WHOLE source's index rows up front, so the window in which a series is unfindable
+    # spans the entire insert set rather than one 500-id block. That is acceptable ONLY for
+    # a deliberate whole-source reconcile, where `rows` IS that source's complete row set
+    # and a re-run is idempotent — NEVER for the incremental pending-queue path, whose rows
+    # are a partial slice and would leave every unlisted series of the source deleted from
+    # the index. The caller must name the source explicitly, and main() asserts that the
+    # rows really are the whole source before passing it.
+    if fts_range_source:
+        lo = _lit(fts_range_source + ":")
+        hi = _lit(fts_range_source + ";")
+        stmts.append(
+            f"DELETE FROM series_fts WHERE series_id >= {lo} AND series_id < {hi};")
+        for j in range(0, len(rows), ROWS_PER_STMT):
+            ch = rows[j:j + ROWS_PER_STMT]
+            vals = ",\n  ".join(
+                "(%s,%s,%s)" % (_lit(r["series_id"]), _lit(r.get("title")),
+                                _lit(r.get("geography"))) for r in ch)
+            stmts.append("INSERT INTO series_fts (series_id,title,geography) VALUES\n  "
+                         f"{vals};")
+        rows_for_fts: list[dict] = []
+    else:
+        rows_for_fts = rows
+    for i in range(0, len(rows_for_fts), FTS_DELETE_PER_STMT):
+        block = rows_for_fts[i:i + FTS_DELETE_PER_STMT]
         _ids = ",".join(_lit(r["series_id"]) for r in block)
         stmts.append(f"DELETE FROM series_fts WHERE series_id IN ({_ids});")
         for j in range(0, len(block), ROWS_PER_STMT):
@@ -309,7 +342,18 @@ def main(argv: list[str] | None = None) -> None:
         # ids resolve but the source never appears in /v1/sources (see _parent_rows). The
         # close MOVED below these calls: it used to run immediately after _rows_for, so
         # passing the handle here would have queried a closed connection.
-        plans.append((db, grp, emit_sql(cols, grp, sub, conn)))
+        # The range delete is offered ONLY when this group provably IS a whole source:
+        # invoked with --source, and every row in the group carries that source_id. The
+        # pending-queue path (a partial slice, possibly mixing sources) can never satisfy
+        # both, so it keeps the per-block id-list deletes. Getting this wrong deletes the
+        # index rows of every series of the source that is NOT in `rows`.
+        whole = None
+        if a.source and grp and all(r.get("source_id") == a.source for r in grp):
+            whole = a.source
+            print(f"  [fts] whole-source reconcile for {a.source}: ONE range DELETE "
+                  f"instead of {-(-len(grp) // FTS_DELETE_PER_STMT):,} id-list statements "
+                  f"(each is a full scan of series_fts)")
+        plans.append((db, grp, emit_sql(cols, grp, sub, conn, fts_range_source=whole)))
     conn.close()
     for db, grp, files in plans:
         if db:
