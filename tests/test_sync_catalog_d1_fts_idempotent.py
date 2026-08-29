@@ -71,12 +71,30 @@ def _rows(n, src="boc"):
 
 
 def test_the_shipped_source_deletes_before_inserting(sync):
-    """Pin the file itself, so a future edit cannot quietly restore the bare INSERT."""
+    """Pin the file itself, so a future edit cannot quietly restore the bare INSERT.
+
+    BROADENED 2026-08-29: this asserted the literal `DELETE ... WHERE series_id IN`, which
+    pinned the SYNTAX rather than the property. The whole-source reconcile added a second,
+    cheaper delete form — one RANGE statement (`series_id >= 'src:' AND < 'src;'`) instead
+    of one full scan per 500-id block — and this test failed on it while the property it
+    names ("an insert is preceded by a delete") was perfectly satisfied. A guard that
+    rejects a correct implementation trains people to edit the guard, which is how it stops
+    guarding. It now accepts EITHER delete form and, crucially, still fails on NONE — and
+    it checks EVERY insert site, not just the first, which the old `.index()` never did.
+    """
     src = open(MOD, encoding="utf-8").read()
-    i = src.index("INSERT INTO series_fts")
-    window = src[max(0, i - 900):i]
-    assert "DELETE FROM series_fts WHERE series_id IN" in window, (
-        "the FTS insert is not preceded by a chunk delete — every sync will duplicate the index")
+    sites = [i for i in range(len(src))
+             if src.startswith("INSERT INTO series_fts", i)]
+    assert sites, "no FTS insert found at all — the sync no longer maintains the index"
+    for i in sites:
+        window = src[max(0, i - 1600):i]
+        assert "DELETE FROM series_fts" in window, (
+            f"the FTS insert at offset {i} is not preceded by ANY delete — that sync path "
+            f"will duplicate the index on every run")
+    # Both forms must survive: the id-list delete for the incremental pending path, and the
+    # range delete for a whole-source reconcile. Losing either is a silent regression.
+    assert "DELETE FROM series_fts WHERE series_id IN" in src
+    assert "DELETE FROM series_fts WHERE series_id >=" in src
 
 
 def test_replaying_the_sync_four_times_leaves_one_row_per_id(sync):
