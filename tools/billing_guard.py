@@ -207,6 +207,14 @@ def _account_id() -> str:
 # the guard must fail toward the expensive reading, never the cheap one.
 _R2_CLASS_B = {"GetObject", "HeadObject", "HeadBucket", "UsageSummary"}
 
+# MEASURED-BUT-UNPRICED WAS THE DEFECT. account_analytics() printed R2 operations — the
+# largest variable line on this account (~230k Class A/day measured 2026-08-29) — while
+# the "PROJECTED MONTH" total omitted them entirely, so the headline understated the bill
+# by roughly the size of everything else combined. It now publishes the newest COMPLETE
+# day here (today is partial and would understate) and the projection prices it.
+_MEASURED = {"r2_class_a_day": None, "r2_class_b_day": None, "workers_day": None,
+             "d1_reads_day": None, "d1_writes_day": None}
+
 
 def _graphql(token: str, query: str, variables: dict):
     """One GraphQL call; None on any failure (never raises — this is a meter,
@@ -265,10 +273,14 @@ query($acct: String!, $start: Date!, $end: Date!) {
             cls = "B" if dd["actionType"] in _R2_CLASS_B else "A"
             per.setdefault(dd["date"], {"A": 0, "B": 0})
             per[dd["date"]][cls] += r["sum"]["requests"]
-        for date in sorted(per):
+        dates = sorted(per)
+        for date in dates:
             ca, cb = per[date]["A"], per[date]["B"]
             out.append(f"R2 ops {date}: ClassA {ca:,} (~${ca / 1e6 * 4.50:.2f}) "
                        f"ClassB {cb:,} (~${cb / 1e6 * 0.36:.2f})")
+        if len(dates) >= 2:                      # newest COMPLETE day, never today
+            _MEASURED["r2_class_a_day"] = per[dates[-2]]["A"]
+            _MEASURED["r2_class_b_day"] = per[dates[-2]]["B"]
     w = _graphql(tok, """
 query($acct: String!, $start: Date!, $end: Date!) {
   viewer { accounts(filter: {accountTag: $acct}) {
@@ -294,10 +306,13 @@ query($acct: String!, $start: Date!, $end: Date!) {
             p = per.setdefault(r["dimensions"]["date"], [0, 0])
             p[0] += r["sum"]["rowsRead"]
             p[1] += r["sum"]["rowsWritten"]
-        for date in sorted(per):
+        dates = sorted(per)
+        for date in dates:
             rr, rw = per[date]
             out.append(f"D1 TRUE totals {date}: {rr:,} read (~${rr / 1e9:.2f}) / "
                        f"{rw:,} written (~${rw / 1e6:.2f}) — GraphQL, not top-100")
+        if len(dates) >= 2:
+            _MEASURED["d1_reads_day"], _MEASURED["d1_writes_day"] = per[dates[-2]]
     return "ACCOUNT ANALYTICS (last 2 complete days + today):\n  " + "\n  ".join(out) \
         if out else "ACCOUNT ANALYTICS: token present but every query failed — see lines above"
 
@@ -335,6 +350,11 @@ def main() -> int:
             writes += w
             lines.append(f"{db}: {r:,} read / {w:,} written (24h)")
     bucket_text, r2_gb = bucket_sizes()
+    # ORDER MATTERS: account_analytics() is what POPULATES _MEASURED, so it must run
+    # BEFORE the projection prices anything. Called later (inside the report string) the
+    # projection always saw an empty carrier and fell back to the truncated insights
+    # figure and an UNMETERED R2 line — measured-but-unpriced, again.
+    analytics_txt = account_analytics()
     # THE month-to-month number (Ahmed 2026-08-18: "follow month to month").
     # Every daily email carries the same projected-invoice line so the trend is
     # readable from any two dated emails: base plan + R2 storage + 30x today's
@@ -350,10 +370,27 @@ def main() -> int:
     # those figures went to the owner while he was worried about the bill.
     D1_READS_INCLUDED = 25_000_000_000
     D1_WRITES_INCLUDED = 50_000_000
-    mo_reads, mo_writes = reads * 30.0, writes * 30.0
+    R2_CLASS_A_INCLUDED = 1_000_000        # $4.50/M past this
+    R2_CLASS_B_INCLUDED = 10_000_000       # $0.36/M past this
+    # PREFER THE GraphQL TRUE TOTALS over `wrangler d1 insights`, which sums only the top
+    # 100 query SHAPES: measured 2026-08-29, insights reported 36.1M reads/day for the
+    # fleet while GraphQL reported 374.3M for the same account — a 10x truncation. The
+    # tool was already FETCHING the true number and still projecting from the small one.
+    d1_r_day = _MEASURED["d1_reads_day"] if _MEASURED["d1_reads_day"] is not None else reads
+    d1_w_day = _MEASURED["d1_writes_day"] if _MEASURED["d1_writes_day"] is not None else writes
+    src_note = "GraphQL" if _MEASURED["d1_reads_day"] is not None else "insights (TRUNCATED)"
+    mo_reads, mo_writes = d1_r_day * 30.0, d1_w_day * 30.0
     d1_read_cost = max(0.0, mo_reads - D1_READS_INCLUDED) / 1e6 * 0.001
     d1_write_cost = max(0.0, mo_writes - D1_WRITES_INCLUDED) / 1e6 * 1.00
-    projected = 5.0 + r2_gb * 0.015 + d1_read_cost + d1_write_cost + d1_over
+    ca_day, cb_day = _MEASURED["r2_class_a_day"], _MEASURED["r2_class_b_day"]
+    r2_op_cost = 0.0
+    r2_op_txt = "UNMETERED"
+    if ca_day is not None:
+        mo_a, mo_b = ca_day * 30.0, (cb_day or 0) * 30.0
+        r2_op_cost = (max(0.0, mo_a - R2_CLASS_A_INCLUDED) / 1e6 * 4.50
+                      + max(0.0, mo_b - R2_CLASS_B_INCLUDED) / 1e6 * 0.36)
+        r2_op_txt = (f"${r2_op_cost:,.0f} [{mo_a/1e6:.1f}M class-A vs 1M included]")
+    projected = (5.0 + r2_gb * 0.015 + d1_read_cost + d1_write_cost + d1_over + r2_op_cost)
     # A total that silently omits a database is not a projection, it is a floor, and it
     # must not be readable as the bill. On 2026-08-23 econ-catalog failed to measure and
     # the run printed "PROJECTED MONTH ~= $28/mo"; econ-catalog alone carries 109.6M
@@ -369,7 +406,8 @@ def main() -> int:
                   f"[{mo_reads/D1_READS_INCLUDED*100:.0f}% of the 25B included] "
                   f"+ D1 writes ${d1_write_cost:,.0f} "
                   f"[{mo_writes/D1_WRITES_INCLUDED*100:.0f}% of the 50M included] "
-                  f"+ D1 storage ${d1_over:,.0f} [{d1_gb_txt}]){caveat}")
+                  f"+ D1 storage ${d1_over:,.0f} [{d1_gb_txt}] "
+                  f"+ R2 operations {r2_op_txt}) [D1 source: {src_note}]{caveat}")
     n_reg = hf_registrations_24h()
     reg_line = ("hf registrations (24h): " + (f"{n_reg:,}" if n_reg >= 0 else "UNMEASURED"))
     report = ("\n".join(lines)
@@ -377,7 +415,7 @@ def main() -> int:
               + f"\nWRITES: {writes:,}/day (~${writes/1e6:.2f}/day at $1.00/M)"
               + "\n" + reg_line
               + "\n\n" + bucket_text
-              + "\n\n" + account_analytics()
+              + "\n\n" + analytics_txt
               + "\n\n" + month_line)
     print(report)
     if n_reg == 0:
