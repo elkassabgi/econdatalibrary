@@ -83,8 +83,34 @@ Write-GuardLog ("{0}  starting {1}: {2} {3}" -f (Get-Date -Format s), $Name, $Ex
 $errLog = Join-Path $logsDir ("{0}_{1}.err.log" -f $Name, $stamp)
 $proc = Start-Process $Exe -ArgumentList $JobArgs -WorkingDirectory $Root -WindowStyle Hidden `
           -RedirectStandardOutput $log -RedirectStandardError $errLog -PassThru
+# CACHE THE HANDLE BEFORE WaitForExit, OR ExitCode COMES BACK $null AND NO JOB IS EVER "DONE".
+# Measured on this machine 2026-08-29, PowerShell 5.1.26100.9168, the exact shape used above:
+#     Start-Process ... -PassThru; $p.WaitForExit(); $p.ExitCode   -> [] , $null -eq it = True
+#     $null = $p.Handle; $p.WaitForExit(); $p.ExitCode             -> 0
+# `$null -eq 0` is False, so the `if ($rc -eq 0)` below took the "NO sentinel" branch on EVERY
+# clean completion. Consequence, measured: `derive_noaa` finished its campaign around 2026-08-03
+# and RELAUNCH_GUARD has resurrected it ever since — 975 launches, 43-61/day, each paging the
+# whole `series/noaa%3A` prefix (3,138,169 objects = 3,139 ListObjectsV2 requests) to discover
+# `to derive: 0`. That is ~150,700 LIST/day. STATE THE DENOMINATOR (R502/R505): 99.5% of the
+# account's LIST operations, but 59.3% of ALL Class A (264,454 on 2026-08-28) — an earlier
+# "95-96%" figure named no denominator at all. Relaunch rate measured 43-61/day, not a flat 48.
+# ~$20/month for zero work, and R2 had begun answering ServiceUnavailable ("Reduce your
+# concurrent request rate"). `derive_statcan` is ~9 hours from finishing and would have joined
+# it. run_guarded_job.ps1's own header predicted this failure in words — the mechanism to
+# prevent it was written, and then disabled by a null.
+#
+# .NET releases the process handle once the object is disposed unless it has been dereferenced,
+# and PowerShell's Start-Process does not dereference it for you; touching .Handle caches it so
+# ExitCode survives the exit. This is the whole fix.
+$null = $proc.Handle
 $proc.WaitForExit()
 $rc = $proc.ExitCode
+if ($null -eq $rc) {
+  # Never let an unreadable exit code masquerade as failure again: say so loudly rather than
+  # silently taking the relaunch branch (R503 — a guard's failure path IS the guard).
+  Write-GuardLog ("{0}  {1} EXIT CODE UNREADABLE - treating as failure, NO sentinel; if this " +
+                  "recurs the .Handle cache above has regressed" -f (Get-Date -Format s), $Name)
+}
 
 if ($rc -eq 0) {
   Set-Content -Path $done -Value ("completed {0} (exit 0), log {1}" -f $stamp, $log) -Encoding utf8
