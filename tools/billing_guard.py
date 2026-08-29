@@ -342,7 +342,18 @@ def main() -> int:
     d1_gb = d1_storage_gb()
     d1_over = max(0.0, d1_gb - 5.0) * 0.75 if d1_gb >= 0 else 0.0
     d1_gb_txt = f"{d1_gb:.1f} GB" if d1_gb >= 0 else "unmeasured"
-    projected = 5.0 + r2_gb * 0.015 + (reads / 1e9) * 30 + (writes / 1e6) * 30 + d1_over
+    # INCLUDED MONTHLY ALLOWANCES — the plan's own terms, which this model omitted until
+    # 2026-08-29 (R502). Workers Paid includes 25e9 D1 rows read and 50e6 rows written per
+    # month before ANY per-row charge (developers.cloudflare.com/workers/platform/pricing,
+    # read 2026-08-29; allowances reset on the SUBSCRIPTION RENEWAL date, not the 1st).
+    # Billing from row zero overstated every D1 figure this tool has ever printed — and
+    # those figures went to the owner while he was worried about the bill.
+    D1_READS_INCLUDED = 25_000_000_000
+    D1_WRITES_INCLUDED = 50_000_000
+    mo_reads, mo_writes = reads * 30.0, writes * 30.0
+    d1_read_cost = max(0.0, mo_reads - D1_READS_INCLUDED) / 1e6 * 0.001
+    d1_write_cost = max(0.0, mo_writes - D1_WRITES_INCLUDED) / 1e6 * 1.00
+    projected = 5.0 + r2_gb * 0.015 + d1_read_cost + d1_write_cost + d1_over
     # A total that silently omits a database is not a projection, it is a floor, and it
     # must not be readable as the bill. On 2026-08-23 econ-catalog failed to measure and
     # the run printed "PROJECTED MONTH ~= $28/mo"; econ-catalog alone carries 109.6M
@@ -354,9 +365,11 @@ def main() -> int:
     caveat = "" if not failed else (
         f" -- EXCLUDES {', '.join(failed)}, which did not measure; the real bill is HIGHER")
     month_line = (f"{label} ~= ${projected:,.0f}/mo "
-                  f"(base $5 + R2 ${r2_gb * 0.015:,.0f} + D1 reads ${reads / 1e9 * 30:,.0f} "
-                  f"+ D1 writes ${writes / 1e6 * 30:,.0f} + D1 storage ${d1_over:,.0f} "
-                  f"[{d1_gb_txt}]){caveat}")
+                  f"(base $5 + R2 ${r2_gb * 0.015:,.0f} + D1 reads ${d1_read_cost:,.0f} "
+                  f"[{mo_reads/D1_READS_INCLUDED*100:.0f}% of the 25B included] "
+                  f"+ D1 writes ${d1_write_cost:,.0f} "
+                  f"[{mo_writes/D1_WRITES_INCLUDED*100:.0f}% of the 50M included] "
+                  f"+ D1 storage ${d1_over:,.0f} [{d1_gb_txt}]){caveat}")
     n_reg = hf_registrations_24h()
     reg_line = ("hf registrations (24h): " + (f"{n_reg:,}" if n_reg >= 0 else "UNMEASURED"))
     report = ("\n".join(lines)
