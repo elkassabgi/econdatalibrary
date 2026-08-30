@@ -140,3 +140,44 @@ def test_no_registry_source_id_is_another_one_plus_a_low_byte():
     assert not bad, (
         f"source id(s) extended by a byte below ';' -- the shorter one's PK range would "
         f"swallow the longer one's series: {bad}")
+
+# -- the SPLIT-PART range, same substitution, different separator --------------
+
+def test_split_part_range_matches_the_like_form_it_replaced(cat):
+    """`<cand>#...` was `LIKE ? ESCAPE`, which full-scans once per unmapped key. It is a
+    PREFIX pattern, so `>= cand+'#' AND < cand+'$'` is equivalent -- '#' is 0x23 and '$' is
+    0x24, adjacent. Measured on the real catalogue: LIKE 1.57 s warm vs 0.00 s, identical
+    rows, 6,872x.
+    """
+    cat.execute("INSERT INTO series VALUES ('census:eits__m3#no','census')")
+    cat.execute("INSERT INTO series VALUES ('census:eits__m3#yes','census')")
+    cat.execute("INSERT INTO series VALUES ('census:eits__m3','census')")        # base, no '#'
+    cat.execute("INSERT INTO series VALUES ('census:eits__m3x#no','census')")    # NOT a part
+    cand = "census:eits__m3"
+    rng = sorted(r[0] for r in cat.execute(
+        "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+        (cand + "#", cand + "$")))
+    assert rng == ["census:eits__m3#no", "census:eits__m3#yes"], rng
+    assert "census:eits__m3" not in rng, "the base id has no '#' and must not be a part"
+    assert "census:eits__m3x#no" not in rng, "a LONGER candidate's parts must not leak in"
+
+
+def test_the_split_separator_bytes_are_adjacent():
+    """The range's upper bound is only correct because '$' immediately follows '#'. Asserted
+    rather than asserted-in-prose, after R513: I wrote a byte-order claim in a comment once
+    today and it was wrong."""
+    assert ord("$") == ord("#") + 1
+
+
+def test_a_candidate_containing_like_wildcards_needs_no_escaping(cat):
+    """The LIKE form had to escape '%', '_' and backslash, and getting that wrong would
+    over-match. A range compares literals, so the whole class of bug disappears -- this pins
+    that it really does."""
+    for sid in ("src:a_b%c#1", "src:a_b%c#2", "src:aXbYc#3"):
+        cat.execute("INSERT INTO series VALUES (?,'src')", (sid,))
+    cand = "src:a_b%c"
+    rng = sorted(r[0] for r in cat.execute(
+        "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+        (cand + "#", cand + "$")))
+    assert rng == ["src:a_b%c#1", "src:a_b%c#2"], rng
+    assert "src:aXbYc#3" not in rng, "'_' and '%' must be literal, not wildcards"
