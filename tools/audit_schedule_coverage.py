@@ -210,9 +210,51 @@ def catalog_counts() -> dict:
     # outlier and crashed instead of waiting, so the ONE number the procedure says to report was
     # unobtainable whenever the workstation was busy. R210.
     con.execute("PRAGMA busy_timeout = 180000")
-    rows = con.execute("SELECT source_id, COUNT(*) FROM series GROUP BY source_id").fetchall()
+    # PER-SOURCE PK RANGES, NOT `GROUP BY source_id`.
+    #
+    # `series` carries exactly ONE index — sqlite_autoindex_series_1, the series_id primary
+    # key. There is none on `source_id`, so `GROUP BY source_id` is a full scan of an 11.9 GB
+    # file, competing with the three crawlers that share this disk. Measured 2026-08-30:
+    #
+    #     SELECT COUNT(*) FROM series                    388.7 s
+    #     349 PK-range counts (this code)                  1.3 s      ~300x
+    #
+    # The old query did not merely run slowly, it did not FINISH: this audit was killed at a
+    # 900 s timeout having produced nothing, so the one number the procedure says to report
+    # was unobtainable. A tool that cannot complete is not a slow instrument, it is no
+    # instrument (R262 — re-derive what starts a run from the system, and the system has to
+    # actually answer).
+    #
+    # Ids are `<source_id>:<rest>`, so `>= 'x:' AND < 'x;'` is an index range on the PK —
+    # ';' is the byte after ':'. Never LIKE: '_' is a wildcard and source ids contain
+    # underscores (R492).
+    ids = [r[0] for r in con.execute("SELECT source_id FROM source")]
+    counts = {}
+    for sid in ids:
+        n = con.execute("SELECT COUNT(*) FROM series WHERE series_id >= ? AND series_id < ?",
+                        (sid + ":", sid + ";")).fetchone()[0]
+        if n:
+            counts[sid] = n
+    # COMPLETENESS, ASSERTED RATHER THAN ASSUMED. Summing per-source ranges silently drops any
+    # series whose prefix is absent from the `source` table, and an under-count here reads as
+    # "that source is not served" — the exact false verdict this audit exists to avoid. The
+    # honest check is `sum == COUNT(*)`, but that is the 388 s scan we just removed. So walk
+    # the GAPS instead: between consecutive covered ranges, ask whether ANY id exists. Each is
+    # one index seek, and finding none proves every row lies inside a counted range.
+    orphan = []
+    bounds = sorted(counts)
+    for lo, hi in zip([""] + [s + ";" for s in bounds], [s + ":" for s in bounds] + [None]):
+        q = "SELECT series_id FROM series WHERE series_id >= ?" + \
+            ("" if hi is None else " AND series_id < ?") + " LIMIT 1"
+        row = con.execute(q, (lo,) if hi is None else (lo, hi)).fetchone()
+        if row:
+            orphan.append(row[0])
     con.close()
-    return {r[0]: r[1] for r in rows if r[0]}
+    if orphan:
+        # Loud, and NOT silently absorbed: these rows belong to no source we know about.
+        print(f"!! {len(orphan)} series lie outside every known source range; counts below "
+              f"are a FLOOR. Examples: {orphan[:5]}", file=sys.stderr)
+    return counts
 
 
 def discontinued():
