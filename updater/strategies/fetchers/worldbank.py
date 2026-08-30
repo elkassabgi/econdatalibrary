@@ -60,8 +60,17 @@ PREFIX = "WDI:"
 # MEASURED before it was written, not asserted (R504, R509):
 #   (a) the publisher's own /v2/country reference list (295 entries, fetched 2026-08-30):
 #       iso2Code XD -> id HIC "High income", XM -> LIC, XN -> LMC, XT -> UMC;
-#   (b) across all 1,486 grouped wdi parquets the store holds HIC/LIC/LMC/UMC
-#       (34,703 / 31,498 / 36,775 / 34,475 rows) and holds ZERO under XD/XM/XN/XT;
+#   (b) in the store update() ACTUALLY OPENS -- clean_full/worldbank_wdi/worldbank_wdi.parquet,
+#       8,973,662 rows, column `series_key` -- HIC/LIC/LMC/UMC carry 35,008 / 31,774 / 37,091 /
+#       34,742 rows and XD/XM/XN/XT carry ZERO. (My first version of this comment cited the
+#       GROUPED tier's counts, a different store with a `country` column that this function
+#       never reads: the right answer from the wrong instrument, caught in review.);
+#   (b2) and the defect is PRESENT, not prospective: clean_full/worldbank/worldbank.parquet
+#       holds 684 series and ZERO with a 2-char geo, so the 8 are absent from the store this
+#       fetcher merges into and survive only in the frozen data/clean/worldbank/ tier that
+#       nothing writes. `_migrate_legacy` returns early when the target exists, so the
+#       migration whose docstring exists to stop these "silently vanishing" has already
+#       failed to carry them. The alias INSERTS them rather than overwriting anything;
 #   (c) enumerating all 263 distinct geos across the 692 published legacy ids, exactly 8 use
 #       a 2-char code and they use exactly these 4 — so this map is the whole class, not a
 #       sample of it. The publisher derives 18 such codes; the other 14 name no legacy id.
