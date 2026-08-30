@@ -182,6 +182,17 @@ _conn_streak = 0
 _blocks_seen = 0
 
 
+# Exceptions raised AFTER the server answered. None of them is evidence of a block, and
+# routing them into the no-reply counter is what made the first version of this detector fire
+# on healthy runs. Verified against the requests hierarchy: ReadTimeout is a Timeout subclass
+# and must be caught BEFORE it (see http_get), the rest land in the generic handler.
+_REPLIED_ERRORS = (
+    requests.exceptions.TooManyRedirects,      # 302 loop -- the server is talking to us
+    requests.exceptions.ChunkedEncodingError,  # body started, then broke
+    requests.exceptions.ContentDecodingError,  # body arrived, gzip was wrong
+)
+
+
 def _throttle() -> None:
     """Space every request at least _MIN_GAP_S apart, process-wide."""
     global _last_request_at
@@ -192,9 +203,12 @@ def _throttle() -> None:
 
 
 def _note_reply() -> None:
-    """ANY reply -- including a 4xx or 5xx -- proves we are not blocked."""
-    global _conn_streak
+    """ANY reply -- including a 4xx, a 5xx, a redirect loop or a truncated body -- proves we
+    are not blocked. It also DECAYS the escalation: otherwise the nap ratchets to the 6-hour
+    cap and stays there for the rest of a multi-day process, so one rough hour costs a day."""
+    global _conn_streak, _blocks_seen
     _conn_streak = 0
+    _blocks_seen = 0
 
 
 def _note_no_reply() -> bool:
@@ -214,6 +228,9 @@ def _cool_off() -> None:
     Istat blocks for 1-2 days. Sleeping an hour and probing again costs one request per
     hour and lets the block expire; continuing at 11/min guarantees it never does."""
     global _blocks_seen, _conn_streak
+    # DECAY. Without it a single rough patch pins the nap at the 6-hour cap for the life of a
+    # process that runs 68-78 h, so one bad hour costs a day. A reply resets the escalation
+    # (see _note_reply); this only counts CONSECUTIVE blocks.
     _blocks_seen += 1
     nap = min(BLOCK_COOLDOWN_MAX_S, BLOCK_COOLDOWN_S * (2 ** (_blocks_seen - 1)))
     log(f"  RATE-LIMIT BLOCK SUSPECTED: {_conn_streak} consecutive connect failures with no "
@@ -268,7 +285,17 @@ def http_get(url: str, accept: str, timeout: int = TIMEOUT,
             # 5xx and anything else: retry with backoff, remember as http error
             log(f"  HTTP {r.status_code} attempt {attempt+1} ({el:.0f}s): ...{url[-72:]}")
             last = HttpResult(None, r.status_code, "http", el)
+        except requests.exceptions.ReadTimeout:
+            # THE SERVER REPLIED and then stalled mid-body. Counting this as "no reply" is
+            # what made the detector fire on healthy runs: replayed over a real 80%-success
+            # log (321 flows, 256 written, 18.2 h) the first version would have slept 85
+            # HOURS. A read timeout is a slow response, not a closed door.
+            el = time.time() - t
+            log(f"  READ TIMEOUT attempt {attempt+1} ({el:.0f}s): ...{url[-72:]}")
+            _note_reply()
+            last = HttpResult(None, None, "timeout", el)
         except requests.exceptions.Timeout:
+            # ConnectTimeout and friends: no reply at all.
             el = time.time() - t
             log(f"  TIMEOUT attempt {attempt+1} ({el:.0f}s): ...{url[-72:]}")
             last = HttpResult(None, None, "timeout", el)
@@ -286,6 +313,16 @@ def http_get(url: str, accept: str, timeout: int = TIMEOUT,
             log(f"  SSL FAIL, host {host} RETIRED for this run "
                 f"({type(e).__name__}): ...{url[-72:]}")
             return HttpResult(None, None, "conn", el)
+        except _REPLIED_ERRORS as e:
+            # EVERY ONE OF THESE HAPPENS AFTER THE SERVER ANSWERED, so none of them is
+            # evidence of a block. TooManyRedirects is the one that mattered: sdmx.istat.it
+            # self-redirects 302, which is a host TALKING to us, and the 0827 log carries
+            # 2,443 of them. The first version routed all of these into the no-reply counter
+            # and would have declared a rate-limit ban on a redirect loop.
+            el = time.time() - t
+            log(f"  REPLIED-BUT-FAILED attempt {attempt+1} ({type(e).__name__}): ...{url[-72:]}")
+            _note_reply()
+            last = HttpResult(None, None, "conn", el)
         except Exception as e:
             el = time.time() - t
             log(f"  ERR attempt {attempt+1} ({type(e).__name__}): ...{url[-72:]}")
@@ -795,6 +832,9 @@ def _preflight() -> bool:
     """
     import urllib.parse
     import requests
+    # Declared here, not at the assignment: `global` must precede the first USE, and the loop
+    # below reads HOSTS. Python rejects it otherwise, which is how this was caught.
+    global HOSTS
     alive = []
     for label, base in HOSTS:
         host = urllib.parse.urlparse(base).hostname
@@ -805,6 +845,11 @@ def _preflight() -> bool:
         # path with 302 -> its own root; following that is an infinite loop and retrying it
         # is pure waste. One un-followed request tells them apart.
         try:
+            # The ceiling applies to preflight too. The guard relaunches this process every
+            # ~5 minutes, so an unthrottled probe here is ~12 requests/hour that bypass the
+            # limiter entirely -- small, but it is the one loop that runs while everything
+            # else is stopped, and exempting the watchdog from the rule is how the rule ends.
+            _throttle()
             probe = requests.get(base + "dataflow/" + AGENCY, timeout=15,
                                  allow_redirects=False,
                                  headers={**UA, "Accept": STR_ACCEPT})
@@ -822,7 +867,18 @@ def _preflight() -> bool:
         print("  preflight: NO ISTAT HOST REACHABLE - upstream outage, exiting immediately "
               "(re-probe on the next guard tick; nothing to crawl, nothing lost)", flush=True)
         return False
-    print(f"  preflight: reachable host(s): {', '.join(alive)}", flush=True)
+    # CARRY THE VERDICT INTO HOSTS. Computing `alive` and then discarding it meant the
+    # crawler went on trying a host preflight had just PROVEN broken, on every slice, all
+    # run. Measured: 2,443 TooManyRedirects events against sdmx.istat.it in the 0827 log --
+    # each one a wasted request against a publisher whose documented ceiling is 5/min, and
+    # (before the reply/no-reply split) each one feeding the block detector.
+    #
+    # R62's rule is exactly this: a message that ANNOUNCES an action ("skipping") must have
+    # STATE behind it, or it is a log line pretending to be a fix. This is the state.
+    dropped = [lbl for lbl, _b in HOSTS if lbl not in alive]
+    HOSTS = [(lbl, b) for lbl, b in HOSTS if lbl in alive]
+    print(f"  preflight: reachable host(s): {', '.join(alive)}"
+          + (f"; DROPPED for this run: {', '.join(dropped)}" if dropped else ""), flush=True)
     return True
 
 
