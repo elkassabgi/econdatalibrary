@@ -24,7 +24,11 @@ Repos: econ `E:\research\econfindatalibrary` · hf `D:\research\hfdatalibrary` (
 
 1. Confirm this skill is loaded and `ECONLIB_COMPLETION_PLAN.md` is reachable.
 2. Re-read the plan's current-phase section (check `WORKLOG.md` for the active phase).
-3. Run `python <skill>/scripts/skill_check.py` — non-zero exit means STOP and fix what it names.
+3. Run `python <skill>/scripts/skill_check.py`. **Exit 1 = STOP** and fix what it names.
+   **Exit 2 = create the named file, then continue.** (These tiers are the script's contract;
+   the earlier "non-zero means STOP" wording contradicted the script's own documented exit 2 and
+   would have hard-stopped a session over a missing `WORKLOG.md`. Its discriminating cases are in
+   `tests/test_skill_check.py` — 8 cases, 5 mutations caught.)
 4. Check red workflows in any repo you will touch: `gh run list` (R421: a red daily job in a repo you push to is your outage).
 5. Append today's intent to `WORKLOG.md` (econ repo root): date / task / instrument / expected result.
 6. Start the parallel adversarial reviewer BEFORE building anything consequential. The project's own adversarial-review skill is in `D:\research\hfdatalibrary\.claude\skills\adversarial-review\`.

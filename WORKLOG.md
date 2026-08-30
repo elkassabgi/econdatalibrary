@@ -102,3 +102,44 @@ quotes other entries; whether a trailing-date cutoff silently exempts entries it
 writing 31 summary lines for entries I have not read is a fabrication risk; and — the one I raised
 myself — that `skill_check.py` treats a non-zero `ledger_check` exit as a **hard session stop**, so
 a correctly-failing guard would become a self-inflicted outage.
+
+### P0.7 — independent evaluation of the econ-completion skill, and three fixes · DONE
+
+Ahmed asked whether the skill will actually work. Evaluated by TESTING it, not reading it, and
+held it to its own rule C5 ("a guard ships with a discriminating pair; 'cannot measure' must
+refuse"). Three defects found in its own preflight, each proven by a run:
+
+| Defect | Evidence |
+|---|---|
+| **Fail-open on a redirected root.** `--hf D:/nonexistent_repo_xyz` printed `[OK] hf repo -> D:\research\hfdatalibrary`, **skipped the ledger check** (gated on `os.path.exists(args.hf)`), and **exited 0** | ran it |
+| **"Cannot measure" passed.** An exception running `ledger_check.py` was downgraded to a warning | code read + mutation |
+| **SKILL.md contradicted the script on exit codes** ("non-zero = STOP" vs documented exit 2 = continue); a missing `WORKLOG.md` returns 2 | ran it |
+
+Also: **no test existed for `skill_check.py` anywhere**, it is **not wired into any hook or CI**,
+and `PLAN_PATH` pointed at `D:\research\deepseek econ plan\`, which `git status` confirms is **not
+a git repository** — an unversioned hard dependency that would hard-stop every session if the
+folder were tidied.
+
+**Fixed and verified:**
+* paths now resolve from `--econ/--hf/--plan` throughout (the hard list no longer ignores them);
+* an unrunnable or failing `ledger_check` is a HARD failure, never a warning;
+* the plan is now versioned at `docs/ECONLIB_COMPLETION_PLAN.md` and the preflight prefers a repo
+  copy — verified: `[OK] plan -> E:\research\econfindatalibrary\docs\ECONLIB_COMPLETION_PLAN.md`;
+* SKILL.md now states the exit tiers that match the script;
+* **`tests/test_skill_check.py` — 8 discriminating cases, and a mutation run kills 5 of 5**
+  (except-branch warns; hard list ignores the redirected root; ledger_check dropped from the hard
+  list; plan check removed; soft warnings silently return 0).
+
+**A defect in my own fix, caught by the mutation run and worth recording:** my first version added
+a defensive `else` beside the subprocess call for "ledger_check absent". Mutation M3 SURVIVED,
+which showed the branch was unreachable — an absent `ledger_check.py` is already a HARD failure
+above, so my test was passing through the hard list, not the branch it claimed to cover. That is
+R488's "right answer for the wrong reason". Dead branch removed; the test's docstring now states
+exactly which path fires.
+
+**Still open (not fixed, deliberately):** the skill is not wired to a hook. Both repos already have
+`SessionStart` / `PreToolUse` / `PostToolUse` / `UserPromptSubmit` wiring and the existing guards
+ship with tests (`test_d1_cost_guard.py`, `test_reliability_system.py`). The skill's activation
+still depends on the model choosing to load it — which is the judgment it exists to constrain.
+That wiring is the single highest-value remaining change and is a behaviour change to every
+session, so it goes through review first.
