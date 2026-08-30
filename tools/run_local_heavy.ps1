@@ -322,8 +322,33 @@ Say ("running updater for " + $targets.Count + " source(s) ...")
 $graceMin = 10
 $hardDeadline = (Get-Date).AddMinutes([int]$env:AQUEDUCT_RUN_BUDGET_MIN + $graceMin)
 $hardStopped = $false
-$proc = Start-Process -FilePath $pythonExe -ArgumentList (@('-m','updater.run') + $srcArgs) `
-        -PassThru -NoNewWindow
+# CAPTURE THE UPDATER'S OUTPUT. -NoNewWindow with no redirection sends it to the parent's
+# console, and this script runs unattended from the guard, so the console is nowhere: every
+# line the updater printed was discarded.
+#
+# Measured 2026-08-30, and it is why an alarm could not be answered. The 06:00Z health gate
+# reported "ROUTE 'local' SILENT - 18 live source(s) run there and NOT ONE has succeeded
+# within 3d (newest success: 6.0d ago)". The corresponding local log is 1,776 bytes and holds
+# NOTHING between "running updater for 29 source(s)" at 00:44:19 and "HARD STOP" at 02:29:23
+# -- 105 minutes of work with no record of which sources were attempted, which finished, or
+# where the budget went. The one question the gate asked was unanswerable from our own logs.
+#
+# `-u` because Python block-buffers stdout the moment it is redirected, so a long job writes
+# nothing for hours and the log reads as a hang (R290 -- that has already cost one false
+# progress report). Separate stderr, and the same Start-Process redirection pattern
+# run_guarded_job.ps1 already uses, whose logs have always been live and readable: the child
+# writes the file with its own handle, so there is no pipeline to buffer and no re-encoding.
+$updaterLog = Join-Path $logDir ("local_heavy_updater_{0}.log" -f $stamp)
+$updaterErr = Join-Path $logDir ("local_heavy_updater_{0}.err.log" -f $stamp)
+Say ("updater output -> " + $updaterLog)
+$proc = Start-Process -FilePath $pythonExe -ArgumentList (@('-u','-m','updater.run') + $srcArgs) `
+        -PassThru -NoNewWindow `
+        -RedirectStandardOutput $updaterLog -RedirectStandardError $updaterErr
+# Cache the handle BEFORE any wait, or PS 5.1 leaves ExitCode $null on a clean exit and the
+# `if ($null -eq $rc) { $rc = 124 }` guard below silently relabels every SUCCESSFUL run as a
+# timeout. That is the same null-ExitCode defect that had RELAUNCH_GUARD resurrecting a
+# finished derive_noaa 975 times (e9587cb8f).
+$null = $proc.Handle
 while (-not $proc.HasExited) {
     if ((Get-Date) -gt $hardDeadline) {
         Say ("HARD STOP: the updater passed its " + $env:AQUEDUCT_RUN_BUDGET_MIN +
