@@ -176,3 +176,37 @@ skill is currently the only part of the reliability system whose activation depe
 choosing to load it — and both repos' SessionStart context currently points at a *different*
 skill (`econ-updater`). That changes the gate for every session in both repos, so it goes to
 Ahmed rather than being done unilaterally.
+
+### P0.9 — oecd "structural breaks": claim proven, proposed fix REDIRECTED, nothing shipped
+
+* **Instrument:** adversarial reviewer re-ran the SHIPPED path against the authoritative flow list
+  in `data/clean_full/oecd/_giant_state.json` (1,549 flows; `definitive_fail: 60`).
+* **Result — the claim got stronger:** **60/60** return HTTP 200 with a well-formed CSV,
+  `OBS_VALUE` present and **`TIME_PERIOD` absent**; zero refutations; 3/3 known-good controls parse
+  normally *with* `TIME_PERIOD`. DSD census: **18/18** structures declare no SDMX `TimeDimension`,
+  against 3/3 healthy controls that do. Alternative requests (`dimensionAtObservation=TIME_PERIOD`,
+  and the publisher default) do not produce one — **our request is not the defect**.
+* **REDIRECT, three ways, all mine:**
+  1. My "13 of 60 sampled" was not a sample. `_named(cap=20)` + `_clip_err(1400)` mean only **16**
+     ids reach the run note, 11 of them from two DSD families. The population was in a sidecar I
+     never opened.
+  2. **My replacement label would have been a new false claim.** 49 of 60 carry a time-like column
+     (45 varying `REF_PERIOD`; **2 carry `PUB_YEAR` as a key DIMENSION over 23 distinct years**);
+     only 11 have none. So "cross-sectional, outside the series model" is refuted by the publisher's
+     own metadata, and this is **not** the `gleif` shape. Correct wording, and all the evidence
+     licenses: *"the publisher's DSD declares no SDMX `TimeDimension`."*
+  3. **"Only a text change" was false.** The note is built in `_common.py::finalize()`, which
+     **raises**; ceasing to call `structural_unit()` lets `run_giant` stamp a catalogue vintage that
+     **short-circuits all 1,545 flows next tick** and sets `last_success_utc`. The health gate is
+     indifferent either way (oecd is `live:false`; both gate paths filter on `live`).
+* **The correct predicate already exists in the tree:** `abs.py` gates `structural_unit()` on a flow
+  that previously had rows. Measured here: **0 of 60** failing flows have a parquet vs **40 of 40**
+  controls. Without it, "no `TIME_PERIOD` ⇒ not a break" would turn a genuine future OECD format
+  change into a silent no-op across 1,545 flows. `jobs/ingest_oecd.py` has the identical defect and
+  books all 59 as `status="full", n_obs=0` — the two-parser rule.
+* **Also established:** oecd has run twice ever and has **no `source_state` row**; it is not stale
+  from a landed fix but **starved** — `run_local_heavy.ps1` aborted **398 of 478** launches with
+  "1 updater-daily run(s) still in flight". Cadence is monthly and it is not due.
+* **Status: NOT SHIPPED.** Ledger **R523**. The work is now well-specified but is a behaviour
+  change (vintage short-circuit + `last_success_utc`), needs a deliberate `ok`-vs-`partial`
+  decision, and cannot be verified end to end while the source is starved.
