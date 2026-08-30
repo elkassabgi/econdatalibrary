@@ -32,7 +32,55 @@ export const GEO_PROJECTION_SOURCES: Record<string, string> = {
 
 export interface GeoAlias { canonical: string; geo: string; }
 
+/** World Bank 2-char economy codes -> the 3-char form the grouped store actually holds.
+ *
+ *  WHO THIS SERVES, stated precisely because my first version of this comment claimed a
+ *  beneficiary it does not have. The eight CATALOGUED `worldbank:<IND>:{XD,XM,XN,XT}` ids
+ *  are NOT helped by this map and never needed it: `series.ts` calls `geoAlias()` only when
+ *  the D1 lookup MISSES, and those eight are in the catalogue, so the alias branch is never
+ *  entered for them. Measured on the running worker — `worldbank:NY.GDP.MKTP.CD:XD`
+ *  returns 200 with rows to 2024-12-31 today, against a `:ZZZ` control that 404s. What this
+ *  map actually reaches is (a) UNCATALOGUED 3-part `worldbank:<IND>:<2-char>` ids, which do
+ *  miss and do fall through to the alias, and (b) `worldbank_wdi:<IND>?geo=<2-char>`.
+ *
+ *  MEASURED, not assumed, because a mapping asserted from memory is how R504 happened:
+ *  (a) the publisher's /v2/country list (295 entries, fetched 2026-08-30) gives
+ *      XD->HIC "High income", XM->LIC "Low income", XN->LMC "Lower middle income",
+ *      XT->UMC "Upper middle income";
+ *  (b) across ALL 1,486 grouped parquets the store holds HIC/LIC/LMC/UMC (34,703 / 31,498 /
+ *      36,775 / 34,475 rows) and holds ZERO rows under XD/XM/XN/XT — so the direction of the
+ *      map is confirmed by our data, not only by the publisher's vocabulary.
+ *
+ *  NOT the fix for AR-019/R500. That defect lives in the FETCHER: worldbank.py reports these
+ *  eight as `missing` every run and cannot refresh them, so they freeze at the next World
+ *  Bank release. Mapping the geo back to 2-char at worldbank.py's key filter is the repair
+ *  that makes `missing` go to zero; a worker-side alias leaves it at eight forever.
+ *
+ *  Adding an entry requires BOTH measurements above, and the value must itself satisfy
+ *  GEO_RE — see canonicalGeo. The publisher derives 18 such codes; the four here are the
+ *  four our catalogue actually uses, verified by enumerating all 263 legacy geos. */
+export const GEO_CODE_ALIASES: Record<string, string> = {
+  XD: "HIC",
+  XM: "LIC",
+  XN: "LMC",
+  XT: "UMC",
+};
+
 const GEO_RE = /^[A-Z0-9]{2,3}$/;
+
+/** Uppercase, validate, translate, then VALIDATE THE RESULT. Applied on both entry points
+ *  (the 3-part alias and `?geo=`), because a user who hits a 404 and retries with `?geo=XD`
+ *  must not get a second wrong answer.
+ *
+ *  The second validation is not redundant: the first one checks what the USER typed, and a
+ *  bad map VALUE would sail past it into the row filter unchecked. Nothing else validates
+ *  the map's right-hand side. */
+function canonicalGeo(raw: string): string | null {
+  const geo = raw.trim().toUpperCase();
+  if (!GEO_RE.test(geo)) return null;
+  const mapped = GEO_CODE_ALIASES[geo] || geo;
+  return GEO_RE.test(mapped) ? mapped : null;
+}
 
 /** worldbank:DT.DOD.DECT.CD:LMY -> { canonical: "worldbank_wdi:DT.DOD.DECT.CD",
  *  geo: "LMY" }. Null for anything that is not a 3-part id of a projection
@@ -43,15 +91,14 @@ export function geoAlias(seriesId: string): GeoAlias | null {
   const [src, code, geoRaw] = parts;
   const target = GEO_PROJECTION_SOURCES[src];
   if (!target || !code) return null;
-  const geo = geoRaw.toUpperCase();
-  if (!GEO_RE.test(geo)) return null;
+  const geo = canonicalGeo(geoRaw);
+  if (!geo) return null;
   return { canonical: `${target}:${code}`, geo };
 }
 
 /** Validate a `?geo=` value the same way the alias path does. */
 export function normalizeGeoParam(raw: string): string | null {
-  const geo = raw.trim().toUpperCase();
-  return GEO_RE.test(geo) ? geo : null;
+  return canonicalGeo(raw);
 }
 
 /** Keep the header plus rows whose id column's LAST ':'-segment equals geo

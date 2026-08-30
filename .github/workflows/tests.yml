@@ -51,6 +51,14 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
+      # NODE IS A TEST REQUIREMENT, NOT A CONVENIENCE. test_worker_geo_projection.py runs the
+      # worker's pure TypeScript under `node --experimental-strip-types` (>= 22.6) and SKIPS
+      # itself when node is absent or older — so without this step the only behavioural test
+      # of the geo projection quietly does not run and the job still reports green. A test
+      # that can be skipped into non-existence is not a pin (reviewer finding, 2026-08-30).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       # The suite imports pyarrow, requests, botocore and zstandard — the updater's own set,
       # verified by grepping every top-level import under tests/. Reusing the updater's
       # requirements file rather than a second hand-maintained list keeps one source of truth
