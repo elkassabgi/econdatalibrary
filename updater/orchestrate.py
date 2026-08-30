@@ -1066,8 +1066,19 @@ def _catalog_ids_for(source_id: str, changed_keys):
         # than guessed.
         if unmapped:
             norm = {}
+            # PK RANGE, NOT `source_id=?`. `series` carries ONE index -- the series_id primary
+            # key -- so `WHERE source_id=?` is a full scan of an 11.9 GB file. Measured
+            # 2026-08-30 on cso: 7.13 s warm (389 s cold on the same table) against 0.00 s for
+            # the range, same answer both ways (7,896 == 7,896), a 5,228x difference.
+            #
+            # This runs on EVERY path that has unmapped keys, inside the 60-minute csv fence
+            # that six sources are currently blowing. It is one contributor, not the whole
+            # cause, and it is free to remove. Equivalence is not assumed: the audit's gap walk
+            # proved every row in `series` lies inside some `<source>:` range, 0 orphans.
+            # Never LIKE -- '_' is a wildcard and source ids contain underscores (R492).
             for (cid,) in con.execute(
-                    "SELECT series_id FROM series WHERE source_id=?", (source_id,)):
+                    "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                    (source_id + ":", source_id + ";")):
                 n = _norm_id(cid)
                 norm[n] = None if n in norm else cid      # None marks an ambiguity
             still = []
@@ -1101,11 +1112,16 @@ def _catalog_ids_for(source_id: str, changed_keys):
         # and still guarantees coherence for small sources.
         if config.BACKEND == "r2":
             return exact, unmapped
-        n_src = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?",
-                            (source_id,)).fetchone()[0]
+        # Same PK-range substitution, same reason: two more full scans of an 11.9 GB file
+        # on the derive-all path.
+        _lo, _hi = source_id + ":", source_id + ";"
+        n_src = con.execute(
+            "SELECT COUNT(*) FROM series WHERE series_id >= ? AND series_id < ?",
+            (_lo, _hi)).fetchone()[0]
         if 0 < n_src <= _DERIVE_ALL_CAP:
             all_ids = [r[0] for r in con.execute(
-                "SELECT series_id FROM series WHERE source_id=?", (source_id,))]
+                "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                (_lo, _hi))]
             return all_ids, []
         return exact, unmapped
     finally:
