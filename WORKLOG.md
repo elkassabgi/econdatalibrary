@@ -210,3 +210,42 @@ Ahmed rather than being done unilaterally.
 * **Status: NOT SHIPPED.** Ledger **R523**. The work is now well-specified but is a behaviour
   change (vintage short-circuit + `last_success_utc`), needs a deliberate `ok`-vs-`partial`
   decision, and cannot be verified end to end while the source is starved.
+
+### P0.2 — `ledger_check --digest` rebuilt to the reviewed design · DONE (Phase 0 exit gate)
+
+Built to the design R521 validated, not the one the plan prescribed.
+
+**Scope, measured from the document's own `## Entries` anchor rather than a line guess:**
+
+| | before | after |
+|---|---|---|
+| entries the guard can see | **112** (`^## (R\d+) — `) | **468** (297 R-form + 171 M-form) |
+| reaching the digest | not measured | **281** |
+| not reaching it | 58 "known backlog" | **187, every one enumerated by name** |
+| exemption mechanism | `RULE_FROM = 475`, open-ended | an allowlist that can only **shrink** |
+| id collisions | unknown | **27 known**, a 28th fails the check |
+
+**Backfilled the 32 post-rule entries** (R435–R466), each digest line composed from that
+entry's **own `RULE`/`RULES` sentence** — wording and numbers preserved, 794 body lines read,
+nothing paraphrased from a heading. Digest ids 339 → 371. **Post-rule targets now 0.**
+
+**Shipped with its enforcement**, which is what C5 demands and what this guard never had:
+`test_ledger_check_digest.py` — **14 cases, and `mutate_digest_guard.py` kills 7 of 7**
+(narrow regex · newline-crossing whitespace · missing backlog passing instead of refusing ·
+dropped rot check · ignored archive anchor · id-only keying · silent new collision).
+
+**Three defects in my own work, each caught by a mutation SURVIVING:**
+1. My guard's `\s*` **crossed newlines**, so a bare `## R221` heading absorbed the blank line
+   and stole the next line as its title — giving the guard and the generator different keys for
+   the same 14 entries, which surfaced as 14 ids failing as *both* unexcused *and* stale.
+   Fixed to `[^\S\n]`, and the generator now **imports the guard's regex and key function** so
+   they cannot drift again.
+2. Three of my tests passed **for the wrong reason** — they failed on a different check than the
+   one under test, so the mutations they were meant to kill survived. Rewritten so only the code
+   under test can decide the outcome (R488, third time today).
+3. The archive boundary was a heuristic ("first entry past line 2000") that put the start ~1,500
+   lines late and reclassified 128 archive entries as digest content. Anchored on `## Entries`,
+   and the tool now **refuses rather than guesses** if that marker is absent.
+
+**Deadlock avoided as planned:** the regex change and the backfill landed together, so the
+preflight stays green. Verified: `skill_check.py` → all 8 checks OK, `RESULT: all checks passed`.
