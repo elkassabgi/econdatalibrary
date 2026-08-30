@@ -101,6 +101,55 @@ def _cursor_path():
     return os.path.join(_out_dir(), "_collupd.json")
 
 
+def fold_unlisted(search_vintages_map, listing, scope):
+    """Which SCOPED matrices Search knows about that the collection listing does not.
+
+    A real function rather than an expression inline in update(), because the test for it
+    used to retype the expression in its own body and therefore agreed with itself by
+    construction -- deleting the fold from production left the suite green (R511 rule 4).
+
+    SCOPE MATTERS. Search carries 5,764 matrices we do not catalogue and ~180 of those are
+    unlisted too. Folding them wholesale would seed the HEAD of the queue with unheld
+    strangers (unheld sorts first) and pulling them would mint store objects for series
+    nobody published.
+    """
+    return {m for m in search_vintages_map if m not in listing and m in scope}
+
+
+UNLISTED_RESERVED_FRAC = 0.25
+
+
+def take_batch(ordered, cap, unlisted=frozenset()):
+    """The bounded slice a run actually pulls, with a RESERVED share for the unlisted set.
+
+    WHY A RESERVATION AND NOT JUST A RANK (R511, second attempt). Giving the unlisted set its
+    own priority class moved it from queue position 12,318 to 5,191 -- and `cap` is 60, so
+    the number of them a run reached went from zero to zero. Class 0 is "not held", and the
+    publisher lists 12,985 matrices of which 5,191 are not in our store, so class 0 alone is
+    86 runs deep. Measured by the reviewer against live PxStat and the production sidecars:
+    the healthy run and the fully-degraded run pulled an IDENTICAL first 60.
+
+    Rank is a statement about ORDER. Reachability is a statement about the CUTOFF. A set that
+    is 5,191 deep in a 60-wide window is not scheduled, whatever its class says, and the
+    honest test is `index < cap`, never `is in the list`.
+
+    So a fixed fraction of every batch is held for matrices that could not be selected AT ALL
+    before R510. They are a finite backlog (495 today), not a standing claim: once they carry
+    a cursor they stop differing from it and drop out of `changed` naturally, and the
+    reservation costs nothing on a run where none are pending.
+    """
+    if not unlisted or cap <= 0:
+        return ordered[:cap]
+    quota = max(1, int(cap * UNLISTED_RESERVED_FRAC))
+    picked, rest = [], []
+    for m in ordered:
+        if m in unlisted and len(picked) < quota:
+            picked.append(m)
+        else:
+            rest.append(m)
+    return picked + rest[:cap - len(picked)]
+
+
 def order_changed(changed, cur_upd, held, unlisted=frozenset()):
     """Run order for a bounded cso batch. Module-level and pure so the scheduling rule can be
     asserted directly.
@@ -397,11 +446,31 @@ def update(unit, since) -> Result:
     # naming them there now reaches them, instead of my inventing a second catalogue here.
     _only_raw = os.environ.get("CSO_ONLY_MATRICES", "").strip()
     want = {x.strip() for x in _only_raw.split(",") if x.strip()} if _only_raw else set()
+    # FAIL CLOSED ON A DEGENERATE VALUE. `CSO_ONLY_MATRICES=","` parses to an empty set, and
+    # treating that as "unset" turns an operator's malformed restriction into a full,
+    # unrestricted 60-table batch -- the opposite of what they asked for, silently.
+    _only_degenerate = bool(_only_raw) and not want
+    if _only_degenerate:
+        print("[cso] CSO_ONLY_MATRICES was set but names no matrix (%r) - refusing to run "
+              "unrestricted; fix the value or unset it" % _only_raw, flush=True)
+        tally.empty_unit()
+        return finalize(tally, _total_rows(out_dir), None, source=SOURCE, series_cursors={})
     scope = held | want
     unlisted = set()
     sv = search_vintages()
+    # COVERAGE FLOOR. The whole fix rests on Search indexing everything -- measured 13,660
+    # matrices against a 12,985-entry listing. A short response silently shrinks the fold
+    # (a 10% response drops it from 468 to 44) and prints the identical success line, which
+    # is the "measured but not asserted" shape this repo keeps paying for. Compare against
+    # the listing we already have in hand rather than a hardcoded number, so the floor moves
+    # with the publisher.
+    if sv and len(sv) < len(cur_upd):
+        print(f"[cso] {SEARCH_METHOD} returned {len(sv):,} matrices, FEWER than the "
+              f"{len(cur_upd):,} the collection listing already carries - treating as a "
+              f"short response and NOT folding; the gap stays open this run", flush=True)
+        sv = {}
     if sv:
-        unlisted = {m for m in sv if m not in cur_upd and m in scope}
+        unlisted = fold_unlisted(sv, cur_upd, scope)
         if unlisted:
             cur_upd = {**cur_upd, **{m: sv[m] for m in unlisted}}
             print(f"[cso] {len(unlisted):,} catalogued matrices are absent from "
@@ -414,7 +483,15 @@ def update(unit, since) -> Result:
               f"not already lost before 2026-08-30, but this run cannot repair the gap.",
               flush=True)
 
-    changed = [m for m, u in cur_upd.items() if stored.get(m) != u]
+    # NORMALISE THE VINTAGE STRINGS BEFORE COMPARING. ReadCollection says
+    # '2020-11-10T11:00:00Z' and Search says '2020-11-10T11:00:00' -- the same instant,
+    # differing only by a trailing 'Z', and 0 of 12,985 matrices agree byte-for-byte across
+    # the two endpoints. Comparing raw would make every matrix that moves between the two
+    # vocabularies look changed on every run, for ever. No churn today (all 732 stored
+    # cursors end in 'Z' and none of the folded matrices has one yet), which is exactly when
+    # to fix it.
+    changed = [m for m, u in cur_upd.items()
+               if (stored.get(m) or "").rstrip("Z") != (u or "").rstrip("Z")]
     # UNHELD MATRICES FIRST, then newest revisions.
     #
     # Newest-first alone is right only when the store is level with the cursor. It was not:
@@ -458,7 +535,7 @@ def update(unit, since) -> Result:
         return finalize(tally, _total_rows(out_dir), None, source=SOURCE,
                         series_cursors={})
 
-    batch = changed[:MAX_TABLES]
+    batch = take_batch(changed, MAX_TABLES, unlisted)
     m2s = _matrix_subject_map()
     refreshed_map = False   # the subject-catalog rebuild below is allowed ONCE per run
     ing = _ingester()
