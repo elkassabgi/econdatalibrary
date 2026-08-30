@@ -120,6 +120,11 @@ assert(normalizeGeoParam(" usa ") === "USA" && normalizeGeoParam("!") === null, 
 // Both entry points, because a user who gets the 404 will retry with ?geo=.
 const xd = geoAlias("worldbank:SP.POP.TOTL:XD");
 assert(xd && xd.geo === "HIC", "XD -> HIC on the alias path");
+// The caller's own code must survive to the error messages: refusing a request for XD
+// with "no rows for HIC" names a code the user never typed.
+assert(xd && xd.requested === "XD", "alias must carry the REQUESTED code");
+const usa = geoAlias("worldbank:SP.POP.TOTL:usa");
+assert(usa && usa.geo === "USA" && usa.requested === "USA", "unmapped: requested == geo");
 assert(normalizeGeoParam("xm") === "LIC", "XM -> LIC on the ?geo= path");
 assert(normalizeGeoParam("XN") === "LMC" && normalizeGeoParam("XT") === "UMC", "XN/XT");
 // A code that is NOT in the alias map must pass through untouched, or the map becomes a

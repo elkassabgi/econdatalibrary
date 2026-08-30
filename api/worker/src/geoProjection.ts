@@ -30,7 +30,12 @@ export const GEO_PROJECTION_SOURCES: Record<string, string> = {
   worldbank_wdi: "worldbank_wdi",
 };
 
-export interface GeoAlias { canonical: string; geo: string; }
+/** `geo` is the code the STORE holds; `requested` is what the caller actually typed, before
+ *  GEO_CODE_ALIASES translated it. Both are carried because an error message that quotes only
+ *  the resolved code tells a user who asked for XD that "HIC" was not found — naming a code
+ *  they have never seen, about a request they did not make. Measured by the 2026-08-30 review:
+ *  1,984 indicator/code combinations reach a 404 or conflict message on this path. */
+export interface GeoAlias { canonical: string; geo: string; requested: string; }
 
 /** World Bank 2-char economy codes -> the 3-char form the grouped store actually holds.
  *
@@ -93,7 +98,7 @@ export function geoAlias(seriesId: string): GeoAlias | null {
   if (!target || !code) return null;
   const geo = canonicalGeo(geoRaw);
   if (!geo) return null;
-  return { canonical: `${target}:${code}`, geo };
+  return { canonical: `${target}:${code}`, geo, requested: geoRaw.trim().toUpperCase() };
 }
 
 /** Validate a `?geo=` value the same way the alias path does. */

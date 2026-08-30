@@ -153,6 +153,10 @@ async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Pr
 export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Promise<Response> {
   const requestedId = seriesId;
   let geoFilter: string | null = null;
+  // What the CALLER typed, kept beside the resolved code so every error message quotes
+  // the user's own words. Without it a request for XD is refused with "no rows for
+  // 'HIC'" -- a code they never used, about a request they never made.
+  let geoRequested: string | null = null;
 
   // 1) catalog membership (404 if unknown) — with per-geo projection fallback
   //    (geoProjection.ts): an uncatalogued 3-part alias like
@@ -165,7 +169,10 @@ export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Pro
     if (alias && !isGated(alias.canonical)) {
       const canon = await dbForSeries(env, alias.canonical)
         .prepare(SELECT_SERIES).bind(alias.canonical).first<SeriesRow>();
-      if (canon) { series = canon; seriesId = alias.canonical; geoFilter = alias.geo; }
+      if (canon) {
+        series = canon; seriesId = alias.canonical;
+        geoFilter = alias.geo; geoRequested = alias.requested;
+      }
     }
     if (!series) return notFound(requestedId);
   }
@@ -194,7 +201,8 @@ export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Pro
       // Alias id AND ?geo= together must agree — never silently prefer one.
       if (normalizeGeoParam(geoParam) !== geoFilter) {
         return badRequest(
-          `conflicting geo: the id names '${geoFilter}' but ?geo= says '${geoParam}'`);
+          `conflicting geo: the id names '${geoRequested ?? geoFilter}' but ?geo= says `
+          + `'${geoParam}'`);
       }
     } else if (GEO_PROJECTION_SOURCES[src0] === src0) {
       const g = normalizeGeoParam(geoParam);
@@ -203,6 +211,7 @@ export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Pro
           "geo must be a 2-3 character World Bank economy code, e.g. USA, LMY, WLD");
       }
       geoFilter = g;
+      geoRequested = geoParam.trim().toUpperCase();
     } else {
       return unsupportedFilter(
         "filter 'geo=' is not honored yet: the derived per-series CSV has no " +
@@ -254,7 +263,10 @@ export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Pro
     if (r.rows === 0) {
       return json({
         error: "geo_not_found",
-        detail: `no rows for geo '${geoFilter}' in ${seriesId} — this grouped ` +
+        detail: `no rows for geo '${geoRequested ?? geoFilter}'`
+          + (geoRequested && geoRequested !== geoFilter
+              ? ` (the store spells it '${geoFilter}')` : "")
+          + ` in ${seriesId} — this grouped ` +
           `series holds ${r.geos.length} economies (e.g. ` +
           `${r.geos.slice(0, 8).join(", ")}). Request the full set at ` +
           `/v1/series/${encodeURIComponent(seriesId)}.csv`,
