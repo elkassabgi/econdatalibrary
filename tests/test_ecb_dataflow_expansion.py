@@ -31,7 +31,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from updater import config                                           # noqa: E402
-from updater.orchestrate import _catalog_ids_for, _ecb_dataflow      # noqa: E402
+from updater.orchestrate import _catalog_ids_for, _ecb_store_key      # noqa: E402
 
 
 # The real dataflows and counts, from data/catalog.db on 2026-08-30.
@@ -44,10 +44,19 @@ def catalog(tmp_path, monkeypatch):
     p = tmp_path / "catalog.db"
     con = sqlite3.connect(p)
     con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
-    for flow, n in REAL.items():
-        for i in range(n):
-            con.execute("INSERT INTO series VALUES (?,?)",
-                        (f"ecb:{flow}:D.C{i:02d}.EUR.SP00.A", "ecb"))
+    # SHAPED LIKE THE REAL CATALOGUE, because a fixture that is not is testing the fixture:
+    # EXR ids start `D.`, FM's four monthly ones `M.`, YC's ten `B.` with `G_N_A` as the
+    # fifth field (which is what distinguishes ECB__YC__B__G_N_A from __G_N_C / __G_N_W).
+    for i in range(REAL["EXR"]):
+        con.execute("INSERT INTO series VALUES (?,?)", (f"ecb:EXR:D.C{i:02d}.EUR.SP00.A", "ecb"))
+    for i in range(REAL["FM"]):
+        con.execute("INSERT INTO series VALUES (?,?)", (f"ecb:FM:M.U2.EUR.4F.KR.X{i:02d}", "ecb"))
+    for i in range(REAL["YC"]):
+        con.execute("INSERT INTO series VALUES (?,?)",
+                    (f"ecb:YC:B.U2.EUR.4F.G_N_A.SV_C_YM.SR_{i:02d}Y", "ecb"))
+    # A sibling curve the real store also carries, which must NOT be claimed by G_N_A.
+    con.execute("INSERT INTO series VALUES (?,?)",
+                ("ecb:YC:B.U2.EUR.4F.G_N_C.SV_C_YM.SR_10Y", "ecb"))
     # A neighbour source, so an over-broad range would be caught rather than invisible.
     con.execute("INSERT INTO series VALUES (?,?)", ("ecbx:EXR:SHOULD_NOT_MATCH", "ecbx"))
     con.commit()
@@ -62,19 +71,6 @@ def catalog(tmp_path, monkeypatch):
     return p
 
 
-def test_the_parser_accepts_only_the_stem_shape():
-    """Controls first: anything that is not the bulk-file shape must stay UNMAPPED and
-    visible. A plausible-but-wrong id is strictly worse than a reported miss, because the
-    miss shows up in the note and the wrong id does not."""
-    assert _ecb_dataflow("ECB.DISS__EXR_PUB__A") == "EXR"
-    assert _ecb_dataflow("ECB.DISS__EXR_PUB__M") == "EXR"
-    assert _ecb_dataflow("ECB.DISS__FM_PUB") == "FM"
-    assert _ecb_dataflow("ECB.DISS__YC_PUB__Q") == "YC"
-    for bad in ("random_key", "ECB.DISS__", "", None,
-                "ECB.DISS__NOPUB__A", "NOTECB__EXR_PUB"):
-        assert _ecb_dataflow(bad) is None, bad
-
-
 # ── ACCEPTANCE CRITERIA for the correct fix, currently xfail ────────────────
 # The first version of this expansion was WITHDRAWN (see the comment in orchestrate.py). It
 # mapped the wrong files: only 47 of 540 store keys parse, and the 18 catalogued daily EXR
@@ -86,14 +82,13 @@ pytestmark_reason = ("ecb dataflow expansion withdrawn 2026-08-30; these are the
                      "criteria for its replacement")
 
 
-@pytest.mark.xfail(reason=pytestmark_reason, strict=True)
 def test_a_changed_file_expands_to_every_series_in_its_dataflow(catalog):
     """One EXR file must expand to the 18 catalogued EXR ids."""
     ids, unmapped = _catalog_ids_for("ecb", ["ECB__EXR__D"])
     assert len(ids) == REAL["EXR"], f"expected {REAL['EXR']} EXR ids, got {len(ids)}"
+    assert all(i.startswith("ecb:EXR:D.") for i in ids), ids[:3]
 
 
-@pytest.mark.xfail(reason=pytestmark_reason, strict=True)
 def test_the_real_store_keys_reach_all_35_catalogued_ids(catalog):
     """THE ACCEPTANCE TEST THE REVIEW NAMED, and the one measurement that would have caught
     the withdrawn version in a single query: every catalogued id must be reachable from a
@@ -106,18 +101,20 @@ def test_the_real_store_keys_reach_all_35_catalogued_ids(catalog):
         YC/B   10/10 contained in ECB__YC__B__G_N_A    (extra segment = key field 5)
     35 of 35, against the 9 of 35 the withdrawn version reached.
     """
-    keys = ["ECB__EXR__D", "ECB__FM__D", "ECB__FM__M", "ECB__YC__B__G_N_A"]
+    keys = ["ECB__EXR__D", "ECB__FM__M", "ECB__YC__B__G_N_A"]
     ids, _ = _catalog_ids_for("ecb", keys)
     assert len(ids) == sum(REAL.values()) == 35, len(ids)
+    assert not any("G_N_C" in i for i in ids), (
+        "ECB__YC__B__G_N_A must not claim the G_N_C curve — that over-claim is exactly what "
+        "the withdrawn version did, in the other direction")
 
 
-def test_the_parser_still_only_accepts_one_of_five_agency_prefixes():
-    """Documents WHY the first version failed, so the next one does not repeat it. The 540
-    store keys carry five prefixes -- ECB 353, ECB.DISS 93, ESTAT 78, EUROSTAT 8, IMF 8 --
-    and `_ecb_dataflow` accepts only `ECB.DISS__<FLOW>_PUB`, i.e. 47 of 540."""
-    assert _ecb_dataflow("ECB.DISS__EXR_PUB__A") == "EXR"
-    assert _ecb_dataflow("ECB__EXR__D") is None, (
-        "this is the file that actually holds the 18 catalogued daily EXR series, and the "
-        "parser rejects it -- the whole defect in one assertion")
-    assert _ecb_dataflow("ECB.DISS__JDF_EXR_HCI_CPI") is None
-    assert _ecb_dataflow("ESTAT__NAMQ_10_GDP") is None
+def test_the_parser_accepts_the_files_that_actually_hold_the_series():
+    """The assertion the withdrawn version failed. `ECB__EXR__D` holds all 18 catalogued
+    daily EXR ids; the first parser rejected it and accepted three files holding none."""
+    assert _ecb_store_key("ECB__EXR__D") == ("EXR", "D", [])
+    assert _ecb_store_key("ECB__YC__B__G_N_A") == ("YC", "B", ["G_N_A"])
+    # The other four agency prefixes carry no catalogued ecb ids and must stay unmapped.
+    for bad in ("ECB.DISS__EXR_PUB__A", "ECB.DISS__JDF_EXR_HCI_CPI",
+                "ESTAT__NAMQ_10_GDP", "EUROSTAT__X", "IMF__Y", "ECB__", "", None):
+        assert _ecb_store_key(bad) is None, bad

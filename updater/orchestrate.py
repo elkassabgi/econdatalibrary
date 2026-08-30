@@ -944,26 +944,31 @@ def _catalog_series_count(source_id: str) -> int:
         return -1
 
 
-def _ecb_dataflow(key):
-    """`ECB.DISS__EXR_PUB__A` -> `EXR`, or None when the key is not that shape.
+def _ecb_store_key(key):
+    """Split an ecb STORE key into (flow, first-key-segment, extra segments), or None.
 
-    ecb is catalogued at SERIES grain (`ecb:EXR:D.AUD.EUR.SP00.A`, 35 ids across the three
-    dataflows EXR/FM/YC) while its store key is a bulk-download FILE STEM covering a whole
-    dataflow. Neither `_flow_of` nor `_table_grain_native` can bridge that: both reduce one
-    key to ONE id, and this is one file to MANY series.
+    `ECB__EXR__D`          -> ("EXR", "D",  [])
+    `ECB__YC__B__G_N_A`    -> ("YC",  "B",  ["G_N_A"])
+    anything else          -> None
 
-    Plain string work rather than a regex, because this module imports no `re` and the shape
-    is fixed: split on the double underscore, take the second field, drop its `_PUB` suffix.
-    None for anything else -- a key that is not this shape must stay UNMAPPED and visible,
-    never guessed at (the rule `_table_grain_native` states for its own misses).
+    WHY THIS SHAPE AND NOT THE ONE I SHIPPED FIRST. The withdrawn version parsed only
+    `ECB.DISS__<FLOW>_PUB`, which is 47 of the 540 store keys, and — fatally — not the ones
+    that hold the catalogued series. The 540 keys carry FIVE agency prefixes (ECB 353,
+    ECB.DISS 93, ESTAT 78, EUROSTAT 8, IMF 8); all 35 catalogued ids live under `ECB__`.
+
+    The catalogue id is `ecb:<FLOW>:<KEY>` and the store file is named for the flow plus the
+    KEY'S OWN LEADING SEGMENTS, so `ecb:EXR:D.AUD.EUR.SP00.A` lives in `ECB__EXR__D` and
+    `ecb:YC:B.U2.EUR.4F.G_N_A.SV_C_YM.SR_10Y` in `ECB__YC__B__G_N_A`. That is why the extras
+    matter: `ECB__YC__B__G_N_C` and `__G_N_W` exist too and hold NONE of the catalogued ids,
+    so a flow+first-segment rule alone would hand them ten ids they do not contain — which is
+    exactly the failure mode of the version this replaces.
     """
-    if not key or not key.startswith("ECB.DISS__"):
+    if not key or not key.startswith("ECB__"):
         return None
     parts = key.split("__")
-    if len(parts) < 2 or not parts[1].endswith("_PUB"):
+    if len(parts) < 3 or not parts[1] or not parts[2]:
         return None
-    flow = parts[1][:-len("_PUB")]
-    return flow or None
+    return parts[1], parts[2], [p for p in parts[3:] if p]
 
 
 def _catalog_ids_for(source_id: str, changed_keys):
@@ -1023,29 +1028,43 @@ def _catalog_ids_for(source_id: str, changed_keys):
                     seen.add(tcand)
                     exact.append(tcand)
                     continue
-            # DATAFLOW expansion (ecb) — WITHDRAWN 2026-08-30, one commit after shipping it.
+            # DATAFLOW expansion (ecb). One bulk file holds every series of a flow at a
+            # given frequency, so a changed file means each catalogued id inside it may be
+            # stale. Same ONE-TO-MANY shape as the split-part block below.
             #
-            # It mapped the WRONG FILES, and the review measured exactly how wrong. My claim was
-            # "all 540 store keys parse to 37 dataflows"; only 47 parse. The keys carry FIVE
-            # agency prefixes -- ECB 353, ECB.DISS 93, ESTAT 78, EUROSTAT 8, IMF 8 -- and the
-            # parser accepted only `ECB.DISS__<FLOW>_PUB`. My own probe printed "unparsed: 489"
-            # and I read past it.
+            # VERIFIED BY CONTAINMENT, not by name — the check the first attempt lacked and
+            # the reason it shipped broken. Across every `ECB__*` store file: 35 ids claimed,
+            # 35 of them actually present in the file that claims them, and 35 of 35
+            # catalogued ids reachable. `ECB__YC__B__G_N_C` and `__G_N_W` claim ZERO, which is
+            # correct — they hold none of the catalogued series, and a flow-only rule would
+            # have handed each of them ten ids they do not contain.
             #
-            # Worse than useless: all 18 catalogued EXR ids are DAILY (`D.`) and live in
-            # `ECB__EXR__D` (2,132,245 rows, contains them) while the three stems it could map
-            # -- `ECB.DISS__EXR_PUB__{A,M,Q}` -- contain ZERO of them. Under AQUEDUCT_BACKEND=r2
-            # that hands derive_and_put 18 ids whose bytes are not on the runner, turning a
-            # coherence NOTE into real `csv_derive failed` plus 18 ids parked in csv_retry_queue
-            # every run. Removing it restores the honest note.
+            # PK RANGE on `ecb:<FLOW>:<SEG1>.`, never LIKE ('_' is a wildcard, R492). '/' is
+            # the byte after '.', so the range is exactly that dotted prefix.
             #
-            # THE CORRECT RULE, measured and ready (see .claude/TODO.md): a store key
-            # `ECB__<FLOW>__<SEG1>[__<SEGn>]` holds catalogue ids `ecb:<FLOW>:<SEG1>.*`.
-            # Verified by CONTAINMENT, not by name: EXR/D 18/18, FM/D 3/3, FM/M 4/4 in
-            # ECB__EXR__D / ECB__FM__D / ECB__FM__M, and YC 10/10 in ECB__YC__B__G_N_A whose
-            # extra segment matches the key's 5th field. That is 35/35 against the 9/35 this
-            # version reached. It is not re-added here without the acceptance test the review
-            # named: every catalogued id must be reachable from a key that CONTAINS it.
-
+            # WHAT THIS DOES NOT FIX, stated because the first version was oversold. ecb's
+            # changed set is a ROTATING window over its 540 store keys (ecb.py rotate_after),
+            # and the four files that hold catalogued ids sit at sorted indices 338, 344, 345
+            # and 443. Observed windows are 79-315 wide, so a run whose window stops before
+            # 338 still maps zero ids and still demotes with the same note. This makes ecb
+            # coherent on the runs that reach those files, where before it was coherent on
+            # none. It does not make it deterministically green, and calling it fixed would
+            # repeat the mistake this block replaces.
+            if source_id == "ecb":
+                parsed = _ecb_store_key(k)
+                if parsed:
+                    flow, seg1, extras = parsed
+                    got = [r[0] for r in con.execute(
+                        "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                        (f"{source_id}:{flow}:{seg1}.", f"{source_id}:{flow}:{seg1}/"))]
+                    for e in extras:
+                        got = [g for g in got if e in g.split(":", 2)[2].split(".")]
+                    if got:
+                        for cid in got:
+                            if cid not in seen:
+                                seen.add(cid)
+                                exact.append(cid)
+                        continue
             # SPLIT-PART expansion (2026-08-05, the census cycle). A table too large for
             # one CSV is catalogued as `<source>:<table>#<part>` rows with NO base id
             # (census: eits__m3#no/#yes, idb__1year#AD..., six composite trade splits) —
