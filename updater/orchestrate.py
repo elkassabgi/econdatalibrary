@@ -1039,10 +1039,28 @@ def _catalog_ids_for(source_id: str, changed_keys):
             # stale on change. A changed table conservatively re-derives ALL its parts.
             # `#` never appears in a non-split id's tail, and LIKE-wildcards in the key
             # are escaped so a key containing % or _ cannot over-match.
-            esc = cand.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            # A PK RANGE, NOT `LIKE ... ESCAPE`. This is a PREFIX pattern, and ESCAPE defeats
+            # sqlite's LIKE optimisation, so the old form full-scanned the 11.9 GB / 13.5M-row
+            # catalogue ONCE PER UNMAPPED KEY. The comment on the table-grain block above
+            # already named this as the likely cause of a 60-minute csv fence blowing at only
+            # 4,704 keys -- and the sources currently blowing it report far more than that:
+            #
+            #     abs                18 catalogued ids vs 200,000 cursors
+            #     ember              60                vs 203,846
+            #     unsdg             396                vs 361,806
+            #     imf_imts_direct 2,937                vs 472,234
+            #
+            # so nearly every key reaches here unmapped. Measured 2026-08-30 on a real
+            # candidate: LIKE 1.57 s warm, range 0.00 s, IDENTICAL rows -- 6,872x. At 200,000
+            # unmapped keys that is ~87 hours of scanning against a 60-minute budget.
+            #
+            # '#' is 0x23 and '$' is 0x24, adjacent bytes, so `>= cand+'#' AND < cand+'$'` is
+            # exactly `cand#...` and nothing else. It also needs no escaping at all: a range
+            # compares literals, so the `%`/`_`/backslash dance the LIKE form required (and
+            # could get wrong on a key containing a backslash) simply disappears.
             parts = [r[0] for r in con.execute(
-                r"SELECT series_id FROM series WHERE series_id LIKE ? ESCAPE '\'",
-                (esc + "#%",))]
+                "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                (cand + "#", cand + "$"))]
             if parts:
                 for p in parts:
                     if p not in seen:
