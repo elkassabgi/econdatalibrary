@@ -55,10 +55,13 @@ def _fake_world(tmp, *, worklog=True, skillmd=True, ledger_check="pass",
     lc = os.path.join(hf, ".claude", "skills", "adversarial-review", "tools",
                       "ledger_check.py")
     if ledger_check != "absent":
+        # Only the two states a fixture can actually create. A "raise" variant was
+        # removed: it wrote a script that exits 0 and raises nothing, so it was dead
+        # code inside the very suite that exists to prove cases are real. The
+        # unrunnable case is produced by monkeypatching subprocess.run instead.
         body = {
             "pass": "import sys\nprint('ledger: ok')\nsys.exit(0)\n",
             "fail": "import sys\nprint('ledger: BAD')\nsys.exit(1)\n",
-            "raise": "import sys\nsys.exit(0)\n",
         }[ledger_check]
         with open(lc, "w") as fh:
             fh.write(body)
@@ -155,3 +158,36 @@ def test_plan_is_found_in_a_repo_copy_when_present(tmp_path):
     code, failures, _ = _load().run(econ, hf, plan, out=lambda *a: None)
     assert code == 0, "a repo copy of the plan must satisfy the check, got %d (%s)" % (
         code, failures)
+
+
+# --------------------------------------------------------------------------- sync
+# The plan mandates installing this skill into BOTH repos. Nothing enforced that the
+# two copies agree, and on 2026-08-30 they actually DIVERGED for about twenty minutes:
+# the econ copy had the fail-open fixed while the hf copy still printed "PASS ... EXIT=0"
+# for a nonexistent --hf root. CI only ever exercises the econ copy, so the divergence
+# was invisible. These cases make a drift between the two installs a test failure.
+
+HF_SKILL = r"D:\research\hfdatalibrary\.claude\skills\econ-completion"
+ECON_SKILL = os.path.join(HERE, "..", ".claude", "skills", "econ-completion")
+
+_SYNCED = ["SKILL.md",
+           os.path.join("scripts", "skill_check.py"),
+           os.path.join("references", "protocols.md"),
+           os.path.join("references", "failure-classes.md"),
+           os.path.join("references", "state-baseline.md"),
+           os.path.join("references", "phase-playbooks.md")]
+
+
+@pytest.mark.parametrize("rel", _SYNCED)
+def test_both_installed_copies_are_identical(rel):
+    econ_f = os.path.normpath(os.path.join(ECON_SKILL, rel))
+    hf_f = os.path.normpath(os.path.join(HF_SKILL, rel))
+    if not os.path.exists(hf_f):
+        pytest.skip("hf copy not present on this machine: %s" % hf_f)
+    a = open(econ_f, "rb").read().replace(b"\r\n", b"\n")
+    b = open(hf_f, "rb").read().replace(b"\r\n", b"\n")
+    assert a == b, (
+        "the two installed skill copies have DIVERGED for %s.\n"
+        "  econ: %s (%d bytes)\n  hf  : %s (%d bytes)\n"
+        "Re-sync them; a divergence on the fail-open case went undetected for 20 minutes "
+        "on 2026-08-30 because CI only tests the econ copy." % (rel, econ_f, len(a), hf_f, len(b)))

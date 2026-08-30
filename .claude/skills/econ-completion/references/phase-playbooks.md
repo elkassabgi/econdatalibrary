@@ -12,8 +12,33 @@ The full task lists live in `ECONLIB_COMPLETION_PLAN.md` Part 3. Load this file 
 ## Phase 0 — Install, baseline, fix the instruments
 
 Entry checks: skill installed in BOTH repos and loads; plan reachable; `WORKLOG.md` created (append-only).
-Key tasks: fix `ledger_check.py --digest` (regex `^#{2,3} (R\d+)\b`, date-based cutoff, discriminating FAIL test) + backfill 147 digest lines; fix stale doc counts; capture baselines (audit, untouched files, retry-queue provenance incl. the `abs`/`ilostat` GROUP BY, the ONE `SELECT_SOURCES` rows_read measurement); brief Ahmed on worldbank_pink and sdmx_nso.
-Gate: `--digest` passes with zero invisible headings; every baseline row instrumented; briefs filed.
+Key tasks: fix `ledger_check.py --digest`; fix stale doc counts; capture baselines (audit, untouched files, retry-queue provenance incl. the `abs`/`ilostat` GROUP BY, the ONE `SELECT_SOURCES` rows_read measurement); brief Ahmed on worldbank_pink and sdmx_nso.
+
+> **CORRECTED 2026-08-30 — the original wording of the digest fix was refuted by this project's own
+> adversarial review the same day (ledger R521). Do NOT implement "date-based cutoff + backfill 147".**
+> Four independent faults: (a) a **date-based cutoff is open-ended and exempts what it cannot
+> parse** — `## R443 … (2026-08-22/23)` is a date *range*, so the regex misses it, the rule falls
+> through to `id >= 475`, and an entry dated four days after the cutoff is **silently excused**
+> (R508/R503's shape); only **85 of 294** headings carry a parsable trailing date at all.
+> (b) **27 ids each carry TWO different entries**, so `id not in digest` and a one-line-per-id
+> backfill would mark both covered and hide one permanently (R488). Key on **(id, heading line)**
+> and add a **no-id-reuse** check. (c) The widened regex still misses **171 `### M-YYYYMMDD-NN:`
+> entries with no R id**, so it covers **294 of 470 headings = 62.6%** — state coverage as a
+> fraction of the population at risk, or bring the M-form into scope (R501). (d) "147" is the
+> distinct count; the guard's arithmetic runs over **174 occurrences** — quote both (R341).
+>
+> **Do instead:** an **enumerated allowlist** of the pre-rule backlog keyed on `(id, title-prefix)`,
+> which **FAILS if a listed entry is missing** from the ledger (it must not rot) and **FAILS if it
+> would need to grow**; a **seven-case** discriminating suite, each case derived from a measured
+> defect; and ship the regex change **and** the backfill in the SAME commit.
+>
+> **Deadlock warning.** `skill_check.py` treats a non-zero `ledger_check --digest` as a HARD
+> failure, so a deliberately-red digest bricks the next session's preflight. Land the backfill with
+> the regex change, or give the preflight an advisory tier for this one check — decide before
+> starting, not after.
+
+Gate: `--digest` covers every entry heading (or states its coverage fraction explicitly); the
+allowlist can only shrink; every baseline row instrumented; briefs filed.
 
 ## Phase 1 — Safe repairs (no data-plane risk)
 

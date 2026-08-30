@@ -143,3 +143,36 @@ ship with tests (`test_d1_cost_guard.py`, `test_reliability_system.py`). The ski
 still depends on the model choosing to load it — which is the judgment it exists to constrain.
 That wiring is the single highest-value remaining change and is a behaviour change to every
 session, so it goes through review first.
+
+### P0.8 — second, independent evaluation of the skill; four more fixes · DONE
+
+An independent evaluator reached **WILL WORK WITH FIXES**, confirmed all three preflight
+fail-opens I had found and fixed, and added four findings I had missed:
+
+1. **The two installed copies had actually DIVERGED** for ~20 minutes today — the econ copy fixed,
+   the hf copy still printing `PASS … EXIT=0` for a nonexistent `--hf`. CI only ever exercised the
+   econ copy. **Fixed:** `tests/test_skill_check.py` now asserts all six skill files are
+   byte-identical across both installs; proven to discriminate by injecting a divergence
+   (1 failed) and restoring it (6 passed). Suite is now **14 cases**.
+2. **A dead branch inside my own C5 suite** — `_fake_world(ledger_check="raise")` wrote a script
+   that exits 0 and raises nothing, and no test used it. Removed.
+3. **`state-baseline.md` still taught the stale numbers.** My corrections had gone into WORKLOG,
+   not back into the file the skill loads — so the next session would have read the wrong figures.
+   **Fixed at source:** W5 (155 invisible ids not 100; 147 distinct / 174 occurrences; the 171
+   M-form entries and the 62.6% coverage; the 27 id collisions; the enumerated-allowlist design),
+   W3 (26 sources attributed, cadence-blind audit, `idb` the one real fault), W6 (sdmx_nso premise
+   withdrawn), W7 (statcan complete; the parquet re-upload CANCELLED per R520).
+4. **Phase 0 task 2 self-deadlocks and prescribes a refuted design.** Executing it correctly makes
+   `ledger_check --digest` red, which `skill_check.py` treats as a HARD failure, bricking every
+   later preflight. **Fixed:** `phase-playbooks.md` now carries the corrected design from R521
+   (enumerated allowlist, `(id, heading line)` keying, no-id-reuse check, seven cases, regex +
+   backfill in one commit) and an explicit deadlock warning.
+
+**Its top recommendation, NOT done and needing a decision:** wire the skill into
+`.claude/hooks/_receipt_rules.py::REQUIRED` so the existing `consequential_gate.py` *denies*
+deploys, D1 writes, `--apply` and pushes to main until `SKILL.md` and `references/protocols.md`
+have qualifying read receipts. Both evaluations independently reached the same conclusion: the
+skill is currently the only part of the reliability system whose activation depends on the model
+choosing to load it — and both repos' SessionStart context currently points at a *different*
+skill (`econ-updater`). That changes the gate for every session in both repos, so it goes to
+Ahmed rather than being done unilaterally.
