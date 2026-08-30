@@ -73,7 +73,11 @@ HOSTS   = [
     ("esplora", "https://esploradati.istat.it/SDMXWS/rest/"),
     ("sdmx",    "https://sdmx.istat.it/SDMXWS/rest/"),
 ]
-RATE        = 1.5      # seconds between requests (polite)
+# "Polite" was a guess, and it was 40 requests/minute against a publisher who documents a
+# ceiling of FIVE and blocks for 1-2 days above it. These sleeps sit between slices in the
+# callers; the real ceiling is now enforced centrally in http_get by _throttle(), which every
+# request funnels through. Kept as a small extra courtesy gap, not as the limiter.
+RATE        = 1.5      # seconds between slices; the HARD limit is ISTAT_QPM, see _throttle
 TIMEOUT     = 300      # generous: esploradati can take minutes
 RETRIES     = 5        # generous retries with backoff for the flaky host
 MAX_SIZE    = 500 * 1024 * 1024   # ~500 MB single-response ceiling (overridable)
@@ -146,6 +150,80 @@ def _over_budget() -> bool:
     return False
 
 
+# ─────────────────────── ISTAT's published rate limit ──────────────────────
+# THE PUBLISHER DOCUMENTS 5 QUERIES PER MINUTE PER IP, AND BLOCKS FOR 1-2 DAYS WHEN YOU
+# EXCEED IT. (ondata.github.io/guida-api-istat, read 2026-08-30: "5 query al minuto per ogni
+# IP", block "compresa tra 1 e 2 giorni".) We had no limiter at all.
+#
+# MEASURED 2026-08-30, and it is our own fault, not Istat being slow:
+#   * our log bursts to 11-12 requests/minute, against a documented ceiling of 5;
+#   * DNS resolves esploradati.istat.it -> 193.204.90.13 fine, but a TCP connect to :443
+#     is SILENTLY DROPPED after 21.0 s -- blackholed, not refused, which is what a firewall
+#     block looks like and never what a busy server looks like;
+#   * a control request to an unrelated host answered HTTP 200 in 0.4 s, so our network is
+#     healthy;
+#   * the crawler had done 275 of 2,483 flows in three days, with 743 timeouts and ZERO
+#     completions in the last 2,000 log lines.
+#
+# THE VICIOUS PART: the block lasts 1-2 days, and every retry we send while blocked renews
+# it. A hot retry loop against a rate-limit block is not merely useless, it is the thing
+# preventing recovery. So this does two jobs -- pace requests below the ceiling, and when a
+# block is detected, STOP POKING and let it expire.
+ISTAT_QPM = int(os.environ.get("ISTAT_QPM", "4"))      # 4 < the documented 5, for margin
+_MIN_GAP_S = 60.0 / max(1, ISTAT_QPM)
+_last_request_at = 0.0
+
+# A streak of connect-level failures with no reply at all is the block signature. HTTP
+# errors do NOT count: a 500 means the server is talking to us.
+BLOCK_STREAK = int(os.environ.get("ISTAT_BLOCK_STREAK", "12"))
+BLOCK_COOLDOWN_S = int(os.environ.get("ISTAT_BLOCK_COOLDOWN_S", "3600"))
+BLOCK_COOLDOWN_MAX_S = 6 * 3600
+_conn_streak = 0
+_blocks_seen = 0
+
+
+def _throttle() -> None:
+    """Space every request at least _MIN_GAP_S apart, process-wide."""
+    global _last_request_at
+    wait = _last_request_at + _MIN_GAP_S - time.time()
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_at = time.time()
+
+
+def _note_reply() -> None:
+    """ANY reply -- including a 4xx or 5xx -- proves we are not blocked."""
+    global _conn_streak
+    _conn_streak = 0
+
+
+def _note_no_reply() -> bool:
+    """Count a connect-level failure. True once the streak says we are blocked.
+
+    R62's lesson applies here: a message that ANNOUNCES an action must have STATE behind
+    it. This returns a decision the caller acts on, rather than logging an intention and
+    re-dialling anyway."""
+    global _conn_streak
+    _conn_streak += 1
+    return _conn_streak >= BLOCK_STREAK
+
+
+def _cool_off() -> None:
+    """Back off hard, escalating, because the block outlives any per-request backoff.
+
+    Istat blocks for 1-2 days. Sleeping an hour and probing again costs one request per
+    hour and lets the block expire; continuing at 11/min guarantees it never does."""
+    global _blocks_seen, _conn_streak
+    _blocks_seen += 1
+    nap = min(BLOCK_COOLDOWN_MAX_S, BLOCK_COOLDOWN_S * (2 ** (_blocks_seen - 1)))
+    log(f"  RATE-LIMIT BLOCK SUSPECTED: {_conn_streak} consecutive connect failures with no "
+        f"reply. Istat publishes 5 req/min per IP and blocks 1-2 days when exceeded, and "
+        f"every retry we send RENEWS it. Sleeping {nap // 60} min (block #{_blocks_seen}) "
+        f"instead of poking. Pace this run with ISTAT_QPM (currently {ISTAT_QPM}/min).")
+    time.sleep(nap)
+    _conn_streak = 0
+
+
 def http_get(url: str, accept: str, timeout: int = TIMEOUT,
              retries: int = RETRIES) -> HttpResult:
     """GET with backoff. Distinguishes 200 / 4xx / 5xx / timeout / conn-error
@@ -171,10 +249,12 @@ def http_get(url: str, accept: str, timeout: int = TIMEOUT,
         # placed after the pipe is already drained: present, plausible, unreachable.
         if attempt and _over_budget():
             return last
+        _throttle()          # never exceed the publisher's published 5 req/min per IP
         t = time.time()
         try:
             r = requests.get(url, headers=hdrs, timeout=timeout)
             el = time.time() - t
+            _note_reply()    # the server spoke to us: whatever else is wrong, we are not blocked
             if r.status_code == 200:
                 return HttpResult(r.content, 200, "ok", el)
             if r.status_code in (400, 404, 413):
@@ -192,6 +272,9 @@ def http_get(url: str, accept: str, timeout: int = TIMEOUT,
             el = time.time() - t
             log(f"  TIMEOUT attempt {attempt+1} ({el:.0f}s): ...{url[-72:]}")
             last = HttpResult(None, None, "timeout", el)
+            if _note_no_reply():
+                _cool_off()
+                return last
         except requests.exceptions.SSLError as e:
             # A TLS handshake failure will not heal in 8 seconds — it means this host
             # (or whatever it redirects to) is misconfigured or decommissioned. Give up
@@ -207,6 +290,9 @@ def http_get(url: str, accept: str, timeout: int = TIMEOUT,
             el = time.time() - t
             log(f"  ERR attempt {attempt+1} ({type(e).__name__}): ...{url[-72:]}")
             last = HttpResult(None, None, "conn", el)
+            if _note_no_reply():
+                _cool_off()
+                return last
         time.sleep(8 * (attempt + 1))
     return last
 
