@@ -559,9 +559,17 @@ def _derive_changed_csvs(unit, res, blob):
                 _cat = (os.environ.get("ECONDL_CATALOG")
                         or os.path.join(config.ROOT, "data", "catalog.db"))
                 with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
+                    # PK RANGE, not `source_id=?`. `series` has one index — the series_id
+                    # primary key — so the column form full-scans an 11.9 GB file. Measured
+                    # 2026-08-30: ecb 7.37 s warm (389 s cold) vs 0.0002 s, same answer.
+                    # This site is on the ZERO-MAPPED path, so it fires for exactly the
+                    # sources already in trouble (abs, ember, ilostat, ecb) on EVERY run,
+                    # inside the same csv fence they are blowing. Equivalence verified
+                    # directly over the whole catalogue: 13,486,342 rows, 0 where the
+                    # source_id column disagrees with the series_id prefix.
                     n_ids = _c.execute(
-                        "SELECT COUNT(*) FROM series WHERE source_id=?",
-                        (unit.source_id,)).fetchone()[0]
+                        "SELECT COUNT(*) FROM series WHERE series_id >= ? AND series_id < ?",
+                        (unit.source_id + ":", unit.source_id + ";")).fetchone()[0]
                     # DECLARED SUBSET (registry `catalog_scope: subset`, e.g. eia: the
                     # store holds ~3.8M grid/scenario series, the catalogue a curated
                     # 268,502): a bulk merge touching only uncatalogued families maps to
@@ -643,9 +651,17 @@ def _derive_changed_csvs(unit, res, blob):
                 _cat = (os.environ.get("ECONDL_CATALOG")
                         or os.path.join(config.ROOT, "data", "catalog.db"))
                 with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
+                    # PK RANGE, not `source_id=?`. `series` has one index — the series_id
+                    # primary key — so the column form full-scans an 11.9 GB file. Measured
+                    # 2026-08-30: ecb 7.37 s warm (389 s cold) vs 0.0002 s, same answer.
+                    # This site is on the ZERO-MAPPED path, so it fires for exactly the
+                    # sources already in trouble (abs, ember, ilostat, ecb) on EVERY run,
+                    # inside the same csv fence they are blowing. Equivalence verified
+                    # directly over the whole catalogue: 13,486,342 rows, 0 where the
+                    # source_id column disagrees with the series_id prefix.
                     n_ids = _c.execute(
-                        "SELECT COUNT(*) FROM series WHERE source_id=?",
-                        (unit.source_id,)).fetchone()[0]
+                        "SELECT COUNT(*) FROM series WHERE series_id >= ? AND series_id < ?",
+                        (unit.source_id + ":", unit.source_id + ";")).fetchone()[0]
             except Exception:                       # noqa: BLE001 — a note must never raise
                 n_ids = None
             if n_ids is None:

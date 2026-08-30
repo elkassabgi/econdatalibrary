@@ -241,6 +241,22 @@ def catalog_counts() -> dict:
     # honest check is `sum == COUNT(*)`, but that is the 388 s scan we just removed. So walk
     # the GAPS instead: between consecutive covered ranges, ask whether ANY id exists. Each is
     # one index seek, and finding none proves every row lies inside a counted range.
+    # THE INVARIANT THE PK-RANGE SUBSTITUTION RESTS ON, asserted where the catalogue lives.
+    # A gap walk shows every row lies inside SOME source range; it does NOT show each row's
+    # `source_id` column equals its own `series_id` prefix, and a row `A:x` labelled
+    # `source_id='B'` passes the gap walk while breaking every range/column substitution in
+    # `_catalog_ids_for`. That distinction was a review finding: my original proof proved the
+    # weaker proposition. Measured 2026-08-30: 13,486,342 rows, 0 null, 0 disagreeing, 10.3 s.
+    # One scan, once per audit, and it is the only thing standing between a silent
+    # source-merge and nobody noticing.
+    mismatch = con.execute(
+        "SELECT COUNT(*) FROM series WHERE source_id IS NULL "
+        "OR substr(series_id, 1, length(source_id) + 1) <> source_id || ':'").fetchone()[0]
+    if mismatch:
+        print(f"!! {mismatch} series rows whose source_id column disagrees with their "
+              f"series_id prefix — every per-source PK RANGE in this repo is unsafe until "
+              f"this is 0 (see updater/orchestrate.py::_catalog_ids_for)", file=sys.stderr)
+
     orphan = []
     bounds = sorted(counts)
     for lo, hi in zip([""] + [s + ";" for s in bounds], [s + ":" for s in bounds] + [None]):
