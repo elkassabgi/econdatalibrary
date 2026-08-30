@@ -19,10 +19,13 @@ The alternative - retiring the legacy ids - was rejected for the reason jobs/ing
 gives for the imf_<flow> sources: breaking thousands of live series ids to buy freshness is a
 bad trade when the ids cost nothing to keep.
 
-THE EIGHT NOT COVERED are aggregate codes (XD, XM, XN, XT - income groups and regions) that
-the wdi fetcher resolves to their 3-char form via the /v2/country reference list, so they are
-present under a different code rather than absent. They are reported every run rather than
-silently dropped; whoever adds the mapping will see the count go to zero.
+THE EIGHT AGGREGATES (XD, XM, XN, XT - income groups) are now covered. The wdi fetcher
+resolves those codes to their 3-char form via the /v2/country reference list, so they were
+present under a different code rather than absent, and the direct key match missed them: they
+were reported `missing` every run and NEVER refreshed, frozen at whatever we last held while
+their wdi twins moved on. WDI_GEO_TO_LEGACY closes it, and this docstring's own promise -
+"whoever adds the mapping will see the count go to zero" - is the test that proves it
+(tests/test_worldbank_geo_alias.py). A non-empty `missing` list now means a NEW gap.
 
 VINTAGE: none of its own. This source is downstream of worldbank_wdi, so it re-projects
 whenever its cadence says to and merge dedup makes a re-run harmless. A fabricated token would
@@ -48,6 +51,36 @@ SOURCE = "worldbank"
 UPSTREAM = "worldbank_wdi"
 DEDUP = ("series_key", "obs_date")
 PREFIX = "WDI:"
+
+# THE MAPPING THIS FILE'S OWN DOCSTRING ASKED FOR. Eight published `worldbank` ids end in a
+# 2-char income-group code; `worldbank_wdi` carries the same economies under the publisher's
+# 3-char form, so the direct key match misses and those eight were reported `missing` every
+# run and never refreshed — frozen at whatever we last held while their wdi twins move on.
+#
+# MEASURED before it was written, not asserted (R504, R509):
+#   (a) the publisher's own /v2/country reference list (295 entries, fetched 2026-08-30):
+#       iso2Code XD -> id HIC "High income", XM -> LIC, XN -> LMC, XT -> UMC;
+#   (b) across all 1,486 grouped wdi parquets the store holds HIC/LIC/LMC/UMC
+#       (34,703 / 31,498 / 36,775 / 34,475 rows) and holds ZERO under XD/XM/XN/XT;
+#   (c) enumerating all 263 distinct geos across the 692 published legacy ids, exactly 8 use
+#       a 2-char code and they use exactly these 4 — so this map is the whole class, not a
+#       sample of it. The publisher derives 18 such codes; the other 14 name no legacy id.
+#
+# Direction matters: keys here are the WDI (3-char) spelling and values the LEGACY (2-char)
+# one, because the loop below is translating an upstream key INTO a published id.
+WDI_GEO_TO_LEGACY = {"HIC": "XD", "LIC": "XM", "LMC": "XN", "UMC": "XT"}
+
+
+def _legacy_alias(legacy_key: str) -> str | None:
+    """`NY.GDP.MKTP.CD:HIC` -> `NY.GDP.MKTP.CD:XD`, or None when nothing maps.
+
+    Applied ONLY after a direct match fails, so a published id always wins over an alias and
+    this can never redirect a key that already resolves."""
+    head, sep, geo = legacy_key.rpartition(":")
+    if not sep:
+        return None
+    alias = WDI_GEO_TO_LEGACY.get(geo)
+    return f"{head}:{alias}" if alias else None
 
 
 def current_vintage(unit):
@@ -154,7 +187,14 @@ def update(unit, since) -> Result:
         if not k or not k.startswith(PREFIX):
             continue
         legacy = k[len(PREFIX):]
-        if legacy not in wanted or d is None or v is None:
+        if legacy not in wanted:
+            # Income-group aggregates: wdi spells the geo 3-char, the published id 2-char.
+            # Tried only on a miss, so a real published id can never be rewritten.
+            alias = _legacy_alias(legacy)
+            if alias is None or alias not in wanted:
+                continue
+            legacy = alias
+        if d is None or v is None:
             continue
         keys.append(legacy)
         dates.append(d)
@@ -173,8 +213,9 @@ def update(unit, since) -> Result:
 
     missing = sorted(wanted - seen)
     if missing:
-        # Named, not swallowed. These are the aggregate codes the wdi fetcher rewrites to a
-        # 3-char form; the count going to zero is how anyone knows the mapping was added.
+        # Named, not swallowed. This USED to be the 8 income-group aggregates; WDI_GEO_TO_LEGACY
+        # now covers those, so a non-empty list here is a NEW gap and worth reading rather than
+        # the standing background noise it had become.
         print(f"[{SOURCE}] {len(missing)} published id(s) have no {UPSTREAM} counterpart "
               f"and were NOT refreshed this run (existing rows untouched): "
               f"{missing[:8]}{' ...' if len(missing) > 8 else ''}", flush=True)
