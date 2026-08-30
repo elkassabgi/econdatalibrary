@@ -389,12 +389,25 @@ newest within group. Re-measured: orphans in the next 60 go **4 → 31**, last o
 **11,945 → 5,142** (~86 runs). A 2.3x improvement, NOT a fix.
 
 RUNNING: targeted backfill of the **263** orphans CSO still publishes, via
-`CSO_ONLY_MATRICES` (~2.5 h in one pass). The other **27** are gone from ReadCollection
-entirely and cannot be re-fetched: `A0207 A0208 A0209 B0207 B0208 B0209 B0212 C0424 C0427
-C0429 C0438 CD820 E1004 E1018 E1033 E1036 E1037 E1038 E1039 E1042 E1043 E7043 NAA02 NAA03
-NAA04 NQQ34 NQQ38`. Their CSVs still hold real data on R2, so they are served-frozen
-archival (the unesco-culture verdict) — but their parquet download has no rows behind it,
-which is a product inconsistency to settle: either delist the 27 or accept CSV-only.
+`CSO_ONLY_MATRICES` (~2.5 h in one pass). The other **27** are absent from ReadCollection: `A0207 A0208 A0209 B0207 B0208
+B0209 B0212 C0424 C0427 C0429 C0438 CD820 E1004 E1018 E1033 E1036 E1037 E1038 E1039 E1042
+E1043 E7043 NAA02 NAA03 NAA04 NQQ34 NQQ38`.
+
+> **CORRECTED 2026-08-30 (R510/R511). "Cannot be re-fetched" was FALSE, and it was the
+> load-bearing half of the archival verdict.** Probed live, all **27 of 27 return data**
+> — 135,875 cells — with a bogus-matrix control returning none. Absence from
+> `ReadCollection` is absence from a CATALOGUE, not a statement about what the publisher
+> serves; `ReadDataset`/`ReadMetadata` answer for every one. The same mistake covers 495
+> catalogued matrices in total, and the real defect is ours: `cso.py` builds `changed`
+> from that listing, so anything it omits could never be selected for a re-pull. Fixed by
+> taking vintages from `Navigation_API.Search` (13,660 matrices, 495/495 coverage) and
+> giving the previously-invisible set its own queue priority class.
+>
+> These 27 are not in `_held.json` (zero store rows), so the fetcher cannot discover them
+> on its own — reach them with `CSO_ONLY_MATRICES`, which is now in the fold scope. Do NOT
+> delist them and do NOT record them in `discontinued.yaml`: that file's bar is "the
+> publisher retired it, so no fetcher can exist", and every one of these is fetchable
+> today.
 
 ### insee_melodi coverage (cycle 38, 2026-08-07)
 
