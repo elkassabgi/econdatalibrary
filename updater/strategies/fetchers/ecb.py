@@ -52,8 +52,11 @@ import gzip
 import json
 import os
 import re
+import http.client          # for HTTPException — see the retry handler in _get
+import time
 import urllib.error
 import urllib.request
+import zlib                 # deflate branch + zlib.error in that same handler
 import xml.etree.ElementTree as ET
 
 import pyarrow as pa
@@ -130,7 +133,6 @@ def _http_get(url: str, accept: str | None = None, timeout: int = DATA_TIMEOUT) 
                 if enc == "gzip":
                     data = gzip.decompress(data)
                 elif enc == "deflate":
-                    import zlib
                     data = zlib.decompress(data)
                 return data
         except urllib.error.HTTPError as e:
@@ -140,9 +142,25 @@ def _http_get(url: str, accept: str | None = None, timeout: int = DATA_TIMEOUT) 
             if e.code not in (429, 500, 502, 503, 504):
                 # other hard 4xx -> still transient-ish for retry, but record
                 pass
-        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+        # http.client.HTTPException AND zlib.error ARE NOT OSError SUBCLASSES, so neither was
+        # caught here and both escaped the retry loop entirely — killing the unit on exactly
+        # the failure this loop exists to absorb. Measured on this interpreter:
+        #
+        #   IncompleteRead  < HTTPException < Exception      NOT an OSError
+        #   LineTooLong     < HTTPException < Exception      NOT an OSError
+        #   zlib.error      < Exception                      NOT an OSError
+        #   RemoteDisconnected < ConnectionResetError < OSError      (was already caught)
+        #   BadGzipFile / SSLError / SSLEOFError      < OSError      (were already caught)
+        #
+        # `IncompleteRead` is the truncated-transfer case — the most transient failure there
+        # is, and the one ECB's large SDMX bodies actually produce — and `zlib.error` is its
+        # deflate-branch twin: the body arrives short, decompression fails, and the exception
+        # sails past a handler that looks like it covers transport. Note that the gzip branch
+        # WAS covered (BadGzipFile is an OSError) while the deflate branch was not, so which
+        # encoding the server chose decided whether a truncation retried or crashed.
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError,
+                http.client.HTTPException, zlib.error) as e:
             last = f"{type(e).__name__}: {e}"
-        import time
         time.sleep(2 * (attempt + 1))
     raise TransientError(f"ecb GET {url}: {last}")
 
