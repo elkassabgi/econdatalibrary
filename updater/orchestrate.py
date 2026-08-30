@@ -928,6 +928,28 @@ def _catalog_series_count(source_id: str) -> int:
         return -1
 
 
+def _ecb_dataflow(key):
+    """`ECB.DISS__EXR_PUB__A` -> `EXR`, or None when the key is not that shape.
+
+    ecb is catalogued at SERIES grain (`ecb:EXR:D.AUD.EUR.SP00.A`, 35 ids across the three
+    dataflows EXR/FM/YC) while its store key is a bulk-download FILE STEM covering a whole
+    dataflow. Neither `_flow_of` nor `_table_grain_native` can bridge that: both reduce one
+    key to ONE id, and this is one file to MANY series.
+
+    Plain string work rather than a regex, because this module imports no `re` and the shape
+    is fixed: split on the double underscore, take the second field, drop its `_PUB` suffix.
+    None for anything else -- a key that is not this shape must stay UNMAPPED and visible,
+    never guessed at (the rule `_table_grain_native` states for its own misses).
+    """
+    if not key or not key.startswith("ECB.DISS__"):
+        return None
+    parts = key.split("__")
+    if len(parts) < 2 or not parts[1].endswith("_PUB"):
+        return None
+    flow = parts[1][:-len("_PUB")]
+    return flow or None
+
+
 def _catalog_ids_for(source_id: str, changed_keys):
     """Map changed store series_keys to catalog series_ids (see hook comment).
     Returns (ids_to_derive, unmapped_keys). Reads the catalog read-only from
@@ -985,6 +1007,31 @@ def _catalog_ids_for(source_id: str, changed_keys):
                     seen.add(tcand)
                     exact.append(tcand)
                     continue
+            # DATAFLOW expansion (ecb). One bulk file carries every series of a dataflow,
+            # so a changed file means every catalogued series under it may be stale. Same
+            # ONE-TO-MANY shape as the split-part block below, on a different key form.
+            # Measured 2026-08-30: ecb has been `partial` since 2026-07-16 reporting "315
+            # changed series_keys have no catalog mapping ... the catalog has 35 rows for it
+            # but NONE matched", and 20 of its last 25 runs carry that same note. Both sides
+            # measured: the catalogue holds EXR 18 / FM 7 / YC 10, the store reports 540
+            # stems, and all three catalogued dataflows appear among them.
+            #
+            # A PK RANGE, never LIKE. `>= 'ecb:EXR:' AND < 'ecb:EXR;'` is an index range on
+            # the primary key; the `LIKE ? ESCAPE` form below defeats sqlite's LIKE
+            # optimisation and full-scans the 11.9 GB catalogue once per unmapped key, which
+            # the comment above records as the likely cause of a 60-minute fence blowing.
+            if source_id == "ecb":
+                flow = _ecb_dataflow(k)
+                if flow:
+                    got = [r[0] for r in con.execute(
+                        "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                        (f"{source_id}:{flow}:", f"{source_id}:{flow};"))]
+                    if got:
+                        for cid in got:
+                            if cid not in seen:
+                                seen.add(cid)
+                                exact.append(cid)
+                        continue
             # SPLIT-PART expansion (2026-08-05, the census cycle). A table too large for
             # one CSV is catalogued as `<source>:<table>#<part>` rows with NO base id
             # (census: eits__m3#no/#yes, idb__1year#AD..., six composite trade splits) —
