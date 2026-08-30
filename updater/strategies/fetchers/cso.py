@@ -101,17 +101,87 @@ def _cursor_path():
     return os.path.join(_out_dir(), "_collupd.json")
 
 
-def order_changed(changed, cur_upd, held):
-    """Run order for a bounded cso batch: UNHELD matrices first, newest revision within
-    each group. Module-level and pure so the scheduling rule can be asserted directly.
+def order_changed(changed, cur_upd, held, unlisted=frozenset()):
+    """Run order for a bounded cso batch. Module-level and pure so the scheduling rule can be
+    asserted directly.
 
-    Two stable passes, least-significant key first — a single tuple key cannot express it
-    because the keys need opposite directions (unheld ascending, revision descending).
+    THREE priority classes, best first:
+      0. UNHELD          - catalogued with no rows at all; we serve nothing for these.
+      1. UNLISTED        - absent from the publisher's collection listing, so until R510 they
+                           could never enter `changed` AT ALL. Nothing else in the queue has
+                           been starved by construction.
+      2. everything else - ordinary revisions, newest first.
+
+    WHY CLASS 1 HAD TO EXIST (R511). Making the unlisted set visible was not enough and I
+    shipped that mistake once. They are HELD by definition, and their vintages are 2020-era —
+    the oldest in the corpus — so under the previous two-class rule they sorted last in the
+    last group. Simulated against the live listing and the production sidecars: all of them
+    landed at queue positions 12,318-12,377 of 12,378, zero inside a 60-table batch, roughly
+    six to twelve months from being pulled, while every run printed a line that read like
+    success. A queue position is a MEASURABLE thing; "it is in the list now" is not.
+
+    Unheld still outranks unlisted: no rows at all is worse than stale rows. The 27 matrices
+    that are catalogued with zero rows AND unlisted are in both classes and sort first, which
+    is right — they are the ones a reader can reach and get nothing from.
+
+    Stable passes, least-significant key first: a single tuple key cannot express it because
+    the keys need opposite directions (class ascending, revision descending).
     """
     out = list(changed)
     out.sort(key=lambda m: (cur_upd.get(m) or ""), reverse=True)
-    out.sort(key=lambda m: m in held)
+    out.sort(key=lambda m: 0 if m not in held else (1 if m in unlisted else 2))
     return out
+
+
+SEARCH_METHOD = "PxStat.System.Navigation.Navigation_API.Search"
+
+
+def search_vintages(timeout: int = 300, tries: int = 3):
+    """{matrix: release datetime} for EVERY matrix the publisher indexes, or {} on failure.
+
+    WHY THIS AND NOT ReadCollection. `ReadCollection` is a catalogue of the CURRENT collection
+    and omits 495 of our 7,896 catalogued matrices, which is R510: `changed` is built from it,
+    so those 495 could never be selected for a re-pull and were frozen in silence. Measured
+    2026-08-30, this endpoint — which `jobs/ingest_cso_ireland.py:102` ALREADY calls to build
+    the catalogue — returns 13,660 matrices, every one carrying `RlsLiveDatetimeFrom`:
+
+        catalogued matrices          7,896
+        unlisted by ReadCollection     495   -> present in Search: 495 / 495
+        our catalogue NOT in Search      0
+
+    One call per run, total coverage, and it agrees with ReadCollection's `updated` on 12,981
+    of 12,985 (the 4 differences are formatting). My first repair instead probed a rotating
+    60-matrix slice with per-matrix ReadMetadata calls: 12.8% coverage per run, an unbounded
+    network phase before the run's Deadline was even constructed, and it structurally could
+    not reach the 27 matrices that are catalogued with ZERO rows (absent from `_held.json`,
+    so absent from a `held - listing` population). Search reaches all of them. R511 — grep for
+    what the neighbouring job already calls before adding a probe.
+
+    Failure returns {} and the caller keeps ReadCollection alone: degraded to the old
+    behaviour, never worse, and the caller says so out loud.
+    """
+    body = {"jsonrpc": "2.0", "id": 1, "method": SEARCH_METHOD,
+            "params": {"LngIsoCode": "en"}}
+    hdr = {"User-Agent": UA["User-Agent"], "Content-Type": "application/json"}
+    for attempt in range(tries):
+        if attempt:
+            time.sleep(min(2 ** attempt, 15))
+        try:
+            r = requests.post(JSONRPC_URL, json=body, headers=hdr, timeout=timeout)
+            if r.status_code != 200:
+                continue
+            d = r.json()
+        except (requests.RequestException, ValueError):
+            continue
+        if d.get("error"):
+            return {}
+        out = {}
+        for row in (d.get("result") or []):
+            mtr, when = row.get("MtrCode"), row.get("RlsLiveDatetimeFrom")
+            if mtr and when:
+                out[mtr] = when
+        return out
+    return {}
 
 
 def _held_path():
@@ -300,6 +370,50 @@ def update(unit, since) -> Result:
             stored = json.loads(_raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             stored = {}
+
+    held = set()
+    _rawh = blob.read_bytes(_held_path())
+    if _rawh:
+        try:
+            held = set(json.loads(_rawh.decode("utf-8")) or [])
+        except (ValueError, UnicodeDecodeError):
+            held = set()
+
+    # R510/R511: FOLD IN THE MATRICES ReadCollection DOES NOT LIST.
+    # `changed` is built from `cur_upd`, so anything missing from the listing can never be
+    # selected for a re-pull — 495 of our 7,896 catalogued matrices were frozen that way, in
+    # silence. Search indexes all of them (verified 495/495, and 0 of our catalogue absent).
+    #
+    # SCOPED, NOT WHOLESALE. Search carries 5,764 matrices we do not catalogue, and ~180 of
+    # those are absent from the listing too. Folding them all would seed the HEAD of the queue
+    # with unheld STRANGERS — unheld sorts first — starving the very set this rescues, and
+    # pulling them would mint store objects for series nobody published (the R487 shape).
+    #
+    # Scope = what we HOLD, plus anything an operator names explicitly. `held` covers the 468
+    # matrices with stale rows. The other 27 of R510's 495 are catalogued with ZERO rows, so
+    # they are not in `_held.json` and the fetcher has no way to know they exist — that is
+    # catalogue knowledge it does not carry. CSO_ONLY_MATRICES is the mechanism that already
+    # exists for exactly this ("a known set of holes filled out-of-band in one pass"), so
+    # naming them there now reaches them, instead of my inventing a second catalogue here.
+    _only_raw = os.environ.get("CSO_ONLY_MATRICES", "").strip()
+    want = {x.strip() for x in _only_raw.split(",") if x.strip()} if _only_raw else set()
+    scope = held | want
+    unlisted = set()
+    sv = search_vintages()
+    if sv:
+        unlisted = {m for m in sv if m not in cur_upd and m in scope}
+        if unlisted:
+            cur_upd = {**cur_upd, **{m: sv[m] for m in unlisted}}
+            print(f"[cso] {len(unlisted):,} catalogued matrices are absent from "
+                  f"{COLLECTION_METHOD} and were invisible to the diff (R510); vintages taken "
+                  f"from {SEARCH_METHOD} and given their own queue priority", flush=True)
+    else:
+        # Degraded, and said out loud: this is the pre-R510 behaviour, not a healthy run.
+        print(f"[cso] {SEARCH_METHOD} unavailable — falling back to {COLLECTION_METHOD} alone, "
+              f"which cannot see matrices it does not list (R510). Nothing is lost that was "
+              f"not already lost before 2026-08-30, but this run cannot repair the gap.",
+              flush=True)
+
     changed = [m for m, u in cur_upd.items() if stored.get(m) != u]
     # UNHELD MATRICES FIRST, then newest revisions.
     #
@@ -316,22 +430,14 @@ def update(unit, since) -> Result:
     # first fills real holes before re-pulls. It asserts nothing about freshness: a held
     # matrix is still re-pulled whenever its publisher revision differs from the cursor, it
     # merely yields priority to a matrix that has no rows at all.
-    held = set()
-    _rawh = blob.read_bytes(_held_path())
-    if _rawh:
-        try:
-            held = set(json.loads(_rawh.decode("utf-8")) or [])
-        except (ValueError, UnicodeDecodeError):
-            held = set()
+    # (`held` is loaded ABOVE the diff now — the unlisted fold scopes on it.)
     # TARGETED BACKFILL. CSO_ONLY_MATRICES=<comma-list> restricts this run to named
     # matrices, so a known set of holes can be filled out-of-band in one pass instead of
     # waiting ~86 scheduled runs for the rotation to reach them. It only ever NARROWS the
     # set the normal diff already selected, so it cannot pull something the cursor says is
     # current, and it leaves every other mechanism (subject routing, merge, cursor and held
     # advancement on pulled_ok only) untouched. Unset in normal operation.
-    _only = os.environ.get("CSO_ONLY_MATRICES", "").strip()
-    if _only:
-        want = {x.strip() for x in _only.split(",") if x.strip()}
+    if want:
         before = len(changed)
         changed = [m for m in changed if m in want]
         missing = want - set(changed)
@@ -339,7 +445,7 @@ def update(unit, since) -> Result:
               + (f"; {len(missing)} requested matrix/matrices are NOT in the publisher's "
                  f"changed set and will NOT be pulled: {sorted(missing)[:8]}" if missing else ""),
               flush=True)
-    changed = order_changed(changed, cur_upd, held)
+    changed = order_changed(changed, cur_upd, held, unlisted)
     if held:
         _unheld = sum(1 for m in changed if m not in held)
         print(f"[cso] {len(changed):,} changed; {_unheld:,} are NOT in the store and go "
