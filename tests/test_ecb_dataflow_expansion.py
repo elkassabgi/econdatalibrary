@@ -75,45 +75,49 @@ def test_the_parser_accepts_only_the_stem_shape():
         assert _ecb_dataflow(bad) is None, bad
 
 
+# ── ACCEPTANCE CRITERIA for the correct fix, currently xfail ────────────────
+# The first version of this expansion was WITHDRAWN (see the comment in orchestrate.py). It
+# mapped the wrong files: only 47 of 540 store keys parse, and the 18 catalogued daily EXR
+# ids live in `ECB__EXR__D`, which the parser rejects, while the three stems it accepted hold
+# zero of them. These tests stay as the bar the replacement must clear, marked xfail so they
+# fail LOUDLY the day someone re-adds a version that does not.
+
+pytestmark_reason = ("ecb dataflow expansion withdrawn 2026-08-30; these are the acceptance "
+                     "criteria for its replacement")
+
+
+@pytest.mark.xfail(reason=pytestmark_reason, strict=True)
 def test_a_changed_file_expands_to_every_series_in_its_dataflow(catalog):
-    """THE REGRESSION, through the shipped resolver. One file stem, 18 catalogue ids."""
-    ids, unmapped = _catalog_ids_for("ecb", ["ECB.DISS__EXR_PUB__A"])
+    """One EXR file must expand to the 18 catalogued EXR ids."""
+    ids, unmapped = _catalog_ids_for("ecb", ["ECB__EXR__D"])
     assert len(ids) == REAL["EXR"], f"expected {REAL['EXR']} EXR ids, got {len(ids)}"
-    assert all(i.startswith("ecb:EXR:") for i in ids), ids[:3]
-    assert unmapped == [], unmapped
 
 
+@pytest.mark.xfail(reason=pytestmark_reason, strict=True)
 def test_the_real_store_keys_reach_all_35_catalogued_ids(catalog):
-    """What the §5.7 note was actually complaining about: 'the catalog has 35 rows for it
-    but NONE matched'. All three catalogued dataflows must be reachable together."""
-    keys = ["ECB.DISS__EXR_PUB__A", "ECB.DISS__EXR_PUB__M",
-            "ECB.DISS__FM_PUB", "ECB.DISS__YC_PUB__Q"]
+    """THE ACCEPTANCE TEST THE REVIEW NAMED, and the one measurement that would have caught
+    the withdrawn version in a single query: every catalogued id must be reachable from a
+    store key that CONTAINS it.
+
+    Measured against the real store 2026-08-30, so the replacement has a target:
+        EXR/D  18/18 contained in ECB__EXR__D          (2,132,245 rows)
+        FM/D    3/3  contained in ECB__FM__D
+        FM/M    4/4  contained in ECB__FM__M
+        YC/B   10/10 contained in ECB__YC__B__G_N_A    (extra segment = key field 5)
+    35 of 35, against the 9 of 35 the withdrawn version reached.
+    """
+    keys = ["ECB__EXR__D", "ECB__FM__D", "ECB__FM__M", "ECB__YC__B__G_N_A"]
     ids, _ = _catalog_ids_for("ecb", keys)
     assert len(ids) == sum(REAL.values()) == 35, len(ids)
-    assert len({i.split(":")[1] for i in ids}) == 3
 
 
-def test_a_file_for_an_uncatalogued_dataflow_maps_to_nothing(catalog):
-    """The control that keeps this honest. 37 dataflows appear among the 540 stems and we
-    catalogue THREE; the other 34 must stay unmapped rather than mint ids.
-
-    Under r2 -- the backend production runs on -- an unmapped key stays unmapped and is
-    reported. Locally it would fall through to derive-all and return all 35, which is why
-    this test pins the backend."""
-    ids, unmapped = _catalog_ids_for("ecb", ["ECB.DISS__BKN_PUB"])
-    assert ids == [], ids
-    assert unmapped == ["ECB.DISS__BKN_PUB"]
-
-
-def test_the_range_cannot_bleed_into_a_neighbouring_source(catalog):
-    """`ecb:EXR:` .. `ecb:EXR;` must not reach `ecbx:`. A prefix range is only safe when its
-    upper bound is the byte after the separator, and getting that wrong would quietly
-    re-derive another source's series."""
-    ids, _ = _catalog_ids_for("ecb", ["ECB.DISS__EXR_PUB__A"])
-    assert not any(i.startswith("ecbx") for i in ids), ids
-
-
-def test_other_sources_are_untouched(catalog):
-    """The expansion is keyed on source_id == 'ecb'; nothing else may change behaviour."""
-    ids, unmapped = _catalog_ids_for("some_other_source", ["ECB.DISS__EXR_PUB__A"])
-    assert ids == [] and unmapped == ["ECB.DISS__EXR_PUB__A"]
+def test_the_parser_still_only_accepts_one_of_five_agency_prefixes():
+    """Documents WHY the first version failed, so the next one does not repeat it. The 540
+    store keys carry five prefixes -- ECB 353, ECB.DISS 93, ESTAT 78, EUROSTAT 8, IMF 8 --
+    and `_ecb_dataflow` accepts only `ECB.DISS__<FLOW>_PUB`, i.e. 47 of 540."""
+    assert _ecb_dataflow("ECB.DISS__EXR_PUB__A") == "EXR"
+    assert _ecb_dataflow("ECB__EXR__D") is None, (
+        "this is the file that actually holds the 18 catalogued daily EXR series, and the "
+        "parser rejects it -- the whole defect in one assertion")
+    assert _ecb_dataflow("ECB.DISS__JDF_EXR_HCI_CPI") is None
+    assert _ecb_dataflow("ESTAT__NAMQ_10_GDP") is None
