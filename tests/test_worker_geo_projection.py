@@ -108,7 +108,7 @@ FIXTURE = (
 )
 
 HARNESS = """
-import {{ geoAlias, filterGeoRows, normalizeGeoParam }} from {geo_url};
+import {{ geoAlias, filterGeoRows, normalizeGeoParam, GEO_CODE_ALIASES }} from {geo_url};
 const assert = (c, m) => {{ if (!c) {{ console.error("FAIL: " + m); process.exit(1); }} }};
 const a = geoAlias("worldbank:DT.DOD.DECT.CD:LMY");
 assert(a && a.canonical === "worldbank_wdi:DT.DOD.DECT.CD" && a.geo === "LMY", "alias");
@@ -116,6 +116,22 @@ assert(geoAlias("worldbank:NY.GDP.MKTP.CD") === null, "2-part not alias");
 assert(geoAlias("imf_weo:NGDP_RPCH:OEMDC") === null, "non-projection source");
 assert(geoAlias("worldbank:X:TOOLONG") === null, "bad geo");
 assert(normalizeGeoParam(" usa ") === "USA" && normalizeGeoParam("!") === null, "param");
+// Legacy income-group codes resolve to the form the grouped object actually holds.
+// Both entry points, because a user who gets the 404 will retry with ?geo=.
+const xd = geoAlias("worldbank:SP.POP.TOTL:XD");
+assert(xd && xd.geo === "HIC", "XD -> HIC on the alias path");
+assert(normalizeGeoParam("xm") === "LIC", "XM -> LIC on the ?geo= path");
+assert(normalizeGeoParam("XN") === "LMC" && normalizeGeoParam("XT") === "UMC", "XN/XT");
+// A code that is NOT in the alias map must pass through untouched, or the map becomes a
+// filter — the control that proves the translation is targeted, not blanket.
+assert(normalizeGeoParam("XK") === "XK", "unmapped 2-char passes through");
+assert(normalizeGeoParam("USA") === "USA", "3-char passes through");
+// Every map VALUE must itself be a legal geo. Nothing else checks the right-hand
+// side, so a bad entry would reach the row filter unvalidated.
+for (const [k, v] of Object.entries(GEO_CODE_ALIASES)) {{
+  assert(/^[A-Z0-9]{{2,3}}$/.test(k), "map key not a legal geo: " + k);
+  assert(normalizeGeoParam(v) === v, "map value not a legal geo: " + v);
+}}
 const fx = {fixture};
 const r = filterGeoRows(fx, "LMY");
 assert(r.rows === 2 && r.text.trim().split(String.fromCharCode(10)).length === 3, "filter rows");
