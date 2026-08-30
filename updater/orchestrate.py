@@ -944,6 +944,20 @@ def _catalog_series_count(source_id: str) -> int:
         return -1
 
 
+def _ecb_file_present(source_id, key):
+    """True when this run has the store file on the machine, under r2.
+
+    Cheap and local by design: `blob.exists` would be an R2 round trip per key and the point
+    is precisely whether the LOCAL scratch mirror holds it, because that is what the deriver
+    will open. Any error answers False — refusing to claim is the safe direction, it costs a
+    coherence note rather than a derive failure.
+    """
+    try:
+        return os.path.exists(os.path.join(config.source_dir(source_id), f"{key}.parquet"))
+    except Exception:                                   # noqa: BLE001 — never raise on a guard
+        return False
+
+
 def _ecb_store_key(key):
     """Split an ecb STORE key into (flow, first-key-segment, extra segments), or None.
 
@@ -1039,18 +1053,47 @@ def _catalog_ids_for(source_id: str, changed_keys):
             # correct — they hold none of the catalogued series, and a flow-only rule would
             # have handed each of them ten ids they do not contain.
             #
+            # A HEURISTIC WITH A MEASURED COUNTEREXAMPLE, not a proven rule. The review
+            # generalised the containment check from our 35 catalogued ids to all 3,728,675
+            # distinct store series and found one: `ECB__BSI__M` claims 38,897, of which 4 are
+            # NOT in that file (they live in `ECB.DISS__JDF_PUB_BSI_CROSS_BORDER_POSITIONS`).
+            # None of the four is catalogued, so there is no live impact — but 35 of 3.7M is
+            # 0.0009% of the store, and "the rule the data supports" was too strong a claim
+            # for that sample. It is a heuristic that is exact on everything we serve.
+            #
             # PK RANGE on `ecb:<FLOW>:<SEG1>.`, never LIKE ('_' is a wildcard, R492). '/' is
             # the byte after '.', so the range is exactly that dotted prefix.
             #
-            # WHAT THIS DOES NOT FIX, stated because the first version was oversold. ecb's
-            # changed set is a ROTATING window over its 540 store keys (ecb.py rotate_after),
-            # and the four files that hold catalogued ids sit at sorted indices 338, 344, 345
-            # and 443. Observed windows are 79-315 wide, so a run whose window stops before
-            # 338 still maps zero ids and still demotes with the same note. This makes ecb
-            # coherent on the runs that reach those files, where before it was coherent on
-            # none. It does not make it deterministically green, and calling it fixed would
-            # repeat the mistake this block replaces.
-            if source_id == "ecb":
+            # WHAT THIS DOES NOT FIX — CORRECTED, because my first disclosure was wrong in
+            # both its numbers and its mechanism, and the truth is BETTER than I said.
+            # ecb's changed set is a rotating window over 540 store keys (ecb.py
+            # rotate_after) and the four claiming files sit at sorted indices 338, 344, 345,
+            # 443. I wrote "windows are 79-315 wide, so a run that stops before 338 maps
+            # zero" — which reads as a prefix from index 0. It is not: `rotate_after` WRAPS
+            # and the bookmark is saved per file, so consecutive windows tile the ring and
+            # STARVATION IS STRUCTURALLY IMPOSSIBLE. Measured over the 25 most recent
+            # cursor-bearing runs the windows are 62-344, and a 200,000-run simulation from
+            # the live bookmark gives: 59.2% of runs reach at least one claiming file, mean
+            # gap 2.5 runs, worst 6-7, guaranteed bound ceil(540/62) = 9 runs. At the real
+            # cadence of 1.39 runs/day that is typically under two days and at worst five.
+            # ecb still reports `partial` on most ticks regardless, because its own deferral
+            # branch returns partial; what changes is that the 35 served CSVs stop going
+            # stale on 59.2% of runs.
+            # THE r2 INVARIANT THIS BRANCH WOULD OTHERWISE BREAK. The comment further down
+            # states what everything downstream relies on: "under r2 we derive exactly the ids
+            # we could MAP (their files are, by construction, the ones this run wrote)". For
+            # ecb that antecedent is FALSE — `ecb.py` seeds a cursor for every file it VISITS,
+            # before fetching, and ten paths there `continue` without writing (including the
+            # 400/404 its own comment calls "the normal 'nothing new'"). Evidence: in 25 of 25
+            # recent cursor-bearing runs the changed count equals the ATTEMPTED count exactly.
+            #
+            # So a mapped ecb id can name a file this run never wrote, and under r2 the deriver
+            # would then fail with "zero rows matched" — a narrower rerun of exactly what made
+            # v1 harmful. It is CONDITIONAL, not guaranteed (a 200 almost always yields rows
+            # because `_start_period` is inclusive), which is why it was invisible. The guard
+            # is one line: under r2, only claim ids whose file is actually present.
+            if source_id == "ecb" and (config.BACKEND != "r2"
+                                       or _ecb_file_present(source_id, k)):
                 parsed = _ecb_store_key(k)
                 if parsed:
                     flow, seg1, extras = parsed
