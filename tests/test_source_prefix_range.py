@@ -16,12 +16,15 @@ today -- `unctad_biotrademerch` against five longer siblings, `fsi` against
 looks: ':' is 0x3A and ';' is 0x3B, adjacent bytes, and every one of those 19 extends with
 '_' (0x5F) or a letter (0x41+), which sort AFTER ';'.
 
-DIGITS DO NOT. 0x30-0x39 are all BELOW 0x3B, so `foo2:X` < `foo;` and a source id that is
-another one plus a digit WOULD be swallowed by the shorter one's range. I wrote the
-assertion the confident way round first -- "every character that can extend a source id
-sorts after ';'" -- and it failed on '0'. There are zero such pairs among the real 349
-source ids today, so the substitution is correct; the registry guard below is what keeps it
-correct when someone adds the 350th.
+AND THE HAZARD I FIRST RECORDED HERE DOES NOT EXIST. I wrote that digits (0x30-0x39, below
+0x3B) meant a digit-extended source id would be swallowed, having checked only that
+`foo2:X < foo;`. The other half of the predicate kills it: `foo2:X >= foo:` is FALSE,
+because '2' is also below ':' (0x3A). A digit-extended sibling falls below the LOWER bound.
+
+`[s+':', s+';')` is therefore EXACTLY the `s:` prefix set for ANY s, unconditionally -- no
+byte lies strictly between ':' and ';'. The registry guard I added for the imagined hazard
+was a false tripwire that would have failed CI on a legitimate future `unctad_oceantrade2`,
+and it is gone.
 
 These tests pin that reasoning, and the equivalence itself, without needing the real 11.9 GB
 catalogue.
@@ -100,46 +103,43 @@ def test_range_and_scan_agree_for_every_source(cat):
         assert sorted(_range_ids(cat, s)) == sorted(_scan_ids(cat, s)), s
 
 
-def test_digits_sort_BELOW_the_upper_bound_which_is_the_real_hazard():
-    """THE TRAP, found by writing this assertion the wrong way round first.
+def test_the_range_is_the_prefix_set_for_ANY_source_id():
+    """CORRECTED 2026-08-30. My first version of this asserted a hazard that does not exist.
 
-    I asserted "every character that can extend a source id sorts after ';'" and it FAILED:
-    ';' is 0x3B and the digits are 0x30-0x39, all BELOW it. So a source id that is another
-    source id followed by a DIGIT lands INSIDE the shorter one's range -- `foo2:X` < `foo;`
-    -- and the shorter source would silently swallow the longer one's series.
+    I checked ONE HALF of a two-sided predicate. Digits do sort below ';' (0x32 < 0x3B), so
+    `foo2:X < foo;` is True -- and I stopped there and wrote "a digit-extended source id
+    WOULD leak". The other half kills it: `foo2:X >= foo:` is FALSE, because '2' (0x32) is
+    also below ':' (0x3A). A digit-extended sibling falls below the LOWER bound, not inside
+    the range.
 
-    Letters and '_' are safe (0x41+, 0x5F). Digits are not. Measured on the real catalogue
-    2026-08-30: 349 source ids, ZERO digit-extended prefix pairs, and zero rows landing in a
-    range they do not belong to -- so the substitution is correct TODAY. The next test is
-    what keeps it correct.
+    So `[s+':', s+';')` is EXACTLY the `s:` prefix set for ANY s, unconditionally -- no byte
+    lies strictly between ':' and ';'. There is no hazard to guard, and the registry guard I
+    added for it was a FALSE TRIPWIRE that would have failed CI on a legitimate future
+    `unctad_oceantrade2`.
+
+    This is R513's own rule landing on R513: I stated a property instead of testing it, in
+    the entry about stating properties instead of testing them.
     """
-    assert ord(";") == ord(":") + 1
-    for ch in "_abcxyzABCXYZ":
-        assert ord(ch) > ord(";"), ch
-    for ch in "0123456789":
-        assert ord(ch) < ord(";"), (
-            f"{ch!r} sorts below ';' -- a digit-extended source id WOULD leak")
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY)")
+    rows = ["foo:S1", "foo:S2", "foo2:L1", "foo0:Z", "foo9:Z", "foo_x:Y", "fooA:Y", "fo:X"]
+    con.executemany("INSERT INTO series VALUES (?)", [(r,) for r in rows])
 
+    def rng(s):
+        return sorted(r[0] for r in con.execute(
+            "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+            (s + ":", s + ";")))
 
-def test_no_registry_source_id_is_another_one_plus_a_low_byte():
-    """THE GUARD, mechanical rather than prose. The PK-range substitution in
-    `_catalog_ids_for` and `audit_schedule_coverage` is equivalent only while no source id is
-    another source id extended by a byte below ';' -- in practice, a digit.
+    assert rng("foo") == ["foo:S1", "foo:S2"], rng("foo")
+    assert rng("foo2") == ["foo2:L1"]
+    assert rng("foo0") == ["foo0:Z"]
+    assert rng("fooA") == ["fooA:Y"]
+    assert rng("foo_x") == ["foo_x:Y"]
+    assert rng("fo") == ["fo:X"], "a SHORTER id must not pick up the longer one either"
+    # Both halves of the predicate, stated so the omission cannot recur.
+    assert ("foo2:X" < "foo;") and not ("foo2:X" >= "foo:")
+    assert ord(";") == ord(":") + 1, "no byte can lie strictly between the bounds"
 
-    This reads the committed registry rather than the 11.9 GB catalogue, so it is fast and
-    runs in CI. If someone adds `unctad_oceantrade2` beside `unctad_oceantrade`, this fails
-    here instead of silently merging two sources' series months later.
-    """
-    import yaml
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(root, "updater", "registry.yaml"), encoding="utf-8") as fh:
-        reg = yaml.safe_load(fh)
-    ids = sorted({s["source_id"] for s in reg["sources"] if s.get("source_id")})
-    bad = [(a, b) for a in ids for b in ids
-           if b != a and b.startswith(a) and ord(b[len(a)]) < ord(";")]
-    assert not bad, (
-        f"source id(s) extended by a byte below ';' -- the shorter one's PK range would "
-        f"swallow the longer one's series: {bad}")
 
 # -- the SPLIT-PART range, same substitution, different separator --------------
 
