@@ -1007,31 +1007,29 @@ def _catalog_ids_for(source_id: str, changed_keys):
                     seen.add(tcand)
                     exact.append(tcand)
                     continue
-            # DATAFLOW expansion (ecb). One bulk file carries every series of a dataflow,
-            # so a changed file means every catalogued series under it may be stale. Same
-            # ONE-TO-MANY shape as the split-part block below, on a different key form.
-            # Measured 2026-08-30: ecb has been `partial` since 2026-07-16 reporting "315
-            # changed series_keys have no catalog mapping ... the catalog has 35 rows for it
-            # but NONE matched", and 20 of its last 25 runs carry that same note. Both sides
-            # measured: the catalogue holds EXR 18 / FM 7 / YC 10, the store reports 540
-            # stems, and all three catalogued dataflows appear among them.
+            # DATAFLOW expansion (ecb) — WITHDRAWN 2026-08-30, one commit after shipping it.
             #
-            # A PK RANGE, never LIKE. `>= 'ecb:EXR:' AND < 'ecb:EXR;'` is an index range on
-            # the primary key; the `LIKE ? ESCAPE` form below defeats sqlite's LIKE
-            # optimisation and full-scans the 11.9 GB catalogue once per unmapped key, which
-            # the comment above records as the likely cause of a 60-minute fence blowing.
-            if source_id == "ecb":
-                flow = _ecb_dataflow(k)
-                if flow:
-                    got = [r[0] for r in con.execute(
-                        "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
-                        (f"{source_id}:{flow}:", f"{source_id}:{flow};"))]
-                    if got:
-                        for cid in got:
-                            if cid not in seen:
-                                seen.add(cid)
-                                exact.append(cid)
-                        continue
+            # It mapped the WRONG FILES, and the review measured exactly how wrong. My claim was
+            # "all 540 store keys parse to 37 dataflows"; only 47 parse. The keys carry FIVE
+            # agency prefixes -- ECB 353, ECB.DISS 93, ESTAT 78, EUROSTAT 8, IMF 8 -- and the
+            # parser accepted only `ECB.DISS__<FLOW>_PUB`. My own probe printed "unparsed: 489"
+            # and I read past it.
+            #
+            # Worse than useless: all 18 catalogued EXR ids are DAILY (`D.`) and live in
+            # `ECB__EXR__D` (2,132,245 rows, contains them) while the three stems it could map
+            # -- `ECB.DISS__EXR_PUB__{A,M,Q}` -- contain ZERO of them. Under AQUEDUCT_BACKEND=r2
+            # that hands derive_and_put 18 ids whose bytes are not on the runner, turning a
+            # coherence NOTE into real `csv_derive failed` plus 18 ids parked in csv_retry_queue
+            # every run. Removing it restores the honest note.
+            #
+            # THE CORRECT RULE, measured and ready (see .claude/TODO.md): a store key
+            # `ECB__<FLOW>__<SEG1>[__<SEGn>]` holds catalogue ids `ecb:<FLOW>:<SEG1>.*`.
+            # Verified by CONTAINMENT, not by name: EXR/D 18/18, FM/D 3/3, FM/M 4/4 in
+            # ECB__EXR__D / ECB__FM__D / ECB__FM__M, and YC 10/10 in ECB__YC__B__G_N_A whose
+            # extra segment matches the key's 5th field. That is 35/35 against the 9/35 this
+            # version reached. It is not re-added here without the acceptance test the review
+            # named: every catalogued id must be reachable from a key that CONTAINS it.
+
             # SPLIT-PART expansion (2026-08-05, the census cycle). A table too large for
             # one CSV is catalogued as `<source>:<table>#<part>` rows with NO base id
             # (census: eits__m3#no/#yes, idb__1year#AD..., six composite trade splits) —
