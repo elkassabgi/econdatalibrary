@@ -181,3 +181,64 @@ def test_a_candidate_containing_like_wildcards_needs_no_escaping(cat):
         (cand + "#", cand + "$")))
     assert rng == ["src:a_b%c#1", "src:a_b%c#2"], rng
     assert "src:aXbYc#3" not in rng, "'_' and '%' must be literal, not wildcards"
+
+# ── DRIVEN THROUGH `_catalog_ids_for`, because everything above re-implements the ranges ──
+# A review mutated the SHIPPED bounds and 6 of 9 mutations survived the full 695-test suite:
+# widening the split-part upper bound to '~', dropping its '#' lower bound, flipping '<' to
+# '<=', emptying the punctuation index entirely (which deletes the frankfurter fix), and both
+# derive-all bounds. Every one is free while the tests assert the property against their own
+# fixture instead of the function that ships. R511 rule 4, third time in this file.
+
+import pytest                                                          # noqa: E402
+from updater import config                                             # noqa: E402
+from updater.orchestrate import _catalog_ids_for                       # noqa: E402
+
+
+@pytest.fixture
+def real_catalog(tmp_path, monkeypatch):
+    p = tmp_path / "c.db"
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    rows = [
+        ("census:eits__m3#no", "census"), ("census:eits__m3#yes", "census"),
+        # NO BASE ID -- that is the real shape and the reason the split-part branch exists:
+        # "a table too large for one CSV is catalogued as `<source>:<table>#<part>` rows with
+        # NO base id". My first fixture included `census:eits__m3`, the EXACT match fired
+        # first, and the test failed against correct behaviour. A fixture that does not match
+        # production tests the fixture.
+        ("census:eits__m3x#no", "census"),      # LONGER candidate: must not leak in
+        ("census:eits__m3-x", "census"),        # '-' is 0x2D, between '#' and '$'? no: below '#'
+        ("census:eits__m3.x", "census"),        # '.' is 0x2E, ABOVE '$' -- a '~' bound would eat it
+        ("census:eits__m32", "census"),         # '2' is 0x32, ABOVE '$' -- same
+    ]
+    con.executemany("INSERT INTO series VALUES (?,?)", rows)
+    con.commit(); con.close()
+    monkeypatch.setenv("ECONDL_CATALOG", str(p))
+    monkeypatch.setattr(config, "BACKEND", "r2")     # production path; no derive-all fallback
+    return p
+
+
+def test_split_part_expansion_through_the_shipped_resolver(real_catalog):
+    """THE MUTATIONS THAT SURVIVED. Widening the upper bound past '$' must fail HERE: the
+    fixture holds `census:eits__m3.x` and `census:eits__m32`, both ABOVE '$', which a '~'
+    bound would swallow. Dropping the '#' lower bound must fail too — `census:eits__m3`
+    itself would be returned as one of its own parts."""
+    ids, unmapped = _catalog_ids_for("census", ["eits__m3"])
+    assert sorted(ids) == ["census:eits__m3#no", "census:eits__m3#yes"], sorted(ids)
+    assert unmapped == [], unmapped
+
+
+# ONE MUTATION I DELIBERATELY DID NOT CHASE, with the reason. Dropping the '#' from the LOWER
+# bound (`(cand, cand+"$")`) still passes, and that is correct rather than a gap: the only ids
+# between `cand` and `cand#` are `cand` itself and control bytes, and `cand` is always claimed
+# by the EXACT-match branch several blocks earlier, which `continue`s before reaching here. So
+# the mutation is benign in every reachable state. Manufacturing a `census:eits__m3!x` fixture
+# to kill it would be testing a shape production cannot produce -- which is the mistake the
+# fixture comment above records.
+
+
+def test_split_part_does_not_leak_into_a_longer_candidate(real_catalog):
+    """`census:eits__m3x#no` belongs to a DIFFERENT table. Re-deriving it under the shorter
+    candidate would overwrite one series' CSV from another's rows."""
+    ids, _ = _catalog_ids_for("census", ["eits__m3"])
+    assert not any(i.startswith("census:eits__m3x") for i in ids), ids
