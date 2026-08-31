@@ -69,13 +69,27 @@ def main() -> int:
                 (sid + ":", sid + ";")).fetchone()[0]
             rnd = random.Random(20260831)
             keys = list(cursors)
-            sample = keys if len(keys) <= a.sample else rnd.sample(keys, a.sample)
+            # Small cursor sets run in FULL regardless of --sample: an EXPANSION
+            # source's id-coverage is only fair over the whole key set (ecb's 540
+            # keys sampled at 200 read idcov 51% while the full set claims 35/35),
+            # and 2,000 keys is still cheap (indexed seeks).
+            full_bound = max(a.sample, 2000)
+            sample = keys if len(keys) <= full_bound else rnd.sample(keys, a.sample)
             ids, unmapped = orchestrate._catalog_ids_for(sid, sample)
             mapped_keys = len(sample) - len(unmapped)
             pct = (100.0 * mapped_keys / len(sample)) if sample else 0.0
             cap = getattr(config, "CURSOR_CAP", 50_000)
+            # ID-COVERAGE (WU-9): key-mapped% is the WRONG KPI for one-to-many
+            # EXPANSION sources — ecb's 0.5% is correct geometry (only 4 of 540 store
+            # files contain catalogued series) while its expansion claims 35/35 ids.
+            # The mapper only ever returns catalogue hits, so coverage is simply
+            # |ids_returned| / n_catalogued. Meaningful when the sample could plausibly
+            # reach the whole catalogue; a 200-key sample against norgesbank's 35k ids
+            # reads ~0 and can never fake an OK-EXPANSION.
+            id_cov = (100.0 * len(ids) / n_cat) if n_cat else 0.0
             klass = ("UNCATALOGUED" if n_cat == 0 else
                      "OK" if pct >= 99.5 else
+                     "OK-EXPANSION" if id_cov >= 99.5 else
                      "GRAIN-MISMATCH" if pct == 0.0 else
                      "PARTIAL")
             e = reg.get(sid, {})
@@ -84,6 +98,7 @@ def main() -> int:
                 "sample_n": len(sample), "mapped_keys": mapped_keys,
                 "mapped_pct": round(pct, 1),
                 "ids_returned": len(ids),
+                "id_coverage_pct": round(id_cov, 1),
                 "cap_saturated": n_cur >= cap,
                 "derive_all_rescues_locally": 0 < n_cat <= orchestrate._DERIVE_ALL_CAP,
                 "catalog_scope": str(e.get("catalog_scope", "full")),
@@ -93,7 +108,7 @@ def main() -> int:
                 "sample_keys": sample[:3],
             })
             print(f"{klass:<15} {sid:<26} cursors={n_cur:>9,} cat={n_cat:>10,} "
-                  f"mapped {mapped_keys}/{len(sample)} ({pct:5.1f}%)"
+                  f"mapped {mapped_keys}/{len(sample)} ({pct:5.1f}%) idcov={id_cov:5.1f}%"
                   f"{'  CAP-SATURATED' if n_cur >= cap else ''}"
                   f"{'  derive-all-rescue(local)' if 0 < n_cat <= orchestrate._DERIVE_ALL_CAP else ''}",
                   flush=True)
@@ -101,13 +116,20 @@ def main() -> int:
         config.BACKEND = _saved_backend
         ccon.close()
 
-    order = {"GRAIN-MISMATCH": 0, "PARTIAL": 1, "UNCATALOGUED": 2, "OK": 3}
+    order = {"GRAIN-MISMATCH": 0, "PARTIAL": 1, "UNCATALOGUED": 2, "OK-EXPANSION": 3, "OK": 4}
     rows.sort(key=lambda r: (order.get(r["class"], 9), r["source"]))
     summary = {}
     for r in rows:
         summary[r["class"]] = summary.get(r["class"], 0) + 1
     print("\nsummary:", json.dumps(summary))
-    out = a.json_out or os.path.join(ROOT, "data", "cursor_grain_audit.json")
+    # A FILTERED run must not clobber the fleet baseline (AR-032's note: the WU-1
+    # pilot's exit-gate run silently replaced the 260-source baseline with a 1-source
+    # file, and the "before" numbers survived only as spec text). --source runs land
+    # in a .partial.json unless --json-out says otherwise; only full runs own the
+    # baseline path.
+    default_name = ("cursor_grain_audit.json" if not a.source
+                    else "cursor_grain_audit.partial.json")
+    out = a.json_out or os.path.join(ROOT, "data", default_name)
     with open(out, "w", encoding="utf-8") as f:
         json.dump({"sample_per_source": a.sample, "summary": summary, "rows": rows},
                   f, indent=1)
