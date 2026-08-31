@@ -362,6 +362,17 @@ def update(unit, since) -> Result:
 
     tally = Tally()
     series_cursors: dict = {}
+    # THE CHANGED-KEYS CHANNEL (second pilot after norgesbank; WU-5 of the 2026-08-31
+    # grain sweep). series_cursors above is keyed by PRODUCT ID (8-digit pids) — a
+    # grain no §5.7 tier can map (audit: 0/25) — while the merge's series_key grain is
+    # VECTORS ('v65201210'), which the punctuation tier bridges to the 20 curated
+    # 'statcan:V…' catalogue ids (measured: 0 _norm_id collisions). The union is
+    # honest ONLY if every merge reported: one skipped report would make the dict
+    # claim "nothing else changed" while that table's vectors went stale — so a
+    # single over-cap merge (a brand-new giant cube's first pull) drops the WHOLE
+    # run back to the legacy path (changed_keys=None) rather than lie.
+    changed_all: dict = {}
+    changed_complete = True
     maxd = None
     # advance the watermark only to the OLDEST release time that we have NOT fully
     # processed; on full success it becomes `today`. On any transient sub-fault we
@@ -403,7 +414,22 @@ def update(unit, since) -> Result:
 
         before = blob.row_count(path)
         try:
-            n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+            if tbl.num_rows <= 2_000_000:
+                n, md, _ch = merge.merge_and_write(
+                    path, tbl, mode="merge", dedup_keys=DEDUP,
+                    report_changed_keys=True)
+                changed_all.update(_ch)
+            else:
+                # over the report cap (merge.py refuses at entry): merge without the
+                # report and poison the union — honesty is binary per run. Say so
+                # (reviewer's note b): without this line the log cannot distinguish
+                # "poisoned to legacy" from "not migrated".
+                print(f"[statcan] {pid}: {tbl.num_rows:,} rows exceeds the "
+                      f"changed-keys report cap — this run falls back to the legacy "
+                      f"productId-cursor path (changed_keys=None)", flush=True)
+                n, md = merge.merge_and_write(path, tbl, mode="merge",
+                                              dedup_keys=DEDUP)
+                changed_complete = False
         except DefinitiveError:
             # never-shrink / column-drop guard tripped -> keep existing data, surface
             # as a sub-unit failure rather than crashing the whole run.
@@ -433,5 +459,11 @@ def update(unit, since) -> Result:
     # cube's tail is empty, is LEGITIMATE for StatCan (it does not release every cube
     # every day) and must NOT raise a structural DefinitiveError. True structural /
     # transport breaks already surface in _get/_post and _changed_pids.
-    return finalize(tally, tally.added, last, source=SOURCE,
-                    series_cursors=series_cursors, empty_window_floor=10 ** 9)
+    res = finalize(tally, tally.added, last, source=SOURCE,
+                   series_cursors=series_cursors, empty_window_floor=10 ** 9)
+    if changed_complete:
+        # merge-measured vector-grain changed set; {} on a quiet pass is the honest
+        # "nothing changed" (coherence met). A run with any unreported merge returns
+        # None here and keeps the legacy productId-cursor behaviour exactly.
+        res.changed_keys = changed_all
+    return res

@@ -630,9 +630,18 @@ def _derive_changed_csvs(unit, res, blob):
             except Exception:                       # noqa: BLE001 — a note must never raise
                 n_ids = None
             from .strategies.fetchers._common import CURSOR_CAP as _CCAP
+            # cap_saturated exists for TRUNCATED cursor sets (>= CURSOR_CAP means the
+            # changed-set was cut and proves nothing about the tail — R497). A MIGRATED
+            # changed_keys set is NEVER truncated: the merge reports completely under
+            # its own 2M cap, and an over-cap merge poisons the whole run to None
+            # before this path can run. Without this predicate, a complete
+            # merge-measured set of >=50k uncatalogued keys (statcan unions 28-32k
+            # vectors per changed cube) tripped the refusal on a factually false
+            # "truncated evidence" note and demoted a healthy subset-scope run —
+            # the WU-5 reviewer drove it end-to-end (CASE D).
             note, demote = _classify_zero_mapped(
                 unit.source_id, scope, n_ids, sample_hits, sample_n, len(unmapped),
-                cap_saturated=len(unmapped) >= _CCAP)
+                cap_saturated=(not migrated) and len(unmapped) >= _CCAP)
             if not demote:
                 print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
             return [], note, [], {}

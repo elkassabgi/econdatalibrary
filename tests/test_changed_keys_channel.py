@@ -101,3 +101,56 @@ def test_norgesbank_wires_the_channel():
                encoding="utf-8").read()
     assert "report_changed_keys=True" in src
     assert src.count("res.changed_keys = ") >= 2   # merge path + quiet path ({})
+
+
+def test_statcan_wires_the_channel_with_the_all_or_none_rule():
+    """WU-5 call-site pin: statcan opts in per-table under the report cap, and ONE
+    unreported merge poisons the union (changed_keys stays None) — an incomplete
+    dict would claim 'nothing else changed' while a giant table's vectors went
+    stale."""
+    src = open(os.path.join(os.path.dirname(orchestrate.__file__),
+                            "strategies", "fetchers", "statcan.py"),
+               encoding="utf-8").read()
+    assert "report_changed_keys=True" in src
+    assert "changed_complete = False" in src
+    assert "if changed_complete:" in src
+    assert "res.changed_keys = changed_all" in src
+
+
+def test_statcan_vector_keys_bridge_via_punctuation(catalog, monkeypatch):
+    """The migration's mapping premise: lowercase vector keys ('v65201210') reach the
+    uppercase catalogue ids via the punctuation-insensitive fallback — driven through
+    the SHIPPED mapper against a fixture catalogue."""
+    import sqlite3 as _sq
+    p = os.environ["ECONDL_CATALOG"]
+    con = _sq.connect(p)
+    con.execute("INSERT INTO series VALUES (?,?)", ("statcan:V65201210", "statcan"))
+    con.execute("INSERT INTO series VALUES (?,?)", ("statcan:V1234567", "statcan"))
+    con.commit(); con.close()
+    from updater import config
+    monkeypatch.setattr(config, "BACKEND", "r2")
+    ids, unmapped = orchestrate._catalog_ids_for("statcan", ["v65201210", "v9999999"])
+    assert ids == ["statcan:V65201210"]
+    assert unmapped == ["v9999999"]
+
+
+def test_statcan_registry_declares_subset_scope():
+    """The reviewer's note (a): dropping the registry line failed NO test. Pin it —
+    the subset scope is what turns uncatalogued-only runs into non-demoting notes."""
+    assert orchestrate._catalog_scope("statcan") == "subset"
+
+
+def test_migrated_complete_set_never_reads_cap_saturated(catalog, monkeypatch):
+    """The reviewer's REQUIRED change (CASE D): a MERGE-MEASURED changed set is never
+    truncated, so >=50k uncatalogued keys must take the subset note, not the
+    'cursor-cap-saturated — truncated evidence' refusal + demote."""
+    import sqlite3 as _sq
+    from updater import config
+    monkeypatch.setattr(config, "BACKEND", "r2")
+    monkeypatch.setattr(orchestrate, "_catalog_scope", lambda sid: "subset")
+    big = {f"vec{i}": "2026-08-31" for i in range(50_001)}   # >= CURSOR_CAP, complete
+    failed, note, deferred, reasons = orchestrate._derive_changed_csvs(
+        _Unit(), _res(changed_keys=big), blob=None)
+    assert failed == [] and deferred == []
+    assert note is not None and "cap-saturated" not in note and "truncated" not in note, note
+    assert "coverage note" in note or "coherent" in note, note
