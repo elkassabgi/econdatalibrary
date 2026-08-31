@@ -515,29 +515,27 @@ def _state_path() -> str:
 
 
 def _load_state() -> dict:
-    p = _state_path()
-    if not os.path.exists(p):
+    """BLOB-ROUTED (R533's class, the hole that entry named and left open).
+
+    This was a plain open(), and sec_edgar runs in the CLOUD, so the per-window done-markers
+    NEVER survived the runner: every CI run started {} and re-did windows it had already
+    completed. Measured 2026-08-31: the file existed locally (124 B, recording edgar_13f
+    01mar2026-31may2026 ok/3,877,004 added) and was ABSENT on R2. The local copy was pushed
+    to R2 BEFORE this shipped — under the r2 backend read_bytes ignores local files, so
+    shipping first would have discarded the very history being preserved.
+    """
+    raw = blob.read_bytes(_state_path())
+    if raw is None:
         return {}
     try:
-        with open(p, encoding="utf-8") as f:
-            return json.load(f)
+        return json.loads(raw.decode("utf-8"))
     except Exception:
         return {}
 
 
 def _save_state(state: dict) -> None:
-    p = _state_path()
-    tmp = f"{p}.{os.getpid()}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f, separators=(",", ":"))
-        os.replace(tmp, p)
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+    blob.write_bytes_atomic(_state_path(),
+                            json.dumps(state, separators=(",", ":")).encode("utf-8"))
 
 
 def current_vintage(unit) -> str | None:

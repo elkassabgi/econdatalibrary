@@ -55,11 +55,12 @@ def test_all_giant_sidecar_consumers_route_through_the_fix():
     sdmx_nso calls them directly. Pin those call sites, and pin that nobody opens
     the sidecar around blob.
 
-    OPEN HOLE, NOT COVERED (deliberately): sec_edgar.py keeps PRIVATE plain-open()
-    state (`_sec_edgar_incr_state.json` under DATA_ROOT, _load_state:517) and so
-    does statcan.py (its STATE watermark file, _load_state:135) — the same
-    R190/R533 class, each needing its own migrate-then-reroute pass. Their fix
-    must not be claimed by this test."""
+    THAT HOLE IS NOW CLOSED (2026-08-31, same session): sec_edgar's
+    `_sec_edgar_incr_state.json` and statcan's STATE watermark were plain-open()
+    per-runner state — sec_edgar runs in the CLOUD, so its per-window done-markers
+    never survived and every CI run re-did completed windows. Both local copies
+    were pushed to R2 first (124 B and 35 B, read-back identical) and both now
+    route through blob. Pinned below so they cannot regress."""
     base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "updater", "strategies", "fetchers")
 
@@ -79,3 +80,13 @@ def test_all_giant_sidecar_consumers_route_through_the_fix():
             if "_giant_state.json" in line and "open(" in line:
                 raise AssertionError(
                     f"{mod}:{i} opens the sidecar directly — bypasses the blob routing")
+
+    # The two formerly-private states, now blob-routed. A plain open() here means the
+    # per-runner disease is back: sec_edgar would re-do completed windows on every CI run.
+    for mod, marker in (("sec_edgar.py", "_state_path()"), ("statcan.py", "STATE")):
+        m = src(mod)
+        assert f"blob.read_bytes({marker})" in m, (
+            f"{mod} no longer READS its incremental state through blob")
+        assert f"blob.write_bytes_atomic({marker}" in m, (
+            f"{mod} no longer WRITES its incremental state through blob")
+        assert "json.load(open(" not in m, f"{mod} reopened a raw json.load(open(...))"
