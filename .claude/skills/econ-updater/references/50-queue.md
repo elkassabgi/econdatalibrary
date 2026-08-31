@@ -1628,3 +1628,16 @@ keys — the routine trickle, absorbed by the next periodic refresh). Full DoD p
 `verify_source_served --source dst`: MISSING 0, ORPHANED 0, byte-compare 25/25 identical
 (after syncing the one 32-row-stale mirror file), D1 2,264 == catalogue, live-listed →
 **SERVED**. The FOR-AHMED refresh-command request is WITHDRAWN — nothing blocks on it.
+
+### eurostat "540 vanished files" — CASE CLOSED 2026-08-31 (R532); the REAL item is a 440-flow backfill
+
+No deleter existed: 487 duplicate $DV orphans deleted 08-08 (catalog-guarded, receipt
+_dv_delete.log) + 54 orphans 08-17 under "Ahmed directive 'delete'" (receipt JSON);
+identity closure 7,754 − 487 − 54 + 1 = 7,214; both adversarial verifiers NOT-REFUTED.
+Neither wave was ledgered — that recording gap is R532's rule.
+**THE BOARD'S LARGEST SERVING GAP, newly minted:** the 440 catalogued-but-fileless flows
+were NEVER INGESTED and carry **60.3% of catalogued eurostat observations** (every
+≥100M-obs flow; raw .tsv.gz + June-vintage clean_grouped exist locally for all 440).
+Backfill scoping is REQUIRED before any run: size the storage/class-A cost (the
+new-giant-storage-quote-first standing order applies — numbers go to Ahmed BEFORE the
+pull/ingest), choose desktop-first local ingest vs fetcher re-pull, and review the plan.
