@@ -249,10 +249,16 @@ def _time_var(variables):
     silently freezing the table. Resolving the parser's own axis kills that
     class. Returns None when the cube has no date axis at all."""
     meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    # dim_labels (valueTexts) supplied so the resolver can judge a name-matched axis on
+    # its LABELS when the codes are positional — hagstofa ships unflagged `Ár`/`Year`
+    # axes coded '0','1','2'… with the period only in valueTexts, and refusing them on
+    # codes alone booked 33 live tables (deaths to 2025, elections 2024) as structural
+    # breaks on every run. Same-axis-only by construction; see resolve_time_dim.
     idx = _pxweb.resolve_time_dim(
         [v.get("code", "") for v in variables],
         [[str(c) for c in (v.get("values") or [])] for v in variables],
-        meta_time_code=meta_time_code, parse_fn=parse_date)
+        meta_time_code=meta_time_code, parse_fn=parse_date,
+        dim_labels=[[str(x) for x in (v.get("valueTexts") or [])] for v in variables])
     return variables[idx] if idx is not None else None
 
 

@@ -286,6 +286,31 @@ def resolve_time_dim(dim_ids, dim_codes, *, meta_time_code=None, role_time=None,
             codes = dim_codes[i] if i < len(dim_codes) else []
             if date_parse_rate(codes, parse_fn, sane_lo=sane_lo, sane_hi=sane_hi) > 0:
                 return i
+            # SAME-AXIS LABEL RESCUE (2026-08-31, hagstofa's 33 false structural breaks).
+            # Unflagged POSITIONAL time axes exist: `Ár`/`Year`/`Mánuður` with codes
+            # '0','1','2'… and the period only in valueTexts ('1971-1975', '2024') — the
+            # publisher never sets `time: true` on them, so the authoritative branch's
+            # label fallback (case (a) above) can never apply, and this branch refused
+            # them on codes alone. Measured 2026-08-31: 20 of 20 recoverable tables from
+            # hagstofa's standing "33/1170 structural" note are exactly this shape,
+            # labels parsing at 0.65-1.00 — live tables (deaths to 2025, elections 2024)
+            # booked as schema breaks on every run. The rescue mirrors the flagged
+            # branch's rule and its safety shape: judge the NAME-MATCHED axis on codes
+            # OR labels, and when neither parses return None — NEVER a different
+            # dimension (the scb Region door, R331, stays shut: `Region` is not in
+            # TIME_CODES and a non-named axis can never enter this loop). Gated on the
+            # caller SUPPLYING dim_labels. MEASURED at ship (the reviewer's count, not
+            # mine): 22 non-test callers, 19 label-less — those keep the old behaviour
+            # byte-identically. TWO callers pass labels: hagstofa (the migration this
+            # rescue exists for) and jobs/ingest_stat_slovenia.py:213, which therefore
+            # INHERITS this rescue — reviewed as safe (SURS is code-coded; its FETCHER's
+            # own parser is label-blind, so production slovenia is unchanged), but any
+            # future dim_labels caller adopts this branch and should say so.
+            if dim_labels is not None:
+                labels = dim_labels[i] if i < len(dim_labels) else []
+                if date_parse_rate(labels, parse_fn,
+                                   sane_lo=sane_lo, sane_hi=sane_hi) > 0:
+                    return i
     return None
 
 
