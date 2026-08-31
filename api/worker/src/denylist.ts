@@ -110,6 +110,21 @@ export const SERIES_CARVEOUTS: Readonly<Record<string, readonly string[]>> = {
   // while the identical indicator was gated under worldbank. Same WB terms apply:
   // third-party data may not be redistributed regardless of which id carries it.
   worldbank_wdi: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
+  // worldbank_esg — THE SAME LEAK AGAIN, left open by the fix directly above.
+  // That 2026-07-22 entry closed `_wdi` while ledger R32, which prompted it, names the
+  // whole family: "a carve-out keyed on one source id does not cover the others" —
+  // worldbank vs _wdi / _esg / _pip / _wgi. `_esg` was in the rule and not in the code.
+  // Confirmed LIVE 2026-08-30, the same discriminating contrast used in July (isGated runs
+  // BEFORE requireDownloadAuth in index.ts, so a gated id 451s pre-auth):
+  //     worldbank:SL.UEM.TOTL.ZS:AGO      -> 451   (gated)
+  //     worldbank_esg:SL.UEM.TOTL.ZS:AGO  -> 401   (NOT gated — 178 series served)
+  // Advertised meanwhile as cc-by-4.0, reservable, commercial_ok. Same WB terms: ILO-sourced
+  // data may not be redistributed regardless of which id carries it.
+  // Scope established from the DATA, not from this list (R32's actual lesson): every source
+  // holding either indicator was enumerated from catalog.db — worldbank 235+195 (gated),
+  // worldbank_wdi 1+1 (gated), worldbank_esg 178 (this leak). No other source carries them,
+  // and `worldbank_extra` has no catalogue rows at all.
+  worldbank_esg: ["SL.UEM.TOTL.ZS"],
   // worldbank_pink aggregates third-party benchmark prices. LME (base metals)
   // and LBMA/IBA (precious metals) REFUSED redistribution in writing on
   // 2026-07-15 (permission records (held privately)) — these series must never
@@ -135,6 +150,28 @@ export function isGated(seriesId: string): boolean {
   return isNonRedistributable(seriesId) || isSeriesCarvedOut(seriesId);
 }
 
-/** LIKE prefixes (`<source>:<indicator>:`) for SQL exclusion of carved series. */
+/** Escape LIKE metacharacters. `_` matches ANY single character in SQL LIKE, and two of our
+ *  three carve-out sources have `_` in the id — so the un-escaped prefix `worldbank_wdi:…`
+ *  also matches `worldbankXwdi:…`. Harmless today (no such source exists) but it is a
+ *  same-shape sibling of R129's unanchored match, and free to close. Use with ESCAPE '\'. */
+export function likeEscape(s: string): string {
+  return s.replace(/[\\%_]/g, (c) => "\\" + c);
+}
+
+/** LIKE prefixes (`<source>:<indicator>:`) for SQL exclusion of THREE-part carved ids. */
 export const SERIES_CARVEOUT_LIKE: readonly string[] = Object.entries(SERIES_CARVEOUTS)
-  .flatMap(([src, inds]) => inds.map((ind) => `${src}:${ind}:`));
+  .flatMap(([src, inds]) => inds.map((ind) => likeEscape(`${src}:${ind}:`)));
+
+/** Exact ids for TWO-part carved series (`<source>:<indicator>`, no third segment).
+ *
+ *  The prefix above ends in a colon, so it matches nothing on a source whose ids have only two
+ *  segments — and `worldbank_wdi` and `worldbank_pink` are exactly that shape
+ *  (`worldbank_wdi:FP.CPI.TOTL.ZG`, `worldbank_pink:aluminum`). Their SQL exclusion has
+ *  therefore always been a no-op, matching 0 rows. The JS gate still covered them, because
+ *  `seriesIndicator` splits on ':' and reads `p[1]`, which works for both shapes — verified
+ *  live 2026-08-30, `worldbank_wdi:FP.CPI.TOTL.ZG` returns 451. So this was a defence-in-depth
+ *  hole rather than an open door, but `worldbank_pink`'s seven metals are REFUSED-in-writing
+ *  and its own note above anticipates the source being un-gated later, at which point the SQL
+ *  layer would be the only thing standing between them and a browse listing. */
+export const SERIES_CARVEOUT_EXACT: readonly string[] = Object.entries(SERIES_CARVEOUTS)
+  .flatMap(([src, inds]) => inds.map((ind) => `${src}:${ind}`));

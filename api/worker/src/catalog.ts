@@ -10,8 +10,9 @@
 import type { Env, CatalogResultRow, CountRow } from "./types";
 import {
   SEARCH_FTS, SEARCH_FTS_COUNT, SEARCH_LIKE, SEARCH_LIKE_COUNT,
-  SEARCH_FTS_SOURCE, SEARCH_FTS_SOURCE_COUNT, SEARCH_LIKE_SOURCE, SEARCH_LIKE_SOURCE_COUNT,
-  BROWSE_SOURCE, BROWSE_SOURCE_COUNT, BROWSE_SOURCE_COUNT_CACHED, BROWSE_ALL, BROWSE_ALL_COUNT,
+  searchFtsSourceSql, searchFtsSourceCountSql, searchLikeSourceSql, searchLikeSourceCountSql,
+  browseSourceSql, browseSourceVisibleCountSql, hasCarveouts,
+  BROWSE_SOURCE_COUNT, BROWSE_SOURCE_COUNT_CACHED, BROWSE_ALL, BROWSE_ALL_COUNT,
 } from "./sql";
 import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor, supportedSources } from "./util";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
@@ -122,10 +123,10 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
     let ftsOk = false;
     try {
       if (src) {
-        const res = await scopedDb.prepare(SEARCH_FTS_SOURCE).bind(q, src, limit, offset).all<CatalogResultRow>();
+        const res = await scopedDb.prepare(searchFtsSourceSql(src)).bind(q, src, limit, offset).all<CatalogResultRow>();
         results = res.results ?? [];
         if (results.length > 0) {
-          const c = await scopedDb.prepare(SEARCH_FTS_SOURCE_COUNT).bind(q, src).first<CountRow>();
+          const c = await scopedDb.prepare(searchFtsSourceCountSql(src)).bind(q, src).first<CountRow>();
           total = c?.n ?? results.length;
           ftsOk = true;
         }
@@ -151,9 +152,9 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
     if (!ftsOk) {
       const like = `%${q}%`;
       if (src) {
-        const res = await scopedDb.prepare(SEARCH_LIKE_SOURCE).bind(like, like, src, limit, offset).all<CatalogResultRow>();
+        const res = await scopedDb.prepare(searchLikeSourceSql(src)).bind(like, like, src, limit, offset).all<CatalogResultRow>();
         results = res.results ?? [];
-        const c = await scopedDb.prepare(SEARCH_LIKE_SOURCE_COUNT).bind(like, like, src).first<CountRow>();
+        const c = await scopedDb.prepare(searchLikeSourceCountSql(src)).bind(like, like, src).first<CountRow>();
         total = c?.n ?? results.length;
       } else {
         const [p, sh] = await Promise.all([
@@ -172,17 +173,26 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
     // PK-range browse: [src+':', src+';') — ';' is ':'+1, closing the prefix
     // range. Reads offset+limit PK entries instead of sort-scanning the whole
     // source (the 87.3B-rows-read/day incident; rationale in sql.ts).
-    const res = await scopedDb.prepare(BROWSE_SOURCE)
+    const res = await scopedDb.prepare(browseSourceSql(src))
       .bind(src + ":", src + ";", limit, offset).all<CatalogResultRow>();
     results = res.results ?? [];
-    const cached = await scopedDb.prepare(BROWSE_SOURCE_COUNT_CACHED).bind(src).first<CountRow>();
-    if (cached && typeof cached.n === "number") {
-      total = cached.n;
-    } else {
-      // Fallback: a source synced before its source_counts row exists. Live
-      // COUNT once — the sync backfills the row and this path goes cold.
-      const c = await scopedDb.prepare(BROWSE_SOURCE_COUNT).bind(src).first<CountRow>();
+    if (hasCarveouts(src)) {
+      // source_counts counts carved rows, so it advertised 692 for worldbank where 262 are
+      // reachable. Only the 3 carve-out sources take this bounded PK-range count; every other
+      // source keeps the free cached read (this path is why that cache exists).
+      const c = await scopedDb.prepare(browseSourceVisibleCountSql(src))
+        .bind(src + ":", src + ";").first<CountRow>();
       total = c?.n ?? results.length;
+    } else {
+      const cached = await scopedDb.prepare(BROWSE_SOURCE_COUNT_CACHED).bind(src).first<CountRow>();
+      if (cached && typeof cached.n === "number") {
+        total = cached.n;
+      } else {
+        // Fallback: a source synced before its source_counts row exists. Live
+        // COUNT once — the sync backfills the row and this path goes cold.
+        const c = await scopedDb.prepare(BROWSE_SOURCE_COUNT).bind(src).first<CountRow>();
+        total = c?.n ?? results.length;
+      }
     }
   } else {
     const [p, sh] = await Promise.all([
