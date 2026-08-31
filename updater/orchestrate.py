@@ -520,8 +520,8 @@ def _derive_changed_csvs(unit, res, blob):
                   f"series_cursors — cannot re-derive CSVs for unknown series; the fetcher "
                   f"must report per-series cursors to satisfy CSV/parquet coherence (§5.7)",
                   flush=True)
-            return [], (f"csv coherence unmet: fetcher reported no series_cursors for "
-                        f"{res.obs} merged obs — CSVs not re-derived (§5.7)"), [], {}
+            return [], (_NO_CURSORS_NOTE + f" for {res.obs} merged obs — CSVs not "
+                        f"re-derived (§5.7)"), [], {}
         return [], None, [], {}
     ids: list = []   # pre-bound: the except below queues ONLY mapped catalog ids
     try:
@@ -688,6 +688,19 @@ def _derive_changed_csvs(unit, res, blob):
                     f"row for {unit.source_id} ({why}) — served ids coherent")
             print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
         return failed, note, deferred_ids, dict(out.get("failed_reasons") or {})
+    except UnitTimeout:
+        # THE FENCE'S OWN CONTROL SIGNAL — re-raise by name (R353). The csv fence at the
+        # call site wraps this function in SIGALRM and carries a designed handler: abandon
+        # the phase as a NON-demoting coverage note, cursors recorded, next run re-derives.
+        # This broad except below used to catch the UnitTimeout FIRST, so that handler was
+        # dead code for any timeout landing inside this try: instead the entire mapped
+        # changed set was enqueued as "csv_derive crashed: UnitTimeout(...)" and the run
+        # demoted — which is precisely how abs parked 100,000 queue rows (two 50k
+        # CURSOR_CAP batches, 2026-08-18..24) and ilostat 50,000 in one day, every row
+        # attempts=1 with the identical error string. Under the r2 backend those rows can
+        # never drain (a retried id derives only when its file is on the runner), so the
+        # bug's residue is permanent until purged.
+        raise
     except Exception as e:  # noqa: BLE001 — CSV failure must NEVER sink the data publish
         # Queue only MAPPED CATALOG ids — never `changed`, which holds raw STORE keys.
         # This branch used to return `changed` verbatim; the caller fed it into
@@ -704,6 +717,11 @@ def _derive_changed_csvs(unit, res, blob):
         return _q, (f"csv_derive crashed ({len(_q)} of {len(changed)} changed series "
                     f"queued): " + repr(e))[:300], [], {s: _crash for s in _q}
 
+
+# Shared between the §5.7 no-cursors branch (which returns it in the note) and the caller
+# (which writes the persistent debt row on seeing it). A shared constant, not a re-typed
+# string, so the two sides cannot drift (R142's marker rule).
+_NO_CURSORS_NOTE = "csv coherence unmet: fetcher reported no series_cursors"
 
 _DERIVE_ALL_CAP = 5000
 
@@ -1628,7 +1646,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     csv_failed, csv_deferred, csv_reasons = [], [], {}
                     csv_err = ("csv coverage note: csv phase exceeded its "
                                f"{_csv_fence:.0f}-min fence and was abandoned for this "
-                               "run — cursors recorded, next run re-derives")
+                               "run — cursors recorded; a chronically-partial source "
+                               "re-derives next run (vintage un-bumped), an ok-status "
+                               "source on its next CHANGE")
                     _csv_fence_tripped = True
                     print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
                 else:
@@ -1695,6 +1715,17 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     # permanently-partial source is how gates stop being read (R244).
                     err_note = "; ".join(x for x in (err_note, csv_err) if x)
                     csv_err = None
+                if csv_err and csv_err.startswith(_NO_CURSORS_NOTE):
+                    # PERSIST THE DEBT (2026-08-31). Until now this branch's demotion was
+                    # the only trace, and it EVAPORATED: nothing queued (ids unknown), the
+                    # fetcher's vintage sidecar already written, so the next run skipped as
+                    # unchanged and reported clean — noaa served 3,138,159 CSVs one
+                    # restatement behind exactly this way. The row survives until a
+                    # completed wholesale campaign (derive_csv_bulk's success stamp)
+                    # clears it; health lists it meanwhile.
+                    store.note_full_rederive_owed(
+                        unit.source_id, vintage=str(res.new_vintage or ""),
+                        note=csv_err[:200])
                 if csv_failed or csv_err:
                     # csv_err with no ids = coherence unmet with unknown series
                     # (no cursors reported): still `partial`, nothing queueable.
