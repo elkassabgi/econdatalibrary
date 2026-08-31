@@ -401,6 +401,7 @@ class BatchWriter:
         self.n_obs = 0
         self.series = set()
         self.series_capped = False
+        self.skip_reason = None    # "no_time_dimension" when the header lacks TIME_PERIOD
         self._reset_buf()
 
     def _reset_buf(self):
@@ -424,6 +425,20 @@ class BatchWriter:
     def add_from_csv(self, path):
         got = parse_csv_keyidx(path)
         if got is None:
+            # WHY it refused matters downstream (R523). A readable header WITHOUT a
+            # TIME_PERIOD column is a dataset whose DSD declares no SDMX TimeDimension —
+            # booking that as status="full", n_obs=0 (as this used to) records a dataset
+            # outside the series model as a successful full ingest of nothing.
+            try:
+                with open(path, "r", encoding="utf-8", newline="") as fh:
+                    header = next(csv.reader(fh), [])
+            except OSError:
+                header = []
+            # Same SDMX-CSV marker requirement as the fetcher's sniff (review finding 1):
+            # a plain-text error body must never earn the no-TimeDimension verdict.
+            is_sdmx_csv = bool(header) and (header[0] == "DATAFLOW" or "OBS_VALUE" in header)
+            if is_sdmx_csv and "TIME_PERIOD" not in header:
+                self.skip_reason = "no_time_dimension"
             return 0
         f, reader, dim_idx, ti, vi, si = got
         n = 0
@@ -704,6 +719,14 @@ def process_flow(sess, flow, dry=False):
             note = f"version fallback {flow['version']}->{used_ver}"
         if sink.series_capped:
             note = (note + "; series>=cap (approx)").lstrip("; ")
+        if nobs == 0 and sink.skip_reason == "no_time_dimension":
+            # NOT "full". The download succeeded but the dataset's DSD declares no SDMX
+            # TimeDimension — there is no series-shaped data to ingest, and there never
+            # will be until the publisher restructures it. Booking it "full, n_obs=0"
+            # recorded 59 such flows as successful ingests of nothing (R523).
+            return {"status": "no_time_dimension", "n_obs": 0, "n_series": 0, "mode": "all",
+                    "note": "publisher DSD declares no SDMX TimeDimension; outside the "
+                            "series model", "version": used_ver}
         return {"status": "full", "n_obs": nobs, "n_series": nser, "mode": "all",
                 "note": note, "version": used_ver}
 
@@ -755,6 +778,13 @@ def process_flow(sess, flow, dry=False):
         sink.abort()
         raise
 
+    if nobs == 0 and sink.skip_reason == "no_time_dimension":
+        # Split-path twin of the mode="all" booking (review finding 2): every area's body
+        # lacked TIME_PERIOD, so this is the same dataset-outside-the-series-model verdict,
+        # and booking it "full, n_obs=0" would re-create the defect through the other door.
+        return {"status": "no_time_dimension", "n_obs": 0, "n_series": 0, "mode": "split",
+                "note": "publisher DSD declares no SDMX TimeDimension; outside the "
+                        "series model"}
     if n_fail == 0:
         return {"status": "full", "n_obs": nobs, "n_series": nser, "mode": "split",
                 "note": f"REF_AREA split: {n_ok}/{len(areas)} areas"}

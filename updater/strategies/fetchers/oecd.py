@@ -190,7 +190,29 @@ def fetch_flow(flow_id, meta, since, session):
         return None, "structural"
     keys, dates, vals, statuses, raws = _parse_csv(content)
     if keys is None:
-        return (None, "structural") if len(content) > 200 else (None, "empty")
+        if len(content) <= 200:
+            return None, "empty"
+        # WHY did the parse refuse? A readable CSV header WITHOUT a TIME_PERIOD column is not
+        # a break — it is a dataset whose DSD declares no SDMX TimeDimension (60 such flows,
+        # verified against the publisher's own DSDs 2026-08-30, 18/18 with controls; R523).
+        # Distinguishing here lets run_giant apply abs.py's predicate: never-had-rows =>
+        # outside the series model; previously-had-rows => a genuine structural break.
+        try:
+            header = next(csv.reader(io.StringIO(
+                content.decode("utf-8", errors="replace").split("\n", 1)[0])))
+        except (StopIteration, csv.Error):
+            header = []
+        # HARDENED (review finding 1): the body must PROVE it is an SDMX-CSV export before
+        # the no-TimeDimension verdict applies — a 200 whose body is plain text or JSON
+        # error prose also "parses" into a header without TIME_PERIOD, and on a storeless
+        # flow that would park a transient outage until the publisher bumps the version,
+        # possibly years, silently. Every genuine export starts DATAFLOW and carries
+        # OBS_VALUE (verified on raw exports); anything else falls STRUCTURAL — loud, the
+        # correct error direction.
+        is_sdmx_csv = bool(header) and (header[0] == "DATAFLOW" or "OBS_VALUE" in header)
+        if is_sdmx_csv and "TIME_PERIOD" not in header:
+            return None, "no_time_dimension"
+        return None, "structural"
     if not keys:
         return None, "empty"
     table = pa.table({
