@@ -65,6 +65,14 @@ class Result:
     # changed") and is honoured. Keys are STORE grain; for a source whose catalogue is
     # series-grain they map exactly (norgesbank, the pilot).
     changed_keys: dict | None = None
+    # TRUNCATED-EVIDENCE FLAG (WU-2b): True when the fetcher KNOWS its reported
+    # cursor set hit CURSOR_CAP, i.e. the changed-set evidence is incomplete by
+    # construction. The orchestrator answers by booking full_rederive_owed — the
+    # catalogued ids beyond the cap would otherwise starve SILENTLY (fhfa: a
+    # rebuild changes all 89,706 catalogued series against a 50,000 cap, leaving
+    # 39,706 CSVs that never re-derive via §5.7, with no note and no demotion).
+    # False (default) = evidence complete or fetcher un-migrated; nothing changes.
+    cursor_cap_hit: bool = False
 
 
 def cadence_due(cadence: str, last_success_utc: str | None, now: datetime | None = None) -> bool:
