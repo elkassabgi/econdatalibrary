@@ -122,8 +122,10 @@ def _drain_forecast(sidecar_after: dict) -> dict:
         return {"todo_before": None, "todo_after": None,
                 "note": f"catalogue unavailable ({type(e).__name__}) — drain not forecast"}
 
-    def _todo(sc: dict) -> int:
-        n = 0
+    def _todo(sc: dict) -> list[str]:
+        # The fetcher builds `todo` then SORTS it (ksh_stadat.py), so the returned order
+        # IS the drain order — which is what decides when a given table is reached.
+        out = []
         store = config.source_dir("ksh_stadat")
         for e in cat:
             tid = fetch._table_id(e)
@@ -132,9 +134,11 @@ def _drain_forecast(sidecar_after: dict) -> dict:
             theme_path = os.path.join(store, f"{tid[:3].lower()}.parquet")
             if sc.get(tid) == fetch._vintage(e) and blob.exists(theme_path):
                 continue
-            n += 1
-        return n
-    return {"catalogue_tables": len(cat), "todo_after": _todo(sidecar_after)}
+            out.append(tid)
+        out.sort()
+        return out
+    todo = _todo(sidecar_after)
+    return {"catalogue_tables": len(cat), "todo_after": len(todo), "todo_order": todo}
 
 
 def main() -> int:
@@ -187,7 +191,12 @@ def main() -> int:
         # cleared table sits in that order decides when IT lands, while the whole backlog
         # takes far longer to drain.
         all_runs = -(-fc["todo_after"] // MAX_PER_RUN)
-        rank = max((sorted(present).index(t) + 1) for t in present) if present else 0
+        # Rank within the FULL drain order, not within the cleared set — the other queued
+        # tables are interleaved ahead of ours, and ignoring them under-reports the wait.
+        order = fc.get("todo_order") or []
+        pos = {t: i + 1 for i, t in enumerate(order)}
+        ranks = [pos[t] for t in present if t in pos]
+        rank = max(ranks) if ranks else 0
         mine_runs = -(-rank // MAX_PER_RUN) if rank else 0
         print(f"drain forecast: {fc['todo_after']:,} table(s) queued after the clear, of "
               f"{fc.get('catalogue_tables', '?')} catalogued. The 181 CLEARED tables sort "
