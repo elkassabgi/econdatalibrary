@@ -249,3 +249,32 @@ dropped rot check · ignored archive anchor · id-only keying · silent new coll
 
 **Deadlock avoided as planned:** the regex change and the backfill landed together, so the
 preflight stays green. Verified: `skill_check.py` → all 8 checks OK, `RESULT: all checks passed`.
+
+### P0.4 — baselines captured · DONE (completes the Phase 0 gate)
+
+| baseline | value | instrument |
+|---|---|---|
+| coverage | 322 served / 270 scheduled / 52 archival / **0 actionable**; 13,486,342 series | `tools/audit_schedule_coverage.py` |
+| untouched files | 26 sources flagged, **0 genuinely stuck** (13 rotating, 3 wrote today, 1 pre-attributed, 3 refuted by cadence, 1 real fault: `idb`) | `attribute_stale.py` + registry cadence + latest `runs` |
+| retry queue | **225,272** (was 231,782 — draining); `abs` 100,000 = **2 × CURSOR_CAP**, `ilostat` 50,000 = 1 × cap; `usda` 48,047 and `imf_qgfs_direct` 20,502 are real single-run counts; `cso` drained **7,256 → 0**; 3 rows now at attempts=3 | `GROUP BY enqueued_utc` on `csv_retry_queue` |
+| sources-endpoint cost | **1,442 rows read, 7.1 ms** — the flag CLOSES, no fix needed | one live run of the exact `sql.ts` query, reading `meta.rows_read` |
+| ledger | **468 archive entries**, 281 reach the digest, 187 enumerated, 27 known collisions | `ledger_check.py --digest` (rebuilt) |
+| NUMBERS.md | 142 rows, all instrumented, none stale >30d | `ledger_check.py --numbers` |
+| reliability system | 33 checks passed; cost-guard suite passed | the two hook test scripts, run directly |
+| collision census | **423/430 stores, 6,201,382,580 rows, 12 offenders** | `dupsweep.py` v3 |
+
+**PHASE 0 EXIT GATE: PASSED.** `--digest` now covers every entry heading and states its scope
+explicitly; the enumerated backlog can only shrink; every baseline row above carries an instrument
+and a date; both briefs are filed (`docs/briefs/PHASE0_BRIEFS.md`), with `sdmx_nso` resolved as
+not-a-reserved-item and `worldbank_pink` awaiting Ahmed.
+
+**Two Phase-1/2 tasks are removed by these measurements**, which is worth stating because the plan
+still lists them: the sources-endpoint materialisation (the cost is 1,442 rows, not millions), and
+the untouched-file attribution (done, and zero sources are stuck).
+
+**Operational note for the next session.** The reading gate refused two commands today by
+classifying the *text being written* as a script or as SQL — both were heredocs writing markdown.
+It fails closed, which is correct, but the refusal aborts the whole compound command, so earlier
+harmless statements in the same line are discarded: two file appends were silently lost and only
+surfaced when the following commit reported "no changes added to commit". Keep file writes and
+anything SQL-shaped in separate calls.
