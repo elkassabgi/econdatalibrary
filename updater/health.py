@@ -266,6 +266,9 @@ def _stuck_transient(units, succ_age, sla_days, attempt_age) -> bool:
 def assess(store=None) -> dict:
     store = store or StateStore()
     now = datetime.now(timezone.utc)
+    # Sources whose SERVED CSV corpus is known-stale relative to the store (§5.7 debt
+    # rows) — see the owed branch inside the loop.
+    owed = {r["source_id"]: r for r in store.full_rederives_owed()}
     reg = {e["source_id"]: e for e in registry.load().get("sources", [])}
     rows = []
     for sid, e in sorted(reg.items()):
@@ -472,6 +475,31 @@ def assess(store=None) -> dict:
         if rotating and health == "OK":
             health = "ROTATING"
 
+        # A full_rederive_owed row means the source's SERVED CSV corpus is stale
+        # relative to the store: a fetcher merged observations but reported no
+        # series_cursors (orchestrate §5.7), so per-series derive queuing was
+        # impossible while the vintage sidecar already marked the pull "done". No
+        # other signal in this module can see that — newest_obs reads the STORE,
+        # which is exactly the half that IS current; noaa served 3,138,159 CSVs one
+        # restatement behind with every instrument green. The row is written by the
+        # orchestrator when the debt is incurred and cleared ONLY by
+        # derive_csv_bulk's zero-error campaign stamp, so the source is held at
+        # ATTENTION (never green, never ROTATING) until a completed campaign proves
+        # the debt paid. A worse verdict (RED-*) stands — the note still shows.
+        owe = owed.get(sid)
+        if owe:
+            # PREPENDED, not appended: attention is truncated to 10 for display, and a
+            # note that CHANGES THE VERDICT must survive the truncation — appended, a
+            # ≥10-unit rotator would flip ATTENTION with its reason cut off (the
+            # reviewer's finding; abs carried 805 attention units in R379's episode).
+            attention = [
+                f"full re-derive OWED since {str(owe.get('noted_utc') or '?')[:10]} "
+                f"(store vintage {owe.get('vintage') or '?'}): served CSVs predate the "
+                f"store — run tools/derive_csv_bulk.py --source {sid}; its zero-error "
+                f"campaign stamp clears this row"] + list(attention)
+            if health in ("OK", "ROTATING"):
+                health = "ATTENTION"
+
         rows.append({
             "source": sid, "strategy": e.get("strategy"), "cadence": cadence,
             # rollout perimeter flag (registry `live: true`) — the --fail-past-2x-sla
@@ -499,6 +527,28 @@ def assess(store=None) -> dict:
             "n_discontinued": len(discontinued),
             "discontinued_series": discontinued[:10],
             "attention": attention[:10],
+        })
+
+    # An owed row whose source has LEFT the registry must not vanish with it — the loop
+    # above iterates registry entries only, so without this a de-registration silently
+    # buries an un-repaid debt (the reviewer's finding; send_digest lists orphan state
+    # rows for the same reason). `live: False` keeps the CI gate out of it — an
+    # unregistered source is not a rollout commitment — but the row is in the table,
+    # the summary and health.json where a reader will meet it.
+    for sid in sorted(set(owed) - set(reg)):
+        owe = owed[sid]
+        rows.append({
+            "source": sid, "strategy": None, "cadence": "unknown", "live": False,
+            "run_location": "unknown", "health": "ATTENTION",
+            "last_success_age_d": None, "last_attempt_age_d": None,
+            "newest_obs": None, "frontier_obs": None, "newest_obs_age_d": None,
+            "upstream_verified": None, "n_series_tracked": 0, "n_discontinued": 0,
+            "discontinued_series": [],
+            "attention": [
+                f"full re-derive OWED since {str(owe.get('noted_utc') or '?')[:10]} but "
+                f"{sid} is NOT in registry.yaml — the debt survives de-registration; "
+                f"either re-derive and clear it, or clear it deliberately with the "
+                f"retirement"],
         })
 
     order = {"RED-SLA": 0, "RED-DATA": 1, "RED-UNRUN": 2, "ATTENTION": 3, "PENDING": 4,
