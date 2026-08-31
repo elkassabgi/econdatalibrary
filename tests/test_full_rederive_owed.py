@@ -165,3 +165,31 @@ def test_no_cursors_branch_returns_the_shared_note():
             _Unit(), _Res(), blob=None)
     assert failed == [] and deferred == [] and reasons == {}
     assert note is not None and note.startswith(orchestrate._NO_CURSORS_NOTE)
+
+
+def test_bulk_derive_refuses_a_behind_mirror(tmp_path, monkeypatch):
+    """R530: the campaign tool must refuse when the local mirror is behind the
+    authoritative store — the guard core/derive_csv.py gained after R383 and this
+    tool lacked while it rewrote 35,135 norgesbank CSVs to a stale vintage."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import core.derive_csv as cdc
+    from tools import derive_csv_bulk as dcb
+
+    root = tmp_path / "fixture_root"
+    d = root / "data" / "clean_full" / "zz_mirror_test"
+    d.mkdir(parents=True)
+    pq.write_table(pa.table({"series_key": pa.array(["a"], pa.string()),
+                             "obs_date": pa.array(["2024-01-01"], pa.string()),
+                             "value": pa.array([1.0], pa.float64())}),
+                   str(d / "zz.parquet"))
+    monkeypatch.setattr(dcb, "ROOT", str(root))
+    monkeypatch.setattr(cdc, "_mirror_behind_store",
+                        lambda sources, sample=0: [("zz_mirror_test",
+                                                    "zz.parquet: local 1 vs R2 2")])
+    monkeypatch.setattr(sys, "argv",
+                        ["derive_csv_bulk.py", "--source", "zz_mirror_test",
+                         "--bucket", "econ-data"])
+    assert dcb.main() == 2, "a behind mirror must refuse the campaign"
+    # ...and --allow-stale-mirror plus a clean mirror both proceed past the guard
+    # (they will then fail later on licence import or R2 -- not asserted here).

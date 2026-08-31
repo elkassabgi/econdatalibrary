@@ -194,7 +194,14 @@ def _durable_clear(source: str) -> bool:
               f"Retry: {manual}", flush=True)
         return False
     from updater.state import StateStore
-    StateStore().clear_full_rederive_owed(source)
+    st = StateStore()
+    if not any(r["source_id"] == source for r in st.full_rederives_owed()):
+        # Nothing to clear (fresh authoritative pull says so) — pushing an unchanged
+        # 11 GB store would spend minutes and a CAS slot to delete nothing.
+        print(f"no full_rederive_owed row for {source} in the authoritative store — "
+              f"nothing to clear", flush=True)
+        return True
+    st.clear_full_rederive_owed(source)
     # Re-check the lock between the clear and the push (verifier's residual): a pass
     # STARTING in this window pulls state that still holds the row and would destroy
     # the clear while we print success. Seconds wide, but free to close.
@@ -239,6 +246,10 @@ def main() -> int:
                          "whose catalogue ids carry the store file (fed_board, fhfa)")
     ap.add_argument("--verify", type=int, default=300,
                     help="byte-compare this many RANDOM series against the resolver first")
+    ap.add_argument("--allow-stale-mirror", action="store_true",
+                    help="override the R383/R530 mirror preflight - ONLY for sources "
+                         "whose run_location is local (their local store IS the truth); "
+                         "for a cloud source this rewrites served CSVs to a stale vintage")
     ap.add_argument("--clear-owed-only", action="store_true",
                     help="run ONLY the durable full_rederive_owed clear (pull->clear->push) "
                          "for --source and exit - for finishing a campaign whose stamp was "
@@ -274,6 +285,31 @@ def main() -> int:
     if src_dir is None:
         print(f"no parquet for {a.source} under data/clean_full or data/clean_grouped")
         return 2
+
+    # THE R383/R530 MIRROR PREFLIGHT — ported here the day its absence was re-committed.
+    # This tool derives from the LOCAL tree; for a CLOUD source (run_location: cloud) R2
+    # is the authoritative store and the local dir is a scratch mirror, so a campaign
+    # from a behind-mirror rewrites every served CSV to a stale vintage while --verify
+    # passes 300/300 (this-path vs resolver over the SAME stale files — R383's hollow
+    # pass, produced live on norgesbank: local 3,768,215 rows/08-06 vs R2 3,805,628/
+    # 08-28, 35,135 CSVs rewritten to the vintage they already had). core/derive_csv.py
+    # gained this refusal after R383; the bulk tool — built precisely so big campaigns
+    # stop using that path — never did. Content-compared (row count + max obs date,
+    # never LastModified/md5), sample-scaled, and any read error refuses toward "cannot
+    # prove it is safe".
+    if not a.dry_run and not a.allow_stale_mirror:
+        from core.derive_csv import _mirror_behind_store
+        behind = _mirror_behind_store([a.source])
+        if behind:
+            for src, detail in behind:
+                print(f"MIRROR BEHIND R2 : {detail}")
+            print(f"REFUSING: the local mirror is behind the authoritative store — a "
+                  f"campaign from it would rewrite served CSVs to a stale vintage while "
+                  f"--verify passes against the same stale files (R383/R530). Sync "
+                  f"{a.source}'s parquets from R2 first, or pass --allow-stale-mirror "
+                  f"if local is genuinely authoritative for this source "
+                  f"(run_location: local).")
+            return 2
     paths = sorted(os.path.join(dp, f)
                    for dp, _dn, fs in os.walk(src_dir) for f in fs
                    if f.endswith(".parquet") and not f.endswith("__series.parquet"))
