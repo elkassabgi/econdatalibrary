@@ -1604,3 +1604,15 @@ aqueduct-updater single-slot eviction rule R291 before dispatching).
 - **stat_slovenia "annotation" — already recorded.** The 1517309S declined-fix rationale,
   the 05W counter-file repair, and the `_sweep_offset.json` bookmark shape are all in this
   file and the landmines table; nothing further to write.
+
+### TABLE-GRAIN mapping (c414c1a35) — PRODUCTION-PROVEN 2026-08-31
+
+The "NOT proven in production" caveat closes: every imf_*_direct family member that MERGED
+rows after the fix booked **ok** with last_success SET on 2026-08-26 (a partial can never
+set it, R231): mfsma +56 clean · **mfsofc +168 clean — the former 60-minute-fence blower**
+· mfsfmp +1 and mfsir +25 with non-demoting "csv coverage note" tails. The `no_change`
+members haven't merged since (proof not applicable). imf_imts_direct's 180-min UnitTimeout
+is the separate local-route giant class, not the mapper. Instrument: unit_state sweep over
+the 14, fresh-pulled state 2026-08-31; the mfsofc heavy job's own NOT-DUE line carries the
+same timestamp. Heavy run 33409577110 (manually dispatched after both crons were lost):
+**35/35 jobs green, conclusion success**.
