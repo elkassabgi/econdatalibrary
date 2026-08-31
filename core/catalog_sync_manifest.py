@@ -24,6 +24,13 @@ Seed only when that holds; if the catalogue is ever rebuilt from scratch, re-ver
 RECORDING IS POST-SUCCESS ONLY. Hashes are written after the sync reports success, so a run
 that dies partway re-sends its rows next time. That is the conservative direction: a
 re-send costs money, a false "already sent" costs correctness.
+
+KNOWN HAZARD, disclosed rather than left latent: the manifest records WHAT was sent, not
+WHERE. A series_id routes to exactly one database via CATALOG_SHARD_FOR, so today there is no
+ambiguity — but if a source's shard assignment is ever CHANGED, its rows are unchanged in
+content and would be skipped, leaving them in the old database and absent from the new one.
+Any edit to CATALOG_SHARD_FOR must therefore be followed by a `--no-diff` reconcile of the
+moved source (`--source <id> --no-diff`), which re-sends it to its new home.
 """
 from __future__ import annotations
 
