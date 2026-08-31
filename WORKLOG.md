@@ -552,3 +552,34 @@ fifth place my brief missed). Resurrection paths closed (capability matrix + cla
 stripped; runbook regenerated). And the reviewer found `tools/purge_unpermitted_r2.py` still
 naming SERVED sources (vdem, wid) in a "gated, no permission" purge list — one re-run away
 from deleting served data; it now refuses loudly until its list is re-derived and reviewed.
+
+---
+
+## Phase 2 task 1 COMPLETE: series_fts rebuilt, swapped, verified live (2026-08-31)
+
+Built server-side from D1's own `series` in 422 PK-range chunks (journal + stop-not-retry),
+**10,348,426 rows == the same-day `series` count exactly**; atomic RENAME swap; post-swap
+`sync_catalog_d1` applied 66,721 pending rows / 75 files; the three frozen workflows
+re-enabled after it. Live acceptance, every row in the predicted direction:
+
+| query | before | after | prediction |
+|---|---|---|---|
+| `disposable` | 35,684 | **35,493** | 35,493 |
+| `unemployment` | 22,108 | **14,011** | 14,011 |
+| `inflation` | 7,524 | **3,534** | 3,531 (+3 = D1's known 243-row lineage lead; none updated today) |
+| `wid disposable` | 33,390 | **33,390** | survival, exact |
+| `boc q=Lynx` | 252 total / 16 distinct | **14/14/14** | repeats dead |
+| zillow orphans | findable | **0 in results** | ghosts gone |
+
+Mid-build the DB hit D1's **10 GB ceiling** (old 23.7M-row index + 7.06M new rows =
+9,991,606,272 bytes) — the one constraint neither the design, nor four probes, nor two
+adversarial reviews had priced, though the number sat in the plan docs (ledger **R528**).
+Every designed safety held: the failed chunk rolled back atomically (journal == table to the
+row), the driver stopped, the old index kept serving. Recovery improved the plan: dropped the
+old index first (9.99 → **5.95 GB**; the reviewed LIKE fallback carried search live at the
+clean predictions), resumed from the journal, swapped with a bare RENAME. Second lesson: the
+DROP returned error **7429 (timeout, object reset)** having SUCCEEDED — verify state, never
+the error string.
+
+The search index now means what it says: no duplicates (was 2.30× on the primary), no orphans
+(was 1,052,814 incl. ghosts of retired zillow), totals == reality.
