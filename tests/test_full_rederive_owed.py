@@ -51,6 +51,101 @@ def test_the_note_constant_is_shared_not_retyped():
     assert src.count('"csv coherence unmet: fetcher reported no series_cursors"') == 1
 
 
+def test_health_holds_an_owed_source_at_attention_until_cleared():
+    """The debt must be VISIBLE where verdicts are read: an otherwise-green source
+    with an owed row reads ATTENTION with the owed note, and ONLY the clear (the
+    campaign stamp's call) releases it back to OK. This is the signal that was
+    missing while noaa served a stale corpus with every instrument green."""
+    from datetime import datetime, timezone
+    from updater import health
+
+    st = StateStore(path=":memory:")
+    now = datetime.now(timezone.utc)
+    today = now.date().isoformat()
+    # Fabricate a healthy 'noaa' (a real registry id, so assess() emits its row):
+    # succeeded just now, newest observation today -> OK on every existing signal.
+    st.upsert_source("noaa", status="ok", last_success_utc=now.isoformat(),
+                     last_attempt_utc=now.isoformat())
+    st.upsert_unit("noaa", "_all", status="ok", last_obs_date=today,
+                   last_attempt_utc=now.isoformat())
+
+    row = next(r for r in health.assess(store=st)["sources"] if r["source"] == "noaa")
+    assert row["health"] == "OK", f"precondition: fabricated-healthy noaa reads {row['health']}"
+
+    st.note_full_rederive_owed("noaa", vintage="noaa:abc", note="csv coherence unmet…")
+    row = next(r for r in health.assess(store=st)["sources"] if r["source"] == "noaa")
+    assert row["health"] == "ATTENTION"
+    assert any("full re-derive OWED" in a for a in row["attention"]), row["attention"]
+
+    st.clear_full_rederive_owed("noaa")
+    row = next(r for r in health.assess(store=st)["sources"] if r["source"] == "noaa")
+    assert row["health"] == "OK"
+
+
+def test_owed_note_survives_the_attention_truncation():
+    """R529 latent #3: attention is displayed as [:10], and a note that CHANGES THE
+    VERDICT must survive that cut. Appended, a >=10-unit rotator flipped ATTENTION
+    with its reason invisible; the note is prepended now — prove it on a source
+    with 12 attention-status units."""
+    from datetime import datetime, timezone
+    from updater import health
+
+    st = StateStore(path=":memory:")
+    now = datetime.now(timezone.utc).isoformat()
+    for i in range(12):
+        st.upsert_unit("noaa", f"u{i:02d}", status="partial",
+                       last_error=f"boom {i}", last_attempt_utc=now)
+    st.note_full_rederive_owed("noaa", vintage="v", note="n")
+
+    row = next(r for r in health.assess(store=st)["sources"] if r["source"] == "noaa")
+    assert row["health"] == "ATTENTION"
+    assert len(row["attention"]) == 10          # the truncation is real in this shape
+    assert row["attention"][0].startswith("full re-derive OWED"), row["attention"][0]
+
+
+def test_orphan_owed_row_survives_deregistration():
+    """R529 latent #4: assess() iterates registry entries, so an owed row whose
+    source leaves registry.yaml surfaced NOWHERE. It must appear as its own
+    ATTENTION row (live=False keeps the CI gate out of it)."""
+    from updater import health
+
+    st = StateStore(path=":memory:")
+    st.note_full_rederive_owed("zz_not_a_registered_source", vintage="v", note="n")
+    rows = [r for r in health.assess(store=st)["sources"]
+            if r["source"] == "zz_not_a_registered_source"]
+    assert len(rows) == 1
+    assert rows[0]["health"] == "ATTENTION" and rows[0]["live"] is False
+    assert any("NOT in registry.yaml" in a for a in rows[0]["attention"])
+
+
+def test_durable_clear_refuses_lock_and_failed_pull(tmp_path, monkeypatch):
+    """R529's core: the clear must move through pull->push, and must REFUSE both
+    when a heavy pass holds the lock (a pull would clobber its in-progress state)
+    and when the pull itself fails (clearing a stale copy dies at the next pull).
+    Neither branch may reach the store."""
+    import subprocess
+    import types
+    from tools import derive_csv_bulk as dcb
+
+    monkeypatch.setattr(dcb, "ROOT", str(tmp_path))
+    calls = []
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: calls.append(a) or
+                        types.SimpleNamespace(stdout="", returncode=1))
+
+    # Live lock -> refuse WITHOUT even pulling.
+    lockdir = tmp_path / "logs"
+    lockdir.mkdir()
+    (lockdir / "local_heavy.lock").write_text("1234,000")
+    assert dcb._durable_clear("noaa") is False
+    assert calls == [], "a pull was attempted under a live heavy-pass lock"
+
+    # Lock gone, pull fails (rc=1) -> refuse after exactly the pull attempt.
+    (lockdir / "local_heavy.lock").unlink()
+    assert dcb._durable_clear("noaa") is False
+    assert len(calls) == 1, "expected one pull-state attempt and no push"
+
+
 def test_no_cursors_branch_returns_the_shared_note():
     """Drive the actual branch: obs merged, no cursors, catalogued > 0."""
     class _Unit:

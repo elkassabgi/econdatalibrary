@@ -153,6 +153,66 @@ def _stream(con, paths, qualify=False):
             yield (f"{shard}:{k}" if qualify else k), rows
 
 
+def _durable_clear(source: str) -> bool:
+    """Clear the full_rederive_owed row THROUGH the pull→push protocol (R529).
+
+    The first cut cleared only the local state.db — and every heavy pass
+    wholesale-replaces that file on pull (R340), so a row that had been pushed
+    RESURRECTED after the campaign's clear (debt un-clearable through the
+    documented path, ATTENTION forever), while a row never pushed was deleted
+    mid-campaign by the pass's pull (the evaporation the row exists to prevent).
+    Any state transition that must outlive this process goes pull → change →
+    push, like every other write in the store's lifecycle.
+
+    REFUSED while the heavy runner's lock is live: a pull now would wholesale-
+    replace state the pass is still writing. The debt then STANDS — the honest
+    state — and the printed command re-runs the clear after the pass.
+    """
+    import subprocess
+    manual = f"py tools/derive_csv_bulk.py --source {source} --clear-owed-only"
+    lock = os.path.join(ROOT, "logs", "local_heavy.lock")
+    if os.path.exists(lock):
+        import time as _t
+        age_h = (_t.time() - os.path.getmtime(lock)) / 3600.0
+        print(f"NOT clearing full_rederive_owed for {source}: local_heavy.lock is present "
+              f"({age_h:.1f}h old) — a heavy pass may be mid-run, and pulling state now "
+              f"would wholesale-replace what it is writing (R340/R529). The debt stands. "
+              f"After the pass finishes: {manual}", flush=True)
+        return False
+
+    def _run(*args):
+        p = subprocess.run([sys.executable, "-m", "updater.run", *args], cwd=_REPO,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=1800)
+        for ln in (p.stdout or "").strip().splitlines()[-2:]:
+            print("   ", ln, flush=True)
+        return p.returncode
+
+    if _run("--pull-state") != 0:
+        print(f"NOT clearing full_rederive_owed for {source}: pull-state failed, and a "
+              f"clear applied to a stale copy dies at the next pull. The debt stands. "
+              f"Retry: {manual}", flush=True)
+        return False
+    from updater.state import StateStore
+    StateStore().clear_full_rederive_owed(source)
+    # Re-check the lock between the clear and the push (verifier's residual): a pass
+    # STARTING in this window pulls state that still holds the row and would destroy
+    # the clear while we print success. Seconds wide, but free to close.
+    if os.path.exists(lock):
+        print(f"full_rederive_owed cleared LOCALLY for {source} but a heavy pass "
+              f"acquired the lock mid-envelope — NOT pushing over its run. The clear "
+              f"will not survive its pull; after the pass: {manual}", flush=True)
+        return False
+    if _run("--push-state") != 0:
+        print(f"full_rederive_owed cleared LOCALLY for {source} but push-state failed "
+              f"(a writer likely raced us) — this clear will NOT survive the next pull. "
+              f"Re-run: {manual}", flush=True)
+        return False
+    print(f"full_rederive_owed cleared for {source} and pushed to the authoritative "
+          f"store", flush=True)
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True)
@@ -179,7 +239,21 @@ def main() -> int:
                          "whose catalogue ids carry the store file (fed_board, fhfa)")
     ap.add_argument("--verify", type=int, default=300,
                     help="byte-compare this many RANDOM series against the resolver first")
+    ap.add_argument("--clear-owed-only", action="store_true",
+                    help="run ONLY the durable full_rederive_owed clear (pull->clear->push) "
+                         "for --source and exit - for finishing a campaign whose stamp was "
+                         "deferred by a live heavy pass, AFTER verifying the campaign")
     a = ap.parse_args()
+
+    if a.clear_owed_only:
+        # --dry-run must stay dry HERE TOO (verifier's finding, the R503 class: this
+        # early-return ran before --dry-run was ever consulted, so rehearsing the
+        # command performed a real remote delete of the debt marker).
+        if a.dry_run:
+            print(f"(dry run) would pull-state, clear full_rederive_owed for "
+                  f"{a.source}, and push-state — nothing done")
+            return 0
+        return 0 if _durable_clear(a.source) else 1
 
     import duckdb
     # WALK, AND RESOLVE THE ROOT. A flat os.listdir under clean_full returns [] for two real
@@ -483,20 +557,47 @@ def main() -> int:
           f"skipped {counts['skip']:,}, errors {counts['err']:,}")
     if failed_log is not None:
         failed_log.close()
-    # CLEAR THE FULL-REDERIVE DEBT — only on a genuinely complete campaign: zero errors,
-    # and not a dry run. The §5.7 no-cursors branch persists a full_rederive_owed row when a
-    # fetcher merges obs without cursors (noaa's 3,138,159-CSV staleness class); this stamp
-    # is the ONLY thing that clears it. A partial campaign (errors, or a kill) leaves the
-    # debt standing, which is the honest state.
-    if not a.dry_run and counts["err"] == 0:
+    # CLEAR THE FULL-REDERIVE DEBT — only on a campaign that PROVABLY TOUCHED the stale
+    # population (R529, both conditions from the review that FAILED the first cut):
+    #   * zero errors AND put > 0 — a stream that rewrote nothing certifies nothing;
+    #   * never under --skip-existing — that flag skips every exists-but-stale object,
+    #     which is precisely the population the debt names, so err==0 is vacuous there
+    #     (the first cut stamped "complete" on a campaign that wrote zero bytes);
+    # and the clear goes through pull→clear→push (_durable_clear), because a clear
+    # written to the local file alone dies at the next wholesale pull (R340).
+    # A partial campaign (errors, a kill) leaves the debt standing: the honest state.
+    # A --skip-newer-than cutoff EARLIER than the debt was noted means the campaign
+    # skipped objects written before the debt existed — i.e. the stale population —
+    # while still PUTting some genuinely-missing keys, so put>0 alone would stamp a
+    # debt the run never repaid (verifier's residual). Refuse toward the debt
+    # standing; the local noted_utc may be stale, but a wrong refusal only defers
+    # the stamp to --clear-owed-only after verification.
+    _cutoff_predates_debt = False
+    if not a.dry_run and a.skip_newer_than:
         try:
-            from updater.state import StateStore
-            StateStore().clear_full_rederive_owed(a.source)
-            print(f"full_rederive_owed cleared for {a.source} (campaign complete)",
-                  flush=True)
+            from updater.state import StateStore as _SS
+            _owe = {r["source_id"]: r for r in _SS().full_rederives_owed()}.get(a.source)
+            if _owe and str(_owe.get("noted_utc") or "") > a.skip_newer_than:
+                _cutoff_predates_debt = True
+        except Exception:                                    # noqa: BLE001
+            _cutoff_predates_debt = True   # unreadable state: refuse toward standing
+    if (not a.dry_run and counts["err"] == 0 and counts["put"] > 0
+            and not a.skip_existing and not _cutoff_predates_debt):
+        try:
+            _durable_clear(a.source)
         except Exception as e:                               # noqa: BLE001
-            print(f"WARNING: could not clear full_rederive_owed for {a.source}: {e} — "
-                  f"clear it manually after verifying the campaign", flush=True)
+            print(f"WARNING: durable clear of full_rederive_owed for {a.source} raised "
+                  f"{e!r} — the debt stands; after verifying the campaign, run "
+                  f"tools/derive_csv_bulk.py --source {a.source} --clear-owed-only",
+                  flush=True)
+    elif not a.dry_run:
+        why = ("errors > 0" if counts["err"] else
+               "--skip-existing skips the stale objects a debt names" if a.skip_existing
+               else "the --skip-newer-than cutoff predates the debt — the stale "
+                    "population was skipped" if _cutoff_predates_debt
+               else "0 PUTs — nothing was rewritten")
+        print(f"full_rederive_owed NOT cleared ({why}); if a debt row exists it stands, "
+              f"which is the honest state", flush=True)
     return 1 if counts["err"] else 0
 
 
