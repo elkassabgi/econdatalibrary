@@ -599,3 +599,16 @@ The search index now means what it says: no duplicates (was 2.30× on the primar
 * **Exit gate: HALF met.** "Zero drift on two consecutive runs (one immediate, one after the
   next sync)" — run 1 is the zero above; run 2 is calendar-bound to the next scheduled sync
   (18:00Z drain or tomorrow's 06:00Z). Re-run the one-statement reconciliation after it.
+
+### Phase 3 task 1a — the retry-queue's round numbers, provenance ESTABLISHED (2026-08-31)
+
+`abs` 100,000 and `ilostat` 50,000 are **cap artefacts, twice over**: each cohort is a run's
+changed-cursor set truncated at `CURSOR_CAP = 50_000`, whose entire csv phase then hit the
+60-minute `UnitTimeout` and enqueued the whole batch. Instrument: the queue rows themselves —
+every one carries `attempts=1` and the same error (`csv_derive crashed: UnitTimeout('<src>/_all
+(csv phase) exceeded its 60-minute hard limit'`); ilostat's 50,000 enqueued on ONE day
+(2026-08-19), abs's 100,000 = two 50k batches (2026-08-18..24, rotation shifted the window).
+Queue total 225,272 across 9 sources; the small ones drain (cso reached 0), the two capped
+cohorts cannot — 50k CSVs do not fit a 60-minute window, so the same timeout that filled the
+queue also guards its drain. The fix is per-source csv budget/pacing (task 1c's territory),
+NOT touching `merge_and_write`/`min_ratio` (R519).
