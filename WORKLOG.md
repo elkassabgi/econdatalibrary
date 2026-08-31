@@ -633,3 +633,14 @@ Current state (the plan's 73,125 was an earlier snapshot; today's `unit_state` n
 
 Task 2's "establish why per source" is therefore done; no mapping-ladder defect found in the
 current fleet — the two real classes are by-design flow residue and uncatalogued store keys.
+
+### Phase 3 task 4 — the perpetual-partials, first triage (2026-08-31)
+
+36 units currently `partial`, five causes (one query over `unit_state`, R359's classify-the-
+notes method): **15** transient tails (self-healing); **7** honest budget deferrals (drain);
+**2** never-shrink refusals = the two unctad collision sources (`refusing shrink
+648,241→362,203`) — the guard doing its job, waiting on the Phase-4 decision; **1** timeout =
+`ember` (97,334 changed series, csv-phase UnitTimeout — the same fence bug the re-raise fix
+under review closes; its crash path queued 0 because ember's colon-free keys are filtered);
+**11 "other"** needing per-source reads (e.g. `treasury`: "177 changed series_keys have no
+catalog mapping"), queued as individual items.
