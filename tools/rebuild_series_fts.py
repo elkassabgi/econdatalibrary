@@ -176,8 +176,18 @@ def main() -> int:
 
     # THE SWAP — one atomic file (probed: a failing statement rolls the file back).
     swap = os.path.join(ROOT, "data", "_fts_swap.sql")
+    # The swap adapts to whether the OLD table still exists. In the 2026-08-31 run the DB hit
+    # D1's 10 GB ceiling mid-build (the old 23.7M-row index + 7.06M new rows) and the old
+    # table was dropped EARLY to reclaim space (9.99 GB -> 5.95 GB; the LIKE fallback carried
+    # search, measured live at the clean predictions). A DROP of a now-absent table inside
+    # the atomic file would roll the RENAME back with it.
+    old_exists = d1("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'series_fts'"
+                    )["results"][0]["n"] > 0
     with open(swap, "w", encoding="utf-8") as fh:
-        fh.write("DROP TABLE series_fts;\nALTER TABLE %s RENAME TO series_fts;\n" % NEW)
+        if old_exists:
+            fh.write("DROP TABLE series_fts;\nALTER TABLE %s RENAME TO series_fts;\n" % NEW)
+        else:
+            fh.write("ALTER TABLE %s RENAME TO series_fts;\n" % NEW)
     p = subprocess.run(["npx", "wrangler", "d1", "execute", DB, "--remote", "--json",
                         "--file", swap.replace("\\", "/")],
                        cwd=WORKER, capture_output=True, text=True, encoding="utf-8",
