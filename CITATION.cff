@@ -28,5 +28,5 @@ abstract: >-
   statistical offices, central banks, and research datasets hosted with written
   permission — surfaced through a curated, continuously-growing searchable
   catalog. Producer-first attribution ships with every download; access via
-  website, free REST API, MCP server, and a Python client. Part of the
+  website, free REST API, MCP server, and Python and R clients. Part of the
   ElkassabgiData family.
