@@ -179,6 +179,7 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `pip` | World Bank Poverty & Inequality Pl | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `polity` | Polity5 (Center for Systemic Peace | permission_required | CONFIRMED | RESTRICTED (keep gated) |
 | `pwt` | Penn World Table (Groningen GGDC) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
+| `qog` | Quality of Government Institute, University of Gothenburg | permission_required | CONFIRMED | ⛔ REFUSED IN WRITING (2026-08-31) — never serve; link-only permitted (QoG Data Finder) |
 | `rba` | Reserve Bank of Australia (RBA) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `riksbank` | Sveriges Riksbank | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `sec_edgar` | sec_edgar | redistributable_open | CONFIRMED | CLEARED - re-host OK |
@@ -3871,3 +3872,26 @@ check must normalise both sides before comparing, or it will report data that al
 Serving it would have added 764 catalogue entries pointing at data already served under
 different ids — the worst kind of growth, because it inflates the counts while making the
 catalogue harder to search.
+
+### qog — REFUSED IN WRITING, email from the publisher (received 2026-08-31)
+
+From Erica Ann Metheney — Head of Data, Governance and Local Development Institute (GLD);
+Team Leader QoG Data, Quality of Government Institute, Department of Political Science,
+University of Gothenburg (erica.metheney@gu.se) — replying to Ahmed's 2026-07-06 permission
+request (the trail's "under review" of 2026-07-07), VERBATIM:
+
+> Unfortunately, as you rightly pointed out, rehosting the datasets would constitute
+> redistribution which is not allowed.  If it is beneficial on your platform, you may always
+> provide a link to the QoG datasets. In this case, we would recommend linking to the QoG
+> Data Finder: https://datafinder.qog.gu.se/
+
+Verdict: **REFUSED — never serve.** What the refusal permits is a LINK to their Data Finder,
+nothing more. Under the standing no-metadata-only rule (host fully or do not list it) a
+link-only catalogue entry is also out; at most a citation on a docs page.
+
+State at the time of the verdict, measured 2026-08-31: `qog` was already in
+`api/worker/src/denylist.ts` (worker answers 451), had **0 catalogue rows** and no `source`
+row, and was absent from `updater/registry.yaml` (nothing schedules it). Local holdings —
+`data/clean_full/qog`, `updater/strategies/fetchers/qog.py`, `jobs/ingest_qog.py` — are
+dormant; the store's data is re-crawlable from the publisher, so its removal is recoverable
+by definition.
