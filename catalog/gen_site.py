@@ -992,7 +992,18 @@ def load_registry():
         sources[r["source_id"]] = dict(r)
 
     # Per-source series rollup (coverage facets) -- only from the registry.
+    #
+    # Series-level carve-outs are EXCLUDED here, so a page counts what a user can actually
+    # download. Without this, worldbank published "692 series" while the worker gates 430 of
+    # them as third-party data and serves 262 (measured 2026-08-30). The prefixes come from
+    # denylist.ts, the same file the worker gates on, so the page and the gate cannot drift.
+    # An unparsable denylist yields no prefixes and this degrades to the old unfiltered count,
+    # loudly (see load_series_carveouts).
     series_roll = {}
+    _carve_excl = "".join(
+        "\n          AND series_id NOT LIKE '" + p.replace("'", "''") + "%'"
+        for p in SERIES_CARVEOUT_PREFIXES
+    )
     q = """
         SELECT source_id,
                COUNT(*)                       AS n_series,
@@ -1001,6 +1012,7 @@ def load_registry():
                COUNT(DISTINCT geography)      AS n_geo,
                MAX(last_updated)              AS last_updated
         FROM series
+        WHERE 1=1""" + _carve_excl + """
         GROUP BY source_id
     """
     for r in con.execute(q):
@@ -1221,6 +1233,56 @@ def load_denylisted():
 
 
 DENYLISTED = load_denylisted()
+
+
+def load_series_carveouts():
+    """SERIES-level carve-outs — SERIES_CARVEOUTS in api/worker/src/denylist.ts.
+
+    The source is redistributable but specific indicators inside it embed third-party data its
+    licence does not cover, so the worker gates those series individually. This generator knew
+    about the SOURCE-level denylist above and nothing about this one, so every published count
+    included series a user can never download.
+
+    Measured 2026-08-30: catalog/site/worldbank.html stated "692 series" three times. Of those
+    692, **430** are carved (SL.UEM.TOTL.ZS 235 + FP.CPI.TOTL.ZG 195) and 262 remain — a 2.64x
+    overstatement on a public page. worldbank_wdi carries the same carve-out rule but has zero
+    catalogue rows under those indicators, so it was never overstated: a rule can be present and
+    bind nothing, which is why this is measured per source rather than assumed from membership.
+
+    Returns {source_id: [indicator, ...]}. Same empty-set contract as the loaders above — an
+    unparsable file subtracts NOTHING rather than silently zeroing every count — but it says so
+    loudly, because for a COUNT the failure direction is a published overstatement, not a
+    missing download button.
+    """
+    path = os.path.join(os.path.dirname(HERE), "api", "worker", "src", "denylist.ts")
+    if not os.path.exists(path):
+        print("  WARNING: denylist.ts absent — series carve-outs NOT subtracted from counts")
+        return {}
+    src = open(path, encoding="utf-8").read()
+    m = re.search(r"SERIES_CARVEOUTS[^=]*=\s*\{(.*?)\n\};", src, re.S)
+    if not m:
+        print("  WARNING: SERIES_CARVEOUTS unparsable — carve-outs NOT subtracted from counts")
+        return {}
+    body = re.sub(r"//[^\n]*", "", m.group(1))
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    out = {}
+    for key in re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:", body, re.M):
+        block = re.search(re.escape(key) + r"\s*:\s*\[(.*?)\]", body, re.S)
+        if block:
+            inds = re.findall(r'"([^"]+)"', block.group(1))
+            if inds:
+                out[key] = inds
+    if not out:
+        print("  WARNING: SERIES_CARVEOUTS parsed to nothing — counts unadjusted")
+    return out
+
+
+SERIES_CARVEOUTS = load_series_carveouts()
+
+# `<src>:<indicator>:` prefixes, matching denylist.ts::SERIES_CARVEOUT_LIKE exactly.
+SERIES_CARVEOUT_PREFIXES = [
+    "%s:%s:" % (src, ind) for src, inds in SERIES_CARVEOUTS.items() for ind in inds
+]
 
 # A page is a promise, and the promise is only true if the DATA PLANE agrees. The resolver says
 # "I know how to serve this"; the denylist says "I must not". Both have to allow it.
