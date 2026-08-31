@@ -403,7 +403,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-26');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-30');
     if(d.as_of){var _ag=tago(d.as_of);
       document.getElementById('sb-data').textContent='Data updated: '+fdate(d.as_of)+(_ag?' ('+_ag+')':'');}
   }).catch(function(){
@@ -445,6 +445,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
       <a href="api.html" class="btn btn-outline">API Access</a><a class="btn btn-outline" href="mcp.html">AI &amp; MCP</a>
     </div>
     <p class="hero-note">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded. Years of history: the earliest catalogued series (Maddison Project / GGDC) begin in year 1&nbsp;CE.</p>
+    <p class="hero-note" id="stats-recalc" style="display:none; color:var(--gold); font-weight:600;"></p>
   </div>
 </section>
 
@@ -667,12 +668,30 @@ function animateCounter(el, target) {
   requestAnimationFrame(step);
 }
 // Live headline counts from /v1/stats - never hardcoded in the page.
-fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (d) {
+// Bucketed by the HOUR, not by the millisecond. /v1/stats is edge-cached for six hours
+// (s-maxage=21600) because an uncached version of this endpoint once read 267M rows/day
+// from D1 - so a per-load cache-buster would reopen a closed cost incident. An hourly
+// bucket bounds staleness to one hour at a cost of at most 24 cache entries per day,
+// which matters when the payload carries a "being recalculated" notice that should not
+// take most of a day to appear or to disappear.
+var STATS_URL = API + "/v1/stats?h=" + Math.floor(Date.now() / 3600000);
+fetch(STATS_URL).then(function (r) { return r.json(); }).then(function (d) {
   function fmtB(n) { if (n < 1e9) return Number(n).toLocaleString(); var s = (Math.floor(n / 1e8) / 10).toFixed(1); if (s.slice(-2) === ".0") s = s.slice(0, -2); return s + "B+"; }
   if (d.individual_series) document.getElementById("live-series").textContent = fmtB(d.individual_series);
   if (d.observations) animateCounter(document.getElementById("obs-counter"), d.observations);
   if (d.as_of) document.getElementById("live-asof").textContent = d.as_of;
   if (d.individual_series) { var c = document.getElementById("cmp-series"); if (c) c.textContent = fmtB(d.individual_series); }
+  // Say plainly, beside the numbers, when they are under recalculation. Driven by the
+  // endpoint, so the notice appears and disappears with the data rather than needing a site
+  // redeploy - and so it cannot outlive the condition it describes.
+  if (d.recalculating) {
+    var rc = document.getElementById("stats-recalc");
+    if (rc) {
+      rc.textContent = d.recalculating_note ||
+        "These headline totals are being recalculated and may change.";
+      rc.style.display = "";
+    }
+  }
 }).catch(function () {});
 </script>
 
