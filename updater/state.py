@@ -264,11 +264,16 @@ class StateStore:
             "         ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY id DESC) AS rn"
             "  FROM runs) WHERE rn <= ? GROUP BY source_id", (sample,))
         est = {sid: (d or 0.0) for sid, d in rows}
+        # `killed_external` joins the floor set (2026-08-31): a unit hard-killed from outside
+        # spent AT LEAST dur_s on an attempt that got somewhere, which is exactly what the
+        # floor exists to remember. Without it, five fast post-kill rows (locked 0.0s,
+        # transient_fails during an upstream outage) roll the kill out of the MAX window and
+        # the floor then restores the OLD cheap estimate — one starvation relapse per outage.
         floors = self.db.execute(
             "SELECT source_id, dur_s FROM ("
             "  SELECT source_id, dur_s,"
             "         ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY id DESC) AS rn"
-            "  FROM runs WHERE status IN ('ok','no_change','partial')"
+            "  FROM runs WHERE status IN ('ok','no_change','partial','killed_external')"
             ") WHERE rn = 1")
         for sid, d in floors:
             if d is not None and sid in est and d > est[sid]:

@@ -321,6 +321,9 @@ Say ("running updater for " + $targets.Count + " source(s) ...")
 # going to lose.
 $graceMin = 10
 $hardDeadline = (Get-Date).AddMinutes([int]$env:AQUEDUCT_RUN_BUDGET_MIN + $graceMin)
+# Captured for the killed-unit recorder below: the elapsed it attributes is measured from the
+# moment the updater is launched, matching the log the parser reads.
+$updaterStart = Get-Date
 $hardStopped = $false
 # CAPTURE THE UPDATER'S OUTPUT. -NoNewWindow with no redirection sends it to the parent's
 # console, and this script runs unattended from the guard, so the console is nowhere: every
@@ -371,6 +374,32 @@ elseif ($proc.HasExited) { $proc.Refresh(); $rc = $proc.ExitCode }
 else { $rc = 124 }
 if ($null -eq $rc) { $rc = 124 }
 Say ("updater exit code: " + $rc)
+
+# RECORD THE UNIT THE KILL UN-RECORDED, before push-state carries the state away. A unit
+# killed by the taskkill above dies without writing its `runs` row, so run_cost_estimate
+# never learns its true cost: the giant keeps a stale cheap estimate, re-enters the cheap
+# band, and eats the NEXT night's whole budget too. Measured 2026-08-30/31 -
+# unctad_tradefoodcatbyproc consumed ~154 min of a 153-min pass, left no row, and 18 live
+# local sources went a 7th day unattempted while it led the queue again. The tool attributes
+# the pass's unaccounted elapsed to the in-flight unit as status=killed_external, which
+# MAX(dur_s) then sees. It must run HERE - between the run and push-state - because
+# pull-state replaces local state wholesale (R340), so a row written any other time is lost.
+#
+# Output goes through Say and a nonzero exit is announced LOUDLY: the adversarial review's
+# core point was that a recorder failing silently in this path re-opens the starvation while
+# everyone believes it fixed. It never aborts the pass - push-state must still run.
+if ($hardStopped) {
+    $elapsedS = [int]((Get-Date) - $updaterStart).TotalSeconds
+    Say ("recording externally-killed unit (elapsed " + $elapsedS + "s) ...")
+    $recOut = & $pythonExe (Join-Path $PSScriptRoot 'record_killed_unit.py') `
+                $updaterLog $elapsedS --apply 2>&1
+    foreach ($ln in @($recOut)) { Say ("  recorder: " + $ln) }
+    if ($LASTEXITCODE -ne 0) {
+        Say ("RECORDER FAILED (exit " + $LASTEXITCODE + ") - the killed unit keeps its " +
+             "stale cheap cost estimate and may starve the fleet again; investigate " +
+             "record_killed_unit.py against " + $updaterLog)
+    }
+}
 
 # Push state even on a non-zero exit: the updater is built to fail one source while having
 # honestly refreshed the others, and discarding that is the opposite of the honest-status
