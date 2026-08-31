@@ -1088,7 +1088,62 @@ def _catalog_ids_for(source_id: str, changed_keys):
     try:
         exact, unmapped = [], []
         seen = set()
+        # ONE-TO-MANY EXPANSIONS (WU-4 of the 2026-08-31 grain sweep): dst subject
+        # groups, treasury endpoint tails, wikidata group containment. Each mirrors
+        # its RESOLVER/fetcher predicate — dst via the fetcher's own _subj (imported,
+        # never retyped: R191/R192 drift), treasury by the catalogue's endpoint-tail
+        # first segment, wikidata's 'companies' group claiming the whole 250-id range
+        # (the resolver hardcodes companies.parquet). The index is built ONCE per call
+        # from the source's PK range (2,264 / 14 / 250 rows — indexed, sub-ms) so the
+        # per-key lookup is O(1). Measured (audit_cursor_grain --source, 2026-08-31,
+        # post-reorder): dst 376/376 keys mapped, claiming 1,057 ids = 46.7% of the
+        # catalogue — bounded by WHICH subject files have cursors yet (376 of ~815
+        # subjects; rotation grows it), NOT by the mapper; treasury 14/14 ids from
+        # 2/177 keys, wikidata 250/250 from 1/3 (other keys honestly unmapped —
+        # catalog_scope: subset carries them).
+        _exp = None
+        if source_id == "dst":
+            from .strategies.fetchers.dst import _subj as _dst_subj
+            _exp = {}
+            for (cid,) in con.execute(
+                    "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                    ("dst:DST:", "dst:DST;")):
+                _exp.setdefault(_dst_subj(cid[len("dst:DST:"):]), []).append(cid)
+        elif source_id == "treasury":
+            _exp = {}
+            for (cid,) in con.execute(
+                    "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                    ("treasury:", "treasury;")):
+                parts = cid.split(":", 2)
+                if len(parts) >= 2:
+                    _exp.setdefault(parts[1], []).append(cid)
+        elif source_id == "wikidata":
+            _all = [r[0] for r in con.execute(
+                "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                ("wikidata:", "wikidata;"))]
+            _exp = {"companies": _all} if _all else {}
         for k in changed_keys:
+            # dst consults its subject index BEFORE the exact tier (the WU-4 review's
+            # REQUIRED change): 10 of the 2,264 subject-group names are THEMSELVES
+            # catalogued table ids (REGN10-class: subject 'REGN10' groups REGN10A…,
+            # while TABLE REGN10 belongs to subject 'REGN' — _subj strips its trailing
+            # digits). Exact-first hit those 10 names and (a) claimed the identically
+            # named table, whose rows live in a DIFFERENT subject file — 7 wrong
+            # claims — and (b) starved the 16 ids those subjects actually group.
+            # Index HIT -> claim the group; MISS -> fall through, so a dst key that
+            # is not a subject name still reaches the exact tier and the rest.
+            if source_id == "dst" and _exp is not None and k.startswith("DST:"):
+                # k[4:] is the subject VERBATIM — never _subj(k[4:]): the fetcher
+                # cursors per subject FILE, and re-applying _subj strips digit-ending
+                # subjects ('AKU100'->'AKU'); exactly 24 of 376 real keys broke that
+                # way in the first cut. _subj belongs on the CATALOGUE side only.
+                _hit = _exp.get(k[4:])
+                if _hit:
+                    for cid in _hit:
+                        if cid not in seen:
+                            seen.add(cid)
+                            exact.append(cid)
+                    continue
             cand = f"{source_id}:{k}"
             row = con.execute("SELECT 1 FROM series WHERE series_id=?", (cand,)).fetchone()
             if row:
@@ -1134,6 +1189,23 @@ def _catalog_ids_for(source_id: str, changed_keys):
                                (tcand,)).fetchone():
                     seen.add(tcand)
                     exact.append(tcand)
+                    continue
+            if _exp is not None:
+                # dst is handled ABOVE the exact tier (see top of loop); treasury and
+                # wikidata stay here — their keys cannot collide with catalogue ids
+                # (treasury ids are '<tail>:<field>', keys 'vN/accounting/...'), so
+                # exact-first is safe for them and the order is pinned by test.
+                if source_id == "treasury":
+                    _hit = _exp.get(k.rsplit("/", 1)[-1])
+                elif source_id == "wikidata":
+                    _hit = _exp.get(k)
+                else:
+                    _hit = None
+                if _hit:
+                    for cid in _hit:
+                        if cid not in seen:
+                            seen.add(cid)
+                            exact.append(cid)
                     continue
             # DATAFLOW expansion (ecb). One bulk file holds every series of a flow at a
             # given frequency, so a changed file means each catalogued id inside it may be
