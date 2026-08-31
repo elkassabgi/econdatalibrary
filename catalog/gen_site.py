@@ -3106,7 +3106,14 @@ function animateCounter(el, target) {
   requestAnimationFrame(step);
 }
 // Live headline counts from /v1/stats - never hardcoded in the page.
-fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (d) {
+// Bucketed by the HOUR, not by the millisecond. /v1/stats is edge-cached for six hours
+// (s-maxage=21600) because an uncached version of this endpoint once read 267M rows/day
+// from D1 - so a per-load cache-buster would reopen a closed cost incident. An hourly
+// bucket bounds staleness to one hour at a cost of at most 24 cache entries per day,
+// which matters when the payload carries a "being recalculated" notice that should not
+// take most of a day to appear or to disappear.
+var STATS_URL = API + "/v1/stats?h=" + Math.floor(Date.now() / 3600000);
+fetch(STATS_URL).then(function (r) { return r.json(); }).then(function (d) {
   function fmtB(n) { if (n < 1e9) return Number(n).toLocaleString(); var s = (Math.floor(n / 1e8) / 10).toFixed(1); if (s.slice(-2) === ".0") s = s.slice(0, -2); return s + "B+"; }
   if (d.individual_series) document.getElementById("live-series").textContent = fmtB(d.individual_series);
   if (d.observations) animateCounter(document.getElementById("obs-counter"), d.observations);
