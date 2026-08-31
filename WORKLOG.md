@@ -583,3 +583,19 @@ the error string.
 
 The search index now means what it says: no duplicates (was 2.30× on the primary), no orphans
 (was 1,052,814 incl. ghosts of retired zillow), totals == reality.
+
+### Phase 2 tasks 2 + 3, and the exit gate's first half (2026-08-31)
+
+* **Task 3 — title consistency: PASSED AT FULL POPULATION, not the plan's 120-id sample.**
+  One statement joins every FTS row to `series`: **0 mismatches** on title OR geography across
+  all **10,348,426** joined rows (`rows_read` 41,393,704, ~$0.04). `series == series_fts ==
+  10,348,426` exactly.
+* **Task 2 — source_counts reconciliation: ZERO DRIFT, ZERO UNCACHED.** One statement, whole
+  cache vs per-source truth: 321 == 321, drifted 0, uncached 0. (The cache stores RAW counts
+  by design; the three carve-out sources take the bounded visible count live in the worker —
+  yesterday's fix — so cache==COUNT(*) is the correct invariant here.)
+* `ledger_check --titles wid boc worldbank bls`: PASS — wid covers all 2,465,197 (was 4×
+  duplicated), boc all 12,862 (was 8×), worldbank 692, bls 9.
+* **Exit gate: HALF met.** "Zero drift on two consecutive runs (one immediate, one after the
+  next sync)" — run 1 is the zero above; run 2 is calendar-bound to the next scheduled sync
+  (18:00Z drain or tomorrow's 06:00Z). Re-run the one-statement reconciliation after it.
