@@ -49,6 +49,10 @@ _FORBIDDEN = re.compile(
     r"(;|--|/\*|\bDROP\b|\bATTACH\b|\bDETACH\b|\bPRAGMA\b|\bINSERT\b|\bUPDATE\b|"
     r"\bDELETE\b|\bCREATE\b|\bALTER\b|\bUNION\b|\bsource_id\b)", re.I)
 
+# Upper bound on how many rows one run can insert for a source — the same cap the
+# fetchers report under. A pre_count jump larger than this is not "a source ran".
+_CURSOR_CAP = 50_000
+
 
 def run_module(*args) -> int:
     p = subprocess.run([sys.executable, "-m", "updater.run", *args], cwd=ROOT,
@@ -154,10 +158,57 @@ def main() -> int:
         if not ok:
             disagreements.append(
                 f"{sid}: live match={match:,} vs authorised match={r['match_count']:,}")
+        # pre_count is a MONOTONE-UP band, not free drift. Cursors are upsert-only, so a
+        # source that ran can only ADD rows; a DECREASE means some other writer deleted
+        # from this table — that is a different store, not drift. And no single run can
+        # insert more than CURSOR_CAP, so a bigger jump is also unexplained.
+        if drift < 0:
+            disagreements.append(
+                f"{sid}: pre_count FELL {abs(drift):,} ({r['pre_count']:,} -> {pre:,}). "
+                f"Cursors are upsert-only (state.py:141) and the only DELETEs live in the "
+                f"purge tools — someone else deleted rows, or this is a different store.")
+        elif drift > _CURSOR_CAP:
+            disagreements.append(
+                f"{sid}: pre_count JUMPED {drift:,}, more than one run can insert "
+                f"(CURSOR_CAP={_CURSOR_CAP:,}). Unexplained growth — investigate.")
         elif drift:
-            print(f"      note: {abs(drift):,} row(s) {'appeared' if drift > 0 else 'vanished'} "
-                  f"since the measurement — expected for a source that ran; the delete set "
-                  f"itself is unchanged, so the authorisation still holds.")
+            print(f"      note: {drift:,} row(s) appeared since the measurement — expected "
+                  f"for a source that ran; the delete set itself is unchanged.")
+
+    # ---- THE GATE THAT ACTUALLY AUTHORISES THE DELETES -----------------------------
+    # Counting proves the set is the one we measured. THIS proves the set is safe to lose:
+    # every key about to be deleted must map to NOTHING in the catalogue, so no served
+    # series can lose its only cursor. It is invariant to drift, which is why loosening
+    # pre_count costs nothing.
+    #
+    # BACKEND MUST BE FORCED TO r2. Under the default local backend the derive-all
+    # fallback (_DERIVE_ALL_CAP, orchestrate.py) returns EVERY id of a small-catalogue
+    # source with unmapped=[], so a set of provably dead keys reads as 100% MAPPED. That
+    # artefact was hit twice while measuring this very migration (worldbank_wdi's 10,255
+    # "mapping" all 1,486 ids; whr's 178 "mapping" all 1,749) and is already twice in the
+    # ledger. A gate that fails open is not a gate (R503).
+    if not disagreements:
+        from updater import config as _cfg
+        from updater import orchestrate as _orc
+        _saved = _cfg.BACKEND
+        _cfg.BACKEND = "r2"
+        try:
+            print("\nmapper gate (r2 semantics — every doomed key must map to NOTHING):")
+            for r in plan:
+                sid = r["source_id"]
+                keys = [row[0] for row in st.db.execute(
+                    f"SELECT series_key FROM series_cursor WHERE source_id=? "
+                    f"AND ({r['predicate']})", (sid,))]
+                ids, unmapped = _orc._catalog_ids_for(sid, keys)
+                print(f"  {sid:<22} {len(keys):>8,} doomed keys -> {len(ids):,} catalogue id(s)"
+                      f"   {'OK' if not ids else 'REFUSES'}")
+                if ids:
+                    disagreements.append(
+                        f"{sid}: {len(ids):,} of the {len(keys):,} rows to delete MAP to "
+                        f"catalogue ids (e.g. {ids[:3]}) — those series would lose their "
+                        f"cursor. This is not dead state.")
+        finally:
+            _cfg.BACKEND = _saved
 
     if disagreements:
         print("\nABORT — the delete set is not the one that was authorised. NOTHING written.")

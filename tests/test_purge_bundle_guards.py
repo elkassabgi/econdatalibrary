@@ -114,3 +114,31 @@ def test_delete_is_always_source_scoped():
     # Count only EXECUTABLE deletes (the f-string form). Plain "DELETE FROM" also occurs
     # in the module docstring, where it documents this very invariant.
     assert src.count('f"DELETE FROM') == 1, "more than one executable DELETE in the tool"
+
+
+def test_pre_count_is_a_monotone_up_band_and_the_mapper_gate_exists():
+    """The synthesis's two remaining gaps, both now closed.
+
+    (1) pre_count may only GROW. Cursors are upsert-only (state.py:141) and the only
+    DELETEs live in the purge tools, so a FALL means another writer deleted rows — a
+    different store, not drift. A jump larger than CURSOR_CAP is likewise unexplained.
+
+    (2) The property that actually authorises the deletes is not a count at all: every
+    doomed key must map to NOTHING in the catalogue. It must run under FORCED r2
+    semantics, because the local backend's derive-all fallback returns every id of a
+    small-catalogue source with unmapped=[], so provably dead keys read as 100% mapped —
+    the artefact that fooled two measuring agents on this very migration. A gate that
+    fails open is not a gate (R503)."""
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "tools", "purge_state_cursors_bundle.py"),
+               encoding="utf-8").read()
+    assert "if drift < 0:" in src, "negative pre_count drift is no longer refused"
+    assert "elif drift > _CURSOR_CAP:" in src, "an unexplained pre_count jump is not refused"
+    assert "pre_count FELL" in src and "pre_count JUMPED" in src
+    i = src.find("mapper gate")
+    assert i != -1, "the mapper gate is gone"
+    block = src[i - 1500:i + 1500]
+    assert '_cfg.BACKEND = "r2"' in block, "the mapper gate no longer FORCES r2 semantics"
+    assert "_orc._catalog_ids_for(" in block, "the gate no longer drives the shipped mapper"
+    assert "if ids:" in block, "the gate no longer refuses when a doomed key maps"
+    assert "_cfg.BACKEND = _saved" in block, "the gate leaks its backend override"
