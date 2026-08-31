@@ -116,7 +116,19 @@ def _fetch_table(tid):
     if not raw:
         return tid, None
     try:
-        rows, _err = ig.parse_table(tid, raw.decode("utf-8", errors="replace"))
+        # DECODE EXACTLY AS THE INGESTER DOES (ingest_ksh_stadat.py:664-666): strict
+        # utf-8-sig first, cp1250 fallback. This line used to read
+        # `decode("utf-8", errors="replace")` — R333's two-parsers class verbatim:
+        # KSH serves some tables cp1250-encoded, `replace` minted U+FFFD into the
+        # series keys, and 1,931 catalogued series (whose CLEAN accents came from the
+        # ingester's correct decode) became unservable — the resolver's exact-equality
+        # match can never hit a mojibake-only store (WU-3 of the 2026-08-31 grain
+        # sweep, the one unit where users receive EMPTY data).
+        try:
+            txt = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            txt = raw.decode("cp1250", errors="replace")
+        rows, _err = ig.parse_table(tid, txt)
     except Exception:
         return tid, None
     return tid, rows or []
