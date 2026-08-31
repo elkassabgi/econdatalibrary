@@ -474,12 +474,43 @@ def _derive_changed_csvs(unit, res, blob):
     43354/77501", which was the 45-minute budget doing its job (ledger R372, and the same
     disease R359 named: a check that reports its own policy as a fault).
 
-    The changed set is exactly `res.series_cursors` — the per-series freshness the
-    fetcher measured from rows it actually merged (never inferred from schedules).
+    The changed set is `res.changed_keys` when the fetcher provides it — the
+    MERGE-MEASURED set from merge_and_write(report_changed_keys=True), which sees
+    both directions the cursor reading misses: an idempotent boundary re-fetch is
+    NOT a change (ecb's changed==attempted 25/25), and a same-period revision IS
+    one even though no max advances (the worldbank_esg disease). An EMPTY
+    changed_keys dict is honoured as "nothing changed". Un-migrated fetchers
+    (changed_keys None) fall back to exactly the old reading:
+    `res.series_cursors.keys()` — the per-series freshness the fetcher measured
+    from rows it actually merged (never inferred from schedules).
     ANY failure here (derive module missing, catalog unreadable, PUT exhausted its
     retries) must never crash or roll back the already-published parquet: the
     caller demotes the run to `partial` and queues the ids in csv_retry_queue."""
-    changed = sorted((res.series_cursors or {}).keys())
+    migrated = getattr(res, "changed_keys", None) is not None
+    if migrated:
+        # The merge report's contract ADMITS a None key (null series_key — AR-029's
+        # standing note), and sorted(None, str) is a TypeError that would escape to the
+        # outer except and book the unit transient_fail AFTER a successful publish with
+        # every state write skipped — the gleif 2-tuple disease, wired into the channel
+        # for any future migrant whose store holds a null key (the pilot's cannot).
+        # Consume the API's whole documented domain: drop the None key LOUDLY — a null
+        # series_key has no catalogue id and no CSV, so there is nothing to derive.
+        if None in res.changed_keys:
+            print(f"[orchestrator] {unit.key}: changed_keys contains a null series_key "
+                  f"— no catalogue id or CSV can exist for it; dropped from the derive "
+                  f"set (the store row itself is published)", flush=True)
+        changed = sorted(k for k in res.changed_keys if k is not None)
+        if not changed:
+            # MERGE-MEASURED EMPTY changed set: every fetched row deduplicated away
+            # identical (the idempotent boundary re-fetch). Nothing served can have
+            # gone stale, so coherence is MET — this must NOT fall through to the
+            # no-cursors branches below, which would book the §5.7 note and (since
+            # 2026-08-31) a full_rederive_owed row for a fetcher that reported
+            # honestly. res.obs > 0 here is expected: obs counts rows MERGED, and an
+            # idempotent re-merge still merges rows.
+            return [], None, [], {}
+    else:
+        changed = sorted((res.series_cursors or {}).keys())
     if not changed:
         if res.obs and _catalog_series_count(unit.source_id) == 0:
             # VACUOUS COHERENCE. A source with ZERO catalogued series has no per-series

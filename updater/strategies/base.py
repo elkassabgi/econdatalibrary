@@ -52,6 +52,19 @@ class Result:
     # optional per-series {series_key: last_obs_date} so the orchestrator can persist
     # per-series freshness (a frozen series can't hide behind a unit-level max).
     series_cursors: dict | None = None
+    # OPTIONAL merge-measured changed set: {series_key: max changed obs_date or None}
+    # from merge_and_write(report_changed_keys=True). When present (not None), §5.7
+    # derives CSVs from THIS instead of series_cursors.keys() — the two answer
+    # different questions and the audit of 2026-08-31 found series_cursors serving
+    # three contradictory contracts at once (health frontier / changed set / cursor
+    # state): the seeding that health NEEDS (every on-disk flow, every run) makes the
+    # changed-set reading over-report (ecb changed==attempted 25/25), while max-date
+    # cursors under-report same-period revisions. The merge is the only place that
+    # knows what actually changed. None (the default) = the fetcher has not migrated;
+    # behaviour is exactly as before. An EMPTY dict is a real statement ("nothing
+    # changed") and is honoured. Keys are STORE grain; for a source whose catalogue is
+    # series-grain they map exactly (norgesbank, the pilot).
+    changed_keys: dict | None = None
 
 
 def cadence_due(cadence: str, last_success_utc: str | None, now: datetime | None = None) -> bool:
