@@ -461,3 +461,27 @@ source ids.
 
 **Still open, unchanged:** `q=gdp` returns `worldbank:NY.GDP.MKTP.CD:XD` first — one of R524's
 eight advertised-but-unresolvable ids. Recorded, not fixed; the remedy is update-path work.
+
+---
+
+## RETRACTED: the re-key authorisation was requested on wrong numbers (2026-08-30)
+
+Ahmed authorised re-keying five sources ("go") on five figures I presented as collision counts.
+**Every one is a catalogue row count** — `SELECT COUNT(*) FROM series WHERE source_id = ?`
+reproduces all six exactly (verified myself after the adversarial review returned STOP). I
+showed him how many public ids would *break* and called it how much damage would be *repaired*.
+
+True collisions: eia **145,248,181** (541× my figure) · idb 14,734,403 (782×) · unctad ×2
+603,467 (16×) · damodaran **1,849** (13× smaller) · usda 65,122. And the remedy is wrong for
+all five — eia needs `period` added to its dedup key (no id changes; 958,244 of 958,293
+collisions resolved in one measured row group); idb and both unctad stores hold only
+`[series_key, obs_date, value]` so **cannot** be re-keyed from disk; damodaran is already
+handled; usda is an ingester-key fix. Unpriced: ~50–57B D1 rows read (52× the daily scan
+budget) and no id-alias mechanism exists for the 418,435 ids.
+
+**Nothing was executed.** Full retraction and corrected work plan in
+`docs/briefs/PHASE0_BRIEFS.md`; ledger **R527** with the structural rule: a number that
+underwrites an authorisation lands in NUMBERS.md with its instrument BEFORE the ask. The
+instrument that produced the bad census (`tools/audit_dedup_uniqueness.py`) is fixed in
+`3b4cf8ea0` — an assumed key now announces itself and a source where nothing was checked exits
+non-zero instead of wearing a pass's face. The four id-preserving fixes await Ahmed's word.
