@@ -268,7 +268,16 @@ def parse_jsonstat2(data: dict, prefix: str, time_code: str | None = None) -> li
         # Pick the time dimension via the shared value-first resolver (core/pxweb.py):
         # authoritative `time: true` / role.time, else highest date-parse-rate, else name.
         # Value-first stops a month axis (codes '0'..'11') from outranking a year axis.
-        time_dim_idx = _pxweb.resolve_time_dim(dim_ids, dim_codes, meta_time_code=time_code, role_time=_pxweb.role_time_of(data), parse_fn=parse_date)
+        # dim_labels passed so an UNFLAGGED positional axis ('Year' coded '0','1',…
+        # with periods only in labels) resolves — this function already collects the
+        # labels above and already dates rows BY them below; only this middle call was
+        # label-blind, so the resolver refused before either half could matter and the
+        # table parsed 0 rows from a perfect 200 (the 33-table false-structural class,
+        # 2026-08-31). Same-axis-only safety lives in resolve_time_dim itself.
+        time_dim_idx = _pxweb.resolve_time_dim(
+            dim_ids, dim_codes, meta_time_code=time_code,
+            role_time=_pxweb.role_time_of(data), parse_fn=parse_date,
+            dim_labels=dim_labels)
 
         if time_dim_idx is None:
             return results
