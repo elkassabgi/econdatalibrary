@@ -1587,3 +1587,20 @@ next attempted run shows the guard released (stalest-first ordering should reach
 within days — if its attempt age keeps growing past ~3 more days, force it:
 `gh workflow run updater-daily.yml -f source=eurostat -f force=true`, minding the
 aqueduct-updater single-slot eviction rule R291 before dispatching).
+
+### Phase-3 triage stubs CLOSED 2026-08-31 (sipri_polity · owid · stat_slovenia)
+
+- **sipri_polity — NOT A DEFECT, recorded.** 6,513 cursors / 0 catalogue rows (cursor-grain
+  audit), `live: false`, worker-denylisted, licence `sipri` RESTRICTED. Its chronic-partial
+  note ("maps nothing AND exceeds the derive-all cap") is honest residue of a gated-by-design
+  source: zero catalogued rows = zero CSVs = nothing can go stale. No code change while
+  live:false — a §5.7 "declared-gated" carve-out was considered and REJECTED for now: the
+  zero-mapped demote is the same signal that catches a stale R2 coherence catalog (R271's
+  650k-series freeze), and no LIVE source needs the carve-out, so weakening it buys silence
+  for two dormant sources at real risk. Revisit only if a gated source ever goes live.
+- **owid — same class + the standing question is already Ahmed's.** DISPUTED licence,
+  gated in LEGACY_KEEP, live:false, 68,893 cursors / 0 rows. "Should a gated store keep
+  refreshing?" is recorded above as his call; nothing mechanical to do until then.
+- **stat_slovenia "annotation" — already recorded.** The 1517309S declined-fix rationale,
+  the 05W counter-file repair, and the `_sweep_offset.json` bookmark shape are all in this
+  file and the landmines table; nothing further to write.
