@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS leases(
 CREATE TABLE IF NOT EXISTS csv_retry_queue(
   series_id TEXT PRIMARY KEY, source_id TEXT, enqueued_utc TEXT,
   attempts INTEGER DEFAULT 0, last_error TEXT);
+CREATE TABLE IF NOT EXISTS full_rederive_owed(
+  source_id TEXT PRIMARY KEY, vintage TEXT, noted_utc TEXT, note TEXT);
 """
 
 _SRC_COLS = ["source_id", "strategy", "cadence", "status", "last_success_utc",
@@ -231,6 +233,29 @@ class StateStore:
             "INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES(?,?,?,?,?,?,?)",
             (now_utc(), sid, uid, status, obs, dur_s, note))
         self.db.commit()
+
+    # ---- full-rederive debt (§5.7's no-cursors branch) ----
+    # A fetcher that merges obs but reports no series_cursors leaves its ENTIRE served CSV
+    # corpus stale, and until 2026-08-31 that debt EVAPORATED: nothing was queued ("ids
+    # unknown"), the vintage sidecar was already written, so the next run skipped as
+    # unchanged and reported clean. noaa served 3,138,159 CSVs one restatement behind that
+    # way. This row is the debt's persistence; only a completed wholesale derive campaign
+    # (derive_csv_bulk's success stamp) clears it.
+    def note_full_rederive_owed(self, source_id, vintage=None, note=None):
+        self.db.execute(
+            "INSERT INTO full_rederive_owed(source_id,vintage,noted_utc,note) "
+            "VALUES(?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
+            "vintage=excluded.vintage, noted_utc=excluded.noted_utc, note=excluded.note",
+            (source_id, vintage, now_utc(), note))
+        self.db.commit()
+
+    def clear_full_rederive_owed(self, source_id):
+        self.db.execute("DELETE FROM full_rederive_owed WHERE source_id=?", (source_id,))
+        self.db.commit()
+
+    def full_rederives_owed(self):
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM full_rederive_owed ORDER BY source_id")]
 
     def recent_runs(self, limit=50):
         return [dict(r) for r in self.db.execute(

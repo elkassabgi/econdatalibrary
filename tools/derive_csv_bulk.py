@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 import argparse
 import csv
+import gzip
 import io
 import os
 import queue
@@ -159,6 +160,13 @@ def main() -> int:
     ap.add_argument("--prefix", default="series")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--skip-existing", action="store_true")
+    ap.add_argument("--skip-newer-than", default=None,
+                    help="resume a changed-everything campaign: skip keys whose R2 "
+                         "LastModified >= this ISO timestamp (the campaign's start). "
+                         "--skip-existing would skip the stale objects being replaced.")
+    ap.add_argument("--failed-keys-file", default=None,
+                    help="append every failed PUT's key+reason here (default: "
+                         "<source>_failed_puts.tsv beside the store)")
     ap.add_argument("--only-catalogued", action="store_true",
                     help="write ONLY series with a catalog.db row. Without this the stream "
                          "writes every series_key in the parquet — R364 measured 1,927 objects "
@@ -347,8 +355,14 @@ def main() -> int:
         if not a.bucket:
             ap.error("--bucket is required unless --dry-run")
         s3 = r2_util.client(write=True)
-        if a.skip_existing:
+        if a.skip_existing or a.skip_newer_than:
             lp = csv_key_prefix(a.prefix, a.source)
+            import datetime as _dt
+            cutoff = None
+            if a.skip_newer_than:
+                cutoff = _dt.datetime.fromisoformat(a.skip_newer_than.replace("Z", "+00:00"))
+                if cutoff.tzinfo is None:
+                    cutoff = cutoff.replace(tzinfo=_dt.timezone.utc)
             tok = None
             while True:
                 kw = {"Bucket": a.bucket, "Prefix": lp, "MaxKeys": 1000}
@@ -356,17 +370,33 @@ def main() -> int:
                     kw["ContinuationToken"] = tok
                 r = _retry(lambda: s3.list_objects_v2(**kw), "LIST")
                 for o in r.get("Contents", []):
-                    existing.add(o["Key"])
+                    if cutoff is not None:
+                        # RESUME semantics (ported from core/derive_csv.py's
+                        # --skip-newer-than, built after a noaa re-derive died in the
+                        # 2026-08-03 reboot): skip only what THIS campaign already wrote.
+                        # --skip-existing is wrong for a changed-everything run — it would
+                        # skip exactly the stale objects being replaced.
+                        if o["LastModified"] >= cutoff:
+                            existing.add(o["Key"])
+                    else:
+                        existing.add(o["Key"])
                 if not r.get("IsTruncated"):
                     break
                 tok = r["NextContinuationToken"]
-            print(f"skip-existing: {len(existing):,} already in R2", flush=True)
+            mode = ("newer than %s" % a.skip_newer_than) if cutoff else "already in R2"
+            print(f"skip: {len(existing):,} {mode}", flush=True)
 
     # ---- producer (single sorted scan) -> bounded queue -> PUT workers --------------
     q: queue.Queue = queue.Queue(maxsize=4000)
     counts = {"put": 0, "skip": 0, "err": 0}
     lock = threading.Lock()
     STOP = object()
+    failed_log = None
+    if not a.dry_run:
+        _flog = a.failed_keys_file or os.path.join(
+            ROOT, "data", "%s_failed_puts.tsv" % a.source)
+        failed_log = open(_flog, "a", encoding="utf-8")
+        print(f"failed PUTs will be recorded in {_flog}", flush=True)
 
     def worker():
         while True:
@@ -376,8 +406,17 @@ def main() -> int:
                 return
             key, body = item
             try:
-                _retry(lambda: s3.put_object(Bucket=a.bucket, Key=key, Body=body,
-                                             ContentType="text/csv"), "PUT")
+                # BORN GZIPPED, per the 2026-08-18 fleet policy (copied from
+                # blob.put_atomic's branch — updater/blob.py:449-457): mtime=0 keeps the
+                # bytes deterministic, ContentEncoding is the marker the worker's reader
+                # decompresses on. The 2026-08-31 noaa-derive review flagged that this tool
+                # still PUT plain — a 3.1M-object rewrite is the one free chance to comply,
+                # and rewriting plain would re-entrench the exception. The --verify gate
+                # compares PRE-compression bytes, so it is unaffected.
+                gz = gzip.compress(body, mtime=0)
+                _retry(lambda: s3.put_object(Bucket=a.bucket, Key=key, Body=gz,
+                                             ContentType="text/csv",
+                                             ContentEncoding="gzip"), "PUT")
                 with lock:
                     counts["put"] += 1
                     if counts["put"] % 25_000 == 0:
@@ -387,6 +426,12 @@ def main() -> int:
                     counts["err"] += 1
                     if counts["err"] <= 5:
                         print(f"  PUT FAILED {key}: {str(e)[:90]}", flush=True)
+                    # EVERY failed key lands in the file, not just the first five as
+                    # console lines: at 3.1M PUTs a 0.01% failure rate is ~300 silently
+                    # stale objects nobody can enumerate afterwards (review change).
+                    if failed_log is not None:
+                        failed_log.write("%s\t%s\n" % (key, str(e)[:160]))
+                        failed_log.flush()
             finally:
                 q.task_done()
 
@@ -436,6 +481,22 @@ def main() -> int:
               f"(they are real data — cataloguing them is a separate decision)", flush=True)
     print(f"done: {seen:,} series streamed, put {counts['put']:,}, "
           f"skipped {counts['skip']:,}, errors {counts['err']:,}")
+    if failed_log is not None:
+        failed_log.close()
+    # CLEAR THE FULL-REDERIVE DEBT — only on a genuinely complete campaign: zero errors,
+    # and not a dry run. The §5.7 no-cursors branch persists a full_rederive_owed row when a
+    # fetcher merges obs without cursors (noaa's 3,138,159-CSV staleness class); this stamp
+    # is the ONLY thing that clears it. A partial campaign (errors, or a kill) leaves the
+    # debt standing, which is the honest state.
+    if not a.dry_run and counts["err"] == 0:
+        try:
+            from updater.state import StateStore
+            StateStore().clear_full_rederive_owed(a.source)
+            print(f"full_rederive_owed cleared for {a.source} (campaign complete)",
+                  flush=True)
+        except Exception as e:                               # noqa: BLE001
+            print(f"WARNING: could not clear full_rederive_owed for {a.source}: {e} — "
+                  f"clear it manually after verifying the campaign", flush=True)
     return 1 if counts["err"] else 0
 
 
