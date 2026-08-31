@@ -71,12 +71,21 @@ def state_path(source_dir: str) -> str:
 
 
 def load_state(source_dir: str) -> dict:
-    p = state_path(source_dir)
-    if not os.path.exists(p):
+    # BLOB-ROUTED (R533, the fleet-class R190 hole): this used plain open(), so the
+    # sidecar NEVER survived an ephemeral CI runner — R2 HEAD 2026-08-31 found it
+    # ABSENT for eurostat AND oecd, meaning every CI _giant sweep started state={}
+    # and re-walked the SAME first ~selection-cap TOC entries forever. blob.read_bytes
+    # is the exact primitive built for this. oecd's populated local sidecar (181,538 B)
+    # was pushed to R2 BEFORE this shipped (the review's required migration — under r2
+    # read_bytes ignores the local file, so shipping first would have reset oecd's
+    # rotation and overwritten its state at the next local pass). eurostat needs no
+    # migration: nothing existed on either side, so CI run 1 starts {} exactly as
+    # before and run 2 finally RESUMES.
+    raw = blob.read_bytes(state_path(source_dir))
+    if raw is None:
         return {}
     try:
-        with open(p, encoding="utf-8") as f:
-            return json.load(f)
+        return json.loads(raw.decode("utf-8"))
     except Exception:
         # A corrupt sidecar must NOT crash the run; treat as empty (every flow then
         # looks new -> selection cap + partial keeps it honest and bounded).
@@ -84,20 +93,15 @@ def load_state(source_dir: str) -> dict:
 
 
 def save_state(source_dir: str, state: dict) -> None:
-    """Atomic sidecar publish (write tmp -> os.replace), same as blob.write_table_atomic."""
-    os.makedirs(source_dir, exist_ok=True)
-    p = state_path(source_dir)
-    tmp = f"{p}.{os.getpid()}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f, separators=(",", ":"))
-        os.replace(tmp, p)
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+    """Atomic sidecar publish, BLOB-ROUTED (local tmp+replace AND the R2 PUT under
+    the r2 backend — write_bytes_atomic's own contract). Cost: run_giant saves ONCE
+    per run and sdmx_nso once per provider, so this is 1-3 small PUTs per run, cents
+    per month — durability of the rotation state is what stops the same-prefix-forever
+    re-walk (R190/R533). A failed PUT raises after botocore's retries and escapes to
+    the orchestrator's handler as transient_fail — loud, and the cost of the lost
+    state is one dedup-protected reselection."""
+    blob.write_bytes_atomic(state_path(source_dir),
+                            json.dumps(state, separators=(",", ":")).encode("utf-8"))
 
 
 def http_get(url, accept, timeout, *, retries=4, rate=1.0, session=None):
