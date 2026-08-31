@@ -101,9 +101,23 @@ def emit() -> None:
                 + ",\n  ".join(s_vals) + ";")
             s_vals, s_n = [], 0
 
+    fts_wiped = False
+
     def cut_fts() -> None:
-        nonlocal f_vals, f_n
+        nonlocal f_vals, f_n, fts_wiped
         if f_vals:
+            # SELF-CLEANING EMISSION (audit_fts_writers' rule): fts5 has no unique constraint,
+            # so these INSERTs duplicate on any re-application — the mechanism that put the
+            # primary DB at 2.30× (this tool was the last RISK writer flagged 2026-08-31).
+            # The scoped DELETE is emitted ONCE, immediately before the first FTS insert, so
+            # it shares that insert's file: if that file half-applies and re-runs, the DELETE
+            # re-runs first and the file self-cleans; files after it never re-trigger it; and
+            # a full re-application (--force-wipe path clears the done-list) wipes before
+            # re-inserting. It can never fire mid-stream against other files' completed rows.
+            if not fts_wiped:
+                add(f"DELETE FROM series_fts WHERE series_id >= '{SOURCE}:' "
+                    f"AND series_id < '{SOURCE};';")
+                fts_wiped = True
             add("INSERT INTO series_fts (series_id,title,geography) VALUES\n  "
                 + ",\n  ".join(f_vals) + ";")
             f_vals, f_n = [], 0
@@ -136,7 +150,21 @@ def emit() -> None:
         raise SystemExit(f"FATAL: emitted {emitted:,} != counted {total:,}")
 
 
-def push() -> None:
+def _shard_fts_count() -> int:
+    """One remote COUNT over the shard's series_fts (~3.1M rows, ~$0.003, only when this
+    retired tool is actually run)."""
+    import json
+    import subprocess
+    npx = __import__("shutil").which("npx")
+    res = subprocess.run(
+        [npx, "wrangler", "d1", "execute", SHARD, "--remote", "--yes",
+         "--command", "SELECT COUNT(*) AS n FROM series_fts;", "--json"],
+        cwd=st.WORKER_DIR, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=600)
+    return int(json.loads(res.stdout)[0]["results"][0]["n"])
+
+
+def push(force_wipe: bool = False) -> None:
     done = set()
     if os.path.exists(DONE_LIST):
         done = {ln.strip() for ln in open(DONE_LIST, encoding="utf-8") if ln.strip()}
@@ -145,6 +173,36 @@ def push() -> None:
     todo = [os.path.join(OUT_DIR, f) for f in all_files if f not in done]
     print(f"push: {len(todo)} of {len(all_files)} files remaining -> {SHARD}")
     st.D1_DATABASE = SHARD  # execute_remote reads the module global
+
+    # THE BARE `INSERT INTO series_fts` BELOW HAS NO GUARD OF ITS OWN. `series` uses INSERT OR
+    # REPLACE (idempotent); fts5 has no unique constraint, so re-running these files against a
+    # shard that already holds noaa's FTS rows ADDS A COPY — the exact mechanism that put the
+    # primary DB at 2.30x (sync_catalog_d1's old whole-source re-inserts, since fixed; this
+    # tool was the one RISK writer audit_fts_writers.py still flagged, 2026-08-31).
+    #
+    # A FRESH push (no done-list) against a NON-EMPTY shard FTS is therefore refused: it is a
+    # re-run of a migration that already landed, and completing it would double the index.
+    # --force-wipe makes the intent explicit: scoped DELETE first, done-list cleared, and the
+    # WHOLE emission re-applies from the top. A partial resume (done-list exists) proceeds —
+    # that is an in-progress first push, the case the done-list was built for.
+    if not done:
+        existing = _shard_fts_count()
+        if existing > 0 and not force_wipe:
+            raise SystemExit(
+                f"REFUSING: shard series_fts already holds {existing:,} rows and this is a "
+                f"FRESH push (no done-list). Re-running the INSERTs would duplicate the "
+                f"index. If you mean to re-migrate, pass --force-wipe (scoped DELETE, then "
+                f"the full emission re-applies).")
+        if existing > 0 and force_wipe:
+            print(f"--force-wipe: deleting {existing:,} noaa FTS rows before re-applying ...")
+            import subprocess
+            npx = __import__("shutil").which("npx")
+            subprocess.run(
+                [npx, "wrangler", "d1", "execute", SHARD, "--remote", "--yes",
+                 "--command",
+                 "DELETE FROM series_fts WHERE series_id >= 'noaa:' AND series_id < 'noaa;';"],
+                cwd=st.WORKER_DIR, check=True, timeout=1800)
+
     for p in todo:
         st.execute_remote([p])          # loud abort on final failure, per-file
         with open(DONE_LIST, "a", encoding="utf-8") as fh:
@@ -243,11 +301,14 @@ def prune_primary() -> int:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("phase", choices=["emit", "push", "verify", "prune-primary"])
+    ap.add_argument("--force-wipe", action="store_true",
+                    help="re-migration only: scoped DELETE of noaa's shard FTS rows first, "
+                         "then the whole emission re-applies (see push's refusal message)")
     a = ap.parse_args()
     if a.phase == "emit":
         emit()
     elif a.phase == "push":
-        push()
+        push(force_wipe=a.force_wipe)
     elif a.phase == "prune-primary":
         sys.exit(prune_primary())
     else:
