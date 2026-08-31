@@ -136,7 +136,29 @@ export default {
           }, 503);
         }
         const measured = await obj.json() as Record<string, unknown>;
-        const statsResp = json({ ...measured, catalog_entries: cat?.c ?? null });
+
+        // HEADLINE TOTALS ARE UNDER RECALCULATION — Ahmed's instruction, 2026-08-30: publish
+        // the flag now, and show it beside the numbers on the home page, rather than let a
+        // reader assume a figure is settled while the database is still being completed.
+        //
+        // The history is why this is not merely cautious. On 2026-08-11 this endpoint served
+        // individual_series = 36.56B, wrong in BOTH directions at once: 32.85B of it was
+        // Canadian census one-observation coordinate cells counted as "series", while the US
+        // Census store — the library's largest — was missed entirely by the scanning tool
+        // (R420). The numbers below are a later census (as_of in the payload), but the
+        // question of what should count as a "series" is exactly what is being resolved.
+        //
+        // REMOVE BOTH FIELDS when the recalculation lands, in the same commit that publishes
+        // the new census. A stale "being recalculated" notice is its own lie.
+        const statsResp = json({
+          ...measured,
+          catalog_entries: cat?.c ?? null,
+          recalculating: true,
+          recalculating_note:
+            "These headline totals are being recalculated while the database is completed. " +
+            "The figures shown are from the census dated in as_of and may change. " +
+            "catalog_entries is counted live and is not affected.",
+        });
         const statsToCache = new Response(statsResp.clone().body, statsResp);
         statsToCache.headers.set("cache-control", "public, max-age=300, s-maxage=21600");
         ctx.waitUntil(statsCache.put(statsKey, statsToCache.clone()));

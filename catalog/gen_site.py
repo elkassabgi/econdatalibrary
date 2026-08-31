@@ -1000,10 +1000,6 @@ def load_registry():
     # An unparsable denylist yields no prefixes and this degrades to the old unfiltered count,
     # loudly (see load_series_carveouts).
     series_roll = {}
-    _carve_excl = "".join(
-        "\n          AND series_id NOT LIKE '" + p.replace("'", "''") + "%'"
-        for p in SERIES_CARVEOUT_PREFIXES
-    )
     q = """
         SELECT source_id,
                COUNT(*)                       AS n_series,
@@ -1012,11 +1008,40 @@ def load_registry():
                COUNT(DISTINCT geography)      AS n_geo,
                MAX(last_updated)              AS last_updated
         FROM series
-        WHERE 1=1""" + _carve_excl + """
         GROUP BY source_id
     """
     for r in con.execute(q):
         series_roll[r["source_id"]] = dict(r)
+
+    # SUBTRACT carved series per affected source, rather than excluding them inside the
+    # rollup above. Both give the same n_series; only this one is affordable.
+    #
+    # My first version put 11 `AND series_id NOT LIKE ...` terms in the GROUP BY, which
+    # evaluates every term against every one of 13.5M rows. Measured 2026-08-30: the run was
+    # still in its load phase after 40 minutes having read 71.5 GB, and I killed it. Only
+    # THREE sources have carve-outs, so 318 sources were paying for a predicate that could
+    # never match them — the same per-source-versus-global mistake the worker's browse
+    # exclusion was corrected for on the same day.
+    #
+    # Each subtraction is a PK-range count (`series_id >= 'src:' AND < 'src;'`), which rides
+    # the primary key, plus an anchored prefix for the indicator. `_` is escaped because it
+    # is a LIKE wildcard and two of the three carve-out ids contain one.
+    for _src, _inds in SERIES_CARVEOUTS.items():
+        if _src not in series_roll:
+            continue
+        _carved = 0
+        for _ind in _inds:
+            _pat = re.sub(r"([\\%_])", r"\\\1", "%s:%s:" % (_src, _ind)) + "%"
+            _carved += con.execute(
+                "SELECT COUNT(*) FROM series "
+                "WHERE series_id >= ? AND series_id < ? "
+                "AND (series_id LIKE ? ESCAPE '\\' OR series_id = ?)",
+                (_src + ":", _src + ";", _pat, "%s:%s" % (_src, _ind)),
+            ).fetchone()[0]
+        if _carved:
+            series_roll[_src]["n_series"] = max(0, series_roll[_src]["n_series"] - _carved)
+            print("  carve-out: %s n_series -%d (third-party series the worker gates)"
+                  % (_src, _carved))
 
     # Recover a true start year that sane_date() would otherwise throw away wholesale.
     #
@@ -2863,6 +2888,7 @@ a.tile-link .tile-go{display:inline-block;margin-top:.9rem;color:var(--blue);fon
       <a href="api.html" class="btn btn-outline">API Access</a><a class="btn btn-outline" href="mcp.html">AI &amp; MCP</a>
     </div>
     <p class="hero-note">Series and observation counts are measured on our data store (as of <span id="live-asof">&mdash;</span>) — never estimated, never hardcoded. Years of history: the earliest catalogued series (Maddison Project / GGDC) begin in year 1&nbsp;CE.</p>
+    <p class="hero-note" id="stats-recalc" style="display:none; color:var(--gold); font-weight:600;"></p>
   </div>
 </section>
 
@@ -3086,6 +3112,17 @@ fetch(API + "/v1/stats").then(function (r) { return r.json(); }).then(function (
   if (d.observations) animateCounter(document.getElementById("obs-counter"), d.observations);
   if (d.as_of) document.getElementById("live-asof").textContent = d.as_of;
   if (d.individual_series) { var c = document.getElementById("cmp-series"); if (c) c.textContent = fmtB(d.individual_series); }
+  // Say plainly, beside the numbers, when they are under recalculation. Driven by the
+  // endpoint, so the notice appears and disappears with the data rather than needing a site
+  // redeploy - and so it cannot outlive the condition it describes.
+  if (d.recalculating) {
+    var rc = document.getElementById("stats-recalc");
+    if (rc) {
+      rc.textContent = d.recalculating_note ||
+        "These headline totals are being recalculated and may change.";
+      rc.style.display = "";
+    }
+  }
 }).catch(function () {});
 </script>
 </body></html>
