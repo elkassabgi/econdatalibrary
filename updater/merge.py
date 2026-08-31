@@ -54,7 +54,106 @@ def _needs_large_string(table) -> bool:
     return False
 
 
-def _dedup(table, keys):
+def _same_vals(a, b):
+    """Element-wise 'these two values are THE SAME OBSERVATION' — the value-identity
+    used by the changed-key report. GROUPING semantics like the key comparison below:
+    null==null is SAME, and (for floats) NaN==NaN is SAME — IEEE equality would report
+    a NaN-valued row as 'revised' on every re-fetch, forever. Otherwise BITWISE
+    equality, deliberately: a publisher restating 1.0 as 1.0000001 IS a revision, and
+    a tolerance would be a policy hidden inside a mechanism (step-2 decision in
+    PHASE3_CURSOR_CONTRACT_BRIEF.md)."""
+    same = pc.or_(pc.fill_null(pc.equal(a, b), False),
+                  pc.and_(pc.is_null(a), pc.is_null(b)))
+    if pa.types.is_floating(a.type) and pa.types.is_floating(b.type):
+        same = pc.or_(same, pc.and_(pc.fill_null(pc.is_nan(a), False),
+                                    pc.fill_null(pc.is_nan(b), False)))
+    return same
+
+
+def _collect_changed(t, keys, same_as_next, n_existing, out):
+    """Fill `out` with {series_key: max changed obs_date (str|None)} from the dedup's
+    own sorted working table — the ONLY place that knows what actually changed.
+
+    `t` is sorted by (keys..., __i) with existing rows carrying __i < n_existing, so
+    within one dedup-key RUN the existing rows are a contiguous PREFIX and the run has
+    AT MOST ONE existing->new transition. That is what makes this a set of linear
+    vector passes with positional per-run alignment — kept-row, first-row and
+    transition-row index arrays each hold at most one entry per run, all ascending —
+    and never a group_by (the 0xC0000005 class this module already bans).
+
+    A run is CHANGED iff it is all-new (an observation key we did not have), or its
+    kept (winning) value differs from the last EXISTING row's value under _same_vals —
+    i.e. what a derived CSV would SERVE for that key changed. A boundary re-fetch that
+    re-returns the identical value is NOT a change (the false-positive class the
+    fetched-keys channel institutionalises). An all-existing run is untouched. If the
+    table has no `value` column, every collision run reports changed — over-reporting
+    is the safe direction and the caller opted into a report, not a guess.
+    """
+    n = t.num_rows
+    series = t.column(keys[0]).combine_chunks()
+    idx = t.column("__i").combine_chunks()
+    new_flag = pc.greater_equal(idx, pa.scalar(n_existing, pa.int64()))
+    obs = (t.column("obs_date").combine_chunks()
+           if "obs_date" in t.column_names else None)
+    val = (t.column("value").combine_chunks()
+           if "value" in t.column_names else None)
+
+    if n == 1:
+        if new_flag[0].as_py():
+            d = obs[0].as_py() if obs is not None else None
+            out[series[0].as_py()] = str(d) if d is not None else None
+        return
+
+    sarn = (same_as_next.combine_chunks()
+            if hasattr(same_as_next, "combine_chunks") else same_as_next)
+    sarn = pc.cast(sarn, pa.bool_())
+    not_same = pc.invert(sarn)
+    true1 = pa.array([True], pa.bool_())
+    keep = pa.concat_arrays([not_same.combine_chunks() if hasattr(not_same, "combine_chunks")
+                             else not_same, true1])
+    first = pa.concat_arrays([true1, not_same.combine_chunks()
+                              if hasattr(not_same, "combine_chunks") else not_same])
+    # one entry per run, ascending — the positional alignment everything below rides on
+    kept_idx = pc.indices_nonzero(keep)
+    first_idx = pc.indices_nonzero(first)
+
+    # existing->new transition INSIDE a run: same key, lhs existing, rhs new. The
+    # transition row IS the last existing row of its run (the value a CSV served).
+    trans = pc.and_(sarn, pc.and_(pc.invert(new_flag.slice(0, n - 1)),
+                                  new_flag.slice(1, n - 1)))
+    trans_idx = pc.indices_nonzero(trans)
+
+    run_all_new = pc.take(new_flag, first_idx)          # run's first row is new -> no history
+    # Two DISJOINT changed populations (a run with a transition has existing history,
+    # so it is never all-new), each taken directly — no run-universe scatter needed:
+    parts = [pc.take(kept_idx, pc.indices_nonzero(run_all_new))]
+    if len(trans_idx):
+        # run id = rank of the run start; maps each transition to its run, so the
+        # transition rows and the kept rows of those same runs align element-wise.
+        run_id = pc.subtract(pc.cumulative_sum(pc.cast(first, pa.int64())),
+                             pa.scalar(1, pa.int64()))
+        kept_of_t = pc.take(kept_idx, pc.take(run_id, trans_idx))
+        if val is not None:
+            rev = pc.invert(_same_vals(pc.take(val, trans_idx), pc.take(val, kept_of_t)))
+        else:
+            rev = pa.array([True] * len(trans_idx), pa.bool_())
+        parts.append(pc.take(kept_of_t, pc.indices_nonzero(rev)))
+    changed_pos = pa.concat_arrays([p.combine_chunks() if hasattr(p, "combine_chunks")
+                                    else p for p in parts])
+    if not len(changed_pos):
+        return
+    ch_series = pc.take(series, changed_pos)
+    ch_obs = pc.take(obs, changed_pos) if obs is not None else None
+    for i in range(len(changed_pos)):        # bounded by changed_keys_cap at entry
+        s = ch_series[i].as_py()
+        d = ch_obs[i].as_py() if ch_obs is not None else None
+        d = str(d) if d is not None else None
+        prev = out.get(s)
+        if s not in out or (d is not None and (prev is None or d > prev)):
+            out[s] = d
+
+
+def _dedup(table, keys, _changed_out=None, _n_existing=0):
     keys = [k for k in keys if k in table.column_names]
     if not keys or table.num_rows == 0:
         return table
@@ -91,6 +190,8 @@ def _dedup(table, keys):
     t = _sort(t, tuple(keys) + ("__i",))
     n = t.num_rows
     if n == 1:
+        if _changed_out is not None:
+            _collect_changed(t, keys, None, _n_existing, _changed_out)
         return t.drop_columns(["__i"])
 
     # NULL == NULL MUST MEAN "SAME KEY" HERE. Arrow's equal() returns NULL when either side
@@ -123,6 +224,11 @@ def _dedup(table, keys):
         if hasattr(same_as_next, "combine_chunks") else pc.invert(same_as_next).cast(pa.bool_()),
         pa.array([True], pa.bool_()),
     ])
+    if _changed_out is not None:
+        # The changed-key report reads the SAME sorted table and same_as_next the dedup
+        # itself is about to filter on — one pass, no second sort, and (crucially) no
+        # possibility of the report and the dedup disagreeing about what a run is.
+        _collect_changed(t, keys, same_as_next, _n_existing, _changed_out)
     return t.filter(keep).drop_columns(["__i"])
 
 
@@ -276,7 +382,8 @@ def _report_impossible_dates(table, out_path) -> int:
 
 
 def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
-                    min_ratio=0.97, allow_empty=False, blob=None):
+                    min_ratio=0.97, allow_empty=False, blob=None,
+                    report_changed_keys=False, changed_keys_cap=2_000_000):
     """Publish new_table to out_path under the never-shrink invariant.
 
     Returns (rows_written, last_obs_date).
@@ -291,7 +398,44 @@ def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
     blob=None publishes to the local filesystem exactly as before. Passing a
     Blob handle (blob.LocalBlob/blob.R2Blob) treats out_path as the object key
     and runs the identical invariants against that backend.
+
+    report_changed_keys=True (opt-in; the default path is byte-identical and keeps
+    the 2-tuple return every existing call site unpacks) returns a THIRD element:
+    {series_key: max changed obs_date or None} for exactly the keys whose SERVED
+    value this write changed — a key extends the store, or wins a dedup collision
+    with a different value under _same_vals (bitwise; null==null and NaN==NaN are
+    "same"). An idempotent boundary re-fetch reports {}. This is the merge-measured
+    changed set of the cursor-contract design (PHASE3_CURSOR_CONTRACT_BRIEF.md):
+    the fetched-key channel over-reports (ecb: changed==attempted 25/25 runs) and
+    max-date cursors miss same-period revisions; only the merge sees both. MERGE
+    MODE ONLY (overwrite has no collisions to compare — asking is a caller bug),
+    and refused above changed_keys_cap new rows BEFORE any I/O: the report's
+    per-key materialisation is bounded by new_table's size, and a giant merge
+    (abs: 376M distinct series) must not discover that limit mid-publish. On any
+    refusal the exception propagates and NOTHING escapes — no partial report.
     """
+    if report_changed_keys:
+        if mode != "merge":
+            raise ValueError(
+                "report_changed_keys is merge-mode only: overwrite has no dedup "
+                "collisions to compare, so a 'changed set' there would be a guess")
+        if new_table.num_rows > changed_keys_cap:
+            raise ValueError(
+                f"report_changed_keys refused: new_table has {new_table.num_rows:,} rows "
+                f"(> cap {changed_keys_cap:,}); raise changed_keys_cap deliberately or "
+                f"do not opt in for this source")
+        # The missing-dedup-key refusal below guards only the merge-with-existing
+        # branch; on FIRST publish a table missing all keys reported a silent {} and
+        # one missing only series_key reported keyed by the WRONG column (the
+        # reviewer's C2 — both contradict the "whole deduped key set" contract).
+        # Refuse loudly here, in the module's own style, BEFORE any I/O.
+        _absent = [k for k in dedup_keys if k not in new_table.column_names]
+        if _absent:
+            raise ValueError(
+                f"report_changed_keys refused: dedup key(s) {_absent} absent from "
+                f"new_table columns {new_table.column_names} — the report would be "
+                f"empty or keyed by the wrong column")
+    changed: "dict | None" = {} if report_changed_keys else None
     if blob is None:
         # Local filesystem — the original code path, byte-identical behavior.
         old_rows = fsblob.row_count(out_path)
@@ -312,9 +456,13 @@ def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
             raise DefinitiveError(
                 f"dedup key(s) {missing_keys} absent from columns {combined.column_names} at "
                 f"{out_path}; refusing to merge (dedup would silently break)")
-        final = _dedup(combined, dedup_keys)
+        final = _dedup(combined, dedup_keys, _changed_out=changed,
+                       _n_existing=existing.num_rows)
     elif mode == "merge":
-        final = _dedup(new_table, dedup_keys)
+        # No published object yet: every surviving key is new, so the report (if
+        # asked for) is the whole deduped key set — _n_existing=0 makes every run
+        # all-new inside the same code path, no special case.
+        final = _dedup(new_table, dedup_keys, _changed_out=changed, _n_existing=0)
     else:  # overwrite — new_table is the full content; never-shrink still guards it
         final = new_table
 
@@ -354,4 +502,6 @@ def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
         pa.default_memory_pool().release_unused()
     except Exception:                                        # noqa: BLE001
         pass                                                 # never fail a good publish
+    if report_changed_keys:
+        return n, last, changed
     return n, last
