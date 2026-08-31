@@ -133,9 +133,15 @@ def _coord_trim(coord):
 # state (release-date watermark + per-cube cursors)
 # --------------------------------------------------------------------------- #
 def _load_state():
-    if os.path.exists(STATE):
+    """BLOB-ROUTED (R533's class). statcan is run_location: local today, so the plain open()
+    worked on this desktop — but the watermark is the whole incremental contract, and the
+    same code on a runner would restart from scratch every time. Local copy (35 B,
+    last_release_date 2026-08-21) was pushed to R2 before this shipped; under the local
+    backend blob reads the identical path, so nothing changes here today."""
+    raw = blob.read_bytes(STATE)
+    if raw is not None:
         try:
-            d = json.load(open(STATE))
+            d = json.loads(raw.decode("utf-8"))
             d.setdefault("last_release_date", None)   # 'YYYY-MM-DD'
             return d
         except Exception:
@@ -144,10 +150,7 @@ def _load_state():
 
 
 def _save_state(state):
-    tmp = STATE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f)
-    os.replace(tmp, STATE)
+    blob.write_bytes_atomic(STATE, json.dumps(state).encode("utf-8"))
 
 
 def _post(endpoint, payload, tries=5):
