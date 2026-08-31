@@ -74,9 +74,19 @@ metadata pass (Task #5); fields absent until populated are omitted, never faked.
 Params: `q=` (FTS5 over title/geography), `source=`, `limit=` (default 50, max 500),
 `offset=`. Returns `{total, limit, offset, results:[{series_id,source,title,frequency,
 unit,geography,license_id,start_date,end_date}]}`. FTS5 with a LIKE fallback (mirrors
-`core/catalog.py::search`). **This covers only the 33 series-cataloged sources** — the
-response carries `"catalog_coverage":"series-level for 33 sources; source-level for the rest"`
-so a caller is never misled into thinking absence = nonexistence.
+`core/catalog.py::search`). **Catalogue grain is NOT uniform**, and the response says so:
+`"catalog_coverage":"mixed grain: some sources are catalogued per series, others per table or
+flow — absence from this catalogue does not mean a series is unavailable"`. Large sources are
+catalogued per table or per flow, with every series inside the corresponding CSV — measured
+2026-08-30 against `data/catalog.db`: `ons_uk` 42 catalogue rows for 3,897,884 series,
+`insee_melodi` 139, `istat` 14,267, `statcan` 20, `oecd` 28, `abs` 18, `bls` 9. Each source's
+generated page states its own grain (`catalog/site/istat.html`: "Served at FLOW grain").
+
+So a `/v1/catalog` search that returns nothing does **not** establish that a series is
+unavailable — fetch it by id, or read the source's page. This line said "33 sources" until
+2026-08-30 (true when written, rotted as the catalogue grew past 300); the first replacement
+claimed series-level coverage for everything, which was false in the opposite direction and was
+caught in review before it deployed. The current wording asserts no count and no uniform grain.
 
 ### Internationalization — `?lang=` (metadata.json + catalog)
 Both `GET /v1/series/{id}.metadata.json` and `GET /v1/catalog` accept an optional

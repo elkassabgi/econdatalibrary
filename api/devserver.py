@@ -53,7 +53,17 @@ from econdl._resolve import ResolveError  # noqa: E402
 # config (resolved once at startup, stashed on the server)
 # --------------------------------------------------------------------------- #
 
-_CATALOG_COVERAGE = "series-level for 33 sources; source-level for the rest"
+# KEEP IN SYNC with api/worker/src/catalog.ts::COVERAGE and api/CONTRACT.md. The dev shim
+# must answer exactly what the worker answers, or a caller who develops against it and then
+# points at production sees a field change meaning underneath them.
+# Carries no COUNT (the old "33 sources" rotted), and keeps the caveat: grain is NOT uniform.
+# Measured 2026-08-30 against data/catalog.db — ons_uk holds 42 catalogue rows for 3,897,884
+# series, insee_melodi 139, istat 14,267, statcan 20, oecd 28. Saying "series-level for every
+# served source" would delete the very warning this field exists to give.
+_CATALOG_COVERAGE = (
+    "mixed grain: some sources are catalogued per series, others per table or flow — "
+    "absence from this catalogue does not mean a series is unavailable"
+)
 
 # next_update_expected = last_success + cadence interval (CONTRACT.md v1.1
 # canonical /v1/last-updates pin). Any cadence NOT in this map -- irregular,
