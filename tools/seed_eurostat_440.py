@@ -33,6 +33,14 @@ NOT compared (the store may carry newer API revisions); cardinality is reported.
 The review's premise measurement was 711/711 sampled keys byte-matching across 3
 flows — this mode re-runs that gate mechanically before any seed write.
 
+AFTER THE SEED — the completion re-stamp MUST run with AQUEDUCT_BACKEND=r2 (review F7).
+The re-key marker and the fetcher's count guard both enumerate through `blob`, so a
+default local-backend re-stamp would write 7,653 into the LOCAL sidecar only, leave R2's
+marker at its old value, and CI's guard would keep eurostat locked out for ever. Expected
+counts differ by one BY DESIGN: NAMQ_10_GDP exists only on R2, so post-seed R2 = 7,654
+while local honestly = 7,653. Reconcile local-vs-R2 store names BEFORE the re-stamp, so a
+publish gap cannot be silently stamped over.
+
 Usage:
   py tools/seed_eurostat_440.py --parity AACT_ALI01
   py tools/seed_eurostat_440.py --flow ABC_XYZ --apply --parity-receipt <path>
@@ -42,11 +50,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
 import gzip
 import json
 import os
 import sys
+import time
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -158,9 +166,15 @@ def parity(flow: str, sample: int) -> int:
                 date_hits += 1
     n = len(sampled)
     ok = n > 0 and key_hits == n and date_hits == n
+    # minted_distinct_keys is REPORTED, not gated (review F3): equal ROW counts plus
+    # sampled key hits do not pin the key SET when the sample is 300 of ~128k, and a
+    # legitimate API revision can add series to the store that June raw cannot have.
+    # The delta is the number a human must look at.
     receipt = {"flow": flow.upper(), "sampled": n, "key_hits": key_hits,
                "date_hits": date_hits, "minted_rows": minted_n,
+               "minted_distinct_keys": len(first_date),
                "store_rows": store_n, "store_distinct_keys": store_keys,
+               "key_set_delta_store_minus_minted": store_keys - len(first_date),
                "verdict": "PASS" if ok else "FAIL"}
     out = os.path.join(ROOT, "data", "_aqueduct",
                        f"seed_parity_{flow.upper()}.json")
@@ -173,13 +187,27 @@ def parity(flow: str, sample: int) -> int:
 
 
 def seed_one(flow: str) -> tuple[str, int]:
-    """Returns (status, rows). status: seeded | refused-exists | no-raw | failed-dup."""
+    """Returns (status, rows). status: seeded | republished | refused-exists | no-raw |
+    failed-dup."""
     import duckdb
     flow_u = flow.upper()
     if flow_u in EXCLUDED:
         return "refused-excluded", 0
     target = os.path.join(STORE, f"{flow_u}.parquet")
-    if os.path.exists(target) or blob.exists(target):
+    local_has = os.path.exists(target)
+    blob_has = blob.exists(target)
+    if local_has and not blob_has and config.BACKEND == "r2":
+        # CRASH-WINDOW REPAIR (review F4). Death between os.replace and publish_file
+        # leaves local-has / R2-missing, and NOTHING downstream detects it: a re-run
+        # short-circuited on refused-exists; the rekey re-stamp counts what R2 actually
+        # holds, so its guard passes WITH flows missing; verify_source_served audits the
+        # CSV/D1/API tiers and never lists store parquets. The first symptom would be a
+        # much-later CI FileNotFoundError. Publishing here makes the seed idempotent.
+        published = blob.publish_file(target)
+        print(f"  republished {flow_u} (local existed, R2 did not): "
+              f"{published:,} bytes", flush=True)
+        return "republished", 0          # no rows newly minted; the file was already correct
+    if local_has or blob_has:
         return "refused-exists", 0
     rp = _raw_path(flow)
     if rp is None:
@@ -212,8 +240,31 @@ def seed_one(flow: str) -> tuple[str, int]:
             print(f"  ABORT {flow_u}: rows={rows:,} streamed={n:,} "
                   f"distinct(key,date)={dk:,} — dup or write skew", flush=True)
             return "failed-dup", 0
-        os.replace(tmp, target)
+        if n == 0:
+            # Review F10: an all-unparseable file would satisfy rows==dk==0 and publish
+            # an EMPTY parquet — a fileless flow is honest, an empty one is a lie the
+            # count guard would then bless. (Measured 0 such flows in this corpus.)
+            print(f"  ABORT {flow_u}: minted 0 rows — refusing to publish an empty flow",
+                  flush=True)
+            return "failed-empty", 0
+        # Windows PermissionError race on replace: an AV scan of a fresh multi-GB file
+        # would otherwise abort the bulk run mid-window. Same bounded 6-attempt loop as
+        # blob.write_table_atomic (blob.py:180-187, added after the 2026-08-01 cepii loss).
+        for attempt in range(6):
+            try:
+                os.replace(tmp, target)
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.2 * (2 ** attempt))
     finally:
+        # Close the writer BEFORE the tmp cleanup: on Windows an open handle turns the
+        # remove into a swallowed PermissionError and leaks the .seedtmp (review F8).
+        try:
+            writer.close()
+        except Exception:                                        # noqa: BLE001
+            pass
         if os.path.exists(tmp):
             try:
                 os.remove(tmp)
@@ -243,7 +294,11 @@ def main() -> int:
         flows = [a.flow]
     elif a.list_file:
         with open(a.list_file, encoding="utf-8") as f:
-            flows = [ln.strip() for ln in f if ln.strip()]
+            # '#' comments so the list can carry its own exclusion record (review F6:
+            # the file shipped with 441 entries under a name claiming 440, namq_10_gdp
+            # among them — a poisoned artifact for any consumer without our filter).
+            flows = [ln.strip() for ln in f
+                     if ln.strip() and not ln.lstrip().startswith("#")]
     else:
         ap.error("need --parity, --flow or --list")
 
@@ -270,13 +325,32 @@ def main() -> int:
 
     tally: dict[str, int] = {}
     total_rows = 0
+    consecutive_fail = 0
     for i, f in enumerate(flows, 1):
         print(f"[{i}/{len(flows)}] {f}", flush=True)
-        status, n = seed_one(f)
+        try:
+            status, n = seed_one(f)
+        except SystemExit as e:
+            # _mint's arity abort is PER FLOW; it used to escape the loop and kill the
+            # whole 440-flow run with no tally printed (review F8). One bad flow must
+            # not cost the window's other 439.
+            print(f"  FLOW ABORTED: {e}", flush=True)
+            status, n = "failed-abort", 0
+        except Exception as e:                                   # noqa: BLE001
+            print(f"  FLOW ERROR: {e!r}", flush=True)
+            status, n = "failed-error", 0
         tally[status] = tally.get(status, 0) + 1
         total_rows += n
+        consecutive_fail = consecutive_fail + 1 if status.startswith("failed") else 0
+        if consecutive_fail >= 5:
+            # A run-wide fault (disk full, R2 credentials, corrupt raw mirror) looks
+            # exactly like per-flow failures repeating. Stop and be read.
+            print("STOPPING: 5 consecutive flow failures — this is a run-wide fault, "
+                  "not bad data. Nothing already seeded is lost.", flush=True)
+            break
     print(json.dumps({"tally": tally, "total_rows": total_rows}))
-    return 0 if tally.get("failed-dup", 0) == 0 else 1
+    failed = sum(v for k, v in tally.items() if k.startswith("failed"))
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":
