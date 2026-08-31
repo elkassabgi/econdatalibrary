@@ -396,3 +396,68 @@ the mechanism exists to prevent. It is not deployed either way (`SITEMAP_STATE` 
 into a commit about `catalog_coverage`. One thing remains **UNVERIFIED**: its mtime is today
 18:30 but its `generated` field is `2026-08-26`, and a run today would have stamped today — so
 its *content* is the 08-26 run's and what touched the file is unexplained.
+
+---
+
+## P1 exit gate MET, and a licence leak found by meeting it (2026-08-30)
+
+**Deployed and verified live.** Worker `econdl-api`, version `000baa89-b800-4ef6-b481-5abde1969266`,
+then `0ddc1cf7-5e08-4396-9dec-df302653e0f7`. Pasted, not asserted:
+
+```
+GET /v1/catalog?limit=1
+"catalog_coverage":"mixed grain: some sources are catalogued per series, others per table or
+ flow — absence from this catalogue does not mean a series is unavailable"
+```
+
+The response's own first row corroborates the grain correction: `abs:ANA_AGG:M1.GPM.20.AUS.Q`
+carries `"frequency":"Q"` and `"geography":"AU"` — `abs` is per-series, the very thing I had
+wrongly called table-grain.
+
+### Verifying my own deploy found a redistribution control failure
+
+**`worldbank_esg` was serving 178 ILO-sourced unemployment series ungated**, advertised
+cc-by-4.0 / reservable / commercial_ok. Ledger **R32** verbatim — "a carve-out keyed on one
+source id does not cover the others" — in a rule that *names* `worldbank_esg`. The 2026-07-22
+fix closed `_wdi` and left `_esg` open. Pre-existing; no commit of mine touched `denylist.ts`.
+
+The discriminating instrument (`index.ts` runs `isGated` **before** `requireDownloadAuth`, so a
+gated id 451s pre-auth and 401 proves the gate did not fire):
+
+| series | before | after |
+|---|---|---|
+| `worldbank:SL.UEM.TOTL.ZS:AGO` | 451 | 451 |
+| **`worldbank_esg:SL.UEM.TOTL.ZS:AGO`** | **401** | **451** |
+| `worldbank_wdi:FP.CPI.TOTL.ZG` | 451 | 451 |
+| `worldbank_esg:AG.LND.FRST.ZS:AFG` (control) | 401 | 401 |
+
+The control matters: the fix gates the ILO indicator without over-gating the source.
+
+### The browse defect, fixed and verified
+
+`?source=worldbank` returned **`total=692` with an empty results array** — offsets 0–193 blank,
+because `FP.CPI` sorts first and all 195 of its rows are carved. The gate was a JS filter applied
+to a page SQL had already cut. Search was worse: `?q=unemployment&source=worldbank` returned
+`total=235` and nothing on **every** page.
+
+```
+before:  ?source=worldbank&limit=3   -> total=692  returned=0
+after :  ?source=worldbank&limit=3   -> total=262  returned=3
+                                         worldbank:NY.GDP.MKTP.CD:ABW / :AFE / :AFG
+before:  ?q=unemployment&source=worldbank -> total=235  returned=0   (inconsistent)
+after :  ?q=unemployment&source=worldbank -> total=0    returned=0   (consistent — all carved)
+```
+
+No collateral damage — `abs` 18, `bls` 9, `istat` 14,267, `ons_uk` 42, all unchanged. The
+exclusion is built **per source**, so the ~318 sources without carve-outs pay nothing; it is
+index-resident (billed `rows_read` unmoved), and only the 2–3 carve-out sources take a bounded
+PK-range count instead of the carved-inclusive `source_counts`.
+
+Two latent SQL defects closed with it: the `<src>:<ind>:` prefix could never match a **two-part**
+id (so `worldbank_wdi` and `worldbank_pink`'s SQL exclusion had always matched zero rows — the JS
+gate covered them, but `worldbank_pink`'s seven REFUSED-in-writing metals would be exposed the
+day that source is un-gated), and `_` is a LIKE wildcard present in two of the three carve-out
+source ids.
+
+**Still open, unchanged:** `q=gdp` returns `worldbank:NY.GDP.MKTP.CD:XD` first — one of R524's
+eight advertised-but-unresolvable ids. Recorded, not fixed; the remedy is update-path work.
