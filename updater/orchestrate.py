@@ -879,6 +879,33 @@ def _eia_table_prefix(key: str) -> "str | None":
     return ".".join(segs[:depth])
 
 
+# UNCTAD dot-prefix table grain (WU-1 of the 2026-08-31 grain sweep). These nine
+# composite-trade sources store SERIES-grain dotted keys ('1560.P_06.02.586.M0100')
+# while their catalogues are minted at a DOT-PREFIX table grain — the resolver serves
+# them via the depth-agnostic exact|prefix predicate in _resolve.py::_DOT_TABLE_GRAIN,
+# so the MAPPER must carry the per-source MINTED depth. Every depth below was MEASURED
+# over the FULL stored cursor population (no sampling — 8,284,628 keys total), each
+# source mapping N/N = 100.0% with 0 nested-prefix ambiguities and every catalogue id
+# covered (discovery run wf_2029ceb4, scratchpad measure_unctad_dot.py, state.db +
+# catalog.db mode=ro). ictgoods is the depth-3 outlier: a shared constant would map 0%
+# there, which is why this is a per-source map, not a number. creativegoodsgr's
+# '|SPAN=nY' suffix lives inside segment 5 and never reaches a depth-2 prefix.
+# Before this tier all nine sat at 0% mapped, CAP-saturated, demoting every run —
+# the R497/eia shape: table-grain collapse turns a truncated 50k changed set into a
+# derivable few-hundred-id list.
+_UNCTAD_DOT_DEPTH = {
+    "unctad_biotrademerchrca": 1,
+    "unctad_ictgoods": 3,
+    "unctad_associatedplasticstradebypartner": 2,
+    "unctad_biotrademerchshare": 2,
+    "unctad_creativegoodsgr": 2,
+    "unctad_hiddenplasticstradebypartner": 2,
+    "unctad_intratrade": 2,
+    "unctad_plasticstradebypartner": 2,
+    "unctad_tradeservcattotal": 2,
+}
+
+
 def _table_grain_native(source_id: str, key: str) -> "str | None":
     """Reduce a TABLE-GRAIN store key to its catalog NATIVE id, or None if it cannot be.
 
@@ -888,6 +915,14 @@ def _table_grain_native(source_id: str, key: str) -> "str | None":
     """
     if source_id == "eia":
         return _eia_table_prefix(key)
+    _ud = _UNCTAD_DOT_DEPTH.get(source_id)
+    if _ud is not None:
+        segs = key.split(".")
+        # `> depth`, never `>=`: an at-grain key (a catalogue id itself) stays with
+        # the exact tier — the eia guard, and R331's never-guess rule in this shape.
+        if len(segs) > _ud:
+            return ".".join(segs[:_ud])
+        return None
     spec = _TABLE_GRAIN.get(source_id)
     if spec is None or ":" not in key:
         return None
