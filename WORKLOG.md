@@ -525,3 +525,30 @@ lost. 4/4 tests including the end-to-end assertion that the estimator's answer a
 rises. Dry-run against the real log attributes **9,233s** to `unctad_tradefoodcatbyproc`.
 En route, R153 twice in one file: I called `State` when the class is `StateStore`, and used
 `$updaterStart` before declaring it — both caught by running/parsing, not by reading.
+
+---
+
+## oecd: the 60 no-TimeDimension flows stop poisoning every run (2026-08-31, `f9f529d41`)
+
+`finalize()` raises on any structural count; oecd's 60 flows whose DSD declares no SDMX
+TimeDimension (reviewer verified at population: `_giant_state.json` = 1,549 flows, exactly 60
+`definitive_fail`, **0 of them with any on-disk parquet**) were misfiled as breaks, so every
+oecd run went `definitive_fail` and the 1,545-flow giant starved. Now: a PROVEN SDMX-CSV
+header without TIME_PERIOD → `no_time_dimension`; abs.py's had-rows predicate keeps a genuine
+vanished-column break loud; never-had-rows flows park at the publisher's vintage (re-probed on
+a version bump — pinned against the REAL `select_flows`); `finalize` carries a named,
+non-demoting note. Review-hardened: the SDMX marker requirement (a plain-text 200 error body
+must fall structural, never park silently for years), the ingester's split path fixed too, and
+the tests now drive the REAL `run_giant` (the first branch test ran zero lines of it). 11/11.
+
+## QoG refused; recorded, deleted, and a loaded gun defused (2026-08-31, `5aa5a1d97` + `9217c25f0`)
+
+Written refusal from the publisher recorded VERBATIM in the canonical licence file; trail row
+DENIED; reply draft for Ahmed at `docs/briefs/QOG_REPLY_DRAFT.md`. Nothing user-facing changed
+(already denylisted, 0 catalogue rows). The dormant holdings (23 MB store, fetcher, ingester)
+deleted after their adversarial review — measured clean in every place a series lives first,
+including the reviewer's two additions (uppercase R2 prefixes; D1 `source_counts`, the R489
+fifth place my brief missed). Resurrection paths closed (capability matrix + classifications
+stripped; runbook regenerated). And the reviewer found `tools/purge_unpermitted_r2.py` still
+naming SERVED sources (vdem, wid) in a "gated, no permission" purge list — one re-run away
+from deleting served data; it now refuses loudly until its list is re-derived and reviewed.
