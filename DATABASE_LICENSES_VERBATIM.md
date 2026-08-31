@@ -3895,3 +3895,18 @@ row, and was absent from `updater/registry.yaml` (nothing schedules it). Local h
 `data/clean_full/qog`, `updater/strategies/fetchers/qog.py`, `jobs/ingest_qog.py` — are
 dormant; the store's data is re-crawlable from the publisher, so its removal is recoverable
 by definition.
+
+Deletion executed 2026-08-31 (adversarial review: PROCEED WITH CHANGES, all applied):
+`data/clean_full/qog/` (23 MB, 2 files), `updater/strategies/fetchers/qog.py`,
+`jobs/ingest_qog.py` — deleted; re-crawlable from the publisher's public CSV URL, so
+recoverable by definition. Resurrection paths closed: qog stripped from
+`UPDATE_CAPABILITY_MATRIX.json` (profiled/expected 133→132, kept true) and
+`updater/_classifications.json`; runbook regenerated (the qog page now honestly reads "in
+registry: NO / served: no / catalogued: 0"). Measured clean before deleting, all places:
+catalogue 0, `source` 0, `license` 0, `series_fts` 0 (by pattern AND by MATCH), R2 zero
+objects under `series/qog%3A`, `series/QOG%3A`, `clean_full/qog/`, `clean_full/QOG/` and
+`_aqueduct/qog`, D1 `source_counts` 0 rows (free query). DELIBERATELY KEPT: the worker/`
+gen_denylist` denylist entries (defence in depth — must outlive the data), and state.db's
+inert qog rows (source_state 1, unit_state 1, runs 1, series_cursor 227,814) — pruning
+227k rows through the CAS-synced state store for a source nothing schedules is R263's
+prune-race class for zero benefit; queued for a routine state-hygiene pass instead.

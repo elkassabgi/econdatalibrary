@@ -23,8 +23,18 @@ BUCKET = "econ-data"
 LOCAL_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 
 # The 15 holding R2 residue: gated, 0 catalog series, no permission (refused, silent, or unassessed).
-TARGETS = ["fred", "gus", "ibge", "ine_spain", "norgesbank", "polity", "qog",
-           "unesco_natmon", "unesco_sci", "unesco_sdg", "unicef", "unsdg",
+# DEFUSED 2026-08-31 (adversarial review of the qog deletion): the old list still named
+# vdem (un-gated 2026-08-24, CONFIRMED CC BY-SA, SERVED) and wid (SERVED, 2.47M series) under
+# a header claiming "gated, 0 catalog series, no permission" -- anyone re-running it would
+# have deleted served data from R2. A dormant tool whose target list has rotted is a loaded
+# gun (R128/R469); this one now refuses until its list is re-derived.
+TARGETS: list = []
+raise SystemExit(
+    "purge_unpermitted_r2.py is DEFUSED: its 2026-07-era TARGETS rotted to include SERVED "
+    "sources (vdem, wid). Re-derive the list from the current denylist + catalogue + "
+    "permission trail before any run, and take it through adversarial review.")
+_OLD_TARGETS_FOR_THE_RECORD = ["fred", "gus", "ibge", "ine_spain", "norgesbank", "polity",
+           "qog", "unesco_natmon", "unesco_sci", "unesco_sdg", "unicef", "unsdg",
            "vdem", "who_gho", "wid"]
 # Ids that share a name prefix with a target but are NOT targets.
 GUARD = ["sipri_polity", "fred_releases", "unesco_clte", "unesco_cltt", "unesco_dem",
