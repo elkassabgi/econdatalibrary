@@ -312,12 +312,18 @@ def update(unit, since) -> Result:
         # updating correctly. A fix aimed at a mechanism I had not verified broke two working
         # endpoints to protect them from a collapse that was not happening.
         #
-        # WHAT IS STILL TRUE: treasury reports `refusing shrink 185->1` for fbp on every run, and
-        # merge's never-shrink guard is what keeps those 185 rows. Since account_nbr IS in the
-        # dedup key, "obs_date is null" does not explain it and the real cause is NOT yet known —
-        # so nothing here pretends to fix it. The guard already prevents the loss; it costs a
-        # `partial` status, which is the correct report for a fetch that cannot be applied.
-        # Tracked in #87 with the measurements, to be diagnosed rather than guessed at.
+        # #87 CLOSED 2026-08-31 — the fbp `refusing shrink 185->1` was R254's null-conjunction
+        # drop, fixed in merge.py 756f502c9 (2026-08-02), and this paragraph's earlier claim
+        # ("every run", "cause NOT yet known") was written 2026-08-03 from PRE-fix run logs.
+        # The mechanism: pre-fix, comparing the all-null obs_date column yielded NULL, the
+        # per-key AND made the whole same-key mask NULL, and filter() DROPS null-mask rows —
+        # so every row but the last vanished REGARDLESS of account_nbr being in the key
+        # (that is why "account_nbr IS in the key" failed to exonerate obs_date: a NULL
+        # poisons the conjunction, it does not lose the vote). Verified 2026-08-31: the
+        # last 8 daily runs contain ZERO fbp shrink refusals (the only two in every log are
+        # unctad's known R519 pair); the store holds 185 rows / 185 distinct identity
+        # tuples; a live re-fetch returns 185 rows keyed identically. R339's lesson again:
+        # the evidence for "still broken" predated the fix.
         if not date_field:
             print(f"[{unit.source_id}] {os.path.basename(path)}: no date field — fetched as a "
                   f"dateless table, keyed by its dimension columns", flush=True)
