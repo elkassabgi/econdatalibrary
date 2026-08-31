@@ -446,10 +446,15 @@ def update(unit, since) -> Result:
     if not all_vals:
         # Nothing fetched. finalize() decides honest status: 'partial' if any flow
         # transient-failed; DefinitiveError on a large all-empty window; else
-        # 'no_change' reporting the real on-disk frontier.
-        return finalize(tally, before, last_obs, source=SOURCE,
-                        series_cursors=cursors,
-                        empty_window_floor=max(len(flows) - 1, 1))
+        # 'no_change' reporting the real on-disk frontier. Nothing merged means
+        # nothing served went stale: report an EMPTY merge-measured changed set
+        # (coherence met) rather than falling back to the flow-grain cursor keys,
+        # which cannot map and would book unmapped-residue noise every quiet run.
+        res = finalize(tally, before, last_obs, source=SOURCE,
+                       series_cursors=cursors,
+                       empty_window_floor=max(len(flows) - 1, 1))
+        res.changed_keys = {}
+        return res
 
     new_tbl = pa.table({
         "series_key": pa.array(all_keys, pa.string()),
@@ -457,10 +462,24 @@ def update(unit, since) -> Result:
         "value":      pa.array(all_vals, pa.float64()),
     })
 
-    n, merged_max = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
+    # THE CURSOR-CONTRACT PILOT (2026-08-31, PHASE3 brief step 4). norgesbank's cursor
+    # keys are FLOW ids while its catalogue is SERIES grain (35,135 ids like
+    # norgesbank:EXR:A.AUD.NOK.SP), so no §5.7 tier could ever map a changed key and NO
+    # CSV was ever re-derived through the daily path — a measured 23-day live coherence
+    # gap. The merge-measured channel fixes the GRAIN at the source: report_changed_keys
+    # returns {store series_key: max changed obs_date} for exactly the keys whose served
+    # value this merge changed (extension OR same-period revision — the startPeriod
+    # boundary anchor exists to catch revisions, and max-date cursors cannot see them),
+    # and store keys ARE catalogue keys here, so the mapper's exact tier hits every one.
+    # `cursors` (per-FLOW frontier) keeps its health/freshness contract untouched.
+    # Cardinality is bounded by the store (~36k distinct) — far under the 2M cap.
+    n, merged_max, changed = merge.merge_and_write(
+        path, new_tbl, mode="merge", dedup_keys=DEDUP, report_changed_keys=True)
     if merged_max and (last_obs is None or merged_max > last_obs):
         last_obs = merged_max
 
     # finalize honors transient -> 'partial' even though rows were merged.
-    return finalize(tally, n, last_obs, source=SOURCE, series_cursors=cursors,
-                    empty_window_floor=max(len(flows) - 1, 1))
+    res = finalize(tally, n, last_obs, source=SOURCE, series_cursors=cursors,
+                   empty_window_floor=max(len(flows) - 1, 1))
+    res.changed_keys = changed
+    return res
