@@ -132,3 +132,6 @@ credentials*
 *secret*
 *.token
 token.txt
+
+# Internal working briefs - never in the public tree (2026-08-31, R531)
+docs/briefs/
