@@ -137,9 +137,17 @@ def update(unit, since) -> Result:
     # rows and must read as no_change, not ok.
     #
     # min_ratio=0.92 (vs default 0.97): the legacy ingester wrote damodaran.parquet WITHOUT
-    # deduping, so it carries ~1849 duplicate (series_key,obs_date) rows (25192 total ->
-    # 23343 distinct). merge dedups, so the FIRST merge legitimately collapses those dupes
-    # (a one-time ~7.3% drop, 0 distinct observations lost). 0.92 admits that collapse yet
+    # deduping. CORRECTED TWICE 2026-08-31 ("the four"; R527 then R535 — the first
+    # correction of the false "0 distinct observations lost" itself shipped a false
+    # "that collapse is history"): the store TODAY still holds every duplicate —
+    # 26,536 rows / 24,687 distinct (series_key,obs_date), 1,842 dup groups, 721 of
+    # them carrying DIFFERING values (measured; dups surviving under this merge-dedup
+    # fetcher PROVE no merge has ever completed here). The first merge that completes
+    # will collapse those ~1,849 rows and PICK one of two real numbers for each of
+    # the 721 (last-in-sort wins) — a PENDING lossy event, disclosed here, not
+    # history. Also pending: ONE mangled-shaped key survives outside the margins
+    # class (histretSP:Real_Estate:328_442, R480's disease; the margins-class rows
+    # themselves measure 0 in-store). 0.92 admits that collapse yet
     # still catches a real truncation — e.g. a pull missing even one ~1400-obs workbook
     # (~21900 rows) falls below the 0.92 floor (23177) and is refused. After the first run
     # the file is dup-free and stays >= its distinct count. This is an explicit per-call

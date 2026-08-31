@@ -44,6 +44,26 @@ from ._common import CURSOR_CAP, Deadline, Tally, finalize, merge_cursors
 from jobs import ingest_eia as ig     # manifest + the production downloader and parser
 
 SOURCE = "eia"
+# THE STORE'S REAL IDENTITY IS 3 COLUMNS, exactly the bls.py precedent ("the four",
+# Ahmed's go 2026-08-31; measured in R527's correction): EIA distinguishes rows sharing
+# (series_id, obs_date) by `period` — EBA's first row group holds 1,000,000 rows,
+# 41,707 distinct (series_id, obs_date) pairs, 999,951 distinct with period added:
+# period resolves 958,244 of 958,293 collisions. The writer never merges (whole-dataset
+# overwrite via write_dataset), so nothing on disk changes and NO public id changes —
+# this declaration is what the dedup auditor reads (R281: auditors must read DEDUP from
+# the module, not assume the default pair) and what any FUTURE merge must inherit
+# (R280: an under-keyed merge collapses the store on first contact).
+#
+# RESIDUE DISCLOSURE (R535): even at 3 columns, EBA keeps 7,443 duplicate groups
+# (14,886 rows of 151,651,834), 6,314 of them with DIFFERING values — concentrated
+# on DST fall-back dates (2024-11-02, 2025-11-02 measured) under byte-IDENTICAL
+# period tokens, with NO on-disk column that discriminates them: they are
+# append-era revision twins, not a missing 4th key column. NG keeps 6 groups and
+# PET 30, all value-identical. A future merge inheriting this key will collapse
+# each group to one value; that is stated here so it cannot re-arm R280 with
+# better-looking numbers. The historical twins await their own one-time cleanup
+# decision (WU-6 family) — this declaration alone changes nothing on disk.
+DEDUP = ("series_id", "obs_date", "period")
 SIDECAR = "_manifest_updated.json"
 BUDGET_MIN = 25
 

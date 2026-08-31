@@ -46,6 +46,33 @@ from ._common import (CURSOR_CAP, Tally, cursors_from_table, finalize, load_rota
                       merge_cursor_map, rotate_after, save_rotation)
 
 SOURCE = "usda"
+# 3-COLUMN IDENTITY ("the four", Ahmed's go 2026-08-31; R527's correction measured
+# 65,122 (series_key, obs_date) collisions that are NASS FORECAST VINTAGES — the same
+# target period published at successive forecast dates, distinguished by the stored
+# REFERENCE_PERIOD_DESC column). The ingest rewrites whole cubes (ParquetWriter parts,
+# no merge), so nothing on disk changes and NO public id changes — this declaration is
+# what the dedup auditor reads (R281) and what any future merge/tail must inherit
+# (R280: an under-keyed merge would collapse the vintages, last-writer-wins).
+#
+# RESIDUE, MEASURED IN FULL 2026-08-31 (57,815,063 store rows; the 3-column key does NOT
+# make this store unique and saying otherwise would re-arm R280 with better numbers):
+#   30,849 duplicate groups / 77,905 rows (0.13% of the store), of which
+#     10,174 carry NO non-null value at all (invisible to COUNT(DISTINCT value) — the
+#            first pass's arithmetic did not close until these were counted separately),
+#     19,846 are value-IDENTICAL (a collapse would lose nothing), and
+#        829 are value-DIFFERING (a collapse picks one of two real numbers).
+#   Of those 829: 476 are separated by STATE_ALPHA and 353 by NOTHING tested.
+#   LOCATION_DESC, WEEK_ENDING, AGG_LEVEL_DESC and COUNTY_CODE each separate ZERO —
+#   so WEEK_ENDING is NOT the missing 4th column, and nobody should propose it again.
+#
+# WHY A 4TH COLUMN CANNOT FIX IT. The 476 are an AMBIGUOUS PUBLIC KEY, not a missing
+# dedup column: for zip-code aggregations the series_key ends "...|ZIP CODE|99999" and
+# omits the state, so genuinely different geographies share one key (measured example:
+# SHEEP & GOATS zip-99999 carries TX=7.0 and MT=4.0 under a byte-identical series_key).
+# Adding STATE_ALPHA to DEDUP would keep both rows while leaving them addressed by the
+# same public id — the ambiguity moves, it does not close. Fixing it means RE-KEYING
+# served ids, which is Ahmed's decision, not this declaration's (RESERVED).
+DEDUP = ("series_key", "obs_date", "REFERENCE_PERIOD_DESC")
 PAGE = "https://www.nass.usda.gov/datasets/"
 UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com"}
 SECTORS = ("animals_products", "crops", "demographics", "economics", "environmental")
