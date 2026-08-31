@@ -644,3 +644,20 @@ notes method): **15** transient tails (self-healing); **7** honest budget deferr
 under review closes; its crash path queued 0 because ember's colon-free keys are filtered);
 **11 "other"** needing per-source reads (e.g. `treasury`: "177 changed series_keys have no
 catalog mapping"), queued as individual items.
+
+### Phase 3 task 4, second half — the 11 "other" partials, individually read (2026-08-31)
+
+Each is now a named item, not a bucket:
+
+| source | note (verbatim core) | disposition |
+|---|---|---|
+| `eia` | 50,000 keys (=CURSOR_CAP) none matched — grain/key-form | **gated on Ahmed's "do the four"** (its dedup-key fix) |
+| `eurostat` | re-key migration incomplete: `_rekeyed.json` says 7213, store holds **7214** | run `tools/rekey_eurostat.py --apply` to completion (its own documented remedy) — queued with review |
+| `noaa` | **fetcher reported NO series_cursors for 550,347,528 merged obs — CSVs not re-derived** | investigate next: potential user-facing CSV staleness at scale |
+| `owid` | 12,192 changed keys, catalogue has NO rows — "not catalogued, purged, or stale coherence catalog" | licence-sensitive (DISPUTED source, R150 forbids auto-cataloguing) — diagnose which of the three |
+| `oecd` | the 60 no-TimeDimension structural | **fixed** (f9f529d41); clears on its next run |
+| `hagstofa` | 33/1170 structural (PxWeb sentinel family, R269) | per-table reads queued |
+| `stat_slovenia` | 2/83 "time axis parses to no dates" | R269's verified benign class; confirm & annotate |
+| `sipri_polity` | 6,513 unmapped + over derive-all cap | dark-series cataloguing item |
+| `treasury` | 177 keys vs 14 catalog rows | R281's per-file identity-key special case |
+| `norgesbank` | 9 keys grain-mismatch | cursor-contract class member (brief filed) |
