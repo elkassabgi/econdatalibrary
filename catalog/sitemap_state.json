@@ -1,5 +1,5 @@
 {
- "generated": "2026-08-26",
+ "generated": "2026-08-30",
  "pages": {
   "abs.html": {
    "lastmod": "2026-08-24",
@@ -67,9 +67,9 @@
    "sha256": "2b6cae16d18a05a213217bc1d2654720ff649c31928cd2adab2cc06b4fcda538"
   },
   "catalog.html": {
-   "lastmod": "2026-08-26",
+   "lastmod": "2026-08-30",
    "noindex": false,
-   "sha256": "0e38792b8afc47c9ef6531cb53f9d8eefa31b8a10abb7f99f2464e5f383a5cb7"
+   "sha256": "e287699a25782c4c0eb190fd837d1ad62c8f4dbc34a69e74815f2c5630d48b55"
   },
   "cbs_nl.html": {
    "lastmod": "2026-08-24",
@@ -137,9 +137,9 @@
    "sha256": "428ffa737cc172bf800c349448b9d197f38a057aea0ab2bf2e2b0b82217764da"
   },
   "dst.html": {
-   "lastmod": "2026-08-24",
+   "lastmod": "2026-08-30",
    "noindex": false,
-   "sha256": "3077cbd98f0444285de0b6e319c382edd9df7a36ccdc7e3274ef6230dd4c21f7"
+   "sha256": "748bcb9ae41c50207a833bb2b06bb29ae619d334242ff038cd66bfa88e462543"
   },
   "ecb.html": {
    "lastmod": "2026-08-24",
@@ -672,9 +672,9 @@
    "sha256": "1e2fdd6bb2cb5db0f0755063ee9fc677096ae1925a02a857fcdc52d8c4d39610"
   },
   "index.html": {
-   "lastmod": "2026-08-24",
+   "lastmod": "2026-08-30",
    "noindex": false,
-   "sha256": "0677403de4064d06d4988068eb1997640647eb52c08b06d4f0eee63042cb39fe"
+   "sha256": "7aa85718a0d8275e1d5cd4884a017a6527c36c8afe83e8521db774ae9d7c78d6"
   },
   "insee_bdm.html": {
    "lastmod": "2026-08-24",
@@ -1637,19 +1637,19 @@
    "sha256": "57fe3aa117f35de0c6729bfd881f9df41498f37fa7a583c246375727029ef041"
   },
   "worldbank.html": {
-   "lastmod": "2026-08-24",
+   "lastmod": "2026-08-30",
    "noindex": false,
-   "sha256": "67d2ce4791d19fcfeb3d0f0c937a8a2009ee6ca2fd80aec1e548d663c0639d03"
+   "sha256": "b03f1aa32f1c7086e78ca2cdedc51727502e3f7bce8bf38f4536297129be25c5"
   },
   "worldbank_esg.html": {
-   "lastmod": "2026-08-24",
+   "lastmod": "2026-08-30",
    "noindex": false,
-   "sha256": "048eefbd07f8bad26d353ffff7941e858d723b1d880ad44207bfbda0d7827f63"
+   "sha256": "189cd755ed6f02a319cf2ec514497edcd48ca01e5a374d0db0532953795c0107"
   },
   "worldbank_wdi.html": {
-   "lastmod": "2026-08-24",
+   "lastmod": "2026-08-30",
    "noindex": false,
-   "sha256": "ac221f11602ec832f5857652cc238b402945e53932ba0ebdad97eef4df7e0244"
+   "sha256": "01d60111c6c07a27967cc13c70e5ccb5069f0ad36be8b6086689567b04a05ef1"
   },
   "yale_epi.html": {
    "lastmod": "2026-08-24",
