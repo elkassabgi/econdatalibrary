@@ -485,3 +485,43 @@ underwrites an authorisation lands in NUMBERS.md with its instrument BEFORE the 
 instrument that produced the bad census (`tools/audit_dedup_uniqueness.py`) is fixed in
 `3b4cf8ea0` — an assumed key now announces itself and a source where nothing was checked exits
 non-zero instead of wearing a pass's face. The four id-preserving fixes await Ahmed's word.
+
+---
+
+## The 7-day local silence, root-caused (2026-08-31)
+
+The health gate on run 33358938352: *"ROUTE 'local' SILENT — 18 live source(s) run there and
+NOT ONE has succeeded within 3d (newest success: 7.2d ago)"* — `bea` RED-DATA, `eia` 8d stale
+on a daily cadence, `statcan` RED-DATA 9d, plus `census`, `noaa`, `oecd` and the unctad giants.
+
+**Not a dead machine.** The guard loop is alive (heartbeat stamped minutes before the check)
+and push-state works (`bis` and `faostat` show 1d in the gate's own table). Three stacked
+causes, each measured:
+
+1. **CI-in-flight deference.** The local runner refuses to start while any updater-daily run
+   is in flight. On 2026-08-29 the guard launched it **203 times** and the sampled tick says
+   `ABORT: 1 updater-daily run(s) still in flight`. With four daily cron windows, free local
+   windows are scarce — the design intent is one ~20h-cadence pass per night, which did run
+   on 08-28 and 08-30/31.
+2. **The one nightly pass gets eaten by a mis-banded giant.** Last night's pass
+   (`local_heavy_updater_20260830-234131.log`): budget clamped to 153 min to end before the
+   03:00Z CI window; istat 39s (upstream outage, clean skip); `unctad_biotrademerch` 516s;
+   then **`unctad_tradefoodcatbyproc` consumed the remaining ~154 min and was hard-killed**.
+   `bea, bls, census, eia, noaa, oecd, ons_uk, statcan…` — never attempted.
+3. **The kill erases its own evidence, so the loop is self-sustaining.** `store.log_run`
+   fires only from inside Python (orchestrate.py:1847); a taskkill from the runner writes NO
+   run row. `run_cost_estimate()` is MAX(dur_s) over the last 5 *recorded* runs, so the
+   killed giant keeps its stale cheap estimate, re-enters the cheap band of the ladder, and
+   leads the queue again tomorrow. Its own docstring calls under-estimation "the failure the
+   lane exists to prevent" — the external-kill path produced exactly that, invisibly. This is
+   R273's killed-before-bookmark loop one level up, at the scheduler.
+
+**Fix built (under parallel review, uncommitted):** `tools/record_killed_unit.py` — parses
+the killed pass's log for the `>>>` without a `<<<`, attributes the unaccounted elapsed
+(floored at 60s; over-estimation is the documented safe direction) as one `killed_external`
+run row — wired into `run_local_heavy.ps1` between the kill and push-state, because
+pull-state replaces local state wholesale (R340) so a row written at any other moment is
+lost. 4/4 tests including the end-to-end assertion that the estimator's answer actually
+rises. Dry-run against the real log attributes **9,233s** to `unctad_tradefoodcatbyproc`.
+En route, R153 twice in one file: I called `State` when the class is `StateStore`, and used
+`$updaterStart` before declaring it — both caught by running/parsing, not by reading.
