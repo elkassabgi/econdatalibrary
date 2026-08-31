@@ -43,20 +43,28 @@ _COMPUTED_KEY = {"treasury"}
 
 
 def dedup_key_for(source: str) -> tuple:
-    """The dedup key THIS source actually passes to merge_and_write.
+    """(key_cols, provenance) — provenance is "declared", "assumed" or "unimportable".
 
     Hardcoding ("series_key","obs_date") is what made the first version of this tool wrong. Of
     18 live extend_by_date sources, three differ: treasury computes its key per file, ofr uses
     ("series_id","obs_date"), and worldbank_esg uses ("country","obs_date") because it has no
     series_key column at all. Read the constant from the module; do not assume it.
+
+    THE PROVENANCE IS PART OF THE ANSWER (R281's second half, closed 2026-08-30 via R527).
+    The old version fell back to the default SILENTLY when a fetcher declared no DEDUP —
+    `eia.py` and `usda.py` declare none, and eia's store has no `series_key` column at all, so
+    every eia file skipped the column check and the tool printed "0 under-keyed" while having
+    measured NOTHING. That zero then fed a collision census, which fed an authorisation request
+    to Ahmed built on the wrong numbers. A fallback that can absorb the whole answer must
+    announce itself, and the caller must treat "assumed" differently from "declared".
     """
     import importlib
     try:
         mod = importlib.import_module(f"updater.strategies.fetchers.{source}")
     except Exception:                                              # noqa: BLE001
-        return DEFAULT_KEY_COLS
+        return DEFAULT_KEY_COLS, "unimportable"
     d = getattr(mod, "DEDUP", None)
-    return tuple(d) if d else DEFAULT_KEY_COLS
+    return (tuple(d), "declared") if d else (DEFAULT_KEY_COLS, "assumed")
 
 
 def audit_file(path: str, key_cols: tuple) -> tuple:
@@ -80,9 +88,15 @@ def main() -> int:
     ap.add_argument("sources", nargs="+")
     ap.add_argument("--prefix", default="", help="only files whose name starts with this")
     ap.add_argument("--quiet-ok", action="store_true", help="print only the under-keyed files")
+    ap.add_argument("--key", default=None,
+                    help="comma-separated key columns, overriding the fetcher's DEDUP. For a "
+                         "source that declares none and whose schema lacks the default pair "
+                         "(eia keys on series_id and stores the hour in `period`), this is the "
+                         "only way to measure it at all: --key series_id,obs_date,period")
     a = ap.parse_args()
 
     bad_total = 0
+    measured_nothing = 0
     for source in a.sources:
         if source in _COMPUTED_KEY:
             print(f"\n{source}: SKIPPED — its dedup key is computed per file "
@@ -91,7 +105,14 @@ def main() -> int:
                   f"{'/'.join(DEFAULT_KEY_COLS)} reports every file under-keyed and every one "
                   f"of those is a false positive.")
             continue
-        key_cols = dedup_key_for(source)
+        if a.key:
+            key_cols, provenance = tuple(c.strip() for c in a.key.split(",")), "explicit"
+        else:
+            key_cols, provenance = dedup_key_for(source)
+        if provenance in ("assumed", "unimportable"):
+            print(f"\n{source}: WARNING — fetcher declares no DEDUP ({provenance}); auditing "
+                  f"against the ASSUMED default {'/'.join(key_cols)}. A verdict under an "
+                  f"assumed key is a hypothesis, not a measurement; pass --key to be explicit.")
         d = config.source_dir(source)
         try:
             files = [f for f in blob.list_parquets(d, recursive=True)
@@ -124,11 +145,23 @@ def main() -> int:
         print(f"  checked {checked}, under-keyed {bad}"
               + (f", skipped {skipped} without {'/'.join(key_cols)}" if skipped else ""))
 
+        # "0 DEFECTS IN 0 FILES EXAMINED IS NOT A RESULT" (R330, and how eia reported clean).
+        # When every file skipped the column check, the key does not describe this store at
+        # all, and the audit measured nothing — that is a failure of the AUDIT, and it must
+        # not exit 0 wearing the same face as a genuine pass. eia: 30 files, all lacking
+        # `series_key`, previously summarised as "checked 0, under-keyed 0" -> exit 0.
+        if files and checked == 0:
+            measured_nothing += 1
+            print(f"  *** MEASURED NOTHING: all {len(files)} file(s) lack "
+                  f"{'/'.join(key_cols)}. The key is wrong for this store, not the store "
+                  f"clean. Declare DEDUP in the fetcher or re-run with --key.")
+
     # A NON-ZERO EXIT so this can gate a change rather than merely inform one. The whole point
     # is to be run BEFORE enabling a tail, and a check nobody can wire into a script is a check
     # that gets skipped.
-    print(f"\n{bad_total} under-keyed file(s) across {len(a.sources)} source(s)")
-    return 1 if bad_total else 0
+    print(f"\n{bad_total} under-keyed file(s) across {len(a.sources)} source(s)"
+          + (f"; {measured_nothing} source(s) MEASURED NOTHING" if measured_nothing else ""))
+    return 1 if (bad_total or measured_nothing) else 0
 
 
 if __name__ == "__main__":
