@@ -4429,6 +4429,11 @@ sources:
   # Routed to the workstation per the owner's standing rule: a database the cloud
   # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
   run_location: local
+  # 20 curated catalogue ids of a ~5.3B-series source (D1-headroom decision, task #29/#45).
+  # MEASURED 2026-08-31 (grain-sweep discovery): a run touching only uncatalogued vectors is
+  # COVERAGE, not a coherence failure - the R497 subset note applies. Adding this key does
+  # NOT change the source count (R347: no EXPECTED_SOURCE_COUNT bump).
+  catalog_scope: subset
   live: false
   scripts:
   - jobs/ingest_statcan.py
