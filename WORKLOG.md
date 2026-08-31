@@ -318,10 +318,17 @@ series GROUP BY source_id`, joined against `SUPPORTED_SOURCES` minus `denylist.t
 | `ons_uk` | **42** | 3,897,884 |
 | `insee_melodi` | 139 | 139 flows / 36,436,053 rows |
 | `istat` | 14,267 | 43,564,079 |
-| `statcan` | 20 | — |
-| `oecd` | 28 | — |
-| `abs` | 18 | — |
-| `bls` | 9 | — |
+
+plus the registered sets in `clients/python/econdl/_resolve.py` — `_FLOW_GRAIN` (11) and
+`_DOT_TABLE_GRAIN` (13). **A second review FAILED my first version of this table**, which also
+listed `statcan` 20, `oecd` 28, `abs` 18 and `bls` 9 as coarse-grain. They are not: all four are
+small hand-curated **per-series** catalogues (`bls:CUUR0000SA0` is one series), carrying a scalar
+frequency AND geography on 100% of rows where the genuine coarse ones carry 0%. I had inferred
+grain from the row count — R141's inversion, committed while writing a fix about grain. The bad
+table reached the **published** `api/CONTRACT.md` before it was caught. My follow-up census then
+erred the other way (classifying 274 sources coarse on "no scalar attributes"): `wid` has
+2,465,197 such rows and every one names a single series. **Row count predicts grain in neither
+direction, and only the positive test — scalar attributes on every row ⇒ per-series — is sound.**
 
 Those are **table and flow grain**, and the sources' own generated pages say so
 (`catalog/site/istat.html`: "Served at FLOW grain"). So the old string's second clause,
@@ -345,13 +352,24 @@ holders. It asserts no count and no uniform grain.
 
 **And it is now pinned mechanically** — `tests/test_catalog_coverage_sync.py`, 4 checks: the three
 holders agree, the string embeds no digit, and it keeps the absence caveat. Nothing had ever
-mentioned this field in ~200 test files, which is exactly how "33 sources" survived months of
-growth past 300. Discriminating pair per R414 (`scratchpad/mutate_coverage_guard.py`, **6/6**):
-one scenario it must accept, five it must refuse, each via its own check. The harness found a real
-bug in the guard on its first run — the old string contains a `;`, my non-greedy regex truncated
-inside the literal, extraction returned EMPTY, and the no-count and caveat checks then passed
-**vacuously** (R413's cannot-fail comparator, in the guard written to prevent exactly this). Fixed
-by matching only a chain of string literals, plus an explicit non-empty assertion.
+mentioned this field in the **98** test files under `tests/`, which is exactly how "33 sources"
+survived months of growth past 300. Discriminating pair per R414, now
+`tools/mutate_coverage_guard.py` — in the repo, because the test cites it and a harness cited in
+shipped code but living in a scratch directory is unreproducible for the next reader.
+
+**11/11 scenarios**, and the harness found **three real guard bugs that the passing tests could
+not** — every one of them in the EXTRACTOR, not in the assertions:
+1. The old string contains a `;`, so my non-greedy regex truncated inside the string literal,
+   extraction returned EMPTY, and the no-count and caveat checks passed **vacuously** (R413's
+   cannot-fail comparator, inside the guard written to prevent exactly that).
+2. A **decoy** `const COVERAGE` planted in a `/* */` comment was read in preference to the live
+   one — so the guard could pass while the deployed value was the original bug.
+3. Requiring the word "absence" accepted the sentence's own **inversion**: "absence from this
+   catalogue *means* a series is unavailable" contains it and asserts the opposite.
+Fixed by a character-scanning comment stripper that never touches string literals, a
+uniqueness assertion on the declaration, a non-empty assertion, and a polarity check that
+requires the negation in the same clause. **A guard is defeated where it READS, not where it
+asserts** — and no passing test can reveal that.
 
 **R-client sweep was incomplete, and one surface reaches users.** Beyond `.zenodo.json` and
 `gen_site.py` I had missed `CITATION.cff:31` (published citation metadata — the reviewer missed

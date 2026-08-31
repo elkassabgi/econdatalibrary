@@ -57,9 +57,12 @@ from econdl._resolve import ResolveError  # noqa: E402
 # must answer exactly what the worker answers, or a caller who develops against it and then
 # points at production sees a field change meaning underneath them.
 # Carries no COUNT (the old "33 sources" rotted), and keeps the caveat: grain is NOT uniform.
-# Measured 2026-08-30 against data/catalog.db — ons_uk holds 42 catalogue rows for 3,897,884
-# series, insee_melodi 139, istat 14,267, statcan 20, oecd 28. Saying "series-level for every
-# served source" would delete the very warning this field exists to give.
+# Some sources are catalogued per table or flow — ons_uk holds 42 catalogue rows for 3,897,884
+# series, istat 14,267 flows, insee_melodi 139; the sets are registered in econdl/_resolve.py
+# (_FLOW_GRAIN, _DOT_TABLE_GRAIN) and each source's page states its own grain. Saying
+# "series-level for every served source" would delete the very warning this field exists to
+# give. Do not infer grain from row count: statcan (20), oecd (28) and bls (9) are small
+# PER-SERIES catalogues, and wid's 2,465,197 rows are series too.
 _CATALOG_COVERAGE = (
     "mixed grain: some sources are catalogued per series, others per table or flow — "
     "absence from this catalogue does not mean a series is unavailable"
