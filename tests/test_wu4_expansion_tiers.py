@@ -100,6 +100,29 @@ def test_wikidata_companies_claims_all_and_others_do_not(cat):
     assert sorted(unmapped) == ["currencies", "stock_exchanges"]
 
 
+def test_census_colon4_overlay_is_additive(cat):
+    """WU-4.2: 'eits__advm3' claims its exact flow id AND the colon-4 series ids
+    under the UNPREFIXED flow; 'eits__m3' claims via the '#' tier AND its colon-4
+    ids. The overlay must never REPLACE the flow claim (additive, no continue)."""
+    con = sqlite3.connect(os.environ["ECONDL_CATALOG"])
+    con.executemany("INSERT INTO series VALUES (?,?)", [
+        ("census:eits__advm3", "census"),
+        ("census:advm3:DXD:NO:sa", "census"), ("census:advm3:DXD:VS:sa", "census"),
+        ("census:eits__m3#no", "census"), ("census:eits__m3#yes", "census"),
+        ("census:m3:TCG:NO:sa", "census"),
+        # arity guard: a colon-2 id inside the range must NOT be claimed
+        ("census:advm3:stray", "census")])
+    con.commit(); con.close()
+    ids, unmapped = orchestrate._catalog_ids_for("census", ["eits__advm3"])
+    assert sorted(ids) == ["census:advm3:DXD:NO:sa", "census:advm3:DXD:VS:sa",
+                           "census:eits__advm3"], ids
+    assert unmapped == []
+    ids2, unmapped2 = orchestrate._catalog_ids_for("census", ["eits__m3"])
+    assert "census:m3:TCG:NO:sa" in ids2
+    assert "census:eits__m3#no" in ids2 and "census:eits__m3#yes" in ids2
+    assert unmapped2 == []
+
+
 def test_treasury_and_wikidata_keep_exact_first(cat, tmp_path):
     """Drift pin (review recommendation): ONLY dst was moved ahead of the exact
     tier. If a treasury/wikidata key ever equals a catalogue id, the exact tier

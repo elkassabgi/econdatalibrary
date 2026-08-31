@@ -1132,6 +1132,22 @@ def _catalog_ids_for(source_id: str, changed_keys):
             # claims — and (b) starved the 16 ids those subjects actually group.
             # Index HIT -> claim the group; MISS -> fall through, so a dst key that
             # is not a subject name still reaches the exact tier and the rest.
+            # census colon-4 OVERLAY (WU-4.2): an 'eits__<flow>' key claims BOTH its
+            # flow id — via the exact tier ('census:eits__advm3') or the '#' split-
+            # part tier ('census:eits__m3#no') below, unchanged — AND the series-
+            # grain ids catalogued under the UNPREFIXED flow ('census:m3:TCG:NO:sa';
+            # measured: exactly 22 colon-4 ids across advm3/m3, 0 other-arity ids in
+            # those ranges). ADDITIVE, never a continue: replacing the flow claim
+            # would starve the 20 exact-form flow ids. Indexed PK range per key,
+            # colon-count filter as belt-and-braces.
+            if source_id == "census" and k.startswith("eits__"):
+                _f = k[6:]
+                for (cid,) in con.execute(
+                        "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                        (f"census:{_f}:", f"census:{_f};")):
+                    if cid.count(":") == 4 and cid not in seen:
+                        seen.add(cid)
+                        exact.append(cid)
             if source_id == "dst" and _exp is not None and k.startswith("DST:"):
                 # k[4:] is the subject VERBATIM — never _subj(k[4:]): the fetcher
                 # cursors per subject FILE, and re-applying _subj strips digit-ending
