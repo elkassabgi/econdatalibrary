@@ -11,6 +11,7 @@
 import type { Env, SourceJoinedRow } from "./types";
 import { SELECT_SOURCES, SELECT_SOURCE_JOINED } from "./sql";
 import { json, SHARDED_SOURCES, dbFor } from "./util";
+import { NON_REDISTRIBUTABLE } from "./denylist";
 
 export async function handleSources(env: Env): Promise<Response> {
   const res = await env.CATALOG.prepare(SELECT_SOURCES).all<SourceJoinedRow>();
@@ -37,14 +38,32 @@ export async function handleSources(env: Env): Promise<Response> {
   }
   rows.sort((a, b) => (a.source_id < b.source_id ? -1 : a.source_id > b.source_id ? 1 : 0));
 
+  // A SOURCE WE REFUSE TO SERVE MUST NOT BE ADVERTISED HERE. This handler applied no
+  // denylist at all, so `worldbank_pink` was listed with a full licence block —
+  // "World Bank Pink Sheet (commodities)", audit-restricted — while every path to its data
+  // answers 451: /v1/catalog?source=worldbank_pink and /v1/series/worldbank_pink:aluminum.csv
+  // both measured 451 live on 2026-08-30. That is a browsable entry a user cannot obtain,
+  // which is exactly the "metadata-only" listing Ahmed's standing rule forbids: host it fully
+  // or do not list it.
+  //
+  // Two comments elsewhere in this worker already ASSERT that this filtering happens
+  // (catalog.ts and bundle.ts both say denylisted sources are hidden from /v1/sources), so
+  // the code and its own documentation disagreed — R125's shape, where prose describes a
+  // change that was never made.
+  //
+  // Note the count moves 322 -> 321, which is now exactly SUPPORTED_SOURCES minus
+  // NON_REDISTRIBUTABLE. `dbnomics` was already absent for an unrelated reason (no `source`
+  // row), so it was never the discrepancy.
+  const servable = rows.filter((r) => !NON_REDISTRIBUTABLE.has(r.source_id));
+
   // CANONICAL v1.1 NESTED shape (CONTRACT.md "Canonical response shapes"):
   //   { source, name, homepage, license:{...}|null, freshness:{...}|null }
   // attribution/terms_url are NOT part of this pin (they live in metadata.json
   // and the bundle provenance). freshness is null when the source has no
   // source_state row at all (honest absence, not a fabricated {null,null,null}).
   return json({
-    total: rows.length,
-    sources: rows.map((r) => {
+    total: servable.length,
+    sources: servable.map((r) => {
       const hasFreshness =
         r.source_status !== null ||
         r.source_last_success !== null ||
