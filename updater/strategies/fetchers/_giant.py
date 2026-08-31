@@ -332,6 +332,30 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             state[fid] = flow_st
             time.sleep(rate)
             continue
+        if status == "no_time_dimension":
+            # The flow's export has no TIME_PERIOD column — its DSD declares no SDMX
+            # TimeDimension. abs.py's predicate decides what that MEANS (R523): on a flow
+            # that PREVIOUSLY had rows it is a genuine break (the column vanished from under
+            # data we hold); on a flow that never had rows it is a dataset outside the
+            # series model, and calling it a break made finalize() raise on every oecd run —
+            # 60 permanent flows reddening a 1,545-flow giant for weeks.
+            #
+            # The predicate reads the store directly (a cheap parquet-footer read through
+            # blob). NOT `since`: sane_since() ALSO returns None when a has-rows store's max
+            # date is corrupt far-future, which would misfile a genuine break as
+            # outside-the-model — the exact conflation this branch exists to avoid.
+            if _max_obs_date(out_path) is not None:
+                tally.structural_unit(
+                    f"{fid}: TIME_PERIOD column GONE from a flow that has rows (break)")
+                flow_st.update(status="definitive_fail")
+            else:
+                tally.no_time_unit(fid)
+                # Advance the vintage: re-probe only when the publisher republishes the
+                # dataset, instead of re-fetching a permanent condition every tick.
+                flow_st.update(status="no_time_dimension", vintage=meta.get("vintage"))
+            state[fid] = flow_st
+            time.sleep(rate)
+            continue
         if status in ("empty", "no_change") or table is None or table.num_rows == 0:
             # 200 with no NEW rows in the tail = genuine quiet flow; SAFE to advance the
             # change-feed vintage (we proved upstream's catalogue token == fetched data).

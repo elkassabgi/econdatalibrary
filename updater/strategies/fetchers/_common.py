@@ -202,6 +202,15 @@ class Tally:
         # from `transient` because they are not failures (R303).
         self.deferred = 0
         self.deferred_ids: list = []
+        # DATASETS OUTSIDE THE TIME-SERIES MODEL — the publisher's DSD declares no SDMX
+        # TimeDimension, so the export has no TIME_PERIOD column and can NEVER parse as a
+        # series. Not a break: nothing was ever there. Kept apart from `structural` because
+        # finalize() RAISES on any structural count — oecd carries 60 such flows (verified
+        # 2026-08-30 against the publisher's own DSDs, 18/18 with controls; 0 of the 60 have
+        # ever had rows vs 40/40 controls — R523), and counting them as breaks made every
+        # oecd run definitive_fail and starved the whole 1,545-flow giant for weeks.
+        self.no_time = 0
+        self.no_time_ids: list = []
 
     def added_unit(self, n: int, label=None):
         self.attempted += 1
@@ -225,6 +234,21 @@ class Tally:
         self.structural += 1
         if label:
             self.structural_ids.append(str(label))
+
+    def no_time_unit(self, label=None):
+        """Sub-unit whose DSD declares no SDMX TimeDimension — outside the series model.
+
+        Only for sub-units that have NEVER had rows (the caller must check the store first,
+        abs.py's predicate): the same body on a flow that previously HAD rows is a genuine
+        structural break and belongs in structural_unit(). Attempted counts — we did the
+        work — but it is neither a failure nor a break, and finalize() reports it as a
+        non-demoting note (R359's precedent: a permanent, explained residue must not redden
+        every run, or real reds drown).
+        """
+        self.attempted += 1
+        self.no_time += 1
+        if label:
+            self.no_time_ids.append(str(label))
 
     def deferred_unit(self, label=None):
         """Sub-unit the budget stopped us reaching. NOT a failure, and NOT attempted.
@@ -300,9 +324,16 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
                              f"{tally.deferred} deferred by budget and taken next tick"
                              + _named(tally.deferred_ids)))
     status = "ok" if tally.added > 0 else "no_change"
+    note = f"+{tally.added} new rows" if tally.added else "no new rows"
+    if tally.no_time:
+        # NON-DEMOTING by design (R359's precedent: a permanent, explained residue must not
+        # redden every run). These sub-units' DSDs declare no SDMX TimeDimension — outside
+        # the series model, never had rows, re-probed only when the publisher's vintage
+        # changes. Named so the note stays actionable rather than a bare count.
+        note += (f"; {tally.no_time} dataset(s) outside the series model — publisher DSD "
+                 f"declares no SDMX TimeDimension" + _named(tally.no_time_ids))
     return Result(status=status, obs=total_rows, last_obs_date=last_obs, new_vintage="date-tail",
-                  series_cursors=series_cursors,
-                  error=(f"+{tally.added} new rows" if tally.added else "no new rows"))
+                  series_cursors=series_cursors, error=note)
 
 
 CURSOR_CAP = 50_000
