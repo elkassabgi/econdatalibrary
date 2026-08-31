@@ -4,10 +4,24 @@ Why this test exists (2026-08-30). The worker answered
 `"series-level for 33 sources; source-level for the rest"` for months after 33 stopped being
 the number -- accurate when written, silently rotten afterwards, and invisible because no test
 mentioned the field. Repairing it then produced a SECOND defect: the replacement,
-"series-level for every served source", was FALSE, because plenty of served sources are
-catalogued at table or flow grain (measured against data/catalog.db: ons_uk 42 catalogue rows
-for 3,897,884 series, insee_melodi 139, istat 14,267, statcan 20, oecd 28, abs 18, bls 9).
-That version was caught in adversarial review before it deployed.
+"series-level for every served source", was FALSE, because some served sources are catalogued
+at table or flow grain: `clients/python/econdl/_resolve.py` registers 11 in `_FLOW_GRAIN` and
+13 in `_DOT_TABLE_GRAIN`, and several more are documented individually -- `ons_uk` holds 42
+catalogue rows for 3,897,884 series (util.ts:453), `istat` 14,267 flows for 43,564,079 series,
+`insee_melodi` 139 flows, `usda` table grain. Caught in adversarial review before it deployed.
+
+CAUTION, learned the hard way in the SECOND review of this same file: do NOT infer grain from
+the catalogue row COUNT, and do not infer it from missing frequency/geography either.
+  * A LOW count is not coarse grain. `statcan` (20), `oecd` (28), `abs` (18) and `bls` (9) are
+    small hand-curated PER-SERIES catalogues -- `bls:CUUR0000SA0` is one series -- and an
+    earlier version of this docstring named all four as table-grain examples. They carry a
+    scalar frequency AND geography on 100% of rows, which a table row cannot.
+  * A HIGH count is not series grain, and ABSENT scalar attributes are not coarse grain:
+    `wid` has 2,465,197 catalogue rows carrying neither, yet each names one series
+    (`wid:WID:acaincj992:p0p100:992:j:AL`). Sparse metadata is not coarse grain.
+The sound direction is only the positive one: scalar frequency and geography on every row
+implies per-series. Otherwise consult the registries above or the source's generated page,
+which states its own grain ("Served at FLOW grain").
 
 So there are two failure modes to hold shut, and they pull in opposite directions:
 
@@ -54,12 +68,57 @@ def _nonempty(value, where):
     return value
 
 
+def _strip_ts_comments(src):
+    """Remove /* */ and // comments, but never inside a string literal.
+
+    Scanned character by character rather than regexed: a `//` inside a URL, or a `"` inside a
+    comment, defeats the regex forms. Adversarial review found the regex version read a DECOY
+    `const COVERAGE` planted inside a /* */ block in preference to the real one -- so the guard
+    could pass while the deployed value was the original bug.
+    """
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if c in '"\'`':                                  # string literal: copy verbatim
+            quote = c
+            out.append(c)
+            i += 1
+            while i < n:
+                out.append(src[i])
+                if src[i] == "\\":
+                    if i + 1 < n:
+                        out.append(src[i + 1])
+                        i += 2
+                        continue
+                elif src[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if src.startswith("/*", i):
+            end = src.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            out.append(" ")
+            continue
+        if src.startswith("//", i):
+            end = src.find("\n", i)
+            i = n if end < 0 else end
+            out.append(" ")
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _ts_coverage():
     """Value of `const COVERAGE`, joining a multi-line `"a" + "b"` concatenation."""
-    src = open(CATALOG_TS, encoding="utf-8").read()
-    m = _TS_ASSIGN.search(src)
-    assert m, "no `const COVERAGE` string assignment in catalog.ts"
-    parts = re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1))
+    src = _strip_ts_comments(open(CATALOG_TS, encoding="utf-8").read())
+    matches = _TS_ASSIGN.findall(src)
+    assert matches, "no `const COVERAGE` string assignment in catalog.ts"
+    assert len(matches) == 1, (
+        "catalog.ts has %d `const COVERAGE` assignments outside comments -- the extractor would "
+        "silently read the first, which need not be the one that deploys" % len(matches))
+    parts = re.findall(r'"((?:[^"\\]|\\.)*)"', matches[0])
     return _nonempty(_norm("".join(parts)), CATALOG_TS)
 
 
@@ -110,12 +169,22 @@ def test_string_keeps_the_absence_caveat():
     It does -- inside one of 14,267 flow CSVs.
     """
     value = _ts_coverage().lower()
-    assert "absence" in value, (
-        "catalog_coverage must keep the caveat that absence != unavailable; got %r" % value
+
+    # POLARITY, not keyword. Review found that merely requiring the word "absence" accepts the
+    # exact inversion of the warning -- "absence from this catalogue means a series is
+    # unavailable" contains it and asserts the opposite. So require the negation itself, in the
+    # same clause as the word.
+    assert re.search(r"absence[^.;]*\b(?:does not|doesn't|never)\b", value), (
+        "catalog_coverage must state that absence does NOT mean unavailable, in so many words; "
+        "got %r. Requiring only the word 'absence' would accept its own negation." % value
     )
-    forbidden = ("for every served source", "for all served sources", "for all sources")
+
+    forbidden = ("for every served source", "for all served sources", "for all sources",
+                 "for each served source", "throughout")
     for phrase in forbidden:
         assert phrase not in value, (
-            "catalog_coverage claims uniform coverage (%r), which is false: sources are "
-            "catalogued at table/flow grain too (ons_uk 42 rows for 3,897,884 series)." % phrase
+            "catalog_coverage claims uniform series-level coverage (%r), which is false: some "
+            "sources are catalogued per table or flow -- ons_uk holds 42 catalogue rows for "
+            "3,897,884 series, and _resolve.py registers 11 flow-grain and 13 table-grain "
+            "sources." % phrase
         )

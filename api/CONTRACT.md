@@ -76,11 +76,21 @@ Params: `q=` (FTS5 over title/geography), `source=`, `limit=` (default 50, max 5
 unit,geography,license_id,start_date,end_date}]}`. FTS5 with a LIKE fallback (mirrors
 `core/catalog.py::search`). **Catalogue grain is NOT uniform**, and the response says so:
 `"catalog_coverage":"mixed grain: some sources are catalogued per series, others per table or
-flow — absence from this catalogue does not mean a series is unavailable"`. Large sources are
-catalogued per table or per flow, with every series inside the corresponding CSV — measured
-2026-08-30 against `data/catalog.db`: `ons_uk` 42 catalogue rows for 3,897,884 series,
-`insee_melodi` 139, `istat` 14,267, `statcan` 20, `oecd` 28, `abs` 18, `bls` 9. Each source's
-generated page states its own grain (`catalog/site/istat.html`: "Served at FLOW grain").
+flow — absence from this catalogue does not mean a series is unavailable"`. Where a source is
+catalogued per table or per flow, one catalogue row stands for a whole table and every series
+in it lives inside that row's CSV. The flow- and table-grain sets are registered in
+`clients/python/econdl/_resolve.py` — `_FLOW_GRAIN` (11 sources: `bfs, cso, dst, hagstofa, scb,
+ssb, stat_estonia, stat_latvia, stat_slovenia, statfin, unsdg`) and `_DOT_TABLE_GRAIN` (13
+`unctad_*` sources) — and several more are documented individually: `ons_uk` holds 42 catalogue
+rows for 3,897,884 series, `istat` 14,267 flows for 43,564,079, `insee_melodi` 139 flows,
+`usda` table grain. **Each source's generated page states its own grain**
+(`catalog/site/istat.html`: "Served at FLOW grain"), and that page is the authority.
+
+Do **not** infer grain from a source's catalogue row count in either direction — an earlier
+version of this paragraph did, and was wrong. A small count often means a small hand-curated
+*per-series* selection (`bls` 9 rows, `statcan` 20, `oecd` 28, `abs` 18 — `bls:CUUR0000SA0` is
+one series), and a large count with sparse metadata is still per-series (`wid`, 2,465,197 rows,
+each one series).
 
 So a `/v1/catalog` search that returns nothing does **not** establish that a series is
 unavailable — fetch it by id, or read the source's page. This line said "33 sources" until

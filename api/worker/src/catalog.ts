@@ -20,10 +20,17 @@ import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
 // "series-level for 33 sources; source-level for the rest", had rotted (33 was accurate when
 // written, months ago). My first repair replaced it with "series-level for every served
 // source", which is FALSE and was caught in adversarial review before it shipped: measured
-// 2026-08-30 against data/catalog.db, plenty of served sources are catalogued at TABLE or FLOW
-// grain — ons_uk 42 catalogue rows for 3,897,884 series, insee_melodi 139 for 139 flows,
-// istat 14,267, statcan 20, oecd 28, abs 18, bls 9. Their own generated pages say so
-// (catalog/site/istat.html: "Served at FLOW grain"; usda.html: "Served at TABLE grain").
+// 2026-08-30, some served sources are catalogued at TABLE or FLOW grain — ons_uk holds 42
+// catalogue rows for 3,897,884 series, istat 14,267 flows for 43,564,079, insee_melodi 139.
+// _resolve.py registers the sets (_FLOW_GRAIN, 11; _DOT_TABLE_GRAIN, 13) and each source's
+// generated page states its own grain (catalog/site/istat.html: "Served at FLOW grain";
+// usda.html: "Served at TABLE grain") — that page is the authority.
+//
+// Do NOT infer grain from the catalogue row count. An earlier version of this comment cited
+// statcan (20), oecd (28), abs (18) and bls (9) as table-grain examples; all four are small
+// hand-curated PER-SERIES catalogues (bls:CUUR0000SA0 is one series) carrying a scalar
+// frequency and geography on every row, which a table row cannot. The converse fails too:
+// wid has 2,465,197 rows with neither attribute and each still names one series.
 //
 // Deleting the "source-level for the rest" half would have removed exactly the warning line 7
 // says this field exists to give: a caller who searches for an ISTAT indicator, gets nothing,
