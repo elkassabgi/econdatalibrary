@@ -1641,3 +1641,13 @@ were NEVER INGESTED and carry **60.3% of catalogued eurostat observations** (eve
 Backfill scoping is REQUIRED before any run: size the storage/class-A cost (the
 new-giant-storage-quote-first standing order applies — numbers go to Ahmed BEFORE the
 pull/ingest), choose desktop-first local ingest vs fetcher re-pull, and review the plan.
+
+### cbs_nl refresh sweep COMPLETE 2026-08-31 (9,081,645,170 obs) — nothing to catalogue
+
+Full pass 5,956 tables: 5,157 skips (already held + current), 7 tables started at skip=0
+and flushed 0 obs with no further log lines (86227-86231NED, 85174NED, 83673NED — new
+catalog entries that returned nothing: classify each as upstream-empty vs quiet-failure
+before believing either), 4 tables hit HTTP 403 (82538NED among them). The TODO's
+"catalogue new tables, regen, deploy" trigger is VACUOUS this pass — no new data landed.
+FOLLOW-UPS queued, not started (one-source rule): probe the 7+4 individually; run the
+deferred cbs_nl collision census (census v3 skipped it while the sweep wrote).
