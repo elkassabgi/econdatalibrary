@@ -37,7 +37,11 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKER = os.path.join(ROOT, "api", "worker")
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+# The plan phase reads ~13.5M rows; on the contended USB store drive (two first-pass
+# ingesters writing) that wedged past 15 minutes. AQUEDUCT_PLAN_CATALOG points it at a fast
+# local COPY -- safe because chunk boundaries only need to PARTITION each PK range, which any
+# snapshot of the catalogue does regardless of drift.
+CATALOG = os.environ.get("AQUEDUCT_PLAN_CATALOG") or os.path.join(ROOT, "data", "catalog.db")
 JOURNAL = os.path.join(ROOT, "data", "_fts_rebuild_journal.jsonl")
 
 DB = "econ-catalog"
@@ -81,13 +85,22 @@ def chunk_plan():
             plan.append((src, lo, hi))
             continue
         n_chunks = (n + CHUNK_ROWS - 1) // CHUNK_ROWS
-        # Boundary ids from the local catalogue. They only need to PARTITION [lo, hi):
-        # every D1 row falls in exactly one [b_i, b_{i+1}) regardless of local/D1 drift.
-        bounds = [r[0] for r in con.execute(
-            "SELECT series_id FROM (SELECT series_id, ROW_NUMBER() OVER (ORDER BY series_id)"
-            " AS rn FROM series WHERE source_id = ?) WHERE rn % ? = 0",
-            (src, (n // n_chunks) or 1)).fetchall()][: n_chunks - 1]
-        edges = [lo] + bounds + [hi]
+        step = (n // n_chunks) or 1
+        # Boundary ids via PK-RANGE seeks, never a source_id filter: the local catalogue has
+        # no index on source_id, so the first version's window query full-scanned 13.5M rows
+        # PER BIG SOURCE (~10 of them) over a USB drive — the ~4-min plan phase wedged past
+        # 15, and a control run alongside made two full scans thrash one disk. R492's lesson
+        # in local form: the cost is the predicate's access path, not the row count.
+        # Boundaries only need to PARTITION [lo, hi): every D1 row falls in exactly one
+        # [b_i, b_{i+1}) regardless of local/D1 drift.
+        bounds = []
+        for i in range(1, n_chunks):
+            r = con.execute(
+                "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ? "
+                "ORDER BY series_id LIMIT 1 OFFSET ?", (lo, hi, step * i)).fetchone()
+            if r:
+                bounds.append(r[0])
+        edges = [lo] + sorted(set(bounds)) + [hi]
         for i in range(len(edges) - 1):
             plan.append(("%s[%d/%d]" % (src, i + 1, len(edges) - 1), edges[i], edges[i + 1]))
     con.close()
