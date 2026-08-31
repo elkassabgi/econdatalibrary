@@ -121,6 +121,20 @@ def main() -> int:
     st = StateStore()
 
     # ---- PRE-FLIGHT: verify EVERY source before mutating ANY of them ----------------
+    #
+    # WHAT IS PINNED, AND WHY ONLY THAT (the verifiers' required change). match_count is
+    # the ONLY invariant number here: every predicate selects a legacy key shape that
+    # current code cannot emit any more, and put_series_cursors is INSERT..ON CONFLICT
+    # DO UPDATE (state.py:141) — upsert-only, never deleting — so a matched row can be
+    # re-dated but never created or destroyed by a normal run. It is also the number
+    # that carries the safety property: it IS the delete set.
+    #
+    # pre_count and post_count are NOT invariant: any run of the source inserts new
+    # (prefixed) rows between the measurement and the execution — fed_board alone could
+    # add up to +44,967 on republish. Pinning them would abort a correct migration for a
+    # legitimate change, and this is an ALL-OR-NOTHING session, so one such abort blocks
+    # the other eight. They are therefore REPORTED with their drift, and the arithmetic
+    # identity live_post == live_pre - live_match is enforced after the delete instead.
     print("\npre-flight (all sources verified before the first DELETE):")
     disagreements = []
     live = {}
@@ -132,20 +146,25 @@ def main() -> int:
             f"SELECT COUNT(*) FROM series_cursor WHERE source_id=? AND ({r['predicate']})",
             (sid,)).fetchone()[0]
         live[sid] = (pre, match)
-        ok = pre == r["pre_count"] and match == r["match_count"]
-        print(f"  {sid:<22} pre {pre:>8,} (want {r['pre_count']:>8,})  "
-              f"match {match:>8,} (want {r['match_count']:>8,})  {'OK' if ok else 'MISMATCH'}")
+        ok = match == r["match_count"]
+        drift = pre - r["pre_count"]
+        print(f"  {sid:<22} match {match:>8,} (want {r['match_count']:>8,}) "
+              f"{'OK' if ok else 'MISMATCH'}   pre {pre:>8,} "
+              f"(measured {r['pre_count']:>8,}, drift {drift:+,})")
         if not ok:
             disagreements.append(
-                f"{sid}: live pre={pre:,} match={match:,} vs receipt "
-                f"pre={r['pre_count']:,} match={r['match_count']:,}")
+                f"{sid}: live match={match:,} vs authorised match={r['match_count']:,}")
+        elif drift:
+            print(f"      note: {abs(drift):,} row(s) {'appeared' if drift > 0 else 'vanished'} "
+                  f"since the measurement — expected for a source that ran; the delete set "
+                  f"itself is unchanged, so the authorisation still holds.")
 
     if disagreements:
-        print("\nABORT — the store disagrees with the measured receipts. NOTHING was written.")
+        print("\nABORT — the delete set is not the one that was authorised. NOTHING written.")
         for d in disagreements:
             print(f"  - {d}")
-        print("\nThe receipts were measured before this run; a drift means the population "
-              "changed underneath the authorisation (R500). Re-measure, re-review, re-run.")
+        print("\nmatch_count is the authorised population (R500: an authorisation is only as "
+              "good as the facts it was given). Re-measure, re-review, re-run.")
         return 2
 
     if not a.apply:
@@ -163,11 +182,18 @@ def main() -> int:
         st.db.commit()
         post = st.db.execute(
             "SELECT COUNT(*) FROM series_cursor WHERE source_id=?", (sid,)).fetchone()[0]
-        ok = post == r["post_count"]
-        print(f"  {sid:<22} {pre:,} -> {post:,} (want {r['post_count']:,}) "
-              f"{'OK' if ok else 'MISMATCH'}")
+        # The IDENTITY, not the stale literal: post must be exactly what this store had
+        # minus what we just deleted. Comparing against the receipt's post_count would
+        # fail on legitimate drift (see the pre-flight note); comparing against the
+        # arithmetic catches the thing that actually matters — a DELETE that removed a
+        # different number of rows than the one we counted and authorised.
+        ok = post == pre - match
+        print(f"  {sid:<22} {pre:,} -> {post:,} (identity {pre:,}-{match:,}="
+              f"{pre - match:,}) {'OK' if ok else 'MISMATCH'}"
+              f"   [receipt predicted {r['post_count']:,}]")
         receipts_out.append({"source_id": sid, "pre": pre, "deleted": match, "post": post,
-                             "expected_post": r["post_count"], "ok": ok})
+                             "identity_expected": pre - match,
+                             "receipt_predicted_post": r["post_count"], "ok": ok})
         if not ok:
             print("\nSTOP — a post-count missed its prediction. The state is LOCAL ONLY and "
                   "has NOT been pushed; the authoritative store is untouched. Investigate "

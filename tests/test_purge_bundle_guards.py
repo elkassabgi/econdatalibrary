@@ -88,6 +88,22 @@ def test_the_in_flight_check_is_imported_not_retyped():
     assert "def runs_in_flight" not in src, "the bundle re-implemented the in-flight check"
 
 
+def test_only_the_invariant_count_gates_execution():
+    """The verifiers' required change: match_count is the ONLY number pinned against the
+    live store. It is the delete set itself, and it cannot drift — every predicate selects
+    a legacy shape current code cannot emit, and put_series_cursors is upsert-only. pre/post
+    DO drift (fed_board alone could add +44,967 on republish), so pinning them would abort a
+    correct all-or-nothing session over a legitimate change. post is checked by the
+    arithmetic identity instead."""
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "tools", "purge_state_cursors_bundle.py"),
+               encoding="utf-8").read()
+    assert 'ok = match == r["match_count"]' in src, "pre-flight no longer pins match_count"
+    assert 'ok = pre == r["pre_count"]' not in src, "pre_count is being pinned again"
+    assert "ok = post == pre - match" in src, "post is no longer checked by the identity"
+    assert 'post == r["post_count"]' not in src, "post_count literal is being pinned again"
+
+
 def test_delete_is_always_source_scoped():
     """Structural containment: every DELETE wraps the clause with an explicit
     source_id bind, so a receipt cannot reach another source's rows."""
