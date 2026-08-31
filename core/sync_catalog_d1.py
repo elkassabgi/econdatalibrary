@@ -64,6 +64,10 @@ PENDING = os.path.join(
     "pending_catalog_sync.txt")
 
 
+from core.catalog_sync_manifest import Manifest as _Manifest      # noqa: E402
+from core.catalog_sync_manifest import default_path as _manifest_path  # noqa: E402
+
+
 def _rows_for(conn: sqlite3.Connection, ids: list[str]) -> tuple[list[str], list[dict]]:
     cols = [d[0] for d in conn.execute("SELECT * FROM series LIMIT 1").description]
     out, seen = [], set()
@@ -292,6 +296,14 @@ def main(argv: list[str] | None = None) -> None:
                     help="emit + verify, execute nothing")
     ap.add_argument("--keep-pending", action="store_true",
                     help="do not truncate the pending file after a successful sync")
+    ap.add_argument("--no-diff", action="store_true",
+                    help="send every queued row even if the local manifest says D1 already "
+                         "has it. Escape hatch for a suspected divergence; it restores the "
+                         "~$86/month behaviour, so say why in the log when you use it.")
+    ap.add_argument("--seed-manifest", action="store_true",
+                    help="record every LOCAL catalogue row as already-sent and exit, "
+                         "sending nothing. Bootstrap only — correct exactly when D1 already "
+                         "holds them (measured 2026-08-31: 322/322 sources, 0 short).")
     a = ap.parse_args(argv)
 
     # WAIT FOR A WRITER INSTEAD OF DYING ON IT. Every other tool here opens catalog.db with a
@@ -300,6 +312,17 @@ def main(argv: list[str] | None = None) -> None:
     # with "database is locked". A read-only connection still has to wait out a writer's lock.
     conn = sqlite3.connect(f"file:{CATALOG_DB}?mode=ro", uri=True, timeout=300.0)
     conn.execute("PRAGMA busy_timeout = 300000")
+
+    # SEED FIRST: it reads the CATALOGUE, not the pending queue, so it must not be gated
+    # behind "nothing to sync" — an empty queue is the normal state to bootstrap in.
+    if a.seed_manifest:
+        _m = _Manifest(_manifest_path(ROOT))
+        n = _m.seed_from_catalog(conn)
+        _m.close(); conn.close()
+        print(f"seeded the sync manifest with {n:,} local row(s); nothing was sent. "
+              f"This asserts D1 already holds them — re-verify before seeding after any "
+              f"catalogue rebuild.")
+        return
     if a.source:
         ids = [r[0] for r in conn.execute(
             "SELECT series_id FROM series WHERE source_id=?", (a.source,))]
@@ -318,9 +341,40 @@ def main(argv: list[str] | None = None) -> None:
 
     cols, rows = _rows_for(conn, ids)
     print(f"catalog sync: {len(ids)} id(s) from {src} -> {len(rows)} local row(s)")
+
+    # THE DIFF (ledger R542). Everything below sends only rows whose CONTENT changed since
+    # the last successful sync, compared against a LOCAL manifest — never against D1, which
+    # would re-introduce the full scans this exists to remove.
+    manifest = _Manifest(_manifest_path(ROOT))
+    if a.no_diff:
+        print("  [diff] DISABLED by --no-diff: sending every queued row")
+        skipped = 0
+    else:
+        before = len(rows)
+        rows, skipped = manifest.split(cols, rows)
+        print(f"  [diff] {skipped:,} of {before:,} row(s) unchanged since the last successful "
+              f"sync -> not sent; {len(rows):,} to send "
+              f"({-(-len(rows) // FTS_DELETE_PER_STMT):,} FTS delete statement(s), each a "
+              f"full scan of series_fts)")
+        if manifest.count() == 0 and skipped == 0 and before > 1000:
+            print("  [diff] WARNING: the manifest is EMPTY, so nothing can be skipped and "
+                  "this run would push the whole queue. Run --seed-manifest first "
+                  "(see its help).")
     if not rows:
         conn.close()
-        print("  none of those ids exist in the local catalog — nothing to advertise")
+        try:
+            manifest.close()
+        except Exception:                                        # noqa: BLE001
+            pass
+        if skipped:
+            print(f"  nothing to send: all {skipped:,} queued row(s) are already in D1 "
+                  f"unchanged. Zero statements, zero FTS scans.")
+            if not a.source and not a.keep_pending:
+                path = a.ids_file or PENDING
+                open(path, "w", encoding="utf-8").close()
+                print(f"  cleared {path}")
+        else:
+            print("  none of those ids exist in the local catalog — nothing to advertise")
         return
 
     # Partition by destination DATABASE before emitting: shard-routed sources
@@ -370,7 +424,12 @@ def main(argv: list[str] | None = None) -> None:
         path = a.ids_file or PENDING
         open(path, "w", encoding="utf-8").close()
         print(f"  cleared {path}")
-    print(f"catalog sync OK: {len(rows)} series row(s) upserted to D1")
+    # POST-SUCCESS ONLY. A run that died partway recorded nothing and re-sends next time —
+    # a re-send costs money, a false "already sent" costs correctness.
+    manifest.record(cols, rows)
+    manifest.close()
+    print(f"catalog sync OK: {len(rows)} series row(s) upserted to D1 "
+          f"({skipped:,} skipped as unchanged)")
 
 
 if __name__ == "__main__":
