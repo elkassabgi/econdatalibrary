@@ -45,7 +45,7 @@ Access channels:
 - **REST API**: free, documented at https://econdatalibrary.com/api.html
 - **AI tools**: an MCP server (Model Context Protocol) so AI assistants can
   query the catalog directly — https://econdatalibrary.com/mcp.html
-- **Clients**: Python and R client libraries
+- **Clients**: a Python client library (`clients/python`)
 
 Registration is free (email, ORCID, or Google); catalog search and metadata
 require no account.

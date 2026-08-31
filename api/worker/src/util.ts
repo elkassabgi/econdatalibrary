@@ -10,7 +10,17 @@
 
 import type { Env, LicenseRow, LicenseBlock } from "./types";
 
-// The 191 sources with an at-rest resolver (econdl._resolve.supported_sources()).
+// The 323 sources with an at-rest resolver (econdl._resolve.supported_sources()).
+// Measured 2026-08-30 by scanning from this declaration to its closing bracket and stripping
+// `//` and `/* */` before extracting literals: 323 distinct ids, ZERO duplicates. "191" was
+// stale by 132. Count this block WITH comments and you overcount badly (350 quoted strings by
+// that method) — the comments in here quote ids while explaining removals, so a plain
+// quoted-string count reads retired ids as members (R259).
+//   `ksh` is the comment-only one: it appears in a removal note and is NOT a member.
+//   `unctad_cpia` IS a live member, which also happens to be quoted in a comment below —
+//   do not confuse the two, as an earlier version of this comment did.
+// Of these 323, `dbnomics` and `worldbank_pink` are in denylist.ts::NON_REDISTRIBUTABLE, so
+// 321 are actually SERVED.
 // A series whose source is NOT in this set returns 501 not_migrated -- loud and
 // actionable, exactly as the dev shim does via ResolveError. KEEP IN SYNC with
 // clients/python/econdl/_resolve.py::_RESOLVERS (regenerate via supported_sources()).

@@ -16,7 +16,25 @@ import {
 import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor, supportedSources } from "./util";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
 
-const COVERAGE = "series-level for 33 sources; source-level for the rest";
+// Carries no COUNT, and — the part that matters — it KEEPS THE CAVEAT. The old value,
+// "series-level for 33 sources; source-level for the rest", had rotted (33 was accurate when
+// written, months ago). My first repair replaced it with "series-level for every served
+// source", which is FALSE and was caught in adversarial review before it shipped: measured
+// 2026-08-30 against data/catalog.db, plenty of served sources are catalogued at TABLE or FLOW
+// grain — ons_uk 42 catalogue rows for 3,897,884 series, insee_melodi 139 for 139 flows,
+// istat 14,267, statcan 20, oecd 28, abs 18, bls 9. Their own generated pages say so
+// (catalog/site/istat.html: "Served at FLOW grain"; usda.html: "Served at TABLE grain").
+//
+// Deleting the "source-level for the rest" half would have removed exactly the warning line 7
+// says this field exists to give: a caller who searches for an ISTAT indicator, gets nothing,
+// and reads "series-level for every served source" concludes the series does not exist. It
+// does — inside one of 14,267 flow CSVs. A stale number is a rot problem; that would have been
+// a correctness problem, and worse than what it replaced.
+//
+// So: no number (nothing to keep it true), and no claim of uniform grain (it is not uniform).
+const COVERAGE =
+  "mixed grain: some sources are catalogued per series, others per table or flow — " +
+  "absence from this catalogue does not mean a series is unavailable";
 
 export async function handleCatalog(url: URL, env: Env): Promise<Response> {
   const { lang, error } = reqLang(url);

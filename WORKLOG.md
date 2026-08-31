@@ -278,3 +278,103 @@ It fails closed, which is correct, but the refusal aborts the whole compound com
 harmless statements in the same line are discarded: two file appends were silently lost and only
 surfaced when the following commit reported "no changes added to commit". Keep file writes and
 anything SQL-shaped in separate calls.
+
+---
+
+## P1 — string repairs, and the third holder of the constant (2026-08-30)
+
+**The reading gate is satisfied for the deploy.** Instrument: `_receipt_rules.classify()` +
+`unread()` evaluated against `.claude/state/reads.json` for this session, 2026-08-30 —
+`cd E:/research/econfindatalibrary/api/worker && npx wrangler deploy` classifies as `deploy`,
+requires `{adversarial-review SKILL.md, econ CLAUDE.md, ledger (MISTAKES.md digest)}`, and all
+three carry qualifying region receipts. The ledger regions `[[1,225],[401,490]]` took six chunked
+Reads; no single Read can span them (the 400 dense digest lines exceed the Read tool's 25k cap).
+
+**What changed, and the one I nearly missed.** The plan named two holders of the coverage
+constant — `api/worker/src/catalog.ts::COVERAGE` and `api/CONTRACT.md`. There is a **third**:
+`api/devserver.py:56::_CATALOG_COVERAGE`, the dev shim, which still read
+`"series-level for 33 sources; source-level for the rest"` after I had "finished" Phase 1.
+Instrument: `grep -rn "catalog_coverage" clients/ api/ site/ docs/`, 2026-08-30, which I ran to
+answer a different question (does any client PARSE this field — none does, so the string is safe
+to change). The sweep found the miss; my own edit pass had not.
+
+That is Ahmed's example-means-class rule doing real work: one reported instance is one instance of
+a class. The zero-result check that closes it — `Grep "series-level for 33 sources"` over the repo,
+2026-08-30 — returns exactly two hits, both legitimate historical quotes: the plan document
+describing the defect, and my own explanatory comment in `catalog.ts` quoting the old value. **No
+live surface still carries the stale string.**
+
+All three now read `"series-level for every served source"` — deliberately carrying no number,
+because the previous value was accurate when written and rotted silently for months.
+
+### The review FAILED it, and it was right — the repair was a new false claim
+
+`"series-level for every served source"` is **false**. Reproduced independently before acting
+(R325), 2026-08-30, `sqlite3` read-only over `data/catalog.db`, `SELECT source_id, count(*) FROM
+series GROUP BY source_id`, joined against `SUPPORTED_SOURCES` minus `denylist.ts`:
+
+| served source | catalogue rows | real series (per `util.ts`'s own comment) |
+|---|---|---|
+| `ons_uk` | **42** | 3,897,884 |
+| `insee_melodi` | 139 | 139 flows / 36,436,053 rows |
+| `istat` | 14,267 | 43,564,079 |
+| `statcan` | 20 | — |
+| `oecd` | 28 | — |
+| `abs` | 18 | — |
+| `bls` | 9 | — |
+
+Those are **table and flow grain**, and the sources' own generated pages say so
+(`catalog/site/istat.html`: "Served at FLOW grain"). So the old string's second clause,
+"source-level for the rest", was the *true* half — and my repair deleted it. `catalog.ts:7` states
+why the field exists: "so absence is never read as nonexistence". A caller who searches for an
+ISTAT indicator, finds nothing, and reads "series-level for every served source" concludes the
+series does not exist. It does, inside one of 14,267 flow CSVs. **A stale number is rot; that
+would have been a correctness regression, worse than what it replaced.** Not deployed — caught
+before shipping, which is the whole point of running the reviewer in parallel.
+
+Two further corrections from the same review, both verified here:
+- **Served = 321, not 322.** `SUPPORTED_SOURCES ∩ NON_REDISTRIBUTABLE = {dbnomics,
+  worldbank_pink}` — I had missed `worldbank_pink`, which is the very source I filed a RESERVED
+  brief about. `docs/ECONLIB_COMPLETION_PLAN.md:78` carries the same 322.
+- **`unctad_cpia` is a LIVE array member**, not comment-only as my new `util.ts` comment claimed.
+  Only `ksh` is comment-only. Corrected in place.
+
+The string now reads `"mixed grain: some sources are catalogued per series, others per table or
+flow — absence from this catalogue does not mean a series is unavailable"` in all **three**
+holders. It asserts no count and no uniform grain.
+
+**And it is now pinned mechanically** — `tests/test_catalog_coverage_sync.py`, 4 checks: the three
+holders agree, the string embeds no digit, and it keeps the absence caveat. Nothing had ever
+mentioned this field in ~200 test files, which is exactly how "33 sources" survived months of
+growth past 300. Discriminating pair per R414 (`scratchpad/mutate_coverage_guard.py`, **6/6**):
+one scenario it must accept, five it must refuse, each via its own check. The harness found a real
+bug in the guard on its first run — the old string contains a `;`, my non-greedy regex truncated
+inside the literal, extraction returned EMPTY, and the no-count and caveat checks then passed
+**vacuously** (R413's cannot-fail comparator, in the guard written to prevent exactly this). Fixed
+by matching only a chain of string literals, plus an explicit non-empty assertion.
+
+**R-client sweep was incomplete, and one surface reaches users.** Beyond `.zenodo.json` and
+`gen_site.py` I had missed `CITATION.cff:31` (published citation metadata — the reviewer missed
+this one too; found by my own grep) and `zenodo_README.md:48`, which ships *inside* the Zenodo
+deposit whose `.zenodo.json` I had just corrected: the two disagreed within one record. Both
+fixed. `STRATEGY.md` is **gitignored** (`.gitignore:78`), so it is a private planning doc and was
+never a public claim; annotated locally anyway. **Still outstanding and NOT fixed:**
+`catalog/site/index.html:487` and `:526` are GENERATED and still advertise "Python and R clients"
+— `gen_site.py` is only the template. The live homepage keeps serving that claim until the site is
+regenerated *and* manually Pages-deployed (R345). I am not calling this item done.
+
+**Test suite: 713 passed** (`py -3.14 -m pytest tests/ -q`, 36m57s, 2026-08-30). `tsc --noEmit`
+exit 0. `py_compile` on the dev shim OK.
+
+**`catalog/sitemap_state.json`: commit it, separately — the risk runs the opposite way to my
+assumption.** The reviewer established that the file has been lagging its own pages since
+2026-08-05 while `catalog/site/` was committed twice (2026-08-24, 2026-08-26). Its working-tree
+content matches the committed `sitemap.xml` exactly (331 pages, 328 × `2026-08-24`, 3 ×
+`2026-08-26`). `gen_site.py:156-160` keeps a page's `lastmod` only when the stored hash matches;
+the *committed* state matches none of the current 331 pages, so **reverting or omitting it makes
+the next run stamp every page with the run date** — a false site-wide date bump, precisely what
+the mechanism exists to prevent. It is not deployed either way (`SITEMAP_STATE` sits outside
+`OUT_DIR`). Committed on its own, described as the lagging companion of `beb78ca78`, not folded
+into a commit about `catalog_coverage`. One thing remains **UNVERIFIED**: its mtime is today
+18:30 but its `generated` field is `2026-08-26`, and a run today would have stamped today — so
+its *content* is the 08-26 run's and what touched the file is unexplained.

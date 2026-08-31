@@ -2840,7 +2840,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
       <div class="acard" style="border-left:4px solid var(--green)">
         <span class="badge open" style="margin-bottom:.5rem;display:inline-block">Redistributed</span>
         <h3>__NOPEN__ sources — all real, all downloadable</h3>
-        <p>Every dataset here is served from our store as citation-headed CSV, over the free REST API, and in snapshot-pinned bundles — with license and attribution attached to every series. Licensed for re-hosting, with Python and R clients ready to go.</p>
+        <p>Every dataset here is served from our store as citation-headed CSV, over the free REST API, and in snapshot-pinned bundles — with license and attribution attached to every series. Licensed for re-hosting, with a Python client ready to go.</p>
         <p style="margin-top:.5rem"><strong>Best for:</strong> direct downloads, reproducible research bundles, API pipelines.</p>
       </div>
     </div>
@@ -2879,7 +2879,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
       <div class="acard">
         <div class="card-icon">{&thinsp;}</div>
         <h3>REST API</h3>
-        <p>Programmatic search, metadata, series CSV, and reproducible snapshot-pinned bundles. Free key. Python and R clients available.</p>
+        <p>Programmatic search, metadata, series CSV, and reproducible snapshot-pinned bundles. Free key. Python client available.</p>
         <a href="download.html#api" class="btn btn-primary" style="margin-top:1rem;">Get API Access</a>
       </div>
       <div class="acard">
