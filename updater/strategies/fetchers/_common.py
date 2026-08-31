@@ -350,7 +350,9 @@ store series (388M rows, ~15,800 series per indicator), and its store keys alrea
 catalog ids (under _DERIVE_ALL_CAP=5000) the orchestrator re-derives all 80 anyway. Reporting
 millions of cursors there would buy exactly nothing and cost millions of queries and rows.
 Every other bulk source here is far below the cap: fed_board's largest release has 39,882
-series, fhfa ~5k, maddison 338, who_hwf 4,421.
+series, maddison 338, who_hwf 4,421 — but NOT fhfa, whose annual_tract cube alone holds
+63,930 series (union ~89,706 — the stale "~5k" here survived 18x growth, WU-2b), so every
+fhfa rebuild saturates the cap; its fetcher discloses that via Result.cursor_cap_hit.
 
 When the cap bites, the caller LOGS the count it dropped. A truncation nobody is told about
 reads as "we covered everything".

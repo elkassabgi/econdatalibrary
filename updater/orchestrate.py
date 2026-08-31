@@ -1878,6 +1878,17 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     # permanently-partial source is how gates stop being read (R244).
                     err_note = "; ".join(x for x in (err_note, csv_err) if x)
                     csv_err = None
+                if getattr(res, "cursor_cap_hit", False):
+                    # WU-2b: the fetcher itself says its cursor evidence is TRUNCATED
+                    # at the cap, so catalogued ids beyond it starve silently (fhfa: a
+                    # rebuild changes all ~89,706 catalogued series against the 50,000
+                    # cap — 39,706 CSVs never re-derive, with no note and no demote).
+                    # Book the durable debt; the wholesale campaign's success stamp
+                    # clears it (same lifecycle as the no-cursors branch below).
+                    store.note_full_rederive_owed(
+                        unit.source_id, vintage=str(res.new_vintage or ""),
+                        note=f"cursor cap hit — changed-set evidence truncated "
+                             f"({len(res.series_cursors or {}):,} keys reported)")
                 if csv_err and csv_err.startswith(_NO_CURSORS_NOTE):
                     # PERSIST THE DEBT (2026-08-31). Until now this branch's demotion was
                     # the only trace, and it EVAPORATED: nothing queued (ids unknown), the

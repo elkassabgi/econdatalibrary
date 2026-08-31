@@ -149,7 +149,8 @@ def update(unit, since) -> Result:
             # Verified against catalog.db: fhfa:annual_cbsa:01, fhfa:annual_county:01001.
             merge_cursors(cursors, local,
                           key_prefix=f"{f[:-len('.parquet')]}:")
-    if len(cursors) >= CURSOR_CAP:
+    cap_hit = len(cursors) >= CURSOR_CAP
+    if cap_hit:
         print(f"[fhfa] cursor set hit the {CURSOR_CAP:,} cap — further changed series are not "
               f"individually reported; the orchestrator's derive-all path covers small "
               f"catalogs", flush=True)
@@ -161,5 +162,12 @@ def update(unit, since) -> Result:
         os.path.join(out_dir, SIDECAR),
         json.dumps({"token": token, "built": dt.date.today().isoformat(),
                     "files": vals}, indent=1, sort_keys=True).encode("utf-8"))
-    return finalize(tally, published, since or None, source=SOURCE,
-                    series_cursors=cursors or None)
+    res = finalize(tally, published, since or None, source=SOURCE,
+                   series_cursors=cursors or None)
+    # WU-2b: a rebuild touches all ~89,706 catalogued fhfa series; a capped cursor
+    # set therefore GUARANTEES starved catalogued ids (39,706 measured). Say so on
+    # the Result — the orchestrator books the full_rederive_owed debt from this.
+    # (The honest changed_keys migration is BLOCKED: report_changed_keys is
+    # merge-mode-only and fhfa overwrite-rebuilds — do not attempt it here.)
+    res.cursor_cap_hit = cap_hit
+    return res
