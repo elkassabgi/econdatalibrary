@@ -340,7 +340,35 @@ jobs:
         # non-zero updater exit does not un-derive the series that WERE derived, and
         # skipping this strands them exactly the way the 31,259 were. Already
         # continue-on-error, so running it on a failed run cannot add a second failure.
-        if: ${{ always() && steps.push_state.outcome == 'success' && inputs.dry_run != true }}
+        # FROZEN 2026-08-31 (ledger R542) — set CATALOG_SYNC_ENABLED to '1' in the repo
+        # variables to re-enable, which is the whole reversal.
+        #
+        # WHY. Commit 7011c878e (2026-08-24) added `DELETE FROM series_fts WHERE series_id
+        # IN (...500 ids...)` to the emitted SQL. series_fts is fts5(series_id UNINDEXED,
+        # ...), so every one of those DELETEs is a FULL TABLE SCAN. Chunks without them run
+        # 1.8-2.1 s; the first chunk carrying them jumps to 15.9-51.5 s, and the run dies in
+        # that region — a different chunk number each time, because how many 16-second scans
+        # land inside one 900 KB chunk depends on the id mix. Every catalogue sync since that
+        # commit has FATAL'd; the ones before it did not.
+        #
+        # THE FAILURE IS CURRENTLY HOLDING THE BILL DOWN, which is why freezing beats
+        # repairing. orchestrate.py:665 queues EVERY re-derived id with no change detection,
+        # so a sync that COMPLETES pushes a mean of 42,046 ids per run = 85 FTS scans =
+        # ~$0.88/run in reads, ~2.86 runs/day => ~$75/month reads + ~$11/month writes, for
+        # rows D1 already holds: measured 0 of 322 sources short, D1 +285 rows vs local.
+        # Today's FTS rebuild cut the per-scan constant 2.30x (23,843,482 -> 10,348,426),
+        # projecting the failing 46-52 s chunks to ~20-23 s — so this step may repair ITSELF
+        # on the next run and start spending ~$86/month INVISIBLY, because it is
+        # continue-on-error and renders green either way.
+        #
+        # UNFREEZE ONLY AFTER the sync is a true DIFF (compare each queued id against a LOCAL
+        # last-sent manifest per DESKTOP_FIRST.md — never against D1, which re-introduces the
+        # scans). Do NOT "fix" this by switching transport or upgrading wrangler: that unlocks
+        # the bill without closing the mechanism. Do NOT widen the DELETE to a range
+        # predicate: fhfa's slice was CAPPED at 50,000 of 89,706 ids, so a range DELETE would
+        # have unindexed ~39,767 series silently (R487 verbatim).
+        if: ${{ always() && steps.push_state.outcome == 'success' && inputs.dry_run != true
+                && vars.CATALOG_SYNC_ENABLED == '1' }}
         continue-on-error: true
         run: python core/sync_catalog_d1.py
 
