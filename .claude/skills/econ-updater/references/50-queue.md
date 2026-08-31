@@ -1573,3 +1573,17 @@ stops that WHILE ISTAT IS DOWN, but the class is systemic and returns the day it
 FIX OPTIONS (not chosen — needs a decision): implement the wall clock on Windows (a watchdog
 thread, since `setitimer` is absent) AND/OR give istat a real per-source `Deadline`, AND/OR
 stop `run_cost_estimate` trusting durations from aborted/killed runs.
+
+### eurostat re-key — COMPLETE on R2 since 2026-08-30 07:23Z; the "run to completion" item is STALE
+
+Measured 2026-08-31 against the store the cloud reads (AQUEDUCT_BACKEND=r2): the R2
+`_rekeyed.json` marker records `files_seen=7214, clean=7214, touched=0, conflicts=0,
+completed 2026-08-30T07:23:56Z`, and the live listing counts exactly **7,214** parquets —
+marker == store, guard condition met. Today's daily still PRINTS "the one-time re-key
+migration has not completed (_rekeyed.json says 7213...)" — that is the STORED note from
+eurostat's last ATTEMPT (2026-08-25, before the completing pass), the R231/R339 snapshot
+trap this file already documents twice. Nothing to run; the item closes when eurostat's
+next attempted run shows the guard released (stalest-first ordering should reach it
+within days — if its attempt age keeps growing past ~3 more days, force it:
+`gh workflow run updater-daily.yml -f source=eurostat -f force=true`, minding the
+aqueduct-updater single-slot eviction rule R291 before dispatching).
