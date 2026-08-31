@@ -142,6 +142,39 @@ def test_carveout_like_prefixes_cover_both_id_shapes():
     ).read(), "carve-out LIKE terms need ESCAPE — '_' is a wildcard and source ids contain it"
 
 
+def test_sources_endpoint_hides_denylisted_sources():
+    """A source we refuse to serve must not be advertised in /v1/sources.
+
+    `worldbank_pink` was listed there with a full licence block while every path to its data
+    answered 451 — a browsable entry nobody can obtain, which is the "metadata-only" listing
+    Ahmed's standing rule forbids (host it fully, or do not list it). Measured live
+    2026-08-30: /v1/sources total 322, of which one is denylisted; both
+    /v1/catalog?source=worldbank_pink and /v1/series/worldbank_pink:aluminum.csv returned 451.
+
+    Comments in catalog.ts and bundle.ts already ASSERTED this filtering happened, so the code
+    contradicted its own documentation (R125). This pins the code, not the prose.
+    """
+    src = open(os.path.join(ROOT, "api", "worker", "src", "sources.ts"), encoding="utf-8").read()
+    assert "NON_REDISTRIBUTABLE" in src, (
+        "sources.ts must filter NON_REDISTRIBUTABLE — otherwise /v1/sources advertises "
+        "sources whose every data path returns 451"
+    )
+    # The closing brace is INDENTED (`  });`), so an anchored `\n\}\);` never matches and the
+    # assertion below would fail for the wrong reason — passing or failing on the locator
+    # rather than on the thing under test (R488). Allow leading whitespace, and prove the
+    # locator works before trusting what it finds.
+    body = re.search(r"return json\(\{(.*?)\n\s*\}\);", src, re.S)
+    assert body, "could not locate the /v1/sources response body"
+    assert "sources:" in body.group(1), (
+        "located a block that is not the response body — the locator is wrong, so any verdict "
+        "it produces is meaningless"
+    )
+    assert "rows.length" not in body.group(1) and "rows.map" not in body.group(1), (
+        "the response still emits the UNFILTERED `rows`; the denylist filter is computed but "
+        "not used — a variable assigned and ignored is the same defect as no filter at all"
+    )
+
+
 def test_worldbank_esg_specifically_is_carved():
     """Regression pin for the 2026-08-30 leak: 178 ILO series served ungated.
 
