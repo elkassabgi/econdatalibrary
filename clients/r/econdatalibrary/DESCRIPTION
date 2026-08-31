@@ -1,0 +1,19 @@
+Package: econdatalibrary
+Type: Package
+Title: Client for the Econ Data Library
+Version: 0.1.0
+Authors@R: person("Ahmed", "Elkassabgi", role = c("aut", "cre"), email = "admin@econdatalibrary.com")
+Description: Access free economic and financial time series from the Econ Data
+    Library (econdatalibrary.com): a curated, continuously-growing catalogue drawn
+    from international organizations, national statistical offices, central banks
+    and research datasets, each served with its producer's licence, attribution and
+    citation. Search the catalogue, download series as tidy data frames, and fetch
+    one indicator across many geographies. Registration is free; catalogue search
+    and metadata require no key.
+License: MIT + file LICENSE
+Encoding: UTF-8
+URL: https://econdatalibrary.com, https://github.com/elkassabgi/econdatalibrary
+BugReports: https://github.com/elkassabgi/econdatalibrary/issues
+Imports:
+    httr
+RoxygenNote: 7.2.3
