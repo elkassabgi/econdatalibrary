@@ -612,3 +612,24 @@ Queue total 225,272 across 9 sources; the small ones drain (cso reached 0), the 
 cohorts cannot — 50k CSVs do not fit a 60-minute window, so the same timeout that filled the
 queue also guards its drain. The fix is per-source csv budget/pacing (task 1c's territory),
 NOT touching `merge_and_write`/`min_ratio` (R519).
+
+### Phase 3 task 2 — the unmapped keys, attributed per class (2026-08-31)
+
+Current state (the plan's 73,125 was an earlier snapshot; today's `unit_state` notes total
+**43,528** across 15 sources, plus two false members):
+
+* **cso 39,442 (90.6%)** — flow-grain by design: per-series store keys against a 7,896-flow
+  catalogue. The note itself says "served ids coherent"; nothing to fix (R359's non-demoting
+  residue doing its job).
+* **~3,626 across 12 sources** (defillama 2,731, ipea 257, rba 225, who_sdg 235,
+  unctad_cpi_annual 215, imf_* smalls, stat_latvia 9, statfin 22, ksh_stadat 60,
+  unctad_rca 55, imf_fas 103, imf_fsibsis 141) — the notes' own classifier: "UNDER the
+  5,000 cap — cause is NOT the cap" (or trivial residue on over-cap catalogs). These are
+  uncatalogued store series (the dark-series class): the fix is ADDITIVE cataloguing per
+  source, queued as ordinary work, or documented residue.
+* **insee_bdm and usda are NOT unmapped** — their notes are honest budget DEFERRALS
+  ("derive budget spent — 46,363 / 48,047 deferred, none failed"), which drain when their
+  runs reach them; usda runs local, so the starvation fix directly helps it.
+
+Task 2's "establish why per source" is therefore done; no mapping-ladder defect found in the
+current fleet — the two real classes are by-design flow residue and uncatalogued store keys.
