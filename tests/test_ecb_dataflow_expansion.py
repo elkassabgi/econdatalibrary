@@ -75,6 +75,19 @@ def catalog(tmp_path, monkeypatch):
     # the source, which masks the defect entirely -- my first version of these tests ran that
     # way and "passed" a case that fails in the cloud. Pin the backend the failure occurs on.
     monkeypatch.setattr(config, "BACKEND", "r2")
+    # ...AND PIN THE STORE THE PRESENCE GUARD READS. Under r2 the ecb branch also requires
+    # `_ecb_file_present` — and this fixture originally left that reading the REAL store, so
+    # the acceptance tests passed on this machine (which holds all 540 ecb parquets) and
+    # failed 0==18 / 0==35 on EVERY CI run since they shipped, the runner holding no store
+    # at all. That is AR-026's own warning ("exercised its true branch by accident")
+    # committed a second time in the same file. The fixture now owns a store dir holding
+    # exactly the four claiming files; ECB__ZZZ__D stays absent, so the M7 residue test
+    # keeps its meaning unchanged.
+    store = tmp_path / "store_with_claiming_files"   # distinct name: the presence-guard
+    store.mkdir()                                    # tests make their own empty "store*"
+    for fn in ("ECB__EXR__D", "ECB__FM__D", "ECB__FM__M", "ECB__YC__B__G_N_A"):
+        (store / f"{fn}.parquet").write_bytes(b"")
+    monkeypatch.setattr(config, "source_dir", lambda sid: str(store))
     return p
 
 
