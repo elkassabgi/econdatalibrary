@@ -1616,3 +1616,15 @@ is the separate local-route giant class, not the mapper. Instrument: unit_state 
 the 14, fresh-pulled state 2026-08-31; the mfsofc heavy job's own NOT-DUE line carries the
 same timestamp. Heavy run 33409577110 (manually dispatched after both crons were lost):
 **35/35 jobs green, conclusion success**.
+
+### dst "275 uncatalogued tables" — CLOSED 2026-08-31: the gap no longer exists
+
+Re-measured at the honest grain (distinct TABLE tokens across all 813 store parquets vs
+catalogue — the 08-27 census and my first re-check both compared FILE names against TABLE
+ids, a unit error): store tables == catalogue == **2,264 exactly, 0 missing both
+directions**. The catalogue grew 1,963 → 2,264 after the 08-27 measurement and the 08-27
+15:30Z R2 coherence refresh carries it (the 08-28 run mapped all but 11 genuinely-new
+keys — the routine trickle, absorbed by the next periodic refresh). Full DoD proven:
+`verify_source_served --source dst`: MISSING 0, ORPHANED 0, byte-compare 25/25 identical
+(after syncing the one 32-row-stale mirror file), D1 2,264 == catalogue, live-listed →
+**SERVED**. The FOR-AHMED refresh-command request is WITHDRAWN — nothing blocks on it.
