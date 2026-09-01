@@ -1,73 +1,52 @@
-"""Repair a LOCAL parquet mirror that has fallen behind the R2 store — safely.
+"""Sync exactly the files a footer_diff run classified as BEHIND or R2-ONLY. Never the AHEAD ones.
 
-WHY THIS EXISTS. `core/derive_csv` resolves every store file through
-`clients/python/econdl/_resolve.py`, which builds a PLAIN LOCAL PATH and never goes through
-`blob`. So a derive run on this desktop reads the LOCAL mirror no matter what
-`AQUEDUCT_BACKEND` says, and for a cloud source — where CI writes R2 and the desktop only
-mirrors — that means it publishes whatever the mirror happens to hold. On 2026-09-01 that had
-put 1,384 store files behind and was serving users an older vintage: eurostat tec00108 served
-5,328 rows where the store held 5,415, and ilostat CCF_XPPP_CUR_RT_A ended 2025-01-01 against
-the store's 2026-01-01 (R548).
+WHY THIS EXISTS AS A SEPARATE TOOL. The obvious move — "the mirror is stale, copy the source
+down" — is the one that destroys data, because divergence is not uniform. Three sources are
+currently AHEAD of the store on some files while behind on others, and the last time a blind
+`aws s3 sync`-shaped operation ran against ilostat it overwrote 41 ahead files and took 967,043
+rows with it (ledger R388). So the copy list is never computed here: it is read from a
+footer_diff JSON, which classified every file in both directions by parquet footer, and the
+`ahead` list is printed as a MERGE queue and skipped.
 
-Every guard below was paid for by a specific failure; do not simplify one away without
-reading its note.
+It also refuses to run against a stale classification. If the JSON's file lists no longer match
+what is in R2, the answer is to re-run footer_diff, not to copy from a snapshot of the past.
 
-  DIRECTION      A file where LOCAL is ahead is not a stale mirror, it is the STORE missing
-                 data, and syncing it down destroys the only richer copy. fao_gf arrived here
-                 labelled BEHIND while holding 110 MORE rows locally (R549 F3).
-
-  CONTAINMENT    Never-shrink on a row COUNT proves nothing: a merge that adds rows to one
-                 family and drops another passes it. Compare (key, date) SETS with a duckdb
-                 ANTI JOIN — no size cap, because the first version capped at 3M rows and the
-                 ten LARGEST files were therefore synced unchecked, after which the local copy
-                 was gone and the question became permanently unanswerable (R549 F5, R550).
-
-  KEY COLUMNS    Never guess the date column positionally. `cols[1]` is gleif's `LegalName`
-                 and defillama's `name`, so renames were counted as lost observations and
-                 THREE files were refused for no reason (R551). With no time axis, a row's
-                 identity is its key alone.
-
-  WITHDRAWALS    For a cloud source the R2 copy IS the publisher's current state, so
-                 identities that vanish are usually a withdrawal, not breakage — ilostat
-                 CCF_XPPP drops 9 of 5,645 pairs (0.16%) while gaining a whole year. Follow
-                 the publisher when R2 is ahead on rows AND dates, and RECORD every withdrawn
-                 identity to a file so nothing disappears unrecorded.
-
-  RESTRUCTURE    A near-total turnover is not a withdrawal. ilostat EIP_NEET_SEX_AGE_RT_A came
-                 through at 21,417 of 21,417 (100%) because the publisher replaced the age
-                 classification outright. Correct to follow, but say so loudly.
-
-  ATOMIC WRITE   Unique temp name (pid + uuid), retry with backoff, cleanup on every path.
-                 A fixed `.syncing` name lost a race with a running derive and left orphans.
-
-  RECEIPTS       The outcome lists are written from SUCCESSES and REFUSALS, never from the
-                 plan. An earlier version wrote its "synced" list from the plan and named
-                 three files whose replace had thrown (R549 F4).
-
-Input TSV: source, relpath, local_rows, r2_rows, local_max, r2_max (header row required).
+    python tools/footer_diff.py --all --json data/_probe/fleet_diff.json
+    python tools/mirror_sync.py --from-json data/_probe/fleet_diff.json --apply
 """
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import json
 import os
-import sys
-import time
 import uuid
+import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
-ROOTS = ("clean_full", "clean_grouped")
-
-
-class _Skip(Exception):
-    """This file is not to be replaced; a refusal has already been recorded."""
+BUCKET = "econ-data"
 
 
 def lost_identities(local_path: str, new_path: str):
-    """(count, description) of identities the LOCAL copy holds that the new copy does not.
+    """(count, description) of identities the LOCAL copy holds that the incoming copy lacks.
 
-    duckdb ANTI JOIN rather than Python sets: it streams and spills, so there is no size cap
-    and therefore no population exempt from the check.
+    A SECOND line of defence behind footer_diff's classification. footer_diff answers "is this
+    file behind?" by row count and max date; it cannot see a file that grows overall while
+    dropping individual observations. Measured 2026-09-01 while repairing 1,384 files: 228
+    ilostat files were BEHIND (R2 ahead on rows AND dates) and still lacked identities the
+    local copy held — CCF_XPPP_CUR_RT_A gained a full year to 2026-01-01 while dropping four
+    countries' 1990-91 values.
+
+    duckdb ANTI JOIN, not Python sets: it streams and spills, so there is no size cap and no
+    population exempt from the check. An earlier version capped at 3M rows and the ten LARGEST
+    files were therefore replaced unchecked, after which the local copy was gone and the
+    question could never be answered (R550).
+
+    NEVER guess the date column positionally. `cols[1]` is gleif's `LegalName` and defillama's
+    `name`; comparing on those made every RENAME look like a lost observation and refused three
+    files with zero identities actually lost (R551). With no time axis, identity is the key.
     """
     import duckdb
     q = duckdb.connect()
@@ -86,143 +65,106 @@ def lost_identities(local_path: str, new_path: str):
         sel = "select \"%s\"::VARCHAR k, \"%s\"::VARCHAR d from read_parquet('%s')"
         left, right = sel % (kq, dq, lp), sel % (kq, dq, rp)
         mode = f"({kc}, {dc})"
-    n = q.execute(f"select count(*) from (({left}) except ({right}))").fetchone()[0]
-    return n, mode
+    return q.execute(f"select count(*) from (({left}) except ({right}))").fetchone()[0], mode
 
 
-def source_dir_any_root(sid: str, repo: str) -> str | None:
-    for root in ROOTS:
-        d = os.path.join(repo, "data", root, sid)
-        if os.path.isdir(d):
-            return d
-    return None
+def sync_source(s3, rec, apply: bool):
+    src, root = rec["source"], rec["root"]
+    names = [n for n, _l, _r in rec["behind"]] + list(rec["r2_only"])
+    ahead = [n for n, _l, _r in rec["ahead"]]
+    if not names:
+        return 0, ahead
+    d = os.path.join(ROOT, "data", root, src)
+    if not apply:
+        return len(names), ahead
+    os.makedirs(d, exist_ok=True)
+    fail = []
+    withdrawals = []
+
+    def one(n):
+        # `n` is a RELATIVE PATH, which for bea and eia contains a directory component.
+        try:
+            dest = os.path.join(d, *(n + ".parquet").split("/"))
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            # Download BESIDE the target, check, then replace. Downloading straight onto
+            # `dest` destroys the local copy before anything has looked at it, which is also
+            # what makes the loss unverifiable afterwards (R550). Unique temp name so two
+            # runs cannot share it, and the temp is cleaned on every path.
+            tmp = f"{dest}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+            try:
+                s3.download_file(BUCKET, f"{root}/{src}/{n}.parquet", tmp)
+                if os.path.exists(dest):
+                    lost, mode = lost_identities(dest, tmp)
+                    if lost:
+                        # footer_diff already established R2 is ahead here, so identities that
+                        # vanish are the publisher withdrawing them, not breakage. Follow it —
+                        # refusing would keep users on an older vintage to preserve superseded
+                        # rows — but never silently: every one is recorded.
+                        withdrawals.append((n, lost, mode))
+                os.replace(tmp, dest)
+            finally:
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+        except Exception as e:                                     # noqa: BLE001
+            fail.append((n, repr(e)[:60]))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+        list(ex.map(one, names))
+    if fail:
+        print(f"   {src}: {len(fail)} download(s) FAILED {fail[:3]}")
+    if withdrawals:
+        tot = sum(w[1] for w in withdrawals)
+        print(f"   {src}: {len(withdrawals)} file(s) lost {tot:,} identities upstream while "
+              f"gaining rows — publisher withdrawals, e.g. "
+              f"{[(w[0], w[1]) for w in withdrawals[:3]]}")
+    return len(names) - len(fail), ahead
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--tsv", required=True, help="source/relpath/local_rows/r2_rows/maxes")
-    ap.add_argument("--apply", action="store_true", help="without this, measure only")
-    ap.add_argument("--source", action="append")
-    ap.add_argument("--out-ok", required=True, help="where the SUCCEEDED list is written")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--from-json", required=True, help="a footer_diff --all output")
+    ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--source", action="append", default=[], help="limit to these sources")
     a = ap.parse_args()
 
-    os.environ.setdefault("AQUEDUCT_BACKEND", "r2")
-    from core import r2_util
-    from updater import blob, config                                  # noqa: F401
+    d = json.load(open(a.from_json, encoding="utf-8"))
+    recs = d["sources"] if "sources" in d else [d]
+    if a.source:
+        recs = [r for r in recs if r["source"] in set(a.source)]
+    todo = [r for r in recs if r["behind"] or r["r2_only"]]
+    print(f"MODE: {'APPLY' if a.apply else 'REPORT ONLY'}   "
+          f"{len(todo)} source(s) with files to pull\n")
 
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    s3 = r2_util.client(write=True)
+    # The merge queue is built from EVERY record, not just the ones with something to pull.
+    # Scoping it to `todo` hid eia's 30 ahead files entirely, because eia has nothing behind —
+    # a report that goes quiet about the most divergent source in the fleet, which is the exact
+    # shape of hole this session has spent the day closing.
+    merge_queue = [(r["source"], [x[0] for x in r["ahead"]]) for r in recs if r["ahead"]]
+    total = 0
+    for r in sorted(todo, key=lambda r: -(len(r["behind"]) + len(r["r2_only"]))):
+        n, ahead = sync_source(s3, r, a.apply) if a.apply else (
+            len(r["behind"]) + len(r["r2_only"]), [x[0] for x in r["ahead"]])
+        total += n
+        note = f"   ({len(ahead)} AHEAD file(s) LEFT ALONE — merge queue)" if ahead else ""
+        print(f"  {r['source']:22s} {len(r['behind']):>4} behind + {len(r['r2_only']):>4} "
+              f"R2-only = {n:>4} pulled{note}")
 
-    rows = []
-    with open(a.tsv, encoding="utf-8") as fh:
-        for ln in fh:
-            f = ln.rstrip("\n").split("\t")
-            if len(f) >= 6 and f[0] != "source" and (not a.source or f[0] in a.source):
-                rows.append(f)
-    print(f"{len(rows):,} behind-R2 file(s) to repair; mode: "
-          f"{'APPLY' if a.apply else 'DRY RUN'}", flush=True)
-    if not a.apply:
-        return 0
-
-    ok, refused, failed, withdrawn = [], [], [], []
-    for i, (sid, rel, lrows, rrows, lmax, rmax) in enumerate(rows, 1):
-        d = source_dir_any_root(sid, repo)
-        if d is None:
-            refused.append((sid, rel, "no local store directory under any known root"))
-            continue
-        p = os.path.join(d, rel.replace("/", os.sep))
-        key = blob._path_to_key(d).rstrip("/") + "/" + rel
-        try:
-            payload = s3.get_object(Bucket="econ-data", Key=key)["Body"].read()
-        except Exception as e:                                        # noqa: BLE001
-            failed.append((sid, rel, f"download {type(e).__name__}"))
-            continue
-
-        tmp = f"{p}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
-        wrote = refused_here = False
-        try:
-            os.makedirs(os.path.dirname(tmp), exist_ok=True)
-            with open(tmp, "wb") as f:
-                f.write(payload)
-            try:
-                lost, mode = lost_identities(p, tmp)
-            except Exception as e:                                    # noqa: BLE001
-                refused.append((sid, rel, f"containment check failed: {type(e).__name__}"))
-                raise _Skip()
-            if lost:
-                net_ahead = (int(rrows) >= int(lrows)
-                             and (not lmax or not rmax or str(rmax) >= str(lmax)))
-                if not net_ahead:
-                    refused.append((sid, rel, f"R2 lacks {lost:,} identities the local copy "
-                                              f"holds AND is not ahead ({int(lrows):,} local "
-                                              f"rows vs {int(rrows):,}) — MERGE, not sync"))
-                    raise _Skip()
-                frac = lost / max(int(lrows), 1)
-                if frac >= 0.5:
-                    print(f"  RESTRUCTURE {sid}/{rel}: {lost:,} of {int(lrows):,} identities "
-                          f"({frac:.0%}) are absent from R2 — the publisher re-keyed this "
-                          f"dataset; this is not a withdrawal", flush=True)
-                withdrawn.append((sid, rel, lost, mode, int(lrows), int(rrows), lmax, rmax))
-            if int(lrows) > int(rrows):
-                refused.append((sid, rel, f"LOCAL IS AHEAD ({int(lrows):,} vs {int(rrows):,}) "
-                                          f"— merge, never a sync-down"))
-                raise _Skip()
-            for attempt in range(6):
-                try:
-                    os.replace(tmp, p)
-                    wrote = True
-                    break
-                except PermissionError:
-                    time.sleep(1.5 * (attempt + 1))
-                except Exception as e:                                # noqa: BLE001
-                    failed.append((sid, rel, f"{type(e).__name__}: {str(e)[:60]}"))
-                    break
-        except _Skip:
-            refused_here = True
-        finally:
-            if os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-        if wrote:
-            ok.append((sid, rel))
-        elif not refused_here and not any(r[1] == rel for r in failed):
-            failed.append((sid, rel, "locked after 6 attempts"))
-        if i % 100 == 0:
-            print(f"  ... {i:,}/{len(rows):,}  synced {len(ok):,}  refused {len(refused):,}  "
-                  f"failed {len(failed):,}", flush=True)
-
-    print(f"\nsynced  {len(ok):,}\nrefused {len(refused):,}\nfailed  {len(failed):,}")
-    for sid, rel, why in refused[:20]:
-        print(f"  REFUSED {sid}/{rel}: {why}")
-    for sid, rel, why in failed[:20]:
-        print(f"  FAILED  {sid}/{rel}: {why}")
-
-    with open(a.out_ok, "w", encoding="utf-8") as f:
-        for sid, rel in ok:
-            f.write(f"{sid}\t{rel}\n")
-    # The NON-successes get a file too. A refusal list that lives in terminal scrollback does
-    # not exist, and 233 of them did exactly that (R551).
-    rpath = a.out_ok.replace(".tsv", "_refused.tsv")
-    with open(rpath, "w", encoding="utf-8") as f:
-        f.write("source\trelpath\treason\n")
-        for sid, rel, why in refused + [(s, r, w) for s, r, w in failed]:
-            f.write(f"{sid}\t{rel}\t{why}\n")
-    print(f"\nwrote {len(ok):,} succeeded -> {a.out_ok}")
-    print(f"wrote {len(refused) + len(failed):,} not-repaired -> {rpath}")
-    if withdrawn:
-        wpath = a.out_ok.replace(".tsv", "_withdrawals.tsv")
-        with open(wpath, "w", encoding="utf-8") as f:
-            f.write("source\trelpath\tidentities_withdrawn\tcompared_on\tlocal_rows\tr2_rows"
-                    "\tlocal_max\tr2_max\n")
-            for row in withdrawn:
-                f.write("\t".join(str(x) for x in row) + "\n")
-        print(f"PUBLISHER WITHDRAWALS: {len(withdrawn):,} file(s) lost "
-              f"{sum(r[2] for r in withdrawn):,} identities upstream -> {wpath}")
+    print(f"\n{total:,} file(s) {'pulled' if a.apply else 'would be pulled'}")
+    if merge_queue:
+        print("\nNOT COPIED — local is AHEAD of the store on these; copying either way loses "
+              "rows, so they need a merge decision per file:")
+        for src, names in merge_queue:
+            print(f"   {src:22s} {len(names):>3}: {', '.join(names[:8])}"
+                  + (" ..." if len(names) > 8 else ""))
+    # Sources whose whole store is missing locally cannot be compared OR repaired from here.
+    for src in d.get("unchecked", []):
+        print(f"   UNCHECKED {src}: no local parquets at all — footer_diff could not compare it")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from core import r2_util
+    s3 = r2_util.client()
+    sys.exit(main())
