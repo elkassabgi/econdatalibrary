@@ -35,10 +35,11 @@ flows — this mode re-runs that gate mechanically before any seed write.
 
 AFTER THE SEED — the completion re-stamp MUST run with AQUEDUCT_BACKEND=r2 (review F7).
 The re-key marker and the fetcher's count guard both enumerate through `blob`, so a
-default local-backend re-stamp would write 7,653 into the LOCAL sidecar only, leave R2's
-marker at its old value, and CI's guard would keep eurostat locked out for ever. Expected
-counts differ by one BY DESIGN: NAMQ_10_GDP exists only on R2, so post-seed R2 = 7,654
-while local honestly = 7,653. Reconcile local-vs-R2 store names BEFORE the re-stamp, so a
+default local-backend re-stamp would write the LOCAL count into the LOCAL sidecar only,
+leave R2's marker at its old value, and CI's guard would keep eurostat locked out for ever.
+MEASURED AFTER THE RUN (the plan's 7,653/7,654 assumed all 440 would seed; seven were
+refused): local = 7,646 and R2 = 7,647, differing by one BY DESIGN because NAMQ_10_GDP
+exists only on R2. Reconcile local-vs-R2 store names BEFORE the re-stamp, so a
 publish gap cannot be silently stamped over.
 
 Usage:
@@ -64,7 +65,7 @@ sys.path.insert(0, ROOT)
 
 from jobs.ingest_eurostat import parse_period, parse_value  # noqa: E402
 from updater import blob, config  # noqa: E402
-from updater.strategies.fetchers.eurostat import (_NON_KEY, _build_key,  # noqa: E402
+from updater.strategies.fetchers.eurostat import (_STRUCTURAL, _build_key,  # noqa: E402
                                                   _norm)
 
 RAW_DIR = os.path.join(ROOT, "data", "raw", "eurostat")
@@ -91,7 +92,19 @@ def _mint(raw_path: str):
         header = f.readline().rstrip("\n").split("\t")
         head0 = header[0]
         dims = head0.split("\\")[0].split(",")
-        dim_cols = [c for c in dims if _norm(c) not in _NON_KEY]
+        # EVERY name before the backslash IS a dimension — that is what the bulk TSV header
+        # means. Filtering it through _NON_KEY (which exists to drop OBS_VALUE/attribute
+        # COLUMNS from an SDMX-CSV row) deleted a real dimension for the seven flows that
+        # carry one named `value`, collapsing ~5.8 source rows onto one id (R544; the
+        # per-flow uniqueness guard refused to publish them).
+        #
+        # This MUST agree with the fetcher, or the id space forks (R22). The fetcher now
+        # selects dimensions POSITIONALLY — the SDMX-CSV columns before TIME_PERIOD minus the
+        # structural prefix — which for these flows yields exactly this list. Proven a no-op
+        # for every other flow: over all 7,638 real headers the two rules differ only on the
+        # seven, and none of the 432 flows already seeded is among them, so nothing published
+        # needs re-minting.
+        dim_cols = [c for c in dims if _norm(c) not in _STRUCTURAL]
         periods = [c.strip() for c in header[1:]]
         pdates = [parse_period(p) for p in periods]
         for line in f:
