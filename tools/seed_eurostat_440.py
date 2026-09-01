@@ -2,7 +2,7 @@
 
 THE GRAMMAR CONTRACT (review v2 change 1 — this is NEW code minting public series
 identity, R22 class, adversarial-review gated before its first write):
-  * key grammar   — the FETCHER's own `_NON_KEY`/`_norm`/`_build_key`, IMPORTED
+  * key grammar   — the FETCHER's own `_STRUCTURAL`/`_norm`/`_build_key`, IMPORTED
     (updater/strategies/fetchers/eurostat.py; never retyped — R191/R192). The bulk
     TSV header's first cell is "<dim1,dim2,...>\\TIME_PERIOD"; each row's first cell
     is the comma-joined dimension VALUES in header order, so name=value pairs are

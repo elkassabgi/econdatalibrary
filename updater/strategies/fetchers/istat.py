@@ -510,8 +510,14 @@ def update(unit, since) -> Result:
             print(f"[istat] budget of {BUDGET_MIN:g} min spent after {dl.elapsed_min():.1f} "
                   f"min — {flows_done} flow(s) attempted, {n_sub - flows_done} left for the "
                   f"next run, which RESUMES after {last_attempted!r} rather than restarting "
-                  f"(vintage not advanced, merged rows keep their derive)", flush=True)
-            tally.transient_unit(f"budget spent after {flows_done} flow(s)")
+                  f"(deferred, not failed; merged rows keep their derive)", flush=True)
+            # deferred_unit, NOT transient_unit (R303, and tests/test_tally_deferred_is_not_
+            # _a_failure.py enforces it — my first cut used transient and turned the suite red).
+            # "Transient" says something went wrong and retrying may help; "deferred" says
+            # nothing went wrong and rotation takes it next tick. Both still return `partial`,
+            # so the vintage does not stamp full coverage either way; only one of them tells
+            # the operator to investigate.
+            tally.deferred_unit(f"budget spent after {flows_done} flow(s)")
             break
         path = os.path.join(out_dir, fn)
         flow_id = fn[: -len(".parquet")]

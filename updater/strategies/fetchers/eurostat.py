@@ -201,8 +201,19 @@ def _parse_csv(content: bytes):
     # whose SDMX-CSV header is
     #   DATAFLOW, LAST UPDATE, freq, value, nace_r1, geo, TIME_PERIOD, OBS_VALUE, OBS_FLAG, ...
     # A single next() over both names picked `value`, so every row's "observation" was a
-    # dimension CODE, float() rejected it, and the flow yielded ZERO rows in silence. That is
-    # the likely reason all seven such flows sit in the never-ingested set.
+    # dimension CODE, float() rejected it, and the flow parsed to ZERO rows in silence —
+    # measured by running the shipped parser over sbs_pen_7b1's real bytes: 0 rows before,
+    # 1,363 after.
+    #
+    # THIS BUG HAD NEVER FIRED, and I first wrote here that it was "the likely reason all
+    # seven sit in the never-ingested set". That was wrong and the review refuted it. Checked
+    # against the state store: eurostat has ONE unit_state row (_all, partial, last_success
+    # NULL) and 8 runs ever, every one stopped by _require_rekeyed with "the one-time re-key
+    # migration has not completed over this store" — the fetcher has never parsed a single
+    # eurostat flow in production. The store was built by the BULK TSV ingester, which has no
+    # OBS_VALUE column and so cannot have this defect. And 433 of the 440 missing flows carry
+    # no `value` dimension at all, yet were equally absent, so the gap has a different,
+    # shared cause. The fix is still right; the story I attached to it was not.
     obs_col = (next((c for c in fields if _norm(c) == "OBS_VALUE"), None)
                or next((c for c in fields if _norm(c) == "VALUE"), None))
     if not time_col or not obs_col:
