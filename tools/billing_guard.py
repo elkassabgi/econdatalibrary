@@ -38,6 +38,14 @@ ALERT_ROWS = 5_000_000_000
 WARN_WRITES = 5_000_000     # ~$5/day
 ALERT_WRITES = 15_000_000   # ~$15/day
 
+# R2 CLASS-A OPERATIONS HAD NO ALARM AT ALL, and on 2026-08-31 they were the single largest
+# line of the day: 2,880,378 ops (~$12.96) against 84,876 (~$0.38) on 08-30 — more than the
+# D1 writes that same day. This guard measured them, printed them, and alarmed on neither.
+# $4.50 per million, 1M included per month, so a single day over ~1M has spent the whole
+# month's allowance. Steady state on this account is ~85k/day.
+WARN_R2_A = 400_000         # ~$1.80/day
+ALERT_R2_A = 1_000_000      # ~$4.50/day, and the entire monthly included allowance in a day
+
 # R2 storage baseline for the email's context line (measured 2026-08-18:
 # econ-data 2.37 TB + ipdatalibrary 599 GB + hfdatalibrary-data 282 GB
 # = 3.25 TB ~= $49/mo at $0.015/GB-mo). Not alerted on — it moves slowly and
@@ -534,6 +542,15 @@ query($acct: String!, $start: Date!, $end: Date!) {
             ca, cb = per[date]["A"], per[date]["B"]
             out.append(f"R2 ops {date}: ClassA {ca:,} (~${ca / 1e6 * 4.50:.2f}) "
                        f"ClassB {cb:,} (~${cb / 1e6 * 0.36:.2f})")
+        # TODAY, PARTIAL, ON PURPOSE. The complete-day figure is the right basis for BILLING
+        # arithmetic, and the wrong basis for an ALARM: a leak that starts at 09:00 is not
+        # visible in a complete day until the next one, so the guard would report it up to
+        # ~24 h late no matter how often it runs. On 2026-08-31 class-A ops went 84,876 ->
+        # 2,880,378 in a day (~$0.38 -> ~$12.96); at a 30-minute cadence that is catchable
+        # within the hour, but only if today counts.
+        if dates:
+            _MEASURED["r2_class_a_today"] = per[dates[-1]]["A"]
+            _MEASURED["r2_class_b_today"] = per[dates[-1]]["B"]
         if _check_days("R2 operations", dates, _WANT, _YDAY):
             _MEASURED["r2_class_a_day"] = per[dates[-2]]["A"]   # newest COMPLETE day
             _MEASURED["r2_class_b_day"] = per[dates[-2]]["B"]
@@ -593,6 +610,12 @@ query($acct: String!, $start: Date!, $end: Date!) {
                        f"{rw:,} written (~${rw / 1e6:.2f}) — GraphQL, not top-100")
         if _check_days("D1 analytics", dates, _WANT, _YDAY):
             _MEASURED["d1_reads_day"], _MEASURED["d1_writes_day"] = per[dates[-2]]
+            # Same reasoning as the R2 block: today is partial and that is exactly why the
+            # alarm needs it. 2026-08-31 wrote 11,412,906 rows (~$11.41) against 678,127 the
+            # day before, and the guard's only same-day view was a complete-day figure that
+            # would not include it until 2026-09-01.
+            _MEASURED["d1_reads_today"] = per[dates[-1]][0]
+            _MEASURED["d1_writes_today"] = per[dates[-1]][1]
             _MEASURED["d1_reads_ptd"] = sum(per[d][0] for d in dates[:-1])
             _MEASURED["d1_writes_ptd"] = sum(per[d][1] for d in dates[:-1])
             _MEASURED["days_elapsed"] = len(dates) - 1
@@ -891,20 +914,57 @@ def main() -> int:
                 "insights (TRUNCATED ~10x low — thresholds are effectively 10x higher)"
     thresholds = (f"\n\nAlarm read {alarm_r:,} / wrote {alarm_w:,} on the newest complete "
                   f"day, source: {alarm_src}.")
-    if alarm_r > ALERT_ROWS or alarm_w > ALERT_WRITES:
-        send_alert("D1 BILLING ALERT: usage exceeds emergency threshold",
-                   report + thresholds
-                   + f"\nThresholds: reads {ALERT_ROWS:,}, writes {ALERT_WRITES:,}. "
-                     "Investigate query shapes with `wrangler d1 insights` "
-                     "immediately (see ledger R430).")
-        print("ALERT — reddening the workflow")
+    # EVERY BREACH REDDENS THE WORKFLOW. Until 2026-09-01 only ALERT did, and WARN's only
+    # delivery was a Resend email — which has never been configured on this account, so the
+    # guard prints "RESEND_API_KEY not set - email skipped" and exits 0. On 2026-08-31 D1
+    # read 2,805,188,474 rows: comfortably over WARN_ROWS, under ALERT_ROWS, so the run went
+    # GREEN and nothing reached anyone. Ahmed found that day on his invoice.
+    #
+    # A red workflow is the one delivery path that needs no secret, because GitHub emails the
+    # repo owner on failure. So WARN reddens too. If that proves noisy the answer is to move
+    # the threshold to where the noise stops, never to make a breach silent again.
+    #
+    # TODAY'S PARTIAL COUNTS. A complete-day alarm is up to ~24 h late by construction, which
+    # defeats a 30-minute cadence.
+    r2a_day = _MEASURED.get("r2_class_a_day") or 0
+    r2a_today = _MEASURED.get("r2_class_a_today") or 0
+    d1r_today = _MEASURED.get("d1_reads_today") or 0
+    d1w_today = _MEASURED.get("d1_writes_today") or 0
+    breaches = []
+    if alarm_r > ALERT_ROWS:
+        breaches.append(f"D1 reads {alarm_r:,} > ALERT {ALERT_ROWS:,} (complete day)")
+    elif alarm_r > WARN_ROWS:
+        breaches.append(f"D1 reads {alarm_r:,} > WARN {WARN_ROWS:,} (complete day)")
+    if alarm_w > ALERT_WRITES:
+        breaches.append(f"D1 writes {alarm_w:,} > ALERT {ALERT_WRITES:,} (complete day)")
+    elif alarm_w > WARN_WRITES:
+        breaches.append(f"D1 writes {alarm_w:,} > WARN {WARN_WRITES:,} (complete day)")
+    if r2a_day > ALERT_R2_A:
+        breaches.append(f"R2 class-A {r2a_day:,} > ALERT {ALERT_R2_A:,} (complete day, "
+                        f"~${r2a_day / 1e6 * 4.50:.2f})")
+    elif r2a_day > WARN_R2_A:
+        breaches.append(f"R2 class-A {r2a_day:,} > WARN {WARN_R2_A:,} (complete day, "
+                        f"~${r2a_day / 1e6 * 4.50:.2f})")
+    if r2a_today > ALERT_R2_A:
+        breaches.append(f"R2 class-A {r2a_today:,} TODAY SO FAR > ALERT {ALERT_R2_A:,} "
+                        f"(~${r2a_today / 1e6 * 4.50:.2f} and the day is not over)")
+    if d1r_today > ALERT_ROWS:
+        breaches.append(f"D1 reads {d1r_today:,} TODAY SO FAR > ALERT {ALERT_ROWS:,}")
+    if d1w_today > ALERT_WRITES:
+        breaches.append(f"D1 writes {d1w_today:,} TODAY SO FAR > ALERT {ALERT_WRITES:,}")
+
+    if breaches:
+        body = (report + thresholds + "\n\nBREACHES:\n- " + "\n- ".join(breaches)
+                + "\n\nThe catalogue sync is the usual cause of a D1 spike: `series_fts` is "
+                  "fts5(series_id UNINDEXED), so every id-scoped statement full-scans "
+                  "~23.8M rows. Both call sites are gated behind CATALOG_SYNC_ENABLED; if "
+                  "that variable is set, unset it. Then check `wrangler d1 insights` for "
+                  "query shapes (R430).")
+        send_alert("BILLING ALERT: " + breaches[0], body)
+        print("BILLING BREACH - reddening the workflow:")
+        for b in breaches:
+            print("  " + b)
         return 1
-    if alarm_r > WARN_ROWS or alarm_w > WARN_WRITES:
-        send_alert("D1 billing warning: usage above baseline",
-                   report + thresholds
-                   + f"\nWarn thresholds: reads {WARN_ROWS:,}, writes {WARN_WRITES:,}. "
-                     "Not an emergency; check shapes.")
-        print("WARN")
     if _DEGRADED:
         # Deliberately NOT a red run. A guard that reddens on a vendor blip becomes noise,
         # and noise is how Ahmed's original alert became "ineffective" (this file's own
