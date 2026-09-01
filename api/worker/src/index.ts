@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Env } from "./types";
+import { runCostGuard, type CostGuardEnv } from "./costGuard";
 import { handlePageview, handlePageviewReport } from "./pageview";
 import { handleCatalog } from "./catalog";
 import { handleSources } from "./sources";
@@ -36,6 +37,17 @@ const CORS_PREFLIGHT: Record<string, string> = {
 };
 
 export default {
+  // COST GUARD, on a schedule Cloudflare honours. GitHub's scheduled workflows are
+  // best-effort: measured on billing-guard.yml, 15 runs against a daily cron came in a
+  // median 0.7 h late and as much as 9.7 h, so a */30 cron there is mostly dropped events.
+  // Ahmed asked for a permanent 30-minute check after 2026-08-31 cost ~$27 in a day and
+  // reached him through his invoice. Cron Triggers run on Cloudflare's own infrastructure,
+  // independent of any workstation. See src/costGuard.ts for what it measures and why a
+  // blind run is treated as a failure.
+  async scheduled(_c: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(runCostGuard(env satisfies CostGuardEnv));
+  },
+
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_PREFLIGHT });

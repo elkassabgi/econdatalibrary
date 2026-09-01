@@ -55,6 +55,27 @@ database_id = "a396506e-e78a-4978-bc38-883056f98810"
 binding = "SERIES_BUCKET"
 bucket_name = "econ-data"
 
+# --- COST GUARD SCHEDULE ---------------------------------------------------------------
+# Every 30 minutes, on Cloudflare's infrastructure. This is the cadence Ahmed asked for on
+# 2026-09-01 after the 08-31 spike (~$27 in one day) reached him through his invoice rather
+# than through any alarm we had built.
+#
+# It is HERE and not only in GitHub Actions because GitHub's scheduled workflows are
+# best-effort: measured over 15 scheduled runs of billing-guard.yml against a daily cron,
+# the median was 0.7 h late and the worst 9.7 h, with the five most recent at 3.8-9.7 h. A
+# */30 cron there is mostly dropped events. Cron Triggers are honoured by the platform this
+# account already runs on, and they do not depend on any workstation being switched on.
+#
+# Needs one secret, the SAME read-only "Account Analytics: Read" token already in the repo
+# .env as CF_ANALYTICS_TOKEN:
+#     npx wrangler secret put CF_ANALYTICS_TOKEN
+#     npx wrangler secret put CF_ACCOUNT_ID
+# Without them the scheduled run writes a `blind` status object and THROWS, because a guard
+# that cannot measure must be louder than one that can -- the Python guard spent months green
+# in CI for exactly that reason, reporting "$13/mo" against a real $328.
+[triggers]
+crons = ["*/30 * * * *"]
+
 # --- Custom domain route (uncomment + edit; or add a Custom Domain in the UI) ---
 # [[routes]]
 # pattern = "api.example.com"
