@@ -819,12 +819,26 @@ def main() -> int:
     notes.extend(_DEGRADED)
     caveat = "" if not notes else (" -- " + "; ".join(notes)
                                    + "; the real bill is HIGHER")
+    # AN ALLOWANCE PERCENTAGE FROM A BLIND SOURCE IS NOT A MEASUREMENT, AND IT INVERTS THE
+    # DECISION. Without CF_ANALYTICS_TOKEN this printed "D1 reads $0 [71% of the 25B
+    # included]" — which reads as 29% of headroom left — on a day the period had actually
+    # spent 887.6% of it, i.e. the allowance was exhausted nine times over and every read
+    # was already billable. The caveat below said "the real bill is HIGHER", and a reader
+    # looking at a headroom percentage still concludes there is headroom. A percentage
+    # computed from a top-100-truncated, non-period source cannot see the allowance at all,
+    # so it must say so rather than produce a reassuring number (R502's class: pricing
+    # against an allowance the instrument has not measured).
+    _blind = bool(graphql_failed)
+    _reads_pos = ("ALLOWANCE POSITION UNMEASURED" if _blind
+                  else f"{mo_reads/D1_READS_INCLUDED*100:.0f}% of the 25B included")
+    _writes_pos = ("ALLOWANCE POSITION UNMEASURED" if _blind
+                   else f"{mo_writes/D1_WRITES_INCLUDED*100:.0f}% of the 50M included")
     month_line = (f"{label} ~= ${projected:,.0f}/mo "
                   f"(base $5 + R2 storage ${r2_store_cost:,.0f} [{st_gb:,.0f} GB, {st_src}] "
                   f"+ Workers {wk_txt} + D1 reads ${d1_read_cost:,.0f} "
-                  f"[{mo_reads/D1_READS_INCLUDED*100:.0f}% of the 25B included] "
+                  f"[{_reads_pos}] "
                   f"+ D1 writes ${d1_write_cost:,.0f} "
-                  f"[{mo_writes/D1_WRITES_INCLUDED*100:.0f}% of the 50M included] "
+                  f"[{_writes_pos}] "
                   f"+ D1 storage ${d1_over:,.0f} [{d1_gb_txt}] "
                   f"+ R2 operations {r2_op_txt}) [D1 source: {src_note}; basis: {basis}]"
                   f"{caveat}")
