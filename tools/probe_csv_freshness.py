@@ -187,9 +187,15 @@ def _mirror_matches_store(src: str, sample: int = 4) -> bool:
                 rpq = rp.replace(os.sep, "/")
                 lcols = [r[0] for r in q.execute(
                     f"describe select * from read_parquet('{lp}')").fetchall()]
+                rcols = [r[0] for r in q.execute(
+                    f"describe select * from read_parquet('{rpq}')").fetchall()]
+                # Describe BOTH sides. Fingerprinting the R2 copy with the LOCAL column list
+                # makes a column added upstream invisible — the query simply never reads it.
+                if lcols != rcols:
+                    return False
                 if ln <= 5_000_000:
                     lfp = q.execute(content_fingerprint_sql(lcols, lp)).fetchone()[0]
-                    rfp = q.execute(content_fingerprint_sql(lcols, rpq)).fetchone()[0]
+                    rfp = q.execute(content_fingerprint_sql(rcols, rpq)).fetchone()[0]
                     if lfp != rfp:
                         return False
                 else:

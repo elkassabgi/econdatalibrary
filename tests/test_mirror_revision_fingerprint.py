@@ -96,6 +96,34 @@ def test_duplicate_rows_do_not_cancel(tmp_path):
     assert _fp(one) != _fp(two), "a duplicated row cancelled out of the fingerprint"
 
 
+def test_NULLS_do_not_collapse_distinct_rows(tmp_path):
+    """DuckDB's concat_ws SKIPS nulls, which made two genuinely different files fingerprint
+    identically. Found on the live wikidata/companies.parquet: swapping two nullable columns
+    changed thousands of rows and the fingerprint did not move at all."""
+    a = pa.table({"k": pa.array(["r1", "r2"]),
+                  "x": pa.array(["v", None]),
+                  "y": pa.array([None, "v"])})
+    b = pa.table({"k": pa.array(["r1", "r2"]),
+                  "x": pa.array([None, "v"]),
+                  "y": pa.array(["v", None])})
+    pa_a, pa_b = str(tmp_path / "n1.parquet"), str(tmp_path / "n2.parquet")
+    pq.write_table(a, pa_a)
+    pq.write_table(b, pa_b)
+    assert _fp(pa_a) != _fp(pa_b), \
+        "NULL placement collapsed: two different files share a fingerprint"
+
+
+def test_the_delimiter_appearing_INSIDE_a_value_does_not_collide(tmp_path):
+    """ember, faostat, fhfa and penn_world_table all carry '|' inside series_key — the very
+    character the old concat_ws version used to join columns."""
+    a = pa.table({"k": pa.array(["a|b"]), "v": pa.array([None], type=pa.string())})
+    b = pa.table({"k": pa.array(["a"]), "v": pa.array(["b"])})
+    pa_a, pa_b = str(tmp_path / "d1.parquet"), str(tmp_path / "d2.parquet")
+    pq.write_table(a, pa_a)
+    pq.write_table(b, pa_b)
+    assert _fp(pa_a) != _fp(pa_b), "'a|b' + NULL collided with 'a' + 'b'"
+
+
 @pytest.mark.parametrize("bad", ['we"ird', "sp ace"])
 def test_odd_column_names_do_not_break_the_query(tmp_path, bad):
     t = pa.table({bad: pa.array(["x", "y"]), "obs_value": pa.array([1.0, 2.0])})
