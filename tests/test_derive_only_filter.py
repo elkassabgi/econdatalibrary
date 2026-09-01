@@ -42,6 +42,18 @@ def test_comments_and_blank_lines_are_ignored(tmp_path):
     assert [r[0] for r in got] == ["eurostat:tec00108"]
 
 
+def test_an_id_CONTAINING_a_hash_is_not_truncated(tmp_path):
+    """ilostat's split-part ids carry '#': `ilostat:CPI_XCPI_COI_RT_M#COI_COICOP_CP01`.
+    Treating '#' as a comment delimiter anywhere on the line silently truncated 52 of them to
+    a base id that matches nothing, so they were skipped and reported as absent from the
+    catalogue while the real id sat in the file."""
+    rows = ROWS + [("ilostat:CPI_XCPI_COI_RT_M#COI_COICOP_CP01", "ilostat")]
+    got = _apply_only(rows, _write(tmp_path,
+                                   "ilostat:CPI_XCPI_COI_RT_M#COI_COICOP_CP01\n"))
+    assert [r[0] for r in got] == ["ilostat:CPI_XCPI_COI_RT_M#COI_COICOP_CP01"], \
+        "an id containing '#' was truncated by the comment stripper"
+
+
 def test_an_id_not_in_the_catalogue_is_NAMED_not_silently_dropped(tmp_path, capsys):
     """The silent-drop shape: the run must not report a tidy success over a smaller set
     than the operator asked for."""

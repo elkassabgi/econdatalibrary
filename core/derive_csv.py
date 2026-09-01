@@ -594,7 +594,14 @@ def _apply_only(rows, path):
     want = set()
     with open(path, encoding="utf-8") as fh:
         for ln in fh:
-            ln = ln.split("#", 1)[0].strip()
+            # A '#' is only a comment at the START of a line. Splitting on it anywhere
+            # TRUNCATED every id that contains one — ilostat's split-part ids look like
+            # `ilostat:CPI_XCPI_COI_RT_M#COI_COICOP_CP01`, so 52 of them silently became
+            # `ilostat:CPI_XCPI_COI_RT_M`, matched nothing, and were reported as absent from
+            # the catalogue when the real id was right there.
+            if ln.lstrip().startswith("#"):
+                continue
+            ln = ln.strip()
             if ln:
                 want.add(ln)
     before = len(rows)
@@ -658,7 +665,7 @@ def main() -> None:
                     help="derive even if the local parquet mirror is BEHIND R2. Only for a "
                          "deliberate rebuild from an older vintage — see the guard below.")
     ap.add_argument("--only", metavar="PATH",
-                    help="file of catalog series ids, one per line (# comments allowed); derive "
+                    help="file of catalog series ids, one per line (lines starting with # are comments); derive "
                          "ONLY these. For a targeted REBUILD, where --skip-existing would skip "
                          "every key and --skip-newer-than would walk the whole source to reach a "
                          "handful. Written 2026-09-01 for the 68 eurostat flows whose served CSV "
