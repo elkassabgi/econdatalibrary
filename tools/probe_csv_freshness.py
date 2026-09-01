@@ -109,6 +109,13 @@ def _mirror_matches_store(src: str, sample: int = 4) -> bool:
     not content-change time, and a parquet re-written with different compression has a
     different md5 with byte-identical data — both proxies produced false verdicts on 2026-08-07
     (R383). Returns False if any sampled file has fewer rows or an earlier max period locally.
+
+    AND, when those two tie, by a DATA-LEVEL fingerprint. Rows and dates cannot see a publisher
+    REVISION, which rewrites values in place; on 2026-09-01 that gap left three eurostat flows
+    serving superseded numbers, one of them headline real GDP growth, while this probe would
+    have reported them level (R549). The fingerprint is computed over values rather than bytes,
+    so R383's objection to md5 still holds: a re-encode by a different pyarrow version does not
+    move it.
     """
     import os
     import random
@@ -167,6 +174,31 @@ def _mirror_matches_store(src: str, sample: int = 4) -> bool:
             return False
         if rn > ln or (rmx and lmx and str(rmx) > str(lmx)):
             return False
+        if rn == ln and str(rmx) == str(lmx):
+            # SAME SHAPE is where a publisher revision hides — it rewrites values and moves
+            # neither the row count nor the max date, so everything above clears it. That is
+            # how TEC00115 (real GDP growth) was served at a superseded vintage while this
+            # probe reported the mirror level (R549). Content fingerprint, not md5: the
+            # desktop and CI write parquet with different pyarrow versions, so bytes differ
+            # for identical data (R383's objection, still respected).
+            from core.derive_csv import content_fingerprint_sql
+            try:
+                lp = os.path.join(d, *f.split("/")).replace(os.sep, "/")
+                rpq = rp.replace(os.sep, "/")
+                lcols = [r[0] for r in q.execute(
+                    f"describe select * from read_parquet('{lp}')").fetchall()]
+                if ln <= 5_000_000:
+                    lfp = q.execute(content_fingerprint_sql(lcols, lp)).fetchone()[0]
+                    rfp = q.execute(content_fingerprint_sql(lcols, rpq)).fetchone()[0]
+                    if lfp != rfp:
+                        return False
+                else:
+                    print(f"  {src}/{f}: {ln:,} rows — same shape but NOT content-checked "
+                          f"(over the 5,000,000-row cap); a revision here is not detected",
+                          flush=True)
+            except Exception:                                         # noqa: BLE001
+                # Cannot prove it is level. Same direction as every other failure here.
+                return False
     return True
 
 

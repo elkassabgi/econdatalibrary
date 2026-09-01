@@ -361,11 +361,30 @@ def _put_with_backoff(s3, bucket, key, body) -> None:
             _time.sleep(wait)
 
 
+def content_fingerprint_sql(cols, path: str) -> str:
+    """DuckDB query returning a DATA-level fingerprint of a parquet file.
+
+    Order-independent (an aggregate over per-row hashes) and independent of how the file was
+    WRITTEN, which is the whole point: the desktop writes with pyarrow 23.0.0 and CI with
+    25.0.1, so byte comparison and md5 both flag a pure re-encode as a difference while missing
+    a real one. R383 rejected hashes for that reason; this fingerprints the values instead.
+
+    `sum` rather than `bit_xor` because XOR cancels in pairs — two identical duplicate rows
+    would disappear from the fingerprint entirely.
+    """
+    expr = ", ".join('"%s"::VARCHAR' % c.replace('"', '""') for c in cols)
+    return (f"select sum(hash(concat_ws('|', {expr}))::HUGEINT) "
+            f"from read_parquet('{path}')")
+
+
 def _mirror_behind_store(sources, sample: int = 0):
     """[(source, detail)] for sources whose LOCAL parquets hold less than R2's.
 
-    Compared by row count and max observation date only — see the note at the call site for
-    why timestamps and hashes are both wrong here. A single behind file is enough to refuse,
+    Compared by row count and max observation date, and — when those two TIE — by a data-level
+    content fingerprint, because a publisher revision rewrites values while leaving both
+    unchanged and is invisible to any shape test (R549: three eurostat flows served superseded
+    values, one of them headline real GDP growth). See the note at the call site for why
+    timestamps and byte hashes are both wrong here. A single behind file is enough to refuse,
     because we cannot know which series it feeds. Any error reading either side is treated as
     "cannot prove it is safe" and reported.
 
@@ -444,6 +463,30 @@ def _mirror_behind_store(sources, sample: int = 0):
             f"select max({dc[0]})::VARCHAR from read_parquet('{p}')").fetchone()[0] if dc else None
         return n, mx
 
+    # CONTENT FINGERPRINT, for the case row count and max date CANNOT see: a publisher
+    # REVISION, which rewrites values in place. On 2026-09-01 three eurostat flows were served
+    # at a superseded vintage — TEC00115 (real GDP growth) had 11 revised values with identical
+    # size, identical row count and identical max date, so every shape-based test cleared it
+    # while users downloaded the old numbers (R549).
+    #
+    # Data-level, not byte-level, which is what makes it safe here: the desktop writes with
+    # pyarrow 23.0.0 and CI with 25.0.1, so a pure re-encode of identical data changes the
+    # file's bytes and its md5 while changing nothing that matters. R383 rejected timestamps
+    # and hashes for exactly that reason and settled on rows+dates; this keeps R383's objection
+    # satisfied and closes the gap it left.
+    #
+    # sum() rather than bit_xor(): XOR cancels in pairs, so two identical duplicate rows would
+    # vanish from the fingerprint.
+    FP_MAX_ROWS = 5_000_000
+
+    def fingerprint(path, n_rows):
+        if n_rows > FP_MAX_ROWS:
+            return None
+        p = path.replace(os.sep, "/")
+        cols = [r[0] for r in q.execute(
+            f"describe select * from read_parquet('{p}')").fetchall()]
+        return q.execute(content_fingerprint_sql(cols, p)).fetchone()[0]
+
     for src in names:
         d, store_root = _dir_for(src)
         if d is None:
@@ -474,6 +517,25 @@ def _mirror_behind_store(sources, sample: int = 0):
             if rn > ln or (rmx and lmx and str(rmx) > str(lmx)):
                 out.append((src, f"{f}: local {ln:,} rows/{lmx} vs R2 {rn:,} rows/{rmx}"))
                 break
+            if rn == ln and str(rmx) == str(lmx):
+                # Same shape on both sides. That is where a REVISION hides, so this is the one
+                # case worth paying a content read for (R549).
+                try:
+                    lfp = fingerprint(os.path.join(d, *f.split("/")), ln)
+                    rfp = fingerprint(rp, rn)
+                except Exception:                                     # noqa: BLE001
+                    lfp = rfp = None
+                if lfp is None or rfp is None:
+                    # NEVER silently. A file too large to fingerprint is a file this guard did
+                    # not fully check, and saying so is the difference between a bounded check
+                    # and one that reads as coverage it does not have.
+                    print(f"[preflight] {src}/{f}: {ln:,} rows — same shape on both sides but "
+                          f"NOT content-checked (over the {FP_MAX_ROWS:,}-row fingerprint cap); "
+                          f"a value revision here would not be detected", flush=True)
+                elif lfp != rfp:
+                    out.append((src, f"{f}: same shape ({ln:,} rows to {lmx}) but the VALUES "
+                                     f"differ — R2 holds a revision the mirror does not"))
+                    break
             if ln > rn or (rmx and lmx and str(lmx) > str(rmx)):
                 # THE OTHER DIRECTION, which the first version of this guard could not see.
                 # An adversarial audit measured 79 clean_full files (+6 sec_edgar) with MORE
@@ -497,6 +559,37 @@ def _mirror_behind_store(sources, sample: int = 0):
                       f"divergence is often two-directional. Investigate before trusting "
                       f"either side.", flush=True)
     return out
+
+
+def _apply_only(rows, path):
+    """Restrict the work list to the ids named in ``path`` (one per line, # comments).
+
+    Two failure shapes this must not have, both of which would report a tidy success:
+
+      * a requested id that is NOT in the catalogue is NAMED, not silently dropped — the run
+        would otherwise derive a smaller set than the operator believes they selected;
+      * a selection of zero EXITS NONZERO rather than completing instantly with nothing done,
+        which is what a mistyped path or a stale id list looks like.
+    """
+    want = set()
+    with open(path, encoding="utf-8") as fh:
+        for ln in fh:
+            ln = ln.split("#", 1)[0].strip()
+            if ln:
+                want.add(ln)
+    before = len(rows)
+    kept = [r for r in rows if r[0] in want]
+    missing = want - {r[0] for r in kept}
+    print(f"--only: selected {len(kept):,} of {before:,} catalog series "
+          f"({len(want):,} ids requested)", flush=True)
+    if missing:
+        print(f"--only: {len(missing):,} REQUESTED IDS ARE NOT IN THE CATALOGUE and will not "
+              f"be derived, e.g. {sorted(missing)[:5]}", flush=True)
+    if not kept:
+        print("--only selected nothing — refusing a no-op run that would exit 0 having "
+              "derived nothing.", flush=True)
+        raise SystemExit(2)
+    return kept
 
 
 def main() -> None:
@@ -544,6 +637,14 @@ def main() -> None:
     ap.add_argument("--allow-stale-mirror", action="store_true",
                     help="derive even if the local parquet mirror is BEHIND R2. Only for a "
                          "deliberate rebuild from an older vintage — see the guard below.")
+    ap.add_argument("--only", metavar="PATH",
+                    help="file of catalog series ids, one per line (# comments allowed); derive "
+                         "ONLY these. For a targeted REBUILD, where --skip-existing would skip "
+                         "every key and --skip-newer-than would walk the whole source to reach a "
+                         "handful. Written 2026-09-01 for the 68 eurostat flows whose served CSV "
+                         "was built from a local mirror that had fallen behind R2, so the CSV "
+                         "served an older vintage than the store held (tec00108 served 5,328 "
+                         "rows against R2's 5,415).")
     a = ap.parse_args()
     global _MAX_ROWS, _ALLOW_STREAM
     _MAX_ROWS = a.max_rows
@@ -575,6 +676,9 @@ def main() -> None:
 
     rows = _catalog_ids(a.limit, a.source)
     print(f"{len(rows):,} catalog series to derive")
+
+    if a.only:
+        rows = _apply_only(rows, a.only)
 
     if a.dry_run:
         ok = miss = 0
