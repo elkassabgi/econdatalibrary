@@ -168,9 +168,17 @@ CSV_ACCEPT = "application/vnd.sdmx.data+csv;version=1.0.0"
 XML_ACCEPT = "application/vnd.sdmx.genericdata+xml;version=2.1"
 
 RATE = 1.0            # seconds between flows (polite; the ingester used 1.5)
-# Wall-clock budget for ONE istat run. Deliberately under the daily job's per-source
-# window; the desktop runner raises it via AQUEDUCT_BUDGET_MIN_OVERRIDE, which Deadline
-# reads itself. The remainder is not lost — the rotation bookmark resumes it.
+# Wall-clock budget for ONE istat run. Deliberately under the daily job's per-source window.
+#
+# READ THIS BEFORE TRUSTING IT ON THE DESKTOP. Deadline honours AQUEDUCT_BUDGET_MIN_OVERRIDE
+# by REPLACING this constant (_common.py:119-136), and tools/run_local_heavy.ps1 sets that
+# override to 360. So this bounds istat at 30 min in CI and at SIX HOURS on the local runner
+# — better than the unbounded stall measured on 2026-09-01 (50 minutes at 5.5 CPU-seconds,
+# no per-flow logging, 16 due sources waiting), but not the same as bounded. The override
+# exists to ENLARGE budgets for the dedicated 382 GB machine, so narrowing it globally would
+# re-cap every other local source; a per-source override is the honest fix and is not built.
+# Until then, a local pass that must not be held by istat should exclude it with -Only.
+# The remainder is never lost either way — the rotation bookmark resumes it.
 BUDGET_MIN = float(os.environ.get("ISTAT_BUDGET_MIN", "30"))
 
 TIMEOUT = 120         # per request, default
