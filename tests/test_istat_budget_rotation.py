@@ -31,12 +31,28 @@ def test_istat_declares_a_budget():
 
 
 def test_the_loop_stops_when_the_budget_is_spent():
+    """The guarded block ENDS AT ITS break — scanning a fixed character window is what
+    tests/test_tally_deferred_is_not_a_failure.py's own comment records as wrong, and my
+    first cut of this test did exactly that: adding a comment inside the block pushed the
+    `break` past the window and reddened a correct file."""
     s = _src()
     i = s.find("for fn in files:")
-    assert i != -1
-    body = s[i:i + 700]
-    assert "if dl.spent():" in body, "the flow loop no longer checks the deadline FIRST"
-    assert "break" in body
+    assert i != -1, "the flow loop is gone"
+    lines = s[i:].splitlines()
+    j = next((n for n, l in enumerate(lines) if "if dl.spent():" in l), None)
+    assert j is not None, "the flow loop no longer checks the deadline FIRST"
+    assert j <= 2, f"the deadline check is not the first thing in the loop (line +{j})"
+    block = []
+    for line in lines[j + 1:]:
+        block.append(line)
+        if line.strip().startswith(("break", "continue")):
+            break
+    body = "\n".join(block)
+    assert body.strip().splitlines()[-1].strip().startswith("break"), (
+        "the deadline block does not end in a break")
+    assert "deferred_unit(" in body, (
+        "a budget deferral must tally as DEFERRED, not transient (R303)")
+    assert "transient_unit(" not in body
 
 
 def test_the_budget_is_paired_with_rotation_not_a_fixed_order():

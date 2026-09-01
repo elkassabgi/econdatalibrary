@@ -65,9 +65,29 @@ def split_kv(key: str) -> list[tuple[str, str]]:
     return out
 
 
+# What a stable key must SHED, and nothing more. The old ingester injected structural and
+# attribute segments (`LAST UPDATE=...` is the marker this tool selects on); those go.
+#
+# `VALUE` IS DELIBERATELY NOT HERE. A eurostat flow can carry a real DIMENSION named `value`
+# — seven do, e.g. `value=ME2501-5000`, an enterprise size band — and _NON_KEY contains VALUE
+# only to keep the OBS_VALUE COLUMN out of an SDMX-CSV key. Using _NON_KEY here would delete
+# that dimension and collapse ~86% of those flows' rows on rewrite (R544's shape, measured by
+# the adversarial review of b28fb7915). The observation column never appears as a key SEGMENT,
+# so nothing is lost by keeping VALUE out of the drop set.
+#
+# NOT REACHABLE TODAY, and said plainly so the next reader does not over-rate the fix: this
+# tool only rewrites a file whose first key contains "LAST UPDATE", and the seven flows are
+# minted by the fixed grammar without one — verified on the real published files
+# (PIPE_EC_ENT, AVIA_GOEXCC, STS_INPR_M all classify `clean`). This closes a latent
+# inconsistency between the three callers of the grammar (R191/R192), not a live loss.
+_REKEY_DROP = {"DATAFLOW", "STRUCTURE", "STRUCTURE_ID", "STRUCTURE_NAME", "ACTION",
+               "LAST UPDATE", "LAST_UPDATE", "TIME_PERIOD", "TIME", "PERIOD", "DATE",
+               "OBS_VALUE", "OBS_FLAG", "OBS_STATUS", "CONF_STATUS", "FLAG"}
+
+
 def stable_key(key: str) -> str:
     """Drop every non-dimension segment, preserving the dimensions' original order."""
-    return ":".join(f"{n}={v}" for n, v in split_kv(key) if _norm(n) not in _NON_KEY)
+    return ":".join(f"{n}={v}" for n, v in split_kv(key) if _norm(n) not in _REKEY_DROP)
 
 
 MARKER = "_rekeyed.json"   # read by eurostat._require_rekeyed; see that guard

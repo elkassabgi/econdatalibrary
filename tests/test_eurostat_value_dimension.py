@@ -1,4 +1,4 @@
-"""A eurostat flow may carry a real DIMENSION named `value`, and the old rules broke on it.
+"""A eurostat flow may carry a real DIMENSION named `value`, and both rules broke on it.
 
 MEASURED 2026-09-01 on sbs_pen_7b1's live SDMX-CSV header:
 
@@ -7,80 +7,98 @@ MEASURED 2026-09-01 on sbs_pen_7b1's live SDMX-CSV header:
 Two separate failures, both silent:
   * obs_col was `next(c for c in fields if _norm(c) in ("OBS_VALUE","VALUE"))`, and the
     DIMENSION sits first in DSD order — so the observation was read from a dimension column,
-    float() rejected every code, and the flow yielded ZERO rows.
+    float() rejected every code, and the flow parsed to ZERO rows.
   * dim_cols was a _NON_KEY blacklist, which deleted that dimension from the key, collapsing
     ~5.8 source rows onto one public id (ledger R544).
 
-The replacement is positional: dimensions are the columns BEFORE TIME_PERIOD minus the
-structural prefix. The decisive property is that this must be a NO-OP for every flow that does
-not carry such a dimension — proven below against the REAL dimension list of all 7,638 raw
-flows, not a handful of hand-written headers.
+THESE TESTS DRIVE THE SHIPPED `_parse_csv`. The first version of this file re-typed the two
+rules and asserted against its own copies — the adversarial review proved it could not fail by
+replacing `_parse_csv` with a stub that returns (None, None, None) and watching all three tests
+pass. That is exactly R544's lesson committed a second time, in the test written to pin R544.
 """
 import glob
 import gzip
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from updater.strategies.fetchers.eurostat import _NON_KEY, _STRUCTURAL, _norm  # noqa: E402
+from updater.strategies.fetchers import eurostat  # noqa: E402
+from updater.strategies.fetchers.eurostat import _STRUCTURAL, _norm  # noqa: E402
 
 RAW = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "data", "raw", "eurostat")
 
 
-def _sdmx_csv_header(dims):
-    """The SDMX-CSV column layout eurostat actually returns, for a given dimension list."""
-    return ["DATAFLOW", "LAST UPDATE"] + list(dims) + ["TIME_PERIOD", "OBS_VALUE",
-                                                       "OBS_FLAG", "CONF_STATUS"]
+def _csv(dims, rows):
+    """An SDMX-CSV body in eurostat's real column layout."""
+    head = ["DATAFLOW", "LAST UPDATE"] + list(dims) + ["TIME_PERIOD", "OBS_VALUE",
+                                                      "OBS_FLAG", "CONF_STATUS"]
+    out = [",".join(head)]
+    for dim_vals, period, obs in rows:
+        out.append(",".join(["ESTAT:X(1.0)", "01/01/26 00:00:00"] + list(dim_vals)
+                            + [period, obs, "", ""]))
+    return ("\n".join(out) + "\n").encode("utf-8")
 
 
-def _old_obs(fields):
-    return next((c for c in fields if _norm(c) in ("OBS_VALUE", "VALUE")), None)
+def test_a_value_dimension_no_longer_eats_the_observation_column():
+    """THE regression, driven through the shipped parser. Before the fix this returned 0 rows
+    because float('ME2501-5000') fails; the dimension had been taken as the observation."""
+    body = _csv(["freq", "value", "nace_r1", "geo"],
+                [(["A", "ME2501-5000", "J6602", "AT"], "2020", "12.5"),
+                 (["A", "ME5001-MAX", "J6602", "AT"], "2020", "34.0")])
+    keys, dates, vals = eurostat._parse_csv(body)
+    assert keys is not None, "_parse_csv returned nothing — the parser rejected a valid body"
+    assert len(keys) == 2, f"expected 2 rows, got {len(keys)}"
+    assert vals == [12.5, 34.0], f"observations came from the wrong column: {vals}"
+    # and the two size bands must remain DISTINCT series, which is what the old key collapsed
+    assert len(set(keys)) == 2, f"the two size bands collapsed onto one id: {keys}"
+    assert "value=ME2501-5000" in keys[0]
 
 
-def _new_obs(fields):
-    return (next((c for c in fields if _norm(c) == "OBS_VALUE"), None)
-            or next((c for c in fields if _norm(c) == "VALUE"), None))
+def test_an_ordinary_flow_is_completely_unchanged():
+    body = _csv(["freq", "unit", "geo"],
+                [(["A", "NR", "AT"], "2020", "7.0"),
+                 (["A", "NR", "BE"], "2020", "8.0")])
+    keys, dates, vals = eurostat._parse_csv(body)
+    assert keys == ["freq=A:unit=NR:geo=AT", "freq=A:unit=NR:geo=BE"]
+    assert vals == [7.0, 8.0]
 
 
-def _old_dims(fields):
-    return [c for c in fields if _norm(c) not in _NON_KEY]
+def test_rows_are_unique_on_key_and_date():
+    """The property the seeder's guard checks and the fetcher never did (review SHOULD-FIX 5).
+    A collapsing key shows up here as a duplicate (key, date)."""
+    body = _csv(["freq", "value", "geo"],
+                [(["A", "S1", "AT"], "2020", "1.0"),
+                 (["A", "S2", "AT"], "2020", "2.0")])
+    keys, dates, vals = eurostat._parse_csv(body)
+    pairs = list(zip(keys, dates))
+    assert len(pairs) == len(set(pairs)), f"duplicate (key, date) after parsing: {pairs}"
 
 
-def _new_dims(fields):
-    t = fields.index("TIME_PERIOD")
-    return [c for c in fields[:t] if _norm(c) not in _STRUCTURAL]
+def test_the_layout_assumption_holds_or_we_would_key_on_an_attribute():
+    """SHOULD-FIX 4: the positional rule takes every column before TIME_PERIOD, so an
+    attribute appearing THERE would enter the key. Not seen in any live header, but assert the
+    consequence explicitly so the hazard is visible rather than implied."""
+    body = _csv(["freq", "geo"], [(["A", "AT"], "2020", "5.0")])
+    keys, _d, _v = eurostat._parse_csv(body)
+    assert keys == ["freq=A:geo=AT"]
+    assert "OBS_FLAG" not in keys[0] and "CONF_STATUS" not in keys[0]
 
 
-def test_the_measured_header_is_fixed():
-    """The exact header returned by the live API for sbs_pen_7b1."""
-    fields = ["DATAFLOW", "LAST UPDATE", "freq", "value", "nace_r1", "geo",
-              "TIME_PERIOD", "OBS_VALUE", "OBS_FLAG", "CONF_STATUS"]
-    assert _old_obs(fields) == "value", "the old rule's failure is no longer reproduced"
-    assert _new_obs(fields) == "OBS_VALUE"
-    assert _old_dims(fields) == ["freq", "nace_r1", "geo"]
-    assert _new_dims(fields) == ["freq", "value", "nace_r1", "geo"]
+def test_the_change_moves_no_key_in_any_real_flow_except_the_known_seven():
+    """The safety property, over the REAL dimension list of every raw flow.
 
-
-def test_a_flow_without_the_collision_is_unchanged():
-    fields = ["DATAFLOW", "LAST UPDATE", "freq", "unit", "geo",
-              "TIME_PERIOD", "OBS_VALUE", "OBS_FLAG"]
-    assert _old_obs(fields) == _new_obs(fields) == "OBS_VALUE"
-    assert _old_dims(fields) == _new_dims(fields) == ["freq", "unit", "geo"]
-
-
-def test_the_new_rule_is_a_no_op_across_every_real_flow_except_the_collisions():
-    """THE decisive property, over the REAL dimension lists of all raw flows.
-
-    A rule change to public key grammar is only safe if it cannot move a key that is already
-    served. Reading the first line of each raw .tsv.gz gives the true dimension list, from
-    which the SDMX-CSV layout follows.
+    Driven through the shipped parser: for each flow, build a one-row SDMX-CSV body from its
+    true dimension list and compare the key the parser produces against the key the OLD
+    blacklist rule would have produced. Only the seven known collisions may differ.
     """
     files = sorted(glob.glob(os.path.join(RAW, "*.tsv.gz")))
-    if len(files) < 100:                       # raw mirror absent (CI) -> nothing to assert
-        import pytest
+    if len(files) < 100:
         pytest.skip("raw eurostat mirror not present")
+    from updater.strategies.fetchers.eurostat import _NON_KEY
     changed, checked = [], 0
     for p in files:
         try:
@@ -91,12 +109,39 @@ def test_the_new_rule_is_a_no_op_across_every_real_flow_except_the_collisions():
         dims = head.rstrip("\n").split("\t")[0].split("\\")[0].split(",")
         if not dims or not dims[0]:
             continue
-        fields = _sdmx_csv_header(dims)
         checked += 1
-        if _old_dims(fields) != _new_dims(fields) or _old_obs(fields) != _new_obs(fields):
+        vals = [f"v{n}" for n in range(len(dims))]
+        keys, _d, _v = eurostat._parse_csv(_csv(dims, [(vals, "2020", "1.0")]))
+        assert keys, f"{os.path.basename(p)}: parser returned nothing"
+        fields = ["DATAFLOW", "LAST UPDATE"] + dims + ["TIME_PERIOD", "OBS_VALUE",
+                                                       "OBS_FLAG", "CONF_STATUS"]
+        row = dict(zip(fields, ["ESTAT:X(1.0)", "01/01/26"] + vals
+                       + ["2020", "1.0", "", ""]))
+        old_key = ":".join(f"{c}={row[c]}" for c in fields
+                           if _norm(c) not in _NON_KEY and row.get(c))
+        if keys[0] != old_key:
             changed.append(os.path.basename(p)[: -len(".tsv.gz")])
     assert checked > 7000, f"only {checked} flows read; the mirror looks incomplete"
     assert sorted(changed) == sorted([
         "sbs_cre_esc", "sbs_ins_5d1", "sbs_ins_5d2", "sbs_part_wtsct",
         "sbs_pen_7b1", "sbs_sc_3ctrn_tr", "sbs_sctrn_dt_r2",
     ]), f"the change is not confined to the known collisions: {changed}"
+
+
+def test_structural_names_are_never_dimensions_in_any_real_flow():
+    """The positional rule removes only _STRUCTURAL. If a real flow ever named a dimension
+    one of those, the seeder and fetcher would silently drop it."""
+    files = sorted(glob.glob(os.path.join(RAW, "*.tsv.gz")))
+    if len(files) < 100:
+        pytest.skip("raw eurostat mirror not present")
+    offenders = []
+    for p in files:
+        try:
+            with gzip.open(p, "rt", encoding="utf-8") as f:
+                head = f.readline()
+        except Exception:
+            continue
+        dims = head.rstrip("\n").split("\t")[0].split("\\")[0].split(",")
+        if any(_norm(c) in _STRUCTURAL for c in dims):
+            offenders.append(os.path.basename(p))
+    assert offenders == [], f"flows whose DIMENSION collides with _STRUCTURAL: {offenders}"
