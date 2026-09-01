@@ -511,16 +511,25 @@ def _mirror_behind_store(sources, sample: int = 0):
         k = min(k, len(files))
         print(f"[preflight] {src}: comparing {k} of {len(files)} parquet(s) under "
               f"data/{store_root}/ against R2 by row count and max obs date", flush=True)
+        unreadable = 0
         for f in random.Random(0).sample(files, k):
             rp = os.path.join(tmp, "r.parquet")
             try:
                 # Same root on both sides — a clean_grouped source must be compared against
-                # r2://econ-data/clean_grouped/, not clean_full, or every object 404s and the
-                # `except: continue` below turns the whole check into a silent pass.
+                # r2://econ-data/clean_grouped/, not clean_full, or every object 404s and this
+                # whole check becomes a silent pass.
                 s3.download_file("econ-data", f"{store_root}/{src}/{f}", rp)
                 ln, lmx = stats(os.path.join(d, *f.split("/")))
                 rn, rmx = stats(rp)
-            except Exception:                                         # noqa: BLE001
+            except Exception as _e:                                   # noqa: BLE001
+                # NEVER SILENTLY. This was a bare `continue`, in the guard that authorises a
+                # WRITE: a source whose objects all 404 (wrong root, renamed prefix, expired
+                # credentials) produced a clean preflight having compared nothing at all. Say
+                # which file and why, count it, and refuse below if the sample was mostly
+                # unreadable — a check that could not read its own sample has not checked.
+                unreadable += 1
+                print(f"[preflight] {src}/{f}: NOT COMPARED ({type(_e).__name__}: "
+                      f"{str(_e)[:70]})", flush=True)
                 continue
             if rn > ln or (rmx and lmx and str(rmx) > str(lmx)):
                 out.append((src, f"{f}: local {ln:,} rows/{lmx} vs R2 {rn:,} rows/{rmx}"))
@@ -578,6 +587,16 @@ def _mirror_behind_store(sources, sample: int = 0):
                       f"missing rows this machine holds. Do not push local over R2; the "
                       f"divergence is often two-directional. Investigate before trusting "
                       f"either side.", flush=True)
+        if unreadable:
+            # A sample this guard could not READ is not a sample it PASSED. One transient R2
+            # error should not block legitimate work, but if most of the sample failed the
+            # check established nothing and must not read as a clean preflight.
+            print(f"[preflight] {src}: {unreadable} of {k} sampled file(s) could not be "
+                  f"compared", flush=True)
+            if unreadable * 2 > k:
+                out.append((src, f"{unreadable} of {k} sampled files were UNREADABLE — this "
+                                 f"preflight compared almost nothing and cannot clear the "
+                                 f"mirror"))
     return out
 
 
