@@ -80,10 +80,63 @@ class _S3File(io.RawIOBase):
         return body
 
 
-def _meta(path_or_file):
+def file_meta(path_or_file):
+    """(num_rows, max observation date as a string or None) from the footer alone.
+
+    THE DATE WAS MISSING AND THE DOCSTRING SAID IT WAS THERE. This returned `m.num_rows` and
+    nothing else while the header above claimed "row count plus max obs date is the only
+    comparison that answers the question asked", so every verdict this tool has ever produced
+    was a row-count verdict. That gap is not theoretical: on 2026-09-01, after a full `--all`
+    run reported 0 files behind across 322 sources, a content fingerprint found **fed_board
+    differing on 11 of 36 objects and fhfa on 2 of 18 — every one at an identical row count**
+    (264 vs 264, 2,681 vs 2,681). A count cannot see a restatement.
+
+    Max date does not catch a pure value revision either — nothing short of reading the data
+    does — but it catches new observations that leave the row count unchanged, and it is FREE:
+    parquet row-group statistics already carry per-column min/max, so this adds no I/O to a
+    footer read that was happening anyway.
+    """
     import pyarrow.parquet as pq
     m = pq.read_metadata(path_or_file)
-    return m.num_rows
+    names = [m.schema.column(i).name for i in range(m.num_columns)]
+    di = next((i for i, c in enumerate(names)
+               if c.lower() in ("obs_date", "date", "time_period")), None)
+    if di is None:
+        return m.num_rows, None
+    best = None
+    for g in range(m.num_row_groups):
+        try:
+            st = m.row_group(g).column(di).statistics
+        except Exception:                                            # noqa: BLE001
+            continue
+        if st is not None and getattr(st, "has_min_max", False):
+            v = str(st.max)
+            if best is None or v > best:
+                best = v
+    return m.num_rows, best
+
+
+def classify(local, remote):
+    """'behind' | 'ahead' | 'same' for a (rows, max_date) pair on each side.
+
+    A file ahead on ONE axis and behind on the other is DIVERGED, and is filed as `ahead` on
+    purpose: `ahead` is the merge queue that mirror_sync never overwrites, so an ambiguous file
+    is left alone rather than synced in a direction that loses rows.
+    """
+    lr, ld = local
+    rr, rd = remote
+    dated = ld is not None and rd is not None
+    r2_newer = (rr > lr) or (dated and rd > ld)
+    loc_newer = (lr > rr) or (dated and ld > rd)
+    if r2_newer and not loc_newer:
+        return "behind"
+    if loc_newer:
+        return "ahead"
+    return "same"
+
+
+def _meta(path_or_file):
+    return file_meta(path_or_file)
 
 
 def catalogued_sources():
@@ -155,12 +208,16 @@ def one_source(s3, src, workers, json_path=None, quiet=False):
         for i, (n, pair, err) in enumerate(ex.map(one, common), 1):
             if err:
                 errs.append((n, err))
-            elif pair[0] < pair[1]:
-                behind.append((n, pair[0], pair[1]))
-            elif pair[0] > pair[1]:
-                ahead.append((n, pair[0], pair[1]))
             else:
-                same += 1
+                # The tuples stay (name, local_rows, r2_rows): tools/mirror_sync.py unpacks
+                # exactly three, and widening them here would break the consumer.
+                verdict = classify(pair[0], pair[1])
+                if verdict == "behind":
+                    behind.append((n, pair[0][0], pair[1][0]))
+                elif verdict == "ahead":
+                    ahead.append((n, pair[0][0], pair[1][0]))
+                else:
+                    same += 1
             if not quiet and i % 2000 == 0:
                 print(f"   {i:,}/{len(common):,} compared", flush=True)
 
