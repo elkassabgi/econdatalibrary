@@ -25,6 +25,14 @@ export interface Env {
   // unset the compiled-in SUPPORTED_SOURCES constant is authoritative.
   SUPPORTED_SOURCES?: string;
 
+  // COST GUARD (src/costGuard.ts), read by the scheduled handler only — never by a request
+  // path. CF_ANALYTICS_TOKEN is a read-only "Account Analytics: Read" token, the same value
+  // the repo .env carries for tools/billing_guard.py. Both are optional at the type level
+  // and MANDATORY at runtime: a scheduled run without them writes a `blind` status object
+  // and throws, because a meter that cannot measure has to be louder than one that can.
+  CF_ANALYTICS_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
+
   // SHARED LOGIN (owner directive; PLAN.md §6 "API keys + rate limit (echo
   // your rate limit)"): the hfdatalibrary users database is THE identity provider
   // for the whole Data Library family. This binding points at hfdatalibrary-db
