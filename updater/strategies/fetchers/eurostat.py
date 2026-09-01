@@ -73,6 +73,12 @@ TIMEOUT = 600
 # the critical one — it changes every release. OBS_FLAG/CONF_STATUS/OBS_STATUS are
 # per-observation attributes, not series identity. DATAFLOW/TIME_PERIOD/OBS_VALUE
 # are structural. Matched case-insensitively and also with '_'<->' ' normalized.
+# The STRUCTURAL PREFIX of an SDMX-CSV row — the columns that precede the dimensions. Only
+# these may be removed positionally; everything else before TIME_PERIOD is a dimension, even
+# when its name collides with an observation/attribute name.
+_STRUCTURAL = {"DATAFLOW", "STRUCTURE", "STRUCTURE_ID", "STRUCTURE_NAME", "ACTION",
+               "LAST UPDATE", "LAST_UPDATE"}
+
 _NON_KEY = {
     "DATAFLOW", "STRUCTURE", "STRUCTURE_ID", "STRUCTURE_NAME", "ACTION",
     "LAST UPDATE", "LAST_UPDATE", "TIME_PERIOD", "TIME", "PERIOD", "DATE",
@@ -190,11 +196,24 @@ def _parse_csv(content: bytes):
         return None, None, None
     fields = reader.fieldnames
     time_col = next((c for c in fields if _norm(c) in ("TIME_PERIOD", "TIME", "PERIOD", "DATE")), None)
-    obs_col = next((c for c in fields if _norm(c) in ("OBS_VALUE", "VALUE")), None)
+    # EXACT OBS_VALUE FIRST, then the bare VALUE alias. A flow can carry a real DIMENSION named
+    # `value`, and in DSD order it sits BEFORE OBS_VALUE — measured 2026-09-01 on sbs_pen_7b1,
+    # whose SDMX-CSV header is
+    #   DATAFLOW, LAST UPDATE, freq, value, nace_r1, geo, TIME_PERIOD, OBS_VALUE, OBS_FLAG, ...
+    # A single next() over both names picked `value`, so every row's "observation" was a
+    # dimension CODE, float() rejected it, and the flow yielded ZERO rows in silence. That is
+    # the likely reason all seven such flows sit in the never-ingested set.
+    obs_col = (next((c for c in fields if _norm(c) == "OBS_VALUE"), None)
+               or next((c for c in fields if _norm(c) == "VALUE"), None))
     if not time_col or not obs_col:
         return None, None, None
-    # series key = dimension columns only (drop structural/attr/LAST UPDATE columns)
-    dim_cols = [c for c in fields if _norm(c) not in _NON_KEY]
+    # DIMENSIONS ARE POSITIONAL in SDMX-CSV: DATAFLOW, [LAST UPDATE], <dimensions>, TIME_PERIOD,
+    # OBS_VALUE, <attributes>. Cutting at time_col and removing only the structural PREFIX keeps
+    # a dimension whose name collides with _NON_KEY, which a name blacklist cannot do. Proven a
+    # no-op elsewhere: over the real dimension lists of all 7,638 flows the two rules agree on
+    # every flow except the seven that carry a `value` dimension (tests/test_eurostat_value_dim).
+    _i_time = fields.index(time_col)
+    dim_cols = [c for c in fields[:_i_time] if _norm(c) not in _STRUCTURAL]
     keys, dates, vals = [], [], []
     for row in reader:
         raw_v = (row.get(obs_col) or "").strip()
