@@ -371,9 +371,17 @@ def content_fingerprint_sql(cols, path: str) -> str:
 
     `sum` rather than `bit_xor` because XOR cancels in pairs — two identical duplicate rows
     would disappear from the fingerprint entirely.
+
+    `list_value`, NOT `concat_ws`. DuckDB's concat_ws SKIPS nulls, so it flattens distinct rows
+    onto one string: concat_ws('|','a',NULL,'b'), concat_ws('|','a','b',NULL) and
+    concat_ws('|','a|b',NULL) all produce 'a|b'. That is not theoretical — on the live
+    wikidata/companies.parquet, swapping the two nullable columns `inception` and `website`
+    changes 4,233 of 19,219 rows and left the concat_ws fingerprint IDENTICAL. Several sources
+    (ember, faostat, fhfa, penn_world_table) also carry '|' inside series_key, which was the
+    delimiter. Hashing a LIST keeps nulls as elements and needs no delimiter at all.
     """
     expr = ", ".join('"%s"::VARCHAR' % c.replace('"', '""') for c in cols)
-    return (f"select sum(hash(concat_ws('|', {expr}))::HUGEINT) "
+    return (f"select sum(hash(list_value({expr}))::HUGEINT) "
             f"from read_parquet('{path}')")
 
 
@@ -520,11 +528,23 @@ def _mirror_behind_store(sources, sample: int = 0):
             if rn == ln and str(rmx) == str(lmx):
                 # Same shape on both sides. That is where a REVISION hides, so this is the one
                 # case worth paying a content read for (R549).
+                fp_err = None
                 try:
                     lfp = fingerprint(os.path.join(d, *f.split("/")), ln)
                     rfp = fingerprint(rp, rn)
-                except Exception:                                     # noqa: BLE001
+                except Exception as _e:                               # noqa: BLE001
                     lfp = rfp = None
+                    fp_err = _e
+                if fp_err is not None:
+                    # FAIL CLOSED, and say what actually happened. This branch used to fall
+                    # through to the cap message — so a schema the query could not read (a
+                    # source with no date column raised IndexError) printed "over the
+                    # 5,000,000-row cap", which was false, and then let the derive PROCEED.
+                    # The tool that gates a WRITE must not be the one that fails open.
+                    out.append((src, f"{f}: content check FAILED "
+                                     f"({type(fp_err).__name__}: {str(fp_err)[:60]}) — cannot "
+                                     f"prove the mirror is level"))
+                    break
                 if lfp is None or rfp is None:
                     # NEVER silently. A file too large to fingerprint is a file this guard did
                     # not fully check, and saying so is the difference between a bounded check
