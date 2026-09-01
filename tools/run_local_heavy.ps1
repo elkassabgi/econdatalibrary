@@ -288,15 +288,57 @@ Say ("per-source budget override: " + $env:AQUEDUCT_BUDGET_MIN_OVERRIDE +
 # flight) and those paths must leave no lock behind - the first version held one from the very
 # start, so every CI-collision abort dropped a stale lock for the next tick to clean up.
 if (-not $lockFile) { $lockFile = Join-Path $logDir 'local_heavy.lock' }
+
+# NEVER STEAL A LIVE LOCK, AND NEVER RELEASE SOMEONE ELSE'S.
+#
+# The lock was written here unconditionally and removed unconditionally on both exit paths,
+# so it protected only the -IfDue caller. Observed 2026-09-01: a pass launched WITHOUT -IfDue
+# skipped the gate above, reached this line and OVERWROTE the live lock held by the legitimate
+# 10:30 pass, stamping its own pid; when that intruder then aborted, the unconditional
+# `Remove-Item` deleted the lock outright. The legitimate pass was still running with no lock
+# to show for it, so every subsequent 5-minute guard tick started ANOTHER full pass  -  each one
+# pulling the 11.28 GB state store, and each intending to push it back (R5: one writer).
+#
+# The gate at the top is the CADENCE decision and stays -IfDue-only. Ownership is not a
+# cadence question: it applies to every invocation, however the job was started.
+$lockHeldByOther = $false
+if (Test-Path $lockFile) {
+    try {
+        $lp = (Get-Content $lockFile -First 1) -split ','
+        $op = Get-Process -Id ([int]$lp[0]) -ErrorAction SilentlyContinue
+        if ($op -and $op.ProcessName -eq 'powershell' -and [int]$lp[0] -ne $PID -and
+            $lp.Count -ge 2 -and
+            $op.StartTime.ToUniversalTime().Ticks.ToString() -eq $lp[1]) {
+            $lockHeldByOther = $true
+        }
+    } catch { }
+}
+if ($lockHeldByOther) {
+    Say ('REFUSING TO START: local_heavy.lock is held by a LIVE pass (pid ' + $lp[0] +
+         '). Two passes would each pull and push the state store and one run would be ' +
+         'thrown away on the ETag compare-and-swap. If you meant to run anyway, stop that ' +
+         'pass first.')
+    exit 0
+}
 Set-Content -Path $lockFile -Value (
     $PID.ToString() + ',' + (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks.ToString()
 ) -Encoding ascii
+
+function Release-LocalHeavyLock {
+    # Only if it is still OURS. An aborting run must not free the lock of whoever owns it now.
+    if (-not (Test-Path $script:lockFile)) { return }
+    try {
+        $p = (Get-Content $script:lockFile -First 1) -split ','
+        if ([int]$p[0] -ne $PID) { return }
+    } catch { return }
+    Remove-Item $script:lockFile -ErrorAction SilentlyContinue
+}
 
 Say "pull-state ..."
 & $pythonExe -m updater.run --pull-state
 if ($LASTEXITCODE -ne 0) {
     Say ("pull-state FAILED (" + $LASTEXITCODE + ") - aborting before any write")
-    Remove-Item $lockFile -ErrorAction SilentlyContinue
+    Release-LocalHeavyLock
     exit 1
 }
 
@@ -432,7 +474,7 @@ if ($pushRc -eq 0 -and -not $crashed) {
     $why = if ($crashed) { "updater CRASHED (rc=" + $rc + ")" } else { "push-state failed (" + $pushRc + ")" }
     Say ("cadence NOT stamped: " + $why + " - this pass is due again on the next guard tick")
 }
-Remove-Item $lockFile -ErrorAction SilentlyContinue
+Release-LocalHeavyLock
 
 Say ("done (updater rc=" + $rc + "). Full log: " + $log)
 exit $rc
