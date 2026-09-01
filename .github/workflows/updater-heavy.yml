@@ -348,6 +348,20 @@ jobs:
         # exit code; skipping this strands them out of /v1/catalog (the 31,259-series
         # class the daily's 2026-07-30 fix documents). continue-on-error already ensures
         # this can never add a second failure.
-        if: ${{ always() && steps.push_state.outcome == 'success' }}
+        #
+        # FROZEN 2026-09-01, the same freeze updater-daily.yml took on 2026-08-31 (R542).
+        # That freeze was applied to the daily ALONE and this copy kept running, which is
+        # what the 08-31 bill records: two successful updater-heavy runs that day (15:38 and
+        # 20:25) against D1 writes of 11,412,906 (~$11.41) and reads of 2,805,188,474
+        # (~$2.81), where 08-30 saw 678,127 writes and 373,588,605 reads. Roughly $14 of D1
+        # in one day from the half of the class that was never frozen.
+        #
+        # `series_fts` is fts5(series_id UNINDEXED), so every id-scoped statement is a full
+        # scan of ~23.8M rows; re-sending a catalogue of 13.5M series is what turns into
+        # billions of reads. Set CATALOG_SYNC_ENABLED to '1' in the repo variables to
+        # re-enable, and only with the manifest diff seeded so it sends changes, not
+        # everything.
+        if: ${{ always() && steps.push_state.outcome == 'success'
+                && vars.CATALOG_SYNC_ENABLED == '1' }}
         continue-on-error: true
         run: python core/sync_catalog_d1.py
