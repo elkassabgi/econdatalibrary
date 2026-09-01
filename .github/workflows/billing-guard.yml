@@ -20,7 +20,20 @@ name: billing-guard
 
 on:
   schedule:
-    - cron: '23 13 * * *'   # daily 13:23 UTC
+    # EVERY 30 MINUTES, standing order from Ahmed 2026-09-01 after the 08-31 spike reached
+    # him through his INVOICE: "you need to run a permanent check every 30 minutes to make
+    # sure that these costs dont happen again."
+    #
+    # Daily was not enough twice over. It ran once at 13:23 UTC, so a leak starting after it
+    # had ~24 h to run; and the 08-31 breach (D1 2,805,188,474 reads, 11,412,906 writes; R2
+    # class-A 2,880,378) sat in the WARN band, whose only delivery was a Resend email that
+    # has never been configured — so the run went GREEN. Both are fixed: every breach now
+    # reddens the workflow (GitHub's failure email needs no secret), and the guard alarms on
+    # TODAY'S PARTIAL numbers as well as the last complete day, because a complete-day alarm
+    # is up to 24 h late however often it runs.
+    #
+    # Off-minutes deliberately: Actions crons scheduled on :00 are heavily delayed or dropped.
+    - cron: '7,37 * * * *'
   workflow_dispatch: {}
 
 permissions:
