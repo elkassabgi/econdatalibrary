@@ -23,7 +23,9 @@ a drop-empty key collision aborts the flow LOUDLY instead of collapsing silently
 
 GUARDS: NAMQ_10_GDP is hard-excluded (fresh 2026-08-24 API pull in the store; June
 raw over it would be a 3-month regression — review change 2). An existing store
-target is REFUSED, never overwritten (never-shrink). Writes need --apply AND a
+target is REFUSED, never overwritten (never-shrink) — but a ONE-SIDED mirror is
+repaired in BOTH directions, because refusing to overwrite must not mean leaving a
+flow underivable: R2-only cost namq_10_gdp its CSV entirely until it was mirrored down. Writes need --apply AND a
 parity PASS recorded this run or --parity-receipt pointing at one.
 
 PARITY MODE (--parity FLOW, read-only): mint rows for a flow that already has BOTH
@@ -37,10 +39,11 @@ AFTER THE SEED — the completion re-stamp MUST run with AQUEDUCT_BACKEND=r2 (re
 The re-key marker and the fetcher's count guard both enumerate through `blob`, so a
 default local-backend re-stamp would write the LOCAL count into the LOCAL sidecar only,
 leave R2's marker at its old value, and CI's guard would keep eurostat locked out for ever.
-MEASURED AFTER THE RUN (the plan's 7,653/7,654 assumed all 440 would seed; seven were
-refused): local = 7,646 and R2 = 7,647, differing by one BY DESIGN because NAMQ_10_GDP
-exists only on R2. Reconcile local-vs-R2 store names BEFORE the re-stamp, so a
-publish gap cannot be silently stamped over.
+FINAL MEASURED STATE (2026-09-01, after all 440 seeded and NAMQ_10_GDP was mirrored down):
+local = 7,654 and R2 = 7,654, with ZERO names on one side only. The re-stamp therefore takes
+files_seen = 7,654. An intermediate reading of 7,646/7,647 was correct only while seven flows
+stood refused for the `value`-dimension defect (R544) and NAMQ existed on R2 alone. Reconcile
+local-vs-R2 names BEFORE the re-stamp regardless, so a publish gap cannot be stamped over.
 
 Usage:
   py tools/seed_eurostat_440.py --parity AACT_ALI01
@@ -220,6 +223,25 @@ def seed_one(flow: str) -> tuple[str, int]:
         print(f"  republished {flow_u} (local existed, R2 did not): "
               f"{published:,} bytes", flush=True)
         return "republished", 0          # no rows newly minted; the file was already correct
+    if blob_has and not local_has and config.BACKEND == "r2":
+        # THE INVERSE REPAIR, and it is not hypothetical — it bit namq_10_gdp on 2026-09-01.
+        # That flow was excluded from seeding because R2 already held a fresh API pull, so
+        # this returned "refused-exists" and left the LOCAL mirror without it. core/derive_csv
+        # resolves a eurostat flow to a LOCAL path, so the derive reported
+        # "unresolvable eurostat:namq_10_gdp: expected eurostat file 'E:\...'" and the flow —
+        # eurostat's quarterly GDP — had no served CSV at all despite being catalogued.
+        # Refusing to overwrite is right; leaving the mirror one-sided is not.
+        raw = blob.read_bytes(target)
+        if raw:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            tmp = f"{target}.{os.getpid()}.mirror"
+            with open(tmp, "wb") as fh:
+                fh.write(raw)
+            os.replace(tmp, target)
+            print(f"  mirrored {flow_u} DOWN from R2 (present there, absent locally): "
+                  f"{len(raw):,} bytes — the derive resolves locally and would have "
+                  f"reported it unresolvable", flush=True)
+            return "mirrored-down", 0
     if local_has or blob_has:
         return "refused-exists", 0
     rp = _raw_path(flow)
