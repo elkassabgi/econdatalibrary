@@ -51,7 +51,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+                      save_rotation)
 
 # Reuse the ingester's UA + parsers verbatim (jobs/ is on sys.path for the orchestrator
 # and the live-test; fall back to a by-path load otherwise).
@@ -167,6 +168,11 @@ CSV_ACCEPT = "application/vnd.sdmx.data+csv;version=1.0.0"
 XML_ACCEPT = "application/vnd.sdmx.genericdata+xml;version=2.1"
 
 RATE = 1.0            # seconds between flows (polite; the ingester used 1.5)
+# Wall-clock budget for ONE istat run. Deliberately under the daily job's per-source
+# window; the desktop runner raises it via AQUEDUCT_BUDGET_MIN_OVERRIDE, which Deadline
+# reads itself. The remainder is not lost — the rotation bookmark resumes it.
+BUDGET_MIN = float(os.environ.get("ISTAT_BUDGET_MIN", "30"))
+
 TIMEOUT = 120         # per request, default
 
 # PER-HOST TIMEOUT, BECAUSE THE SURVIVING HOST IS THE SLOW ONE. sdmx.istat.it is
@@ -471,8 +477,34 @@ def update(unit, since) -> Result:
         except ValueError:
             pass
 
+    # BUDGET + ROTATION (AR-017 SHOULD-FIX 3, the gap this file's own comment below names:
+    # "istat still has no Deadline of its own ... the day ISTAT recovers, ~2,442 flows x
+    # >=1.0s RATE (plus two R2 reads each) will overrun the pass again").
+    #
+    # Measured 2026-09-01, which is why it is being closed now: a local heavy pass sat on
+    # istat for 33+ minutes at 5.3 CPU-SECONDS — blocked on a socket, no per-flow logging,
+    # nothing to stop it — while 16 due sources waited behind it. The orchestrator's hard
+    # per-unit timeout does not exist on Windows ("no signal.setitimer"), so on the local
+    # runner this source was unbounded.
+    #
+    # THE BUDGET ALONE WOULD BE R190. Deadline's own docstring records it: a budget over a
+    # FIXED order re-walks the same prefix every run and the tail never drains. _flow_files
+    # is stable and sorted, so the budget is paired with the shared rotation bookmark —
+    # each run resumes after the last flow it attempted.
+    bookmark = load_rotation(out_dir)
+    files = rotate_after(files, bookmark)
+    dl = Deadline(minutes=BUDGET_MIN)
+    last_attempted = None
+
     n_sub = len(files)
     for fn in files:
+        if dl.spent():
+            print(f"[istat] budget of {BUDGET_MIN:g} min spent after {dl.elapsed_min():.1f} "
+                  f"min — {flows_done} flow(s) attempted, {n_sub - flows_done} left for the "
+                  f"next run, which RESUMES after {last_attempted!r} rather than restarting "
+                  f"(vintage not advanced, merged rows keep their derive)", flush=True)
+            tally.transient_unit(f"budget spent after {flows_done} flow(s)")
+            break
         path = os.path.join(out_dir, fn)
         flow_id = fn[: -len(".parquet")]
         before = blob.row_count(path)
@@ -566,6 +598,7 @@ def update(unit, since) -> Result:
         # boundary year (zero net-new) would have empty==attempted and falsely raise.
         # The REAL net-new delta is carried by `obs` (total) and merge's row count.
         tally.added_unit(m)
+        last_attempted = fn
         if md:
             cursors[flow_id] = md
             if last_obs is None or md > last_obs:
@@ -575,6 +608,11 @@ def update(unit, since) -> Result:
     # ISTAT flow updates only a few times a year) is legitimate no_change, NOT a break;
     # real breaks are caught precisely per-flow via structural_unit(). A whole-host
     # outage routes to 'partial' via transient_unit() instead of the floor.
+    # Persist the resume point ONLY for flows actually reached. Saving a bookmark the run
+    # never got to would skip them for ever — the silent half of R190.
+    if last_attempted:
+        save_rotation(out_dir, last_attempted)
+
     return finalize(tally, total, last_obs, source=SOURCE,
                     series_cursors=cursors,
                     empty_window_floor=max(n_sub - 1, 1))
