@@ -484,9 +484,22 @@ def account_analytics() -> str:
     tok = _load_env_token()
     acct = _account_id()
     if not tok or not acct:
+        # A MISSING TOKEN IS A RED RUN, not a footnote. Printing the blind spot was supposed
+        # to be enough; it was not. Every scheduled run took this branch, priced R2
+        # operations, Workers and the storage MEAN at zero, fell back to a D1 source it knows
+        # is ~10x low, and exited 0 — so the workflow was GREEN through the 2026-08-31 spike
+        # and reported a "PARTIAL MONTH FLOOR ~= $13/mo" against a real $328. Measured the
+        # same minute on the same commit, with and without the token.
+        #
+        # This is distinct from _DEGRADED below, which stays green on purpose: a failed query
+        # is a vendor blip, an absent token is a permanent configuration hole that nothing
+        # else will ever report.
+        _MEASURED["unmetered"] = True
         return ("ACCOUNT ANALYTICS: UNMETERED — R2 operations and Workers usage are "
-                "invisible to this guard. Set CF_ANALYTICS_TOKEN (read-only "
-                "Analytics token) in .env / CI secrets to close the gap.")
+                "invisible to this guard, D1 falls back to a ~10x-low source, and the "
+                "month figure below is a FLOOR that will read far under the real bill. "
+                "Set CF_ANALYTICS_TOKEN (read-only 'Account Analytics: Read' token) in "
+                ".env and in the repo secrets to close the gap.")
     # UTC, NOT LOCAL. GraphQL's `date` dimension is UTC (proven 2026-08-29: the API's own
     # error carried 2026-08-30T00:13Z while the local clock read 08-29 19:13, UTC-5). With
     # date.today() this window ended a UTC day EARLY for five hours every evening, so the
@@ -926,6 +939,19 @@ def main() -> int:
     #
     # TODAY'S PARTIAL COUNTS. A complete-day alarm is up to ~24 h late by construction, which
     # defeats a 30-minute cadence.
+    if _MEASURED.get("unmetered"):
+        # Cannot measure => cannot reassure. Exit before the threshold arithmetic, which
+        # would otherwise compare zeros against limits and pass.
+        send_alert("BILLING GUARD IS BLIND: CF_ANALYTICS_TOKEN is not set",
+                   report + "\n\nThis run measured NOTHING that matters: R2 operations, "
+                            "Workers and the storage mean were priced at zero and D1 fell "
+                            "back to a source that reads ~10x low. Set CF_ANALYTICS_TOKEN "
+                            "(read-only 'Account Analytics: Read') in the repo secrets.")
+        print("BILLING GUARD BLIND - reddening the workflow: CF_ANALYTICS_TOKEN is not set, "
+              "so R2 operations are unmetered and D1 is measured ~10x low. The month figure "
+              "printed above is a FLOOR, not the bill.")
+        return 1
+
     r2a_day = _MEASURED.get("r2_class_a_day") or 0
     r2a_today = _MEASURED.get("r2_class_a_today") or 0
     d1r_today = _MEASURED.get("d1_reads_today") or 0

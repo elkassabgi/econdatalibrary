@@ -49,6 +49,13 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       DIGEST_TO: ${{ secrets.DIGEST_TO }}
+      # WITHOUT THIS THE GUARD IS BLIND IN CI, AND REASSURING. It was never passed, so every
+      # scheduled run fell back to `wrangler d1 insights` (which this file's own docstring
+      # records as ~10x low) and priced R2 operations, Workers and the storage MEAN at zero.
+      # Measured 2026-09-01, the same minute, same code: locally with the token it reported
+      # $328/mo and exited 1 on three breaches; here it reported "PARTIAL MONTH FLOOR ~= $13/mo"
+      # and exited 0. A monitor that says $13 when the bill is $328 is worse than none.
+      CF_ANALYTICS_TOKEN: ${{ secrets.CF_ANALYTICS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
