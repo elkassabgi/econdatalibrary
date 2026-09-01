@@ -145,3 +145,33 @@ def test_structural_names_are_never_dimensions_in_any_real_flow():
         if any(_norm(c) in _STRUCTURAL for c in dims):
             offenders.append(os.path.basename(p))
     assert offenders == [], f"flows whose DIMENSION collides with _STRUCTURAL: {offenders}"
+
+
+def test_an_attribute_before_the_time_column_is_REFUSED_not_keyed_on():
+    """Review SHOULD-FIX 4, driven. The positional cut takes every column before TIME_PERIOD,
+    so an attribute there would enter the key — and OBS_FLAG changes between releases, which
+    is the `LAST UPDATE` duplication class this module exists to prevent. It must refuse."""
+    head = ["DATAFLOW", "LAST UPDATE", "freq", "geo", "OBS_FLAG",
+            "TIME_PERIOD", "OBS_VALUE", "CONF_STATUS"]
+    body = (",".join(head) + "\n"
+            + "ESTAT:X(1.0),01/01/26,A,AT,e,2020,5.0,\n").encode("utf-8")
+    keys, dates, vals = eurostat._parse_csv(body)
+    assert keys is None, (
+        f"an attribute before the time column was keyed on instead of refused: {keys}")
+    # and fetch_flow must be able to unpack it — the 2-tuple form would ValueError there
+    assert (dates, vals) == (None, None)
+
+
+def test_a_collapsing_key_is_REFUSED_by_the_property_guard():
+    """Review SHOULD-FIX 5, driven. `rows == distinct(series_key, obs_date)` is what caught
+    R544; it lived only in the seeder. Simulate a key that loses a dimension by giving two
+    rows that differ ONLY in a column the parser cannot see as a dimension."""
+    # `period` is a _NON_KEY name that is NOT VALUE, so the layout assertion catches it first;
+    # to exercise the PROPERTY guard specifically, use two identical dimension tuples.
+    body = _csv(["freq", "geo"],
+                [(["A", "AT"], "2020", "1.0"),
+                 (["A", "AT"], "2020", "2.0")])
+    keys, dates, vals = eurostat._parse_csv(body)
+    assert keys is None, (
+        f"two rows collapsing to one (key, date) were published instead of refused: {keys}")
+    assert (dates, vals) == (None, None)

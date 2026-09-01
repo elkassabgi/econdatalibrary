@@ -225,6 +225,21 @@ def _parse_csv(content: bytes):
     # every flow except the seven that carry a `value` dimension (tests/test_eurostat_value_dim).
     _i_time = fields.index(time_col)
     dim_cols = [c for c in fields[:_i_time] if _norm(c) not in _STRUCTURAL]
+    # LAYOUT ASSERTION (review SHOULD-FIX 4). The positional cut takes EVERY column before the
+    # time column, so an attribute appearing there would enter the key — and an attribute like
+    # OBS_FLAG changes between releases, which is the `LAST UPDATE` duplication class this
+    # module exists to prevent. Not seen in any of 5 live headers, so this refuses rather than
+    # guesses: an unknown attribute-shaped name before TIME_PERIOD stops the flow instead of
+    # silently minting an unstable key.
+    _attrish = [c for c in dim_cols if _norm(c) in _NON_KEY and _norm(c) != "VALUE"]
+    if _attrish:
+        print(f"[eurostat] REFUSING a flow whose columns before {time_col} include "
+              f"{_attrish} — those are attribute/structural names, and keying on them mints "
+              f"an unstable series_key. Layout assumption broken; not parsed.", flush=True)
+        # _parse_csv's contract is a THREE-tuple; fetch_flow unpacks three and maps
+        # keys-is-None onto its own (None, "structural"). Returning the 2-tuple here would
+        # ValueError at the call site — caught only because the test drives the guard.
+        return None, None, None
     keys, dates, vals = [], [], []
     for row in reader:
         raw_v = (row.get(obs_col) or "").strip()
@@ -240,6 +255,19 @@ def _parse_csv(content: bytes):
         keys.append(_build_key(row, dim_cols))
         dates.append(d)
         vals.append(v)
+    # THE PROPERTY GUARD, moved here from the seeder (review SHOULD-FIX 5). `rows ==
+    # distinct(series_key, obs_date)` is what actually caught R544 — it needs no oracle and
+    # fires exactly when identity is being lost. The seeder had it and the fetcher did not,
+    # which is why a collapsing key could only be caught on the backfill path. A eurostat
+    # (series, period) pair is unique by construction, so a duplicate here means the key is
+    # dropping a dimension, not that the publisher shipped two observations.
+    if keys:
+        _pairs = len(set(zip(keys, dates)))
+        if _pairs != len(keys):
+            print(f"[eurostat] REFUSING: {len(keys):,} rows collapse to {_pairs:,} distinct "
+                  f"(series_key, obs_date) — the key is losing a dimension. Dimensions used: "
+                  f"{dim_cols}. Not parsed; existing data kept.", flush=True)
+            return None, None, None
     return keys, dates, vals
 
 
