@@ -37,7 +37,74 @@ const MAX_CHARS = 45_000;          // per-tool-response ceiling (context-friendl
 // Object, so the user's whole session dies with it. The MCP never wants more than max_rows<=2000
 // rows anyway: refuse the passthrough at the header, before a byte of body is read, and tell the
 // caller to ask for a date window (which makes the server filter, and send a verifiable body).
-const MCP_MAX_PASSTHROUGH_BYTES = 4 * 1024 * 1024;
+// 1 MiB stored, not 4: at the fleet's largest measured compression ratio (37.5x, the
+// worker's own MAX_RATIO) 4 MiB of stored gzip is 157 MB of text, and a real flat-value
+// monthly series measured 4.00 MiB stored -> 77.3 MB of text, whose peak heap through this
+// tool's line pipeline (measured 2.81x the text) is ~217 MB against a 128 MB limit (R620).
+const MCP_MAX_PASSTHROUGH_BYTES = 1024 * 1024;
+// The worker refuses server-side filtering above this stored size (4 GiB / 37.5), so above it
+// a date window is not a way out of the size refusal - it is a second refusal.
+const FILTER_MAX_STORED_BYTES = 114_532_461;
+// The hard ceiling on TEXT this tool will hold, whatever shape it arrived in.
+const MCP_MAX_TEXT_BYTES = 8 * 1024 * 1024;
+// JSON endpoints that grow with the fleet rather than with a caller-supplied limit.
+const MCP_MAX_JSON_BYTES = 4 * 1024 * 1024;
+
+/**
+ * JSON body with the same ceiling as the CSV read, for the endpoints whose size grows with
+ * the fleet rather than with a caller-supplied limit (R622). Returns null when the cap is hit
+ * or the text does not parse, so the caller can say so rather than throw inside a tool.
+ */
+async function jsonCapped<T>(r: Response, cap: number = MCP_MAX_JSON_BYTES): Promise<T | null> {
+  const { text: t, capped } = await readCapped(r, cap);
+  if (capped) return null;
+  try { return JSON.parse(t) as T; } catch { return null; }
+}
+
+/** Drop a response body without reading it. */
+async function discard(r: Response) {
+  try { await r.body?.cancel(); } catch { /* the body is being discarded anyway */ }
+}
+
+/**
+ * Read a response body as text, stopping at `cap` bytes.
+ *
+ * `r.text()` has no ceiling: it reads whatever arrives, and the isolate dies with the
+ * McpAgent Durable Object - taking the user's session - somewhere past 128 MB. EVERY SHAPE OF
+ * THE CSV READ goes through here, because the shape that can be measured up front (the gzip
+ * passthrough, which declares content-length) is not the shape that gets large by surprise (a
+ * wide date window on the inflate path, which declares nothing). The JSON endpoints are read
+ * separately: most are server-clamped, and the two that grow with the fleet use jsonCapped.
+ *
+ * Cost of the cap, measured in a real isolate at 8 MiB: +9.3 MB after the read and +38.6 MB
+ * after this tool's split/map/filter/slice pipeline for ASCII (4.61x the capped bytes), and
+ * +11.1 / +48.6 MB (5.79x) when one non-Latin-1 character forces V8's two-byte string. So the
+ * margin against 128 MB is ~2.6x, and two concurrent tool calls in one Durable Object halve it.
+ */
+async function readCapped(r: Response, cap: number): Promise<{ text: string; capped: boolean }> {
+  const body = r.body;
+  if (!body) return { text: "", capped: false };
+  const reader = body.getReader();
+  const dec = new TextDecoder();
+  let out = "";
+  let seen = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      seen += value.byteLength;
+      if (seen > cap) {
+        try { await reader.cancel(); } catch { /* already going away */ }
+        return { text: out, capped: true };
+      }
+      out += dec.decode(value, { stream: true });
+    }
+    out += dec.decode();
+  } finally {
+    try { reader.releaseLock(); } catch { /* the reader is done with */ }
+  }
+  return { text: out, capped: false };
+}
 const UPSTREAM_TIMEOUT_MS = 25_000;
 
 // ── upstream fetch with timeout + one retry on transient failure ────────────
@@ -207,15 +274,27 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       if (passthrough) {
         const stored = Number(r.headers.get("content-length") ?? "");
         if (!hasLen || !Number.isFinite(stored)) {
-          try { await r.body?.cancel(); } catch { /* the body is being discarded anyway */ }
+          await discard(r);
           return { content: [{ type: "text", text: `${series_id}: the response is a gzip passthrough with no content-length - an intermediary re-coded it, so nothing proves the transfer was whole. Ask again with date_from/date_to; the server then returns a filtered, verifiable response.` }], isError: true };
         }
         if (stored > MCP_MAX_PASSTHROUGH_BYTES) {
-          try { await r.body?.cancel(); } catch { /* the body is being discarded anyway */ }
-          return { content: [{ type: "text", text: `${series_id}: this series is served whole as ${(stored / (1024 * 1024)).toFixed(1)} MB of compressed CSV, which is far more than this tool can hold in memory (and more than max_rows=${max_rows} would show). Ask again with date_from/date_to for the window you need.` }], isError: true };
+          await discard(r);
+          // Above the server's own filter ceiling a date window is not a way out: the
+          // filtered request is refused 400 unsupported_filter, so this tool would send the
+          // user round a loop. Name the client that can actually read it (R620).
+          const beyondFilter = stored > FILTER_MAX_STORED_BYTES;
+          return { content: [{ type: "text", text: `${series_id}: this series is served whole as ${(stored / (1024 * 1024)).toFixed(1)} MB of compressed CSV - more than this tool can hold in memory, and far more than max_rows=${max_rows} would show. ` + (beyondFilter ? `It is also past the server's server-side filtering limit, so a date window will be refused too: this series cannot be read through this tool at all. Use the Python client (pip install econdl; econdl.series("${series_id}")), which streams it.` : `Ask again with date_from/date_to for the window you need.`) }], isError: true };
         }
       }
-      const csv = await r.text();
+      // EVERY shape is capped, not just the one that declares its size. A windowed request
+      // takes the inflate path - chunked, no content-length, no citation-omitted header - so
+      // the passthrough guard above never sees it, and a measured window of one test series
+      // returned 133,483,150 bytes: past the isolate's 128 MB limit, before the ~1.8x this
+      // tool's own line pipeline adds on top (R620). The read stops at the cap instead.
+      const { text: csv, capped } = await readCapped(r, MCP_MAX_TEXT_BYTES);
+      if (capped) {
+        return { content: [{ type: "text", text: `${series_id}: the response passed ${(MCP_MAX_TEXT_BYTES / (1024 * 1024)).toFixed(0)} MB of CSV and was stopped - reading it whole would exceed this tool's memory limit and end the session. Ask again for a narrower date_from/date_to window, or use the Python client (pip install econdl) for the full series.` }], isError: true };
+      }
       // Comment lines start with '#': the citation preamble (never on raw=1) and, on a response
       // with no content-length that is not a gzip passthrough, the mandatory completeness line
       // `# econdl-complete rows=N` (CONTRACT.md 2026-09-02): a server-side abort reaches us as a
@@ -230,6 +309,12 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       const dataLines = nonblank.filter((l) => !l.startsWith("#"));
       if (mk && dataLines.length - 1 !== Number(mk[1])) {
         return { content: [{ type: "text", text: `${series_id}: the completeness line says ${mk[1]} rows but ${dataLines.length - 1} were received - the transfer was cut off; retry.` }], isError: true };
+      }
+      if (dataLines.length <= 1) {
+        // An empty 200 is forbidden by the contract, and this was the only reference client
+        // that rendered one as a successful empty table - a `content-length: 0` passes every
+        // size guard there is (R620). The Python client raises EmptyBody here.
+        return { content: [{ type: "text", text: `${series_id}: the server returned no data rows at all. The contract forbids an empty 200, so this is a fault, not an empty series: retry, and if it persists the series is not being served correctly.` }], isError: true };
       }
       const header = dataLines[0] ?? "";
       const rows = dataLines.slice(1);
@@ -277,7 +362,8 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       if (!r.ok) return relayError(r, "list_econ_sources");
       // /v1/sources returns {total, sources:[...]}, not a bare array — casting
       // the body to an array made .filter throw on every call (verified live).
-      const payload = await r.json() as { sources?: Array<Record<string, any>> };
+      const payload = await jsonCapped<{ sources?: Array<Record<string, any>> }>(r);
+      if (!payload) return { content: [{ type: "text", text: "The source list came back larger than this tool can hold, or unparseable. Retry; if it persists the endpoint is at fault." }], isError: true };
       let list = payload.sources ?? [];
       if (contains) {
         const c = contains.toLowerCase();
@@ -305,7 +391,8 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     }, async ({ source }) => {
       const r = await upstream(`${ECON}/v1/last-updates`);
       if (!r.ok) return relayError(r, "get_data_freshness");
-      const d = await r.json() as { generated?: string; datasets: Array<Record<string, any>> };
+      const d = await jsonCapped<{ generated?: string; datasets: Array<Record<string, any>> }>(r);
+      if (!d) return { content: [{ type: "text", text: "The update ledger came back larger than this tool can hold, or unparseable. Retry; if it persists the endpoint is at fault." }], isError: true };
       let rows = d.datasets ?? [];
       if (source) rows = rows.filter((x) => x.source === source);
       if (!rows.length) return text(`No update-ledger rows${source ? ` for '${source}'` : ""}. Sources join the automated rollout in phases; absent = still on its verified initial load.`);
