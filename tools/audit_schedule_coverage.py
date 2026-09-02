@@ -287,6 +287,45 @@ def discontinued():
     return {e["source_id"]: e for e in (d.get("sources") or [])}
 
 
+
+# WHAT THE cbs_nl CRAWLER HOLDS BACK. The crawler keeps a served copy while it records why it
+# did not replace it: over the re-pull ceiling (_repull_deferred.json), a re-pull that produced
+# nothing (_repull_zero.json), a re-pull refused by the replacement floor or undatable
+# (_repull_refused.json), an operator's accepted shrink not yet acted on (_accept_shrink.json),
+# and re-pulls in flight (<table>.repull.json). R592/R596: those registries were write-only -
+# the deferred list had sat 9 days with no decision and nothing named it.
+CBS_DIR = os.path.join(ROOT, "data", "clean_full", "cbs_nl")
+CBS_REGISTRIES = (
+    ("_repull_deferred.json", "over the automatic re-pull ceiling - needs an explicit yes"),
+    ("_repull_zero.json", "re-pull produced ZERO observations - served copy kept"),
+    ("_repull_refused.json", "re-pull refused (replacement floor / undatable / withdrawn) - served copy kept"),
+    ("_accept_shrink.json", "accepted shrink pending the next pass"),
+)
+
+
+def cbs_held_back() -> list:
+    """[(label, count, oldest_stamp)] for every non-empty cbs_nl registry, plus live markers."""
+    import glob
+    import json as _json
+    import time as _time
+    out = []
+    for fname, label in CBS_REGISTRIES:
+        try:
+            with open(os.path.join(CBS_DIR, fname), encoding="utf-8") as fh:
+                reg = _json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not reg:
+            continue
+        stamps = [v.get("noted", "") for v in reg.values() if isinstance(v, dict)]
+        out.append((f"{fname}: {label}", len(reg), min(stamps) if stamps else ""))
+    markers = glob.glob(os.path.join(CBS_DIR, "*.repull.json"))
+    if markers:
+        oldest = min(os.path.getmtime(m) for m in markers)
+        out.append(("live re-pull markers (*.repull.json)", len(markers),
+                    _time.strftime("%Y-%m-%dT%H:%M:%S", _time.localtime(oldest))))
+    return out
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--verbose", action="store_true",
@@ -311,6 +350,12 @@ def main() -> int:
     print(f"SERVED  (both)          {len(served):>6,}   {served_series:>12,} series")
     print()
     print(f"SCHEDULED of served     {len(covered):>6,}   {covered_series:>12,} series")
+    held = cbs_held_back()
+    if held:
+        print()
+        print("cbs_nl HELD BACK by the crawler (a served copy behind CBS until someone decides):")
+        for label, n, oldest in held:
+            print(f"   {n:>5,}  {label}" + (f"   oldest {oldest}" if oldest else ""))
     # SPLIT THE GAP INTO WORK AND ARCHIVAL. Both are genuinely NOT auto-updating — that total is
     # unchanged and still printed first — but a dataset the publisher has RETIRED cannot be fixed
     # by building a fetcher, so leaving it at the top of the work queue makes the largest apparent
