@@ -15,7 +15,7 @@ Run: python jobs/ingest_cbs_nl.py
      python jobs/ingest_cbs_nl.py --only 83439NED,37230NED
 """
 from __future__ import annotations
-import datetime as dt, json, os, sys, time, urllib.parse
+import datetime as dt, json, os, re, sys, time, urllib.parse
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
 
@@ -122,6 +122,8 @@ REPLACE_FLOOR = 0.5                     # a re-pull that keeps < 50% of the serv
 ACCEPT_FILE = "_accept_shrink.json"     # the operator's explicit yes to a shrink, IN THE STORE (R598):
 FORCE_SWEEP = False                     # --force-sweep: run the marker sweep on a < 90% catalogue listing
 PROBE_FAIL_FILE = "_probe_failures.json"
+TITLE_FAIL_FILE = "_title_failures.json"
+TITLE_FAIL_LIMIT = 5      # consecutive title-fetch failures before the table is recorded upstream-broken (R623)
 
 # A revised table is re-pulled automatically only up to this size. Set from the MEASURED
 # distribution of the 329 tables CBS had revised on 2026-08-24, not from a round number:
@@ -594,7 +596,21 @@ def discards_since(before: dict) -> dict:
 
 
 def parse_cbs_period(s: str) -> dt.date | None:
-    """Parse CBS period codes.
+    """The date of a CBS period code, or None. See parse_cbs_period_ex for the span tag."""
+    return parse_cbs_period_ex(s)[0]
+
+
+def parse_cbs_period_ex(s: str) -> tuple[dt.date | None, str | None]:
+    """(date, span_tag) for a CBS period code.
+
+    span_tag is None for an ordinary period and a short code ('G3', 'XX23', 'VJ08') for a
+    MULTI-PERIOD AGGREGATE. The caller puts the tag in the series key, because two aggregates
+    of different length can start in the same year ('2004G200' and '2004G500' both begin in
+    2004) and would otherwise land on one (key, date) with different values - the R573 bug.
+    Aggregates are dated to the FIRST day of their span, so they can never collide with the
+    31 December an annual period gets either.
+
+    Parse CBS period codes.
     Annual:      '2022JJ00' or '2022'
     Monthly:     '2022MM01'
     Quarterly:   '2022KW01'
@@ -630,23 +646,30 @@ def parse_cbs_period(s: str) -> dt.date | None:
             # formats, where real periods were being thrown away. This is the opposite case:
             # refusing to invent a period that was never published.
             y = int(s)
-            return dt.date(y, 12, 31) if _year_ok(y) else None
+            return (dt.date(y, 12, 31), None) if _year_ok(y) else (None, None)
         # Exact date, YYYYMMDD. MUST precede the generic <year><code> branch, which
         # would read '19990924' as year 1999 + code '09' and fall through to None.
         if len(s) == 8 and s.isdigit():
             y = int(s[:4])
-            return dt.date(y, int(s[4:6]), int(s[6:8])) if _year_ok(y) else None
+            return (dt.date(y, int(s[4:6]), int(s[6:8])), None) if _year_ok(y) else (None, None)
+        # A BARE-DIGIT CODE OF 5 OR 6 DIGITS IS NOT DATABLE FROM ITS SHAPE. Two tables use
+        # the identical shape for different periods (read live from CBS, 2026-09-02):
+        #   7330eng  '19621' is titled "1996 1st quarter"  (the prefix 196 means 1996)
+        #   71715eng '19981' is titled "1998 1st quarter"  (the prefix 1998 means 1998)
+        # Reading the first by shape gives 1962-01-01 - a fabricated date 34 years early,
+        # written as data. resolve_period() dates these from CBS's own Title instead; here
+        # they stay None, and the wrapper counts them.
         if len(s) >= 6 and s[:4].isdigit():
             yr = int(s[:4]); rest = s[4:].upper()
             if not _year_ok(yr):
-                return None
+                return (None, None)
             if rest[:2] == "JJ":          # annual
-                return dt.date(yr, 12, 31)
+                return (dt.date(yr, 12, 31), None)
             # Dutch academic year yr/yr+1, dated to its END — consistent with JJ
             # dating an annual period to its last day, and correct for these tables,
             # whose measures (graduates, enrolments) are realised when the year ends.
             if rest[:2] == "SJ":          # schooljaar
-                return dt.date(yr + 1, 7, 31)
+                return (dt.date(yr + 1, 7, 31), None)
             if rest == "X000":
                 # CBS's generic "other period" slot: 15 meanings across 55 tables ("week 0
                 # (3 dagen)", "januari-september", "Standaardfout", 5-year spans, "Oude
@@ -656,22 +679,28 @@ def parse_cbs_period(s: str) -> dt.date | None:
                 # served content is unchanged, and every occurrence is COUNTED so the
                 # title-driven rule (open) can be sized. Never silently.
                 _discard("X000-legacy-dated", s)
-                return dt.date(yr + 2, 7, 31)
+                return (dt.date(yr + 2, 7, 31), None)
             # Span of TWO academic years starting at yr, so it ends with the year
             # beginning yr+1 -> July of yr+2 ('2003X001' is titled "2003/'04 - 2004/'05").
             if rest[:2] == "X0":          # two-school-year span
-                return dt.date(yr + 2, 7, 31)
+                return (dt.date(yr + 2, 7, 31), None)
+            # MULTI-PERIOD AGGREGATES (G2-G5, XX, TM, VJ) ARE NOT DATED HERE. Their shape
+            # does not carry their meaning, and one of them proved it: 70267NED titles
+            # '1996VJ08' "1995 september - 1996 augustus" (the code's month ENDS the year)
+            # while 70269NED titles '1990VJ04' "1990 mei - 1991 april" (the code's month
+            # STARTS it). A shape rule wrote 1989-05-01 for a period beginning 1990-05-01.
+            # resolve_period() reads CBS's Title for these; see _SPAN_FAMILIES.
             if rest[:2] == "KW":          # quarter
                 q = int(rest[2:4]) if rest[2:4].isdigit() else 0
-                return dt.date(yr, (q-1)*3+1, 1) if 1 <= q <= 4 else None
+                return (dt.date(yr, (q-1)*3+1, 1), None) if 1 <= q <= 4 else (None, None)
             if rest[:2] == "MM":          # month
                 m = int(rest[2:4]) if rest[2:4].isdigit() else 0
-                return dt.date(yr, m, 1) if 1 <= m <= 12 else None
+                return (dt.date(yr, m, 1), None) if 1 <= m <= 12 else (None, None)
             if rest[:2] == "HJ":          # half-year: 'HJ01' = "1e halfjaar", 'HJ02' = "2e halfjaar"
                 # R573: `rest[2:3]` read the '0' of 'HJ01', so BOTH halves dated to 1 July and
                 # 86156NED held 455,024 duplicate (key, date) pairs with conflicting values.
                 h = int(rest[2:4]) if rest[2:4].isdigit() else 0
-                return dt.date(yr, 1 if h == 1 else 7, 1) if h in (1, 2) else None
+                return (dt.date(yr, 1 if h == 1 else 7, 1), None) if h in (1, 2) else (None, None)
             if rest[:1] == "W" and rest[1:].isdigit():
                 # Week codes are 'W<k><nn>': k = weeks per period, nn = the period's ordinal.
                 #   W1nn  one week    (70895ned: '1971W101' "1971 week 1" .. 'W153' "week 53 (1 dag)")
@@ -689,7 +718,7 @@ def parse_cbs_period(s: str) -> dt.date | None:
                     k, nn = int(rest[1]), int(rest[2:4])
                     if k == 0 or nn == 0:
                         _discard("W-zero", s)
-                        return None
+                        return (None, None)
                     if k == 4 and nn >= 14:
                         # 53-ISO-week years carry variants beside the regular codes (37456,
                         # 72006ned, 2004/2009): W414 "week 49 - 53 (5 weken)" shares its START
@@ -705,9 +734,9 @@ def parse_cbs_period(s: str) -> dt.date | None:
                             w = 53
                         elif nn == 15 and _has_53_weeks(yr):
                             _discard("W4-52wk-average-in-53wk-year-dated-30-dec", s)
-                            return dt.date(yr, 12, 30)
+                            return (dt.date(yr, 12, 30), None)
                         else:
-                            return dt.date(yr, 12, 31)
+                            return (dt.date(yr, 12, 31), None)
                     else:
                         w = (nn - 1) * k + 1
                 else:                                      # legacy 2-digit form, kept for safety
@@ -715,13 +744,287 @@ def parse_cbs_period(s: str) -> dt.date | None:
                 d = _week_start(yr, w)
                 if d is None:
                     _discard("W-out-of-range", s)
-                return d
+                return (d, None)
         # ISO date
         if len(s) == 10 and s[4] == "-":
-            return dt.date.fromisoformat(s[:10])
+            return (dt.date.fromisoformat(s[:10]), None)
     except Exception:
         pass
+    return (None, None)
+
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["january", "february", "march", "april", "may", "june", "july", "august", "september",
+     "october", "november", "december"], 1)}
+_MONTHS.update({m: i for i, m in enumerate(
+    ["januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus", "september",
+     "oktober", "november", "december"], 1)})
+_T_YEAR = re.compile(r"(\d{4})\Z")
+_T_MONTH_RANGE = re.compile(r"(\d{4})\s+([A-Za-z]+)\s*[-\u2013\u2014]\s*(\d{4})\s+([A-Za-z]+)\Z")
+_T_YEAR_RANGE = re.compile(r"(\d{4})\s*[/\-\u2013\u2014]\s*(\d{4})\Z")
+_T_TOT_RANGE = re.compile(r"(\d{4})\s+(?:tot|t/m|until|through)\s+(?:en\s+met\s+)?(\d{4})\Z", re.I)
+_RANGE_MARKS = ("-", "\u2013", "\u2014", "/", " tot ", " t/m ", " until ", " through ")
+_T_QUARTER = re.compile(r"(\d{4})[ ,]+([1-4])\s*(?:e|st|nd|rd|th)\s*(?:kwartaal|quarter)\Z", re.I)
+_T_MONTH = re.compile(r"(\d{4})\s+([A-Za-z]+)\Z")
+_T_HALF = re.compile(r"(\d{4})[ ,]+([12])\s*e\s*halfjaar\Z", re.I)
+
+
+def parse_cbs_title(title: str) -> tuple[dt.date | None, str | None]:
+    """Date a period from CBS's OWN Title for the code.
+
+    Used for codes whose digits do not carry their meaning. All 20 title shapes present in
+    the affected tables are covered (measured 2026-09-02 over 877 code/title pairs):
+        '2001'  '2008*'                      -> the year
+        '1957 January' .. '1957 December'    -> the month (English and Dutch month names)
+        '1998 1st quarter' .. '4th quarter'  -> the quarter
+        '2001, 1e kwartaal'  '2008, 1e kwartaal*'
+    A trailing '*' is CBS's provisional marker, not part of the period. Anything else returns
+    None: an unreadable title is a code we refuse to date, never one we guess."""
+    t = (title or "").strip().rstrip("*").strip()
+    if not t:
+        return (None, None)
+    # RANGES FIRST, AND TO THEIR START. The month and quarter patterns are anchored at the END
+    # of the title, so "1995 september - 1996 augustus" would otherwise return 1996-08-01 - the
+    # far end of the period. A range is dated at its first day, like every other aggregate.
+    m = _T_MONTH_RANGE.match(t)
+    if m and m.group(2).lower() in _MONTHS:
+        yr, mo = int(m.group(1)), _MONTHS[m.group(2).lower()]
+        return (dt.date(yr, mo, 1), None) if _year_ok(yr) else (None, None)
+    m = _T_YEAR_RANGE.match(t) or _T_TOT_RANGE.match(t)
+    if m:
+        yr = int(m.group(1))
+        return (dt.date(yr, 1, 1), None) if _year_ok(yr) else (None, None)
+    if any(mark in t.lower() for mark in _RANGE_MARKS):
+        # A range this parser does not understand must not be read from one of its ends.
+        return (None, None)
+    m = _T_QUARTER.search(t)
+    if m:
+        yr, q = int(m.group(1)), int(m.group(2))
+        return (dt.date(yr, (q - 1) * 3 + 1, 1), None) if _year_ok(yr) else (None, None)
+    m = _T_HALF.search(t)
+    if m:
+        yr, h = int(m.group(1)), int(m.group(2))
+        return (dt.date(yr, 1 if h == 1 else 7, 1), None) if _year_ok(yr) else (None, None)
+    m = _T_MONTH.search(t)
+    if m and m.group(2).lower() in _MONTHS:
+        yr, mo = int(m.group(1)), _MONTHS[m.group(2).lower()]
+        return (dt.date(yr, mo, 1), None) if _year_ok(yr) else (None, None)
+    m = _T_YEAR.fullmatch(t)
+    if m:
+        yr = int(m.group(1))
+        return (dt.date(yr, 12, 31), None) if _year_ok(yr) else (None, None)
+    return (None, None)
+
+
+_SPAN_G = ("G2", "G3", "G4", "G5")
+
+
+def span_tag(code: str) -> str | None:
+    """The identity discriminator for a multi-period aggregate, from the CODE.
+
+    The DATE of these comes from CBS's Title (their shape lies), but the tag may come from the
+    code: it exists only to keep a 3-year average out of the annual series, and two codes that
+    differ must stay two series. Unseen XX/TM suffixes are kept distinct for the same reason."""
+    c = (code or "").strip().upper()
+    if len(c) >= 6 and c[:4].isdigit():
+        fam = c[4:6]
+        if fam in _SPAN_G:
+            return fam
+        if fam in ("XX", "TM", "VJ"):
+            return c[4:8]
     return None
+
+
+def resolve_period(code: str, titles: dict | None) -> tuple[dt.date | None, str | None]:
+    """The date of one period cell: by code where the code carries its meaning, by CBS's
+    Title where it does not.
+
+    A bare-digit code of 5 or 6 digits is the ambiguous case (see parse_cbs_period_ex), so it
+    is resolved from the Title ONLY. With no title map - the dimension fetch failed - such a
+    code is dropped and counted, because dating it by shape fabricates data."""
+    c = (code or "").strip()
+    tag = span_tag(c)
+    if tag or (c.isdigit() and len(c) in (5, 6)):
+        t = (titles or {}).get(c)
+        if t is None:
+            _discard("no-title-for-code:" + (tag or "len%d" % len(c)), c)
+            return (None, None)
+        d, _ = parse_cbs_title(t)
+        if d is None:
+            _discard("unreadable-title:" + str(t)[:40], c)
+            return (None, None)
+        if tag:
+            _discard("span-dated-from-title:" + tag, c)
+        return (d, tag)
+    d, tag = parse_cbs_period_ex(c)
+    # FREE POPULATION COUNT, no extra request. Some annual codes carry a POINT title -
+    # 07223ENG titles '1993JJ00' "January 1st 1993" while the code is dated 31 December, the
+    # catalogue-wide annual convention. That is a convention question, not a defect, and it
+    # should be decided on the whole population rather than on the ten codes that happened to
+    # be looked at (R621). So it is counted whenever the title map is ALREADY in hand for
+    # this table, and never fetched for the purpose.
+    if d is not None and len(c) >= 6 and c[4:6].upper() == "JJ" and getattr(titles, "fetched", False):
+        t = titles.get(c) if titles is not None else None
+        if t and _T_MONTH.search(str(t).strip().rstrip("*").strip()):
+            _discard("annual-code-with-point-title", c)
+    return (d, tag)
+
+
+class TitleMap:
+    """CBS's Key -> Title map for one table, fetched ONCE and only if a code needs it.
+
+    Two jobs, and the second is the important one. It is lazy, so a table whose codes all
+    carry their own meaning (the overwhelming majority) pays no metadata request at all. And
+    it REMEMBERS a failed fetch, so the caller can tell "CBS says this code has no title"
+    apart from "we never got the titles" - which are the same thing to resolve_period and
+    opposite things to the crawl: the first is a code to drop, the second is a table to retry
+    (R621). Before this, a single failed request silently emptied an aggregate-only table into
+    the no-retry ZERO registry, or dropped the aggregates out of a served table while keeping
+    98% of its rows - comfortably above the replace floor, so the loss was written and the
+    stamp advanced."""
+
+    def __init__(self, table_id: str, period_col: str):
+        self.table_id = table_id
+        self.period_col = period_col
+        self._map = None
+        self.fetched = False
+        self.failed = False
+
+    def get(self, code, default=None):
+        if not self.fetched:
+            self.fetched = True
+            self._map = get_period_titles(self.table_id, self.period_col)
+            self.failed = self._map is None
+            if self.failed:
+                log(f"  {self.table_id}: period-title fetch FAILED - the table needs titles to "
+                    f"date its codes, so nothing is concluded from this pass (retried next run)")
+        if self._map is None:
+            return default
+        return self._map.get(code, default)
+
+
+def get_period_titles(table_id: str, period_col: str) -> dict | None:
+    """CBS's Key -> Title map for a table's period dimension, or None if it cannot be read."""
+    data = get_json(f"{BASE}/{table_id}/{period_col}?$format=json")
+    if not data:
+        return None
+    vals = data.get("value", []) if isinstance(data, dict) else data
+    if not isinstance(vals, list):
+        return None
+    out = {}
+    for v in vals:
+        if isinstance(v, dict) and v.get("Key") is not None:
+            out[str(v["Key"]).strip()] = v.get("Title")
+    return out or None
+
+
+def _family_of(code: str) -> str:
+    """The family slice CBS uses: YYYY + 2 characters. Anything else is reported whole so an
+    unreadable code can be found in the log by its own text."""
+    c = (code or "").strip()
+    return c[4:6].upper() if len(c) >= 6 and c[:4].isdigit() else f"len{len(c)}:{c[:8]}"
+
+
+_PARSE_EX_RAW = parse_cbs_period_ex
+
+
+def parse_cbs_period_ex(s: str) -> tuple[dt.date | None, str | None]:   # noqa: F811
+    """Wrap the parser so that NO code is ever discarded silently (R615/R616).
+
+    Every "crawled N rows and wrote ZERO observations" line this crawler has ever printed
+    reported discards={}, because only four families called _discard and an unknown code just
+    returned None. 311,235 rows over 66 tables were lost that way and the counters showed
+    nothing. An unreadable code is now counted under its own family, always."""
+    d, tag = _PARSE_EX_RAW(s)
+    if d is None and (s or "").strip():
+        _discard("unparsed:" + _family_of(s), s)
+    return d, tag
+
+
+_NUM_INT = re.compile(r"-?\d+\Z")
+_NUM_DOT = re.compile(r"-?\d*\.\d+\Z")
+_NUM_COMMA = re.compile(r"-?\d*,\d+\Z")
+
+
+def coerce_topic(v, col: str):
+    """A CBS Topic value as a float, or None when it is not a number.
+
+    CBS declares 217 of the Topic columns in this population as Datatype String and sends
+    their numbers as text. The old loop kept a column only `isinstance(v, (int, float))`, so
+    every one of those values was dropped and nothing counted it: 20 tables served zero rows
+    while their measure columns were fully populated upstream.
+
+    The three text forms below were MEASURED over 2,000 rows of every affected table, not
+    guessed: 16,277 int-strings, 1,131 dot decimals and 2,406 values with a DUTCH DECIMAL
+    COMMA ('3,0', '54,1'). Every comma value has exactly one comma with exactly one digit
+    after it and no column mixes comma with dot, so the comma is a decimal point. Deleting it
+    (the obvious "strip the separators" fix) would have multiplied those 2,406 values by ten.
+
+    '.' and '' are CBS's missing markers. A Topic can also be genuinely textual (municipality
+    codes 'GM0213', dates '01 jan 1830', province names) - 2,989 such values here - and those
+    must never become numbers."""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        _discard("value-boolean:" + col, str(v))
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if s == "" or s == ".":
+        _discard("value-missing", s or "''")
+        return None
+    if _NUM_INT.match(s):
+        return float(s)
+    if _NUM_DOT.match(s):
+        # Mirror of the comma guard: '1.234' is 1.234 in one convention and 1234 in the other,
+        # and CBS publishes in both. All 1,131 dot decimals measured carry exactly ONE digit,
+        # so refusing three costs no measured value and closes the 1000x hole.
+        if len(s.split(".")[1]) > 2:
+            _discard("value-ambiguous-dot:" + col, s)
+            return None
+        return float(s)
+    if _NUM_COMMA.match(s):
+        # A comma with THREE digits after it is ambiguous (1,234 is 1.234 in Dutch and 1234
+        # in English) and no value in this population has more than one, so guessing is not
+        # justified: count it and drop it, loudly, rather than write a number 1000x wrong.
+        if len(s.split(",")[1]) > 2:
+            _discard("value-ambiguous-comma:" + col, s)
+            return None
+        return float(s.replace(",", "."))
+    _discard("value-nonnumeric:" + col, s)
+    return None
+
+
+def get_table_schema(table_id: str) -> dict | None:
+    """CBS's own column schema for a table, from /DataProperties.
+
+    Returns {"period_col": <TimeDimension or None>, "topics": {name: datatype},
+             "dims": [names]} - the publisher's classification, which is authoritative where
+    the old name-pattern heuristic was a guess. `Type` is one of TimeDimension, Dimension,
+    GeoDimension, Topic (the measures) and TopicGroup (a heading, not a column)."""
+    data = get_json(f"{BASE}/{table_id}/DataProperties?$format=json")
+    if not data:
+        return None
+    props = data.get("value", []) if isinstance(data, dict) else data
+    if not isinstance(props, list) or not props:
+        return None
+    period_col, topics, dims = None, {}, []
+    for p in props:
+        if not isinstance(p, dict):
+            continue
+        key, typ = p.get("Key"), (p.get("Type") or "")
+        if not key:
+            continue
+        if typ == "TimeDimension" and period_col is None:
+            period_col = key
+        elif typ == "Topic":
+            topics[key] = p.get("Datatype") or "?"
+        elif typ.endswith("Dimension"):
+            dims.append(key)
+    if not topics:
+        return None            # nothing to measure: fall back to the old heuristic
+    return {"period_col": period_col, "topics": topics, "dims": dims}
 
 
 def get_table_columns(table_id: str) -> list[str] | None:
@@ -767,7 +1070,7 @@ def period_keys(table_id: str, period_col: str = "Perioden") -> list[str]:
 _PERIOD_EXACT = ("perioden", "periods", "jaar", "period", "datum", "t_period")
 
 
-def _find_period_col(table_id: str, cols: list[str]) -> str | None:
+def _find_period_col(table_id: str, cols: list[str], allowed: list | None = None) -> str | None:
     """The column carrying the observation period, or None if the table has none.
 
     Exact-name matching alone is not enough. CBS names the time dimension after what it
@@ -780,6 +1083,17 @@ def _find_period_col(table_id: str, cols: list[str]) -> str | None:
     and `MinderDan10VanDeTijd_9` (a measure) out — both merely contain "tijd", neither
     parses as a period.
     """
+    # `allowed`, when given, is the set of columns CBS DECLARES as dimensions. Only those may
+    # be considered: 70739ned has no period dimension at all, and the value probe below picked
+    # its Topic column 'BegindatumSorteerveld_6' - a SORT KEY - so every observation would have
+    # been dated by a sort field (R616). Older tables (7336eng, 7330eng, 37765arw, 71715eng,
+    # 7478eng, 83492NED, 85174NED) declare their period column as a plain Dimension named
+    # 'Perioden'/'Periods' rather than a TimeDimension, so refusing everything without a
+    # TimeDimension would have thrown those seven away instead.
+    if allowed is not None:
+        cols = [c for c in cols if c in set(allowed)]
+        if not cols:
+            return None
     exact = next((c for c in cols if c.lower() in _PERIOD_EXACT), None)
     if exact:
         return exact
@@ -866,8 +1180,22 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
             log(f"  {table_id}: column probe failed during a re-pull ({k} consecutive) - marker closed, will retry")
         return 0  # table unavailable
 
-    # Identify period and value columns
-    period_col = _find_period_col(table_id, cols)
+    # Identify period and value columns. CBS publishes this itself in /DataProperties, and
+    # its answer beats the name heuristic: the TimeDimension is named 'Perioden' in 49 of
+    # these tables, 'Periods' in 8 and 'Period' in 1, and 8 have none at all.
+    tschema = get_table_schema(table_id)
+    topics = tschema["topics"] if tschema else None
+    if tschema:
+        # CBS's TimeDimension wins outright. Where it declares none, the search is confined to
+        # the columns it declares as DIMENSIONS - never a Topic - because the value probe once
+        # selected 70739ned's Topic 'BegindatumSorteerveld_6', a sort key (R616).
+        period_col = tschema.get("period_col") or _find_period_col(table_id, cols, tschema["dims"])
+    else:
+        period_col = _find_period_col(table_id, cols)
+    if topics is not None:
+        topics = {k: v for k, v in topics.items() if k in cols}
+        if not topics:
+            topics = None
     discards_before = dict(PERIOD_DISCARDS)   # AFTER the probe (R592): per-table delta for DONE / ZERO lines
     if period_col is None:
         # NO TIME COLUMN -> every row would be discarded, because the row loop does
@@ -880,7 +1208,8 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
         # ingestible as a time series, and finding that out costs one metadata call,
         # not 59 million rows.
         log(f"  SKIP {table_id}: no period column in {len(cols)} columns "
-            f"(cannot date observations) — not crawled")
+            f"(CBS declares no TimeDimension for it — it is a cross-tabulation, not a time "
+            f"series, so it has no observations to contribute) — not crawled")
         if os.path.exists(out_path) and repull_in_flight(out_dir, table_id):
             end_repull(out_dir, table_id)   # structural: recorded, not retried until CBS changes it
             _note_vintage(out_dir, REFUSED_FILE, table_id, modified or "", {"reason": "undatable"})
@@ -888,6 +1217,10 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
                 drop_accept(out_dir, table_id, "the table has no period column (undatable)")
             log(f"  {table_id}: held copy stays; vintage recorded as undatable in {REFUSED_FILE}")
         return 0
+    # CBS's own Title for every period code, for the codes whose digits do not carry their
+    # meaning (one request per table; None if it cannot be read).
+    period_titles = TitleMap(table_id, period_col)
+
     # CBS TypedDataSet has numeric values in integer or decimal columns
     # Skip metadata/code columns (non-numeric) by checking name patterns
     skip_cols = {"ID", "StringValue", "ColorCode", "Status",
@@ -917,6 +1250,7 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
 
     all_keys, all_dates, all_vals = [], [], []
     fetch_error = False
+    ckpt_part_val = None      # the partition VALUE a checkpoint was taken in (R626)
     skip = 0
     parts = 0
     written = 0
@@ -938,6 +1272,7 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
                 pq.read_metadata(part_path(i))  # raises if missing or corrupt
             skip, parts, written = int(ck["skip"]), int(ck["parts"]), int(ck["written"])
             pidx = int(ck.get("pidx", 0))
+            ckpt_part_val = ck.get("part_val")
             log(f"  {table_id}: resuming at skip={skip:,} ({parts} parts, {written:,} obs already flushed)")
         except Exception:
             for i in range(1000):
@@ -952,15 +1287,66 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
     if period_col:
         total = table_row_count(table_id)
         if total and total >= PARTITION_MIN_ROWS:
-            pk = period_keys(table_id, period_col)
+            # De-duplicated: `list.index` below takes the FIRST match, so a repeated period
+            # key would resume backwards and re-crawl everything between it and the real
+            # position, duplicating rows in the concat (R627).
+            pk = list(dict.fromkeys(period_keys(table_id, period_col)))
             if len(pk) > 1:
                 partitions = pk
                 log(f"  {table_id}: {total:,} rows -> partitioning by {period_col} "
                     f"into {len(pk)} slices (avoids O(offset) deep-$skip cost)")
 
+    # THE PARTITION VALUE WINS OVER ITS INDEX. `pidx` indexes a list re-fetched every pass;
+    # CBS is oldest-first and appends, so the index holds today, but ONE historical insertion
+    # would shift every later index and either skip a partition (loss) or re-read it
+    # (duplicates). The value is unambiguous while it is still published (R626).
+    if ckpt_part_val is not None and len(partitions) > 1:
+        if ckpt_part_val in partitions:
+            found = partitions.index(ckpt_part_val)
+            if found != pidx:
+                log(f"  {table_id}: the partition list moved - resuming on VALUE "
+                    f"{ckpt_part_val!r} (index {found}; the checkpoint said {pidx})")
+                pidx = found
+        else:
+            log(f"  {table_id}: checkpointed partition {ckpt_part_val!r} is no longer in CBS's "
+                f"list - restarting the table rather than resuming on a stale index")
+            clear_partials(out_dir, table_id)
+            pidx = skip = parts = written = 0
+
     last_ckpt_skip = skip
     rows_crawled_total = 0   # R592: `skip` is a per-partition offset and is 0 at every loop exit
     broken_now = False
+
+    def finish_partition():
+        """End the current partition: FLUSH what is buffered, then checkpoint the truth.
+
+        ONE routine, because there were two. A partition ends either on a short page or on an
+        empty one - the second whenever its row count is an exact multiple of PAGE, which for a
+        table whose rows-per-period is a product of dimension cardinalities is EVERY partition
+        - and the R626 flush went into the short-page branch alone. The empty-page branch kept
+        checkpointing `parts` and `written` (which describe DISK) beside pidx+1 while the
+        partition's rows were still in memory, and omitted `part_val` as well, so a rewind or a
+        guard kill lost them and the value-resume protection was absent (R627).
+
+        Returns the new (pidx, skip, last_ckpt_skip, parts, written) via the enclosing scope.
+        """
+        nonlocal pidx, skip, last_ckpt_skip, parts, written, all_keys, all_dates, all_vals
+        if all_vals:
+            batch = pa.table({
+                "series_key": pa.array(all_keys,  pa.string()),
+                "obs_date":   pa.array(all_dates, pa.date32()),
+                "value":      pa.array(all_vals,  pa.float64()),
+            })
+            pq.write_table(batch, part_path(parts), compression="zstd")
+            parts += 1
+            written += len(all_vals)
+            all_keys, all_dates, all_vals = [], [], []
+        pidx += 1
+        skip = 0
+        last_ckpt_skip = 0
+        with open(ckpt_path, "w") as f:
+            json.dump({"skip": 0, "parts": parts, "written": written, "pidx": pidx,
+                       "part_val": partitions[pidx] if pidx < len(partitions) else None}, f)
     while pidx < len(partitions):
         part_val = partitions[pidx]
         flt = ""
@@ -977,6 +1363,23 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
                 broken_now = True
                 if os.path.exists(out_path) and repull_in_flight(out_dir, table_id):
                     end_repull(out_dir, table_id)   # R598: registered once, and not left open for 7 days
+                # CLEAR THE PARTS ONLY IF THIS CRAWL STARTED THEM. This branch writes no
+                # checkpoint, so anything IT flushed is addressed by nothing, and left behind
+                # those files feed the `<table>.part*.parquet` glob in state_recently_touched -
+                # the owner check gating NOT_RETRIED cleanup - making the table look in-flight
+                # for STALE_STATE_HOURS. That is why 285 orphan parts sit across 120 tables
+                # today, 166 of them under 84910NED (R636).
+                #
+                # BUT A RESUMED CRAWL'S PARTS ARE NOT THIS CRAWL'S TO DELETE. An existing
+                # checkpoint addresses them: 85477NED carries parts=70 and 35,518,400
+                # observations, and the largest table in the store is the one CBS is most
+                # likely to 500 on. Deleting them unconditionally destroys exactly the work
+                # this round refused to discard at copy-in. R596's "a 500 is not resumable" was
+                # about not writing a NEW checkpoint that never advances; it does not license
+                # deleting an OLD one, and keeping it cannot recreate the 315-run loop because
+                # broken_recently blocks the table for seven days either way (R640).
+                if not os.path.exists(ckpt_path):
+                    clear_partials(out_dir, table_id)
             else:
                 # R596: a failed FIRST page (403, timeout) concludes nothing either - the old
                 # guard `skip > 0 or pidx > 0` let it fall through to the ZERO path and freeze
@@ -985,17 +1388,17 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
             break
         rows = data.get("value", []) if isinstance(data, dict) else data
         if not rows:
-            # this partition is exhausted -> advance to the next, offset back to 0
-            pidx += 1
-            skip = 0
-            last_ckpt_skip = 0
-            with open(ckpt_path, "w") as f:
-                json.dump({"skip": 0, "parts": parts, "written": written, "pidx": pidx}, f)
+            # This partition is exhausted -> advance to the next, offset back to 0. An empty
+            # page is how a partition whose length is an exact multiple of PAGE ends, so this
+            # branch flushes exactly like the short-page one (R627).
+            finish_partition()
+            if pidx >= len(partitions):
+                break
             continue
 
         for row in rows:
             period_raw = row.get(period_col or "Perioden", "")
-            d = parse_cbs_period(str(period_raw).strip())
+            d, span_tag = resolve_period(str(period_raw).strip(), period_titles)
             if d is None:
                 continue
             # Build key from all non-numeric / non-period columns
@@ -1003,33 +1406,75 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
             for col in cols:
                 if col in skip_cols or col == period_col:
                     continue
+                if topics is not None and col in topics:
+                    continue                      # a measure, never part of the key
                 v = row.get(col)
                 if v is None:
                     continue
-                if isinstance(v, (int, float)):
-                    continue  # numeric → candidate value
+                if topics is None and isinstance(v, (int, float)):
+                    continue  # numeric → candidate value (heuristic fallback only)
                 if isinstance(v, str) and v.strip():
                     dim_parts.append(f"{col}={v.strip()}")
             series_key = ":".join(dim_parts) or table_id
+            if span_tag:
+                # A multi-period aggregate gets its own series: '2004G200' (a 2-year average)
+                # and '2004G500' both begin in 2004 and would otherwise collide on one
+                # (key, date) with different values — the R573 duplicate-pair bug.
+                series_key = f"{series_key}:period_span={span_tag}"
 
             # All numeric values for this period+key
-            for col in cols:
+            for col in (topics if topics is not None else cols):
                 if col in skip_cols or col == period_col:
                     continue
                 v = row.get(col)
                 if v is None:
                     continue
-                if not isinstance(v, (int, float)):
-                    continue
-                try:
-                    fv = float(v)
-                except (TypeError, ValueError):
-                    continue
+                if topics is not None:
+                    fv = coerce_topic(v, col)
+                    if fv is None:
+                        continue
+                else:
+                    if not isinstance(v, (int, float)):
+                        continue
+                    try:
+                        fv = float(v)
+                    except (TypeError, ValueError):
+                        continue
                 all_keys.append(f"{series_key}:{col}")
                 all_dates.append(d)
                 all_vals.append(fv)
 
         skip += len(rows)
+        if period_titles.failed:
+            # A metadata request failed, not the data: conclude NOTHING about this table.
+            # Served copy kept, no registry entry, no stamp advance, retried next pass, and
+            # never the ZERO registry whose purpose is to stop retrying (R621).
+            #
+            # AND REWIND. The R596 fetch_error path below flushes what is buffered and
+            # checkpoints at the CURRENT offset, which is right for a failed DATA fetch (the
+            # page was never read) and wrong for a failed METADATA fetch (the page WAS read,
+            # and the codes needing titles were dropped out of it). Left alone it checkpoints
+            # past the loss: the next pass resumes after the half-parsed page, completes with
+            # the aggregate missing, reports no discards at all, and advances the stamp -
+            # R621's shape B rebuilt across two passes (R623). So the in-flight buffer is
+            # dropped and the offset returns to the last committed checkpoint; that page is
+            # re-read whole next time, with its titles.
+            log(f"  {table_id}: rewinding {skip - last_ckpt_skip:,} row(s) to the last "
+                f"checkpoint (skip={last_ckpt_skip:,}) - the page was parsed without the "
+                f"titles it needed, so it is not committed")
+            skip = last_ckpt_skip
+            all_keys, all_dates, all_vals = [], [], []
+            k = _bump_counter(out_dir, TITLE_FAIL_FILE, table_id)
+            if k >= TITLE_FAIL_LIMIT:
+                # Not a passing outage: record it where it can be seen and rechecked, rather
+                # than retrying for ever in a log line nobody reads (R623).
+                mark_broken(out_dir, table_id, 0,
+                            f"period-title endpoint failed {k} consecutive passes")
+                broken_now = True
+            fetch_error = True
+            break
+        if period_titles.fetched and not period_titles.failed:
+            _reset_counter(out_dir, TITLE_FAIL_FILE, table_id)   # a good fetch clears the run
         rows_crawled_total += len(rows)
         rows_since_ckpt = skip - last_ckpt_skip
         if len(all_vals) >= FLUSH_EVERY or (rows_since_ckpt >= FLUSH_ROWS and all_vals):
@@ -1065,11 +1510,7 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
             last_ckpt_skip = skip
         if len(rows) < PAGE:
             # short page = end of THIS partition, not necessarily the table
-            pidx += 1
-            skip = 0
-            last_ckpt_skip = 0
-            with open(ckpt_path, "w") as f:
-                json.dump({"skip": 0, "parts": parts, "written": written, "pidx": pidx}, f)
+            finish_partition()
             if pidx >= len(partitions):
                 break
             time.sleep(0.5)
@@ -1080,7 +1521,7 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
         time.sleep(0.5)
 
     if fetch_error:
-        # Persist progress and keep the checkpoint so the next run resumes here
+        # Persist progress and keep the checkpoint so the next run resumes here.
         if all_vals:
             batch = pa.table({
                 "series_key": pa.array(all_keys,  pa.string()),
@@ -1090,11 +1531,39 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
             pq.write_table(batch, part_path(parts), compression="zstd")
             parts += 1
             written += len(all_vals)
-            with open(ckpt_path, "w") as f:
-                json.dump({"skip": skip, "parts": parts, "written": written, "pidx": pidx}, f)
+        # WRITE THE CHECKPOINT WHETHER OR NOT THE BUFFER HAD ANYTHING IN IT, and include the
+        # partition VALUE. Two defects lived in the old `if all_vals:` version:
+        #   * the rewound `skip` was never persisted, so the line that presents itself as the
+        #     rewind mechanism changed nothing but a number in the log below - the buffer clear
+        #     was doing all the work, and a future change to either would have been silently
+        #     unguarded (R633);
+        #   * a fetch error mid-table wrote a checkpoint with NO `part_val`, so the very
+        #     resume-by-value protection added for R626 was absent on exactly the path that
+        #     produces most checkpoints.
+        with open(ckpt_path, "w") as f:
+            json.dump({"skip": skip, "parts": parts, "written": written, "pidx": pidx,
+                       "part_val": partitions[pidx] if pidx < len(partitions) else None}, f)
         log(f"  WARNING {table_id}: fetch failed at skip={skip:,}; "
             f"{written:,} obs checkpointed for resume next run")
         return 0
+
+    # AN INTERRUPTED CRAWL CONCLUDES NOTHING, WHETHER OR NOT IT FLUSHED A PART FIRST.
+    #
+    # This guard used to live inside the `parts == 0` branch below, so it protected only a
+    # crawl that had written nothing at all. A CBS 500 arriving AFTER a flush sets broken_now,
+    # skips a guard it never reaches, and falls through to the assembly - which REPLACES the
+    # served table with the fraction that was crawled before the fault, advances the manifest
+    # stamp, and (since a successful crawl clears the broken registry) erases the record that
+    # anything went wrong. Demonstrated on a 60-row served copy: it came back with 50 rows, a
+    # current stamp and no entry in any registry. The replacement floor does not save it -
+    # a 500 past the halfway mark leaves a fraction that clears the floor (R635).
+    #
+    # ABOVE THE TAIL FLUSH, not below it. Placed after, the flush wrote a part file first
+    # and the 500 branch's clear_partials had already run - so the guard returned leaving
+    # an orphan nothing addresses, which then feeds the glob in state_recently_touched and
+    # makes the table look in-flight for STALE_STATE_HOURS (R636).
+    if fetch_error or broken_now:
+        return 0   # nothing is concluded: the checkpoint resumes it / mark_broken registered it
 
     if all_vals:
         batch = pa.table({
@@ -1114,12 +1583,13 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
         # 18 hours under the undetected period column, without ever producing a single
         # line anyone could grep for. R592: this line was DEAD (`skip` is 0 at every loop
         # exit) and never fired in 478 guard logs; it keys on rows_crawled_total now.
-        if fetch_error or broken_now:
-            return 0   # nothing is concluded: the checkpoint resumes it / mark_broken already registered it
         if rows_crawled_total > 0:
+            _dd = discards_since(discards_before)
+            _why = ("every period code was undatable" if _dd else
+                    "NOT ONE row was dropped by a counted rule - this is a DEFECT")
             log(f"  !! {table_id}: crawled {rows_crawled_total:,} rows and wrote ZERO observations "
-                f"(period_col={period_col!r}, discards={discards_since(discards_before)}) "
-                f"— this is a DEFECT, not an empty table")
+                f"(period_col={period_col!r}, {_why}, discards={_dd}) "
+                f"— {'no datable period in the whole table' if _dd else 'a DEFECT, not an empty table'}")
         # R589/R592: a completed crawl that produced nothing must not leave a resumable
         # checkpoint or an open re-pull behind: record the vintage (so it is not retried
         # until CBS publishes a newer stamp), close the marker, clear the partials. The
@@ -1187,6 +1657,14 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
     record_modified(out_dir, table_id, modified)
     end_repull(out_dir, table_id)
     _clear_vintage(out_dir, ZERO_FILE, table_id)      # a real replacement supersedes any record
+    if load_broken(out_dir).get(table_id):
+        # A table that has just been crawled is not upstream-broken any more, and that file is
+        # what a human reads to see what is wrong (R626).
+        reg = load_broken(out_dir)
+        reg.pop(table_id, None)
+        with open(_broken_path(out_dir), "w", encoding="utf-8") as f:
+            json.dump(reg, f, indent=1, sort_keys=True)
+        log(f"  {table_id}: cleared from {BROKEN_FILE} - it crawled")
     _clear_vintage(out_dir, REFUSED_FILE, table_id)
     if table_id in load_accepts(out_dir):
         drop_accept(out_dir, table_id, "the accepted re-pull replaced the served copy")
