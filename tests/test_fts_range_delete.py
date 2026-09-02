@@ -81,3 +81,60 @@ def test_the_range_bound_stops_at_the_source_boundary():
 def test_quotes_in_a_source_name_cannot_break_out():
     sql = _stmts(_rows("o'x", 3), fts_range_source="o'x")
     assert "'o''x:'" in sql and "'o''x;'" in sql
+
+
+# ---------------------------------------------------------------------------------------
+# THE DECISION, not the emitter. Every test above hands `fts_range_source` straight to
+# emit_sql, so all five prove what emit_sql does when told the set is whole - and NOTHING
+# tested who decides that. The decision lived in main() as
+# `all(r["source_id"] == a.source for r in grp)`, which is true of any SUBSET, and by the
+# time it ran the diff had already reduced `rows` to the changed ones. Measured on the real
+# state: 105 new cbs_nl ids to send, 5,154 unchanged and dropped by the diff, one range
+# DELETE emitted, 105 re-inserted - 5,049 series silently unlisted (R658).
+from core.sync_catalog_d1 import whole_source_reconcile  # noqa: E402
+
+
+def test_the_range_form_is_REFUSED_when_the_diff_dropped_rows():
+    """The bug, in one line. A homogeneous slice is not a whole source."""
+    rows = _rows("cbs_nl", 105)
+    assert whole_source_reconcile("cbs_nl", rows, skipped_by_diff=5154) is None
+    assert whole_source_reconcile("cbs_nl", rows, skipped_by_diff=1) is None
+
+
+def test_the_range_form_is_offered_when_nothing_was_dropped():
+    rows = _rows("cbs_nl", 105)
+    assert whole_source_reconcile("cbs_nl", rows, skipped_by_diff=0) == "cbs_nl"
+
+
+def test_no_source_no_range_form():
+    """The pending-queue path passes no --source and can mix sources."""
+    assert whole_source_reconcile(None, _rows("cbs_nl", 10), 0) is None
+    assert whole_source_reconcile("", _rows("cbs_nl", 10), 0) is None
+
+
+def test_a_mixed_group_is_refused_even_with_nothing_dropped():
+    rows = _rows("cbs_nl", 5) + _rows("gus_dbw", 5)
+    assert whole_source_reconcile("cbs_nl", rows, 0) is None
+
+
+def test_a_sharded_source_is_refused():
+    """A source split across two D1 databases has only part of itself in each group, and a
+    range predicate inside one database is still a claim about the whole source."""
+    rows = _rows("cbs_nl", 105)
+    assert whole_source_reconcile("cbs_nl", rows, 0, n_groups=2) is None
+    assert whole_source_reconcile("cbs_nl", rows, 0, n_groups=1) == "cbs_nl"
+
+
+def test_an_empty_group_is_refused():
+    assert whole_source_reconcile("cbs_nl", [], 0) is None
+
+
+def test_main_ASKS_the_function_rather_than_re_deciding():
+    """A guard that main() does not call is not a guard. The previous decision was inline,
+    so extracting it is only an improvement if the call site actually uses it."""
+    import inspect
+    from core import sync_catalog_d1 as m
+    src = inspect.getsource(m.main)
+    assert "whole_source_reconcile(" in src, "main() no longer asks the guard"
+    assert 'all(r.get("source_id") == a.source for r in grp)' not in src, \
+        "the old inline homogeneity test is back in main()"
