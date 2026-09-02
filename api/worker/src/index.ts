@@ -205,10 +205,23 @@ export default {
           // key (hf keys work as-is); catalog/metadata/freshness stay open.
           const auth = await requireDownloadAuth(request, env);
           if (auth instanceof Response) return auth;
-          const resp = await handleSeriesCsv(id, url, env);
-          if (resp.status === 200) {
+          // Streamed responses (csvStream.ts) report the bytes actually WRITTEN to the client
+          // when the transfer ends (via ctx.waitUntil) - never the at-rest size and never the
+          // bytes produced ahead of the client (R582/R585). The string path still logs its
+          // exact UTF-8 length up front.
+          const userId = auth.user.id;
+          // An aborted transfer still moved bytes (R593: 2.455 GB of egress left no row): log
+          // what was written whether or not the transfer completed. Completeness is visible to
+          // the client through the in-band `# econdl-complete` line, not through this log.
+          const onDone = async (bytes: number, _ok: boolean) => {
+            if (bytes > 0) await logDownload(env, userId, id, request, bytes);
+          };
+          const resp = await handleSeriesCsv(id, url, env, ctx, onDone);
+          // String path and gzip passthrough declare content-length (exact wire bytes); the
+          // inflate shape declares none and reports delivered bytes through onDone instead.
+          if (resp.status === 200 && resp.headers.has("content-length")) {
             const bytes = Number(resp.headers.get("content-length")) || 0;
-            await logDownload(env, auth.user.id, id, request, bytes);
+            await logDownload(env, userId, id, request, bytes);
           }
           return resp;
         }

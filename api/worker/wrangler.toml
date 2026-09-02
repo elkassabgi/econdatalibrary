@@ -21,6 +21,13 @@ name = "econdl-api"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
+
+# CPU budget per request (Workers Paid: default 30 s, max 300 s). Measured 2026-09-01
+# (R582): inflating a served object costs ~25-40 CPU-s per GB of text, so the filtered
+# stream path (src/csvStream.ts) needs the ceiling; the unfiltered path passes the
+# stored gzip bytes through at ~1 CPU-s per 170 MB and never approaches it.
+[limits]
+cpu_ms = 300000
 workers_dev = true
 account_id = "ce51d5c7fe3859098751b89bbebeab7a"
 

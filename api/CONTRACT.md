@@ -47,7 +47,49 @@ Query params:
 Status contract: **200** with ≥1 row; **404** if the id is not in the catalog;
 **501** `{"error":"not_migrated","source":"<src>","detail":...}` if the source has no
 resolver yet (loud, actionable); **502** `{"error":"resolver_empty",...}` if the id
-resolves to a file but zero rows (refuse to emit an empty series silently).
+resolves to a file but zero rows (refuse to emit an empty series silently); **502**
+`{"error":"data_unavailable",...}` if the stored object does not start with the contract
+header (malformed at rest: refused, never served as data). The R2 ETag is attached only to
+`?raw=1` downloads of the WHOLE object (no window, no projection).
+
+Large objects (stored size ≥ 256 KiB — table-grain series can be hundreds of MB gzipped;
+ledger R582): the body is never materialised in the worker.
+- Unfiltered (no `from`/`to`/`geo`): the response is the **stored gzip bytes**
+  (`content-encoding: gzip`, exact `content-length`, the R2 ETag on `?raw=1`). The edge
+  negotiates the encoding with the client. The in-body citation header is **omitted** on
+  this path and declared by `x-econdl-citation-omitted: large-object` plus
+  `link: </v1/series/{id}.metadata.json>; rel="describedby"` (the citation lives there).
+- Filtered: the object is inflated and filtered as a stream — chunked transfer, **no
+  `content-length`** — and the same 200/502 rules apply. Above 1.5 GB decompressed the
+  request is refused up front with **400** `unsupported_filter` (download `?raw=1` and
+  filter locally); a malformed stored object is **502** `data_unavailable`.
+**Completeness line (mandatory since 2026-09-02).** A CSV response that carries NO
+`content-length` (the server inflated a stored object at or above 256 KiB for a `from`/`to`/`geo`
+filter, or a plain-stored large object) ends with one comment line:
+
+    # econdl-complete rows=<N>
+
+where N is the number of data rows delivered. Comment lines start with `#` and are skipped by
+`pandas.read_csv(..., comment="#")` and R's `comment.char="#"`. A response that does not end with
+this line was cut off: the edge delivers a server-side abort (a corrupt object detected
+mid-stream, a stalled read) as an ordinary end of body, so the line is the only way a client can
+tell a complete 200 from a truncated one. A response WITH `content-length` carries no marker and
+needs none: that covers every object below 256 KiB (filtered or not - the string path, exact
+UTF-8 length) and every unfiltered large gzip passthrough (`x-econdl-citation-omitted`); there
+the declared length is the completeness check. Rule for clients: no `content-length` → require
+the marker; `content-length` → compare the bytes received. A short read (fewer bytes than declared) is a truncated transfer. Responses on the string path (objects below 256 KiB) carry
+`cache-control: no-transform` so an intermediary does not recode them and the declared length
+survives to the client. The gzip passthrough stays edge-negotiated (see above): a client that
+wants the stored bytes with their length sends `Accept-Encoding: gzip`, as the reference
+clients do; a passthrough that arrives WITHOUT `content-length` (an intermediary inflated it)
+carries no completeness line and is unverifiable - the reference clients refuse it.
+
+**Filter refusals (400 `unsupported_filter`).** Server-side filtering is refused up front for a
+stored object above 114 MB (4 GiB / 37.5, the fleet's largest measured compression ratio: above
+it the gzip ISIZE can have wrapped), for a declared decompressed size above 1.5 GB, and for a
+declared size above 37.5x the stored size (the fleet's largest measured ratio; the message names
+the ratio). All three are 400 `unsupported_filter`. The full object remains available at `?raw=1`.
+
 
 ### `GET /v1/series/{id}.metadata.json`
 ```jsonc
@@ -207,3 +249,16 @@ diverged, these are the pinned canonical shapes (the verify pass enforces them):
 
 A pytest conformance test (`api/test_conformance.py`) asserts the shim's response shapes
 against these pins so the byte-for-byte agreement is enforced, not just asserted.
+
+## Consumers of this contract
+
+A change to a served byte shape is tested against EVERY reader below before it ships (R601:
+the citation header of 2026-07-09 broke the Python client for 55 days because nobody ran it).
+
+| consumer | where | what pins it |
+|---|---|---|
+| Python client `econdl` (0.1.1) | `clients/python/econdl/_http.py` (`parse_series_csv`, `_decode_body`, `_read_body`) | `tests/test_python_client_csv_parse.py` (citation form, bare form, gzip passthrough, marker rule, mid-id `#`, empty body, short read / cut gzip) |
+| R client `econdatalibrary` | `clients/r/econdatalibrary/R/client.R` (`edl_series`) | read-only review (no R runtime on the build box) - strips `#`-leading lines, marker rule keyed on content-length / `x-econdl-citation-omitted` |
+| MCP server | `mcp/src/index.ts` (`get_econ_series`, requests `raw=1`) | `npx tsc --noEmit` (one pre-existing SDK type clash, unrelated); strips `#`-leading lines, marker rule |
+| Worker itself | `api/worker/src/series.ts`, `csvStream.ts` | `node --test api/worker/test/csvStream.test.ts`; local e2e against `wrangler dev --local` (launch config `econ-api-local-test`) |
+| Pipelines quoting the header text | the citation header says `pandas pd.read_csv(url, comment="#")` | keep that sentence true whenever the header or the completeness line changes |
