@@ -80,9 +80,17 @@ the declared length is the completeness check. Rule for clients: no `content-len
 the marker; `content-length` → compare the bytes received. A short read (fewer bytes than declared) is a truncated transfer. Responses on the string path (objects below 256 KiB) carry
 `cache-control: no-transform` so an intermediary does not recode them and the declared length
 survives to the client. The gzip passthrough stays edge-negotiated (see above): a client that
-wants the stored bytes with their length sends `Accept-Encoding: gzip`, as the reference
-clients do; a passthrough that arrives WITHOUT `content-length` (an intermediary inflated it)
-carries no completeness line and is unverifiable - the reference clients refuse it.
+wants the stored bytes with their length sends `Accept-Encoding: gzip`; a passthrough that
+arrives WITHOUT `content-length` (an intermediary inflated it) carries no completeness line and
+is unverifiable - every reference client refuses it. What each client actually sends differs,
+and callers should know which they are using: the Python client sets `Accept-Encoding: gzip`
+itself and decodes the body; the R client sets nothing, because httr hands the request to
+libcurl with `CURLOPT_ACCEPT_ENCODING` empty, which advertises every encoding that libcurl
+build supports (gzip and deflate always, br and zstd on newer builds) and decodes the body
+before R sees a byte - so an R caller can legitimately receive a re-coded passthrough, and the
+refusal above is the check that catches it. The MCP server does not read large passthroughs at
+all: it refuses any passthrough above 4 MiB stored, or one with no `content-length`, and asks
+for a date window instead, because reading one whole would exceed its isolate's memory limit.
 
 **Filter refusals (400 `unsupported_filter`).** Server-side filtering is refused up front for a
 stored object above 114 MB (4 GiB / 37.5, the fleet's largest measured compression ratio: above
