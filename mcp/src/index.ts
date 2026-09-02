@@ -32,6 +32,12 @@ const HF_API = "https://api.hfdatalibrary.com";
 const HF_SITE = "https://hfdatalibrary.com";
 const ACCOUNT_URL = "https://hfdatalibrary.com/pages/download";
 const MAX_CHARS = 45_000;          // per-tool-response ceiling (context-friendly)
+// R615: an unfiltered large object is served as the STORED gzip bytes (a passthrough). Reading
+// one whole costs this isolate its 128 MB memory limit - and the isolate is the McpAgent Durable
+// Object, so the user's whole session dies with it. The MCP never wants more than max_rows<=2000
+// rows anyway: refuse the passthrough at the header, before a byte of body is read, and tell the
+// caller to ask for a date window (which makes the server filter, and send a verifiable body).
+const MCP_MAX_PASSTHROUGH_BYTES = 4 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 25_000;
 
 // ── upstream fetch with timeout + one retry on transient failure ────────────
@@ -195,10 +201,38 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       if (date_to) du.searchParams.set("to", date_to);
       const r = await upstream(du.toString(), key);
       if (!r.ok) return relayError(r, "get_econ_series");
+      // Decide on the HEADERS, before the body is read (R615).
+      const hasLen = r.headers.get("content-length") !== null;
+      const passthrough = r.headers.get("x-econdl-citation-omitted") !== null;
+      if (passthrough) {
+        const stored = Number(r.headers.get("content-length") ?? "");
+        if (!hasLen || !Number.isFinite(stored)) {
+          try { await r.body?.cancel(); } catch { /* the body is being discarded anyway */ }
+          return { content: [{ type: "text", text: `${series_id}: the response is a gzip passthrough with no content-length - an intermediary re-coded it, so nothing proves the transfer was whole. Ask again with date_from/date_to; the server then returns a filtered, verifiable response.` }], isError: true };
+        }
+        if (stored > MCP_MAX_PASSTHROUGH_BYTES) {
+          try { await r.body?.cancel(); } catch { /* the body is being discarded anyway */ }
+          return { content: [{ type: "text", text: `${series_id}: this series is served whole as ${(stored / (1024 * 1024)).toFixed(1)} MB of compressed CSV, which is far more than this tool can hold in memory (and more than max_rows=${max_rows} would show). Ask again with date_from/date_to for the window you need.` }], isError: true };
+        }
+      }
       const csv = await r.text();
-      const lines = csv.trim().split("\n");
-      const header = lines[0];
-      const rows = lines.slice(1);
+      // Comment lines start with '#': the citation preamble (never on raw=1) and, on a response
+      // with no content-length that is not a gzip passthrough, the mandatory completeness line
+      // `# econdl-complete rows=N` (CONTRACT.md 2026-09-02): a server-side abort reaches us as a
+      // clean end of body, so the line is the only proof the transfer was whole (R607).
+      const allLines = csv.split("\n").map((l) => l.replace(/\r$/, ""));
+      const nonblank = allLines.filter((l) => l.trim() !== "");
+      const last = nonblank.length ? nonblank[nonblank.length - 1] : "";
+      const mk = /^#\s*econdl-complete\s+rows=(\d+)\s*$/.exec(last);
+      if (!hasLen && !passthrough && !mk) {
+        return { content: [{ type: "text", text: `${series_id}: the response declared no content-length and does not end with the '# econdl-complete rows=N' line the contract requires - the transfer was cut off; retry.` }], isError: true };
+      }
+      const dataLines = nonblank.filter((l) => !l.startsWith("#"));
+      if (mk && dataLines.length - 1 !== Number(mk[1])) {
+        return { content: [{ type: "text", text: `${series_id}: the completeness line says ${mk[1]} rows but ${dataLines.length - 1} were received - the transfer was cut off; retry.` }], isError: true };
+      }
+      const header = dataLines[0] ?? "";
+      const rows = dataLines.slice(1);
       let body: string;
       let note = "";
       if (rows.length > max_rows) {

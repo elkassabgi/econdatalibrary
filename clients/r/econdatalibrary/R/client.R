@@ -220,11 +220,40 @@ edl_series <- function(series_id, from = NULL, to = NULL) {
                               utils::URLencode(series_id, reserved = TRUE), ".csv"),
                        query)
   txt <- httr::content(resp, as = "text", encoding = "UTF-8")
-  # Tolerate a commented citation preamble if one is ever added; the contract's shape
-  # is a bare header, so this is defensive, not assumed.
+  # Every .csv carries a '#' citation preamble (since 2026-07-09). A response with NO
+  # content-length that is not a gzip passthrough (x-econdl-citation-omitted) was inflated
+  # by the server and MUST end with '# econdl-complete rows=N' (CONTRACT.md, 2026-09-02):
+  # a server-side abort reaches the client as a clean end of body, so the line is the only
+  # proof the transfer was whole (R607).
+  hdrs <- httr::headers(resp)
+  has_len <- !is.null(hdrs[["content-length"]])
+  passthrough <- !is.null(hdrs[["x-econdl-citation-omitted"]])
+  # R615: this client does NOT choose its Accept-Encoding. httr's curl handle sets libcurl's
+  # CURLOPT_ACCEPT_ENCODING to "" - every encoding the local libcurl build supports (gzip,
+  # deflate, and on newer builds br and zstd) - and libcurl decodes the body before R sees a
+  # byte. A proxy is therefore free to re-code a gzip passthrough into another encoding, and
+  # then content-length describes bytes nobody counted. A passthrough with no content-length
+  # is UNVERIFIABLE: it carries no completeness line (the server never inflated it) and no
+  # length to check, so nothing proves the transfer was whole.
+  if (!has_len && passthrough)
+    stop(sprintf(paste0("econdatalibrary: %s: the gzip passthrough arrived without a content-length - ",
+                        "an intermediary re-coded the body, so nothing proves the transfer was whole. ",
+                        "Retry, or pass from=/to= so the server returns a filtered response that ",
+                        "carries the '# econdl-complete rows=N' line"), series_id))
   lines <- strsplit(txt, "\r?\n")[[1]]
+  expected <- NA_integer_
+  if (!has_len && !passthrough) {
+    nonblank <- lines[nzchar(trimws(lines))]
+    last <- if (length(nonblank)) nonblank[length(nonblank)] else ""
+    m <- regmatches(last, regexec("^#\\s*econdl-complete\\s+rows=([0-9]+)\\s*$", last))[[1]]
+    if (length(m) < 2L)
+      stop(sprintf("econdatalibrary: %s: the response declared no content-length and does not end with the '# econdl-complete rows=N' line the contract requires - the transfer was cut off; retry", series_id))
+    expected <- as.integer(m[2])
+  }
   lines <- lines[!grepl("^\\s*#", lines)]
   df <- utils::read.csv(text = paste(lines, collapse = "\n"), stringsAsFactors = FALSE)
+  if (!is.na(expected) && nrow(df) != expected)
+    stop(sprintf("econdatalibrary: %s: the completeness line says %d rows but %d were parsed - the transfer was cut off; retry", series_id, expected, nrow(df)))
   if ("obs_date" %in% names(df)) df$obs_date <- as.Date(df$obs_date)
   if ("value" %in% names(df))    df$value    <- suppressWarnings(as.numeric(df$value))
   df
