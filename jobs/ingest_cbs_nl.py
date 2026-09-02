@@ -116,6 +116,12 @@ def broken_recently(out_dir: str, table_id: str) -> str | None:
 
 MODIFIED_FILE = "_modified.json"
 DEFERRED_FILE = "_repull_deferred.json"
+ZERO_FILE = "_repull_zero.json"        # vintages whose re-pull produced ZERO observations (R589)
+REFUSED_FILE = "_repull_refused.json"  # vintages whose re-pull was refused by the replacement floor
+REPLACE_FLOOR = 0.5                     # a re-pull that keeps < 50% of the served rows is refused
+ACCEPT_FILE = "_accept_shrink.json"     # the operator's explicit yes to a shrink, IN THE STORE (R598):
+FORCE_SWEEP = False                     # --force-sweep: run the marker sweep on a < 90% catalogue listing
+PROBE_FAIL_FILE = "_probe_failures.json"
 
 # A revised table is re-pulled automatically only up to this size. Set from the MEASURED
 # distribution of the 329 tables CBS had revised on 2026-08-24, not from a round number:
@@ -177,8 +183,253 @@ def note_deferred_repull(out_dir: str, table_id: str, modified: str, rows: int) 
     os.replace(tmp, p)
 
 
+def _note_vintage(out_dir: str, fname: str, table_id: str, modified: str, extra: dict) -> None:
+    p = os.path.join(out_dir, fname)
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+    d[table_id] = {"upstream_modified": modified, "noted": dt.datetime.now().isoformat(timespec="seconds"), **extra}
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=1, sort_keys=True)
+    os.replace(tmp, p)
+
+
+def load_accepts(out_dir: str) -> dict:
+    """{tid: {"vintage": <CBS stamp the operator saw refused>, "refused_rows": n}} (R600: a
+    vintage-less yes was spent on a later, smaller re-pull the operator never saw)."""
+    try:
+        with open(os.path.join(out_dir, ACCEPT_FILE), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_accepts(out_dir: str, d: dict) -> None:
+    p = os.path.join(out_dir, ACCEPT_FILE)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=1, sort_keys=True)
+    os.replace(tmp, p)
+
+
+def record_accepts(out_dir: str, tids) -> None:
+    """Record the operator's yes AGAINST the refusal it answers: the vintage and row count in
+    `_repull_refused.json`. A tid with no refusal on record gets nothing (logged)."""
+    try:
+        with open(os.path.join(out_dir, REFUSED_FILE), encoding="utf-8") as f:
+            refused = json.load(f)
+    except Exception:
+        refused = {}
+    cur = load_accepts(out_dir)
+    for tid in tids:
+        r = refused.get(tid)
+        if not r or not r.get("upstream_modified"):
+            log(f"  --accept-shrink {tid}: nothing refused on record - not recorded")
+            continue
+        if r.get("reason") or not r.get("repull_rows"):
+            log(f"  --accept-shrink {tid}: the refusal is '{r.get('reason') or 'no row count'}', not a shrink - "
+                f"nothing to accept, not recorded (R604)")
+            continue
+        cur[tid] = {"vintage": r["upstream_modified"], "refused_rows": r.get("repull_rows"),
+                    "served_rows": r.get("served_rows"), "noted": dt.datetime.now().isoformat(timespec="seconds")}
+        log(f"  --accept-shrink {tid}: recorded for CBS vintage {r['upstream_modified']} "
+            f"({r.get('served_rows')} -> {r.get('repull_rows')} rows)")
+    _write_accepts(out_dir, cur)
+
+
+ACCEPT_YIELD_FLOOR = 0.9   # an accepted re-pull must keep >= 90% of the rows the operator was shown
+
+
+def accept_applies(out_dir: str, table_id: str, modified: str, new_rows=None) -> bool:
+    """True only while CBS's stamp is the one the operator accepted AND, when the new yield is
+    known, it is at least ACCEPT_YIELD_FLOOR of the count the operator saw (R604: a same-stamp
+    re-pull yielding 5 rows was replaced on a yes given for 30)."""
+    e = load_accepts(out_dir).get(table_id)
+    if not e or e.get("vintage") != modified:
+        return False
+    if new_rows is not None and e.get("refused_rows"):
+        return new_rows >= ACCEPT_YIELD_FLOOR * int(e["refused_rows"])
+    return True
+
+
+def drop_accept(out_dir: str, table_id: str, why: str) -> None:
+    cur = load_accepts(out_dir)
+    if table_id in cur:
+        e = cur.pop(table_id)
+        _write_accepts(out_dir, cur)
+        log(f"  {table_id}: accepted shrink for vintage {e.get('vintage')} DROPPED - {why}")
+
+
+def _bump_counter(out_dir: str, fname: str, table_id: str) -> int:
+    p = os.path.join(out_dir, fname)
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+    d[table_id] = int(d.get(table_id, 0)) + 1
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=1, sort_keys=True)
+    os.replace(tmp, p)
+    return d[table_id]
+
+
+def _own_start_time() -> float:
+    try:
+        import psutil
+        return float(psutil.Process().create_time())
+    except Exception:
+        return 0.0
+
+
+def _reset_counter(out_dir: str, fname: str, table_id: str) -> None:
+    p = os.path.join(out_dir, fname)
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        return
+    if table_id in d:
+        del d[table_id]
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1, sort_keys=True)
+        os.replace(tmp, p)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        import psutil
+        return psutil.pid_exists(int(pid))
+    except Exception:
+        return True   # cannot tell -> assume alive (never delete a possible owner's state)
+
+
+STALE_STATE_HOURS = 2.0   # marker/checkpoint/parts touched more recently than this belong to a live run
+
+
+def state_recently_touched(out_dir: str, table_id: str) -> bool:
+    """R598: never clean re-pull state a running writer is still producing - a checkpoint or part
+    written within STALE_STATE_HOURS is in flight whichever process wrote it."""
+    import glob
+    paths = [_repull_marker(out_dir, table_id), os.path.join(out_dir, f"{table_id}.ckpt.json")]
+    paths += glob.glob(os.path.join(out_dir, f"{table_id}.part*.parquet"))
+    newest = max((os.path.getmtime(x) for x in paths if os.path.exists(x)), default=0.0)
+    return newest > 0 and (time.time() - newest) < STALE_STATE_HOURS * 3600
+
+
+def marker_pid_alive(out_dir: str, table_id: str) -> bool:
+    """The marker names a pid that is running (start time NOT checked - see marker_owner_alive)."""
+    try:
+        with open(_repull_marker(out_dir, table_id), encoding="utf-8") as f:
+            pid = int(json.load(f).get("pid", 0))
+    except Exception:
+        return False
+    return pid > 0 and pid != os.getpid() and _pid_alive(pid)
+
+
+def marker_owner_alive(out_dir: str, table_id: str) -> bool:
+    """True when the re-pull marker names a pid that is still running (an in-flight run - possibly
+    an operator's --accept-shrink run - whose checkpoint and parts must not be touched, R598)."""
+    try:
+        with open(_repull_marker(out_dir, table_id), encoding="utf-8") as f:
+            d = json.load(f)
+        pid = int(d.get("pid", 0))
+        started = float(d.get("pid_started", 0) or 0)
+    except Exception:
+        return False
+    if not (pid > 0 and pid != os.getpid() and _pid_alive(pid)):
+        return False
+    if not started:
+        return False   # a marker without a start time cannot prove its owner; the recency bound still protects fresh state
+    try:
+        import psutil
+        return abs(psutil.Process(pid).create_time() - started) < 2.0   # R600: a recycled pid is not the owner
+    except Exception:
+        return True
+
+
+def _clear_vintage(out_dir: str, fname: str, table_id: str) -> None:
+    """Remove a table's entry from a registry (after a replacement, or an accepted shrink)."""
+    p = os.path.join(out_dir, fname)
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        return
+    if table_id in d:
+        del d[table_id]
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1, sort_keys=True)
+        os.replace(tmp, p)
+
+
+def sweep_markers(out_dir: str, catalogue_ids) -> None:
+    """R598: a marker for a table CBS withdrew from its catalogue was never closed - nothing
+    iterates markers, only the catalogue - and the publish tool skips a marked file for ever."""
+    import glob
+    for mp in glob.glob(os.path.join(out_dir, "*.repull.json")):
+        tid = os.path.basename(mp)[:-len(".repull.json")]
+        if catalogue_ids is not None and tid not in catalogue_ids:
+            end_repull(out_dir, tid)
+            clear_partials(out_dir, tid)
+            ck = os.path.join(out_dir, f"{tid}.ckpt.json")
+            if os.path.exists(ck):
+                os.remove(ck)
+            _note_vintage(out_dir, REFUSED_FILE, tid, "", {"reason": "withdrawn-from-catalogue"})
+            log(f"  {tid}: re-pull marker closed - the table is no longer in CBS's catalogue "
+                f"(recorded in {REFUSED_FILE}); the held copy stays")
+
+
+def registry_summary(out_dir: str) -> None:
+    """What is being HELD BACK, with age - printed at pass start and end (R596: the guard kills
+    passes, so an end-only summary rarely prints)."""
+    for fname, label in ((DEFERRED_FILE, "deferred (over the re-pull ceiling)"),
+                         (ZERO_FILE, "zero-result re-pulls"), (REFUSED_FILE, "floor-refused / undatable re-pulls")):
+        try:
+            with open(os.path.join(out_dir, fname), encoding="utf-8") as f:
+                reg = json.load(f)
+        except Exception:
+            continue
+        if reg:
+            oldest = min(v.get("noted", "") for v in reg.values())
+            log(f"  registry {fname}: {len(reg)} table(s) {label}, oldest noted {oldest} - "
+                f"each is a served copy behind CBS until someone decides")
+    import glob
+    live = []
+    for mp in glob.glob(os.path.join(out_dir, "*.repull.json")):
+        tid = os.path.basename(mp)[:-len(".repull.json")]
+        age_h = (time.time() - os.path.getmtime(mp)) / 3600.0
+        live.append((tid, age_h, marker_owner_alive(out_dir, tid)))
+    if live:
+        live.sort(key=lambda x: -x[1])
+        log(f"  live re-pull markers: {len(live)} - " + ", ".join(
+            f"{t} ({h:.1f} h{', owner alive' if a else ''})" for t, h, a in live[:10]))
+    acc = load_accepts(out_dir)
+    if acc:
+        log("  accepted shrinks pending: " + ", ".join(f"{t} (vintage {e.get('vintage')})" for t, e in sorted(acc.items())))
+
+
+def _vintage_noted(out_dir: str, fname: str, table_id: str, modified: str) -> bool:
+    try:
+        with open(os.path.join(out_dir, fname), encoding="utf-8") as f:
+            return json.load(f).get(table_id, {}).get("upstream_modified") == modified
+    except Exception:
+        return False
+
+
 def repull_verdict(out_dir: str, table_id: str, modified: str, out_path: str, rows: int):
     """Should this already-held table be crawled again? None means skip.
+
+    R589: a vintage whose re-pull wrote ZERO observations, or was refused by the replacement
+    floor, is recorded and NOT retried until CBS publishes a newer Modified stamp - otherwise
+    the crawler re-pulls, writes nothing, keeps the marker, and loops forever.
 
     THIS IS THE AUTO-UPDATE. Before it the gate was `os.path.exists(out_path)`, so a table
     crawled once was never looked at again: the crawler completed a full 5,953-table pass
@@ -214,6 +465,15 @@ def repull_verdict(out_dir: str, table_id: str, modified: str, out_path: str, ro
         held = hdt.isoformat(timespec="seconds") + " (mtime)"
     if mdt <= hdt:
         return None
+    for fname, why in ((ZERO_FILE, "ZERO observations"), (REFUSED_FILE, "refused by the replacement floor")):
+        if fname == REFUSED_FILE and accept_applies(out_dir, table_id, modified):
+            continue   # R596/R598/R600: the operator's yes, for THIS vintage, reaches the floor
+        if fname == REFUSED_FILE and load_accepts(out_dir).get(table_id):
+            drop_accept(out_dir, table_id, f"CBS is now at {modified}, a vintage the operator did not see")
+        if _vintage_noted(out_dir, fname, table_id, modified):
+            log(f"  {table_id}: CBS vintage {modified} already re-pulled and {why} - not retried "
+                f"until CBS publishes a newer stamp (R589)")
+            return "NOT_RETRIED"   # R592: NOT None - the None branch records the vintage as held
     if rows > REPULL_MAX_ROWS:
         return "TOO_BIG"
     return held
@@ -244,7 +504,7 @@ def repull_in_flight(out_dir: str, table_id: str) -> str:
 def begin_repull(out_dir: str, table_id: str, modified: str) -> None:
     tmp = _repull_marker(out_dir, table_id) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"target": modified,
+        json.dump({"target": modified, "pid": os.getpid(), "pid_started": _own_start_time(),   # the owner (R598/R600)
                    "started": dt.datetime.now().isoformat(timespec="seconds")}, f)
     os.replace(tmp, _repull_marker(out_dir, table_id))
 
@@ -296,6 +556,41 @@ _YEAR_LO, _YEAR_HI = 1500, 2100
 
 def _year_ok(y: int) -> bool:
     return _YEAR_LO <= y <= _YEAR_HI
+
+
+PERIOD_DISCARDS: dict = {}   # family -> count of period codes the parser returned None for / legacy-dated
+
+
+def _discard(family: str, code: str) -> None:
+    """Count what the parser drops or legacy-dates so ingest can LOG it per table (R573 rule 3)."""
+    PERIOD_DISCARDS[family] = PERIOD_DISCARDS.get(family, 0) + 1
+
+
+def _has_53_weeks(yr: int) -> bool:
+    return dt.date(yr, 12, 28).isocalendar()[1] == 53
+
+
+def _week_start(yr: int, w: int):
+    """First day of CBS week `w` of calendar year `yr`, calendar-clipped: never before 1 January
+    of `yr`; week 53 of a 52-ISO-week year is the Monday after ISO week 52 (the last 1-2 days of
+    the year); beyond that None."""
+    if w < 1 or w > 53:
+        return None
+    try:
+        d = dt.date.fromisocalendar(yr, w, 1)
+    except ValueError:
+        if w != 53:
+            return None
+        d = dt.date.fromisocalendar(yr, 52, 1) + dt.timedelta(days=7)
+    if d.year > yr:
+        return None
+    jan1 = dt.date(yr, 1, 1)
+    return jan1 if d < jan1 else d
+
+
+def discards_since(before: dict) -> dict:
+    """Per-table discard delta: what THIS table's parse dropped or legacy-dated."""
+    return {k: v - before.get(k, 0) for k, v in PERIOD_DISCARDS.items() if v - before.get(k, 0) > 0}
 
 
 def parse_cbs_period(s: str) -> dt.date | None:
@@ -352,8 +647,18 @@ def parse_cbs_period(s: str) -> dt.date | None:
             # whose measures (graduates, enrolments) are realised when the year ends.
             if rest[:2] == "SJ":          # schooljaar
                 return dt.date(yr + 1, 7, 31)
+            if rest == "X000":
+                # CBS's generic "other period" slot: 15 meanings across 55 tables ("week 0
+                # (3 dagen)", "januari-september", "Standaardfout", 5-year spans, "Oude
+                # methode" school years ...) and the ONLY code family of 8 served tables
+                # (136,862 rows). No global date is right, and None would empty those tables
+                # (R589). The LEGACY dating (the X0 branch: yr+2, 31 July) is KEPT so the
+                # served content is unchanged, and every occurrence is COUNTED so the
+                # title-driven rule (open) can be sized. Never silently.
+                _discard("X000-legacy-dated", s)
+                return dt.date(yr + 2, 7, 31)
             # Span of TWO academic years starting at yr, so it ends with the year
-            # beginning yr+1 -> July of yr+2.
+            # beginning yr+1 -> July of yr+2 ('2003X001' is titled "2003/'04 - 2004/'05").
             if rest[:2] == "X0":          # two-school-year span
                 return dt.date(yr + 2, 7, 31)
             if rest[:2] == "KW":          # quarter
@@ -362,12 +667,55 @@ def parse_cbs_period(s: str) -> dt.date | None:
             if rest[:2] == "MM":          # month
                 m = int(rest[2:4]) if rest[2:4].isdigit() else 0
                 return dt.date(yr, m, 1) if 1 <= m <= 12 else None
-            if rest[:2] == "HJ":          # half-year
-                h = int(rest[2:3]) if rest[2:3].isdigit() else 1
-                return dt.date(yr, 1 if h == 1 else 7, 1)
-            if rest[:1] == "W" and rest[1:3].isdigit():  # week
-                w = int(rest[1:3])
-                return dt.date.fromisocalendar(yr, max(1, min(53, w)), 1)
+            if rest[:2] == "HJ":          # half-year: 'HJ01' = "1e halfjaar", 'HJ02' = "2e halfjaar"
+                # R573: `rest[2:3]` read the '0' of 'HJ01', so BOTH halves dated to 1 July and
+                # 86156NED held 455,024 duplicate (key, date) pairs with conflicting values.
+                h = int(rest[2:4]) if rest[2:4].isdigit() else 0
+                return dt.date(yr, 1 if h == 1 else 7, 1) if h in (1, 2) else None
+            if rest[:1] == "W" and rest[1:].isdigit():
+                # Week codes are 'W<k><nn>': k = weeks per period, nn = the period's ordinal.
+                #   W1nn  one week    (70895ned: '1971W101' "1971 week 1" .. 'W153' "week 53 (1 dag)")
+                #   W4nn  four weeks  (37456/72006: 'W401' "week 01 - 04" .. 'W413' "week 49 - 52";
+                #                      'W415' or 'W417' "week 01 - 52 (gemiddelde)" = the annual
+                #                      average; in 53-ISO-week years ALSO 'W414' "week 49 - 53
+                #                      (5 weken)" and 'W417' "week 01 - 53 (gemiddelde)")
+                # R573: `rest[1:3]` read '12' from 'W127' and collapsed 3,004 periods onto 413
+                # dates. R588: CBS weeks are CALENDAR-YEAR-CLIPPED (week 1 starts on 1 January
+                # when the ISO Monday is in December; week 53 exists in 52-ISO-week years).
+                # R589: the 53-week-year variants share their START with W413 / the average, so
+                # a period-start date cannot carry them - dropped and counted (a variant token
+                # in the key is the fix; Ahmed's decision).
+                if len(rest) == 4:
+                    k, nn = int(rest[1]), int(rest[2:4])
+                    if k == 0 or nn == 0:
+                        _discard("W-zero", s)
+                        return None
+                    if k == 4 and nn >= 14:
+                        # 53-ISO-week years carry variants beside the regular codes (37456,
+                        # 72006ned, 2004/2009): W414 "week 49 - 53 (5 weken)" shares its START
+                        # with W413, and W417 "week 01 - 53 (gemiddelde)" is a second annual
+                        # average beside W415 "week 01 - 52 (gemiddelde)". A period-start date
+                        # cannot carry two codes on one day, and dropping either loses data, so
+                        # each variant gets a deterministic, distinct date and is COUNTED:
+                        #   W414 -> the Monday of week 53 (its extra week);
+                        #   W415 -> 31 Dec, or 30 Dec in a 53-week year (the average excluding
+                        #           week 53); W417 (and any other average code) -> 31 Dec.
+                        if nn == 14:
+                            _discard("W4-53wk-variant-dated-by-extra-week", s)
+                            w = 53
+                        elif nn == 15 and _has_53_weeks(yr):
+                            _discard("W4-52wk-average-in-53wk-year-dated-30-dec", s)
+                            return dt.date(yr, 12, 30)
+                        else:
+                            return dt.date(yr, 12, 31)
+                    else:
+                        w = (nn - 1) * k + 1
+                else:                                      # legacy 2-digit form, kept for safety
+                    w = int(rest[1:3])
+                d = _week_start(yr, w)
+                if d is None:
+                    _discard("W-out-of-range", s)
+                return d
         # ISO date
         if len(s) == 10 and s[4] == "-":
             return dt.date.fromisoformat(s[:10])
@@ -470,6 +818,20 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
     if os.path.exists(out_path):
         n = pq.read_metadata(out_path).num_rows
         verdict = repull_verdict(out_dir, table_id, modified, out_path, n)
+        if verdict == "NOT_RETRIED":
+            # The served copy is the OLD vintage; the manifest must keep saying so (R592: the
+            # None branch below would stamp the NEW stamp and certify the freeze as current).
+            # R596: an interrupt between recording and closing may have left a marker or a
+            # checkpoint - clean them here, idempotently, so publishing is never blocked.
+            if repull_in_flight(out_dir, table_id):
+                if marker_owner_alive(out_dir, table_id) or state_recently_touched(out_dir, table_id):
+                    return n   # R598: an in-flight run (an operator's accept run) owns this state
+                end_repull(out_dir, table_id)
+            clear_partials(out_dir, table_id)
+            ck = os.path.join(out_dir, f"{table_id}.ckpt.json")
+            if os.path.exists(ck):
+                os.remove(ck)
+            return n
         if verdict is None:
             log(f"  skip {table_id} ({n:,} rows)")
             record_modified(out_dir, table_id, modified)
@@ -481,6 +843,10 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
                 f"in {DEFERRED_FILE} for an explicit decision")
             return n
         if repull_in_flight(out_dir, table_id) == modified:
+            if marker_owner_alive(out_dir, table_id) or (marker_pid_alive(out_dir, table_id)
+                                                          and state_recently_touched(out_dir, table_id)):
+                log(f"  {table_id}: re-pull to {modified} is in flight in another process - standing down (R600/R604)")
+                return n
             log(f"  RE-PULL {table_id}: resuming the in-flight re-pull to {modified} "
                 f"(keeping its checkpoint; the {n:,}-row copy is still serving)")
         else:
@@ -491,11 +857,18 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
 
     # Discover columns from first row
     cols = get_table_columns(table_id)
+    if cols is not None:
+        _reset_counter(out_dir, PROBE_FAIL_FILE, table_id)
     if cols is None:
+        if os.path.exists(out_path) and repull_in_flight(out_dir, table_id):
+            end_repull(out_dir, table_id)   # transient: retried next pass, marker not left open (R596)
+            k = _bump_counter(out_dir, PROBE_FAIL_FILE, table_id)
+            log(f"  {table_id}: column probe failed during a re-pull ({k} consecutive) - marker closed, will retry")
         return 0  # table unavailable
 
     # Identify period and value columns
     period_col = _find_period_col(table_id, cols)
+    discards_before = dict(PERIOD_DISCARDS)   # AFTER the probe (R592): per-table delta for DONE / ZERO lines
     if period_col is None:
         # NO TIME COLUMN -> every row would be discarded, because the row loop does
         #   d = parse_cbs_period(row.get(period_col or "Perioden", ""))
@@ -508,6 +881,12 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
         # not 59 million rows.
         log(f"  SKIP {table_id}: no period column in {len(cols)} columns "
             f"(cannot date observations) — not crawled")
+        if os.path.exists(out_path) and repull_in_flight(out_dir, table_id):
+            end_repull(out_dir, table_id)   # structural: recorded, not retried until CBS changes it
+            _note_vintage(out_dir, REFUSED_FILE, table_id, modified or "", {"reason": "undatable"})
+            if table_id in load_accepts(out_dir):
+                drop_accept(out_dir, table_id, "the table has no period column (undatable)")
+            log(f"  {table_id}: held copy stays; vintage recorded as undatable in {REFUSED_FILE}")
         return 0
     # CBS TypedDataSet has numeric values in integer or decimal columns
     # Skip metadata/code columns (non-numeric) by checking name patterns
@@ -580,6 +959,8 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
                     f"into {len(pk)} slices (avoids O(offset) deep-$skip cost)")
 
     last_ckpt_skip = skip
+    rows_crawled_total = 0   # R592: `skip` is a per-partition offset and is 0 at every loop exit
+    broken_now = False
     while pidx < len(partitions):
         part_val = partitions[pidx]
         flt = ""
@@ -593,8 +974,14 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
                 # Upstream corruption, not an interrupted download. Calling this a
                 # resumable checkpoint is what produced the 315-run loop.
                 mark_broken(out_dir, table_id, 500, LAST_ERROR.get("body", ""))
-            elif skip > 0 or pidx > 0:
-                fetch_error = True   # died mid-table, not a dead table
+                broken_now = True
+                if os.path.exists(out_path) and repull_in_flight(out_dir, table_id):
+                    end_repull(out_dir, table_id)   # R598: registered once, and not left open for 7 days
+            else:
+                # R596: a failed FIRST page (403, timeout) concludes nothing either - the old
+                # guard `skip > 0 or pidx > 0` let it fall through to the ZERO path and freeze
+                # the table until CBS bumped Modified.
+                fetch_error = True
             break
         rows = data.get("value", []) if isinstance(data, dict) else data
         if not rows:
@@ -643,6 +1030,7 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
                 all_vals.append(fv)
 
         skip += len(rows)
+        rows_crawled_total += len(rows)
         rows_since_ckpt = skip - last_ckpt_skip
         if len(all_vals) >= FLUSH_EVERY or (rows_since_ckpt >= FLUSH_ROWS and all_vals):
             batch = pa.table({
@@ -724,10 +1112,32 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
         # a completed crawl that wrote zero observations — is what 23 tables did for
         # weeks under the SJ/X0/YYYYMMDD parser gap, and what 84808/84809NED did for
         # 18 hours under the undetected period column, without ever producing a single
-        # line anyone could grep for.
-        if skip > 0:
-            log(f"  !! {table_id}: crawled {skip:,} rows and wrote ZERO observations "
-                f"(period_col={period_col!r}) — this is a DEFECT, not an empty table")
+        # line anyone could grep for. R592: this line was DEAD (`skip` is 0 at every loop
+        # exit) and never fired in 478 guard logs; it keys on rows_crawled_total now.
+        if fetch_error or broken_now:
+            return 0   # nothing is concluded: the checkpoint resumes it / mark_broken already registered it
+        if rows_crawled_total > 0:
+            log(f"  !! {table_id}: crawled {rows_crawled_total:,} rows and wrote ZERO observations "
+                f"(period_col={period_col!r}, discards={discards_since(discards_before)}) "
+                f"— this is a DEFECT, not an empty table")
+        # R589/R592: a completed crawl that produced nothing must not leave a resumable
+        # checkpoint or an open re-pull behind: record the vintage (so it is not retried
+        # until CBS publishes a newer stamp), close the marker, clear the partials. The
+        # served copy, if any, stays as it was.
+        was_repull = os.path.exists(out_path) and bool(repull_in_flight(out_dir, table_id))
+        if was_repull:
+            end_repull(out_dir, table_id)          # close first (R596: an interrupt after recording
+        clear_partials(out_dir, table_id)          # would otherwise leave the marker forever)
+        if os.path.exists(ckpt_path):
+            os.remove(ckpt_path)
+        _note_vintage(out_dir, ZERO_FILE, table_id, modified or "", {"rows_crawled": rows_crawled_total,
+                      "served_rows": pq.read_metadata(out_path).num_rows if os.path.exists(out_path) else 0})
+        if was_repull:
+            log(f"  {table_id}: re-pull produced nothing - served copy KEPT, vintage recorded in {ZERO_FILE}")
+            if accept_applies(out_dir, table_id, modified or ""):
+                drop_accept(out_dir, table_id, "the accepted re-pull produced nothing")
+        else:
+            log(f"  {table_id}: first crawl produced nothing - recorded in {ZERO_FILE}, checkpoint cleared")
         return 0
 
     # Concatenate part files into the final parquet (memory-bounded, one part at a time)
@@ -735,6 +1145,39 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
     for i in range(parts):
         writer.write_table(pq.read_table(part_path(i)))
     writer.close()
+    # R589: never replace a served table with a fraction of itself. A re-pull that keeps fewer
+    # than REPLACE_FLOOR of the served rows is refused, recorded, and the old file kept - the
+    # cause (a parser change, a partial upstream response) is for a person to look at.
+    if os.path.exists(out_path) and repull_in_flight(out_dir, table_id):
+        try:
+            old_n = pq.read_metadata(out_path).num_rows
+        except Exception:                                               # noqa: BLE001
+            old_n = 0
+        new_n = pq.read_metadata(tmp_path).num_rows
+        log(f"  {table_id}: replacing {old_n:,} served rows with {new_n:,} "
+            f"({(new_n / old_n if old_n else 0):.1%}; discards={discards_since(discards_before)})")
+        if old_n and new_n < REPLACE_FLOOR * old_n and not accept_applies(out_dir, table_id, modified, new_n):
+            acc = load_accepts(out_dir).get(table_id)
+            if acc and acc.get("vintage") == modified:
+                log(f"  {table_id}: the accepted shrink was for {acc.get('refused_rows')} rows; this re-pull "
+                    f"yields {new_n:,} - consent does not carry (R604), refusing afresh")
+                # R606: the accept must not survive, or every pass re-crawls the table in full;
+                # the refusal recorded below makes the next pass NOT_RETRIED
+                drop_accept(out_dir, table_id, f"yield {new_n:,} < {ACCEPT_YIELD_FLOOR:.0%} of "
+                                               f"{acc.get('refused_rows')} - re-run --accept-shrink={table_id} to accept {new_n:,}")
+            log(f"  !! {table_id}: re-pull would replace {old_n:,} served rows with {new_n:,} "
+                f"({new_n / old_n:.1%} < {REPLACE_FLOOR:.0%}) - REFUSED, served copy kept, vintage "
+                f"recorded in {REFUSED_FILE} (discards={discards_since(discards_before)}); "
+                f"re-run with --accept-shrink={table_id} to accept it")
+            os.remove(tmp_path)
+            for i in range(parts):
+                os.remove(part_path(i))
+            if os.path.exists(ckpt_path):
+                os.remove(ckpt_path)
+            end_repull(out_dir, table_id)          # close first, then record (R596)
+            _note_vintage(out_dir, REFUSED_FILE, table_id, modified,
+                          {"served_rows": old_n, "repull_rows": new_n, "floor": REPLACE_FLOOR})
+            return 0
     os.replace(tmp_path, out_path)
     for i in range(parts):
         os.remove(part_path(i))
@@ -743,23 +1186,45 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
     n = pq.read_metadata(out_path).num_rows
     record_modified(out_dir, table_id, modified)
     end_repull(out_dir, table_id)
-    log(f"  {table_id}: DONE {n:,} obs  [{title[:50]}]")
+    _clear_vintage(out_dir, ZERO_FILE, table_id)      # a real replacement supersedes any record
+    _clear_vintage(out_dir, REFUSED_FILE, table_id)
+    if table_id in load_accepts(out_dir):
+        drop_accept(out_dir, table_id, "the accepted re-pull replaced the served copy")
+    dd = discards_since(discards_before)
+    log(f"  {table_id}: DONE {n:,} obs  [{title[:50]}]" + (f"  discards={dd}" if dd else ""))
     return n
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
     only_ids: set[str] = set()
+    accept_only = False
     for a in sys.argv[1:]:
         if a.startswith("--only"):
             raw = a.split("=", 1)[-1] if "=" in a else ""
             only_ids = set(raw.split(","))
+        elif a.startswith("--accept-shrink="):
+            ids = [x for x in a.split("=", 1)[1].split(",") if x]
+            record_accepts(OUT, ids)   # R598/R600: the yes lives in the store, for the ONE crawler
+            accept_only = True
+        elif a == "--force-sweep":
+            global FORCE_SWEEP
+            FORCE_SWEEP = True
         elif not a.startswith("-"):
             only_ids.add(a)
 
+    if accept_only and not only_ids:
+        log("accept recorded; the guard's crawler will act on it - not starting a second crawler (R600)")
+        return
+    registry_summary(OUT)
     log("Fetching CBS Netherlands table catalog...")
     tables = get_catalog()
     log(f"Found {len(tables)} tables in catalog")
+    manifest_n = len(load_modified(OUT))
+    if tables and (FORCE_SWEEP or manifest_n == 0 or len(tables) >= 0.9 * manifest_n):
+        sweep_markers(OUT, {t.get("Identifier", "") for t in tables})
+    elif tables:
+        log(f"  catalogue listing has {len(tables)} tables vs {manifest_n} held - partial listing, marker sweep skipped (R600)")
 
     if only_ids:
         tables = [t for t in tables if t.get("Identifier") in only_ids]
@@ -780,6 +1245,7 @@ def main():
         time.sleep(0.3)
 
     log(f"DONE: {total:,} total CBS Netherlands observations")
+    registry_summary(OUT)
 
 
 if __name__ == "__main__":
