@@ -40,9 +40,29 @@ MAX_ROWS = 750_000_000
 SHRINK_TOLERANCE = 0.01
 
 
-def _existing_rows(head):
-    """Row count recorded on the object already in R2, or None if it predates the metadata."""
+def _existing_bytes_meta(head):
+    """Byte size recorded on the object, or None. Written from 2026-09-02 onward."""
     md = (head or {}).get("Metadata") or {}
+    for k in ("bytes", "x-amz-meta-bytes"):
+        if k in md:
+            try:
+                return int(md[k])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _existing_rows(head):
+    """Row count recorded on the object already in R2, or None if it predates the metadata.
+
+    THE 105 OBJECTS PUBLISHED ON 2026-09-02 CARRY A BYTE COUNT UNDER THIS KEY, not a row
+    count - the bug this function's caller was fixed for. They are identified by having a
+    `rows` value and no `bytes` value, and are treated as having NO row count, so the guard
+    falls back to comparing bytes rather than comparing a byte count against a row count.
+    """
+    md = (head or {}).get("Metadata") or {}
+    if ("bytes" not in md and "x-amz-meta-bytes" not in md):
+        return None                      # pre-fix object: its "rows" is really bytes
     for k in ("rows", "x-amz-meta-rows"):
         if k in md:
             try:
@@ -142,16 +162,26 @@ def main() -> int:
     fd, tmp = tempfile.mkstemp(suffix=".csv.gz", prefix="one_")
     os.close(fd)
     try:
-        n = d._series_csv_to_file_sorted(sid, tmp)
-        ok, why = shrink_verdict(n, os.path.getsize(tmp), head)
+        # BYTES, NOT ROWS. `_series_csv_to_file_sorted` returns os.path.getsize(out_path) -
+        # its sibling's docstring says "Returns the byte size written" - and the first version
+        # of this block bound it to `n`, printed it as a row count, passed it as `new_rows` and
+        # stored it under `metadata={"rows": ...}`. The comparison was right by accident, since
+        # both sides were bytes, and wrong in every message. The row count is already in hand
+        # from the ceiling check above, so both are now real and both are recorded.
+        nbytes = d._series_csv_to_file_sorted(sid, tmp)
+        ok, why = shrink_verdict(n_rows, nbytes, head)
         if not ok and not allow_shrink:
             print(f"REFUSE {sid} would publish a REGRESSION: {why}. Nothing uploaded. Pass "
                   f"--allow-shrink if the publisher genuinely withdrew those rows.")
             return 0
         if not ok:
             print(f"SHRINK {sid} allowed by --allow-shrink: {why}")
-        d._put_gzip_file_with_backoff(r2.client, bucket, key, tmp, metadata={"rows": str(n)})
-        print(f"OK {sid} {n} ({why})")
+        meta = {"bytes": str(nbytes)}
+        if n_rows:
+            meta["rows"] = str(n_rows)
+        d._put_gzip_file_with_backoff(r2.client, bucket, key, tmp, metadata=meta)
+        print(f"OK {sid} {nbytes} bytes"
+              + (f" / {n_rows:,} rows" if n_rows else "") + f" ({why})")
         return 0
     except Exception as e:                                   # noqa: BLE001
         print(f"FAIL {sid} {type(e).__name__}: {str(e)[:120]}")
