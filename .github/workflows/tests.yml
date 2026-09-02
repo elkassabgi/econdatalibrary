@@ -79,8 +79,14 @@ jobs:
       # A STEP, NOT A PYTEST WRAPPER. The wrapper pattern above (test_worker_geo_projection.py)
       # SKIPS itself when node is missing, which this workflow already records as the way a
       # pin can be skipped into non-existence. A step fails when node is absent.
+      # INSTALL FIRST. src/csvStream.ts imports `fflate`, so running the tests before the
+      # install fails with ERR_MODULE_NOT_FOUND rather than telling you anything about the
+      # code. That is what the first version of this step did.
+      - name: Install worker deps
+        run: npm ci --prefix api/worker --no-audit --no-fund
+
       - name: worker tests (node:test)
         run: node --test api/worker/test/*.test.ts
 
       - name: worker typecheck
-        run: npm ci --prefix api/worker --no-audit --no-fund && npm run typecheck --prefix api/worker
+        run: npm run typecheck --prefix api/worker
