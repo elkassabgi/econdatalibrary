@@ -22,6 +22,7 @@ either direction destroys one side. AHEAD files are a MERGE queue and are report
 from __future__ import annotations
 
 import argparse
+import re
 import concurrent.futures
 import io
 import json
@@ -80,6 +81,26 @@ class _S3File(io.RawIOBase):
         return body
 
 
+_ISO_DT = re.compile(r"(\d{4}-\d{2}-\d{2})[ T]\d")
+
+
+def _as_day(v):
+    """The rendered max as a DAY, so a DATE column and a TIMESTAMP column compare.
+
+    `str(statistics.max)` renders a DATE as '2026-03-04' and a TIMESTAMP as
+    '2026-03-04 00:00:00', and classify() orders those lexicographically - so two files holding
+    ONE IDENTICAL observation classify as 'behind' one way round and 'ahead' the other. No file
+    in the mirror has a TIMESTAMP-typed date column today, but a DATE/TIMESTAMP drift is exactly
+    what R595 and R605 record as having happened, which is why the identity check reads the type
+    on both sides. This is the same guard, one layer up (R637).
+
+    Day granularity is what this function means by "max observation date"; a sub-day
+    distinction has never been part of the verdict."""
+    s = str(v)
+    m = _ISO_DT.match(s)
+    return m.group(1) if m else s
+
+
 def file_meta(path_or_file):
     """(num_rows, max observation date as a string or None) from the footer alone.
 
@@ -110,7 +131,7 @@ def file_meta(path_or_file):
         except Exception:                                            # noqa: BLE001
             continue
         if st is not None and getattr(st, "has_min_max", False):
-            v = str(st.max)
+            v = _as_day(st.max)
             if best is None or v > best:
                 best = v
     return m.num_rows, best
