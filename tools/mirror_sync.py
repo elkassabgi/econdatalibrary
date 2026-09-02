@@ -326,6 +326,7 @@ def sync_source(s3, rec, apply: bool):
     fail = []
     stale_files = []
     weak_identity = []
+    junk_kept = []
     unreadable_local = []
     one_axis = []
     check_failed = []
@@ -568,6 +569,15 @@ def sync_source(s3, rec, apply: bool):
                 except OSError as e:
                     check_failed.append((n, f"replace failed: {e!r}"[:80]))
                     record(n, "", "", f"replace FAILED - local kept: {' '.join(str(e).split())[:100]}")
+                    if junk_note is not None:
+                        # "LOCAL KEPT" IS REASSURING AND, HERE, WRONG-HEADED: the copy being
+                        # kept is not a parquet file. The generic CHECK FAILED line is true
+                        # and says nothing about that, so the one file in the run that is
+                        # actively unreadable looked like the other refusals (R656 F7).
+                        with lock:
+                            junk_kept.append((n, junk_note[1]))
+                        record(n, "", "", "and the copy being KEPT is the corrupt one - this "
+                                          "file is unreadable until the next sync succeeds")
                     return
                 # THE ACT HAS HAPPENED. Every list a completed-tense summary line
                 # counts is appended HERE and nowhere earlier, so no wording of those lines can
@@ -603,6 +613,10 @@ def sync_source(s3, rec, apply: bool):
     led.close()
     if fail:
         print(f"   {src}: {len(fail)} download(s) FAILED {fail[:3]}")
+    if junk_kept:
+        print(f"   {src}: {len(junk_kept)} local file(s) are CORRUPT and could NOT be replaced - "
+              f"the copy being kept is the unreadable one, so these are down until the next "
+              f"sync succeeds: {[j[0] for j in junk_kept][:3]}")
     if unreadable_local:
         print(f"   {src}: {len(unreadable_local)} local file(s) were UNREADABLE and have been "
               f"replaced - they held nothing that could be lost, and refusing would have "
@@ -647,7 +661,7 @@ def sync_source(s3, rec, apply: bool):
               f"is not counted) that the incoming copy lacks — followed the publisher, every "
               f"tuple in {ledger} (written before each replace); e.g. {[(w[0], w[1], w[2]) for w in withdrawals[:3]]}")
     if not (withdrawals or check_failed or fail or stale_files or weak_identity
-            or unreadable_local):
+            or unreadable_local or junk_kept):
         try:
             os.remove(ledger)   # nothing to keep
         except OSError:
