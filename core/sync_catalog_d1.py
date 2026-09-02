@@ -54,6 +54,39 @@ from core.sync_state_d1 import (CATALOG_SHARD_FOR, MAX_FILE_BYTES,  # noqa: E402
 # rationale block at the emit site in emit_sql.
 FTS_DELETE_PER_STMT = 500
 
+
+def whole_source_reconcile(source, rows, skipped_by_diff, n_groups=1):
+    """The source id when a range DELETE is provably safe, else None.
+
+    SAFE MEANS COMPLETE, NOT HOMOGENEOUS - and the previous test was homogeneity, which is
+    the whole bug (R658). `DELETE FROM series_fts WHERE series_id >= 'src:' AND < 'src;'`
+    removes the index rows of EVERY series of the source, so it is only correct when the
+    rows that follow it re-insert every one of them. The check `all(r["source_id"] ==
+    source)` is true of any subset, and by the time it ran the DIFF had already reduced
+    `rows` to the rows whose content had CHANGED. Measured on the state that existed when
+    this was found: 105 newly catalogued cbs_nl ids, 5,154 unchanged and therefore dropped
+    by the diff, one range DELETE emitted, 105 ids re-inserted - 5,049 series deleted from
+    the search index and never restored. `/v1/catalog?q=dwellings&source=cbs_nl` would have
+    gone from 29 to 0 while /v1/sources still advertised 5,259.
+
+    So the diff and the range delete are mutually exclusive. `--no-diff` sets
+    skipped_by_diff to 0 and the range form is available again, which is the documented way
+    to ask for a whole-source reconcile.
+
+    n_groups guards the shard case: a source split across two D1 databases has only part of
+    itself in each group, and a range predicate inside one database would still be a claim
+    about the whole source. Conservative, and free - no source shards today.
+    """
+    if not source or not rows:
+        return None
+    if skipped_by_diff:
+        return None                    # a partial slice: the omitted ids would be unlisted
+    if n_groups != 1:
+        return None
+    if not all(r.get("source_id") == source for r in rows):
+        return None
+    return source
+
 CATALOG_DB = os.path.abspath(os.environ.get("ECONDL_CATALOG")
                              or os.path.join(ROOT, "data", "catalog.db"))
 # Written by the orchestrator: one series_id per line, appended whenever a CSV is
@@ -401,9 +434,14 @@ def main(argv: list[str] | None = None) -> None:
         # pending-queue path (a partial slice, possibly mixing sources) can never satisfy
         # both, so it keeps the per-block id-list deletes. Getting this wrong deletes the
         # index rows of every series of the source that is NOT in `rows`.
-        whole = None
-        if a.source and grp and all(r.get("source_id") == a.source for r in grp):
-            whole = a.source
+        whole = whole_source_reconcile(a.source, grp, skipped, len(groups))
+        if a.source and not whole and grp:
+            print(f"  [fts] NOT a whole-source reconcile for {a.source}: "
+                  f"{skipped:,} row(s) were dropped by the diff and would be UNLISTED by a "
+                  f"range DELETE, so this uses "
+                  f"{-(-len(grp) // FTS_DELETE_PER_STMT):,} id-list statement(s). Pass "
+                  f"--no-diff to send every row and take the single-scan form.")
+        if whole:
             print(f"  [fts] whole-source reconcile for {a.source}: ONE range DELETE "
                   f"instead of {-(-len(grp) // FTS_DELETE_PER_STMT):,} id-list statements "
                   f"(each is a full scan of series_fts)")
