@@ -346,7 +346,7 @@ def _catalog_ids(limit: int | None, source: list | None):
         conn.close()
 
 
-def _put_gzip_file_with_backoff(s3, bucket, key, path) -> None:
+def _put_gzip_file_with_backoff(s3, bucket, key, path, metadata=None) -> None:
     """PUT an ALREADY-GZIPPED file by streaming it, same backoff as the in-memory put.
 
     The file is reopened on every attempt. Passing one handle would upload zero bytes on
@@ -357,7 +357,7 @@ def _put_gzip_file_with_backoff(s3, bucket, key, path) -> None:
     for attempt in range(7):
         try:
             with open(path, "rb") as fh:
-                s3.put_object(Bucket=bucket, Key=key, Body=fh, ContentType="text/csv",
+                s3.put_object(Bucket=bucket, Key=key, Body=fh, Metadata=(metadata or {}), ContentType="text/csv",
                               ContentEncoding="gzip")
             return
         except Exception as e:                               # noqa: BLE001
