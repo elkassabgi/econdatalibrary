@@ -67,3 +67,20 @@ jobs:
         run: pip install --quiet -r requirements-updater.txt pytest
       - name: pytest
         run: python -m pytest tests/ -q
+
+      # THE WORKER'S OWN TESTS, WHICH NOTHING RAN. api/worker/test/csvStream.test.ts holds 12
+      # node:test cases covering the streamed-CSV path — the code that decides whether a large
+      # object is delivered or answers "Memory limit exceeded before EOF". package.json had no
+      # `test` script, no workflow invoked it, and `npx vitest run` (the runner someone would
+      # reach for) reports "No test suite found" because the file uses node:test. Twelve
+      # passing tests contributing zero signal: this file's own header calls that "reassurance
+      # without evidence", and it was true one directory over.
+      #
+      # A STEP, NOT A PYTEST WRAPPER. The wrapper pattern above (test_worker_geo_projection.py)
+      # SKIPS itself when node is missing, which this workflow already records as the way a
+      # pin can be skipped into non-existence. A step fails when node is absent.
+      - name: worker tests (node:test)
+        run: node --test api/worker/test/*.test.ts
+
+      - name: worker typecheck
+        run: npm ci --prefix api/worker --no-audit --no-fund && npm run typecheck --prefix api/worker
