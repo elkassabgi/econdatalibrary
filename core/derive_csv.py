@@ -97,7 +97,7 @@ def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
     res = _resolve.resolve(series_id)
     if res.dedup_on or res.stamp_id or not res.tidy_ok:
         raise ValueError(f"{series_id}: not eligible for sorted streaming")
-    src = str(res.parquet_path).replace("\\", "/").replace("'", "''")
+    src = _duck_source(res)          # one quoted path, or a DuckDB list of them
     key = res.key_col.replace('"', '""')
     fd, plain = _tf.mkstemp(suffix=".csv", prefix="ddb_")
     os.close(fd)
@@ -120,7 +120,7 @@ def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
         con.execute("SET temp_directory='%s'" % _duck_spill_dir())
         con.execute(
             f'COPY (SELECT CAST("{key}" AS VARCHAR) AS series_id, obs_date, value '
-            f"FROM read_parquet('{src}') WHERE \"{key}\" IS NOT NULL "
+            f"FROM read_parquet({src}) WHERE \"{key}\" IS NOT NULL "
             f"ORDER BY series_id, obs_date) "
             f"TO '{plain_q}' (FORMAT CSV, HEADER, DELIMITER ',')")
         con.close()
@@ -266,16 +266,54 @@ def _derive_and_put(s3, bucket: str, key: str, series_id: str) -> None:
     _put_with_backoff(s3, bucket, key, body)
 
 
+def resolved_paths(res) -> list:
+    """Every parquet file a resolution covers, as a list, whatever shape it arrived in.
+
+    ONE ANSWER FOR THREE CALLERS. `Resolution.parquet_path` may be a file, a directory or (for
+    a partitioned source) a list, and each consumer used to decide for itself: DuckDB got
+    `str(path)`, pyarrow got the raw value, and the MAX_ROWS ceiling checked `isinstance(...,
+    str)` and silently skipped anything else. Three readings of one field is how a ceiling
+    stops applying without anyone noticing (R658).
+    """
+    p = res.parquet_path
+    if isinstance(p, (list, tuple)):
+        return [str(x) for x in p]
+    p = str(p)
+    if os.path.isdir(p):
+        import glob as _glob                                          # noqa: PLC0415
+        return sorted(_glob.glob(os.path.join(p, "**", "*.parquet"), recursive=True))
+    return [p]
+
+
+def _duck_source(res) -> str:
+    """The `read_parquet(...)` argument for a resolution: one quoted path, or a LIST of them.
+
+    DuckDB accepts `read_parquet(['a','b'])`, so a partitioned series needs no glob and no
+    temporary view - but it does need the list built here rather than by str() on a Python
+    list, which yields `['a', 'b']` with Python quoting and fails to parse.
+    """
+    paths = [p.replace("\\", "/").replace("'", "''") for p in resolved_paths(res)]
+    if len(paths) == 1:
+        return "'%s'" % paths[0]
+    return "[%s]" % ", ".join("'%s'" % p for p in paths)
+
+
 def _series_csv_bytes(series_id: str) -> bytes:
     """Project one series to CSV bytes via the econdl resolver (the contract shape)."""
     from econdl import _resolve
     res = _resolve.resolve(series_id)
-    if _MAX_ROWS and isinstance(res.parquet_path, str):
+    if _MAX_ROWS:
+        # SUM THE PARTS. The old gate was `isinstance(res.parquet_path, str)`, so a list or a
+        # directory skipped the ceiling altogether - the check stopped applying at exactly the
+        # shape that means MORE data (R658 F3). An unreadable footer still contributes 0, so an
+        # unknown size cannot block a series that would otherwise derive.
+        n = 0
         try:
             import pyarrow.parquet as _pq
-            n = _pq.read_metadata(res.parquet_path).num_rows
+            for _p in resolved_paths(res):
+                n += _pq.read_metadata(_p).num_rows
         except Exception:
-            n = 0
+            n = n or 0
         if n > _MAX_ROWS:
             raise TooLarge(f"{n:,} rows > {_MAX_ROWS:,}; use the streaming path")
     table = _resolve.read_native(res)
