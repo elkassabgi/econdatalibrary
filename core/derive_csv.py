@@ -346,14 +346,70 @@ def _catalog_ids(limit: int | None, source: list | None):
         conn.close()
 
 
-def _put_gzip_file_with_backoff(s3, bucket, key, path, metadata=None) -> None:
+# How many uploads the identical-object check avoided this process. Printed by callers that
+# report a total, so the saving is observed rather than assumed.
+_SKIPPED_IDENTICAL = [0]
+
+
+
+def _file_md5(path: str) -> str:
+    """MD5 of a file, streamed. Matches R2's ETag for a single-part object."""
+    import hashlib                                                   # noqa: PLC0415
+    h = hashlib.md5()                                                # noqa: S324
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(4 * 1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def object_is_identical(s3, bucket: str, key: str, path: str) -> bool:
+    """True only when R2 already holds EXACTLY these bytes.
+
+    WHY THIS IS SAFE TO TRUST. `sorted_csv_gz` gzips with mtime=0 and no filename so that "the
+    object matches gzip.compress(csv, mtime=0) exactly" - the same data gives the same bytes,
+    hence the same MD5 - and R2 reports that MD5 as the ETag of a single-part object.
+
+    WHY IT REFUSES TO GUESS. A multipart ETag looks like `<hex>-<n>` and is a digest of part
+    digests, not of the content, so it cannot be compared and those objects upload. So does any
+    head that errors, lacks an ETag, or disagrees on size. Every uncertain case falls toward
+    UPLOADING: a wasted class-A operation costs $0.0000045, and a stale served object costs a
+    user the wrong answer.
+
+    MEASURED REASON TO EXIST: 7,686,397 of 10.8 M class-A operations in 24 days are PutObject on
+    econ-data, ~320,000 a day, on a publish path that never compared anything.
+    """
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+    except Exception:                                                # noqa: BLE001
+        return False                                                 # absent, or cannot ask
+    etag = str(head.get("ETag") or "").strip('"')
+    if not etag or "-" in etag:
+        return False                                                 # multipart: not comparable
+    try:
+        if head.get("ContentLength") != os.path.getsize(path):
+            return False                                             # cheap disagreement first
+        return etag == _file_md5(path)
+    except OSError:
+        return False
+
+def _put_gzip_file_with_backoff(s3, bucket, key, path, metadata=None,
+                                skip_identical=True) -> None:
     """PUT an ALREADY-GZIPPED file by streaming it, same backoff as the in-memory put.
 
     The file is reopened on every attempt. Passing one handle would upload zero bytes on
     any retry, because the first attempt leaves it at EOF - a silent empty object, which
     is worse than the transient error that caused the retry.
+
+    SKIPS AN IDENTICAL OBJECT. 71% of this account's class-A operations are PutObject on
+    econ-data - 7,686,397 of 10.8 M over 24 days - on a path that never compared anything, so
+    a source that marks every series changed republishes identical bytes daily. The check is
+    an exact MD5-vs-ETag match and refuses to guess; see `object_is_identical`. Pass
+    skip_identical=False to force the write.
     """
     import time as _time                                             # noqa: PLC0415
+    if skip_identical and object_is_identical(s3, bucket, key, path):
+        _SKIPPED_IDENTICAL[0] += 1
+        return
     for attempt in range(7):
         try:
             with open(path, "rb") as fh:
@@ -930,8 +986,16 @@ def main() -> None:
             if up % 500 == 0:
                 print(f"  derived+put {up:,} (skip {skip:,}, miss {miss:,})...", flush=True)
 
+    # SAY WHAT THE CHECK SAVED. `_SKIPPED_IDENTICAL` counted avoided uploads from the first
+    # commit and nothing printed it, so the saving could only be predicted. 71% of this
+    # account's class-A operations are PutObject on econ-data - 7,686,397 of 10.8 M over 24
+    # days - so this number is the one that says whether that line is coming down.
+    ident = _SKIPPED_IDENTICAL[0]
     print(f"done: put {up:,} series CSVs, skipped {skip:,} existing, "
           f"{miss:,} unresolvable (store-coverage gaps)")
+    if ident:
+        print(f"      {ident:,} upload(s) avoided - R2 already held those exact bytes "
+              f"(~${ident / 1e6 * 4.50:.2f} of class-A operations not spent)")
 
 
 if __name__ == "__main__":
