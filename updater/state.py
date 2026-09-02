@@ -75,6 +75,16 @@ _UNIT_COLS = ["source_id", "unit_id", "strategy", "upstream_vintage", "last_succ
               "attempt_count", "last_error"]
 
 
+# WITHDRAWN (R629). A read-time detector for censored runs - a duration landing on the unit
+# timeout - was measured to demote three sources that have since run fast (defillama's latest
+# `ok` is 88.7 s and it was pushed from band 2 to band 3, the very starvation the ladder was
+# built to stop), to catch 21 legitimate `partial` runs inside its window, to MISS the least
+# ambiguous censored rows because a UnitTimeout is recorded `transient_fail`, and to evaporate
+# entirely when AQUEDUCT_UNIT_TIMEOUT_MIN is 180 as updater-heavy sets it. Censorship belongs in
+# the row AT WRITE TIME, not inferred from a duration at read time. See R625 for what it was
+# trying to fix: seven unctad giants banded cheap on a 2,700 s cutoff recorded as their cost.
+
+
 class StateStore:
     def __init__(self, path: str | None = None):
         config.ensure_dirs()

@@ -672,11 +672,28 @@ def route_silence(report: dict) -> "list[str]":
         if not seen:
             continue                       # never configured, not gone silent — see above
         newest = f"{min(seen):.1f}d ago"
+        # SAY WHETHER THE MACHINE IS RUNNING. "Not one has succeeded" is true and, on its own,
+        # misleading: a multi-unit source is permanently `partial` by design and partial never
+        # sets last_success, so a route can be attempting every night and still read as
+        # silent. Distinguishing the two costs one line and no new data — and getting it
+        # wrong sent a whole investigation down the wrong path, which started from this
+        # sentence and concluded the machine had stopped (R625/R629).
+        attempts = [r.get("last_attempt_age_d") for r in rows]
+        recent_attempts = [a for a in attempts if a is not None and a <= ROUTE_SILENCE_DAYS]
+        if recent_attempts:
+            colour = (f"{len(recent_attempts)} of them WERE ATTEMPTED within "
+                      f"{ROUTE_SILENCE_DAYS:.0f}d (newest attempt {min(recent_attempts):.1f}d "
+                      f"ago), so the route is running and those sources are not reaching a "
+                      f"state that sets last_success — a different diagnosis from a stopped "
+                      f"machine, and one this gate cannot resolve from here.")
+        else:
+            colour = ("NONE of them was even attempted in that window, so the route itself "
+                      "has stopped reporting: check the machine's guard loop and its "
+                      "heartbeat.")
         out.append(
             f"ROUTE '{loc}' SILENT — {len(rows)} live source(s) run there and NOT ONE has "
-            f"succeeded within {ROUTE_SILENCE_DAYS:.0f}d (newest success: {newest}). This "
-            f"gate cannot judge those sources, but it can see that the route has stopped "
-            f"reporting: check the machine's guard loop and its heartbeat.")
+            f"succeeded within {ROUTE_SILENCE_DAYS:.0f}d (newest success: {newest}). "
+            f"{colour}")
     return out
 
 
