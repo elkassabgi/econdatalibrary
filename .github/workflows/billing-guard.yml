@@ -56,6 +56,14 @@ jobs:
       # $328/mo and exited 1 on three breaches; here it reported "PARTIAL MONTH FLOOR ~= $13/mo"
       # and exited 0. A monitor that says $13 when the bill is $328 is worse than none.
       CF_ANALYTICS_TOKEN: ${{ secrets.CF_ANALYTICS_TOKEN }}
+      # AND THE ACCOUNT ID, which is the OTHER half of the same gate. account_analytics()
+      # refuses on `not tok or not acct`, and _account_id() used to read only
+      # R2_WRITE_ENDPOINT, falling back to the repo `.env` — which is gitignored and does not
+      # exist on a runner. So on 2026-09-02, minutes after CF_ANALYTICS_TOKEN was added to the
+      # repo secrets, run 33669058808 still printed "CF_ANALYTICS_TOKEN is not set". Both
+      # names are passed now: CLOUDFLARE_ACCOUNT_ID above is the canonical one, and this is
+      # the fallback if its stored value is ever not a bare 32-hex tag.
+      R2_WRITE_ENDPOINT: ${{ secrets.R2_WRITE_ENDPOINT }}
     steps:
       - uses: actions/checkout@v4
 

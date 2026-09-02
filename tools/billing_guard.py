@@ -197,18 +197,48 @@ def _load_env_token() -> str:
 
 
 def _account_id() -> str:
-    """Account tag, derivable from the R2 endpoint host (no secret involved)."""
-    ep = os.environ.get("R2_WRITE_ENDPOINT", "")
-    if not ep:
-        try:
-            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            for line in open(os.path.join(root, ".env"), encoding="utf-8"):
-                if line.startswith("R2_WRITE_ENDPOINT="):
-                    ep = line.split("=", 1)[1].strip()
-                    break
-        except OSError:
-            pass
-    return ep.split("//")[1].split(".")[0] if "//" in ep else ""
+    """The 32-hex account tag, from whichever source this environment actually has.
+
+    THE TOKEN WAS NOT THE ONLY THING MISSING IN CI, AND THE ERROR MESSAGE SAID IT WAS. This
+    read only `R2_WRITE_ENDPOINT`, falling back to the repo `.env` - and `.env` is gitignored,
+    so it does not exist on a runner, while billing-guard.yml's env block never passed that
+    secret. `account_analytics()` refuses on `not tok or not acct`, so on 2026-09-02, minutes
+    after CF_ANALYTICS_TOKEN was added to the repo secrets exactly as instructed, run
+    33669058808 still printed "CF_ANALYTICS_TOKEN is not set" - naming the one thing that WAS
+    now set. The person who did the right thing was told they had not.
+
+    `CLOUDFLARE_ACCOUNT_ID` is the same value, is already in the workflow's env block, and is
+    the canonical name for it. Tried first, then the R2 endpoint host (an R2 endpoint is
+    https://<account_id>.r2.cloudflarestorage.com), then either key in `.env` for local runs.
+
+    The result is SHAPE-CHECKED. A wrong or truncated value would build a valid-looking
+    GraphQL query against the wrong account and return zeros, which this guard would price as
+    a quiet month - the exact failure mode it exists to prevent (R507).
+    """
+    import re as _re
+
+    def _tag(v: str) -> str:
+        v = (v or "").strip().strip('"').strip("'")
+        if "//" in v:                       # an endpoint, not a bare id
+            v = v.split("//", 1)[1].split(".", 1)[0]
+        return v if _re.fullmatch(r"[0-9a-f]{32}", v) else ""
+
+    for v in (os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""),
+              os.environ.get("R2_WRITE_ENDPOINT", "")):
+        tag = _tag(v)
+        if tag:
+            return tag
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for line in open(os.path.join(root, ".env"), encoding="utf-8"):
+            for key in ("CLOUDFLARE_ACCOUNT_ID=", "R2_WRITE_ENDPOINT="):
+                if line.startswith(key):
+                    tag = _tag(line.split("=", 1)[1])
+                    if tag:
+                        return tag
+    except OSError:
+        pass
+    return ""
 
 
 # R2 operation classes per Cloudflare's pricing page (Class A $4.50/M past 1M/mo
@@ -495,11 +525,23 @@ def account_analytics() -> str:
         # is a vendor blip, an absent token is a permanent configuration hole that nothing
         # else will ever report.
         _MEASURED["unmetered"] = True
+        # NAME THE MISSING PIECE, NOT THE USUAL SUSPECT. This sentence used to blame the
+        # token unconditionally, and on run 33669058808 it did so minutes after the token
+        # had been added correctly - the account id was the half that was absent, because
+        # `.env` does not exist on a runner and the workflow passed no endpoint. A
+        # diagnostic that names the wrong cause costs more than none: it sends the person
+        # who fixed the real thing back to check the thing they just fixed.
+        missing = ([] if tok else ["CF_ANALYTICS_TOKEN (read-only 'Account Analytics: "
+                                   "Read' token)"]) + \
+                  ([] if acct else ["CLOUDFLARE_ACCOUNT_ID (or R2_WRITE_ENDPOINT), the "
+                                    "32-hex account tag"])
+        _MEASURED["unmetered_missing"] = missing
         return ("ACCOUNT ANALYTICS: UNMETERED — R2 operations and Workers usage are "
                 "invisible to this guard, D1 falls back to a ~10x-low source, and the "
                 "month figure below is a FLOOR that will read far under the real bill. "
-                "Set CF_ANALYTICS_TOKEN (read-only 'Account Analytics: Read' token) in "
-                ".env and in the repo secrets to close the gap.")
+                "MISSING: " + " AND ".join(missing) + ". Set it in .env for a local run "
+                "and in the repo secrets AND billing-guard.yml's env block for CI — a "
+                "secret that no env line passes is invisible to the job.")
     # UTC, NOT LOCAL. GraphQL's `date` dimension is UTC (proven 2026-08-29: the API's own
     # error carried 2026-08-30T00:13Z while the local clock read 08-29 19:13, UTC-5). With
     # date.today() this window ended a UTC day EARLY for five hours every evening, so the
@@ -942,14 +984,17 @@ def main() -> int:
     if _MEASURED.get("unmetered"):
         # Cannot measure => cannot reassure. Exit before the threshold arithmetic, which
         # would otherwise compare zeros against limits and pass.
-        send_alert("BILLING GUARD IS BLIND: CF_ANALYTICS_TOKEN is not set",
+        # THE SUBJECT LINE NAMES WHAT IS ACTUALLY ABSENT. Hard-coding the token here is how
+        # run 33669058808 told someone their correctly-added token was not set.
+        gap = " AND ".join(_MEASURED.get("unmetered_missing")
+                           or ["CF_ANALYTICS_TOKEN or the account id"])
+        send_alert(f"BILLING GUARD IS BLIND: {gap} not available to this run",
                    report + "\n\nThis run measured NOTHING that matters: R2 operations, "
                             "Workers and the storage mean were priced at zero and D1 fell "
-                            "back to a source that reads ~10x low. Set CF_ANALYTICS_TOKEN "
-                            "(read-only 'Account Analytics: Read') in the repo secrets.")
-        print("BILLING GUARD BLIND - reddening the workflow: CF_ANALYTICS_TOKEN is not set, "
-              "so R2 operations are unmetered and D1 is measured ~10x low. The month figure "
-              "printed above is a FLOOR, not the bill.")
+                            f"back to a source that reads ~10x low. MISSING: {gap}.")
+        print(f"BILLING GUARD BLIND - reddening the workflow: {gap} not available to this "
+              f"run, so R2 operations are unmetered and D1 is measured ~10x low. The month "
+              f"figure printed above is a FLOOR, not the bill.")
         return 1
 
     r2a_day = _MEASURED.get("r2_class_a_day") or 0
