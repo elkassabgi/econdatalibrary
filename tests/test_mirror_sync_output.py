@@ -20,6 +20,7 @@ import time
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -461,6 +462,12 @@ def test_a_local_file_being_written_RIGHT_NOW_is_left_alone(tmp_path):
     assert "CHECK FAILED" in out or "local kept" in out.lower(), out
 
 
+@pytest.mark.skipif(os.name != "nt", reason=(
+    "the probe under test is os.rename(p, p), which raises PermissionError on Windows while "
+    "another process holds the file and SUCCEEDS on POSIX - mirror_sync says so in its own "
+    "comment and keeps mtime as the fallback there. On Linux this fixture's back-dated file "
+    "is correctly replaced, so the assertion would be testing the opposite behaviour, not the "
+    "same one. The mirror runs on this Windows workstation; CI never syncs."))
 def test_a_file_with_an_OPEN_HANDLE_is_left_alone_even_if_it_looks_old(tmp_path):
     """R647: the open-handle probe replaced mtime as the PRIMARY signal and had no test of its
     own - every fixture closed its file first, so only the mtime fallback was ever exercised.

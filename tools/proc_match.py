@@ -106,6 +106,17 @@ def kill_verified(proc: Proc, wait_s: float = 15.0) -> tuple:
         try:
             p.wait(timeout=wait_s)
         except psutil.TimeoutExpired:
+            # A KILLED CHILD ON POSIX IS A ZOMBIE UNTIL ITS PARENT REAPS IT, and psutil's
+            # wait() on a process that is not OUR child polls the process table - where a
+            # zombie is still present. So a SIGKILL that worked perfectly reported "still
+            # alive after 15s", which is true of the table entry and false of the process.
+            # Windows has no zombie state, which is why this only ever failed on Linux CI.
+            try:
+                if p.status() == psutil.STATUS_ZOMBIE:
+                    return True, (f"killed {proc.pid} (zombie: dead, awaiting reap by its "
+                                  f"parent)")
+            except psutil.NoSuchProcess:
+                return True, f"killed {proc.pid} (gone)"
             return False, f"kill sent to {proc.pid} but it is still alive after {wait_s:g}s"
         return True, f"killed {proc.pid} (waited)"
     except psutil.NoSuchProcess:
