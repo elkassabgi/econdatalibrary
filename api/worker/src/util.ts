@@ -549,8 +549,38 @@ export function csv(body: string, extra?: Record<string, string>): Response {
   const bytes = new TextEncoder().encode(body).length;
   return new Response(body, {
     status: 200,
-    headers: { ...CSV_HEADERS, "content-length": String(bytes), ...(extra ?? {}) },
+    // R613/R614: the string path (objects below 256 KiB) is the one whose completeness rests on
+    // the declared content-length surviving to the client, so it forbids recoding; the gzip
+    // passthrough stays edge-negotiated (a non-gzip client must not receive gzip bytes under a
+    // .csv name), and the reference clients send Accept-Encoding: gzip and refuse a
+    // length-less passthrough as unverifiable.
+    headers: { ...CSV_HEADERS, "cache-control": "public, max-age=300, no-transform",
+               "content-length": String(bytes), ...(extra ?? {}) },
   });
+}
+
+/** 200 text/csv whose body is a STREAM (large objects, csvStream.ts). No content-length
+ *  is known up front; `atRestBytes` (the R2 object's stored size) travels in
+ *  `x-econdl-bytes-at-rest` so the download gate can still record a served-bytes
+ *  figure (a lower bound: stored objects are gzipped) instead of 0. */
+export function csvStream(body: ReadableStream<Uint8Array>, atRestBytes: number,
+                          extra?: Record<string, string>): Response {
+  return new Response(body, {
+    status: 200,
+    // informational only: the download log records bytes WRITTEN to the client (R593)
+    headers: { ...CSV_HEADERS, "x-econdl-bytes-at-rest": String(atRestBytes), ...(extra ?? {}) },
+  });
+}
+
+/** 200 text/csv whose body is the STORED GZIP BYTES, untouched (csvStream.ts passthrough).
+ *  `extra` carries content-encoding: gzip and the exact content-length; encodeBody "manual"
+ *  tells the runtime the body is already encoded, so nothing re-compresses or inflates it. */
+export function csvPassthrough(body: ReadableStream<Uint8Array>, extra: Record<string, string>): Response {
+  return new Response(body, {
+    status: 200,
+    headers: { ...CSV_HEADERS, ...extra },
+    encodeBody: "manual",
+  } as ResponseInit & { encodeBody: "manual" });
 }
 
 // --- honest-status error bodies (machine-readable `error` codes) -----------

@@ -49,9 +49,15 @@
 import type { Env, SeriesRow, SourceRow, LicenseRow } from "./types";
 import { SELECT_SERIES, SELECT_SOURCE, SELECT_LICENSE } from "./sql";
 import {
-  csv, json, notFound, notMigrated, dataUnavailable, resolverEmpty, unsupportedFilter,
-  badRequest, supportedSources, sourceOf, licenseBlock, dbForSeries,
+  csv, csvStream, csvPassthrough, json, notFound, notMigrated, dataUnavailable, resolverEmpty,
+  unsupportedFilter, badRequest, supportedSources, sourceOf, licenseBlock, dbForSeries,
 } from "./util";
+import {
+  CSV_HEADER, FILTER_MAX_STORED_BYTES, FILTER_MAX_TEXT_BYTES, LineFilter, MAX_RATIO, STREAM_MIN_BYTES,
+  VerifiedGunzip, completeLine, identityPipe, isGzipMagic, isizeFromTrailer, newStats, peekGzipHeader,
+  prefixBytes, primePump, slices,
+} from "./csvStream";
+import type { FilterOpts, Primed } from "./csvStream";
 import { isGated } from "./denylist";
 import { GEO_PROJECTION_SOURCES, geoAlias, normalizeGeoParam, filterGeoRows } from "./geoProjection";
 
@@ -150,7 +156,10 @@ async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Pr
   );
 }
 
-export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Promise<Response> {
+export async function handleSeriesCsv(
+  seriesId: string, url: URL, env: Env, ctx?: ExecutionContext,
+  onDone?: (bytes: number, ok: boolean) => Promise<void>,
+): Promise<Response> {
   const requestedId = seriesId;
   let geoFilter: string | null = null;
   // What the CALLER typed, kept beside the resolved code so every error message quotes
@@ -249,11 +258,34 @@ export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Pro
   // core/derive_csv.py; plain objects keep working, so the fleet can migrate
   // gradually with this reader deployed first.
   const gzipped = obj.httpMetadata?.contentEncoding === "gzip";
+  const rawParam0 = url.searchParams.get("raw");
+  const bare0 = rawParam0 === "1" || rawParam0 === "true";
+
+  // 4a) LARGE objects are STREAMED, never materialised (csvStream.ts). Measured
+  //     2026-09-01: 51 cbs_nl objects exceed 100 MB gzipped (max 554 MB), i.e. GBs
+  //     of text; `.text()` of that inside a 128 MB isolate dies with Error 1102 —
+  //     every one of them was catalogued and undeliverable. The stream keeps the
+  //     honest statuses: it is primed before the Response exists, so 0 rows is
+  //     still 502 / the geo 404 names real alternatives.
+  if (obj.size >= STREAM_MIN_BYTES) {
+    return streamLarge(obj, gzipped, seriesId, requestedId, series, env,
+                       { from, to, geo: geoFilter }, geoRequested, bare0, ctx, onDone);
+  }
+
   const text = gzipped
     ? await new Response(
         obj.body.pipeThrough(new DecompressionStream("gzip")),
       ).text()
     : await obj.text();
+  // A stored object that does not start with the contract header is malformed: 502, never a
+  // 200 whose "rows" are something else (R582 F8: the string path served it; the stream path
+  // refuses it — both must agree).
+  const firstNl = text.indexOf("\n");
+  const firstLine = (firstNl < 0 ? text : text.slice(0, firstNl)).replace(/\r$/, "");
+  if (firstLine !== CSV_HEADER) {
+    return json({ error: "data_unavailable", source, series_id: seriesId,
+                  detail: `the at-rest object is malformed (header '${firstLine.slice(0, 60)}'); refusing to serve it` }, 502);
+  }
 
   // 4b) per-geo projection: keep only this economy's rows. Zero matches is an
   //     honest 404 that names real alternatives, never an empty 200.
@@ -287,12 +319,199 @@ export async function handleSeriesCsv(seriesId: string, url: URL, env: Env): Pro
   const bare = rawParam === "1" || rawParam === "true";
   // The R2 ETag describes the FULL stored object — never attach it to a
   // geo-projected subset.
-  if (bare) return csv(filtered, geoFilter === null ? { etag: obj.httpEtag } : undefined);
+  // The R2 ETag describes the FULL stored object: never attach it to a projected OR
+  // date-windowed body (R582 F8 — the window case was leaking it).
+  const whole = geoFilter === null && from === null && to === null;
+  if (bare) return csv(filtered, whole ? { etag: obj.httpEtag } : undefined);
   const note = geoFilter !== null
     ? `# Projection: rows for geo=${geoFilter} of grouped series ${seriesId}` +
       (requestedId !== seriesId ? ` (requested as ${requestedId})` : "") + "\n"
     : "";
   return csv((await citationHeader(seriesId, series, env)) + note + filtered);
+}
+
+/** Serve a large object without holding it (csvStream.ts; ledger R579/R582/R585).
+ *
+ *  PASSTHROUGH — no window, no geo, gzipped object: the stored gzip bytes go to the client
+ *  untouched (content-encoding: gzip, exact content-length, ~0.7 CPU-s per GB, flat memory).
+ *  Primed first: the first stored chunk(s) must carry the gzip magic AND inflate to the
+ *  contract header plus a data row (a plain object flagged gzip, or a double-gzipped object,
+ *  is 502 - never a 200 the client cannot decode). The in-body citation is OMITTED on this
+ *  path (a gzip member prepended to the stored bytes is not decoded by curl --compressed) and
+ *  the response says so: `x-econdl-citation-omitted: large-object` + a Link to the metadata.
+ *  ?raw=1 additionally passes the R2 ETag (it describes exactly these bytes).
+ *
+ *  INFLATE — window / geo / plain object: a PULL-DRIVEN pump (never a pipeThrough chain,
+ *  which workerd runs ahead of the consumer): one R2 chunk -> fflate gunzip with CRC32/ISIZE
+ *  verification -> byte-level line filter -> `await writer.write()` into an identity stream.
+ *  Primed before the Response exists so the contract statuses hold (wrong header or 0 rows
+ *  -> 502; geo never matched -> 404 naming real economies; malformed -> 502). A mid-run
+ *  error ABORTS the transfer (never a clean EOF on a 200). Refused UP FRONT (400,
+ *  actionable) when the stored size could wrap the 4 GiB ISIZE or the decompressed size
+ *  exceeds FILTER_MAX_TEXT_BYTES. Bytes written to the client are counted and handed to
+ *  `onDone` when the transfer ends (the download log records delivered bytes, not produced). */
+async function streamLarge(
+  obj: R2ObjectBody, gzipped: boolean, seriesId: string, requestedId: string,
+  series: SeriesRow, env: Env, opts: FilterOpts, geoRequested: string | null, bare: boolean,
+  ctx: ExecutionContext | undefined, onDone: ((bytes: number, ok: boolean) => Promise<void>) | undefined,
+): Promise<Response> {
+  const filtered = opts.from !== null || opts.to !== null || opts.geo !== null;
+  const key = objectKey(seriesId);
+  const source = sourceOf(seriesId);
+  const malformed = (why: string) => json({ error: "data_unavailable", source, series_id: seriesId,
+    detail: `the at-rest object is malformed (${why}); refusing to serve it` }, 502);
+  const settle = (p: Promise<number>, written: () => number) => {
+    // R599: an aborted transfer still moved bytes - report what was written, not 0
+    const done = p.then((n) => onDone?.(n, true), () => onDone?.(written(), false)).catch(() => undefined);
+    if (ctx) ctx.waitUntil(done);
+  };
+
+  if (!filtered && gzipped) {
+    // Prime on THIS body: pull stored chunks until the inflated prefix shows the header and a
+    // data row (bounded: peekGzipHeader stops after 64 KB of text), then cancel it and serve a
+    // SECOND GET's body untouched - the runtime pumps a native R2 body at ~0.7 CPU-s per GB
+    // (R582), whereas re-emitting the bytes through a JS pump measured 2.8 MB/s. One extra
+    // class-B GET per large download.
+    const held: Uint8Array[] = [];
+    let heldBytes = 0;
+    let magicChecked = false;
+    let peek = { headerOk: false, hasRow: false };
+    const reader = obj.body.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        held.push(value);
+        heldBytes += value.length;
+        if (!magicChecked && heldBytes >= 3) {
+          magicChecked = true;
+          const first3 = new Uint8Array(3);
+          let o = 0;
+          for (const c of held) { for (let i = 0; i < c.length && o < 3; i++) first3[o++] = c[i]; if (o >= 3) break; }
+          if (!isGzipMagic(first3)) throw new Error("not a gzip member (flagged gzip at rest)");
+        }
+        peek = peekGzipHeader(held);
+        if (peek.headerOk && peek.hasRow) break;
+        if (held.reduce((n, c) => n + c.length, 0) > 4 * 1024 * 1024) break;   // 4 MB of gzip with no data row: give up
+      }
+    } catch (e) {
+      await reader.cancel(e).catch(() => undefined);
+      return malformed(String((e as Error).message ?? e).slice(0, 120));
+    }
+    await reader.cancel().catch(() => undefined);
+    if (!peek.headerOk) return malformed("stored bytes do not inflate to the contract header");
+    if (!peek.hasRow) return resolverEmpty(seriesId);
+    // The primed bytes are the ones served: the second GET is conditional on the same ETag; a
+    // replace between the two GETs yields a bodyless result (R593 b) and an honest 502.
+    const fresh = await env.SERIES_BUCKET.get(key, { onlyIf: { etagMatches: obj.etag } });
+    if (fresh === null) return dataUnavailable(source, seriesId);
+    if (!("body" in fresh) || fresh.body === null) {
+      return json({ error: "data_unavailable", source, series_id: seriesId,
+        detail: "the object was replaced while the response was being prepared; retry" }, 502);
+    }
+    const extra: Record<string, string> = {
+      "content-encoding": "gzip",
+      "content-length": String(fresh.size),
+      // a cacheable, pre-encoded body must vary on the request's encoding, or a shared cache
+      // could hand these gzip bytes to a client that did not accept gzip (review round 8)
+      "vary": "Accept-Encoding",
+      "x-econdl-citation-omitted": "large-object",
+      "link": `</v1/series/${encodeURIComponent(seriesId)}.metadata.json>; rel="describedby"`,
+    };
+    if (bare) extra["etag"] = fresh.httpEtag;
+    return csvPassthrough(fresh.body, extra);
+  }
+
+  // Inflate path: budget first, never a 200 that dies at the CPU limit.
+  if (gzipped) {
+    if (obj.size > FILTER_MAX_STORED_BYTES) {
+      await obj.body.cancel().catch(() => undefined);
+      return unsupportedFilter(
+        `this series' object is ${(obj.size / 1e6).toFixed(0)} MB stored, above the size at which its ` +
+        `decompressed length is knowable in advance; server-side filtering is not offered for it. ` +
+        `Download the full series at /v1/series/${encodeURIComponent(seriesId)}.csv?raw=1 (gzip) and filter locally.`);
+    }
+    const tail = await env.SERIES_BUCKET.get(key, { range: { offset: Math.max(0, obj.size - 4), length: 4 } });
+    const isize = tail === null ? -1 : isizeFromTrailer(new Uint8Array(await tail.arrayBuffer()));
+    if (isize > obj.size * MAX_RATIO) {
+      // an ISIZE beyond any ratio the fleet has produced is forged, wrapped, or a degenerate
+      // object (R593: a 5.96 MB object declaring 100 MB bought 79.6 CPU-s and 2.455 GB of
+      // egress). Not a 'malformed' verdict - an honest 344x object exists in theory - but a
+      // filter the server will not run (R599).
+      await obj.body.cancel().catch(() => undefined);
+      return unsupportedFilter(
+        `this series' object declares ${(isize / 1e6).toFixed(0)} MB decompressed from ${(obj.size / 1e6).toFixed(1)} MB stored ` +
+        `(${(isize / obj.size).toFixed(0)}x); server-side filtering is offered up to ${MAX_RATIO}x. ` +
+        `Download the full series at /v1/series/${encodeURIComponent(seriesId)}.csv?raw=1 (gzip) and filter locally.`);
+    }
+    if (isize < 0 || isize > FILTER_MAX_TEXT_BYTES) {
+      await obj.body.cancel().catch(() => undefined);
+      return unsupportedFilter(
+        `this series' object is ${isize < 0 ? "of unknown decompressed size" : `${(isize / 1e6).toFixed(0)} MB decompressed`}` +
+        `, above the server-side filter budget of ${(FILTER_MAX_TEXT_BYTES / 1e6).toFixed(0)} MB. ` +
+        `Download the full series at /v1/series/${encodeURIComponent(seriesId)}.csv?raw=1 ` +
+        `(gzip) and filter locally.`);
+    }
+  } else if (obj.size > FILTER_MAX_TEXT_BYTES) {
+    await obj.body.cancel().catch(() => undefined);
+    return unsupportedFilter(
+      `this series' object is ${(obj.size / 1e6).toFixed(0)} MB, above the server-side filter budget ` +
+      `of ${(FILTER_MAX_TEXT_BYTES / 1e6).toFixed(0)} MB. Download it at ` +
+      `/v1/series/${encodeURIComponent(seriesId)}.csv?raw=1 and filter locally.`);
+  }
+
+  const stats = newStats();
+  const lf = new LineFilter(opts, stats);
+  const vg = gzipped ? new VerifiedGunzip(stats) : null;
+  // one piece per INFLATE_SLICE of stored bytes, emitted as produced (R593/R599: the transient
+  // is one slice's inflate plus the coalescing buffer, never chunk x ratio)
+  // LAZY (R603): a generator - each slice is inflated only when the pump asks for the next
+  // piece, i.e. after the previous piece has gone through the coalescing writer. Array.map
+  // evaluated every slice before the first write and the transient never moved.
+  const step = function* (chunk: Uint8Array): Generator<Uint8Array> {
+    if (!vg) { yield lf.push(chunk); return; }
+    for (const sl of slices(chunk)) yield lf.push(vg.push(sl));
+  };
+  const finish = function* (): Generator<Uint8Array> {
+    if (vg) yield lf.push(vg.finish());
+    yield lf.flush();
+    yield completeLine(stats.rows);   // the in-band completeness marker (R593)
+  };
+  let primed: Primed;
+  try {
+    primed = await primePump(obj.body, step, finish, stats);
+  } catch (e) {
+    return malformed((stats.malformed ?? String((e as Error).message ?? e)).slice(0, 120));
+  }
+  if (primed.first === null || stats.headerOk === false || stats.rows === 0) {
+    if (opts.geo !== null && stats.headerOk !== false && !stats.geoMatched) {
+      const geos = [...stats.geos].sort();
+      return json({
+        error: "geo_not_found",
+        detail: `no rows for geo '${geoRequested ?? opts.geo}'`
+          + ` in ${seriesId} — this grouped series holds ${geos.length} economies (e.g. `
+          + `${geos.slice(0, 8).join(", ")}). Request the full set at `
+          + `/v1/series/${encodeURIComponent(seriesId)}.csv`,
+      }, 404);
+    }
+    return stats.headerOk === false ? malformed("stored bytes do not start with the contract header") : resolverEmpty(seriesId);
+  }
+  const note = opts.geo !== null
+    ? `# Projection: rows for geo=${opts.geo} of grouped series ${seriesId}` +
+      (requestedId !== seriesId ? ` (requested as ${requestedId})` : "") + "\n"
+    : "";
+  const prefix = (bare ? "" : (await citationHeader(seriesId, series, env)) + note) + CSV_HEADER + "\n";
+  const { readable, writable } = identityPipe();
+  const writer = writable.getWriter();
+  const run = (async () => {
+    const pb = prefixBytes(prefix);
+    await writer.write(pb); stats.bytesOut += pb.length;
+    return primed.run(writer);
+  })();
+  settle(run, () => stats.bytesOut);
+  // The R2 ETag describes the FULL stored object — only on the bare, unfiltered path.
+  const extra = bare && !filtered ? { etag: obj.httpEtag } : undefined;
+  return csvStream(readable, obj.size, extra);
 }
 
 /** Keep the header + rows whose obs_date is within [from, to] (inclusive).
