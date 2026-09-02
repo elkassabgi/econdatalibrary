@@ -1583,8 +1583,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # consecutive runs. A reserve is meant to bound THIS unit's overrun; sizing it
             # by the slowest unit in the fleet is what starved the cheap ones.
             _need_min = min(_worst_min, max(2 * 1.5 * (_est_s / 60.0), 10.0))
+        _now = time.time()
         if (run_deadline is not None
-                and time.time() + _need_min * 60.0 > run_deadline
+                and _now + _need_min * 60.0 > run_deadline
                 and not (sources and len(sources) == 1)):
             # WORST-CASE LOOKAHEAD, not a point check: a unit owns up to TWO
             # per-unit SIGALRM windows (detect_change probe + update), so the
@@ -1593,7 +1594,18 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # a 240 gate and ran 78 min into the 285-min step kill (31466202723).
             # Single-source dispatches are deliberate manual proofs — never cap those,
             # or a proof run would report success having skipped the source under test.
+            # SAY IT WHERE IT HAPPENS. The summary this list feeds is printed after the loop,
+            # and a hard stop never reaches the end of the loop - so on every budget-killed
+            # pass the skips were invisible, and the last ten local passes all ended that way
+            # (R625). One line per skip costs nothing and survives a kill.
             budget_skipped.append(unit.source_id)
+            # The numbers printed are the ones that DECIDED: `_now` is the instant the
+            # comparison used, not a fresh clock read, and `_need_min` is the RESERVE this
+            # gate requires - a worst case, not an estimate of what the unit would take.
+            print(f"[orchestrator] BUDGET SKIP {unit.source_id}/{unit.unit_id}: the gate "
+                  f"reserves {_need_min:.0f} min (worst case, not an estimate) and "
+                  f"{max(0.0, (run_deadline - _now) / 60.0):.0f} min remain in this pass - "
+                  f"deferred to the next one", flush=True)
             continue
         try:
             runnable = _has_adapter(unit)

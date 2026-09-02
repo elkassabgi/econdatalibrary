@@ -386,6 +386,30 @@ $hardStopped = $false
 $updaterLog = Join-Path $logDir ("local_heavy_updater_{0}.log" -f $stamp)
 $updaterErr = Join-Path $logDir ("local_heavy_updater_{0}.err.log" -f $stamp)
 Say ("updater output -> " + $updaterLog)
+# SNAPSHOT WHAT THE STORE KNOWS, so the cadence decision below can ask what this pass ADVANCED
+# rather than how the updater exited or how many rows it wrote. A hard stop still stamped the
+# 20-hour clock, so a pass that finished nothing cost a whole day - and the last ten passes all
+# ended in a hard stop (R625).
+#
+# NOT A ROW COUNT. Three rounds of this guard counted `runs` rows and all three were inert on
+# the motivating pass, because a row records that a unit was ATTEMPTED: the 2026-09-01 pass
+# wrote `istat partial` whose own note says every ISTAT host was unusable and whose
+# last_success_utc has not moved since 2026-07-14, and that row was read as work. `partial` is
+# a bucket - it covers eia merging 235 million rows and istat reaching no host at all - so no
+# partition of it can carry this decision. The probe diffs `unit_state.last_success_utc` and
+# `upstream_vintage`, which are written only on real progress (R630).
+$progressSnap = Join-Path $logDir ("local_heavy_progress_{0}.json" -f $stamp)
+$snapRaw = ( & $pythonExe (Join-Path $PSScriptRoot 'unit_progress_probe.py') --snapshot $progressSnap 2>$null ) | Select-Object -Last 1
+# EMPTY STDOUT IS NOT ZERO. In PowerShell 5.1 `[int]$null` is 0 and does NOT throw, so a
+# sentinel the helper prints from its own except-branch cannot cover the case where the helper
+# never runs at all - a missing script or an interpreter that fails to start prints nothing,
+# and the cast then yields a confident 0 (R630).
+#
+# THE PATTERN IS THE GUARD, not the comparison beside it: '^\d+$' rejects an empty string, a
+# warning line and the -1 sentinel alike, so `-ge 0` can only ever see a non-negative number
+# (R634). It is kept because it states the intent, not because it can fire.
+. (Join-Path $PSScriptRoot 'cadence_decision.ps1')
+$snapshotOk = ($null -ne (Read-ProbeNumber $snapRaw))
 $proc = Start-Process -FilePath $pythonExe -ArgumentList (@('-u','-m','updater.run') + $srcArgs) `
         -PassThru -NoNewWindow `
         -RedirectStandardOutput $updaterLog -RedirectStandardError $updaterErr
@@ -467,13 +491,31 @@ if ($pushRc -ne 0) {
 # Round-trip format ('o') so it parses back as UTC regardless of locale; a bare local-time
 # string re-parsed as UTC is a 5-hour error and hid a healthy run once already (R198).
 $crashed = ($rc -lt 0) -or ($rc -eq 134) -or ($rc -eq 137) -or ($rc -eq 139)
-if ($pushRc -eq 0 -and -not $crashed) {
-    Set-Content -Path $stampFile -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ascii
-    Say "cadence stamped - state committed"
-} else {
-    $why = if ($crashed) { "updater CRASHED (rc=" + $rc + ")" } else { "push-state failed (" + $pushRc + ")" }
-    Say ("cadence NOT stamped: " + $why + " - this pass is due again on the next guard tick")
+# A PASS THAT ADVANCED NOTHING IS NOT A PASS, whatever its exit code. On 2026-09-01 a single
+# source consumed 177.6 minutes of a 168-minute budget, was killed, and the clock was stamped
+# anyway; the last ten passes have all ended that way (R625). The question is answered from the
+# state store's own progress fields, not from an exit code and not from a count of attempts.
+$advanced = $null            # $null is UNKNOWN, and unknown is not permission
+if ($snapshotOk) {
+    $diffRaw = ( & $pythonExe (Join-Path $PSScriptRoot 'unit_progress_probe.py') --diff $progressSnap 2>$null ) | Select-Object -Last 1
+    $advanced = Read-ProbeNumber $diffRaw -AllowNegative
+    if ($null -ne $advanced -and $advanced -lt 0) { $advanced = $null }   # the probe's sentinel
 }
+# UNKNOWN IS NOT PERMISSION, WHATEVER THE EXIT CODE. The previous version applied that rule only
+# under a hard stop, so an unreadable probe still stamped on rc=0 - narrower than its own
+# comment claimed (R630). A pass that advanced nothing has nothing for the next tick to wait
+# 20 hours to repeat, and a pass whose progress cannot be read has not shown that it did.
+# ONE decision, in a function that is TESTED against real PowerShell (tools/cadence_decision.ps1
+# and its test beside it). Two of the three defects this guard shipped were language facts -
+# `[int]$null` is 0 and does not throw - which reading the script cannot catch (R630/R634).
+$decision = Test-CadenceShouldStamp -PushRc $pushRc -Crashed $crashed -Advanced $advanced
+if ($decision.Stamp) {
+    Set-Content -Path $stampFile -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ascii
+    Say ("cadence stamped - state committed (" + $decision.Why + ")")
+} else {
+    Say ("cadence NOT stamped: " + $decision.Why + " - this pass is due again on the next guard tick")
+}
+if (Test-Path $progressSnap) { Remove-Item $progressSnap -ErrorAction SilentlyContinue }
 Release-LocalHeavyLock
 
 Say ("done (updater rc=" + $rc + "). Full log: " + $log)

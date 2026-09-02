@@ -345,7 +345,11 @@ def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
             # horizon (a sentinel or a counter), or run_location: local, where this IS the store.
             claim = (units[0].get("last_obs") if units else None)
             c10 = str(claim)[:10] if claim else ""
-            impossible = bool(c10) and (c10 > "2200-01-01" or c10 < "1500-01-01")
+            # ONE definition of "is this a real, orderable date", shared with the progress
+            # probe: two tools asking the same question with two tests is the R483/R484 shape,
+            # and each caught a value the other missed (R639).
+            from updater.obs_date import is_orderable_obs_date
+            impossible = bool(c10) and not is_orderable_obs_date(c10)
             local_auth = (e.get("run_location") == "local")
             if claim and fr and c10 > str(fr) and (impossible or local_auth):
                 A("")
