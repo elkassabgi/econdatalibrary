@@ -39,7 +39,12 @@ CATALOG = os.path.join(ROOT, "data", "catalog.db")
 STORE = os.path.join(ROOT, "data", "clean_full")
 
 _PART_RE = re.compile(r"\.part\d*\.parquet$", re.I)
-_EXCL_DIRS = {"parts", "_cache", "_tmp"}
+# `_live` is the freeze-and-forward LIVE HALF of an already-catalogued table, not a new
+# table. It carries the same native id as its frozen sibling, so walking into it would
+# catalogue every partitioned table a second time under an id that already exists - and
+# `series` is INSERT OR IGNORE while `series_fts` has no unique constraint, which is
+# exactly the mismatch that put 8.00 copies of every boc series in the live index.
+_EXCL_DIRS = {"parts", "_cache", "_tmp", "_live"}
 
 # source -> (licence id, title-map file or None, id builder)
 SOURCES = {

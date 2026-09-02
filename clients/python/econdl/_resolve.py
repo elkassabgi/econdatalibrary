@@ -1816,6 +1816,52 @@ def supported_sources() -> list[str]:
     return sorted(base)
 
 
+# --------------------------------------------------------------------------- #
+# Freeze-and-forward: a source may keep a LIVE half beside its frozen store.
+# --------------------------------------------------------------------------- #
+
+LIVE_DIR = "_live"
+
+
+def live_sibling(path: str) -> "str | None":
+    """The live-half file for a frozen store file, when one exists.
+
+    `<root>/<src>/<rel>.parquet` -> `<root>/<src>/_live/<rel>.parquet`.
+
+    The frozen half is the store exactly as it stood at the cut and is never rewritten again;
+    the live half accumulates in front of it. Splitting the EXISTING files at the boundary was
+    the obvious alternative and is wrong: 648,435,713 rows across the 25 problematic sources
+    sit inside parquet row groups whose dates straddle any recent cut, because the files were
+    never written in date order, so a clean split means rewriting all of them - more work than
+    the partition saves.
+    """
+    if not isinstance(path, str) or not path.endswith(".parquet"):
+        return None
+    d, fn = os.path.split(path)
+    if os.path.basename(d) == LIVE_DIR:          # already the live half
+        return None
+    cand = os.path.join(d, LIVE_DIR, fn)
+    return cand if os.path.exists(cand) else None
+
+
+def with_live_half(parquet_path):
+    """`parquet_path` extended with its live half, or unchanged when there is none.
+
+    Returns a LIST only when a partition actually exists, so every unpartitioned source keeps
+    the exact str it has today and nothing downstream sees a new shape it has never been given.
+    """
+    if isinstance(parquet_path, (list, tuple)):
+        out = []
+        for p in parquet_path:
+            out.append(str(p))
+            sib = live_sibling(str(p))
+            if sib:
+                out.append(sib)
+        return out
+    sib = live_sibling(parquet_path)
+    return [parquet_path, sib] if sib else parquet_path
+
+
 def resolve(series_id: str, root: str | None = None) -> Resolution:
     root = root or default_data_root()
     src = _catalog.source_of(series_id)
@@ -1828,6 +1874,10 @@ def resolve(series_id: str, root: str | None = None) -> Resolution:
         r.key_col = "series_id"   # the stamped column carries identity
     if src in _NATIVE_ONLY:
         r.tidy_ok = False
+    # FREEZE AND FORWARD, applied here for the same reason the three lines above are:
+    # sixty-odd resolvers each build their own path, and a rule that lives in sixty places
+    # has already begun to drift (R469). A source with no `_live` directory is untouched.
+    r.parquet_path = with_live_half(r.parquet_path)
     return r
 
 
