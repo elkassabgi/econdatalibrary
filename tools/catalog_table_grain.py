@@ -33,6 +33,8 @@ import sys
 import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from tools.derive_one import MAX_ROWS          # noqa: E402  the ceiling has ONE home (R469)
 CATALOG = os.path.join(ROOT, "data", "catalog.db")
 STORE = os.path.join(ROOT, "data", "clean_full")
 
@@ -65,6 +67,15 @@ def _tables(source: str):
             out.append((fn[:-len(".parquet")], os.path.join(dp, fn)))
     return sorted(out)
 
+
+def _num_rows(path: str):
+    """Rows in this table, from footer metadata only. None when it cannot be established -
+    an unknown size must not silently pass a ceiling check, and it must not block a table
+    that would otherwise catalogue, so the caller treats None as "no opinion"."""
+    try:
+        return pq.read_metadata(path).num_rows
+    except Exception:                                   # noqa: BLE001
+        return None
 
 def _date_range(path: str):
     """(min, max) of obs_date from column statistics — footer only, no data read."""
@@ -114,14 +125,28 @@ def main() -> int:
         tables = _tables(src)
         existing = {r[0] for r in con.execute(
             "SELECT series_id FROM series WHERE source_id=?", (src,))}
-        rows, skipped = [], 0
+        rows, skipped, oversized = [], 0, []
         for tid, path in tables:
             sid = f"{src}:{tid}"
             if sid in existing:
                 skipped += 1
                 continue
+            # THE SIZE CEILING IS THE DERIVE'S OWN, IMPORTED (R469, R658). Two cbs_nl
+            # tables are deliberately not listed by the worker - 37824 at 1,886,692,500 rows
+            # and 37731 at 1,056,918,900, about 360 GB and 200 GB as single CSVs - and
+            # api/worker/src/util.ts states the rule: "Nothing here lists what it cannot
+            # deliver." Hard-coding those two ids here is precisely the drift R469 records,
+            # because the ceiling would then live in two places and one of them would move.
+            n_rows = _num_rows(path)
+            if n_rows is not None and n_rows > MAX_ROWS:
+                oversized.append((tid, n_rows))
+                continue
             lo, hi = _date_range(path)
             rows.append((sid, src, titles.get(tid, tid), None, None, None, None, lic, lo, hi, None, "{}"))
+        if oversized:
+            print(f"  {src:9} EXCLUDED {len(oversized)} table(s) over the derive's "
+                  f"{MAX_ROWS:,}-row ceiling - a CSV that cannot be delivered must not be "
+                  f"listed: {[(t, f'{n:,}') for t, n in sorted(oversized, key=lambda x: -x[1])][:4]}")
         print(f"  {src:9} tables={len(tables):>6,}  already catalogued={skipped:>6,}  "
               f"to insert={len(rows):>6,}  licence={lic}"
               + (f"  titled={sum(1 for t,_ in tables if t in titles):,}" if titles else ""))
@@ -142,8 +167,21 @@ def main() -> int:
                                 [(r[0],) for r in rows])
                 con.executemany("INSERT INTO series_fts(series_id,title,geography) VALUES (?,?,?)",
                                 [(r[0], r[2], None) for r in rows])
-            except sqlite3.OperationalError:
-                pass
+            except sqlite3.OperationalError as e:
+                # FAIL OPEN WAS THE DEFECT (R654). A swallowed index write leaves the id in
+                # `series` and absent from `series_fts`: it exists, resolves, and cannot be
+                # FOUND by its published name - the state the 164,705-series title repair
+                # existed to undo, and R487's shape exactly. Then commit() ran and the line
+                # below announced success. A catalogue with no FTS table at all is the one
+                # legitimate case and is reported rather than raised; everything else is a
+                # real failure and must stop the run.
+                if "no such table" in str(e).lower():
+                    print(f"            -> NOTE: no series_fts table in this catalogue; "
+                          f"{len(rows):,} series rows written with NO search index. They "
+                          f"resolve by id and cannot be found by name until it is built.")
+                else:
+                    con.rollback()
+                    raise
             con.commit()
             print(f"            -> inserted {len(rows):,} rows")
         total_new += len(rows)
