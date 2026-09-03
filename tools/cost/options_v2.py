@@ -63,8 +63,8 @@ def main():
 
     print("\nD1 rows read are ABOVE the allowance and priced in the block above. D1 writes,")
     print("Workers requests and R2 class-B are all $0, inside theirs.")
-    print("but NUMBERS.md row 76 warns reads sit at 49% of the allowance on a median day, so")
-    print("that headroom is one maintenance campaign wide.\n")
+    print("Reads were once called 49% of the allowance on a MEDIAN day. Over the 18 days")
+    print("since the serving fix the AVERAGE is 1,111,156,496/day = 138% of it.")
 
     print("THE GUARD IS A STEP FUNCTION, not a smooth saving.")
     attempts = 110_000
