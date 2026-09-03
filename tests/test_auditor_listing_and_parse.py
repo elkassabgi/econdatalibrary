@@ -134,3 +134,54 @@ def test_a_nested_store_is_visible_to_the_recursive_listing():
     deep = sum(1 for _r, _dirs, fs in os.walk(d) for f in fs if f.endswith(".parquet"))
     assert deep > flat, "bea is no longer nested, so this guard has nothing to catch"
     assert deep > 100, f"recursive listing sees only {deep} files under bea"
+
+
+# ---------------------------------------------------------- the HLL fallback
+#
+# Five giant stores had NO store-vs-catalogue figure: cbs_nl (18.0 GB), eurostat (11.3 GB) and
+# gus_dbw (5.5 GB) died with OutOfMemoryException — cbs_nl again at a 32 GB limit, 29.7 of
+# 29.8 GiB — while statcan (175.1 GB) and oecd (53.3 GB) were never attempted. So the fleet
+# total excluded the library's two largest sources. The fallback is the method
+# tools/series_census.py::_distinct_keys already uses; what these tests protect is the LABEL and
+# the refusal to assert the expensive verdict from an estimate.
+
+
+def test_an_exact_scan_that_ooms_falls_back_to_an_estimate():
+    src = open(STORE_AUDIT, encoding="utf-8").read()
+    assert "approx_count_distinct" in src, "the giants have no figure again"
+
+
+def test_an_estimate_is_always_labelled_as_one():
+    """series_census measured HLL error at +19.3% to -14.0% — an unlabelled estimate is a lie."""
+    src = open(STORE_AUDIT, encoding="utf-8").read()
+    i = src.index("HLL FALLBACK")
+    j = src.index("finally:", i)
+    branch = src[i:j]
+    # The RECORDED ROW must carry it, not merely the console line — stripping the label from
+    # fh.write() while leaving it in print() passed an earlier version of this test.
+    written = [ln for ln in branch.splitlines() if "fh.write(" in ln and "{gap}" in ln]
+    assert written, "the approximate branch no longer writes a row"
+    assert all("[approx" in ln for ln in written),         "an estimate is written to the TSV without its label — it would read as a count"
+
+
+def test_an_estimate_may_not_assert_ORPHAN():
+    """ORPHAN claims users are offered something that 404s. A -14% error manufactures one.
+
+    2026-08-04: 2,050 of 2,408 reported orphans were phantom, which is why the shard-qualified
+    retry exists. An estimator with worse error than that must not reach the same verdict.
+    """
+    src = open(STORE_AUDIT, encoding="utf-8").read()
+    # The WHOLE fallback branch: from its marker comment to the enclosing finally.
+    i = src.index("HLL FALLBACK")
+    j = src.index("finally:", i)
+    branch = src[i:j]
+    assert "inconclusive" in branch, "the approximate path lost its inconclusive verdict"
+    # R120: match the VERDICT TOKEN, not the keyword — the branch's own comment explains why
+    # ORPHAN is forbidden, so a bare substring test fails on the explanation.
+    assert 'note = "ORPHAN"' not in branch and 'note, orph = "ORPHAN"' not in branch,         "an ESTIMATE can now assert ORPHAN — the expensive verdict"
+
+
+def test_a_failed_estimate_still_reports_rather_than_vanishing():
+    """R390: a branch that cannot evaluate must PRINT, never skip in silence."""
+    src = open(STORE_AUDIT, encoding="utf-8").read()
+    assert "approx also failed" in src, "a double failure would disappear silently"
