@@ -39,9 +39,10 @@ METHODS = ("transient_unit", "structural_unit", "no_time_unit", "deferred_unit")
 
 # Measured 2026-09-03: 241 at first sweep; 225 after labelling the sixteen sites in the
 # currently-FAILING sources; 206 after penn_world_table (7), pwt (6) and gleif (6), the three
-# worst files among LIVE sources. Labelled is now 210 of 416 — past half for the first time.
+# worst files among LIVE sources; 196 after bls (5) and faostat (5), both of which appear
+# in the daily attention list. Labelled is now 220 of 416.
 # RATCHET: this may only ever go DOWN.
-BASELINE_UNLABELLED = 206
+BASELINE_UNLABELLED = 196
 
 
 def _unlabelled() -> list[tuple[str, int, str]]:

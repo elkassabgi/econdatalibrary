@@ -263,21 +263,21 @@ def _process_domain(d: dict, out_dir: str, tally: Tally, sidecar: dict,
     try:
         st = _download_zip(url, tmp_zip)
         if st == "transient":
-            tally.transient_unit()
+            tally.transient_unit(f"{code}: bulk zip download failed (transient)")
             return
         if st == "structural":
-            tally.structural_unit()
+            tally.structural_unit(f"{code}: bulk zip download failed (structural)")
             return
         # --- parse to long (production parser) ---
         _CODE_FOR_PARSE[0] = code
         try:
             tbl = _parse_zip_to_table(tmp_zip)
         except zipfile.BadZipFile:
-            tally.structural_unit()
+            tally.structural_unit(f"{code}: bulk archive is not a readable zip")
             return
         if tbl.num_rows == 0:
             # 200 with a real archive but parsed 0 rows -> structural break.
-            tally.structural_unit()
+            tally.structural_unit(f"{code}: real archive parsed to 0 rows")
             return
         # --- merge (dedup + never-shrink + atomic) ---
         before = blob.row_count(out_path)
@@ -287,8 +287,10 @@ def _process_domain(d: dict, out_dir: str, tally: Tally, sidecar: dict,
             # A legit >3% domain revision trips never-shrink. ISOLATE it to THIS
             # domain — existing data kept, vintage NOT advanced, surfaced as partial
             # for review — instead of aborting the whole-source run (which would also
-            # lose vintages saved for domains merged earlier this tick).
-            tally.transient_unit()
+            # lose vintages saved for domains merged earlier this tick). NAMED, because a
+            # refusal with numbers reads as a network failure when it carries only a count.
+            tally.transient_unit(
+                f"{code}: never-shrink refused the merge over {before:,} stored rows")
             return
         tally.added_unit(max(0, n - before))
         # Report WHICH series moved. Without this the orchestrator cannot re-derive their
