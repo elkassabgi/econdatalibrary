@@ -73,25 +73,29 @@ def run_update(source: str, urls, parse_fn) -> Result:
     for url in urls:
         try:
             r = requests.get(url, headers=UA, timeout=120, allow_redirects=True)
-        except (requests.Timeout, requests.ConnectionError):
-            tally.transient_unit()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            tally.transient_unit(f"{url[-58:]}: {type(e).__name__}")
             continue
         if r.status_code in _TRANSIENT_HTTP:
-            tally.transient_unit()
+            tally.transient_unit(f"{url[-58:]}: HTTP {r.status_code}")
             continue
         if r.status_code != 200 or len(r.content) < 1000:
-            tally.structural_unit()
+            tally.structural_unit(
+                f"{url[-58:]}: HTTP {r.status_code}, {len(r.content):,} bytes "
+                f"(under the 1,000-byte floor)")
             continue
         try:
             k, d, v = parse_fn(r.content)
-        except Exception:
-            tally.structural_unit()  # 200 with a body we couldn't parse -> schema break
+        except Exception as e:  # noqa: BLE001
+            # 200 with a body we couldn't parse -> schema break
+            tally.structural_unit(f"{url[-58:]}: unparseable body — {type(e).__name__}")
             continue
         if v:
             keys, dates, vals = k, d, v
             got_data = True
             break
-        tally.structural_unit()  # 200, real body, parsed 0 rows -> structural
+        # 200, real body, parsed 0 rows -> structural
+        tally.structural_unit(f"{url[-58:]}: real body parsed to 0 rows")
 
     if not got_data:
         return finalize(tally, before, None, source=source)
