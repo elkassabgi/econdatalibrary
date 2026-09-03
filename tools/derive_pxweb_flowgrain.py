@@ -51,6 +51,38 @@ def group_subject(path: str) -> dict:
             if d is None or v is None:
                 continue
             out.setdefault(p, []).append((k, d.isoformat(), v))
+
+    # THIS TOOL AND THE UPDATER MUST NOT MINT DIFFERENT IDS FOR THE SAME KEY.
+    #
+    # A review told me `PREFIX_RE` is the naive "drop the `=`-bearing segments" rule that
+    # `updater/orchestrate.py::_flow_of` replaced after it corrupted 658 hagstofa keys, whose
+    # NACE values look like `Atvinnugrein=K: 65`. I TESTED THAT AND IT IS NOT TRUE HERE: this
+    # regex takes the prefix before the first `dim=` segment, and on
+    # `THJ11002.px:Atvinnugrein=K: 65:Ar=2020` both rules return `THJ11002.px`.
+    #
+    # They DO diverge, on a different shape - a colon inside the first dimension's NAME:
+    #
+    #     FLOW.px:A: B=1:C=2   ->  PREFIX_RE 'FLOW.px:A'   _flow_of 'FLOW.px'
+    #
+    # so the guard is warranted, just not for the reason I was given. The regex stays because
+    # it is vectorised over millions of rows; every DISTINCT prefix is now checked against the
+    # updater's own function - a handful of comparisons per file - and a disagreement REFUSES
+    # rather than publishing objects under ids the serving side will never look for.
+    try:
+        from updater.orchestrate import _flow_of                      # noqa: PLC0415
+    except Exception as exc:                                          # noqa: BLE001
+        raise SystemExit(
+            f"cannot import the updater's _flow_of to check this tool's prefixes against it "
+            f"({type(exc).__name__}: {exc}). Refusing rather than minting ids that may not "
+            f"match the serving side.")
+    for p, rows in out.items():
+        want = _flow_of(rows[0][0])
+        if want and want != p:
+            raise SystemExit(
+                f"ID RULE DIVERGENCE in {os.path.basename(path)}: this tool's PREFIX_RE gives "
+                f"{p!r} for key {rows[0][0]!r}, the updater's _flow_of gives {want!r}. "
+                f"Publishing under the wrong id is worse than not publishing; fix PREFIX_RE or "
+                f"route this tool through _flow_of before running it again.")
     return out
 
 

@@ -58,7 +58,15 @@ def main() -> int:
     keys, dates, vals = [], [], []
     for m in RETIRED:
         k = "series/" + urllib.parse.quote(f"cso:CSO:{m}", safe="") + ".csv"
-        body = c.get_object(Bucket="econ-data", Key=k)["Body"].read().decode("utf-8")
+        raw = c.get_object(Bucket="econ-data", Key=k)["Body"].read()
+        # INFLATE FIRST. Objects are gzip-at-rest since 2026-08-18 and cso's ARE gzipped, so
+        # the bare .decode("utf-8") this line used to do raises UnicodeDecodeError on every
+        # key - this tool is broken today, not merely at risk. Magic-byte detection, the same
+        # pattern tools/verify_source_served.py:202 uses; owed since commit d866c43d3.
+        if raw[:2] == b"\x1f\x8b":
+            import gzip as _gzip                                      # noqa: PLC0415
+            raw = _gzip.decompress(raw)
+        body = raw.decode("utf-8")
         rdr = csv.reader(io.StringIO(body))
         hdr = next(rdr)
         if hdr != ["series_id", "obs_date", "value"]:

@@ -269,6 +269,20 @@ def main() -> int:
                 served = s3.get_object(Bucket=BUCKET, Key=key)["Body"].read()
             except Exception:                                         # noqa: BLE001
                 continue          # absent object is the MISSING class, not staleness
+            # INFLATE FIRST. Objects are stored gzip-at-rest since 2026-08-18, and the serving
+            # contract is the DECOMPRESSED text - the worker inflates before it does anything
+            # (api/worker/src/series.ts:260 keys on ContentEncoding). Comparing compressed
+            # bytes against a freshly built CSV makes EVERY gzipped object look stale, and
+            # this tool runs daily and prints "users are downloading superseded data".
+            # Magic-byte detection, not metadata, so it works on any client copy - the same
+            # pattern tools/verify_source_served.py:202 already uses. Commit d866c43d3
+            # (2026-08-18) noted this fix was owed to four tools; this is one of them.
+            if served[:2] == b"\x1f\x8b":
+                import gzip as _gzip                                  # noqa: PLC0415
+                try:
+                    served = _gzip.decompress(served)
+                except Exception:                                     # noqa: BLE001
+                    continue      # an unreadable object is not evidence of staleness
             try:
                 fresh = _series_csv_bytes(sid)
             except Exception:                                         # noqa: BLE001

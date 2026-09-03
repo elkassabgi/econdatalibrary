@@ -134,6 +134,14 @@ def stale_sample(src: str, k: int, seed: int):
         key = "series/" + urllib.parse.quote(sid, safe="") + ".csv"
         try:
             served = s3.get_object(Bucket=BUCKET, Key=key)["Body"].read()
+            # INFLATE FIRST, and here it is load-bearing: --apply re-derives everything this
+            # calls stale. Objects are gzip-at-rest since 2026-08-18 and the serving contract
+            # is the DECOMPRESSED text, so comparing compressed bytes marks every gzipped
+            # object stale and turns a verdict into a mass re-upload. Magic-byte detection,
+            # the pattern tools/verify_source_served.py:202 uses; owed since commit d866c43d3.
+            if served[:2] == b"\x1f\x8b":
+                import gzip as _gzip                                  # noqa: PLC0415
+                served = _gzip.decompress(served)
             want = _series_csv_bytes(sid)
         except Exception:                                             # noqa: BLE001
             continue

@@ -142,3 +142,91 @@ def test_non_series_keys_are_untouched():
     assert body == b'{"a":1}'
     assert "Metadata" not in kw
     assert "ContentEncoding" not in kw
+
+
+# ---------------------------------------------------------------------------
+# The shared writer helpers, which the tools under tools/ are meant to adopt.
+# ---------------------------------------------------------------------------
+
+def test_an_already_gzipped_body_is_not_gzipped_again():
+    """R560: about 188 objects were shipped double-gzipped and served as text/csv.
+
+    Some producers compress at enqueue and hand the compressed body straight to the writer.
+    `tools/derive_statcan_tables.py:285` carries this magic-byte check privately; the SHARED
+    helper must not be the one place that lacks it.
+    """
+    from core.r2_util import series_csv_put_args
+    already = gzip_bytes(CSV)
+    body, kw, digest = series_csv_put_args(already)
+    assert body == already, "the body was re-compressed"
+    assert kw["ContentEncoding"] == "gzip"
+    assert digest is None, (
+        "a digest of already-compressed bytes is not comparable to one taken before "
+        "compression, so the helper must decline to offer one")
+    assert "Metadata" not in kw
+
+
+def test_put_series_csv_skips_what_r2_already_holds():
+    from core.r2_util import put_series_csv
+    c = FakeClient({KEY: (gzip_bytes(CSV), {"csvmd5": _plain_md5(CSV)})})
+    assert put_series_csv(c, "econ-data", KEY, CSV) == "skipped"
+    assert not c.puts
+
+
+def test_put_series_csv_writes_and_stamps_the_digest():
+    from core.r2_util import put_series_csv
+    c = FakeClient()
+    assert put_series_csv(c, "econ-data", KEY, CSV) == "put"
+    key, body, kw = c.puts[0]
+    assert kw["Metadata"] == {"csvmd5": _plain_md5(CSV)}
+    assert kw["ContentEncoding"] == "gzip"
+
+
+def test_put_series_csv_retries_a_transient_throttle():
+    """boto's 5 retries are NOT enough on their own.
+
+    updater/derive.py:50-57 records the reason: R2 throws ServiceUnavailable/SlowDown throttles
+    that outlast them, and one killed the 2026-07-02 bulk run at 103k objects. Four of the nine
+    tools carry a private 6-or-7-try loop for this; a shared helper without one would silently
+    demote them while looking like consolidation.
+    """
+    from core.r2_util import put_series_csv
+
+    class Flaky(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        def put_object(self, Bucket, Key, Body, **kw):      # noqa: N803
+            self.attempts += 1
+            if self.attempts < 3:
+                raise RuntimeError("SlowDown")
+            return super().put_object(Bucket=Bucket, Key=Key, Body=Body, **kw)
+
+    c = Flaky()
+    import unittest.mock as mock
+    with mock.patch("time.sleep", lambda *_a, **_k: None):
+        assert put_series_csv(c, "econ-data", KEY, CSV) == "put"
+    assert c.attempts == 3
+    assert len(c.puts) == 1
+
+
+def test_put_series_csv_gives_up_loudly_rather_than_silently():
+    from core.r2_util import put_series_csv, PUT_TRIES
+
+    class Dead(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        def put_object(self, Bucket, Key, Body, **kw):      # noqa: N803
+            self.attempts += 1
+            raise RuntimeError("SlowDown")
+
+    c = Dead()
+    import pytest
+    import unittest.mock as mock
+    with mock.patch("time.sleep", lambda *_a, **_k: None):
+        with pytest.raises(RuntimeError):
+            put_series_csv(c, "econ-data", KEY, CSV)
+    assert c.attempts == PUT_TRIES, "an exhausted PUT must raise, never return quietly"
