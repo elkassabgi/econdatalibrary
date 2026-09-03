@@ -369,10 +369,12 @@ def update(unit, since) -> Result:
 
         try:
             data = _get_json(sess, url)
-        except TransientError:
+        except TransientError as e:
             # Leave this flow's existing rows untouched; record & keep going so one
-            # flaky flow can't strand the rest -> run becomes 'partial'.
-            tally.transient_unit()
+            # flaky flow can't strand the rest -> run becomes 'partial'. NAMED: the loop
+            # variable was in scope and never passed, so the note could only ever give a
+            # count.
+            tally.transient_unit(f"{flow}: {str(e)[:160]}")
             time.sleep(RATE)
             continue
 
@@ -414,9 +416,13 @@ def update(unit, since) -> Result:
             if (not full_fetch
                     and _has_nonempty_series(data)
                     and _has_iso_parseable_time(data)):
-                tally.structural_unit()
+                # The body HAS non-empty series and ISO-parseable time on an incremental
+                # fetch and still yielded nothing — the interesting case, and the one most
+                # worth naming.
+                tally.structural_unit(
+                    f"{flow}: non-empty series with parseable time produced 0 rows")
             else:
-                tally.empty_unit()
+                tally.empty_unit(f"{flow}: empty tail")
             time.sleep(RATE)
             continue
 

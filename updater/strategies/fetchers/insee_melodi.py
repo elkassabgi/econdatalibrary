@@ -350,9 +350,9 @@ def update(unit, since) -> Result:
 
         try:
             obs, had_envelope = _fetch_flow_obs(sess, code, start_year)
-        except TransientError:
+        except TransientError as e:
             # leave this flow's data untouched; record & keep going -> run is 'partial'
-            tally.transient_unit()
+            tally.transient_unit(f"{code}: fetch failed — {str(e)[:150]}")
             total += before
             time.sleep(RATE)
             continue
@@ -362,9 +362,13 @@ def update(unit, since) -> Result:
             # populated flow == structural break. A startPeriod tail returning nothing,
             # or a genuinely empty flow, is legitimately empty.
             if start_year is None and had_envelope and before > 0:
-                tally.structural_unit()
+                # The most important of the three to name: a full origin fetch of a flow that
+                # HELD data came back with a real envelope and nothing in it.
+                tally.structural_unit(
+                    f"{code}: full fetch returned a real envelope with 0 rows over "
+                    f"{before:,} stored")
             else:
-                tally.empty_unit()
+                tally.empty_unit(f"{code}: empty tail")
             total += before
             time.sleep(RATE)
             continue
@@ -394,9 +398,10 @@ def update(unit, since) -> Result:
             # already left the existing data untouched. A never-landed flow (before == 0)
             # with an unparseable origin body stays empty (nothing to break).
             if before > 0:
-                tally.structural_unit()
+                tally.structural_unit(
+                    f"{code}: origin body did not parse over {before:,} stored rows")
             else:
-                tally.empty_unit()
+                tally.empty_unit(f"{code}: never landed, unparseable origin body")
             total += before
             time.sleep(RATE)
             continue

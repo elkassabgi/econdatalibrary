@@ -601,14 +601,16 @@ def update(unit, since) -> Result:
             selected_total += 1
             try:
                 added = _fetch_key(prod_cfg, key, sess, tally, cursors=cursors)
-            except TransientError:
-                tally.transient_unit()
+            except TransientError as e:
+                tally.transient_unit(f"{key}: {str(e)[:150]}")
                 pstate[key] = {"status": "transient_fail"}
                 _save_state(state)
                 time.sleep(0.5)
                 continue
             except DefinitiveError as e:
-                tally.structural_unit()
+                # The reason was already captured into pstate and never reached the tally,
+                # so the run note carried a count while the diagnosis sat in a state file.
+                tally.structural_unit(f"{key}: {str(e)[:150]}")
                 pstate[key] = {"status": "definitive_fail", "error": str(e)[:200]}
                 _save_state(state)
                 time.sleep(0.5)
