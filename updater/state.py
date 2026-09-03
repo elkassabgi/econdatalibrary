@@ -22,8 +22,20 @@ CREATE TABLE IF NOT EXISTS source_state(
   enabled INTEGER DEFAULT 1, note TEXT);
 -- obs_count IS NOT COMPARABLE ACROSS RUNS. Read this before drawing a conclusion from it.
 --
--- It is whatever the fetcher passed finalize() as `total_rows`, and fetchers mean two different
--- things by that. Most pass ROWS MERGED THIS RUN. Thirteen of them then do
+-- It is whatever the fetcher passed finalize() as `total_rows`, and the parameter is named
+-- that for a reason: MOST FETCHERS PASS THE STORE'S TOTAL ROW COUNT, not rows merged this run.
+-- Measured 2026-09-03: of ~123 finalize() call sites, THREE pass a genuine added count
+-- (gleif.py:187, sec_edgar.py:634, and one tally.added); the rest pass `before`, which is
+-- `blob.row_count(path)` - the whole store.
+--
+-- This comment used to say "Most pass ROWS MERGED THIS RUN", which is the opposite, and that
+-- sentence propagated into CLAUDE.md, four skill references and the orchestrator's own warning
+-- message. Two committed runbooks refute it without any code reading: docs/runbook/bea.md:41
+-- records obs 251,203 beside a note of "+258,223 new rows", and bcb.md:41-42 has consecutive
+-- obs values differing by 237 beside "+308 new rows". A merged count cannot be smaller than
+-- the rows it claims to have added.
+--
+-- Thirteen fetchers then do
 --
 --     if published == 0:
 --         published = sum(blob.row_count(f) for f in every file in the store)

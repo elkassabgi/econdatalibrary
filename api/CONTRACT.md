@@ -187,6 +187,15 @@ Per dataset, projected from `unit_state` + `source_state` + registry cadence:
     "next_update_expected": "2026-06-25",     // last_success + cadence interval
     "obs_count": 12345 }] }
 ```
+
+> **`obs_count` here is not a count of observations added by that run, and is not comparable
+> across runs.** It is whatever the fetcher reported to `finalize()` as `total_rows`: measured
+> 2026-09-03, about 120 of ~123 call sites pass the STORE'S TOTAL row count and only three pass
+> a genuine added count. Some fetchers additionally substitute the whole-store total when a run
+> merged nothing, so the same number can repeat unchanged across runs that did different
+> amounts of work. Use it as an order-of-magnitude size for the unit, never as a delta. (This
+> is distinct from the per-series `obs_count` documented above, which is a real count of
+> observations in that series.)
 Canonical SQL (runs verbatim on D1 — D1 *is* SQLite):
 ```sql
 SELECT u.source_id, u.unit_id, u.status, u.last_success_utc, u.upstream_vintage,

@@ -301,7 +301,7 @@ def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
                 A(f"    {ln}")
             A(f"    ```")
     A("")
-    A("> `obs_count` is **not comparable across runs** — most fetchers report rows merged this run, "
+    A("> `obs_count` is **not comparable across runs** — most fetchers report the STORE TOTAL, not rows merged this run (measured 2026-09-03: 3 of ~123 finalize call sites pass a real added count), "
       "thirteen fall back to the whole store when nothing was written. To ask how big this source "
       "is, count the store. See ledger R326 and the comment in `updater/state.py`.")
     A("")
@@ -599,8 +599,10 @@ def main():
         "",
         "- A `partial` never sets `last_success_utc` (**R231**), so a source reading "
         "\"last SUCCESS: NEVER\" may be perfectly healthy and failing one sub-unit.",
-        "- `obs_count` means \"rows this run\" on a productive run and \"whole store\" on a quiet "
-        "one (**R326**) — a healthy source can appear to lose 168M rows. Count the store instead.",
+        "- `obs_count` is **not** \"rows this run\": most fetchers pass the STORE TOTAL to "
+        "`finalize` — measured 2026-09-03, 3 of ~123 call sites pass a real added count "
+        "(**R326**, mechanism corrected). A healthy source can appear to lose 168M rows. "
+        "Count the store instead.",
         "",
         "| source | live | served | catalogued | status | last success |",
         "|---|---|---|---|---|---|",

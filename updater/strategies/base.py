@@ -73,6 +73,25 @@ class Result:
     # 39,706 CSVs that never re-derive via §5.7, with no note and no demotion).
     # False (default) = evidence complete or fetcher un-migrated; nothing changes.
     cursor_cap_hit: bool = False
+    # ROWS ACTUALLY MERGED THIS RUN, and ONLY when the fetcher can prove it. None (the default)
+    # means "not reported" and behaves exactly as before.
+    #
+    # WHY THIS IS NOT `obs`. `finalize`'s second parameter is named `total_rows` and about 120
+    # of ~123 call sites pass the STORE'S TOTAL - `blob.row_count(path)` - so `obs` says how big
+    # the store is, not what a run did. Thirteen fetchers additionally substitute the whole-store
+    # total when a run merged nothing, which is how idb was reported as "merged 15,066,444 obs"
+    # on runs that merged zero, three times, with the same number each time.
+    #
+    # WHY NOT `tally.added` EITHER. It carries two conventions in production - net new rows
+    # (`added_unit(max(0, n - before))`) in ~40 fetchers, rows PARSED in _giant, noaa, usda, abs,
+    # ecb, bcb, insee_melodi and istat, several deliberately so they do not trip the all-empty
+    # structural floor. And under the first convention a SAME-PERIOD REVISION collapses old and
+    # new into one row carrying the new value (merge.py:186-190, "new wins"), so the count is
+    # unchanged while the served value changed. Inferring "nothing merged" from it would silence
+    # a genuine coherence violation.
+    #
+    # So this is an AFFIRMATIVE CLAIM, not an inference: a fetcher sets it only where it knows.
+    merged_rows: int | None = None
 
 
 def cadence_due(cadence: str, last_success_utc: str | None, now: datetime | None = None) -> bool:

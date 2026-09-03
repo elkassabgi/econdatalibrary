@@ -375,6 +375,8 @@ def update(unit, since) -> Result:
     if capped and res.status in ("ok", "no_change"):
         res = Result(status="partial", obs=res.obs, last_obs_date=res.last_obs_date,
                      new_vintage=res.new_vintage, series_cursors=res.series_cursors,
+                     merged_rows=res.merged_rows, cursor_cap_hit=res.cursor_cap_hit,
+                     changed_keys=res.changed_keys,
                      error=f"budget spent with {remaining} of {len(due)} due table(s) "
                            f"still behind upstream; manifest checkpointed, drains next run")
     return res
