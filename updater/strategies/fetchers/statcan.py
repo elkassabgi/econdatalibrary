@@ -392,15 +392,19 @@ def update(unit, since) -> Result:
         try:
             vmap = _disk_vector_map(path)
         except Exception as e:  # corrupt/locked file -> transient, retry next run
-            tally.transient_unit(); all_ok = False
+            tally.transient_unit(
+                f"{os.path.basename(path)}: unreadable on disk — {type(e).__name__}")
+            all_ok = False
             continue
         if not vmap:
-            tally.empty_unit()
+            tally.empty_unit(f"{os.path.basename(path)}: no vectors on disk")
             continue
         try:
             tbl = _fetch_cube_tail(vmap, win_start, today)
-        except TransientError:
-            tally.transient_unit(); all_ok = False
+        except TransientError as e:
+            tally.transient_unit(f"{os.path.basename(path)}: tail fetch failed — "
+                                 f"{str(e)[:110]}")
+            all_ok = False
             continue
 
         if tbl.num_rows == 0:
@@ -436,7 +440,9 @@ def update(unit, since) -> Result:
         except DefinitiveError:
             # never-shrink / column-drop guard tripped -> keep existing data, surface
             # as a sub-unit failure rather than crashing the whole run.
-            tally.structural_unit(); all_ok = False
+            tally.structural_unit(
+                f"{os.path.basename(path)}: merge guard refused over {before:,} stored")
+            all_ok = False
             continue
         delta = max(0, n - before)
         tally.added_unit(delta)

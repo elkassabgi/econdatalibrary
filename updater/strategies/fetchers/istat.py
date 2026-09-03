@@ -563,7 +563,7 @@ def update(unit, since) -> Result:
 
         if outcome == "transient":
             # Every host failed this flow -> keep existing data, re-queue (run partial).
-            tally.transient_unit()
+            tally.transient_unit(f"{flow_id}: every host failed")
             total += before
             continue
 
@@ -571,7 +571,9 @@ def update(unit, since) -> Result:
             # A 200 real body now parsing 0 rows, or the flow withdrawn from BOTH
             # catalogs while it previously held data -> schema/structural break.
             # finalize() raises DefinitiveError; existing data is kept by merge.
-            tally.structural_unit()
+            tally.structural_unit(
+                f"{flow_id}: real body parsed 0 rows, or withdrawn from both catalogs, "
+                f"over {before:,} stored")
             total += before
             continue
 
@@ -599,7 +601,7 @@ def update(unit, since) -> Result:
         except Exception:
             # merge guard tripped (would shrink / drop a column): keep old data, surface
             # as transient so the flow re-runs next tick with a fresh pull.
-            tally.transient_unit()
+            tally.transient_unit(f"{flow_id}: merge guard tripped over {before:,} stored")
             total += before
             continue
 

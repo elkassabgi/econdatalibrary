@@ -175,30 +175,31 @@ def update(unit, since) -> Result:
         # Cheap published total for this cube (also the per-cube transient/empty signal).
         try:
             total = ing.count(getattr(ing, count_attr), f"count-{name}")
-        except (requests.RequestException, RuntimeError, ValueError):
-            tally.transient_unit()
+        except (requests.RequestException, RuntimeError, ValueError) as e:
+            tally.transient_unit(f"{name}: COUNT query failed — {type(e).__name__}")
             total_rows += before
             continue
 
         if total == 0:
             # WDQS healthy but the COUNT genuinely returned 0 entities for this cube.
-            tally.empty_unit()
+            tally.empty_unit(f"{name}: COUNT returned 0 entities")
             total_rows += before
             continue
 
         try:
             recs = _pull_cube_records(ing, getattr(ing, page_fn_attr),
                                       getattr(ing, shape_fn_attr), total, name)
-        except (requests.RequestException, RuntimeError, ValueError):
+        except (requests.RequestException, RuntimeError, ValueError) as e:
             # run_sparql exhausted retries on a 5xx/429/timeout/network drop -> transient.
-            tally.transient_unit()
+            tally.transient_unit(f"{name}: paging exhausted retries — {type(e).__name__}")
             total_rows += before
             continue
 
         if not recs:
             # 200 responses that paged 0 rows while the COUNT says total>0 -> structural break
             # (schema/predicate change), NOT a quiet day. finalize() raises DefinitiveError.
-            tally.structural_unit()
+            tally.structural_unit(
+                f"{name}: COUNT says {total:,} but paging returned 0 rows")
             total_rows += before
             continue
 
