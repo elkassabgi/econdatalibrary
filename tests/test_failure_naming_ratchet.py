@@ -20,7 +20,8 @@ MEASURED 2026-09-03: 241 unlabelled call sites across 76 fetchers against 175 la
 A live cost of it: ksh_stadat has reported `1/60 sub-unit(s) transient-failed; will retry` on
 five consecutive runs from 2026-07-31 to 2026-09-01. An identical count for five weeks is a
 constant, not a measurement (R669) — and both its call sites pass no label, so which of the 60 is
-unanswerable from our own logs.
+unanswerable from our own logs. (Both were labelled on 2026-09-03; it is kept here
+as the worked example precisely because it shows what the fix looks like.)
 
 WHY A RATCHET AND NOT A FIX. Labelling 241 sites is a large mechanical change that deserves its
 own review; a ratchet stops the bleeding today at no risk. The baseline below is the measured
@@ -36,8 +37,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FETCHERS = os.path.join(ROOT, "updater", "strategies", "fetchers")
 METHODS = ("transient_unit", "structural_unit", "no_time_unit", "deferred_unit")
 
-# Measured 2026-09-03. RATCHET: this may only ever go DOWN.
-BASELINE_UNLABELLED = 241
+# Measured 2026-09-03: 241 at first sweep, lowered to 225 the same day after the
+# sixteen sites in the currently-FAILING sources were labelled.
+# RATCHET: this may only ever go DOWN.
+BASELINE_UNLABELLED = 225
 
 
 def _unlabelled() -> list[tuple[str, int, str]]:
@@ -98,6 +101,11 @@ def test_the_detector_finds_both_shapes() -> None:
     by_file = defaultdict(int)
     for f, _, _ in sites:
         by_file[f] += 1
-    assert any("ksh_stadat" in f for f in by_file), (
-        "ksh_stadat is the worked example in the docstring and must be detected"
+    # NOT anchored on a named source. The first version asserted ksh_stadat was detected,
+    # because it was the docstring's worked example — and labelling ksh_stadat, which is
+    # exactly what this ratchet exists to encourage, then broke the test. An anti-vacuity
+    # check must not require any particular offender to stay broken.
+    assert len(by_file) > 1, (
+        f"unlabelled sites found in only {len(by_file)} file(s) — the detector is probably "
+        f"matching one accidental pattern rather than the fleet"
     )

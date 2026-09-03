@@ -189,7 +189,10 @@ def update(unit, since) -> Result:
                     tid, cur_v = futs[fut]
                     _t, rows = fut.result()
                     if rows is None:
-                        tally.transient_unit()
+                        # NAMED. `_fetch_table` returns None for a transport or WAF failure;
+                        # the table id was in scope all along and never passed, so five weeks
+                        # of "1/60 transient-failed" never said WHICH of the 60 (R669).
+                        tally.transient_unit(f"{tid}: transport/WAF failure fetching the table")
                         continue
                     theme = tid[:3].lower()
                     if not rows:
@@ -217,9 +220,10 @@ def update(unit, since) -> Result:
         path = os.path.join(out_dir, f"{theme}.parquet")
         try:
             n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-        except DefinitiveError:
-            # isolate to this theme; its tables keep their OLD vintages so they retry next tick
-            tally.transient_unit()
+        except DefinitiveError as e:
+            # isolate to this theme; its tables keep their OLD vintages so they retry next tick.
+            # The exception carries the reason the merge refused and used to be discarded.
+            tally.transient_unit(f"{theme}: merge refused — {str(e)[:160]}")
             continue
         published += n
         for k, d in zip(keys, dates):

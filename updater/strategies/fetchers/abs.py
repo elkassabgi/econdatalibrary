@@ -195,7 +195,9 @@ def update(unit, since) -> Result:
             # collect() exhausts its 5x retry budget on the ABS mid-body drops / 5xx /
             # timeouts and re-raises (requests.* or urllib3 ProtocolError). Leave this
             # flow's existing data untouched, record transient, keep going. -> 'partial'.
-            tally.transient_unit()
+            # NAMED: `exc` was bound and discarded, and abs has 1,222 sub-units — a bare count
+            # at that scale cannot be acted on.
+            tally.transient_unit(f"{flow}: {type(exc).__name__} — {str(exc)[:160]}")
             total += before
             mx = max_obs.isoformat() if max_obs else None
             # seed this flow's frontier so a transient flow can't hide behind the max:
@@ -227,11 +229,12 @@ def update(unit, since) -> Result:
         # --- publish (atomic, dedup, never-shrink) ---
         try:
             n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-        except DefinitiveError:
+        except DefinitiveError as e:
             # never-shrink / dropped-column / 0-row guard refused this flow's write.
             # Keep the old file, surface as transient so the run is 'partial' and retries
-            # rather than silently dropping a flow's delta.
-            tally.transient_unit()
+            # rather than silently dropping a flow's delta. The exception says WHICH guard
+            # and with what numbers; it used to be discarded.
+            tally.transient_unit(f"{flow}: write refused — {str(e)[:160]}")
             total += before
             continue
 

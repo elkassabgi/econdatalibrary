@@ -633,8 +633,10 @@ def update(unit, since) -> Result:
             tid_clean = tid.replace(".px", "")
             try:
                 meta = _get_meta(sess, tid)
-            except TransientError:
-                tally.transient_unit()
+            except TransientError as e:
+                # NAMED, like the structural paths this file's own regression gate covers.
+                # Distinguished from the query POST below: different endpoint, different fault.
+                tally.transient_unit(f"{tid}: metadata GET failed — {str(e)[:150]}")
                 time.sleep(RATE)
                 continue
             time.sleep(RATE)
@@ -720,8 +722,8 @@ def update(unit, since) -> Result:
             body = {"query": query_vars, "response": {"format": "json-stat2"}}
             try:
                 resp = _post_query(sess, tid, body)
-            except TransientError:
-                tally.transient_unit()
+            except TransientError as e:
+                tally.transient_unit(f"{tid}: data POST failed — {str(e)[:150]}")
                 time.sleep(RATE)
                 continue
             time.sleep(RATE)
