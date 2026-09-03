@@ -1,7 +1,7 @@
 """tools/flowgrain_ons_uk.py — dataset-grain catalog + CSV publish for ons_uk.
 
-WHY DATASET GRAIN. After the re-key (tools/rekey_ons_uk.py) ons_uk holds 3,897,884 genuine
-series across 42 datasets. Per-series would mean 3.9M catalog rows and ~43 hours of derive,
+WHY DATASET GRAIN. After the re-key (tools/rekey_ons_uk.py) ons_uk holds ~3.9M genuine
+series across its datasets. Per-series would mean 3.9M catalog rows and ~43 hours of derive,
 and — the deciding point — those keys are opaque dimension codes
 (`administrative-geography=K02000001:sic-unofficial=14:...`) with no per-series title
 anywhere in ONS's API. Cataloguing 3.9M rows titled with their own key is code soup: it
@@ -21,6 +21,31 @@ Reads the parquets from R2 (the published store), so what is catalogued is what 
 
   python tools/flowgrain_ons_uk.py --dry-run
   python tools/flowgrain_ons_uk.py --catalog --upload
+
+READ BEFORE RUNNING IT (measured 2026-09-03, adversarial review; ledger R696). The counts above
+were 42 datasets when this was written and R2 now holds 49 — the 7 from the 2026-08-03 batch
+never got a CSV. Fixing that with a plain `--catalog --upload` costs far more than it looks:
+
+  * NO SKIP. put() below calls c.put_object directly and never core.r2_util.put_series_csv, so
+    there is no skip_identical and no gzip/csvmd5. A full run re-uploads ALL 49 CSVs —
+    4,251,672,591 bytes to publish 51,613,652 new — with 0 of 42 parquets newer than the CSV
+    they overwrite, and the largest single PUT (ashe-tables-9-and-10, 1.41 GB) re-sent up to 6
+    times on a transient error.
+  * THREE FULL SCANS OF AN 11.9 GB DATABASE TO CHANGE 49 ROWS. `series` carries only its PK, and
+    `series_fts` is fts5(series_id UNINDEXED) — so the DELETE, the fts DELETE ... LIKE and the
+    re-INSERT ... SELECT are each a scan of ~14M rows. That fts scan is the mechanism R542 froze
+    the D1 sync over; measured here, the read-only equivalent ran >15 min without finishing, and
+    the sqlite timeout=180 below is shorter than the tool's own scan. The DELETE is also a no-op:
+    the next statement is INSERT OR REPLACE over a superset.
+  * IT REACHES NO USER WHILE THE D1 SYNC IS FROZEN. api/worker/src/series.ts reads D1 first and
+    returns notFound before touching R2, so new ids stay 404 until D1 has rows. Report the
+    outcome as "staged for the next sync", never as served.
+  * --threads does NOT parallelise uploads: put() runs in the main thread inside the
+    as_completed loop, and --dry-run skips that path entirely, so a dry run's timing says
+    nothing about it.
+
+The safe shape is to scope every write to the ids that actually changed, route PUTs through
+put_series_csv, delete nothing, and assert put_ok == len(objs) afterwards.
 """
 from __future__ import annotations
 import argparse, csv, io, os, sqlite3, sys, time, urllib.parse
