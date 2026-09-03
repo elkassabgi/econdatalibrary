@@ -132,6 +132,24 @@ async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Pr
   const row = (label: string, val: string | null | undefined): string =>
     val ? `#  ${(label + ":").padEnd(11)}${String(val).replace(/\s+/g, " ").trim()}\n` : "";
 
+  // Same gutter as row(), but wrapped to the 78-column bar below. A notice long enough to
+  // matter is long enough to need this: unwrapped it prints three bar-widths wide and reads as
+  // damage rather than as something to act on.
+  const rows = (label: string, val: string | null | undefined): string => {
+    if (!val) return "";
+    const width = 65;                       // 78 minus "#  " and the 11-column label gutter
+    const out: string[] = [];
+    let line = "";
+    for (const word of String(val).replace(/\s+/g, " ").trim().split(" ")) {
+      if (line && line.length + 1 + word.length > width) { out.push(line); line = word; }
+      else line = line ? line + " " + word : word;
+    }
+    if (line) out.push(line);
+    return out
+      .map((l, i) => `#  ${(i === 0 ? label + ":" : "").padEnd(11)}${l}\n`)
+      .join("");
+  };
+
   let licLine = "";
   if (L) {
     let s = L.name || L.id || "";
@@ -168,6 +186,17 @@ async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Pr
     // IDB written permission (2026-07-15) requires "a clear, permanent link
     // back to the original dataset page" — ids are idb:IDB:<dataset-slug>:...
     row("Dataset", source === "idb" ? idbDatasetUrl(seriesId) : null) +
+    // MEASURED 2026-09-03 over the full store: 11,339 of 18,854 idb series carry two or more
+    // DIFFERENT values on the same date, because the series key is indicator+country while the
+    // publisher's tables also break the same indicator down by sex, area, age, quintile,
+    // education, ethnicity and survey. Those rows are different populations, not duplicates, and
+    // nothing in the CSV separates them. Said out loud until the key is repaired, because the
+    // alternative is delivering it as if it were clean.
+    rows("Caveat", source === "idb"
+      ? "rows are keyed by indicator and country only; the publisher also breaks these down by "
+        + "sex, area, age, quintile, education and survey, so one date may carry several "
+        + "different values that this file cannot tell apart"
+      : null) +
     row("Homepage", src?.homepage) +
     row("Terms", src?.terms_url) +
     row("Cite as", citation) +
