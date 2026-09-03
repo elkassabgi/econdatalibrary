@@ -4,8 +4,6 @@ sess = requests.Session(); sess.headers.update({'User-Agent': UA})
 base = 'https://fiscaldata.treasury.gov'
 API = 'https://api.fiscaldata.treasury.gov/services/api/fiscal_service'
 
-slugs = json.load(open('D:/research/econfindatalibrary/data/_treasury_authoritative.json'))['slugs'] \
-        if False else None
 slugs = [
  'average-interest-rates-treasury-securities','daily-government-account-series','daily-treasury-statement',
  'debt-to-the-penny','delinquent-debt-referral-compliance','electronic-securities-transactions',
