@@ -44,6 +44,18 @@ STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CADENCE_LIMIT_DAYS = {"daily": 3, "weekly": 14, "monthly": 45, "quarterly": 120, "annual": 400}
 
 
+
+def live_source_ids(entries) -> set:
+    """The live tier, read EXACTLY as `registry.to_units()` reads it.
+
+    `registry.load()["sources"]` hands back raw yaml entries and 15 of the 282 have no `live` key
+    at all. `to_units` normalises with `bool(entry.get("live", False))`, so an absent flag means
+    NOT live; a reader testing `e.get("live") is False` would classify those 15 as live and
+    silently restore the noise this removes. One expression, one place — two interpretations of a
+    single flag is how R676 and R685 happened.
+    """
+    return {e["source_id"] for e in entries if bool(e.get("live", False))}
+
 def is_late(cadence: str, ts, now) -> bool:
     """True when `ts` is older than the source's cadence allows.
 
@@ -116,6 +128,23 @@ def main() -> None:
     warn = [r for r in rows if r[1] in ("partial", "transient_fail")]
     bad = [r for r in rows if r[1] not in ("ok", "no_change", "partial", "transient_fail")]
 
+    # NOT IN THE LIVE TIER -> CANNOT IMPROVE. updater-daily.yml sets AQUEDUCT_LIVE_ONLY=1 and
+    # orchestrate.py:1536 honours it, so a non-live source is never executed by the daily run and
+    # its status is frozen. Measured 2026-09-03: 7 of 36 attention rows were such sources (bls,
+    # census, imf_imts_direct, istat, oecd, owid, sipri_polity) — 19% of a list whose whole
+    # purpose is to say what needs doing. Same shape as the unmanaged leftovers above, one layer
+    # in: those had no registry entry, these have one and are simply not live.
+    #
+    # `bool(e.get("live", False))` is the EXACT expression registry.py:79 and health.py:507 use,
+    # so an absent flag means not-live here too. Four of the seven have no `live` key at all, and
+    # a second interpretation of the same field is how R676 and R685 happened.
+    dormant = []
+    if _entries is not None:
+        _live_ids = live_source_ids(_entries)
+        dormant = [r for r in warn + bad if r[0] not in _live_ids]
+        warn = [r for r in warn if r[0] in _live_ids]
+        bad = [r for r in bad if r[0] in _live_ids]
+
     healthy = run_status.lower() == "success" and not bad
     subject = (f"econdatalibrary daily: OK — {len(ok)} sources current"
                if healthy else
@@ -185,6 +214,12 @@ def main() -> None:
         lines.append(f"  ({len(orphans)} unmanaged leftover state row(s), excluded from the "
                      f"counts above — no registry entry, so they never re-run: "
                      f"{', '.join(sorted(r[0] for r in orphans))})")
+        lines.append("")
+    if dormant:
+        lines.append(f"  ({len(dormant)} source(s) not in the live tier, excluded from the "
+                     f"counts above — the daily run does not execute them "
+                     f"(AQUEDUCT_LIVE_ONLY), so their status cannot change: "
+                     f"{', '.join(sorted(r[0] for r in dormant))})")
         lines.append("")
     for r in ok:
         # A "data through" frontier far in the future is a legitimate projection
