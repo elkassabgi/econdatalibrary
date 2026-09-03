@@ -38,11 +38,60 @@ LIST_FLOOR = 7_500    # measured after the noaa LIST leak stopped
 D1_READS_DAY = 1_111_156_496
 
 
+def live_inputs():
+    """(stored GB, D1 GB, D1 rows read/day, source) measured now, or the constants if not.
+
+    A cost tool whose inputs are frozen constants keeps printing the same answer while the
+    account moves, which reads as live and is not. These three drift: stored bytes grow with
+    ingestion, D1 read volume moves with both traffic and maintenance. The constants remain as
+    a labelled fallback so the tool still runs with no credentials.
+    """
+    import datetime as _dt                                            # noqa: PLC0415
+    try:
+        tok, acct = bg._load_env_token(), bg._account_id()
+        if not tok or not acct:
+            return R2_GB, D1_GB, D1_READS_DAY, "constants (no analytics token)"
+        end = _dt.datetime.now(_dt.timezone.utc).date()
+        start = (end - _dt.timedelta(days=18)).isoformat()
+        q_st = ("query($a:String!,$s:Date!,$e:Date!){viewer{accounts(filter:{accountTag:$a}){"
+                "r2StorageAdaptiveGroups(limit:5000,filter:{date_geq:$s,date_leq:$e})"
+                # bucketName IS LOAD-BEARING. Grouped by date alone the API returns ONE row per
+                # date and `max` is the largest single bucket, not the total - it reported
+                # 630 GB (econ-data) where the three buckets hold 913. A dimension you omit is
+                # not summed for you; it is collapsed by the aggregate you asked for.
+                "{dimensions{date bucketName}max{payloadSize metadataSize}}}}}")
+        q_d1 = ("query($a:String!,$s:Date!,$e:Date!){viewer{accounts(filter:{accountTag:$a}){"
+                "d1AnalyticsAdaptiveGroups(limit:5000,filter:{date_geq:$s,date_leq:$e})"
+                "{dimensions{date}sum{rowsRead}}}}}")
+        v = {"a": acct, "s": start, "e": end.isoformat()}
+        st = bg._graphql(tok, q_st, v)
+        d1 = bg._graphql(tok, q_d1, v)
+        by_day = {}
+        for r in bg._rows(st or {}, "r2StorageAdaptiveGroups", 5000):
+            d = r["dimensions"]["date"]
+            by_day[d] = by_day.get(d, 0.0) + (
+                r["max"]["payloadSize"] + r["max"].get("metadataSize", 0)) / 1000 ** 3
+        reads = {}
+        for r in bg._rows(d1 or {}, "d1AnalyticsAdaptiveGroups", 5000):
+            d = r["dimensions"]["date"]
+            reads[d] = reads.get(d, 0) + r["sum"]["rowsRead"]
+        # drop today: it is partial and would drag both figures down
+        days = sorted(by_day)[:-1]
+        rdays = sorted(reads)[:-1]
+        gb = by_day[days[-1]] if days else R2_GB
+        rpd = (sum(reads[d] for d in rdays) / len(rdays)) if rdays else D1_READS_DAY
+        return gb, D1_GB, rpd, "measured over %d complete days" % max(len(rdays), 0)
+    except Exception as exc:                                          # noqa: BLE001
+        return R2_GB, D1_GB, D1_READS_DAY, "constants (%s)" % type(exc).__name__
+
+
 def fixed_block():
     """Priced with the meter's own helpers, not re-derived rates."""
-    r2 = bg.gb_months(R2_GB, DAYS) * 0.015
-    d1 = max(0.0, bg.gb_months(D1_GB, DAYS) - 5.0) * 0.75
-    reads = bg.units(D1_READS_DAY * DAYS, bg.D1_READS_INCLUDED, 0.001)
+    gb, d1gb, rpd, src = live_inputs()
+    r2 = bg.gb_months(gb, DAYS) * 0.015
+    d1 = max(0.0, bg.gb_months(d1gb, DAYS) - 5.0) * 0.75
+    reads = bg.units(rpd * DAYS, bg.D1_READS_INCLUDED, 0.001)
+    print(f"   inputs: {gb:,.0f} GB stored, {rpd:,.0f} D1 rows read/day  [{src}]")
     return {"Workers plan": 5.00, "R2 storage": r2, "D1 storage": d1, "D1 rows read": reads}
 
 
