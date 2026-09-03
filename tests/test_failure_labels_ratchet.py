@@ -15,6 +15,12 @@ a single-sub-unit fetcher "1/1 failed" already identifies the unit. What matters
 INSIDE A LOOP, where N distinct failures collapse into one count. Measured by AST on 2026-08-04:
 171 such calls across 59 files.
 
+A LABEL ON A SINGLE-UNIT FETCHER STILL CARRIES THE REASON. The denominator above is right
+about IDENTITY - "1/1 failed" already says which unit - but it says nothing about WHY, and the
+raise site usually knows: an HTTP status, a byte count, an exception type. penn_world_table, pwt,
+gleif and _iep were labelled on 2026-09-03 for that reason even though their calls are not
+in-loop, which is why this BUDGET fell from 136 to 112 without those files appearing here.
+
 THIS IS A RATCHET, NOT A GATE. Fixing all 171 needs the right in-scope identifier at each site,
 which is per-site judgement, not a sweep. So this test pins the number: it may fall, never rise.
 New code must label; existing debt gets paid down without blocking anything. When you fix some,
@@ -42,7 +48,7 @@ METHODS = {"transient_unit", "structural_unit"}
 # 152 -> 147: _giant's five. Highest leverage of the lot -- _giant drives the biggest sources
 # over hundreds of flows, so its unlabelled count was the least actionable row in the system.
 # 147 -> 142: ssb's five. ssb sweeps ~1,515 tables, so each label removes 1,515 candidates.
-BUDGET = 136  # 2026-08-06: unsdg rework labeled its bare calls (cycle 38)
+BUDGET = 112  # 2026-08-06: unsdg rework labeled its bare calls (cycle 38)
 
 
 class _Counter(ast.NodeVisitor):
