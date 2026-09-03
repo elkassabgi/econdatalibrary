@@ -8,11 +8,54 @@ to write without write creds.
 """
 from __future__ import annotations
 
+import gzip as _gzip
 import os
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(_THIS, ".."))
 ENV = os.path.join(ROOT, ".env")
+
+# The gzip header's OS byte, forced. See gzip_bytes() below for why this constant exists.
+_GZIP_OS_UNKNOWN = 0xFF
+
+
+def gzip_bytes(data: bytes, compresslevel: int = 9) -> bytes:
+    """Gzip for R2, normalised so THIS repo's two writers agree with each other.
+
+    WHAT IT FIXES. `core/derive_csv.py` writes some objects with `GzipFile` and others with
+    `gzip.compress`, and those disagreed on Python 3.11: `GzipFile._write_gzip_header` writes
+    b"\\377" unconditionally, while 3.11's `gzip.compress` returns
+    `zlib.compress(data, level, wbits=31)` untouched when mtime == 0, leaving zlib's build
+    platform in the header's OS byte (3 on Linux). Python 3.14 ends the same function with
+    `struct.pack("<4sLBB", gzip_data, int(mtime), gzip_data[8], 255)`, forcing 255. Forcing it
+    here makes the two paths byte-identical on every interpreter tested.
+
+    WHAT IT DOES NOT FIX, and this must not be overstated. It does NOT make output portable
+    across machines. The DEFLATE STREAM itself differs: Python 3.14 on the desktop links
+    zlib-ng ("1.3.1.zlib-ng"), the 3.11 runners link stock zlib 1.3.1, and the same input at
+    level 9 produced 787,922 bytes against 788,191. Measured on 90 real bucket objects written
+    since the 2026-08-18 gzip cutover, each population is reproducible only by the compressor
+    that made it:
+
+        stored OS=3   (n=45): 45/45 reproducible on 3.11, 23/45 on 3.14
+        stored OS=255 (n=44): 44/44 reproducible on 3.14,  9/44 on 3.11
+
+    With this normalisation the desktop's skip rate on those objects rises from 49.4% to 75.3%
+    and CI's from 50.6% to 60.7%. Roughly a quarter still re-uploads on every pass, forever,
+    and no header edit can reach that.
+
+    THE REAL FIX IS NOT BYTE-IDENTITY. A compressed stream is not a portable invariant, and a
+    matching Python version would not save it either - 3.14 bundles zlib-ng on Windows and
+    links system zlib on Linux. The durable comparison is the digest of the PRE-COMPRESSION
+    CSV, carried in object metadata. `core/derive_csv.py:428` already passes `Metadata=`, and
+    the skip guard already pays a `head_object` that returns it. This helper is a prerequisite,
+    not the cure. Same lesson as R383, which rejected byte hashes for parquet because the
+    desktop and CI run different pyarrow versions.
+    """
+    out = _gzip.compress(data, compresslevel=compresslevel, mtime=0)
+    if len(out) > 9 and out[9] != _GZIP_OS_UNKNOWN:
+        out = out[:9] + bytes([_GZIP_OS_UNKNOWN]) + out[10:]
+    return out
 
 
 def load_env() -> dict:

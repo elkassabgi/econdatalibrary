@@ -523,7 +523,7 @@ def main() -> int:
                 # still PUT plain — a 3.1M-object rewrite is the one free chance to comply,
                 # and rewriting plain would re-entrench the exception. The --verify gate
                 # compares PRE-compression bytes, so it is unaffected.
-                gz = gzip.compress(body, mtime=0)
+                gz = r2_util.gzip_bytes(body)
                 _retry(lambda: s3.put_object(Bucket=a.bucket, Key=key, Body=gz,
                                              ContentType="text/csv",
                                              ContentEncoding="gzip"), "PUT")

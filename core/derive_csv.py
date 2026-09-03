@@ -83,7 +83,13 @@ def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
              materialises a batch on the Python side, so there is nothing to crash.
 
     The CSV is then gzipped in a streaming pass with mtime=0 and no filename in the header,
-    so the object matches gzip.compress(csv, mtime=0) exactly.
+    so the object matches `core.r2_util.gzip_bytes(csv)` exactly.
+
+    It used to say "matches gzip.compress(csv, mtime=0)", and that was portable only by
+    accident. GzipFile writes the header's OS byte as 255 on every Python; gzip.compress leaves
+    it at zlib's build platform on 3.11 (3 on the Linux runners) and forces 255 on 3.14. So
+    this streaming path and the in-memory path produced DIFFERENT objects for the same CSV
+    whenever CI wrote one of them. `gzip_bytes` normalises that byte, so the two agree again.
 
     FILE-GRAIN ONLY: res.predicate is a pyarrow Expression that cannot be handed to SQL. For
     file-grain the whole file is the series set, so "key IS NOT NULL" is the same filter.
@@ -365,9 +371,15 @@ def _file_md5(path: str) -> str:
 def object_is_identical(s3, bucket: str, key: str, path: str) -> bool:
     """True only when R2 already holds EXACTLY these bytes.
 
-    WHY THIS IS SAFE TO TRUST. `sorted_csv_gz` gzips with mtime=0 and no filename so that "the
-    object matches gzip.compress(csv, mtime=0) exactly" - the same data gives the same bytes,
-    hence the same MD5 - and R2 reports that MD5 as the ETag of a single-part object.
+    WHY THIS IS SAFE TO TRUST. `sorted_csv_gz` gzips with mtime=0 and no filename, and every
+    in-memory writer goes through `core.r2_util.gzip_bytes`, so the same data gives the same
+    bytes ON EVERY MACHINE - hence the same MD5, which R2 reports as the ETag of a single-part
+    object.
+
+    "On every machine" is the part that was not true until 2026-09-02. The header's OS byte
+    came from zlib's build platform under Python 3.11, which CI pins, so a key written by a
+    Linux runner could never be recognised as identical by the desktop, and the two took turns
+    re-uploading it. Nothing that decompresses ever noticed.
 
     WHY IT REFUSES TO GUESS. A multipart ETag looks like `<hex>-<n>` and is a digest of part
     digests, not of the content, so it cannot be compared and those objects upload. So does any
@@ -437,11 +449,15 @@ def _put_with_backoff(s3, bucket, key, body) -> None:
     the bytes deterministic — verify_source_served byte-compares served objects against
     freshly-derived expectations, and a timestamp in the header would break equality for
     identical CSV content."""
-    import gzip as _gzip
     import time as _time
+    from .r2_util import gzip_bytes
     if isinstance(body, str):
         body = body.encode()
-    body = _gzip.compress(body, mtime=0)
+    # gzip_bytes, not gzip.compress: on Python 3.11 (what CI pins) the header's OS byte comes
+    # from zlib's build platform and is 3 on Linux; on 3.14 (the desktop) gzip.compress forces
+    # it to 255. The same CSV therefore becomes two different objects depending on where this
+    # ran, which defeats every digest comparison downstream.
+    body = gzip_bytes(body)
     for attempt in range(7):
         try:
             s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="text/csv",

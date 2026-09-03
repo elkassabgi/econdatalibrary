@@ -417,6 +417,12 @@ def _is_404(exc) -> bool:
 SKIPPED_IDENTICAL = [0]
 _SKIPPED_LOCK = threading.Lock()
 
+# Object-metadata key holding the MD5 of the CSV BEFORE compression. Lowercase and free of
+# separators on purpose: S3 metadata keys travel as HTTP header suffixes and boto3 lowercases
+# them on the way back, so anything else invites a case mismatch nobody notices until a guard
+# silently stops matching.
+_PLAIN_MD5 = "csvmd5"
+
 
 def _count_skip() -> None:
     with _SKIPPED_LOCK:
@@ -469,10 +475,23 @@ class R2Blob:
         # the verifier's byte-compare. Manifests/JSON stay plain — their readers
         # (including this module's own get paths) expect raw bytes.
         is_series_csv = key.startswith("series/") and key.endswith(".csv")
+        plain_digest = None
         if is_series_csv:
-            import gzip as _gzip
-            data = _gzip.compress(data, mtime=0)
+            import hashlib                                            # noqa: PLC0415
+            # THE DIGEST IS TAKEN BEFORE COMPRESSION, and that is the whole point. Comparing
+            # compressed bytes is not portable: this desktop's Python 3.14 links zlib-ng
+            # ("1.3.1.zlib-ng") and the 3.11 runners link stock zlib, so the same CSV at level
+            # 9 deflates to 787,922 bytes here and 788,191 there. Measured on 90 real objects,
+            # each population is reproducible only by the compressor that wrote it - 45/45
+            # OS=3 objects rebuild on 3.11 and 23/45 on 3.14. No header normalisation reaches
+            # that. The CSV's own MD5 does: it is the same number on every machine, every
+            # Python and every zlib. Same lesson as R383, which rejected byte hashes for
+            # parquet because the desktop and CI run different pyarrow versions.
+            plain_digest = hashlib.md5(data).hexdigest()              # noqa: S324
+            from core.r2_util import gzip_bytes
+            data = gzip_bytes(data)
             kw["ContentEncoding"] = "gzip"
+            kw["Metadata"] = {_PLAIN_MD5: plain_digest}
         # DO NOT RE-UPLOAD BYTES R2 ALREADY HOLDS. Measured 2026-09-02: PutObject on econ-data
         # is 7,686,397 of 10.8 M class-A operations over 24 days - 71% of the only variable
         # line left on a median day - and this path is the one that makes them. The gzip above
@@ -485,14 +504,37 @@ class R2Blob:
         #
         # Every uncertain case UPLOADS: a multipart ETag is a digest of digests, and an error
         # asking is not evidence of anything.
-        if is_series_csv and self._already_holds(key, data):
+        if is_series_csv and self._already_holds(key, data, plain_digest):
             _count_skip()
             return
         self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **kw)
 
-    def _already_holds(self, key: str, data: bytes) -> bool:
-        """True only when the object's ETag equals the MD5 of exactly these bytes."""
+    def _already_holds(self, key: str, data: bytes, plain_digest: str | None = None) -> bool:
+        """True only when R2 provably holds this same CSV.
+
+        TWO COMPARISONS, in order of how much they prove:
+
+        1. `x-amz-meta-<_PLAIN_MD5>` against the digest of the PRE-COMPRESSION CSV. This is the
+           durable one - the same number on every machine, Python and zlib - and it is the only
+           one that survives the desktop and the runners linking different compressors.
+        2. The ETag against the MD5 of the compressed bytes. Kept for objects written before
+           the metadata existed, so the fleet converges instead of re-uploading everything at
+           once. It answers correctly when the same compressor wrote the object and stays
+           silent otherwise, which is a false NEGATIVE - an extra upload, never a wrong skip.
+
+        Every uncertain case UPLOADS: a multipart ETag is a digest of digests, an absent object
+        has nothing to compare, and an error asking is not evidence of anything.
+        """
         import hashlib                                                # noqa: PLC0415
+        if plain_digest:
+            try:
+                meta = self.client.head_object(Bucket=self.bucket, Key=key).get("Metadata", {})
+            except Exception:                                         # noqa: BLE001
+                meta = {}
+            # boto3 lowercases metadata keys on the way back out; do not assume the case.
+            stored = {k.lower(): v for k, v in (meta or {}).items()}.get(_PLAIN_MD5)
+            if stored:
+                return stored == plain_digest
         try:
             tag = self.etag(key)
         except Exception:                                             # noqa: BLE001
