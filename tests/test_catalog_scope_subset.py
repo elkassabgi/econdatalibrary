@@ -64,6 +64,24 @@ def test_full_scope_zero_mapped_demotes_unchanged():
     assert "grain/key-form mismatch" in note and note.startswith("csv coherence unmet:")
 
 
+def test_the_zero_mapped_note_names_BOTH_causes_and_asserts_neither():
+    """It sees the CHANGED keys only, so it cannot know which of the two it is.
+
+    norgesbank, 2026-09-03: the note said "none matched — grain/key-form mismatch" while 35,135
+    of its 35,727 store keys matched a catalogue row EXACTLY and 0 catalogue rows lacked a store
+    key. The real condition was 592 uncatalogued MONEY_MARKET series, and the 9 changed keys all
+    fell inside them. A reader following that note hunts a key-form bug that does not exist.
+    """
+    note, demote = _classify_zero_mapped("norgesbank", "full", 35135, None, 0, 9)
+    assert demote is True, "R359's demotion must be unchanged — only the wording moved"
+    assert "grain/key-form mismatch" in note, "the key-form cause must still be offered"
+    assert "uncatalogued" in note, (
+        "the note must also offer the uncatalogued-residue cause; asserting the key-form one "
+        "alone is what sent a reader after a bug that was not there")
+    assert "CHANGED" in note, (
+        "the note must say the zero applies to the CHANGED keys, not to the whole store")
+
+
 def test_no_rows_and_unavailable_still_demote_even_for_subset():
     # n_ids == 0: not catalogued/purged/stale reference — subset cannot rescue it.
     _, demote0 = _classify_zero_mapped("eia", "subset", 0, None, 0, 10)

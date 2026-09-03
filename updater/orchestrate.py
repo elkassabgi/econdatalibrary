@@ -436,8 +436,16 @@ def _classify_zero_mapped(source_id: str, scope: str, n_ids: "int | None",
         why = ("the catalog this run read has NO rows for it — not catalogued, "
                "purged, or the coherence catalog is stale")
     else:
-        why = (f"the catalog this run read has {n_ids:,} rows for it but none "
-               f"matched — grain/key-form mismatch")
+        # NAMES BOTH CAUSES, because this function can only see the CHANGED keys and the two
+        # are indistinguishable from here. norgesbank 2026-09-03 read "none matched — grain/
+        # key-form mismatch" while 35,135 of its 35,727 store keys matched a catalogue row
+        # exactly; the 592 that did not are all MONEY_MARKET and simply uncatalogued, and the 9
+        # changed keys all fell inside them. The old wording sent the reader after a key-form
+        # bug that does not exist. The demotion is unchanged (R359).
+        why = (f"the catalog this run read has {n_ids:,} rows for it but none of the CHANGED "
+               f"keys matched — either a grain/key-form mismatch, or these particular series "
+               f"are uncatalogued while the rest map fine; compare the store's full key set "
+               f"against the catalogue to tell them apart")
         if scope == "subset" and sample_hits is not None and sample_n > 0:
             if cap_saturated:
                 why += (f"; catalog_scope=subset exception REFUSED: the changed-set "
