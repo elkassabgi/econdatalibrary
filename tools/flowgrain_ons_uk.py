@@ -34,9 +34,16 @@ never got a CSV. Fixing that with a plain `--catalog --upload` costs far more th
   * THREE FULL SCANS OF AN 11.9 GB DATABASE TO CHANGE 49 ROWS. `series` carries only its PK, and
     `series_fts` is fts5(series_id UNINDEXED) — so the DELETE, the fts DELETE ... LIKE and the
     re-INSERT ... SELECT are each a scan of ~14M rows. That fts scan is the mechanism R542 froze
-    the D1 sync over; measured here, the read-only equivalent ran >15 min without finishing, and
-    the sqlite timeout=180 below is shorter than the tool's own scan. The DELETE is also a no-op:
+    the D1 sync over. CORRECTED 2026-09-03: the first measurement of this said ">15 min without
+    finishing", but that probe ran while a 32 GB eurostat job with 50 GB of spill was saturating
+    the box. Re-timed quiet, `count(*) from series_fts where series_id like 'ons_uk:%'` is 5.5 s
+    and the `series` scan 7.8 s — so all three together are ~19 s, not hours. The scans are still
+    scans; it is the COST argument that was wrong, by about 160x. The DELETE is also a no-op:
     the next statement is INSERT OR REPLACE over a superset.
+  * THE PER-ROW FORM IS THE ONE TO FEAR, and it is in tools/catalog_table_grain.py:171:
+    executemany("DELETE FROM series_fts WHERE series_id=?", ...) is one unindexed scan PER ROW.
+    At 5.5 s each that is ~18 min for gus_dbw's 194 files (which is why it completed unnoticed)
+    and ~8.8 h for cbs_nl's ~5,758.
   * IT REACHES NO USER WHILE THE D1 SYNC IS FROZEN. api/worker/src/series.ts reads D1 first and
     returns notFound before touching R2, so new ids stay 404 until D1 has rows. Report the
     outcome as "staged for the next sync", never as served.
