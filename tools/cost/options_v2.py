@@ -31,11 +31,19 @@ D1_GB = 8.34          # NUMBERS.md rows 37/59
 LIST_FLOOR = 7_500    # measured after the noaa LIST leak stopped
 
 
+# D1 ROWS READ, measured over the 18 days after the 2026-08-15 serving fix. This module used to
+# print "D1 reads $0" as though it were established; it was read off a 24-HOUR panel
+# (285,913,827/day) treated as the rate, and the real average is 3.9x that. It does not vary
+# with upload volume, so it belongs in the fixed block rather than being added by hand later.
+D1_READS_DAY = 1_111_156_496
+
+
 def fixed_block():
     """Priced with the meter's own helpers, not re-derived rates."""
     r2 = bg.gb_months(R2_GB, DAYS) * 0.015
     d1 = max(0.0, bg.gb_months(D1_GB, DAYS) - 5.0) * 0.75
-    return {"Workers plan": 5.00, "R2 storage": r2, "D1 storage": d1}
+    reads = bg.units(D1_READS_DAY * DAYS, bg.D1_READS_INCLUDED, 0.001)
+    return {"Workers plan": 5.00, "R2 storage": r2, "D1 storage": d1, "D1 rows read": reads}
 
 
 def class_a(attempts_per_day, hit_rate):
@@ -51,9 +59,10 @@ def main():
     for k, v in fb.items():
         print(f"   {k:<22}$ {v:6.2f}")
     print(f"   {'':<22}$ {sum(fb.values()):6.2f}   "
-          f"(I told Ahmed $20.87; it is ${sum(fb.values()):.2f})")
+          f"(I told Ahmed $20.87 with D1 reads at zero; it is ${sum(fb.values()):.2f})")
 
-    print("\nD1 reads $0, D1 writes $0, Workers requests $0, R2 class-B $0 - inside allowances,")
+    print("\nD1 rows read are ABOVE the allowance and priced in the block above. D1 writes,")
+    print("Workers requests and R2 class-B are all $0, inside theirs.")
     print("but NUMBERS.md row 76 warns reads sit at 49% of the allowance on a median day, so")
     print("that headroom is one maintenance campaign wide.\n")
 
@@ -71,9 +80,9 @@ def main():
     rows = [
         ("1. bulk re-uploads continue at this period's rate", 325_592, 0.0),
         ("2. no bulk re-uploads; daily updating only", 110_000, 0.0),
-        ("3a. option 2 + guard at the 10.5% I first measured", 110_000, 0.105),
-        ("3b. option 2 + guard at the 89% seen on recent writes", 110_000, 0.89),
-        ("4. option 3b + quarterly updating for slow sources", 20_000, 0.89),
+        ("3a. option 2 + guard at the MEASURED 70% skip rate", 110_000, 0.70),
+        ("3b. option 2 + guard at the 89% on recently-written objects", 110_000, 0.89),
+        ("4. quarterly uploads (see tools/cost/quarterly_upload.py)", 20_000, 0.89),
     ]
     print(f"{'option':<52}{'class-A':>9}{'TOTAL':>9}")
     for label, att, hit in rows:
@@ -81,7 +90,8 @@ def main():
         total = (sum(fb.values()) + cost) * bg.TAX_UPLIFT
         print(f"{label:<52}{cost:>9.2f}{total:>9.2f}")
 
-    print("\nNOTE 3a vs 2: a 10.5% hit rate changes the bill by exactly nothing.")
+    print("\nNOTE: below a 20% skip rate the guard changes the bill by exactly nothing -")
+    print("class-A bills in whole millions, so the saving arrives in $4.50 steps.")
     print("The guard has never run in production, so every hit rate above is a prediction.")
     return 0
 
