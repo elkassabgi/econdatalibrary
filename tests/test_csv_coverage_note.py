@@ -85,7 +85,11 @@ def test_zero_mapped_with_rows_stays_coherence_unmet(monkeypatch, tmp_path):
                         catalog_ids=["src:chain_tvl:BTC"],
                         cursors={"BTC": "2026-08-01"})
     assert note and "csv coherence unmet" in note, note
-    assert "none matched" in note
+    # The note used to say a bare "none matched", which reads as a claim about the whole store.
+    # norgesbank showed why that is wrong: 35,135 of its 35,727 store keys matched a catalogue
+    # row exactly, and only the 9 CHANGED keys — all inside its 592 uncatalogued MONEY_MARKET
+    # series — did not. The zero is still reported; it is now scoped to what was measured.
+    assert "none of the CHANGED keys matched" in note, note
 
 
 def test_caller_prefix_contract(monkeypatch, tmp_path):
