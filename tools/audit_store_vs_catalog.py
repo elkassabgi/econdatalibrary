@@ -79,9 +79,23 @@ def main() -> int:
     for i, d in enumerate(names, 1):
         if d in done:
             continue
-        files = [f for f in glob.glob(os.path.join(STORE, d, "*.parquet"))
-                 if not f.endswith("__series.parquet")]
+        # RECURSIVE. A one-level glob undercounts every nested store and drops four of them
+        # entirely — measured 2026-09-03: bea 1 -> 592, gus_dbw 194 -> 868, eia 30 -> 60, and
+        # edgar_insider / edgar_13f / edgar_pointers / usda all 0 -> hundreds. bea's flat count
+        # made it report `store 17,699 / cat 913,230 / ORPHAN`, an artifact of 591 unseen files.
+        # R261/R389/R390's flat-listing trap, which R390 names usda for by name.
+        files = [os.path.join(root, f)
+                 for root, _dirs, fs in os.walk(os.path.join(STORE, d))
+                 for f in fs
+                 if f.endswith(".parquet") and not f.endswith("__series.parquet")]
         if not files:
+            # NEVER a silent continue. R390: "a guard is the LAST place to tolerate a silent
+            # skip, so any branch where it cannot evaluate must print and be read as UNCHECKED,
+            # never as clean" — a dropped store is indistinguishable from a clean one.
+            line = f"{d}\t\t{counts.get(d, 0)}\t\tno parquet (UNCHECKED)"
+            fh.write(line + "\n"); fh.flush()
+            print(f"[{i}/{len(names)}] {d:24s} no parquet under it — UNCHECKED, not clean "
+                  f"(catalogue holds {counts.get(d, 0):,})", flush=True)
             continue
         cat = counts.get(d, 0)
         gb = dir_gb(files)
