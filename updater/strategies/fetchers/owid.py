@@ -158,9 +158,9 @@ def update(unit, since) -> Result:
                 slug, lastmod = futs[fut]
                 _s, status, parsed = fut.result()
                 if status == "transient":
-                    tally.transient_unit(); continue
+                    tally.transient_unit(f"{slug}: fetch failed"); continue
                 if status == "empty":
-                    tally.empty_unit(); continue
+                    tally.empty_unit(f"{slug}: nothing to fetch"); continue
                 if status == "structural":
                     # A single chart that parses to zero rows must NOT be structural:
                     # finalize() RAISES DefinitiveError on any structural unit, which would
@@ -168,7 +168,9 @@ def update(unit, since) -> Result:
                     # (run 30133686534: 5/150 zero-row charts -> nothing merged at all).
                     # Count it empty and deliberately do NOT advance its vintage, so it is
                     # retried next tick and a persistent break still surfaces.
-                    tally.empty_unit(); continue
+                    tally.empty_unit(
+                        f"{slug}: parsed 0 rows (empty ON PURPOSE — structural would abort "
+                        f"the whole source)"); continue
 
                 keys, dates, vals = parsed[0], parsed[1], parsed[2]
                 tbl = pa.table({
@@ -180,8 +182,10 @@ def update(unit, since) -> Result:
                 before = blob.row_count(path) if blob.exists(path) else 0
                 try:
                     n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-                except DefinitiveError:
-                    tally.transient_unit(); continue
+                except DefinitiveError as e:
+                    tally.transient_unit(
+                        f"{slug}: merge refused over {before:,} stored — {str(e)[:100]}")
+                    continue
                 published += n
                 tally.added_unit(max(0, n - before))
                 # BOUNDED (2026-07-30). 1,048,968 distinct series in this store against a

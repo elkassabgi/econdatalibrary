@@ -336,10 +336,10 @@ def update(unit, since) -> Result:
 
         try:
             rows, structural_zero = _fetch_rows(sess, endpoint, date_field, since_date)
-        except TransientError:
+        except TransientError as e:
             # Leave this endpoint's existing data untouched; record & keep going so one
             # flaky endpoint can't strand the other 180. -> run becomes 'partial'.
-            tally.transient_unit()
+            tally.transient_unit(f"{endpoint}: {str(e)[:120]}")
             total += before
             if before and (date_field and "obs_date" in all_cols):
                 # preserve the known frontier for this endpoint in the cursor map
@@ -353,7 +353,9 @@ def update(unit, since) -> Result:
             if structural_zero and before > 0:
                 # 200 + real envelope but 0 rows on a FULL fetch of a previously
                 # populated cube -> schema/structural break, not a quiet period.
-                tally.structural_unit()
+                tally.structural_unit(
+                    f"{endpoint}: full fetch returned a real envelope with 0 rows over "
+                    f"{before:,} stored")
             else:
                 # incremental tail with nothing newer, or genuinely-empty endpoint
                 tally.empty_unit()
