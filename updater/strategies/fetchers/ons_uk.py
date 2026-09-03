@@ -364,7 +364,9 @@ def update(unit, since) -> Result:
                     n, md = merge.merge_and_write(path, tbl, mode="replace", dedup_keys=DEDUP)
                 except DefinitiveError as e:
                     print(f"[ons_uk] {ds_id}: guard refused the write — {e}", flush=True)
-                    tally.transient_unit()       # isolate a guard trip to this dataset
+                    # isolate a guard trip to this dataset; the reason is already in hand
+                    tally.transient_unit(
+                        f"{ds_id}: write guard refused over {before:,} stored — {str(e)[:100]}")
                     continue
                 published += n
                 tally.added_unit(max(0, n - before))
