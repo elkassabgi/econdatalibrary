@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import datetime as _dt
 import os
 import sqlite3
 import sys
@@ -37,8 +38,8 @@ def main() -> None:
 
     con = sqlite3.connect(f"file:{STATE}?mode=ro", uri=True)
     rows = con.execute(
-        "SELECT source_id, status, last_obs_date, last_success_utc, last_error "
-        "FROM unit_state ORDER BY source_id").fetchall()
+        "SELECT source_id, status, last_obs_date, last_success_utc, last_error, "
+        "last_attempt_utc FROM unit_state ORDER BY source_id").fetchall()
     con.close()
 
     # unit_state accumulates a row for every source that has EVER run, including ones
@@ -48,11 +49,30 @@ def main() -> None:
     # entry, hence never re-run and never able to recover). Scope the pass/fail verdict to
     # what we actually manage, but list the orphans explicitly rather than dropping them:
     # a silent filter would be the same mistake in the other direction.
+    # ABSOLUTE FIRST, RELATIVE SECOND. The workflow runs this as `python updater/send_digest.py`
+    # (updater-daily.yml), i.e. as a SCRIPT - so `__package__` is empty and `from . import
+    # registry` raises ImportError, is swallowed by the except below, and `managed` becomes None.
+    # The orphan filter has therefore never run on a scheduled digest, which is why
+    # `fred_releases` - de-registered in July, unschedulable, last attempted 71 days ago - was
+    # still being listed as needing attention every morning.
+    #
+    # The None fallback stays: a genuinely unreadable registry must report everything rather
+    # than silently hide rows. It just must not be reached by an invocation style.
+    managed = None
     try:
-        from . import registry
+        import os as _os                                              # noqa: PLC0415
+        import sys as _sys                                            # noqa: PLC0415
+        _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        from updater import registry                                  # noqa: PLC0415
         managed = {e["source_id"] for e in registry.load().get("sources", [])}
-    except Exception:
-        managed = None          # registry unreadable -> report everything, don't hide rows
+    except Exception:                                                 # noqa: BLE001
+        try:
+            from . import registry                                    # noqa: PLC0415
+            managed = {e["source_id"] for e in registry.load().get("sources", [])}
+        except Exception:                                             # noqa: BLE001
+            managed = None      # registry genuinely unreadable -> report everything
     orphans = [r for r in rows if managed is not None and r[0] not in managed]
     if managed is not None:
         rows = [r for r in rows if r[0] in managed]
@@ -70,11 +90,33 @@ def main() -> None:
     feed = "https://econdl-api.elkassabgi.workers.dev/v1/last-updates"
     runlog = f"https://github.com/elkassabgi/econdatalibrary/actions/runs/{run_id}"
 
+    def tried_age(ts) -> str:
+        """How long ago we last ATTEMPTED this source, as a short human string.
+
+        Without it a 16-day-old error reads exactly like this morning's. eurostat's row on
+        2026-09-03 described a re-key migration that had completed two days earlier - a fossil,
+        indistinguishable in the email from a live failure.
+        """
+        if not ts:
+            return "never"
+        try:
+            t = _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=_dt.timezone.utc)
+        except Exception:                                             # noqa: BLE001
+            return "?"
+        h = (_dt.datetime.now(_dt.timezone.utc) - t).total_seconds() / 3600.0
+        if h < 0:
+            return "?"
+        if h < 36:
+            return f"{h:.0f}h ago"
+        return f"{h / 24:.0f}d ago"
+
     # ---- plain-text fallback (some clients / previews) ----
     lines = [f"Run {run_id}: {run_status}",
              f"{len(ok)} ok/no_change · {len(warn)} partial/transient · {len(bad)} failed", ""]
     for r in sorted(warn + bad, key=lambda x: x[0]):
-        lines.append(f"  !! {r[0]:20} {r[1]:15} last_obs={r[2] or '—'}  err={str(r[4] or '')[:90]}")
+        lines.append(f"  !! {r[0]:20} {r[1]:15} tried={tried_age(r[5]):>8}  last_obs={r[2] or '—'}  err={str(r[4] or '')[:78]}")
     if warn or bad:
         lines.append("")
     if orphans:
@@ -123,6 +165,8 @@ def main() -> None:
             f'<td style="padding:7px 10px;border-top:1px solid #e5e7eb;'
             f'font-family:Consolas,monospace;font-size:13px;">{esc(r[2])}</td>'
             f'<td style="padding:7px 10px;border-top:1px solid #e5e7eb;color:{grey};'
+            f'font-family:Consolas,monospace;font-size:13px;">{esc(tried_age(r[5]))}</td>'
+            f'<td style="padding:7px 10px;border-top:1px solid #e5e7eb;color:{grey};'
             f'font-size:12px;">{esc(str(r[4] or "")[:110])}</td></tr>')
 
     current_rows = ""
@@ -151,7 +195,7 @@ def main() -> None:
     <table role="presentation" cellspacing="8" style="border-collapse:separate;margin:0 auto 14px;"><tr>
       {chip(len(ok), "current", green)}{chip(len(warn), "retrying", amber)}{chip(len(bad), "failed", red)}
     </tr></table>
-    {"<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;color:" + red + ";'>Needs attention</h3><table role='presentation' width='100%' style='border-collapse:collapse;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'><tr><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Source</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Status</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Data through</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Detail</th></tr>" + attention_rows + "</table>" if (warn or bad) else ""}
+    {"<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;color:" + red + ";'>Needs attention</h3><table role='presentation' width='100%' style='border-collapse:collapse;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'><tr><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Source</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Status</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Data through</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Last tried</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Detail</th></tr>" + attention_rows + "</table>" if (warn or bad) else ""}
     <h3 style="font-family:Georgia,serif;font-size:15px;margin:18px 0 6px;">Current sources ({len(ok)})</h3>
     <table role="presentation" width="100%" style="border-collapse:collapse;">
       <tr><th align="left" style="padding:5px 10px;font-size:11px;color:{grey};text-transform:uppercase;">Source</th>
