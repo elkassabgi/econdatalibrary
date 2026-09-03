@@ -377,10 +377,11 @@ def update(unit, since) -> Result:
 
         try:
             inds, economies, freq, mx = _flow_layout(path)
-        except Exception:
+        except Exception as e:  # noqa: BLE001
             # Unreadable existing file: leave it untouched, keep its rows in total,
             # and surface honestly as a transient sub-failure (re-run next tick).
-            tally.transient_unit()
+            tally.transient_unit(
+                f"{os.path.basename(path)}: existing file unreadable — {type(e).__name__}")
             total += before
             continue
 
@@ -426,11 +427,13 @@ def update(unit, since) -> Result:
             flow_rows.extend(rows)
 
         if flow_transient:
-            tally.transient_unit()      # -> partial; existing data untouched
+            # -> partial; existing data untouched
+            tally.transient_unit(f"{os.path.basename(path)}: a request failed this flow")
             total += before
             continue
         if flow_structural:
-            tally.structural_unit()     # -> DefinitiveError in finalize()
+            # -> DefinitiveError in finalize()
+            tally.structural_unit(f"{os.path.basename(path)}: schema break in this flow")
             total += before
             continue
 
@@ -458,9 +461,11 @@ def update(unit, since) -> Result:
             # re-return: a structural break, not a quiet tail. If we never saw a real
             # header (all 404/empty bodies), it's legitimately empty.
             if flow_had_data and before > 0:
-                tally.structural_unit()
+                tally.structural_unit(
+                    f"{os.path.basename(path)}: real SDMX header, 0 data rows on a boundary "
+                    f"re-fetch over {before:,} stored")
             else:
-                tally.empty_unit()
+                tally.empty_unit(f"{os.path.basename(path)}: no real header, legitimately empty")
             total += before
             continue
 

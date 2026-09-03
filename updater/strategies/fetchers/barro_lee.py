@@ -148,22 +148,23 @@ def update(unit, since) -> Result:
     for url in BL_FILES:
         try:
             r = requests.get(url, headers=UA, timeout=120, allow_redirects=True)
-        except (requests.Timeout, requests.ConnectionError):
-            tally.transient_unit()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            tally.transient_unit(f"{url[-52:]}: {type(e).__name__}")
             continue
         if r.status_code in _TRANSIENT:
-            tally.transient_unit()
+            tally.transient_unit(f"{url[-52:]}: HTTP {r.status_code}")
             continue
         if r.status_code != 200 or len(r.content) <= 100:
             # 404 / moved / truncated body — not a transient; treat as structural so
             # a stale/renamed file list surfaces instead of laundering to no_change.
-            tally.structural_unit()
+            tally.structural_unit(
+                f"{url[-52:]}: HTTP {r.status_code}, {len(r.content):,} bytes")
             continue
 
         k, d, v = _parse_bl_csv(r.content)
         if not v:
             # 200 with a real body that parsed nothing -> schema/structural break.
-            tally.structural_unit()
+            tally.structural_unit(f"{url[-52:]}: real body parsed 0 rows")
             continue
 
         for ki, di, vi in zip(k, d, v):
