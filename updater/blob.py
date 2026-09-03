@@ -404,6 +404,11 @@ def _is_404(exc) -> bool:
     return code in ("404", "NoSuchKey", "NotFound") or status == 404
 
 
+# Uploads this process avoided because R2 already held the exact bytes. Read by callers that
+# report a total, so the saving is OBSERVED rather than predicted - the counter in
+# core/derive_csv.py existed for hours before anything printed it.
+SKIPPED_IDENTICAL = [0]
+
 class R2Blob:
     """R2-backed Blob. Keys are object keys inside the ``econ-data`` bucket.
 
@@ -450,11 +455,38 @@ class R2Blob:
         # worker's reader decompresses on; mtime=0 keeps bytes deterministic for
         # the verifier's byte-compare. Manifests/JSON stay plain — their readers
         # (including this module's own get paths) expect raw bytes.
-        if key.startswith("series/") and key.endswith(".csv"):
+        is_series_csv = key.startswith("series/") and key.endswith(".csv")
+        if is_series_csv:
             import gzip as _gzip
             data = _gzip.compress(data, mtime=0)
             kw["ContentEncoding"] = "gzip"
+        # DO NOT RE-UPLOAD BYTES R2 ALREADY HOLDS. Measured 2026-09-02: PutObject on econ-data
+        # is 7,686,397 of 10.8 M class-A operations over 24 days - 71% of the only variable
+        # line left on a median day - and this path is the one that makes them. The gzip above
+        # uses mtime=0 exactly so the bytes are deterministic, so the same data gives the same
+        # MD5, which R2 reports as a single-part object's ETag.
+        #
+        # SERIES CSVs ONLY. Manifests and state files also come through here and something may
+        # read their LastModified as a freshness signal; skipping one of those would leave a
+        # stale timestamp reading as "not updated". The cost is entirely in the CSVs.
+        #
+        # Every uncertain case UPLOADS: a multipart ETag is a digest of digests, and an error
+        # asking is not evidence of anything.
+        if is_series_csv and self._already_holds(key, data):
+            SKIPPED_IDENTICAL[0] += 1
+            return
         self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **kw)
+
+    def _already_holds(self, key: str, data: bytes) -> bool:
+        """True only when the object's ETag equals the MD5 of exactly these bytes."""
+        import hashlib                                                # noqa: PLC0415
+        try:
+            tag = self.etag(key)
+        except Exception:                                             # noqa: BLE001
+            return False
+        if not tag or "-" in tag:              # absent, or multipart: not comparable
+            return False
+        return tag == hashlib.md5(data).hexdigest()                   # noqa: S324
 
     def put_file(self, key: str, src_path: str) -> None:
         # upload_file streams and switches to multipart above the threshold, so a
