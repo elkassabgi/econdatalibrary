@@ -290,7 +290,7 @@ class Tally:
             self.deferred_ids.append(str(label))
 
 
-def _named(ids, cap: int = 20) -> str:
+def _named(ids, cap: int = 20, char_budget: int = 1200) -> str:
     """Render the offending sub-unit labels for an error message, bounded.
 
     Bounded because a source with hundreds of sub-units would otherwise push a
@@ -308,12 +308,33 @@ def _named(ids, cap: int = 20) -> str:
     and one that still needs a bisect. Twenty path-shaped ids run ~900 characters, comfortably
     inside 1400 with the message prefix; beyond that the orchestrator's clip takes over and
     says so.
+
+    CHARACTER BUDGET ADDED 2026-09-03, because that last sentence stopped being true. The count
+    cap was reasoned on labels that were IDS. Labels now carry the REASON too — an exception
+    type and message, truncated per call site — which is the point of them, and which takes
+    twenty labels from ~900 characters to ~3,200. Measured: 10 failed sub-units render 1,637
+    characters, past both the orchestrator's 1,400 clip and gen_runbook's ~1,152 wrap.
+    Nothing breaks — last_error and runs.note store it — but a 3,200-character cell in the
+    morning email is unreadable, and an unreadable alert is the failure the labels exist to
+    prevent.
+
+    BOTH LIMITS APPLY and both elisions are stated. The count still binds first when labels are
+    short, so wid's 12 and hagstofa's 7 render complete exactly as they did.
     """
     if not ids:
         return ""
-    shown = ", ".join(ids[:cap])
-    extra = f", +{len(ids) - cap} more" if len(ids) > cap else ""
-    return f" [{shown}{extra}]"
+    kept, used = [], 0
+    for i in ids[:cap]:
+        s = str(i)
+        # +2 for the ", " that will join it; always keep at least one, however long it is,
+        # because a single truncated label is more use than none.
+        if kept and used + len(s) + 2 > char_budget:
+            break
+        kept.append(s)
+        used += len(s) + 2
+    omitted = len(ids) - len(kept)
+    extra = f", +{omitted} more" if omitted > 0 else ""
+    return f" [{', '.join(kept)}{extra}]"
 
 
 def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
