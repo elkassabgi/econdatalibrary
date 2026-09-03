@@ -76,9 +76,17 @@ def main() -> int:
     if len(files) > 18:
         print(f"    ... and {len(files) - 18} more")
     print()
-    print("Every one of these can report a COUNT and never an identity. The two existing")
-    print("regression gates cover cso and stat_slovenia only, and stat_slovenia's own")
-    print("transient calls are still bare - the gate it has protects its STRUCTURAL path.")
+    print("NOT ALL OF THESE ARE DEFECTS. Two bare `deferred_unit()` calls are deliberate —")
+    print("stat_estonia.py and unsdg.py both count deferrals without holding an identifier,")
+    print("and deferral is not a failure (R303): naming every deferred sub-unit would bury")
+    print("the ones that actually broke. Read each site; do not apply a blanket rule.")
+    print()
+    print("Every other one can report a COUNT and never an identity.")
+    print()
+    print("Progress is ratcheted by tests/test_failure_naming_ratchet.py, which fails if this")
+    print("count RISES and demands the baseline be lowered when it falls. Sources whose")
+    print("failures are CURRENT were done first, on 2026-09-03: the sixteen the cloud health")
+    print("gate fails on, then the worst remaining live files.")
     return 0
 
 

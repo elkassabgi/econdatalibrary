@@ -292,6 +292,11 @@ def update(unit, since) -> Result:
     if stopped_at is not None:
         deferred += len(codes) - stopped_at
     for _ in range(deferred):
+        # DELIBERATELY UNLABELLED, like stat_estonia's. This loop counts deferrals without
+        # holding an identifier for any of them, and deferral is not a failure (R303) — it is
+        # the budget working. Naming every deferred code would bury the sub-units that actually
+        # broke, which is the exact failure the naming effort exists to prevent. Labelling this
+        # would mean restructuring the deferral accounting, not adding an argument.
         tally.deferred_unit()          # budget/deadline slice, honest partial (R303)
 
     if not merged_any:
