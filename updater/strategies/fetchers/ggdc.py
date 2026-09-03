@@ -205,26 +205,28 @@ def update(unit, since) -> Result:
 
         data, outcome = _fetch(url)
         if outcome == "transient":
-            tally.transient_unit()
+            tally.transient_unit(f"{fname}: fetch failed (transient)")
             total_rows += before
             continue
         if outcome == "notfound" or not data:
             # A pinned URL/datafile-id that 403/404s or returns a tiny body: this component
             # is missing/rotated. Count empty; if EVERY component is empty, finalize's
             # all-empty-window guard escalates to a structural break (don't fake success).
-            tally.empty_unit()
+            tally.empty_unit(f"{fname}: pinned URL 403/404 or a tiny body — component rotated")
             total_rows += before
             continue
 
         try:
             keys, dates, vals = _parse_panel(data, sheets, prefix, id_cols, min_year)
-        except Exception:
-            tally.structural_unit()      # 200 with a real body that failed to parse -> schema break
+        except Exception as e:  # noqa: BLE001
+            # 200 with a real body that failed to parse -> schema break
+            tally.structural_unit(f"{fname}: body will not parse — {type(e).__name__}")
             total_rows += before
             continue
 
         if not vals:
-            tally.structural_unit()      # 200, >10KB body, but parsed 0 rows -> structural break
+            # 200, >10KB body, but parsed 0 rows -> structural break
+            tally.structural_unit(f"{fname}: real body parsed 0 rows over {before:,} stored")
             total_rows += before
             continue
 

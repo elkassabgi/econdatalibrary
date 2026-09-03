@@ -476,19 +476,20 @@ def update(unit, since) -> Result:
             boundary = per_table_max.get(pref)  # None => table not yet on disk (full backfill)
             try:
                 rows, st = _query_table_delta(sess, t, boundary)
-            except TransientError:
-                tally.transient_unit()  # -> run becomes 'partial'; existing data untouched
+            except TransientError as e:
+                # -> run becomes 'partial'; existing data untouched
+                tally.transient_unit(f"{pref}: query failed — {str(e)[:110]}")
                 continue
-            except DefinitiveError:
+            except DefinitiveError as e:
                 # A hard 4xx on one table shouldn't strand the rest; record structural.
-                tally.structural_unit()
+                tally.structural_unit(f"{pref}: hard 4xx — {str(e)[:110]}")
                 continue
 
             if st == "structural":
-                tally.structural_unit()
+                tally.structural_unit(f"{pref}: parser reported a structural break")
                 continue
             if st == "empty":
-                tally.empty_unit()
+                tally.empty_unit(f"{pref}: no rows past the boundary")
                 continue
 
             # st == "data": accumulate this table's NEW rows (dedup within the group).

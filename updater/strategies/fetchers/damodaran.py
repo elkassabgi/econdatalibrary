@@ -99,20 +99,20 @@ def update(unit, since) -> Result:
 
         data, outcome = _fetch(url)
         if outcome == "transient":
-            tally.transient_unit()
+            tally.transient_unit(f"{dataset}: fetch failed (transient)")
             continue
         if outcome == "notfound" or not data:
             # A rotated/missing workbook on a normally-multi-file source: count as empty
             # (genuine 404 for one of ~22 files). If EVERY file 404s, finalize's
             # all-empty-window guard escalates to a structural break (URLs rotated).
-            tally.empty_unit()
+            tally.empty_unit(f"{dataset}: 404 or empty body — one workbook rotated")
             continue
 
         try:
             k, d, v = ing.parse_dataset(data, dataset, url, specific_sheets)
-        except Exception:
+        except Exception as e:  # noqa: BLE001
             # 200 returned a body but it failed to parse -> structural/schema break.
-            tally.structural_unit()
+            tally.structural_unit(f"{dataset}: body will not parse — {type(e).__name__}")
             continue
 
         if v:
@@ -120,7 +120,7 @@ def update(unit, since) -> Result:
             tally.attempted += 1            # parsed-ok; real new-row count assigned after merge
         else:
             # 200 with a real (>500B) body but 0 rows parsed -> structural break.
-            tally.structural_unit()
+            tally.structural_unit(f"{dataset}: real body parsed 0 rows")
 
     # If nothing parsed (all transient, or guards not yet tripped), don't write.
     if not all_vals:

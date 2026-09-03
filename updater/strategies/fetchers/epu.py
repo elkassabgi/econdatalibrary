@@ -115,9 +115,9 @@ def update(unit, since) -> Result:
 
         if data is None:
             if transient:
-                tally.transient_unit()
+                tally.transient_unit(f"{label}: fetch failed (transient)")
             else:
-                tally.empty_unit()
+                tally.empty_unit(f"{label}: non-200, no body to parse")
             continue
 
         try:
@@ -125,20 +125,23 @@ def update(unit, since) -> Result:
                 k, d, v = job.parse_all_country_xlsx(data)
             else:
                 k, d, v = job.parse_epu_xlsx(data, code)
-        except Exception:
+        except Exception as e:  # noqa: BLE001
             # a 200 with a real body we could not parse
             if label in KNOWN_UNPARSEABLE:
-                tally.empty_unit()
+                tally.empty_unit(f"{label}: known-unparseable layout, body did not parse")
             else:
-                tally.structural_unit()  # fresh schema/format break
+                # fresh schema/format break
+                tally.structural_unit(f"{label}: body will not parse — {type(e).__name__}")
             continue
 
         if not v:
             # 200, non-trivial body, but parsed 0 rows
             if label in KNOWN_UNPARSEABLE:
-                tally.empty_unit()       # long-standing layout this parser can't read
+                # long-standing layout this parser can't read
+                tally.empty_unit(f"{label}: known-unparseable layout, 0 rows")
             else:
-                tally.structural_unit()  # a workbook that used to parse now doesn't -> break
+                # a workbook that used to parse now doesn't -> break
+                tally.structural_unit(f"{label}: real body parsed 0 rows")
             continue
 
         added = 0
