@@ -153,9 +153,33 @@ def main() -> int:
                 if abs(qn - cat) < abs(n - cat):
                     n, qualified = qn, True
         except Exception as e:                                 # noqa: BLE001
-            fh.write(f"{d}\t\t{cat}\t\tscan failed {type(e).__name__}\n"); fh.flush()
-            print(f"[{i}/{len(names)}] {d:24s} SCAN FAILED {type(e).__name__}: "
-                  f"{str(e)[:80]}", flush=True)
+            # HLL FALLBACK, the method tools/series_census.py::_distinct_keys already uses:
+            # exact where it completes, approximate only when it cannot, and SAY WHICH.
+            # Without this the five biggest stores have no figure at all, so the fleet total
+            # silently excludes the library's two largest sources.
+            try:
+                n = q.execute(f"select approx_count_distinct(series_key) from "
+                              f"read_parquet({lst}, union_by_name=true)").fetchone()[0]
+                approx = True
+            except Exception as e2:                            # noqa: BLE001
+                fh.write(f"{d}\t\t{cat}\t\tscan failed {type(e).__name__}; "
+                         f"approx also failed {type(e2).__name__}\n"); fh.flush()
+                print(f"[{i}/{len(names)}] {d:24s} SCAN FAILED {type(e).__name__}, "
+                      f"approx too ({type(e2).__name__})", flush=True)
+                continue
+            gap = n - cat
+            # AN ESTIMATE MAY NOT ASSERT ORPHAN. Measured HLL error is +19.3% to -14.0%
+            # (series_census docstring), so a negative gap on a giant is as likely to be the
+            # estimator as the data — and ORPHAN is the verdict that claims users get a 404.
+            if cat == 0 and n > 0:
+                note, unc = "UNCATALOGUED", unc + n
+            elif gap > 0:
+                note, unc = "partial", unc + gap
+            else:
+                note = "inconclusive"
+            fh.write(f"{d}\t{n}\t{cat}\t{gap}\t{note}  [approx +19/-14%]\n"); fh.flush()
+            print(f"[{i}/{len(names)}] {d:24s} store ~{n:>11,}  cat {cat:>12,}  {gap:>+12,}  "
+                  f"{note:14s} {gb:,.1f} GB  [approx: exact OOM'd]", flush=True)
             continue
         finally:
             q.close()
