@@ -345,12 +345,13 @@ def update(unit, since):
         before = blob.row_count(path)
         idx = id_index.get(doi)
         if idx is None:
-            tally.transient_unit()  # couldn't resolve the dataset listing this run
+            # couldn't resolve the dataset listing this run
+            tally.transient_unit(f"{basename}: dataset listing for DOI {doi} unresolved")
             continue
         file_id = idx.get(filename)
         if file_id is None:
             # The expected file vanished from the latest version -> structural change.
-            tally.structural_unit()
+            tally.structural_unit(f"{basename}: {filename} is gone from the latest version")
             continue
 
         url = f"{DV_ACCESS}/{file_id}"
@@ -371,13 +372,14 @@ def update(unit, since):
             break
 
         if content is None:
-            tally.transient_unit()
+            tally.transient_unit(f"{basename}: download of {filename} returned nothing")
             continue
 
         keys, dates, vals = _parse(kind, prefix, label, content)
         if not keys:
             # 200 with a real CSV body that parsed 0 numeric rows -> structural break.
-            tally.structural_unit()
+            tally.structural_unit(
+                f"{basename}: real CSV body parsed 0 numeric rows over {before:,} stored")
             continue
 
         tbl = pa.table({
@@ -392,7 +394,9 @@ def update(unit, since):
             # A never-shrink / column-drop refusal on ONE file: the existing data is
             # kept untouched (merge publishes nothing). Surface as structural so the
             # whole-source status is honest; do not abort the other sub-units.
-            tally.structural_unit()
+            tally.structural_unit(
+                f"{basename}: merge refused over {before:,} stored rows (min_ratio "
+                f"{min_ratio})")
             total_rows += before
             continue
         total_rows += n

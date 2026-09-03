@@ -598,8 +598,8 @@ def update(unit, since) -> Result:
             url = f"{BASE}/{tpath}/"
             try:
                 meta, gone = _get_meta(sess, url)
-            except TransientError:
-                tally.transient_unit()
+            except TransientError as e:
+                tally.transient_unit(f"{tpath}: metadata GET failed — {str(e)[:130]}")
                 time.sleep(RATE)
                 continue
             time.sleep(RATE)
@@ -617,9 +617,10 @@ def update(unit, since) -> Result:
                 # previously-populated table this is a schema/structural break; on a
                 # never-landed table it is just unusable -> empty.
                 if stored_max is not None:
-                    tally.structural_unit()
+                    tally.structural_unit(
+                        f"{tpath}: 200 with no usable metadata over a populated table")
                 else:
-                    tally.empty_unit()
+                    tally.empty_unit(f"{tpath}: no usable metadata, never landed")
                 continue
 
             variables = meta["variables"]
@@ -630,9 +631,9 @@ def update(unit, since) -> Result:
                 # metadata 200 but no time dimension on a previously-populated table
                 # => structural break; on a never-landed table it's just unusable -> empty.
                 if stored_max is not None:
-                    tally.structural_unit()
+                    tally.structural_unit(f"{tpath}: metadata has no time dimension")
                 else:
-                    tally.empty_unit()
+                    tally.empty_unit(f"{tpath}: no time dimension, never landed")
                 continue
 
             if not new_time_codes:
@@ -643,8 +644,8 @@ def update(unit, since) -> Result:
             try:
                 resp, http400 = _post_data(sess, url, {
                     "query": query_vars, "response": {"format": "json-stat2"}})
-            except TransientError:
-                tally.transient_unit()
+            except TransientError as e:
+                tally.transient_unit(f"{tpath}: data POST failed — {str(e)[:130]}")
                 time.sleep(RATE)
                 continue
             time.sleep(RATE)
@@ -707,9 +708,10 @@ def update(unit, since) -> Result:
                 #    horizon that is still not newer than stored_max (the real regression),
                 #    clearing the ~117 subject-BE false partials. (verified: scb parser diag)
                 if stored_max is not None and le_ceiling > 0:
-                    tally.structural_unit()
+                    tally.structural_unit(
+                        f"{tpath}: rows inside the horizon but none newer than stored max")
                 else:
-                    tally.empty_unit()
+                    tally.empty_unit(f"{tpath}: nothing newer")
                 continue
 
             tally.added_unit(kept)        # rows flowed for this table (net-new vs merge counted later)
