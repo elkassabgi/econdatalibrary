@@ -58,29 +58,162 @@ $jobs = @(
 #   eurostat  a --dry-run measurement, read-only, safe to repeat from the start
 $pwsh = 'powershell.exe'
 $runner = Join-Path (Join-Path $root 'tools') 'run_guarded_job.ps1'
-$longJobs = @(
-  @{ n = 'derive_statcan'; match = 'derive_statcan_tables.py';
-     jobArgs = @('-u','tools/derive_statcan_tables.py','--bucket','econ-data',
-                 '--max-rows','3000000','--skip-existing','--workers','20'); env = @{} },
-  @{ n = 'derive_noaa';    match = 'derive_csv';
-     jobArgs = @('-u','-m','core.derive_csv','--bucket','econ-data','--source','noaa',
-                 '--workers','16','--skip-newer-than','2026-08-03T00:00:00Z'); env = @{} },
-  @{ n = 'rekey_eurostat'; match = 'rekey_eurostat.py';
-     jobArgs = @('-u','tools/rekey_eurostat.py','--dry-run');
-     env = @{ AQUEDUCT_BACKEND = 'r2' } }
-)
+# ALL THREE LONG JOBS RETIRED 2026-09-02. Retired IN PLACE, not deleted, following the
+# dbnomics_istat precedent at lines 27-39 above: the argv is the recipe for the next run of
+# each campaign, and WORKLOG.md (2026-08-31, Phase 3 task 4) already queues a noaa re-derive
+# for the 550,347,528 merged observations whose CSVs were never rebuilt. Deleting the lines
+# would delete the only written record of `--skip-newer-than` vs `--skip-existing`, the
+# distinction that cost a 31% pass in R307.
+#
+# WHY RETIRED, and not merely sentinelled. Each job stops only because of a
+# `logs/<job>.DONE` file, and `.gitignore:24` ignores `logs/`. A machine rebuild, a pruned
+# log directory or a restore from backup leaves the array armed with no sentinels beside it.
+# `derive_noaa` cost that exactly once already: a null `ExitCode` from PowerShell 5.1 meant
+# the runner never recorded success, so the guard resurrected a FINISHED job ~48 times a day
+# for three weeks, each pass paging 3,139 ListObjects over `series/noaa%3A` before printing
+# "to derive: 0". Measured marginal cost $22.50/month, and `billing_guard.py:46`'s
+# WARN_R2_A = 400_000/day sits ABOVE the peak it produced (264,454 on 2026-08-28), so nothing
+# alarmed and nothing would.
+#
+# COMPLETION EVIDENCE, independent of the sentinels:
+#   derive_statcan   logs/derive_statcan_20260823T020739Z.log
+#                    "[8207/8207] ... units: 466,341  put 252,425  skipped 213,916  errors 0"
+#                    CAVEAT: 5 tables REFUSED (too large, no usable splitter), ~535M rows
+#                    never derived - 37100234, 37100277, 98100023, 98100174, 98100206.
+#                    Structural, not an interruption: relaunching cannot fix them. Carried
+#                    into docs/runbook/statcan.md so they do not live only in that log.
+#   derive_noaa      logs/derive_noaa_20260829T191812Z.log
+#                    "done: put 0 series CSVs, skipped 3,138,159 existing, 0 unresolvable"
+#   rekey_eurostat   logs/rekey_eurostat_20260803T224026Z.log
+#                    "[7754/7754] ... conflicting revisions: 66,628 ... --dry-run: nothing
+#                    written." SUPERSEDED: data/clean_full/eurostat/_rekeyed.json
+#                    (2026-09-01T07:34:16Z) reads files_seen 7654, clean 7654, conflicts 0,
+#                    so the real migration has since run and the gate at
+#                    updater/strategies/fetchers/eurostat.py:388-393 is satisfied.
+#
+# `foreach ($j in @())` iterates zero times in PowerShell 5.1, and nothing else in this file
+# or in RELAUNCH_GUARD_LOOP.ps1 reads $longJobs - no .Count, no divisor, no health line.
+$longJobs = @()
+# @{ n = 'derive_statcan'; match = 'derive_statcan_tables.py';
+#    jobArgs = @('-u','tools/derive_statcan_tables.py','--bucket','econ-data',
+#                '--max-rows','3000000','--skip-existing','--workers','20'); env = @{} },
+# @{ n = 'derive_noaa';    match = 'derive_csv';
+#    jobArgs = @('-u','-m','core.derive_csv','--bucket','econ-data','--source','noaa',
+#                '--workers','16','--skip-newer-than','2026-08-03T00:00:00Z'); env = @{} },
+# @{ n = 'rekey_eurostat'; match = 'rekey_eurostat.py';
+#    jobArgs = @('-u','tools/rekey_eurostat.py','--dry-run');
+#    env = @{ AQUEDUCT_BACKEND = 'r2' } }
 
 # Stop guarding a job once it has genuinely finished: a sentinel file
 # logs/<job>.DONE means "do not relaunch" (written by the operator when a job
 # completes, so the guard doesn't resurrect a finished pull).
+# Hours without a log write before a job is CONSIDERED for a stall kill. Only a
+# consideration: it must also show no CPU over a 20-second sample (R457, R453).
+$STALL_HOURS = 3
+
 $running = @((Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue).CommandLine)
 
 foreach ($j in $jobs) {
   $doneFlag = Join-Path $logsDir ("{0}.DONE" -f $j.n)
   if (Test-Path $doneFlag) { continue }
 
+  # A SECOND, SELF-EXPIRING SENTINEL FOR MAINTENANCE. `.DONE` means "this job COMPLETED" and is
+  # an interface with four readers - run_guarded_job.ps1 writes it only on exit 0,
+  # DATABASE_REFERENCE.md cites its ABSENCE as evidence a job is still guarded, and
+  # CUTOVER_AND_BACKFILL_PLAN.md puts it in the backup set, so a backup taken during a
+  # maintenance window would capture a lock as a completion certificate and a restore would
+  # retire the job for good. Borrowing it to hold the guard off during a copy-in is the
+  # sentinel-as-interface mistake this repo already records (R475, R287, R642).
+  #
+  # `.PAUSED` says what it means and CANNOT outlive its window: it carries a UTC stamp and is
+  # ignored - and removed - once older than PAUSE_MAX_MIN. `finally` does not run on a hard
+  # kill or a reboot, and the startup launcher fires only at logon, so a permanent flag left by
+  # an interrupted copy-in would silently retire the crawler with nothing to restart it.
+  $pauseFlag = Join-Path $logsDir ("{0}.PAUSED" -f $j.n)
+  if (Test-Path $pauseFlag) {
+    $PAUSE_MAX_MIN = 120
+    $ageMin = ((Get-Date).ToUniversalTime() - (Get-Item $pauseFlag).LastWriteTime.ToUniversalTime()).TotalMinutes
+    if ($ageMin -lt $PAUSE_MAX_MIN) {
+      Add-Content -Path $guardLog -Value ("{0}  PAUSED {1}: maintenance flag {2:N0} min old (limit {3:N0}) - not relaunching" `
+        -f (Get-Date -Format s), $j.n, $ageMin, $PAUSE_MAX_MIN)
+      continue
+    }
+    Add-Content -Path $guardLog -Value ("{0}  PAUSED {1}: flag is {2:N0} min old, past the {3:N0}-minute limit - removing it and resuming guard duty" `
+      -f (Get-Date -Format s), $j.n, $ageMin, $PAUSE_MAX_MIN)
+    Remove-Item $pauseFlag -ErrorAction SilentlyContinue
+  }
+
   $alive = $false
   foreach ($cmd in $running) { if ($cmd -and $cmd -like ("*{0}*" -f $j.match)) { $alive = $true; break } }
+
+  # A NAME MATCH IS NOT LIVENESS (R457). istat_sliced sat here for 15.5 HOURS as an
+  # orphan - parent gone, blocked writing into a pipe with no reader, 15 threads, zero
+  # CPU and zero I/O - and every tick this loop saw a process with the right command line
+  # and left it alone. Same shape as R446, where a wedged process held the local_heavy
+  # lock and froze 29 sources: a liveness token held by something incapable of working.
+  #
+  # TWO independent signals are required before killing anything, because getting this
+  # wrong in the other direction destroys live work: on 2026-08-23 cbs_nl looked hung on
+  # CPU alone (7s over 5 hours) and was in fact downloading 8 MB every 20 seconds. So a
+  # quiet log ALONE is not enough - output here is block-buffered and a healthy job can
+  # be silent for a long time.
+  if ($alive) {
+    $newest = Get-ChildItem (Join-Path $logsDir ("guard_{0}_*.log" -f $j.n)) -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -notlike "*.err.log" } |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($newest -and ((Get-Date) - $newest.LastWriteTime).TotalHours -gt $STALL_HOURS) {
+      $procs = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                 Where-Object { $_.CommandLine -and $_.CommandLine -like ("*{0}*" -f $j.match) })
+      # CPU *and* I/O, because either alone gives a false reading. A slow download burns
+      # almost no CPU while working perfectly (cbs_nl: 0.45s CPU per 20s while pulling
+      # 8 MB), and a process blocked on a dead pipe burns neither. Only "no CPU AND no
+      # bytes moved" is conclusive, which is exactly the measurement that identified the
+      # istat_sliced orphan.
+      $cpu1 = 0.0; $io1 = 0.0
+      foreach ($pr in $procs) {
+        $o = Get-Process -Id $pr.ProcessId -ErrorAction SilentlyContinue
+        if ($o) { $cpu1 += $o.CPU }
+        $w = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $pr.ProcessId) -ErrorAction SilentlyContinue
+        if ($w) { $io1 += [double]$w.ReadTransferCount + [double]$w.WriteTransferCount + [double]$w.OtherTransferCount }
+      }
+      Start-Sleep -Seconds 20
+      $cpu2 = 0.0; $io2 = 0.0
+      foreach ($pr in $procs) {
+        $o = Get-Process -Id $pr.ProcessId -ErrorAction SilentlyContinue
+        if ($o) { $cpu2 += $o.CPU }
+        $w = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $pr.ProcessId) -ErrorAction SilentlyContinue
+        if ($w) { $io2 += [double]$w.ReadTransferCount + [double]$w.WriteTransferCount + [double]$w.OtherTransferCount }
+      }
+      # TWO CONSECUTIVE TICKS, never one sample (R54). A 20-second window is not evidence
+      # of death: cbs_nl pulls one page roughly every FOUR MINUTES, so any short sample can
+      # land in the gap between requests. That is not hypothetical - on 2026-07-25 an
+      # 8-second sample of this very crawler read 0 bytes in and 0 bytes out, I called it
+      # "silently dead for two days" and killed a job that was working perfectly.
+      #
+      # So a quiet sample only ARMS a suspicion, recorded in logs/<job>.stall_suspect.
+      # The kill needs the same verdict again on a later tick, which puts minutes between
+      # the two observations and spans any polite crawler's natural idle gap. One healthy
+      # request in between clears the flag.
+      $suspectFile = Join-Path $logsDir ("{0}.stall_suspect" -f $j.n)
+      $hadSuspect = Test-Path $suspectFile      # captured BEFORE this tick can set it
+      $quietNow = ((($cpu2 - $cpu1) -lt 0.05) -and (($io2 - $io1) -lt 5000))
+      if (-not $quietNow) {
+        Remove-Item $suspectFile -Force -ErrorAction SilentlyContinue
+      } elseif (-not $hadSuspect) {
+        Set-Content -Path $suspectFile -Value ((Get-Date -Format s) + " first quiet sample")
+        Add-Content -Path $guardLog -Value ("{0}  SUSPECT {1}: quiet sample, waiting for a second tick before acting (R54)" `
+          -f (Get-Date -Format s), $j.n)
+      }
+      if ($quietNow -and $hadSuspect) {
+        Remove-Item $suspectFile -Force -ErrorAction SilentlyContinue
+        Add-Content -Path $guardLog -Value ("{0}  STALLED {1}: no log write for {2:N1} h and no CPU over 20s - killing so it can relaunch" `
+          -f (Get-Date -Format s), $j.n, ((Get-Date) - $newest.LastWriteTime).TotalHours)
+        foreach ($pr in $procs) { & taskkill /PID $pr.ProcessId /T /F 2>&1 | Out-Null }
+        Start-Sleep -Seconds 3
+        $alive = $false
+      }
+    }
+  }
 
   if (-not $alive) {
     $ts = Get-Date -Format "MMdd_HHmm"
@@ -134,6 +267,28 @@ $heavy = Join-Path (Join-Path $root 'tools') 'run_local_heavy.ps1'
 if (Test-Path $heavy) {
   $heavyDone = Join-Path $logsDir 'local_heavy.DONE'
   if (-not (Test-Path $heavyDone)) {
+    # PRUNE THE EMPTY PAIRS THIS BLOCK ITSELF CREATES. -IfDue exits immediately unless a pass
+    # is genuinely due, so ~288 ticks a day each leave two zero-byte files. Measured
+    # 2026-09-02: 8,092 such pairs - 16,184 files - against 681 pairs holding a real pass
+    # narration, and every glob over logs/ walked all of them. Worse than the cost, an empty
+    # file is the same shape a FAILED launch would leave, so the noise hid the one signal.
+    #
+    # A PAIR, NOT A FILE, and never one younger than 30 minutes. An empty stdout beside a
+    # NON-empty stderr is a launch that died before the script ran, which is exactly the case
+    # worth keeping; a recent pair may belong to a process that has not written yet.
+    $cut = (Get-Date).AddMinutes(-30)
+    Get-ChildItem -Path $logsDir -Filter 'guard_localheavy_*.log' -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.Length -eq 0 -and $_.LastWriteTime -lt $cut } |
+      ForEach-Object {
+        $base = $_.FullName -replace '\.err\.log$','' -replace '\.log$',''
+        $o = "$base.log"; $e = "$base.err.log"
+        $oEmpty = (-not (Test-Path $o)) -or ((Get-Item $o).Length -eq 0)
+        $eEmpty = (-not (Test-Path $e)) -or ((Get-Item $e).Length -eq 0)
+        if ($oEmpty -and $eEmpty) {
+          Remove-Item -LiteralPath $o -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $e -Force -ErrorAction SilentlyContinue
+        }
+      }
     $ts = Get-Date -Format "MMdd_HHmm"
     Start-Process 'powershell.exe' `
       -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$heavy,'-IfDue') `

@@ -94,6 +94,18 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None)
     # Each worker gets its OWN blob handle. boto3 clients are documented thread-safe
     # for most calls, but "most" is not a guarantee worth a corrupted upload, and a
     # per-thread handle costs nothing.
+    # WHAT `put` ACTUALLY COUNTS, since 2026-09-02. `R2Blob.put_atomic` now compares the
+    # gzipped body against the stored object's ETag and RETURNS WITHOUT UPLOADING when they
+    # match, so `put` counts CSVs HANDLED, not bytes sent. A line reading "put 50,000 CSVs"
+    # would name one thing and count another — the R628/R652 defect this project keeps
+    # repeating — so the skipped share is measured here and reported beside it.
+    #
+    # Snapshot-and-diff rather than reading the counter directly: it is a module-level list
+    # shared by every backend instance, and a second call in the same process would otherwise
+    # inherit the first call's total.
+    from . import blob as _blob_mod
+    _skipped_at_entry = _blob_mod.SKIPPED_IDENTICAL[0]
+
     workers = int(os.environ.get("AQUEDUCT_DERIVE_WORKERS", "8") or 8)
     ids = list(dict.fromkeys(series_ids))        # dedupe, order preserved
     if workers <= 1 or len(ids) < 2:
@@ -234,8 +246,19 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None)
     for _d in deferred_ids:
         failed_reasons.setdefault(_d, "derive budget spent — deferred, not failed")
     _hb_stop.set()
+
+    # SAY WHAT THE GUARD SAVED, and say it even when it saved nothing — a line that appears
+    # only on a non-zero count cannot distinguish "no redundant uploads" from "the guard is
+    # not running", and those need different responses. The share is the number that decides
+    # whether the guard is worth its HeadObject per upload.
+    skipped = _blob_mod.SKIPPED_IDENTICAL[0] - _skipped_at_entry
+    if put:
+        print(f"  of {put:,} CSVs handled, {skipped:,} were ALREADY CURRENT and were not "
+              f"re-uploaded ({100.0 * skipped / put:.1f}%)", flush=True)
+
     return {"put": put, "failed": failed, "deferred": deferred,
-            "deferred_ids": deferred_ids, "failed_reasons": failed_reasons}
+            "deferred_ids": deferred_ids, "failed_reasons": failed_reasons,
+            "skipped_identical": skipped}
 
 
 def _check(series_id: str | None) -> int:

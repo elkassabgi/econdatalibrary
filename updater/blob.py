@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import threading
 import time
 import shutil
 import uuid
@@ -407,7 +408,19 @@ def _is_404(exc) -> bool:
 # Uploads this process avoided because R2 already held the exact bytes. Read by callers that
 # report a total, so the saving is OBSERVED rather than predicted - the counter in
 # core/derive_csv.py existed for hours before anything printed it.
+#
+# LOCKED, because `derive_and_put` runs eight worker threads by default and `x[0] += 1` is a
+# read-modify-write, not an atomic operation. The GIL makes a lost increment unlikely rather
+# than impossible, and this number is going into a cost report: an undercount would make the
+# guard look less effective than it is and argue for the wrong decision. A lock costs nothing
+# against an S3 round trip.
 SKIPPED_IDENTICAL = [0]
+_SKIPPED_LOCK = threading.Lock()
+
+
+def _count_skip() -> None:
+    with _SKIPPED_LOCK:
+        SKIPPED_IDENTICAL[0] += 1
 
 class R2Blob:
     """R2-backed Blob. Keys are object keys inside the ``econ-data`` bucket.
@@ -473,7 +486,7 @@ class R2Blob:
         # Every uncertain case UPLOADS: a multipart ETag is a digest of digests, and an error
         # asking is not evidence of anything.
         if is_series_csv and self._already_holds(key, data):
-            SKIPPED_IDENTICAL[0] += 1
+            _count_skip()
             return
         self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **kw)
 

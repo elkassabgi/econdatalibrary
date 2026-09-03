@@ -58,6 +58,13 @@ def _run(monkeypatch, tmp_path, catalog_ids, cursors, derive_out=None, source="s
     fake = types.ModuleType("updater.derive")
     fake.derive_and_put = lambda ids, blob: derive_out or {"failed": []}
     monkeypatch.setitem(sys.modules, "updater.derive", fake)
+    # `from . import derive` (orchestrate.py:648) returns the PACKAGE ATTRIBUTE when one
+    # exists, and importing updater.derive anywhere sets it for the rest of the process - so
+    # sys.modules alone leaves the real deriver in place. pytest imports every test module at
+    # collection, so one unrelated module-level import decides whether this fake is used.
+    # Same defect as tests/test_csv_fence_unittimeout_reraise.py, which it made fail outright.
+    import updater as _updater_pkg
+    monkeypatch.setattr(_updater_pkg, "derive", fake, raising=False)
     monkeypatch.setattr(O, "_record_for_catalog_sync", lambda ids: None, raising=False)
     monkeypatch.setattr(O, "_resolve_blob", lambda: None, raising=False)
     return O._derive_changed_csvs(_Unit(source), _Res(cursors), blob=object())
