@@ -80,6 +80,27 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Aligned to the writer rather than re-deriving 60,993 objects: a bounded scan of 60,000
 // keys under series/ found NO literal ! ' ( ) * in any key, so the store is uniformly
 // Python-spelled and there is no second convention this would break.
+
+// Dataset slugs IDB has RENAMED since we ingested them. The old name 404s at the publisher with
+// no redirect, which breaks condition (3) of IDB's written permission (2026-07-15): "a clear,
+// permanent link back to the original dataset page".
+//
+// Kept as a map rather than re-keying the affected series: a re-key would change public series
+// ids and break every URL a user already holds, in order to repair a link in a comment header.
+//
+// Checked, not assumed — tools/cost/idb_backlink_check.py asks CKAN package_show whether every
+// slug in the served catalogue still resolves, and names any that stop. As of 2026-09-02, 20 of
+// 21 resolved and this was the one that did not.
+const IDB_RENAMED: Record<string, string> = {
+  // -> cima-indicators, "Center of Information to Improve Learning (CIMA)", cc-by, 29 series
+  "center-for-learning-improvement-information-cima-regional-indicators-2007-2": "cima-indicators",
+};
+
+function idbDatasetUrl(seriesId: string): string {
+  const slug = seriesId.split(":")[2] ?? "";
+  return `https://data.iadb.org/dataset/${IDB_RENAMED[slug] ?? slug}`;
+}
+
 function objectKey(seriesId: string): string {
   const rfc3986 = encodeURIComponent(seriesId).replace(
     /[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
@@ -146,7 +167,7 @@ async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Pr
     licLine +
     // IDB written permission (2026-07-15) requires "a clear, permanent link
     // back to the original dataset page" — ids are idb:IDB:<dataset-slug>:...
-    row("Dataset", source === "idb" ? `https://data.iadb.org/dataset/${seriesId.split(":")[2] ?? ""}` : null) +
+    row("Dataset", source === "idb" ? idbDatasetUrl(seriesId) : null) +
     row("Homepage", src?.homepage) +
     row("Terms", src?.terms_url) +
     row("Cite as", citation) +

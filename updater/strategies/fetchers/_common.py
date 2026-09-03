@@ -211,6 +211,12 @@ class Tally:
         # oecd run definitive_fail and starved the whole 1,545-flow giant for weeks.
         self.no_time = 0
         self.no_time_ids: list = []
+        # SUB-UNITS THAT LEGITIMATELY HELD NOTHING. Counted since the beginning; NAMED only
+        # since 2026-09-02, because `empty_unit` took a `label` argument and discarded it while
+        # its three siblings recorded theirs. Six fetchers were already passing one. idb paid
+        # for it: 29 resources re-entered the queue on every run, and the run summary could only
+        # ever say "29 empty" - never which 29, so four consecutive no-op runs looked normal.
+        self.empty_ids: list = []
 
     def added_unit(self, n: int, label=None):
         self.attempted += 1
@@ -222,6 +228,8 @@ class Tally:
     def empty_unit(self, label=None):
         self.attempted += 1
         self.empty += 1
+        if label:
+            self.empty_ids.append(str(label))
 
     def transient_unit(self, label=None):
         self.attempted += 1
@@ -334,6 +342,13 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
                              + _named(tally.deferred_ids)))
     status = "ok" if tally.added > 0 else "no_change"
     note = f"+{tally.added} new rows" if tally.added else "no new rows"
+    if not tally.added and tally.empty and tally.empty_ids:
+        # NAMED ONLY WHEN THE RUN ADDED NOTHING. That is the case where "which ones?" is the
+        # whole question and the bare count answers none of it - idb printed "29 empty" for four
+        # consecutive runs while the same 29 resources cycled forever. On a run that DID add
+        # rows, empty sub-units are unremarkable and stay a count, so a healthy source's note
+        # does not grow a list every tick. Non-demoting: nothing here is a failure.
+        note += "; nothing added, empty sub-units were" + _named(tally.empty_ids)
     if tally.no_time:
         # NON-DEMOTING by design (R359's precedent: a permanent, explained residue must not
         # redden every run). These sub-units' DSDs declare no SDMX TimeDimension — outside
