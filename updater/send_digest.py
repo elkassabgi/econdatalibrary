@@ -20,6 +20,7 @@ import datetime as _dt
 import re as _re
 import os
 import sqlite3
+import time as _time
 import sys
 import urllib.request
 
@@ -72,6 +73,49 @@ def live_source_ids(entries) -> set:
     single flag is how R676 and R685 happened.
     """
     return {e["source_id"] for e in entries if bool(e.get("live", False))}
+
+
+# The first-pass crawlers (orchestrate.py FIRSTPASS_DIRS) are excluded from the normal run and
+# have no unit_state row, so nothing reported them at all until 2026-09-03 — the day gus_dbw sat
+# stalled for two hours and was found only by accident. Six hours is deliberately loose: cbs_nl
+# was 0.01 h old and gus_dbw 1.99 h when this was written, so it alarms on a dead crawler without
+# firing on a slow one.
+FIRSTPASS_STALE_HOURS = 6.0
+
+
+def firstpass_ages(store_root: str, names, now: float):
+    """[(name, age_hours, newest_filename)] for those that exist, oldest first.
+
+    The age is of the newest file of ANY type, not the newest parquet. gus_dbw writes a checkpoint
+    continuously and parquet about every ten days; cbs_nl writes both constantly. A parquet-only
+    signal reports gus_dbw as ten days dead while it is working normally — precisely the false
+    alarm that trains a reader to skip the section.
+
+    A directory that does not exist is OMITTED, not alarmed: it means no first pass is in flight
+    (dbnomics has none — the domain is banned, R251).
+    """
+    out = []
+    for name in sorted(names):
+        d = os.path.join(store_root, name)
+        if not os.path.isdir(d):
+            continue
+        newest, newest_name = 0.0, ""
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    try:
+                        if not e.is_file():
+                            continue
+                        m = e.stat().st_mtime
+                    except OSError:
+                        continue
+                    if m > newest:
+                        newest, newest_name = m, e.name
+        except OSError:
+            continue
+        if newest:
+            out.append((name, (now - newest) / 3600.0, newest_name))
+    return sorted(out, key=lambda r: -r[1])
 
 def is_late(cadence: str, ts, now) -> bool:
     """True when `ts` is older than the source's cadence allows.
@@ -143,6 +187,20 @@ def main() -> None:
     orphans = [r for r in rows if managed is not None and r[0] not in managed]
     if managed is not None:
         rows = [r for r in rows if r[0] in managed]
+
+    # COMPUTED ONCE, rendered in BOTH bodies. The text body is a fallback almost nobody sees —
+    # every HTML-capable client renders html_doc — so a section that exists only in `lines` has
+    # not shipped. Computing it twice would be a second definition of one measurement (R676).
+    try:
+        from updater.orchestrate import FIRSTPASS_DIRS                # noqa: PLC0415
+    except Exception:                                                 # noqa: BLE001
+        FIRSTPASS_DIRS = None    # skip the section rather than report a remembered list
+    fp = []
+    if FIRSTPASS_DIRS:
+        fp = firstpass_ages(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "data", "clean_full"),
+            FIRSTPASS_DIRS, _time.time())
 
     ok = [r for r in rows if r[1] in ("ok", "no_change")]
     warn = [r for r in rows if r[1] in ("partial", "transient_fail")]
@@ -247,6 +305,20 @@ def main() -> None:
                      f"(AQUEDUCT_LIVE_ONLY), so their status cannot change: "
                      f"{', '.join(sorted(r[0] for r in dormant))})")
         lines.append("")
+
+    # FIRST-PASS CRAWLERS. These have no unit_state row and appeared NOWHERE in this email until
+    # 2026-09-03, when gus_dbw sat stalled for two hours on upstream connection resets and was
+    # found only by accident. They are not small: gus_dbw's completed backfill is 1,237,900,173
+    # observations. FIRSTPASS_DIRS is imported, never copied — a second copy of one list is
+    # R676's shape and drifts the first time a crawler is added.
+    if fp:
+        if True:
+            lines.append("  first-pass crawlers (no unit_state row — invisible to the gate):")
+            for name, age_h, newest in fp:
+                mark = "  STALE" if age_h > FIRSTPASS_STALE_HOURS else ""
+                lines.append(f"     {name:12} last wrote {age_h:5.1f}h ago "
+                             f"({newest[:34]}){mark}")
+            lines.append("")
     for r in ok:
         # A "data through" frontier far in the future is a legitimate projection
         # horizon (e.g. fred_releases carries CBO potential-GDP / WEO forecasts that
@@ -276,6 +348,38 @@ def main() -> None:
                 f'font-family:Georgia,serif;">{n}</div>'
                 f'<div style="font-size:11px;color:{grey};text-transform:uppercase;'
                 f'letter-spacing:.05em;">{label}</div></td>')
+
+    # THE SAME THREE SECTIONS AS THE TEXT BODY. They were text-only until 2026-09-03, which
+    # meant the reader of the actual email never saw them.
+    def _note(text):
+        return (f'<div style="margin:8px 0;padding:8px 11px;background:#f9fafb;'
+                f'border-left:3px solid {grey};border-radius:4px;font-size:12px;'
+                f'color:{grey};line-height:1.5;">{text}</div>')
+
+    notes_html = ""
+    if orphans:
+        notes_html += _note(
+            f"<b>{len(orphans)}</b> unmanaged leftover state row(s), excluded from the counts "
+            f"above — no registry entry, so they never re-run: "
+            f"{esc(', '.join(sorted(r[0] for r in orphans)))}")
+    if dormant:
+        notes_html += _note(
+            f"<b>{len(dormant)}</b> source(s) not in the live tier, excluded from the counts "
+            f"above — the daily run does not execute them (AQUEDUCT_LIVE_ONLY), so their status "
+            f"cannot change: {esc(', '.join(sorted(r[0] for r in dormant)))}")
+    if fp:
+        _rows = ""
+        for _name, _age, _newest in fp:
+            _stale = _age > FIRSTPASS_STALE_HOURS
+            _rows += (f'<tr><td style="padding:3px 10px 3px 0;">{esc(_name)}</td>'
+                      f'<td style="padding:3px 10px 3px 0;color:{red if _stale else grey};'
+                      f'font-weight:{"700" if _stale else "400"};">{_age:.1f}h ago'
+                      f'{" — STALE" if _stale else ""}</td>'
+                      f'<td style="padding:3px 0;color:{grey};">{esc(_newest)}</td></tr>')
+        notes_html += _note(
+            "<b>first-pass crawlers</b> — no unit_state row, so they are invisible to the health "
+            f"gate:<table role='presentation' style='margin-top:5px;font-size:12px;'>{_rows}"
+            "</table>")
 
     attention_rows = ""
     for r in sorted(warn + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
@@ -319,6 +423,7 @@ def main() -> None:
       {chip(len(ok), "current", green)}{chip(len(warn), "retrying", amber)}{chip(len(bad), "failed", red)}
     </tr></table>
     {"<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;color:" + red + ";'>Needs attention</h3><table role='presentation' width='100%' style='border-collapse:collapse;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'><tr><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Source</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Status</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Data through</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Last tried</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Detail</th></tr>" + attention_rows + "</table>" if (warn or bad) else ""}
+    {notes_html}
     <h3 style="font-family:Georgia,serif;font-size:15px;margin:18px 0 6px;">Current sources ({len(ok)})</h3>
     <table role="presentation" width="100%" style="border-collapse:collapse;">
       <tr><th align="left" style="padding:5px 10px;font-size:11px;color:{grey};text-transform:uppercase;">Source</th>
@@ -335,6 +440,18 @@ def main() -> None:
   </div>
 </div>
 </body></html>"""
+
+    # INSPECT THE REAL EMAIL WITHOUT SENDING IT. On 2026-09-03 three sections shipped into the
+    # text body alone — the orphan list, the non-live list and the first-pass crawlers — and no
+    # one would have seen any of them, because the text body is the fallback almost no client
+    # renders. There was no way to look: without an API key this script prints the TEXT and drops
+    # the HTML. This runs before the send decision, so it works with no key present.
+    _html_out = os.environ.get("AQUEDUCT_DIGEST_HTML_OUT")
+    if _html_out:
+        with open(_html_out, "w", encoding="utf-8") as _fh:
+            _fh.write(html_doc)
+        print(f"[digest] html written to {_html_out} ({len(html_doc):,} bytes)", flush=True)
+
 
     print(f"[digest] {subject}\n{body}\n", flush=True)
     if not key:

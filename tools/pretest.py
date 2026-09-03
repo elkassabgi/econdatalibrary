@@ -33,12 +33,21 @@ banner below prints both versions on every run.
 WORTH SAYING PLAINLY: those two files therefore protect NOTHING on CI. Their guarantee exists
 only when someone runs them on a machine holding the data, which is this one.
 
-WHICH IS WHY THEY NOW RUN BY DEFAULT. Re-measured 2026-09-03 on this machine, warm: the full
+WHICH IS WHY THEY NOW RUN BY DEFAULT. Re-measured 2026-09-03 on this machine, WARM: the full
 suite is 340 s, the deselected set 272 s, and the two files alone 44 s for 12 passed and 0
-skipped. The original premise — 57 minutes against 4m54s — rested on one earlier run that
-recorded 3,445 s and is not reproducible; it was almost certainly a cold read of the 10 GB
-eurostat mirror. Sixty-eight seconds does not buy a permanent hole in local coverage, least of
-all in a tool built to catch what CI will reject. `--fast` opts out when you want the 68 s back.
+skipped. Sixty-eight seconds does not buy a permanent hole in local coverage, least of all in a
+tool built to catch what CI will reject.
+
+THE 68 SECONDS IS A WARM-CACHE NUMBER, and that matters more than it sounds. Later the same day,
+with the page cache evicted by a 163 GB diagnostic (R690) and two crawlers writing, the full suite
+was still running after 25 minutes at 92 CPU-seconds — I/O-starved on the 10 GB eurostat mirror
+and the 11.9 GB catalog.db — while the deselected set finished in 278 s. That also explains the
+original 3,445 s premise, which was almost certainly one cold run.
+
+So: the two files cost about a minute when their data is cached and twenty minutes or more when
+it is not. Full stays the default because it is right when you can afford it; **`--fast` is the
+answer on a busy machine**, and it is CI's exact selection, so it remains the honest pre-push
+check for a change CI will judge.
 """
 from __future__ import annotations
 
@@ -72,7 +81,8 @@ def _ci_python() -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--fast", action="store_true",
-                    help="skip the two data-bound files (saves ~68 s; loses their coverage)")
+                    help="CI's exact selection; skips the two data-bound files "
+                         "(~68 s warm, 20+ min if their data is not cached)")
     ap.add_argument("--full", action="store_true",
                     help="deprecated — the full suite is now the default")
     ap.add_argument("rest", nargs="*", help="extra args passed straight to pytest")
