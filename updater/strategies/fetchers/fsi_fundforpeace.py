@@ -178,26 +178,29 @@ def update(unit, since) -> Result:
             continue
         try:
             r = requests.get(url, headers=UA, timeout=60, allow_redirects=True)
-        except (requests.Timeout, requests.ConnectionError):
-            tally.transient_unit()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            tally.transient_unit(f"{year}: {type(e).__name__} fetching {url[-46:]}")
             continue
         if r.status_code in (429, 500, 502, 503, 504):
-            tally.transient_unit()
+            tally.transient_unit(f"{year}: HTTP {r.status_code}")
             continue
         if r.status_code == 404:
             # one stale per-year URL; not fatal — the year may simply have moved.
-            tally.empty_unit()
+            tally.empty_unit(f"{year}: 404, the release URL may have moved")
             continue
         if r.status_code != 200 or len(r.content) < 5000:
-            tally.structural_unit()
+            tally.structural_unit(
+                f"{year}: HTTP {r.status_code}, {len(r.content):,} bytes "
+                f"(under the 5,000-byte floor)")
             continue
         try:
             k, d, v = _parse_xlsx(r.content, year)
-        except Exception:
-            tally.structural_unit()
+        except Exception as e:  # noqa: BLE001
+            tally.structural_unit(f"{year}: XLSX will not parse — {type(e).__name__}")
             continue
         if not v:
-            tally.structural_unit()  # 200 with a real XLSX body but parsed 0 rows -> schema break
+            # 200 with a real XLSX body but parsed 0 rows -> schema break
+            tally.structural_unit(f"{year}: real XLSX parsed 0 rows")
             continue
         all_keys.extend(k); all_dates.extend(d); all_vals.extend(v)
         tally.added_unit(len(v))  # provisional; net new vs merge resolved below

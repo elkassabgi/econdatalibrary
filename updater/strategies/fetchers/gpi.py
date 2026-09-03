@@ -238,16 +238,18 @@ def update(unit, since) -> Result:
     for url in GPI_URLS:
         try:
             r = requests.get(url, headers=UA, timeout=120, allow_redirects=True)
-        except (requests.Timeout, requests.ConnectionError):
-            tally.transient_unit()  # network/timeout — retry next run, never "no data"
+        except (requests.Timeout, requests.ConnectionError) as e:
+            # network/timeout — retry next run, never "no data"
+            tally.transient_unit(f"{url[-52:]}: {type(e).__name__}")
             continue
 
         if r.status_code in _TRANSIENT_HTTP:
-            tally.transient_unit()
+            tally.transient_unit(f"{url[-52:]}: HTTP {r.status_code}")
             continue
         if r.status_code != 200 or len(r.content) < 1000:
             # 404 / hard-4xx / empty body for this candidate URL -> structural for this sub-unit.
-            tally.structural_unit()
+            tally.structural_unit(
+                f"{url[-52:]}: HTTP {r.status_code}, {len(r.content):,} bytes")
             continue
 
         try:
@@ -255,15 +257,17 @@ def update(unit, since) -> Result:
                 k, d, v = _parse_owid_csv(r.content)
             else:
                 k, d, v = _parse_gpi_xlsx(r.content)
-        except Exception:
-            tally.structural_unit()  # 200 with a body we couldn't parse -> schema break
+        except Exception as e:  # noqa: BLE001
+            # 200 with a body we couldn't parse -> schema break
+            tally.structural_unit(f"{url[-52:]}: unparseable body — {type(e).__name__}")
             continue
 
         if v:
             keys, dates, vals = k, d, v
             got_data = True
             break
-        tally.structural_unit()  # 200, real body, parsed 0 rows -> structural
+        # 200, real body, parsed 0 rows -> structural
+        tally.structural_unit(f"{url[-52:]}: real body parsed 0 rows")
 
     if not got_data:
         # No URL yielded data. finalize() is honest: any structural sub-unit raises
