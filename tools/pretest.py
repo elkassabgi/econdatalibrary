@@ -31,9 +31,14 @@ banner below prints both versions on every run.
     this tool   1,940 collected   1,928 passed, 12 desel    293 s
 
 WORTH SAYING PLAINLY: those two files therefore protect NOTHING on CI. Their guarantee exists
-only when someone runs them on a machine holding the data, which is this one, and rarely. That is
-a real gap and it is not this tool's job to hide it — run `--full` before anything that touches
-eurostat parsing or the carve-out.
+only when someone runs them on a machine holding the data, which is this one.
+
+WHICH IS WHY THEY NOW RUN BY DEFAULT. Re-measured 2026-09-03 on this machine, warm: the full
+suite is 340 s, the deselected set 272 s, and the two files alone 44 s for 12 passed and 0
+skipped. The original premise — 57 minutes against 4m54s — rested on one earlier run that
+recorded 3,445 s and is not reproducible; it was almost certainly a cold read of the 10 GB
+eurostat mirror. Sixty-eight seconds does not buy a permanent hole in local coverage, least of
+all in a tool built to catch what CI will reject. `--fast` opts out when you want the 68 s back.
 """
 from __future__ import annotations
 
@@ -66,24 +71,27 @@ def _ci_python() -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--fast", action="store_true",
+                    help="skip the two data-bound files (saves ~68 s; loses their coverage)")
     ap.add_argument("--full", action="store_true",
-                    help="run everything, including the data-bound files (~57 minutes)")
+                    help="deprecated — the full suite is now the default")
     ap.add_argument("rest", nargs="*", help="extra args passed straight to pytest")
     a = ap.parse_args()
 
     cmd = [sys.executable, "-m", "pytest", "tests/", "-q"]
-    if not a.full:
+    if a.fast:
         for path, _ in DATA_BOUND:
             cmd += ["--deselect", path]
     cmd += a.rest
 
-    if a.full:
-        print("running the FULL suite, including the data-bound files (~57 min)\n", flush=True)
-    else:
-        print("running CI's real coverage; deselected because CI skips them anyway:", flush=True)
+    if a.fast:
+        print("--fast: skipping the data-bound files, which saves about 68 s and gives up "
+              "their coverage:", flush=True)
         for path, why in DATA_BOUND:
             print(f"    {path}  — {why}", flush=True)
-        print("  (use --full before touching eurostat parsing or the carve-out)\n", flush=True)
+        print("", flush=True)
+    else:
+        print("running the FULL suite (measured 340 s on this machine)\n", flush=True)
 
     t0 = time.time()
     rc = subprocess.run(cmd, cwd=ROOT).returncode
