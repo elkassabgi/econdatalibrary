@@ -506,12 +506,38 @@ def _derive_changed_csvs(unit, res, blob):
             # gone stale, so coherence is MET — this must NOT fall through to the
             # no-cursors branches below, which would book the §5.7 note and (since
             # 2026-08-31) a full_rederive_owed row for a fetcher that reported
-            # honestly. res.obs > 0 here is expected: obs counts rows MERGED, and an
-            # idempotent re-merge still merges rows.
+            # honestly.
+            #
+            # THIS RETURN IS CORRECT, BUT NOT FOR THE REASON THAT USED TO BE WRITTEN HERE.
+            # The old comment justified it with "res.obs > 0 here is expected: obs counts rows
+            # MERGED". `obs` does NOT count rows merged. `finalize(tally, total_rows, ...)`
+            # (_common.py:299) sets `obs=total_rows` on all three return paths, and about 120
+            # of ~123 call sites pass the store's total row count. Two committed runbooks show
+            # it plainly: docs/runbook/bea.md:41 records obs 251,203 beside "+258,223 new
+            # rows", and bcb.md:41-42 has consecutive obs differing by 237 beside "+308 new
+            # rows". What actually makes this return safe is that `changed_keys == {}` is a
+            # MERGE-MEASURED, value-comparing statement (merge.py:404-407, `_same_vals`): it
+            # says nothing served changed, independently of any row count.
             return [], None, [], {}
     else:
         changed = sorted((res.series_cursors or {}).keys())
     if not changed:
+        # NOTHING MERGED, PROVEN BY THE FETCHER. Not inferred: `merged_rows` is set only where
+        # a fetcher can state it, and None (almost everywhere) falls through to the checks
+        # below exactly as before. If no row was merged then no served CSV can have gone
+        # stale, so coherence is MET and there is no debt to book.
+        #
+        # This must NOT be derived from `res.obs` (the store's total) or from `tally.added`
+        # (two conventions in production, and blind to a same-period revision that replaces a
+        # value without changing the row count). Both were tried; see base.py's Result.
+        # getattr, not res.merged_rows: this function is driven by duck-typed stand-ins in the
+        # tests and by any Result-shaped object a fetcher hands back, exactly as the
+        # `changed_keys` read above does. A bare attribute access here raises AttributeError
+        # inside the orchestrator's outer `except`, which books the unit transient_fail AFTER a
+        # successful publish with every state write skipped - the gleif 2-tuple disease this
+        # same function already carries two scars from.
+        if getattr(res, "merged_rows", None) == 0:
+            return [], None, [], {}
         if res.obs and _catalog_series_count(unit.source_id) == 0:
             # VACUOUS COHERENCE. A source with ZERO catalogued series has no per-series
             # CSVs, so there is nothing that can go stale and §5.7 is satisfied rather
@@ -547,12 +573,20 @@ def _derive_changed_csvs(unit, res, blob):
             # demotes the run to `partial` (nothing to queue — ids unknown);
             # the un-bumped vintage forces a re-fetch until the fetcher
             # reports cursors. An `ok` here would be a silent §5.7 violation.
-            print(f"[orchestrator] WARNING {unit.key}: merged {res.obs} obs but reported no "
-                  f"series_cursors — cannot re-derive CSVs for unknown series; the fetcher "
-                  f"must report per-series cursors to satisfy CSV/parquet coherence (§5.7)",
-                  flush=True)
-            return [], (_NO_CURSORS_NOTE + f" for {res.obs} merged obs — CSVs not "
-                        f"re-derived (§5.7)"), [], {}
+            # "merged {res.obs} obs" WAS A FALSE SENTENCE and this is the one string a human
+            # reads as a merge count: it goes to the operator log, into the note persisted on
+            # `full_rederive_owed`, and through `unit_state.last_error` into Ahmed's digest
+            # email. `res.obs` is the STORE'S TOTAL ROW COUNT - `finalize`'s own parameter is
+            # named `total_rows` - so idb was reported as "merged 15,066,444 obs" on runs that
+            # merged NOTHING, the same figure every time, because idb.py:191-193 substitutes
+            # the store total when `published == 0`. The count of rows merged this run is not
+            # reported by most fetchers at all, and saying so is more useful than inventing it.
+            print(f"[orchestrator] WARNING {unit.key}: store holds {res.obs} rows and the "
+                  f"fetcher reported no series_cursors (merged-row count not reported) — "
+                  f"cannot re-derive CSVs for unknown series; the fetcher must report "
+                  f"per-series cursors to satisfy CSV/parquet coherence (§5.7)", flush=True)
+            return [], (_NO_CURSORS_NOTE + f"; store holds {res.obs} rows, merged-row count "
+                        f"not reported — CSVs not re-derived (§5.7)"), [], {}
         return [], None, [], {}
     ids: list = []   # pre-bound: the except below queues ONLY mapped catalog ids
     try:

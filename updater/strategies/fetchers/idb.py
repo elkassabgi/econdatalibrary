@@ -189,12 +189,20 @@ def update(unit, since) -> Result:
 
     _save_sidecar(out_dir, sidecar)
 
+    # KEEP THE TRUE MERGE COUNT BEFORE SUBSTITUTING. `published` is rows merged this run; the
+    # fallback below replaces it with the whole store so a quiet run still reports the source's
+    # real size. That substitution is fine for `obs` and was disastrous for anything reading it
+    # as a merge count: the orchestrator's coherence check saw obs=15,066,444 with no cursors
+    # and booked a full_rederive_owed debt for fifteen million observations on runs that merged
+    # ZERO - the same figure on 2026-08-19, 08-25 and 09-01, because it is the store's total.
+    merged_this_run = published
+
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
 
     res_out = finalize(tally, published, maxd or (since or None), source=SOURCE,
-                       series_cursors=cursors)
+                       series_cursors=cursors, merged_rows=merged_this_run)
     if capped:
         res_out.new_vintage = None
     return res_out

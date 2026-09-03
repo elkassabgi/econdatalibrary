@@ -64,16 +64,16 @@ def make(ds: str, source: str):
             rows_k, rows_d, rows_v = j.pull_rows(ds, cid, key, meta)
         except j.UnsupportedLayout:
             tally.structural_unit()
-            return finalize(tally, before, None, source=source)
+            return finalize(tally, before, None, source=source, merged_rows=0)
         except Exception:                                # noqa: BLE001 — network/contract
             tally.transient_unit()
-            return finalize(tally, before, None, source=source)
+            return finalize(tally, before, None, source=source, merged_rows=0)
 
         if not rows_k:
             # A reachable API that yields zero parseable observations is a CONTRACT
             # change, not an empty release — do not record the vintage.
             tally.structural_unit()
-            return finalize(tally, before, None, source=source)
+            return finalize(tally, before, None, source=source, merged_rows=0)
 
         tbl = pa.table({"series_key": pa.array(rows_k, pa.string()),
                         "obs_date": pa.array(rows_d, pa.date32()),

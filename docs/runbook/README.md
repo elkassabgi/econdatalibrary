@@ -7,7 +7,7 @@
 Before anything else, two facts that mislead people repeatedly:
 
 - A `partial` never sets `last_success_utc` (**R231**), so a source reading "last SUCCESS: NEVER" may be perfectly healthy and failing one sub-unit.
-- `obs_count` means "rows this run" on a productive run and "whole store" on a quiet one (**R326**) — a healthy source can appear to lose 168M rows. Count the store instead.
+- `obs_count` is **not** "rows this run": most fetchers pass the STORE TOTAL to `finalize` — measured 2026-09-03, 3 of ~123 call sites pass a real added count (**R326**, mechanism corrected). A healthy source can appear to lose 168M rows. Count the store instead.
 
 | source | live | served | catalogued | status | last success |
 |---|---|---|---|---|---|

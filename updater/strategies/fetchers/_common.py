@@ -297,8 +297,17 @@ def _named(ids, cap: int = 20) -> str:
 
 
 def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
-             empty_window_floor=10):
-    """Turn a Tally into an honest Result (or raise DefinitiveError). See module docstring."""
+             empty_window_floor=10, merged_rows=None):
+    """Turn a Tally into an honest Result (or raise DefinitiveError). See module docstring.
+
+    `total_rows` is what it says: about 120 of ~123 call sites pass the STORE'S TOTAL, so the
+    resulting `Result.obs` describes how big the store is, not what this run did. Do not read
+    it as a merge count and do not let any message call it one.
+
+    `merged_rows` is the honest answer to "did this run merge anything", and a fetcher passes it
+    ONLY where it can prove it. None (the default) means not reported, which is what almost
+    every fetcher truthfully is, and behaves exactly as before.
+    """
     if tally.structural:
         raise DefinitiveError(
             f"{source}: {tally.structural}/{tally.attempted} sub-unit(s) returned 200 but parsed 0 "
@@ -310,7 +319,7 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
             f"window — likely a structural break, not a quiet period; existing data kept")
     if tally.transient:
         return Result(status="partial", obs=total_rows, last_obs_date=last_obs,
-                      new_vintage="date-tail", series_cursors=series_cursors,
+                      new_vintage="date-tail", series_cursors=series_cursors, merged_rows=merged_rows,
                       error=f"{tally.transient}/{tally.attempted} sub-unit(s) transient-failed; will retry"
                             + _named(tally.transient_ids))
     if tally.deferred:
@@ -319,7 +328,7 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
         # the message no longer calls a deliberate deferral a failure, and the denominator is what
         # was actually attempted (R303).
         return Result(status="partial", obs=total_rows, last_obs_date=last_obs,
-                      new_vintage="date-tail", series_cursors=series_cursors,
+                      new_vintage="date-tail", series_cursors=series_cursors, merged_rows=merged_rows,
                       error=(f"{tally.attempted} sub-unit(s) attempted, none failed; "
                              f"{tally.deferred} deferred by budget and taken next tick"
                              + _named(tally.deferred_ids)))
@@ -333,7 +342,7 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
         note += (f"; {tally.no_time} dataset(s) outside the series model — publisher DSD "
                  f"declares no SDMX TimeDimension" + _named(tally.no_time_ids))
     return Result(status=status, obs=total_rows, last_obs_date=last_obs, new_vintage="date-tail",
-                  series_cursors=series_cursors, error=note)
+                  series_cursors=series_cursors, merged_rows=merged_rows, error=note)
 
 
 CURSOR_CAP = 50_000

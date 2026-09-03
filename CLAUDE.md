@@ -103,8 +103,12 @@ Read it BEFORE forming a theory. Three things mislead nearly everyone, so they a
 
 - A `partial` never sets `last_success_utc` (R231), so "last SUCCESS: **never**" is often a
   perfectly healthy source failing one sub-unit.
-- `obs_count` means "rows this run" on a productive run and "whole store" on a quiet one (R326)
-  — a healthy source can appear to have lost 168M rows.
+- `obs_count` is NOT "rows this run". It is whatever the fetcher passed `finalize()` as
+  `total_rows`, and measured 2026-09-03 only THREE of ~123 call sites pass a genuine added
+  count — the rest pass the store's total. R326's conclusion (not comparable across runs) is
+  right; the mechanism this line used to give was backwards, and it was the first thing every
+  session read. `docs/runbook/bea.md:41` settles it without any code: obs 251,203 beside a note
+  of "+258,223 new rows".
 - A FUTURE date is usually a legitimate PROJECTION, not staleness (CSO to 2057, Estonia 2085,
   UN WPP 2101). A defect is a SENTINEL (9999/2999) or a COUNTER (contiguous from year 1). Never
   judge by the size of the number. R327.
