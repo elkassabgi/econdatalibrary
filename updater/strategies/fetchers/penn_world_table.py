@@ -104,31 +104,37 @@ def update(unit, since) -> Result:
     # ---- 1) Re-fetch the whole workbook (reuse the ingester's URL + polite UA). ----
     try:
         r = requests.get(DATA_URL, headers=UA, timeout=300, allow_redirects=True)
-    except (requests.Timeout, requests.ConnectionError):
-        tally.transient_unit()
+    except (requests.Timeout, requests.ConnectionError) as e:
+        tally.transient_unit(f"pwt workbook: {type(e).__name__} — {str(e)[:140]}")
         return finalize(tally, 0, None, source=SOURCE)
     if r.status_code in (429, 500, 502, 503, 504):
-        tally.transient_unit()
+        tally.transient_unit(f"pwt workbook: HTTP {r.status_code}")
         return finalize(tally, 0, None, source=SOURCE)
     if r.status_code != 200 or len(r.content) < 100_000:
         # Hard non-200 / truncated body: not a healthy upstream -> structural, keep data.
-        tally.structural_unit()
+        tally.structural_unit(
+            f"pwt workbook: HTTP {r.status_code}, {len(r.content):,} bytes "
+            f"(under the 100,000-byte floor)")
         return finalize(tally, 0, None, source=SOURCE)
 
     # ---- 2) Parse the `Data` sheet (reuse the ingester's column logic). ----
     try:
         df = pd.read_excel(io.BytesIO(r.content), sheet_name="Data", engine="openpyxl")
-    except Exception:  # noqa: BLE001 — a 200 body we cannot parse as the expected workbook
-        tally.structural_unit()
+    except Exception as e:  # noqa: BLE001 — a 200 body we cannot parse as the workbook
+        tally.structural_unit(f"pwt workbook: 200 but unparseable — {type(e).__name__}: "
+                              f"{str(e)[:120]}")
         return finalize(tally, 0, None, source=SOURCE)
 
     if "year" not in df.columns or "countrycode" not in df.columns:
-        tally.structural_unit()
+        tally.structural_unit(
+            "pwt workbook: the `Data` sheet is missing `year` and/or `countrycode`")
         return finalize(tally, 0, None, source=SOURCE)
 
     data_cols = [c for c in df.columns if c not in ID_COLS and c not in INFO_COLS and c in VAR_DEFS]
     if not data_cols:
-        tally.structural_unit()  # 200, real workbook, but no recognised numeric variables
+        # 200, real workbook, but no recognised numeric variables
+        tally.structural_unit(
+            f"pwt workbook: none of its {len(df.columns)} columns is a recognised variable")
         return finalize(tally, 0, None, source=SOURCE)
 
     df = df.copy()
@@ -146,9 +152,10 @@ def update(unit, since) -> Result:
             # No values for this variable in a real body: if it has published history,
             # that's a structural drop; if it never existed, a genuine empty sub-unit.
             if before > 0:
-                tally.structural_unit()
+                tally.structural_unit(
+                    f"{var}: variable vanished from the workbook over {before:,} stored rows")
             else:
-                tally.empty_unit()
+                tally.empty_unit(f"{var}: never published")
             total_rows += before
             continue
 
