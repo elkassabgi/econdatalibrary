@@ -37,10 +37,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FETCHERS = os.path.join(ROOT, "updater", "strategies", "fetchers")
 METHODS = ("transient_unit", "structural_unit", "no_time_unit", "deferred_unit")
 
-# Measured 2026-09-03: 241 at first sweep, lowered to 225 the same day after the
-# sixteen sites in the currently-FAILING sources were labelled.
+# Measured 2026-09-03: 241 at first sweep; 225 after labelling the sixteen sites in the
+# currently-FAILING sources; 206 after penn_world_table (7), pwt (6) and gleif (6), the three
+# worst files among LIVE sources. Labelled is now 210 of 416 — past half for the first time.
 # RATCHET: this may only ever go DOWN.
-BASELINE_UNLABELLED = 225
+BASELINE_UNLABELLED = 206
 
 
 def _unlabelled() -> list[tuple[str, int, str]]:

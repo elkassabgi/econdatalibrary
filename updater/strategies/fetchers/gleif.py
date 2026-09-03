@@ -142,8 +142,8 @@ def update(unit, since) -> Result:
     try:
         try:
             _download(url, tmp_zip)
-        except TransientError:
-            tally.transient_unit()
+        except TransientError as e:
+            tally.transient_unit(f"golden copy download failed — {str(e)[:150]}")
             return finalize(tally, before, since or None, source=SOURCE)
 
         # stream-parse (memory-bounded, 200k-row batches) into the temp parquet
@@ -159,22 +159,29 @@ def update(unit, since) -> Result:
                 with z.open(csvs[0]) as f:
                     n_new = ig._parse_csv(f, tmp_pq)
             else:
-                tally.structural_unit()
+                tally.structural_unit(
+                    f"golden copy zip holds neither .xml nor .csv: {members[:4]}")
                 return finalize(tally, before, since or None, source=SOURCE)
         except zipfile.BadZipFile:
-            tally.structural_unit()
+            tally.structural_unit("golden copy is not a readable zip (truncated or not a zip)")
             return finalize(tally, before, since or None, source=SOURCE)
-        except Exception:
-            tally.transient_unit()
+        except Exception as e:  # noqa: BLE001 — retried on purpose
+            tally.transient_unit(f"golden copy parse failed — {type(e).__name__}: "
+                                 f"{str(e)[:130]}")
             return finalize(tally, before, since or None, source=SOURCE)
 
         if not n_new:
-            tally.structural_unit()
+            tally.structural_unit(
+                f"golden copy parsed 0 rows from a real archive over {before:,} stored")
             return finalize(tally, before, since or None, source=SOURCE)
 
         # hand-rolled never-shrink: an overwrite has no merge guard behind it
         if before and n_new < before * SHRINK_FLOOR:
-            tally.transient_unit()
+            # A REFUSAL, not a fault — and the numbers are the whole story. Unnamed it reads
+            # exactly like a network failure, which is the opposite diagnosis.
+            tally.transient_unit(
+                f"never-shrink refused: {n_new:,} rows against {before:,} stored "
+                f"(floor {SHRINK_FLOOR:.0%})")
             return finalize(tally, before, since or None, source=SOURCE)
 
         # publish the parquet BYTES (no full-table materialisation)
