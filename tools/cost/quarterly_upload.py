@@ -24,7 +24,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from tools import billing_guard as bg  # noqa: E402
 
 DAYS = 31
-FIXED = 5.00 + 13.96 + 2.62      # Workers + R2 storage (gb_months) + D1 storage
+# D1 ROWS READ ARE NOT ZERO, and leaving them out of this model is why I once hand-added them
+# to an already-taxed column and understated option 4 by up to $0.62. Measured over the 18 days
+# after the 2026-08-15 serving fix: 1,111,156,496 rows a day = 34.4 B in a 31-day period against
+# 25 B included = $9.45 BEFORE tax. It does not vary with upload volume, so it belongs in FIXED.
+D1_READS_DAY = 1_111_156_496
+FIXED = 5.00 + 13.96 + 2.62 + bg.units(D1_READS_DAY * 31, bg.D1_READS_INCLUDED, 0.001)
 LIST_FLOOR = 7_500               # measured, after the noaa LIST leak stopped
 ATTEMPTS_DAY = 110_000           # measured median of post-fix days with no backfill
 
