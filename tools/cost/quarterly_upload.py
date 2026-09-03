@@ -24,12 +24,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from tools import billing_guard as bg  # noqa: E402
 
 DAYS = 31
-# D1 ROWS READ ARE NOT ZERO, and leaving them out of this model is why I once hand-added them
-# to an already-taxed column and understated option 4 by up to $0.62. Measured over the 18 days
-# after the 2026-08-15 serving fix: 1,111,156,496 rows a day = 34.4 B in a 31-day period against
-# 25 B included = $9.45 BEFORE tax. It does not vary with upload volume, so it belongs in FIXED.
-D1_READS_DAY = 1_111_156_496
-FIXED = 5.00 + 13.96 + 2.62 + bg.units(D1_READS_DAY * 31, bg.D1_READS_INCLUDED, 0.001)
+
+# ONE FIXED BLOCK, IMPORTED, NOT A SECOND COPY.
+#
+# Both models price the same account, and two copies is how they drift apart - this file
+# carried 13.96 of storage and 1,111,156,496 reads/day as literals while options_v2 had already
+# been changed to measure them. Importing also means the bucketName bug that made the storage
+# query return the largest bucket instead of the total is fixed in one place, not two.
+#
+# D1 rows read belong in FIXED because they do not vary with upload volume. Leaving them out of
+# this model is what led me to hand-add $9.45 - a PRE-tax figure - to an already-taxed column
+# and understate option 4 by up to $0.62.
+from tools.cost.options_v2 import fixed_block as _fixed_block  # noqa: E402
+
+FIXED = sum(_fixed_block().values())
 LIST_FLOOR = 7_500               # measured, after the noaa LIST leak stopped
 ATTEMPTS_DAY = 110_000           # measured median of post-fix days with no backfill
 
@@ -74,10 +82,14 @@ def main():
     print(f"   ${year_now * bg.TAX_UPLIFT:8.2f}/year   "
           f"${year_now * bg.TAX_UPLIFT / 12:6.2f}/month")
 
-    print("\nTHE NUMBER THAT DECIDES IT is the quarterly burst, and I have NOT measured it.")
-    print("It is the count of DISTINCT series whose bytes change in 90 days - not the sum of")
-    print("daily changes, and not the catalogue size. Everything above is a curve, not a")
-    print("forecast, until that one number is measured.")
+    print("")
+    print("THE BURST IS NOW MEASURED, and it turns this option down.")
+    print("tools/cost/burst_measure.py walked all 13,978,094 objects: 100% were written within")
+    print("90 days, 75.8% within 30. So the CEILING is the whole library, not the 250k-5M this")
+    print("curve was built around. At the 70% write-redundancy measured by prove_plain_digest,")
+    print("the burst is ~4.2M and option 4 costs about $39.47/month - WORSE than option 3's")
+    print("$37.87, and it costs three-month-old served data on top. It wins only above ~90%")
+    print("redundancy. See the proposal, section 8.")
     return 0
 
 
