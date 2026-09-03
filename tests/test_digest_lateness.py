@@ -27,7 +27,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from updater.send_digest import CADENCE_LIMIT_DAYS, is_late  # noqa: E402
+from updater.send_digest import (CADENCE_LIMIT_DAYS, is_late,  # noqa: E402
+                                 late_label)
 
 NOW = dt.datetime(2026, 9, 3, 12, 0, tzinfo=dt.timezone.utc)
 
@@ -79,3 +80,33 @@ def test_a_naive_timestamp_is_read_as_utc():
     naive = (NOW - dt.timedelta(days=10)).replace(tzinfo=None).isoformat()
     assert is_late("daily", naive, NOW) is True
     assert is_late("monthly", naive, NOW) is False
+
+
+# ---------------------------------------------------------------------------
+# The marker itself. All 6 late sources measured on 2026-09-03 were on the local
+# route and none were in the cloud, so the route is the diagnosis more often than
+# the source is — and a marker that omits it sends the reader to the wrong place.
+
+def test_a_healthy_source_gets_no_marker():
+    assert late_label("daily", "local", ago(1), NOW) == ""
+    assert late_label("static", "local", ago(9_999), NOW) == ""
+
+
+def test_the_route_is_named_when_it_is_not_the_default():
+    """eia, declared DAILY, 11.6 days stale, on the route whose sweep is ~17.7 days."""
+    assert late_label("daily", "local", ago(11.6), NOW) == " LATE(local)"
+    assert late_label("weekly", "local", ago(17.1), NOW) == " LATE(local)"
+
+
+def test_the_default_route_is_NOT_named():
+    """Printing '(any)' on every row would be noise, not signal."""
+    assert late_label("daily", "any", ago(11.6), NOW) == " LATE"
+    assert late_label("daily", "", ago(11.6), NOW) == " LATE"
+    assert late_label("daily", None, ago(11.6), NOW) == " LATE"
+
+
+def test_the_marker_starts_with_a_space_so_it_never_abuts_the_age():
+    """It is appended straight after `tried= 12d ago` in both the text and html renders."""
+    for label in (late_label("daily", "local", ago(99), NOW),
+                  late_label("daily", "any", ago(99), NOW)):
+        assert label.startswith(" ") and not label.endswith(" "), repr(label)

@@ -45,6 +45,23 @@ CADENCE_LIMIT_DAYS = {"daily": 3, "weekly": 14, "monthly": 45, "quarterly": 120,
 
 
 
+
+def late_label(cadence: str, run_location: str, ts, now) -> str:
+    """The marker a digest row carries: '', ' LATE', or ' LATE(<route>)'.
+
+    The route is named because it is the diagnosis more often than the source is. On 2026-09-03
+    all 6 late sources in the fleet were on the local route — whose full sweep is ~17.7 days
+    (R683) — and none were in the cloud. `eia` is declared DAILY and was 11.6 days stale. Reading
+    "eia LATE" sends someone to eia; "eia LATE(local)" sends them to what is actually wrong.
+
+    An absent `run_location` means "any" (the reading orchestrate.py uses), and "any" is not
+    printed: labelling every row with the default would be noise, not signal.
+    """
+    if not is_late(cadence, ts, now):
+        return ""
+    where = run_location or "any"
+    return " LATE" if where == "any" else f" LATE({where})"
+
 def live_source_ids(entries) -> set:
     """The live tier, read EXACTLY as `registry.to_units()` reads it.
 
@@ -120,6 +137,9 @@ def main() -> None:
     managed = {e["source_id"] for e in _entries} if _entries is not None else None
     # cadence comes from the SAME load, so a row can say whether its age is actually late
     cadence = {e["source_id"]: (e.get("cadence") or "") for e in (_entries or [])}
+    # WHERE a late source runs is the first thing a reader needs: on 2026-09-03 all
+    # 6 late sources were on the local route and no cloud source was late at all.
+    route = {e["source_id"]: (e.get("run_location") or "any") for e in (_entries or [])}
     orphans = [r for r in rows if managed is not None and r[0] not in managed]
     if managed is not None:
         rows = [r for r in rows if r[0] in managed]
@@ -155,9 +175,15 @@ def main() -> None:
     runlog = f"https://github.com/elkassabgi/econdatalibrary/actions/runs/{run_id}"
 
     def late_mark(source_id, ts) -> str:
-        """' LATE' when this source has missed several of its own cycles, else ''."""
-        return " LATE" if is_late(cadence.get(source_id, ""), ts,
-                                  _dt.datetime.now(_dt.timezone.utc)) else ""
+        """' LATE', with the route when it is not the default, else ''.
+
+        The route is the diagnosis more often than the source is: every late source measured on
+        2026-09-03 was on the local route, whose full sweep is ~17.7 days (R683), and `eia` is
+        declared DAILY. "eia LATE" alone sends the reader to eia; "eia LATE(local)" sends them
+        to the thing that is actually wrong.
+        """
+        return late_label(cadence.get(source_id, ""), route.get(source_id, "any"), ts,
+                          _dt.datetime.now(_dt.timezone.utc))
 
     def tried_age(ts) -> str:
         """How long ago we last ATTEMPTED this source, as a short human string.
@@ -207,7 +233,7 @@ def main() -> None:
     lines = [f"Run {run_id}: {run_status}",
              f"{len(ok)} ok/no_change · {len(warn)} partial/transient · {len(bad)} failed", ""]
     for r in sorted(warn + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
-        lines.append(f"  !! {r[0]:20} {kind_of(r[4])[1]:8} {r[1]:15} tried={tried_age(r[5]):>8}{late_mark(r[0], r[5]):<5}  err={str(r[4] or '')[:72]}")
+        lines.append(f"  !! {r[0]:20} {kind_of(r[4])[1]:8} {r[1]:15} tried={tried_age(r[5]):>8}{late_mark(r[0], r[5]):<13}  err={str(r[4] or '')[:72]}")
     if warn or bad:
         lines.append("")
     if orphans:
