@@ -281,7 +281,7 @@ def main() -> int:
                 # (flush) so the queue buffers small bodies; the magic-byte check
                 # keeps this path safe for both compressed and raw producers.
                 if body[:2] != b"\x1f\x8b":
-                    body = gzip.compress(body, mtime=0)
+                    body = r2_util.gzip_bytes(body)
                 s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv",
                               ContentEncoding="gzip")
                 with lock:
@@ -382,7 +382,7 @@ def main() -> int:
             # Compress BEFORE enqueueing: the queue then buffers ~10-20 MB gzip
             # bodies instead of ~100 MB raw CSVs (measured 5.4-11x on statcan).
             # Same deterministic bytes as the worker path (mtime=0).
-            q.put((key, gzip.compress(_rows_csv(rows), mtime=0)))
+            q.put((key, r2_util.gzip_bytes(_rows_csv(rows))))
 
         while True:
             batch = cur.fetchmany(200_000)
