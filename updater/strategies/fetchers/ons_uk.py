@@ -325,7 +325,8 @@ def update(unit, since) -> Result:
                 _id, keys, dates, vals, err = fut.result()
                 if keys is None:
                     print(f"[ons_uk] {ds_id}: transient — {err}", flush=True)
-                    tally.transient_unit()
+                    # the reason was already in hand and never reached the note
+                    tally.transient_unit(f"{ds_id}: {str(err)[:120]}")
                     continue
                 if not keys:
                     # Real body, zero parseable rows — or nothing the publisher offers to
@@ -336,7 +337,9 @@ def update(unit, since) -> Result:
                     # retry from starving the rest of the catalog.
                     print(f"[ons_uk] {ds_id}: no rows — {err or 'parsed 0 rows from a real body'}",
                           flush=True)
-                    tally.empty_unit()
+                    tally.empty_unit(
+                        f"{ds_id}: {str(err) or 'parsed 0 rows from a real body'} "
+                        f"(empty ON PURPOSE — structural would abort the source)")
                     continue
                 tbl = pa.table({
                     "series_key": pa.array(keys, pa.string()),
