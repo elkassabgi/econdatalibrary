@@ -53,7 +53,8 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
 
   // A query that IS a source id resolves to that source (2026-08-25).
   //
-  // `ftsOk` is set from `results.length > 0`, which means "FTS returned
+  // `ftsOk` USED TO BE set from `results.length > 0` (tightened 2026-09-03 to judge the SQL:
+  // `merged.length` globally, the COUNT scoped). Either way it means "FTS returned
   // something", NOT "FTS answered this query". Unscoped, `MATCH 'wid'` also
   // matched 10 unrelated unctad_rfia rows, so a non-empty-from-anywhere result
   // suppressed the LIKE fallback for everyone else. It was masked only because
@@ -123,11 +124,19 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
     let ftsOk = false;
     try {
       if (src) {
+        // COUNT FIRST, for the same reason as the global branch below: this SQL carries
+        // LIMIT/OFFSET, so an offset past the last page returns zero rows LEGITIMATELY and the
+        // old `results.length > 0` test read that as "FTS failed" and re-ran everything through
+        // the LIKE fallback - a different engine, a different `total`, for a query that worked.
+        // The COUNT is index-backed and was already being run whenever results existed; the
+        // only new cost is running it on an empty page, which is far cheaper than the scan it
+        // replaces.
+        const c = await scopedDb.prepare(searchFtsSourceCountSql(src)).bind(q, src).first<CountRow>();
+        const n = c?.n ?? 0;
         const res = await scopedDb.prepare(searchFtsSourceSql(src)).bind(q, src, limit, offset).all<CatalogResultRow>();
         results = res.results ?? [];
-        if (results.length > 0) {
-          const c = await scopedDb.prepare(searchFtsSourceCountSql(src)).bind(q, src).first<CountRow>();
-          total = c?.n ?? results.length;
+        if (n > 0) {
+          total = n;
           ftsOk = true;
         }
       } else {
@@ -137,7 +146,19 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
         ]);
         const merged = [...(p.results ?? []), ...(sh.results ?? [])];
         results = merged.slice(offset, offset + limit);
-        if (results.length > 0) {
+        // JUDGE FTS ON WHAT THE SQL RETURNED, NOT ON WHAT SURVIVED THE SLICE.
+        //
+        // This read `results.length > 0` - the POST-SLICE page. So paging past the last page
+        // of a SUCCESSFUL search made `ftsOk` false and re-ran the whole query through the
+        // LIKE fallback, which is a full scan of both databases (~24.2M rows, 40-65 s) and
+        // reports a DIFFERENT total, because LIKE and MATCH match different things.
+        // Reproduced live: /v1/catalog?source=bls&q=employment returns total=2, and the same
+        // query at &offset=99 returns total=4. Two totals, two engines, one query.
+        //
+        // A crawler paging a search that WORKED triggers it on every query, which is not the
+        // "user typed something the index does not contain" case anyone was guarding against.
+        // `merged` is the FTS result set; if it is non-empty, FTS worked.
+        if (merged.length > 0) {
           const [cp, cs] = await Promise.all([
             env.CATALOG.prepare(SEARCH_FTS_COUNT).bind(q).first<CountRow>(),
             env.CATALOG_CLIMATE.prepare(SEARCH_FTS_COUNT).bind(q).first<CountRow>(),

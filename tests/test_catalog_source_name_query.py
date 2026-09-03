@@ -93,14 +93,31 @@ def test_the_denylist_gate_still_runs_after_resolution():
         "not served")
 
 
-def test_negative_control_the_ftsok_gate_is_still_the_permissive_form():
-    """R346/R414: this suite must be able to SEE the condition it was written for.
+def test_the_ftsok_gate_judges_the_sql_not_the_sliced_page():
+    """R346/R414 control, REWRITTEN 2026-09-03 because the gate was tightened on purpose.
 
-    The fix deliberately does NOT change `results.length > 0`; it routes around it. If a later
-    edit tightened that gate, this control fails and the docstring above needs revisiting —
-    it is a prompt to re-read, not a defect.
+    It used to assert `results.length > 0` was still present, with a docstring saying a
+    tightening would be "a prompt to re-read, not a defect". This is that re-read.
+
+    `results` is the POST-SLICE page in the global branch and the LIMIT/OFFSET page in the
+    source-scoped one. So paging past the last page of a SUCCESSFUL search made `ftsOk` false
+    and re-ran the whole query through the LIKE fallback - a full scan of both databases
+    (~24.2M rows, 40-65 s) that reports a DIFFERENT `total`, because LIKE and MATCH match
+    different things. Reproduced live before the fix:
+
+        /v1/catalog?source=bls&q=employment             -> total=2
+        /v1/catalog?source=bls&q=employment&offset=99   -> total=4
+
+    A crawler paging a search that WORKED triggered it on every query. The gate now reads the
+    SQL's own answer: `merged.length` globally, the COUNT scoped.
     """
     s = _src()
-    assert "results.length > 0" in s, (
-        "the permissive ftsOk gate is gone; re-check whether the source-id resolution is "
-        "still the right fix or whether the gate itself now answers the question")
+    assert "merged.length > 0" in s, (
+        "the global ftsOk gate no longer judges the FTS result set; a zero-length PAGE of a "
+        "successful search would fall through to the LIKE scan again")
+    # The CODE form, not the words. Three comments in catalog.ts still quote the old gate in
+    # order to explain why it changed, and asserting on the bare string matched those - the
+    # same grep-versus-code confusion R673 records, made while writing the test that records it.
+    assert "if (results.length > 0)" not in s, (
+        "the post-slice gate is back - paging past the last page will switch engines and "
+        "report a different total for the same query")
