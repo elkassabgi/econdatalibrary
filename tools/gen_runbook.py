@@ -297,8 +297,17 @@ def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
         if u["error"]:
             A(f"  - last error:")
             A(f"    ```")
-            for ln in textwrap.wrap(u["error"], 96)[:12]:
+            # BOUNDED, AND THE ELISION IS STATED. This used to be a bare [:12], which for
+            # idb's note discarded 30 of 42 wrapped lines and stopped mid-sentence, leaving a
+            # reader unable to tell a complete list from a truncated one. `_named()` bounds its
+            # output the same way and its docstring gives the rule: the elision is stated rather
+            # than silent.
+            _wrapped = textwrap.wrap(u["error"], 96)
+            for ln in _wrapped[:12]:
                 A(f"    {ln}")
+            if len(_wrapped) > 12:
+                A(f"    … {len(_wrapped) - 12} more line(s) not shown "
+                  f"(full text in unit_state.last_error)")
             A(f"    ```")
     A("")
     A("> `obs_count` is **not comparable across runs** — most fetchers report the STORE TOTAL, not rows merged this run (measured 2026-09-03: 3 of ~123 finalize call sites pass a real added count), "
