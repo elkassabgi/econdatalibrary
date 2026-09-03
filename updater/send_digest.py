@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import datetime as _dt
+import re as _re
 import os
 import sqlite3
 import sys
@@ -112,11 +113,33 @@ def main() -> None:
             return f"{h:.0f}h ago"
         return f"{h / 24:.0f}d ago"
 
+    # Ordering, not filtering. Measured 2026-09-03: 20 of 37 attention rows were permanent by
+    # construction — a subset declaration or a budget window away from clearable — and a list
+    # that is always that long cannot distinguish a new problem from the standing one. Rows are
+    # sorted and given a reason; NONE is dropped, because a misclassification would otherwise
+    # bury the row it misjudged, and this is a regex over error text, not an oracle.
+    _KINDS = (
+        ("SCHEMA", 0, _re.compile(r"returned 200 but parsed 0 rows", _re.I)),
+        ("SHRINK", 1, _re.compile(r"refusing shrink", _re.I)),
+        ("MIGRATE", 2, _re.compile(r"migration has not completed", _re.I)),
+        ("RETRY", 3, _re.compile(r"transient-failed|UNEXPECTED:|UnitTimeout", _re.I)),
+        ("SUBSET", 8, _re.compile(r"csv coherence unmet|csv coverage note", _re.I)),
+        ("BUDGET", 9, _re.compile(r"deferred by budget", _re.I)),
+    )
+
+    def kind_of(err) -> tuple:
+        """(sort rank, short label). Unmatched rows sort with the actionable ones, never last."""
+        text = str(err or "")
+        for name, rank, pat in _KINDS:
+            if pat.search(text):
+                return rank, name
+        return 4, "OTHER"
+
     # ---- plain-text fallback (some clients / previews) ----
     lines = [f"Run {run_id}: {run_status}",
              f"{len(ok)} ok/no_change · {len(warn)} partial/transient · {len(bad)} failed", ""]
-    for r in sorted(warn + bad, key=lambda x: x[0]):
-        lines.append(f"  !! {r[0]:20} {r[1]:15} tried={tried_age(r[5]):>8}  last_obs={r[2] or '—'}  err={str(r[4] or '')[:78]}")
+    for r in sorted(warn + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
+        lines.append(f"  !! {r[0]:20} {kind_of(r[4])[1]:8} {r[1]:15} tried={tried_age(r[5]):>8}  err={str(r[4] or '')[:72]}")
     if warn or bad:
         lines.append("")
     if orphans:
@@ -155,7 +178,7 @@ def main() -> None:
                 f'letter-spacing:.05em;">{label}</div></td>')
 
     attention_rows = ""
-    for r in sorted(warn + bad, key=lambda x: x[0]):
+    for r in sorted(warn + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
         color = red if r in bad else amber
         attention_rows += (
             f'<tr><td style="padding:7px 10px;border-top:1px solid #e5e7eb;'
