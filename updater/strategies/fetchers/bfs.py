@@ -365,8 +365,9 @@ def update(unit, since) -> Result:
         # 1) metadata
         try:
             meta = _get_json(sess, url)
-        except TransientError:
-            tally.transient_unit()  # -> partial; keep going so one flaky table can't strand the rest
+        except TransientError as e:
+            # -> partial; keep going so one flaky table can't strand the rest
+            tally.transient_unit(f"{dbid}: metadata GET failed — {str(e)[:120]}")
             time.sleep(RATE)
             continue
         if not isinstance(meta, dict) or not meta.get("variables"):
@@ -374,9 +375,10 @@ def update(unit, since) -> Result:
             # data for that has vanished from the data endpoint is a per-table structural
             # break; a never-seen catalog id with no metadata is legitimately empty.
             if since_max is not None and before > 0:
-                tally.structural_unit()
+                tally.structural_unit(
+                    f"{dbid}: vanished from the data endpoint over {before:,} stored rows")
             else:
-                tally.empty_unit()
+                tally.empty_unit(f"{dbid}: no metadata, never seen")
             time.sleep(RATE)
             continue
         variables = meta["variables"]
@@ -397,8 +399,8 @@ def update(unit, since) -> Result:
         body = {"query": query_vars, "response": {"format": "json-stat2"}}
         try:
             resp = _post_json(sess, url, body)
-        except TransientError:
-            tally.transient_unit()
+        except TransientError as e:
+            tally.transient_unit(f"{dbid}: data POST failed — {str(e)[:120]}")
             time.sleep(RATE)
             continue
         if resp is _TOO_LARGE or resp is None:
@@ -420,9 +422,9 @@ def update(unit, since) -> Result:
             # helper) that hagstofa/statfin/stat_estonia already use -- bfs was missing the
             # sane_since guard + the any-non-null check, causing ~90 false structurals.
             if structural_on_zero_rows(sane_since(since_max), resp):
-                tally.structural_unit()
+                tally.structural_unit(f"{dbid}: 0 rows inside the sane horizon")
             else:
-                tally.empty_unit()
+                tally.empty_unit(f"{dbid}: nothing newer")
             time.sleep(RATE)
             continue
 

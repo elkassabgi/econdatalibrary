@@ -102,19 +102,20 @@ def update(unit, since) -> Result:
     for wk, url in urls.items():
         try:
             status, content, lm = _cond_get(sess, url, sidecar.get(wk))
-        except TransientError:
-            tally.transient_unit()
+        except TransientError as e:
+            tally.transient_unit(f"{wk}: conditional GET failed — {str(e)[:120]}")
             continue
         if status == "not_modified":
             continue
         if status == "gone":
-            tally.empty_unit()
+            tally.empty_unit(f"{wk}: workbook gone upstream")
             continue
         try:
             wbs[wk] = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
             new_lm[wk] = lm
-        except Exception:
-            tally.structural_unit()       # a 200 that is not a valid xlsx
+        except Exception as e:  # noqa: BLE001
+            # a 200 that is not a valid xlsx
+            tally.structural_unit(f"{wk}: 200 but not a valid xlsx — {type(e).__name__}")
 
     if not wbs:
         return finalize(tally, _total_rows(out_dir), since or None, source=SOURCE)
@@ -130,7 +131,7 @@ def update(unit, since) -> Result:
             continue
         wb = wbs[wb_key]
         if sheet not in wb.sheetnames:
-            tally.structural_unit()
+            tally.structural_unit(f"{wb_key}: sheet {sheet!r} is missing from the workbook")
             continue
         _, slugs, dates, vals, _, _ = ig.parse_sheet(wb[sheet], spec)
         if not slugs:
