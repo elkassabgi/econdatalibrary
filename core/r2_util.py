@@ -9,6 +9,7 @@ to write without write creds.
 from __future__ import annotations
 
 import gzip as _gzip
+import hashlib as _hashlib
 import os
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
@@ -116,3 +117,118 @@ def client(write: bool = False):
         "s3", endpoint_url=c["endpoint"], aws_access_key_id=c["key"],
         aws_secret_access_key=c["secret"], region_name="auto",
         config=Config(signature_version="s3v4", retries={"max_attempts": 5, "mode": "standard"}))
+
+
+# ---------------------------------------------------------------------------
+# SERIES CSV OBJECTS: one definition of how they are stored, shared by every writer.
+#
+# WHY THIS LIVES HERE. `updater/blob.py::put_atomic` and nine tools under `tools/` all write
+# `series/<id>.csv` into the same bucket, and until 2026-09-03 they disagreed: the updater
+# gzipped and the tools wrote plain, so any id both touched alternated encodings and neither
+# side's skip check could ever match. Two implementations of "how a series CSV is stored" is
+# the defect; this is the one.
+# ---------------------------------------------------------------------------
+
+PLAIN_MD5_KEY = "csvmd5"
+"""Object-metadata key holding the MD5 of the CSV BEFORE compression.
+
+Lowercase and separator-free on purpose: S3 metadata keys travel as HTTP header suffixes and
+boto3 lowercases them on the way back, so anything else invites a case mismatch that nobody
+notices until a guard silently stops matching.
+"""
+
+
+def series_csv_put_args(csv: bytes) -> tuple[bytes, dict, str]:
+    """(body to store, put_object kwargs, the CSV's own digest).
+
+    The digest is taken BEFORE compression, and that is the point. Compressed bytes are not a
+    portable identity: the desktop's Python 3.14 links zlib-ng and the 3.11 runners link stock
+    zlib, so the same CSV at level 9 deflates to 787,922 bytes on one and 788,191 on the other.
+    The CSV's own MD5 is the same number on every machine, Python and zlib.
+    """
+    # ALREADY-GZIPPED INPUT IS RETURNED AS-IS. Some producers compress at enqueue and hand the
+    # compressed body straight here; gzipping it again would store a double-gzipped object
+    # served as text/csv, which is R560 - about 188 objects shipped that way from exactly this
+    # mistake. tools/derive_statcan_tables.py:285 already carries this magic-byte check
+    # privately; the shared helper must not be the one place that lacks it.
+    #
+    # The digest is then of the COMPRESSED bytes, not the CSV, so it cannot be compared against
+    # a digest taken before compression. Returning None says so rather than offering a number
+    # that looks comparable and is not.
+    if csv[:2] == b"\x1f\x8b":
+        return csv, {"ContentType": "text/csv", "ContentEncoding": "gzip"}, None
+
+    digest = _hashlib.md5(csv).hexdigest()                            # noqa: S324
+    return gzip_bytes(csv), {
+        "ContentType": "text/csv",
+        "ContentEncoding": "gzip",
+        "Metadata": {PLAIN_MD5_KEY: digest},
+    }, digest
+
+
+def r2_holds_csv(s3, bucket: str, key: str, digest: str, body: bytes | None = None) -> bool:
+    """True only when R2 provably holds this same CSV. Every uncertain case returns False.
+
+    Two comparisons, in order of how much they prove:
+
+      1. `x-amz-meta-csvmd5` against `digest`. Durable across machines and compressors.
+      2. The ETag against the MD5 of `body`, when given. Only for objects written before the
+         metadata existed, so the fleet converges instead of re-uploading everything at once.
+         It answers correctly when the same compressor wrote the object and stays silent
+         otherwise - a false NEGATIVE, which costs one upload and never a wrong skip.
+
+    A multipart ETag (`<hex>-<n>`) is a digest of digests and is never comparable. An error
+    asking is not evidence of anything.
+    """
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+    except Exception:                                                 # noqa: BLE001
+        return False
+    meta = {k.lower(): v for k, v in (head.get("Metadata") or {}).items()}
+    stored = meta.get(PLAIN_MD5_KEY)
+    # `digest` may be empty when the caller had no pre-compression digest to offer (an
+    # already-gzipped body). Comparing a real stored digest against "" would answer False and
+    # force an upload - safe, but wasteful, and it would look like a mismatch rather than a
+    # question that was never asked.
+    if stored and digest:
+        return stored == digest
+    if body is None:
+        return False
+    tag = (head.get("ETag") or "").strip('"')
+    if not tag or "-" in tag:
+        return False
+    return tag == _hashlib.md5(body).hexdigest()                      # noqa: S324
+
+
+PUT_TRIES = 7
+"""App-level PUT attempts, on top of boto's own 5.
+
+NOT REDUNDANT WITH BOTO. `updater/derive.py:50-57` records why: "R2 can throw transient
+ServiceUnavailable/SlowDown throttles that outlast boto's built-in retries (killed the
+2026-07-02 bulk run at 103k objects)". Four of the nine tools that write series CSVs carry a
+private 6-or-7-try loop for this reason and five carry none at all; a shared helper without a
+loop would silently demote the four to boto's 5 while looking like consolidation.
+"""
+
+
+def put_series_csv(s3, bucket: str, key: str, csv: bytes, *, skip_identical: bool = True):
+    """PUT one series CSV the way every writer should. Returns "put" or "skipped".
+
+    Compresses via `series_csv_put_args` (which leaves an already-gzipped body alone), records
+    the pre-compression digest so the next writer can recognise it from any machine, skips the
+    upload when R2 provably holds the same CSV, and retries transient R2 throttles.
+    """
+    import time as _time                                              # noqa: PLC0415
+
+    body, kw, digest = series_csv_put_args(csv)
+    if skip_identical and digest and r2_holds_csv(s3, bucket, key, digest, body):
+        return "skipped"
+    for attempt in range(PUT_TRIES):
+        try:
+            s3.put_object(Bucket=bucket, Key=key, Body=body, **kw)
+            return "put"
+        except Exception:                                             # noqa: BLE001
+            if attempt == PUT_TRIES - 1:
+                raise
+            _time.sleep(2 ** attempt)
+    raise AssertionError("unreachable")

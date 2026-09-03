@@ -110,14 +110,24 @@ def test_the_gzipping_write_sites_use_the_helper():
     """A new bare `gzip.compress(...)` on one of these paths reintroduces the split.
 
     NAMED FOR WHAT IT CHECKS. This was called "every R2 write site" and inspected five files.
-    At least nine more tools PUT `series/<id>.csv` into the same bucket with no gzip and no
-    ContentEncoding at all - derive_pxweb_flowgrain.py:133, derive_unsdg_flows.py:136,
+    At least FIFTEEN other tools PUT `series/<id>.csv` into the same bucket with no gzip and no
+    ContentEncoding: derive_pxweb_flowgrain.py:133, derive_unsdg_flows.py:136,
     derive_noaa_missing.py:154, flowgrain_insee_melodi.py:146, flowgrain_ons_uk.py:122,
     derive_dip_tables.py:69, derive_imts_tables.py:77, derive_mfs_tables.py:71,
-    derive_pip_tables.py:68 - and they are what produces the still-plain majority of the
-    bucket. Any series id touched by one of those AND by the updater alternates plain and
-    gzip on every pass, which is a larger re-upload loop than the one this file is about and
-    is not addressed here. A test that checks five of twenty must not claim twenty.
+    derive_pip_tables.py:68, derive_census_tables.py:253, derive_ilostat_indicators.py:201,
+    derive_istat_flows.py:267, derive_usda_tables.py:154, _derive_bea_bulk.py:182 and
+    refresh_sec_edgar.py:538. None of that is addressed here.
+
+    TWO THINGS THIS DOCSTRING USED TO CLAIM, BOTH MEASURED FALSE. It said those tools "produce
+    the still-plain majority of the bucket": the nine named first own about 16,789 plain
+    objects, while a HEAD probe of eight other sources projects 1,333,274 - bea alone is
+    913,230, fifty-four times the nine combined. And it said any shared id "alternates plain
+    and gzip on every pass": alternation needs both writers to run recurrently, and only the
+    updater does. These tools are manual, last wrote on 2026-08-05/08-07, and leave a STOCK of
+    un-converted objects rather than a running loop.
+
+    A test that checks five of twenty must not claim twenty - and its docstring must not
+    describe a population it never measured.
 
     Parsed from the AST, not grepped. A text search cannot tell a CALL from the word appearing
     in a docstring, and the first version of this test failed on the very comment written to

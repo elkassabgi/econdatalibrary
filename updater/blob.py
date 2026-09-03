@@ -477,21 +477,163 @@ class R2Blob:
         is_series_csv = key.startswith("series/") and key.endswith(".csv")
         plain_digest = None
         if is_series_csv:
-            import hashlib                                            # noqa: PLC0415
-            # THE DIGEST IS TAKEN BEFORE COMPRESSION, and that is the whole point. Comparing
-            # compressed bytes is not portable: this desktop's Python 3.14 links zlib-ng
-            # ("1.3.1.zlib-ng") and the 3.11 runners link stock zlib, so the same CSV at level
-            # 9 deflates to 787,922 bytes here and 788,191 there. Measured on 90 real objects,
-            # each population is reproducible only by the compressor that wrote it - 45/45
-            # OS=3 objects rebuild on 3.11 and 23/45 on 3.14. No header normalisation reaches
-            # that. The CSV's own MD5 does: it is the same number on every machine, every
-            # Python and every zlib. Same lesson as R383, which rejected byte hashes for
-            # parquet because the desktop and CI run different pyarrow versions.
-            plain_digest = hashlib.md5(data).hexdigest()              # noqa: S324
-            from core.r2_util import gzip_bytes
-            data = gzip_bytes(data)
-            kw["ContentEncoding"] = "gzip"
-            kw["Metadata"] = {_PLAIN_MD5: plain_digest}
+            # ONE DEFINITION OF HOW A SERIES CSV IS STORED, shared with the tools that write
+            # the same key shape. Two implementations is what produced the plain/gzip
+            # alternation in the first place, so this deliberately does not re-derive the
+            # encoding here.
+            from core.r2_util import series_csv_put_args               # noqa: PLC0415
+            data, csv_kw, plain_digest = series_csv_put_args(data)
+            kw.update(csv_kw)
+        # DO NOT RE-UPLOAD BYTES R2 ALREADY HOLDS. Measured 2026-09-02: PutObject on econ-data
+        # is 7,686,397 of 10.8 M class-A operations over 24 days - 71% of the only variable
+        # line left on a median day - and this path is the one that makes them. The gzip above
+        # uses mtime=0 exactly so the bytes are deterministic, so the same data gives the same
+        # MD5, which R2 reports as a single-part object's ETag.
+        #
+        # SERIES CSVs ONLY. Manifests and state files also come through here and something may
+        # read their LastModified as a freshness signal; skipping one of those would leave a
+        # stale timestamp reading as "not updated". The cost is entirely in the CSVs.
+        #
+        # Every uncertain case UPLOADS: a multipart ETag is a digest of digests, and an error
+        # asking is not evidence of anything.
+        if is_series_csv and self._already_holds(key, data, plain_digest):
+            _count_skip()
+            return
+        self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **kw)
+
+    def _already_holds(self, key: str, data: bytes, plain_digest: str | None = None) -> bool:
+        """True only when R2 provably holds this same CSV. Delegates; does exactly ONE HEAD.
+
+        This used to do its own two-step and cost TWO head_object calls whenever the metadata
+        was absent - which is every object in the bucket today, since 0 of 1,280 sampled carry
+        `csvmd5` and the guard has never run. Doubling the HEAD on every upload attempt is real
+        latency inside a 45-minute derive budget and real class-B volume, for nothing.
+
+        `core.r2_util.r2_holds_csv` reads the metadata AND the ETag out of a single response,
+        and is the same comparison the tools under tools/ use, so the two cannot drift.
+        """
+        from core.r2_util import r2_holds_csv                         # noqa: PLC0415
+        if plain_digest:
+            return r2_holds_csv(self.client, self.bucket, key, plain_digest, data)
+        # No pre-compression digest (an already-gzipped body): the ETag is all there is.
+        return r2_holds_csv(self.client, self.bucket, key, "", data)
+
+    def put_file(self, key: str, src_path: str) -> None:
+        """Stream a file into the store. A no-op when src is already the store path."""
+        p = self._path(key)
+        if os.path.abspath(p) == os.path.abspath(src_path):
+            return
+        d = os.path.dirname(p)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        shutil.copyfile(src_path, p)
+
+    def etag(self, key: str) -> str | None:
+        data = self.get(key)
+        if data is None:
+            return None
+        return hashlib.md5(data).hexdigest()
+
+    def exists(self, key: str) -> bool:
+        return os.path.exists(self._path(key))
+
+
+# Extension -> ContentType for R2 PUTs. Only types the Worker actually serves
+# raw need an entry; everything else falls back to S3's application/octet-stream.
+# text/csv matches core/derive_csv.py's backfill PUTs exactly.
+_CONTENT_TYPES = {
+    ".csv": "text/csv",
+    ".json": "application/json",
+}
+
+
+def _is_404(exc) -> bool:
+    """True when a botocore ClientError means 'object does not exist'."""
+    resp = getattr(exc, "response", None) or {}
+    code = str(resp.get("Error", {}).get("Code", ""))
+    status = resp.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return code in ("404", "NoSuchKey", "NotFound") or status == 404
+
+
+# Uploads this process avoided because R2 already held the exact bytes. Read by callers that
+# report a total, so the saving is OBSERVED rather than predicted - the counter in
+# core/derive_csv.py existed for hours before anything printed it.
+#
+# LOCKED, because `derive_and_put` runs eight worker threads by default and `x[0] += 1` is a
+# read-modify-write, not an atomic operation. The GIL makes a lost increment unlikely rather
+# than impossible, and this number is going into a cost report: an undercount would make the
+# guard look less effective than it is and argue for the wrong decision. A lock costs nothing
+# against an S3 round trip.
+SKIPPED_IDENTICAL = [0]
+_SKIPPED_LOCK = threading.Lock()
+
+# Object-metadata key holding the MD5 of the CSV BEFORE compression. Lowercase and free of
+# separators on purpose: S3 metadata keys travel as HTTP header suffixes and boto3 lowercases
+# them on the way back, so anything else invites a case mismatch nobody notices until a guard
+# silently stops matching.
+_PLAIN_MD5 = "csvmd5"
+
+
+def _count_skip() -> None:
+    with _SKIPPED_LOCK:
+        SKIPPED_IDENTICAL[0] += 1
+
+class R2Blob:
+    """R2-backed Blob. Keys are object keys inside the ``econ-data`` bucket.
+
+    The boto3 client comes from ``core.r2_util.client(write=True)`` — creds
+    resolve env-first with ``.env`` fallback, so this works identically on a
+    laptop and headless in CI (GitHub secrets arrive as the same R2_* env
+    names). The client is built lazily: importing this module never requires
+    boto3 or credentials, only actually touching R2 does.
+    """
+
+    def __init__(self, bucket: str = R2_BUCKET):
+        self.bucket = bucket
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            from core import r2_util  # lazy — only R2 runs need boto3 + creds
+            self._client = r2_util.client(write=True)
+        return self._client
+
+    def get(self, key: str) -> bytes | None:
+        from botocore.exceptions import ClientError
+        try:
+            resp = self.client.get_object(Bucket=self.bucket, Key=key)
+        except ClientError as e:
+            if _is_404(e):
+                return None
+            raise
+        return resp["Body"].read()
+
+    def put_atomic(self, key: str, data: bytes) -> None:
+        # Single PUT — atomic per key on R2 (plan D-3); botocore already retries
+        # transient failures (r2_util config: 5 attempts, standard mode).
+        # ContentType by extension: the Worker serves series CSVs via plain R2 GET,
+        # and core/derive_csv.py's backfill PUTs set text/csv — a re-derived CSV
+        # must not silently downgrade to application/octet-stream (A3 handoff note).
+        kw = {}
+        ct = _CONTENT_TYPES.get(os.path.splitext(key)[1].lower())
+        if ct:
+            kw["ContentType"] = ct
+        # GZIP AT REST, series CSVs ONLY (cost plan 2026-08-18, mirrors
+        # core/derive_csv.py's writer): ContentEncoding='gzip' is the marker the
+        # worker's reader decompresses on; mtime=0 keeps bytes deterministic for
+        # the verifier's byte-compare. Manifests/JSON stay plain — their readers
+        # (including this module's own get paths) expect raw bytes.
+        is_series_csv = key.startswith("series/") and key.endswith(".csv")
+        plain_digest = None
+        if is_series_csv:
+            # ONE DEFINITION OF HOW A SERIES CSV IS STORED, shared with the tools that write
+            # the same key shape. Two implementations is what produced the plain/gzip
+            # alternation in the first place, so this deliberately does not re-derive the
+            # encoding here.
+            from core.r2_util import series_csv_put_args               # noqa: PLC0415
+            data, csv_kw, plain_digest = series_csv_put_args(data)
+            kw.update(csv_kw)
         # DO NOT RE-UPLOAD BYTES R2 ALREADY HOLDS. Measured 2026-09-02: PutObject on econ-data
         # is 7,686,397 of 10.8 M class-A operations over 24 days - 71% of the only variable
         # line left on a median day - and this path is the one that makes them. The gzip above
