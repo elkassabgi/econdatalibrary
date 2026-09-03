@@ -148,8 +148,9 @@ def update(unit, since) -> Result:
         total = r0.get("total", 0)
         fields = r0.get("fields", [])
         if not total or total > ig.MAX_RESOURCE_ROWS:
-            # NAMED, and the reason distinguished: over-cap is a policy exclusion, not an
-            # empty resource, and the two were indistinguishable in the run summary.
+            # LABELLED, and the reason distinguished: over-cap is a policy exclusion, not an
+            # empty resource, and the tally counts both under `empty` with nothing to
+            # tell them apart. The label is collected, not printed - see Tally.empty_ids.
             why = "over cap" if total and total > ig.MAX_RESOURCE_ROWS else "no rows"
             tally.empty_unit(f"{slug}/{rid[:8]}: {why}")
             sidecar[rid] = lm
