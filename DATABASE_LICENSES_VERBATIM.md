@@ -871,10 +871,32 @@ TWO THINGS THIS PASS DOES *NOT* SETTLE, stated rather than glossed:
     SERIES inside a dataset came from a proprietary third-party provider. No dataset we
     serve declares one; that is the strongest statement this method supports.
 
-MATERIAL FOR THE 2026-08-28 REPAIR: all 379 under-keyed files belong to ONE dataset,
-`social-indicators-of-latin-america-and-the-caribbean`, whose licence is **cc-by**
-(CC BY 4.0 — derivatives permitted with attribution). The under-keying repair is therefore
-licence-clear on its own terms and does not touch any ND dataset.
+MATERIAL FOR THE 2026-08-28 REPAIR — ~~all 379 under-keyed files belong to ONE dataset,
+`social-indicators-of-latin-america-and-the-caribbean` ... the under-keying repair is therefore
+licence-clear on its own terms and does not touch any ND dataset~~ **CORRECTED 2026-09-03, and
+the correction changes the plan rather than the verdict.**
+
+Measured over all 554 stored parquets (`tools/cost/idb_underkeyed_licences.py`; a file counts as
+under-keyed when its rows outnumber its distinct `(series_key, obs_date)` pairs):
+
+| licence | under-keyed files | stacked rows | share |
+|---|---:|---:|---:|
+| `cc-by` — derivatives permitted | 390 | 14,198,901 | **96.4%** |
+| `cc-by-nc-nd` — NoDerivatives | 18 | 535,502 | 3.6% |
+
+Under-keyed files sit in **seventeen** packages, not one. `social-indicators` is still the bulk
+of it (386 files, 13,882,394 stacked rows, 94.2% of the total), and it is still `cc-by`. But
+`population-and-housing-censuses`, `center-for-learning-improvement` (5 files),
+`priorities-for-productivity-and-income`, `a-database-on-currency-composition` and nine more are
+`cc-by-nc-nd`.
+
+So the repair is licence-clear **once scoped to the `cc-by` packages** — which is 96.4% of the
+defect and needs no NoDerivatives decision. The remaining 18 files do, and 3.6% is not a reason
+to wave them through: NoDerivatives is a yes/no question, not a proportion, and reformatting an
+ND file is precisely the act it names.
+
+Why the original was wrong: 379 was a count of files in one dataset, and it was read as a count
+of all under-keyed files. The two are different populations.
 
 Caveat: this review covers only the general website terms at the cited URL. Bundesbank time series are also distributed via its SDMX/statistics API, which may carry its own separate terms; if the library ingests data through that channel, those terms should be reviewed separately rather than relying on this page.
 
