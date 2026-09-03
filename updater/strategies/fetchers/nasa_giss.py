@@ -166,24 +166,27 @@ def update(unit, since) -> Result:
         url = f"{BASE}/{fname}"
         try:
             r = requests.get(url, headers=UA, timeout=120)
-        except (requests.Timeout, requests.ConnectionError):
-            tally.transient_unit()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            tally.transient_unit(f"{fname}: {type(e).__name__}")
             continue
         if r.status_code in _TRANSIENT or r.status_code == 404:
-            tally.transient_unit()
+            # 404 is deliberately TRANSIENT here: a table missing today may be back tomorrow.
+            tally.transient_unit(f"{fname}: HTTP {r.status_code}")
             continue
         if r.status_code != 200:
             # hard non-200 (not 404/429) — body unavailable, treat as structural
-            tally.structural_unit()
+            tally.structural_unit(f"{fname}: HTTP {r.status_code}")
             continue
 
         body = r.content or b""
         k, d, v = _parse_giss_csv(body, label)
         if not v:
             if body.strip():
-                tally.structural_unit()  # real body, parsed nothing -> schema break
+                # real body, parsed nothing -> schema break
+                tally.structural_unit(
+                    f"{fname}: {len(body):,}-byte body parsed 0 rows")
             else:
-                tally.empty_unit()       # genuinely empty body
+                tally.empty_unit(f"{fname}: empty body")
             continue
 
         all_keys.extend(k)

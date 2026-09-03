@@ -158,7 +158,7 @@ def update(unit, since) -> Result:
         except TransientError:
             # Record the transient sub-unit and surface partial WITHOUT publishing
             # anything (nothing has been written yet in this run).
-            tally.transient_unit()
+            tally.transient_unit(f"{ds}: fetch failed before anything was published")
             cur_total = sum(blob.row_count(os.path.join(out_dir, f"{d}.parquet")) for d in DATASETS)
             last_db = None
             for d in DATASETS:
@@ -178,15 +178,18 @@ def update(unit, since) -> Result:
         # that parsed 0 rows, OR a dataset that previously had data now parsing
         # 0 rows, OR a large fraction of points unparseable (partial drift).
         if not envelope_ok:
-            tally.structural_unit()
+            tally.structural_unit(f"{ds}: envelope missing, not a dict, or empty")
             continue
         if tbl.num_rows == 0:
             # Non-empty envelope but 0 usable rows -> schema break (OFR always
             # serves history). before>0 reinforces it but isn't required.
-            tally.structural_unit()
+            tally.structural_unit(
+                f"{ds}: non-empty envelope parsed 0 usable rows over {before:,} stored")
             continue
         if total_points > 0 and (dropped / total_points) >= DROP_RATIO_STRUCTURAL:
-            tally.structural_unit()
+            tally.structural_unit(
+                f"{ds}: {dropped:,} of {total_points:,} points unparseable "
+                f"({dropped / total_points:.0%}, floor {DROP_RATIO_STRUCTURAL:.0%})")
             continue
         # Healthy dataset: merge + publish.
         n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
