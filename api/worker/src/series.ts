@@ -47,6 +47,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Env, SeriesRow, SourceRow, LicenseRow } from "./types";
+import { headerRows, idbDatasetUrl, IDB_CAVEAT } from "./seriesHeader";
 import { SELECT_SERIES, SELECT_SOURCE, SELECT_LICENSE } from "./sql";
 import {
   csv, csvStream, csvPassthrough, json, notFound, notMigrated, dataUnavailable, resolverEmpty,
@@ -81,25 +82,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // keys under series/ found NO literal ! ' ( ) * in any key, so the store is uniformly
 // Python-spelled and there is no second convention this would break.
 
-// Dataset slugs IDB has RENAMED since we ingested them. The old name 404s at the publisher with
-// no redirect, which breaks condition (3) of IDB's written permission (2026-07-15): "a clear,
-// permanent link back to the original dataset page".
-//
-// Kept as a map rather than re-keying the affected series: a re-key would change public series
-// ids and break every URL a user already holds, in order to repair a link in a comment header.
-//
-// Checked, not assumed — tools/cost/idb_backlink_check.py asks CKAN package_show whether every
-// slug in the served catalogue still resolves, and names any that stop. As of 2026-09-02, 20 of
-// 21 resolved and this was the one that did not.
-const IDB_RENAMED: Record<string, string> = {
-  // -> cima-indicators, "Center of Information to Improve Learning (CIMA)", cc-by, 29 series
-  "center-for-learning-improvement-information-cima-regional-indicators-2007-2": "cima-indicators",
-};
 
-function idbDatasetUrl(seriesId: string): string {
-  const slug = seriesId.split(":")[2] ?? "";
-  return `https://data.iadb.org/dataset/${IDB_RENAMED[slug] ?? slug}`;
-}
 
 function objectKey(seriesId: string): string {
   const rfc3986 = encodeURIComponent(seriesId).replace(
@@ -132,23 +115,6 @@ async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Pr
   const row = (label: string, val: string | null | undefined): string =>
     val ? `#  ${(label + ":").padEnd(11)}${String(val).replace(/\s+/g, " ").trim()}\n` : "";
 
-  // Same gutter as row(), but wrapped to the 78-column bar below. A notice long enough to
-  // matter is long enough to need this: unwrapped it prints three bar-widths wide and reads as
-  // damage rather than as something to act on.
-  const rows = (label: string, val: string | null | undefined): string => {
-    if (!val) return "";
-    const width = 65;                       // 78 minus "#  " and the 11-column label gutter
-    const out: string[] = [];
-    let line = "";
-    for (const word of String(val).replace(/\s+/g, " ").trim().split(" ")) {
-      if (line && line.length + 1 + word.length > width) { out.push(line); line = word; }
-      else line = line ? line + " " + word : word;
-    }
-    if (line) out.push(line);
-    return out
-      .map((l, i) => `#  ${(i === 0 ? label + ":" : "").padEnd(11)}${l}\n`)
-      .join("");
-  };
 
   let licLine = "";
   if (L) {
@@ -192,11 +158,7 @@ async function citationHeader(seriesId: string, series: SeriesRow, env: Env): Pr
     // education, ethnicity and survey. Those rows are different populations, not duplicates, and
     // nothing in the CSV separates them. Said out loud until the key is repaired, because the
     // alternative is delivering it as if it were clean.
-    rows("Caveat", source === "idb"
-      ? "rows are keyed by indicator and country only; the publisher also breaks these down by "
-        + "sex, area, age, quintile, education and survey, so one date may carry several "
-        + "different values that this file cannot tell apart"
-      : null) +
+    headerRows("Caveat", source === "idb" ? IDB_CAVEAT : null) +
     row("Homepage", src?.homepage) +
     row("Terms", src?.terms_url) +
     row("Cite as", citation) +
