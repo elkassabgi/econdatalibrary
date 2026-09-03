@@ -149,25 +149,25 @@ def update(unit, since) -> Result:
         stored = sidecar.get(label) or {}
         try:
             status, content, lm, etag = _cond_get(url, stored)
-        except TransientError:
-            tally.transient_unit()
+        except TransientError as e:
+            tally.transient_unit(f"{label}: conditional GET failed — {str(e)[:120]}")
             continue
         if status == "not_modified":
             continue                       # current -> skipped, not counted
         if status == "gone":
-            tally.empty_unit()
+            tally.empty_unit(f"{label}: file gone upstream")
             continue
 
         try:
             keys, dates, vals = ig.parse_wpp_csv(content, label)
-        except Exception:
-            tally.transient_unit()
+        except Exception as e:  # noqa: BLE001
+            tally.transient_unit(f"{label}: CSV parse failed — {type(e).__name__}")
             continue
         if not keys:
             # Real body, zero rows. Empty (not structural): finalize() raises on any structural
             # unit, which would abort the source and stop the OTHER file from publishing too.
             # The validator is deliberately NOT advanced, so this file retries next tick.
-            tally.empty_unit()
+            tally.empty_unit(f"{label}: real body, 0 rows (empty on purpose, not structural)")
             continue
 
         tbl = pa.table({
@@ -179,8 +179,9 @@ def update(unit, since) -> Result:
         before = blob.row_count(path) if blob.exists(path) else 0
         try:
             n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-        except DefinitiveError:
-            tally.transient_unit()
+        except DefinitiveError as e:
+            tally.transient_unit(f"{label}: merge refused over {before:,} stored — "
+                                 f"{str(e)[:110]}")
             continue
         published += n
         tally.added_unit(max(0, n - before))
