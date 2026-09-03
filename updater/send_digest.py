@@ -32,6 +32,37 @@ STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                      "data", "_aqueduct", "state.db")
 
 
+
+# An age means nothing without the cadence it is measured against. Measured 2026-09-03 across all
+# 229 live sources: 6 are late by this rule, while the four OLDEST ages in the render (38.2 days —
+# pwt, oxcgrt, barro_lee, gppd) are cadence `static` and perfectly fine. Before this, the digest's
+# `tried=` column read as alarming exactly where nothing was wrong, and read as unremarkable for
+# eia at 11.6 days, which is DAILY and four cycles late.
+#
+# Limits are deliberately generous: a source is late only after missing several of its own cycles,
+# so a LATE marker is unarguable rather than borderline.
+CADENCE_LIMIT_DAYS = {"daily": 3, "weekly": 14, "monthly": 45, "quarterly": 120, "annual": 400}
+
+
+def is_late(cadence: str, ts, now) -> bool:
+    """True when `ts` is older than the source's cadence allows.
+
+    `irregular` and `static` declare NO expectation and are never late — marking them would
+    recreate the false alarm this exists to remove. An absent or unparseable timestamp is also
+    never late: not knowing when something last ran is a different condition from knowing it ran
+    too long ago, and reporting it as lateness would be a guess wearing a measurement's clothes.
+    """
+    lim = CADENCE_LIMIT_DAYS.get(cadence or "")
+    if not lim or not ts:
+        return False
+    try:
+        t = _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return False
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=_dt.timezone.utc)
+    return (now - t).total_seconds() / 86400.0 > lim
+
 def main() -> None:
     key = os.environ.get("RESEND_API_KEY", "").strip()
     run_status = os.environ.get("RUN_STATUS", "unknown")   # ${{ job.status }} from the yml
@@ -67,13 +98,16 @@ def main() -> None:
         if _root not in _sys.path:
             _sys.path.insert(0, _root)
         from updater import registry                                  # noqa: PLC0415
-        managed = {e["source_id"] for e in registry.load().get("sources", [])}
+        _entries = registry.load().get("sources", [])
     except Exception:                                                 # noqa: BLE001
         try:
             from . import registry                                    # noqa: PLC0415
-            managed = {e["source_id"] for e in registry.load().get("sources", [])}
+            _entries = registry.load().get("sources", [])
         except Exception:                                             # noqa: BLE001
-            managed = None      # registry genuinely unreadable -> report everything
+            _entries = None     # registry genuinely unreadable -> report everything
+    managed = {e["source_id"] for e in _entries} if _entries is not None else None
+    # cadence comes from the SAME load, so a row can say whether its age is actually late
+    cadence = {e["source_id"]: (e.get("cadence") or "") for e in (_entries or [])}
     orphans = [r for r in rows if managed is not None and r[0] not in managed]
     if managed is not None:
         rows = [r for r in rows if r[0] in managed]
@@ -90,6 +124,11 @@ def main() -> None:
 
     feed = "https://econdl-api.elkassabgi.workers.dev/v1/last-updates"
     runlog = f"https://github.com/elkassabgi/econdatalibrary/actions/runs/{run_id}"
+
+    def late_mark(source_id, ts) -> str:
+        """' LATE' when this source has missed several of its own cycles, else ''."""
+        return " LATE" if is_late(cadence.get(source_id, ""), ts,
+                                  _dt.datetime.now(_dt.timezone.utc)) else ""
 
     def tried_age(ts) -> str:
         """How long ago we last ATTEMPTED this source, as a short human string.
@@ -139,7 +178,7 @@ def main() -> None:
     lines = [f"Run {run_id}: {run_status}",
              f"{len(ok)} ok/no_change · {len(warn)} partial/transient · {len(bad)} failed", ""]
     for r in sorted(warn + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
-        lines.append(f"  !! {r[0]:20} {kind_of(r[4])[1]:8} {r[1]:15} tried={tried_age(r[5]):>8}  err={str(r[4] or '')[:72]}")
+        lines.append(f"  !! {r[0]:20} {kind_of(r[4])[1]:8} {r[1]:15} tried={tried_age(r[5]):>8}{late_mark(r[0], r[5]):<5}  err={str(r[4] or '')[:72]}")
     if warn or bad:
         lines.append("")
     if orphans:
@@ -188,7 +227,7 @@ def main() -> None:
             f'<td style="padding:7px 10px;border-top:1px solid #e5e7eb;'
             f'font-family:Consolas,monospace;font-size:13px;">{esc(r[2])}</td>'
             f'<td style="padding:7px 10px;border-top:1px solid #e5e7eb;color:{grey};'
-            f'font-family:Consolas,monospace;font-size:13px;">{esc(tried_age(r[5]))}</td>'
+            f'font-family:Consolas,monospace;font-size:13px;">{esc(tried_age(r[5]) + late_mark(r[0], r[5]))}</td>'
             f'<td style="padding:7px 10px;border-top:1px solid #e5e7eb;color:{grey};'
             f'font-size:12px;">{esc(str(r[4] or "")[:110])}</td></tr>')
 
