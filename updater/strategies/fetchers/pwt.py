@@ -56,14 +56,15 @@ def update(unit, since) -> Result:
 
     try:
         r = requests.get(URL, headers=UA, timeout=300)
-    except (requests.Timeout, requests.ConnectionError):
-        tally.transient_unit()
+    except (requests.Timeout, requests.ConnectionError) as e:
+        tally.transient_unit(f"pwt 10.0 workbook: {type(e).__name__} — {str(e)[:140]}")
         return finalize(tally, before, None, source=SOURCE)
     if r.status_code in (429, 500, 502, 503, 504):
-        tally.transient_unit()
+        tally.transient_unit(f"pwt 10.0 workbook: HTTP {r.status_code}")
         return finalize(tally, before, None, source=SOURCE)
     if r.status_code != 200:
-        tally.structural_unit()
+        tally.structural_unit(f"pwt 10.0 workbook: HTTP {r.status_code} — a FROZEN vintage "
+                              f"should not move, so this is the host or the URL")
         return finalize(tally, before, None, source=SOURCE)
 
     import openpyxl
@@ -80,7 +81,8 @@ def update(unit, since) -> Result:
 
     rows = list(data_sheet.iter_rows(values_only=True))
     if not rows:
-        tally.structural_unit()  # 200 but empty sheet -> schema/structural break
+        # 200 but empty sheet -> schema/structural break
+        tally.structural_unit("pwt 10.0 workbook: the data sheet is empty")
         return finalize(tally, before, None, source=SOURCE)
 
     headers = [str(h).strip() if h is not None else "" for h in rows[0]]
@@ -93,7 +95,8 @@ def update(unit, since) -> Result:
                              if h.lower() in ("country", "countryname", "country_name")), None)
 
     if year_col is None:
-        tally.structural_unit()  # header present but no year col -> structural break
+        # header present but no year col -> structural break
+        tally.structural_unit("pwt 10.0 workbook: header present but no year column")
         return finalize(tally, before, None, source=SOURCE)
 
     skip_cols = {country_col, year_col, country_name_col}
@@ -132,7 +135,9 @@ def update(unit, since) -> Result:
                     "obs_date": pa.array(dates, pa.date32()),
                     "value": pa.array(vals, pa.float64())})
     if tbl.num_rows == 0:
-        tally.structural_unit()  # 200 + real workbook but parsed nothing -> structural
+        # 200 + real workbook but parsed nothing -> structural
+        tally.structural_unit(
+            f"pwt 10.0 workbook: parsed 0 rows from a real body over {before:,} stored")
         return finalize(tally, before, None, source=SOURCE)
 
     n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
