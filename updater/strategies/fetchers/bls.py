@@ -622,8 +622,9 @@ def update(unit, since) -> Result:
             try:
                 vintage, tail, escalated, can_uc = _survey_vintage(
                     sess, sv, (cov.get(sv) or {}).get("current_ratio"))
-            except TransientError:
-                tally.transient_unit()  # probe failed -> partial, re-run next tick
+            except TransientError as e:
+                # probe failed -> partial, re-run next tick
+                tally.transient_unit(f"{sv}: vintage probe failed — {str(e)[:140]}")
                 continue
 
             if not tail:
@@ -657,11 +658,11 @@ def update(unit, since) -> Result:
                     dest = os.path.join(tmpdir, f"{sv}__{f}")
                     _download(sess, sv, f, dest)
                     raw_paths.append(dest)
-            except TransientError:
-                tally.transient_unit()
+            except TransientError as e:
+                tally.transient_unit(f"{sv}: tail download failed — {str(e)[:140]}")
                 continue
-            except DefinitiveError:
-                tally.structural_unit()
+            except DefinitiveError as e:
+                tally.structural_unit(f"{sv}: tail download refused — {str(e)[:140]}")
                 continue
 
             # 3) parse -> table conformed to the existing parquet's schema.
@@ -672,10 +673,11 @@ def update(unit, since) -> Result:
                 if n_body > 0:
                     # Non-trivial body that parsed to 0 usable rows = schema/format
                     # break (BLS always serves parseable rows in a Current cut).
-                    tally.structural_unit()
+                    tally.structural_unit(
+                        f"{sv}: {n_body:,}-row body parsed to 0 usable rows")
                 else:
                     # Genuinely empty file body (rare) — honest no-data sub-unit.
-                    tally.empty_unit()
+                    tally.empty_unit(f"{sv}: empty file body")
                 # Do NOT advance vintage on structural; advance on a real empty body
                 # so we don't re-parse the same empty file forever.
                 if n_body == 0 and vintage is not None:
@@ -727,7 +729,10 @@ def update(unit, since) -> Result:
                                                     key_col="series_id"),
                                  cap=CURSOR_CAP)
             except DefinitiveError as e:
-                tally.transient_unit()
+                # The reason was already being captured into the data-op record below and
+                # never reached the tally, so the run note carried a count while the
+                # diagnosis sat somewhere a reader had to know to look.
+                tally.transient_unit(f"{sv}: merge refused — {str(e)[:140]}")
                 self_dups = _preexisting_dups(path)
                 if self_dups > 0:
                     _record_dataop(out_dir, sv, self_dups, str(e)[:160])
