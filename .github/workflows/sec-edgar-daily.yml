@@ -123,6 +123,16 @@ jobs:
               print(f"::error::could not read back {probe} from R2: {e!r}")
               sys.exit(1)
           prows = pq.read_metadata(io.BytesIO(pb)).num_rows
+          # INFLATE FIRST. Series CSVs have been stored gzip-at-rest since 2026-08-18 and
+          # sec_edgar's are among the last still plain (40/40 sampled 2026-09-03). The moment
+          # they are converted, `decode("utf-8","replace")` here would turn the compressed
+          # bytes into replacement characters rather than raise, `crows` would collapse to
+          # about zero, and this gate would fail with "parquet and served CSV disagree" - a
+          # true-looking error naming the wrong cause. Magic-byte detection, the same pattern
+          # tools/verify_source_served.py:202 uses.
+          if cb[:2] == b"\x1f\x8b":
+              import gzip as _gzip
+              cb = _gzip.decompress(cb)
           # Count DATA rows only. The raw R2 object carries a bare `series_id,...`
           # header; the worker prepends a citation block of `#` comment lines when it
           # serves the file, so skipping both makes this check valid against either.
