@@ -148,7 +148,10 @@ def update(unit, since) -> Result:
         total = r0.get("total", 0)
         fields = r0.get("fields", [])
         if not total or total > ig.MAX_RESOURCE_ROWS:
-            tally.empty_unit()            # empty or over the cap: examined, advance the vintage
+            # NAMED, and the reason distinguished: over-cap is a policy exclusion, not an
+            # empty resource, and the two were indistinguishable in the run summary.
+            why = "over cap" if total and total > ig.MAX_RESOURCE_ROWS else "no rows"
+            tally.empty_unit(f"{slug}/{rid[:8]}: {why}")
             sidecar[rid] = lm
             continue
 
@@ -161,7 +164,7 @@ def update(unit, since) -> Result:
 
         keys, dates, vals = ig.rows_to_long(rows, slug, rname, fields)
         if not vals:
-            tally.empty_unit()            # no date+value pattern in this resource
+            tally.empty_unit(f"{slug}/{rid[:8]}: no date+value pattern in {len(rows)} rows")
             sidecar[rid] = lm
             continue
 
