@@ -62,17 +62,25 @@ def make(ds: str, source: str):
             cid, key = j.creds()
             meta = j.report_metadata(ds)
             rows_k, rows_d, rows_v = j.pull_rows(ds, cid, key, meta)
-        except j.UnsupportedLayout:
-            tally.structural_unit()
+        except j.UnsupportedLayout as e:
+            # NAMED. This used to discard the exception, so every failure of any unctad source
+            # rendered as a bare "1/1 sub-unit(s) ..." and the reason was gone. The label is
+            # what finalize renders through _named into unit_state.last_error, the run note and
+            # the digest.
+            tally.structural_unit(f"{ds}: unsupported layout — {str(e)[:160]}")
             return finalize(tally, before, None, source=source, merged_rows=0)
-        except Exception:                                # noqa: BLE001 — network/contract
-            tally.transient_unit()
+        except Exception as e:                           # noqa: BLE001 — network/contract
+            # Credentials travel as ClientId/ClientSecret HEADERS, not URL parameters
+            # (jobs/ingest_unctad_ds.py), so the exception text carries no secret. Truncated
+            # because a label is a signpost, not a stack trace.
+            tally.transient_unit(f"{ds}: {type(e).__name__} — {str(e)[:160]}")
             return finalize(tally, before, None, source=source, merged_rows=0)
 
         if not rows_k:
             # A reachable API that yields zero parseable observations is a CONTRACT
-            # change, not an empty release — do not record the vintage.
-            tally.structural_unit()
+            # change, not an empty release — do not record the vintage. Named for the same
+            # reason as the handlers above: a bare count cannot be investigated.
+            tally.structural_unit(f"{ds}: 200 but zero parseable observations")
             return finalize(tally, before, None, source=source, merged_rows=0)
 
         tbl = pa.table({"series_key": pa.array(rows_k, pa.string()),
