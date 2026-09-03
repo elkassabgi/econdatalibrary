@@ -196,7 +196,14 @@ def main(sources):
             t0 = time.time()
             res = derive.derive_and_put(todo, blob)
             el = time.time() - t0
-            print(f"  derived put={res['put']:,} failed={len(res['failed']):,} "
+            # `put` counts CSVs HANDLED, not bytes sent: R2Blob.put_atomic compares the
+            # gzipped body against the stored ETag and returns without uploading when they
+            # match. Naming the skipped share here keeps this line from counting one thing
+            # while saying another (R666, and R628/R652 before it).
+            _skipped = res.get("skipped_identical", 0)
+            print(f"  derived put={res['put']:,} "
+                  f"(already current, not re-uploaded: {_skipped:,}) "
+                  f"failed={len(res['failed']):,} "
                   f"in {el / 60:.1f} min ({res['put'] / max(el, 1e-9):.1f}/s)",
                   flush=True)
             for f in res["failed"][:5]:

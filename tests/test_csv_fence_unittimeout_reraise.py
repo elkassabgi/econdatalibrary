@@ -51,6 +51,23 @@ def _run(monkeypatch, exc):
     fake_derive = types.SimpleNamespace(derive_and_put=boom)
     monkeypatch.setitem(sys.modules, "updater.derive", fake_derive)
     monkeypatch.setattr(orchestrate, "derive", fake_derive, raising=False)
+
+    # THE PACKAGE ATTRIBUTE IS THE ONE THAT ACTUALLY WINS, and without this line these two
+    # tests pass or fail depending on COLLECTION ORDER. `_derive_changed_csvs` reaches derive
+    # through a lazy `from . import derive` (orchestrate.py:648). For `from package import
+    # name`, Python returns `getattr(package, name)` when the package already carries that
+    # attribute - and importing `updater.derive` ANYWHERE sets it, permanently, on the real
+    # module. Patching `sys.modules` then reaches nothing, `boom` is never called, the real
+    # deriver runs, and the assertions fail against a note they were never meant to see.
+    #
+    # pytest imports every test module during COLLECTION, before any test runs, so a single
+    # module-level `from updater import derive` in an unrelated test file breaks these two no
+    # matter which order the files are given. Measured: adding
+    # tests/test_derive_reports_skipped.py made both fail in BOTH orders, while this file
+    # alone still passed. `raising=False` above hid it - it silently created an attribute
+    # nothing reads instead of failing loudly.
+    import updater as _updater_pkg
+    monkeypatch.setattr(_updater_pkg, "derive", fake_derive, raising=False)
     return orchestrate._derive_changed_csvs(_Unit(), _Res(), blob=None)
 
 

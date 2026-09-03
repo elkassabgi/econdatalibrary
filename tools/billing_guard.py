@@ -43,7 +43,19 @@ ALERT_WRITES = 15_000_000   # ~$15/day
 # D1 writes that same day. This guard measured them, printed them, and alarmed on neither.
 # $4.50 per million, 1M included per month, so a single day over ~1M has spent the whole
 # month's allowance. Steady state on this account is ~85k/day.
-WARN_R2_A = 400_000         # ~$1.80/day
+# LOWERED 2026-09-02 from 400,000, because the threshold sat ABOVE the incident it was written
+# for and three weeks of a recurring charge passed underneath it in silence. A finished
+# `derive_noaa` was resurrected ~48 times a day from 2026-08-10 to 08-29, each pass paging
+# 3,139 ListObjects over `series/noaa%3A` for zero work: ~150,672 operations a day, $22.50 a
+# month in marginal cost. The PEAK total class-A across the whole leak was 264,454 (08-28),
+# comfortably under 400,000, so this guard measured it, printed it, and never warned once.
+#
+# 150,000 is ~1.75x the ~85k/day steady state and ~$0.68/day. It fires on backfill days too,
+# and that is intended rather than tolerated: a day that spends $0.68 of a bill Ahmed has
+# capped at $35 is a day he should be told about. The number to avoid is not "alarms" but
+# "alarms nobody can act on" - every firing here names a day and an operation count that can
+# be traced to a job.
+WARN_R2_A = 150_000         # ~$0.68/day; above the ~85k/day steady state, below the noaa leak
 ALERT_R2_A = 1_000_000      # ~$4.50/day, and the entire monthly included allowance in a day
 
 # R2 storage baseline for the email's context line (measured 2026-08-18:
