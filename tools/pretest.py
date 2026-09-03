@@ -17,7 +17,15 @@ and BOTH SKIP when their data is absent:
     test_series_carveout_coverage.py:86   skipif(not os.path.exists(CATALOG))
 
 The GitHub runner has neither, so on CI they contribute nothing. Deselecting them locally
-reproduces CI's real coverage exactly, at 4m54s instead of 57m — measured, both numbers.
+reproduces CI's SELECTION at 4m54s instead of 57m — measured, both numbers.
+
+IT DOES NOT REPRODUCE CI'S ENVIRONMENT, and that distinction cost forty red runs. CI pins Python
+3.11; this workstation runs 3.14. `tests/test_blob_skip_identical.py` built a fixture with
+`gzip.compress(data, mtime=0)` while production uses `r2_util.gzip_bytes`, and those two agree
+only on 3.14 — 3.11 leaves zlib's build platform in the gzip header's OS byte where 3.14 forces
+255. This tool printed PASS for forty pushes while `tests` was red on every one of them. A PASS
+here means "the tests CI selects pass ON THIS INTERPRETER", which is weaker than it reads, so the
+banner below prints both versions on every run.
 
     full        1,945 collected   1 failed, 1944 passed   3,445 s
     this tool   1,940 collected   1,928 passed, 12 desel    293 s
@@ -31,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -42,6 +51,17 @@ DATA_BOUND = [
     ("tests/test_eurostat_value_dimension.py", "globs 7,638 .tsv.gz / 10.0 GB"),
     ("tests/test_series_carveout_coverage.py", "reads the 11.9 GB catalog.db"),
 ]
+
+
+def _ci_python() -> str:
+    """The version CI pins, read from the workflow rather than remembered."""
+    wf = os.path.join(ROOT, ".github", "workflows", "tests.yml")
+    try:
+        with open(wf, encoding="utf-8") as fh:
+            m = re.search(r"python-version:\s*['\"]?([0-9.]+)", fh.read())
+        return m.group(1) if m else "unknown"
+    except OSError:
+        return "unknown"
 
 
 def main() -> int:
@@ -67,6 +87,12 @@ def main() -> int:
 
     t0 = time.time()
     rc = subprocess.run(cmd, cwd=ROOT).returncode
+    local = f"{sys.version_info.major}.{sys.version_info.minor}"
+    ci = _ci_python()
+    if ci != "unknown" and not ci.startswith(local):
+        print(f"\nNOTE: this ran on Python {local}; CI pins {ci}. A PASS here does NOT cover "
+              f"version-sensitive behaviour —\n      forty red runs hid behind exactly that gap "
+              f"(gzip header bytes differ between 3.11 and 3.14).", flush=True)
     print(f"\n{'PASS' if rc == 0 else 'FAIL'} in {time.time() - t0:.0f}s "
           f"(exit {rc}) — {' '.join(cmd[2:])}")
     if rc != 0:
