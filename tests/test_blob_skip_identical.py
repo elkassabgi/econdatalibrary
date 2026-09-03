@@ -14,13 +14,13 @@ signal. Skipping one of those would leave a stale timestamp reading as "not upda
 """
 from __future__ import annotations
 
-import gzip
 import hashlib
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.r2_util import gzip_bytes  # noqa: E402
 from updater.blob import SKIPPED_IDENTICAL, R2Blob  # noqa: E402
 
 CSV = b"series_id,obs_date,value\na,2020-01-01,1.0\n"
@@ -52,7 +52,15 @@ def blob_with(client):
 
 
 def gz_md5(data: bytes) -> str:
-    return hashlib.md5(gzip.compress(data, mtime=0)).hexdigest()      # noqa: S324
+    """The ETag R2 would report, built with the SAME compressor production uses.
+
+    NOT `gzip.compress(data, mtime=0)`. That is what this file did until 2026-09-03, and it made
+    the test green on Python 3.14 and red on the 3.11 runners for 40 straight CI runs: 3.11's
+    `gzip.compress` leaves zlib's build platform in the header OS byte, `gzip_bytes` forces 255,
+    so the fixture's digest could never match the bytes production actually PUTs. A fixture that
+    re-derives what the code under test derives is not a baseline, it is a second opinion.
+    """
+    return hashlib.md5(gzip_bytes(data)).hexdigest()                  # noqa: S324
 
 
 def test_an_identical_series_csv_is_NOT_uploaded():
