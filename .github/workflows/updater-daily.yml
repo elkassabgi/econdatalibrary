@@ -436,6 +436,32 @@ jobs:
         continue-on-error: true
         run: python tools/probe_csv_freshness.py --sources 6 --sample 8
 
+      - name: source_counts drift check (the browse total nothing validated)
+        # /v1/catalog?source=X does not count anything. catalog.ts:208 reads one cached row
+        # (sql.ts:246) and serves it verbatim for every source without a carve-out. Nothing
+        # checked that row against `series`, and on 2026-09-04 noaa's was 42 high -- while the
+        # static catalogue page published the correct figure, so the site and the API disagreed
+        # on the same source. 31 tools/audit_*.py existed and none covered this table.
+        #
+        # FREE MODE ON PURPOSE. This reads source_counts (one indexed row per source, which the
+        # d1_cost_guard does not count) and compares against the catalog.db already pulled above
+        # for the CSV derive, using per-source PK ranges. Measured rows_read: 322. The
+        # authoritative form is --remote-truth, which is TWO full scans (~$0.013) -- run that by
+        # hand when this reports something, not on a schedule.
+        #
+        # A hit here is not automatically a served error: this mode cannot distinguish cache
+        # drift from D1 legitimately being ahead of local (the known 243-row residual shows up
+        # as sec_edgar/fhfa/fed_board). The tool says so in its own output. --remote-truth is
+        # what separates them.
+        #
+        # continue-on-error for the same reason as the probe above: it is new, and until a week
+        # of runs shows what it says when nothing is wrong it must not red a run it has not
+        # earned the right to red. DROP THE FLAG once it is quiet -- a check nobody can fail is
+        # a check nobody reads (R244).
+        if: ${{ always() }}
+        continue-on-error: true
+        run: python tools/audit_d1_source_counts.py
+
       - name: Daily digest email (morning report, like hfdatalibrary's)
         # Runs even when earlier steps failed so a broken morning is REPORTED,
         # not silent. Needs the RESEND_API_KEY repo secret; without it the step
