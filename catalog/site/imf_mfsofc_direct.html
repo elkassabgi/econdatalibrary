@@ -327,7 +327,9 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
     if(diff<86400)return Math.floor(diff/3600)+' hours ago';
     if(diff<604800)return Math.floor(diff/86400)+' days ago';
     return '';}catch(e){return '';}}
-  fetch(API+"/v1/stats?t="+Date.now()).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
+  // Hourly bucket, NOT per-load. /v1/stats is edge-cached 6h (s-maxage=21600); a
+  // millisecond cache-buster defeats it and sends every visitor to the origin (R709).
+  fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
     document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-30');

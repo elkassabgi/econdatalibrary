@@ -504,7 +504,9 @@ addEventListener("load", function () {
       return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
     } catch (e) { return s; }
   }
-  fetch(API + '/v1/stats?t=' + Date.now())
+  // Hourly bucket, not per-load: /v1/stats is edge-cached 6h (s-maxage=21600) and a
+  // millisecond buster defeats it, sending every visitor to the origin.
+  fetch(API + '/v1/stats?h=' + Math.floor(Date.now() / 3600000))
     .then(function (r) { if (!r.ok) throw 0; return r.json(); })
     .then(function (d) {
       var dot = el('sb-dot'), txt = el('sb-text'), data = el('sb-data');
