@@ -99,7 +99,11 @@ export default {
       // data store (census 2026-07-02, D:\...\_series_census_hll.json): global
       // distinct series keys per source via HyperLogLog (~1% error; a floor,
       // since keys that repeat across datasets dedupe), observations = exact
-      // parquet row counts. catalog_entries is counted live from D1.
+      // parquet row counts. catalog_entries is SUM(n) over the sync-maintained
+      // source_counts cache — NOT a live count. The live COUNT(*) below is only
+      // the fallback when that SUM is null. Said "counted live" here until
+      // 2026-09-04, when noaa's cache row was found 42 high (R709): a cache can
+      // drift from `series`, so tools/audit_d1_source_counts.py now checks it.
       if (path === "/v1/stats") {
         // NO hardcoded headline numbers (owner rule: counts must never go stale
         // in code). The measured census results live in R2 at _aqueduct/stats.json
@@ -169,7 +173,7 @@ export default {
           recalculating_note:
             "These headline totals are being recalculated while the database is completed. " +
             "The figures shown are from the census dated in as_of and may change. " +
-            "catalog_entries is counted live and is not affected.",
+            "catalog_entries is maintained by the catalogue sync and is not affected.",
         });
         const statsToCache = new Response(statsResp.clone().body, statsResp);
         statsToCache.headers.set("cache-control", "public, max-age=300, s-maxage=21600");

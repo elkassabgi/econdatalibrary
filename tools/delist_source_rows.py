@@ -110,8 +110,14 @@ def main() -> int:
         return 1
 
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    # source_counts MUST go with them (R709). It is what /v1/catalog serves as `total`
+    # (sql.ts:246) and what /v1/stats sums (index.ts:121). Deleting `series` and `source`
+    # while leaving the count row behind produces the ilo symptom: the source vanishes from
+    # /v1/sources, still contributes its old count to the fleet total, and still advertises
+    # `total: N` over an empty result set.
     for stmt in (f"DELETE FROM series WHERE source_id='{src}';",
-                 f"DELETE FROM source WHERE source_id='{src}';"):
+                 f"DELETE FROM source WHERE source_id='{src}';",
+                 f"DELETE FROM source_counts WHERE source_id='{src}';"):
         r = subprocess.run(["npx", "wrangler", "d1", "execute", D1_NAME, "--remote",
                             "--command", stmt],
                            cwd=os.path.join(ROOT, "api", "worker"),
