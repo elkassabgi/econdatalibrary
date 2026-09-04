@@ -106,6 +106,24 @@ DEEP_HISTORY_OK = {
 _OUT_DIRS = {}
 
 
+def _show_store(path):
+    """Render a store path the way the ACTIVE backend addresses it.
+
+    Under --r2 the listing is an R2 key prefix, not a local directory. Printing
+    `E:\\research\\...\\clean_full\\cso` for an --r2 run sends the reader to a directory that run
+    never touched, and on a CI runner that path does not exist at all — the R330/R296 class this
+    file's header exists to prevent. Used by BOTH the hit line and the NOT-SCANNED block; having
+    it in only one of them is how the hit line kept lying after the other was fixed.
+    """
+    if config.BACKEND != "r2":
+        return path
+    root = os.path.dirname(config.DATA_ROOT)
+    if path.startswith(root):
+        rel = path[len(root):].replace(os.sep, "/").lstrip("/")
+        return rel + "/   (R2 key prefix)"
+    return path
+
+
 def _store_candidates(sid):
     """Every place this source's parquet store might actually live, in priority order.
 
@@ -283,7 +301,7 @@ def main() -> int:
                   f"({n_hi} past {bound}, {n_lo} before {lo})"
                   f"  [judged {n_judged}/{len(files)}"
                   + (f", {n_unreadable} unjudgeable" if n_unreadable else "")
-                  + f"; store {d}]"
+                  + f"; store {_show_store(d)}]"
                   + ("   [DEEP_HISTORY_OK: " + DEEP_HISTORY_OK[sid] + "]"
                      if sid in DEEP_HISTORY_OK else ""))
             for rel, worst, earliest in sorted(
@@ -304,14 +322,10 @@ def main() -> int:
         for sid, cands in unscanned:
             print(f"  {sid}:")
             for c in cands:
-                # Under --r2 the listing is an R2 key prefix, not a local path. Printing the
-                # Windows path for an --r2 run sent a reader to a directory that run never
-                # touched (the R330/R296 class this file's own header exists to prevent).
-                shown = c
-                if config.BACKEND == "r2" and c.startswith(os.path.dirname(config.DATA_ROOT)):
-                    shown = (c[len(os.path.dirname(config.DATA_ROOT)):]
-                             .replace(os.sep, "/").lstrip("/") + "/   (R2 key prefix)")
-                print(f"      looked in: {shown}")
+                # A candidate line may carry a trailing "  (N file(s) present, ...)" note; keep
+                # it while still rendering the PATH part for the active backend.
+                head, sep, tail = c.partition("  (")
+                print(f"      looked in: {_show_store(head)}{sep}{tail}")
         for sid, exc in errored:
             print(f"  {sid}: listing failed ({exc}) — also no result.")
         print("  A source can be redirected by the registry's `out_dir`, or live in the "
