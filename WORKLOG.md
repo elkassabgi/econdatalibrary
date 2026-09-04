@@ -594,6 +594,24 @@ The search index now means what it says: no duplicates (was 2.30× on the primar
   cache vs per-source truth: 321 == 321, drifted 0, uncached 0. (The cache stores RAW counts
   by design; the three carve-out sources take the bounded visible count live in the worker —
   yesterday's fix — so cache==COUNT(*) is the correct invariant here.)
+
+  > **CORRECTION 2026-09-04 — this result was scoped to ONE of the two databases, and the
+  > drift was in the other.** "One statement" means one database, and `321` is the *primary's*
+  > cached-source count; `docs/ECONLIB_COMPLETION_PLAN.md:27` spells the fleet out as
+  > "(321 + 1 noaa shard)". `noaa` lives alone on `econ-catalog-climate` and was therefore
+  > never examined — and `noaa` is precisely the source that had drifted: its cached count read
+  > **3,138,201** against a true **3,138,159**, +42, for at least a day. So this line declared
+  > zero drift over a population that excluded the only drifted member, and on that basis
+  > reported the exit gate half-met.
+  >
+  > This is R702's shape a second time: counting the primary and calling it the fleet. Any
+  > catalogue-wide claim must union `econ-catalog` **and** `econ-catalog-climate`
+  > (`util.ts:510` `SHARDED_SOURCES`, `util.ts:513` `dbFor`). The replacement check does:
+  > `python tools/audit_d1_source_counts.py --remote-truth` loops both databases and keys its
+  > comparison by *(database, source_id)*. Re-run 2026-09-04 after the repair: 322 cached
+  > sources, 322 truth sources, and the only remaining mismatch is `statcan`, which is mid-push
+  > (see R709). **The exit gate is not half-met by the run above; re-establish it with the
+  > two-database check.**
 * `ledger_check --titles wid boc worldbank bls`: PASS — wid covers all 2,465,197 (was 4×
   duplicated), boc all 12,862 (was 8×), worldbank 692, bls 9.
 * **Exit gate: HALF met.** "Zero drift on two consecutive runs (one immediate, one after the
