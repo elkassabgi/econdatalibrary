@@ -45,6 +45,7 @@ USAGE
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import io
 import json
 import os
@@ -76,7 +77,13 @@ def _wrangler() -> str:
     w = shutil.which("wrangler")
     if w:
         return w
-    raise SystemExit("FATAL: no wrangler binary found; cannot reach D1")
+    # RuntimeError, NOT SystemExit. SystemExit derives from BaseException, so main()'s
+    # `except Exception` would not catch it and the process would exit 1 -- which this file
+    # defines as "at least one cached count disagrees". A missing binary would then report as a
+    # FINDING instead of as "could not look", inverting the very trichotomy the docstring
+    # promises. That path is live in CI: wrangler is installed by the `npm ci` inside the
+    # "Sync freshness to D1" step, which is skipped whenever the state push fails.
+    raise RuntimeError("no wrangler binary found; cannot reach D1")
 
 
 def d1(db: str, sql: str) -> tuple[list, int]:
@@ -108,18 +115,38 @@ def local_counts(sources) -> dict:
     finish at all. It is the same trick the worker uses (sql.ts:216-231) and the same predicate
     `--refresh-counts` writes with, so the three agree by construction.
 
-    Sources come from the CACHE, not from the local table: this asks "is each cached number
-    right?", and a source with a cache row but no local rows must surface as a mismatch rather
-    than silently disappear from the comparison.
+    The source set is the UNION of the cached sources and the local `source` table, not the
+    cached sources alone. Both directions are findings and each is invisible from the other side:
+
+      * cached, no local rows  -> the cache over-reports (noaa's +42 was this shape);
+      * local rows, NOT cached -> the worker falls through to a live COUNT(*) on EVERY page view.
+        That second class is the expensive one and it is on record: ECONLIB_COMPLETION_PLAN.md:77
+        has `vdem` with no cache row costing a live COUNT(*) of 783,100 rows per page view -- the
+        rebuilt $82/day shape. Taking sources from the cache alone made that class structurally
+        unreportable, which would have been a coverage REGRESSION against the reconciliation this
+        check replaces (whose superseded WORKLOG line reads "drifted 0, uncached 0").
     """
     if not os.path.exists(LOCAL):
         raise RuntimeError(f"local catalogue not found at {LOCAL}")
     gb = os.path.getsize(LOCAL) / 1e9
-    print(f"  counting {len(sources):,} source(s) in the local catalogue "
-          f"({gb:.2f} GB) by PK range ...", flush=True)
+    age_d = (dt.datetime.now() - dt.datetime.fromtimestamp(os.path.getmtime(LOCAL))).days
     con = sqlite3.connect(f"file:{LOCAL.replace(os.sep, '/')}?mode=ro", uri=True, timeout=300.0)
     con.execute("PRAGMA busy_timeout = 300000")   # crawlers hold this file continuously
     try:
+        # STALENESS IS THE FAILURE MODE OF THIS WHOLE MODE, so say the age out loud. In CI the
+        # local catalogue is a snapshot pulled from R2, and that object is refreshed only by a
+        # hand-run tools/refresh_r2_catalog.py. A snapshot older than the thing it is auditing
+        # reports AGREEMENT for any source catalogued since -- so a source at cache 0 and local
+        # 0 looks fine while D1 actually holds rows. Use --remote-truth when this warns.
+        if age_d >= 2:
+            print(f"  *** WARNING: local catalogue is {age_d} day(s) old. Any source catalogued"
+                  f"\n      since then will compare 0-vs-0 and report AGREEMENT. Prefer"
+                  f"\n      --remote-truth when this file is not current.", flush=True)
+        local_srcs = {r[0] for r in con.execute("SELECT source_id FROM source")
+                      if isinstance(r[0], str)}
+        sources = set(sources) | local_srcs
+        print(f"  counting {len(sources):,} source(s) in the local catalogue "
+              f"({gb:.2f} GB, {age_d}d old) by PK range ...", flush=True)
         out = {}
         for src in sorted(sources):
             out[src] = con.execute(
@@ -182,11 +209,17 @@ def main(argv=None) -> int:
         homes.setdefault(src, []).append(db)
     dupes = {s: d for s, d in homes.items() if len(d) > 1}
 
+    # ABSENT AND ZERO ARE THE SAME THING HERE, so compare `(cv or 0)` rather than `cv != tv`.
+    # A registered source with no series rows and no cache row is a source that has not been
+    # ingested yet -- 27 of them (central_banks, cftc, gii, pxweb ...) -- and reporting each as
+    # a mismatch of +0 buried the four real findings under noise on the first run after the
+    # union was added. What must still be caught is absent-cache-WITH-rows, which this keeps:
+    # 0 vs 783,100 is a mismatch, 0 vs 0 is not.
     bad = []
     if a.remote_truth:
         for key in sorted(set(cache) | set(truth)):
             cv, tv = cache.get(key), truth.get(key)
-            if cv != tv:
+            if (cv or 0) != (tv or 0):
                 bad.append((key[0], key[1], cv, tv))
     else:
         # Local truth is per-source, so compare per source. Summing the cache is correct only
@@ -196,7 +229,7 @@ def main(argv=None) -> int:
             cache_by_src[src] = cache_by_src.get(src, 0) + n
         for src in sorted(set(cache_by_src) | set(truth)):
             cv, tv = cache_by_src.get(src), truth.get(src)
-            if cv != tv:
+            if (cv or 0) != (tv or 0):
                 bad.append(("/".join(homes.get(src, [])) or None, src, cv, tv))
 
     print(f"  cached sources : {len(homes):,}")
@@ -234,18 +267,40 @@ def main(argv=None) -> int:
               f"{(cv or 0) - (tv or 0):>+10,}   {db or '?'}")
 
     if a.fix:
-        print("\n  repair SQL (the statement sync_catalog_d1.py:277-279 already uses --"
-              "\n  it recomputes inside D1, so it cannot be wrong about the current state):\n")
+        # Prints the SUPPORTED repair command, not raw SQL. The earlier version emitted a
+        # hand-run `wrangler d1 execute ... WHERE source_id = '<src>'`, which was wrong three
+        # ways: it is the full-scan predicate (~10.3M rows a time) where the range form is a
+        # bounded read; it is precisely the by-hand patch that falsifies the documented
+        # "source_counts has exactly one writer" invariant (state-baseline.md:25,
+        # protocols.md:38); and it guessed the database, so for an UNCACHED source on the
+        # climate shard it would have named the primary and silently written n=0 there -- the
+        # failure the noaa repair used a negative control to rule out.
+        #
+        # --refresh-counts routes through the single writer and resolves the shard itself via
+        # CATALOG_SHARD_FOR, so none of the three applies.
+        srcs = sorted({src for _db, src, _cv, _tv in bad})
+        print("\n  repair (routes through the one writer; it resolves the shard itself):\n")
+        print("      python core/sync_catalog_d1.py --refresh-counts " + ",".join(srcs))
         for db, src, cv, tv in bad:
-            if tv is None and cv is not None:
-                print(f"  -- {src}: cached but no series rows; verify the source is not mid-push")
-                continue
-            print(f"  wrangler d1 execute {db or DBS[0]} --remote --command \\\n"
-                  f"    \"INSERT OR REPLACE INTO source_counts(source_id, n) "
-                  f"SELECT '{src}', COUNT(*) FROM series WHERE source_id = '{src}';\"")
+            if tv in (None, 0) and cv:
+                print(f"\n  -- {src}: cached {cv:,} but no rows found. If a push is in flight,"
+                      f" let it finish;\n     refreshing now would publish a partial count.")
+            elif cv is None and tv:
+                # NO ROW AT ALL. catalog.ts:216-218 falls through to a live COUNT(*) for this
+                # source on every page view -- the expensive class (vdem, 783,100 rows/view).
+                print(f"\n  -- {src}: {tv:,} rows and NO cache row -- the worker runs a LIVE"
+                      f" COUNT(*) for this\n     source on every page view until it is set"
+                      f" (ECONLIB_COMPLETION_PLAN.md:77, the vdem shape).")
+            elif cv == 0 and tv:
+                # A ROW EXISTING WITH VALUE 0 IS A DIFFERENT BUG, and saying "falls back to a
+                # live count" here would be wrong: the row exists, so the cached branch is taken
+                # and 0 is served verbatim beside a non-empty page. Cheap, and incoherent.
+                print(f"\n  -- {src}: {tv:,} rows but the cache row says 0 -- served as"
+                      f" `total: 0` next to a\n     non-empty page. Usual cause: an interrupted"
+                      f" push (source_counts is written only at the END of a sync, R709).")
         if not a.remote_truth:
-            print("\n  NOTE: this ran against the LOCAL catalogue. Re-run with --remote-truth")
-            print("  before applying anything -- local and D1 can legitimately differ mid-sync.")
+            print("\n  NOTE: this ran against the LOCAL catalogue, which in CI is an R2 snapshot")
+            print("  refreshed only by hand. Re-run with --remote-truth before applying anything.")
 
     return 1
 

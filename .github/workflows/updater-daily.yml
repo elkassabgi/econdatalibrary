@@ -443,16 +443,22 @@ jobs:
         # static catalogue page published the correct figure, so the site and the API disagreed
         # on the same source. 31 tools/audit_*.py existed and none covered this table.
         #
-        # FREE MODE ON PURPOSE. This reads source_counts (one indexed row per source, which the
-        # d1_cost_guard does not count) and compares against the catalog.db already pulled above
-        # for the CSV derive, using per-source PK ranges. Measured rows_read: 322. The
-        # authoritative form is --remote-truth, which is TWO full scans (~$0.013) -- run that by
-        # hand when this reports something, not on a schedule.
+        # --remote-truth, NOT the free mode, and the reason is specific to CI.
         #
-        # A hit here is not automatically a served error: this mode cannot distinguish cache
-        # drift from D1 legitimately being ahead of local (the known 243-row residual shows up
-        # as sec_edgar/fhfa/fed_board). The tool says so in its own output. --remote-truth is
-        # what separates them.
+        # Free mode's truth is data/catalog.db. On the desktop that file is current. In THIS job
+        # it is the snapshot pulled from R2 at the "Pull catalog.db" step, and that object is
+        # refreshed only by a hand-run tools/refresh_r2_catalog.py — it was dated 2026-08-27
+        # while this step was being written on 09-04. A snapshot older than the thing it audits
+        # does not merely miss things, it reports the WRONG ANSWER CONFIDENTLY: statcan was
+        # catalogued locally on 09-01, so in CI it would compare cache 0 against snapshot 0 and
+        # tick green — on the one source provably serving total:0 beside a non-empty page, which
+        # is the exact defect this step exists to catch. The tool now warns when the file is
+        # stale, but a warning behind continue-on-error is not a check.
+        #
+        # So this spends TWO full scans a day (~$0.013/day, ~$0.39/month) to compare the cache
+        # against D1's own `series`. That is the only mode whose truth cannot be stale, and it is
+        # also the only one that can tell cache drift from D1 merely being ahead of local. Run
+        # the free mode on the DESKTOP, where catalog.db is live and the check costs nothing.
         #
         # continue-on-error for the same reason as the probe above: it is new, and until a week
         # of runs shows what it says when nothing is wrong it must not red a run it has not
@@ -460,7 +466,11 @@ jobs:
         # a check nobody reads (R244).
         if: ${{ always() }}
         continue-on-error: true
-        run: python tools/audit_d1_source_counts.py
+        env:
+          # The two scans are deliberate and budgeted; without this the d1_cost_guard's daily
+          # ceiling could refuse them on a day that already spent its allowance elsewhere.
+          ALLOW_D1_SCAN_BUDGET: "2"
+        run: python tools/audit_d1_source_counts.py --remote-truth
 
       - name: Daily digest email (morning report, like hfdatalibrary's)
         # Runs even when earlier steps failed so a broken morning is REPORTED,

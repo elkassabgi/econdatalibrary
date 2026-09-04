@@ -388,6 +388,18 @@ def main(argv: list[str] | None = None) -> None:
         srcs = [s.strip() for s in a.refresh_counts.split(",") if s.strip()]
         if not srcs:
             raise SystemExit("--refresh-counts needs at least one source id")
+        if a.dry_run:
+            # --dry-run MUST NOT WRITE. Beyond the plain contract at the flag's own help text
+            # ("emit + verify, execute nothing"), the cost guard depends on it:
+            # .claude/hooks/d1_cost_guard.py DRIVER_FREE matches `--dry-run` and allows the call
+            # UNCOUNTED, on the stated grounds that "neither reaches D1". Without this branch
+            # `--dry-run --refresh-counts noaa` performed a remote write while being waved
+            # through as free -- a write the budget could not see.
+            for src in srcs:
+                db = CATALOG_SHARD_FOR.get(src) or "econ-catalog"
+                print(f"  (dry-run) would refresh source_counts for {src} on {db} "
+                      f"via COUNT(*) over the PK range {src}: .. {src};")
+            return
         tmp = tempfile.mkdtemp(prefix="d1counts_")
         for src in srcs:
             db = CATALOG_SHARD_FOR.get(src)
