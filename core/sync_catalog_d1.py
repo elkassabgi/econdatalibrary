@@ -364,8 +364,28 @@ def main(argv: list[str] | None = None) -> None:
               f"catalogue rebuild.")
         return
     if a.source:
+        # SAY SOMETHING BEFORE THE SLOW PART (ledger R706 rule 2). This selection used to be the
+        # first thing the tool did and it printed nothing, so a run that was still reading looked
+        # identical to a run that had hung - two background jobs sat 70 and 15 minutes on this
+        # exact query shape before anyone noticed they had produced nothing.
+        print(f"selecting local catalogue rows for source={a.source} ...", flush=True)
+        # INDEX SEARCH, NOT A TABLE SCAN. `source_id` carries no index, so `WHERE source_id=?`
+        # plans as `SCAN series` over an 11.9 GB file: measured still running after 20 minutes
+        # while the workstation's crawlers held the disk, and R706 records the same shape timing
+        # out at 400 s. `series_id` IS the primary key and is built as "<source>:<key>", so a
+        # range over it plans as `SEARCH series USING INDEX sqlite_autoindex_series_1` - measured
+        # 44.6 s for statcan's 466,341 ids under that same contention.
+        #
+        # The `source_id = ?` term is kept deliberately. It costs nothing (it filters rows the
+        # index already matched) and it makes a FALSE INCLUSION impossible if some source ever
+        # keys a series outside its own prefix. A false EXCLUSION would still be possible in that
+        # case, which is why the count is printed: compare it against the source's known row
+        # count before trusting a surprising number.
         ids = [r[0] for r in conn.execute(
-            "SELECT series_id FROM series WHERE source_id=?", (a.source,))]
+            "SELECT series_id FROM series "
+            "WHERE series_id >= ? AND series_id < ? AND source_id = ?",
+            (a.source + ":", a.source + ";", a.source))]
+        print(f"  selected {len(ids):,} id(s)", flush=True)
         src = f"source={a.source}"
     else:
         path = a.ids_file or PENDING
