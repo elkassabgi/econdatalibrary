@@ -97,6 +97,31 @@ DEEP_HISTORY_OK = {
     "noaa":       "GHCN station records begin 1840 — real",
     "scb":        "Swedish long series reach 1800 (MI.parquet); BE/HE at year 0114 are NOT this "
                   "and are a real defect — see task #91",
+    "ggdc":       "holds maddison2020.parquet and maddison2023.parquet — the SAME Maddison "
+                  "Project data already exempted above, published by the Groningen Growth and "
+                  "Development Centre. Exempting `maddison` but not `ggdc` made every run report "
+                  "the same dataset as a permanent false positive (found 2026-09-04)",
+    "gapminder":  "income_per_person_long_series:chn genuinely starts 0730-12-31 — Gapminder's "
+                  "published long income reconstruction for China; the key says long_series. "
+                  "1,888 of 3,763,088 rows",
+}
+
+# The HIGH side needs its own list, and for a sharper reason than the low side.
+#
+# A far-future date is usually fabrication (a missing time axis, a code read as a year) — that is
+# the cso 9998 defect. But some publishers ship an explicit open-ended sentinel, and there the
+# far-future value IS the faithful reproduction of the source. The danger is the obvious "fix":
+# inventing plausible dates for those rows would be fabricating data to make a checker green,
+# which is the one thing this tool must never encourage.
+#
+# Same discipline as above: named individually, with the evidence, never a pattern.
+PUBLISHER_SENTINEL_OK = {
+    "eurostat":   "ENV_WAT_LTAA and TEN00001 are 100% 9999-12-31 (524 and 388 rows). Their keys "
+                  "carry freq=NAP — Eurostat's own 'not applicable' frequency code — because "
+                  "these are Long-Term Annual Averages with NO time dimension. It is the "
+                  "publisher's open-ended sentinel, not our fabrication, and the pipeline already "
+                  "guards the one place it leaked: sync_state_d1.py:158 filters end_date >= "
+                  "'2900-01-01' out of source_data_through. Do NOT invent dates for these rows",
 }
 
 
@@ -303,7 +328,9 @@ def main() -> int:
                   + (f", {n_unreadable} unjudgeable" if n_unreadable else "")
                   + f"; store {_show_store(d)}]"
                   + ("   [DEEP_HISTORY_OK: " + DEEP_HISTORY_OK[sid] + "]"
-                     if sid in DEEP_HISTORY_OK else ""))
+                     if sid in DEEP_HISTORY_OK else "")
+                  + ("   [PUBLISHER_SENTINEL_OK: " + PUBLISHER_SENTINEL_OK[sid] + "]"
+                     if sid in PUBLISHER_SENTINEL_OK else ""))
             for rel, worst, earliest in sorted(
                     bad, key=lambda x: (x[1] or "", x[2] or ""), reverse=True)[:5]:
                 span = []
