@@ -95,24 +95,37 @@ def d1(db: str, sql: str) -> tuple[list, int]:
     return rows, read
 
 
-def local_counts() -> dict:
-    """GROUP BY over the local catalogue.
+def local_counts(sources) -> dict:
+    """Count each source in the local catalogue, using the PRIMARY KEY range.
 
-    This is SLOW and says so before it starts: `series` has no index on source_id, so this is a
-    full scan of an ~11.9 GB table and takes minutes. The first version of this file printed
-    nothing until it finished, so a 900 s timeout killed it with an empty log and no clue which
-    step was slow — R706's shape exactly. Announce the expensive call BEFORE making it.
+    The obvious form -- `SELECT source_id, COUNT(*) FROM series GROUP BY source_id` -- is a full
+    scan of an ~11.9 GB table with no index on source_id. It took over 900 s and was killed by a
+    timeout with an empty log, which is why this function announces itself before doing work
+    (R706: never put a slow call at the start of a job without a print in front of it).
+
+    Counting `series_id >= 'src:' AND series_id < 'src;'` instead rides sqlite's implicit index on
+    the primary key, so ~322 bounded counts finish in seconds where the single GROUP BY did not
+    finish at all. It is the same trick the worker uses (sql.ts:216-231) and the same predicate
+    `--refresh-counts` writes with, so the three agree by construction.
+
+    Sources come from the CACHE, not from the local table: this asks "is each cached number
+    right?", and a source with a cache row but no local rows must surface as a mismatch rather
+    than silently disappear from the comparison.
     """
     if not os.path.exists(LOCAL):
         raise RuntimeError(f"local catalogue not found at {LOCAL}")
     gb = os.path.getsize(LOCAL) / 1e9
-    print(f"  scanning local catalogue ({gb:.2f} GB, no source_id index -- expect minutes) ...",
-          flush=True)
-    con = sqlite3.connect(f"file:{LOCAL.replace(os.sep, '/')}?mode=ro", uri=True)
+    print(f"  counting {len(sources):,} source(s) in the local catalogue "
+          f"({gb:.2f} GB) by PK range ...", flush=True)
+    con = sqlite3.connect(f"file:{LOCAL.replace(os.sep, '/')}?mode=ro", uri=True, timeout=300.0)
+    con.execute("PRAGMA busy_timeout = 300000")   # crawlers hold this file continuously
     try:
-        out = {s: n for s, n in con.execute(
-            "SELECT source_id, COUNT(*) FROM series GROUP BY source_id") if isinstance(s, str)}
-        print(f"  local scan done: {len(out):,} sources", flush=True)
+        out = {}
+        for src in sorted(sources):
+            out[src] = con.execute(
+                "SELECT COUNT(*) FROM series WHERE series_id >= ? AND series_id < ?",
+                (src + ":", src + ";")).fetchone()[0]
+        print(f"  local counts done: {len(out):,} sources", flush=True)
         return out
     finally:
         con.close()
@@ -151,7 +164,7 @@ def main(argv=None) -> int:
                     truth[(db, row["source_id"])] = row["n"]
                 print(f"    {len(rows):,} source(s), rows_read={r:,}", flush=True)
         if not a.remote_truth:
-            truth = local_counts()
+            truth = local_counts({src for (_db, src) in cache})
     except Exception as e:                                    # noqa: BLE001
         # EXIT 2, never 0. A check that could not look is not a check that passed (R704).
         print(f"  COULD NOT LOOK: {e}", file=sys.stderr)
@@ -199,7 +212,21 @@ def main(argv=None) -> int:
         print("\n  PASS -- every cached count equals its true count")
         return 0
 
-    print(f"\n  {len(bad)} MISMATCH(ES) -- these numbers are served to users:\n")
+    # WHAT A MISMATCH MEANS DEPENDS ON THE MODE, and conflating the two would misdiagnose every
+    # finding. --remote-truth compares the cache against D1's OWN series, so a mismatch there is
+    # cache drift and nothing else. The default compares against the LOCAL catalogue, where a
+    # mismatch has two possible causes: the cache drifted, OR D1 legitimately holds rows local
+    # does not. That second case is real and routine -- measured 2026-09-04, sec_edgar +161,
+    # fhfa +61 and fed_board +21 all reconcile to the known 243-row D1-ahead-of-local residual,
+    # and their caches match D1 exactly. Reporting those as "wrong numbers served to users" would
+    # send the next reader chasing three non-problems.
+    if a.remote_truth:
+        print(f"\n  {len(bad)} MISMATCH(ES) -- the cache disagrees with D1's own `series`, so "
+              f"these numbers ARE wrong for users:\n")
+    else:
+        print(f"\n  {len(bad)} MISMATCH(ES) vs the LOCAL catalogue. This mode cannot tell cache "
+              f"drift from\n  D1 legitimately being ahead of local -- re-run with --remote-truth "
+              f"to separate them:\n")
     print(f"  {'source':<26}{'cached':>14}{'true':>14}{'delta':>10}   database")
     for db, src, cv, tv in sorted(bad, key=lambda x: -abs((x[2] or 0) - (x[3] or 0))):
         print(f"  {src:<26}{('-' if cv is None else format(cv, ',')):>14}"
