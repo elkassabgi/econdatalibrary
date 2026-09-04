@@ -377,12 +377,27 @@ def main(argv: list[str] | None = None) -> None:
     # the single writer instead.
     #
     # The predicate is the PK RANGE, not `WHERE source_id = ?` as the post-insert refresh at the
-    # bottom of emit_sql() uses. Two reasons: the range rides the autoindex (sql.ts:216-231) so a
-    # repair costs a bounded read instead of a full scan, and the range is the population
-    # `browseSourceSql` actually pages — which is what `total` claims to describe. Measured on noaa
-    # 2026-09-04 the two agree exactly (3,138,159 both ways, 0 rows in either asymmetric
-    # difference), so this is cheaper without being different. If they ever DISAGREE that is itself
-    # the finding, and `tools/audit_d1_source_counts.py` is what surfaces it.
+    # bottom of emit_sql() uses. ONE reason, not two — and the reason I first wrote here was
+    # wrong, so it is worth stating what was measured.
+    #
+    # I claimed the range "rides the autoindex so a repair costs a bounded read instead of a full
+    # scan". That is true of the LOCAL catalog.db, whose only index is the series_id primary key
+    # (a `GROUP BY source_id` there runs past 900 s). It is NOT true of D1. Measured 2026-09-04
+    # on econ-catalog, both forms are index seeks and read exactly n+1 rows:
+    #
+    #   WHERE source_id='bea'                        n=913,230  rows_read=913,231   421 ms
+    #   WHERE series_id >= 'bea:' AND < 'bea;'       n=913,230  rows_read=913,231   911 ms
+    #   WHERE source_id='nyfed'                      n=8        rows_read=9         1.6 ms
+    #
+    # So D1 indexes source_id, the range is not cheaper there, and it is in fact SLOWER. There is
+    # no cost argument for changing emit_sql's predicate, and it has not been changed.
+    #
+    # What survives is the semantic reason: the range is the population `browseSourceSql` actually
+    # pages (sql.ts:216), which is what `total` claims to describe. Measured on noaa the two agree
+    # exactly (3,138,159 both ways, 0 rows in either asymmetric difference), and
+    # tests/test_source_prefix_range.py proves the equivalence in general. If they ever DISAGREE
+    # the two writers would fight — this one repairs, the next sync overwrites — and
+    # `tools/audit_d1_source_counts.py --remote-truth` is what would surface that oscillation.
     if a.refresh_counts:
         conn.close()
         srcs = [s.strip() for s in a.refresh_counts.split(",") if s.strip()]
