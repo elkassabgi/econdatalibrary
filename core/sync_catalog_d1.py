@@ -344,6 +344,11 @@ def main(argv: list[str] | None = None) -> None:
                     help="record every LOCAL catalogue row as already-sent and exit, "
                          "sending nothing. Bootstrap only — correct exactly when D1 already "
                          "holds them (measured 2026-08-31: 322/322 sources, 0 short).")
+    ap.add_argument("--refresh-counts", metavar="SRC[,SRC...]",
+                    help="recompute source_counts for these sources and exit, sending no series "
+                         "rows. Repair path for a cache that drifted from `series` — see R709 and "
+                         "tools/audit_d1_source_counts.py, which finds the drift and prints the "
+                         "source list to pass here.")
     a = ap.parse_args(argv)
 
     # WAIT FOR A WRITER INSTEAD OF DYING ON IT. Every other tool here opens catalog.db with a
@@ -363,6 +368,44 @@ def main(argv: list[str] | None = None) -> None:
               f"This asserts D1 already holds them — re-verify before seeding after any "
               f"catalogue rebuild.")
         return
+
+    # REPAIR PATH FOR A DRIFTED source_counts ROW (R709 / noaa +42).
+    #
+    # It lives HERE, in the sync, on purpose. Two documents state that source_counts has exactly
+    # one writer (`skills/econ-completion/references/state-baseline.md:25`, `protocols.md:38`), and
+    # a hand-run `wrangler d1 execute` to patch a row would quietly make both false. Repair through
+    # the single writer instead.
+    #
+    # The predicate is the PK RANGE, not `WHERE source_id = ?` as the post-insert refresh at the
+    # bottom of emit_sql() uses. Two reasons: the range rides the autoindex (sql.ts:216-231) so a
+    # repair costs a bounded read instead of a full scan, and the range is the population
+    # `browseSourceSql` actually pages — which is what `total` claims to describe. Measured on noaa
+    # 2026-09-04 the two agree exactly (3,138,159 both ways, 0 rows in either asymmetric
+    # difference), so this is cheaper without being different. If they ever DISAGREE that is itself
+    # the finding, and `tools/audit_d1_source_counts.py` is what surfaces it.
+    if a.refresh_counts:
+        conn.close()
+        srcs = [s.strip() for s in a.refresh_counts.split(",") if s.strip()]
+        if not srcs:
+            raise SystemExit("--refresh-counts needs at least one source id")
+        tmp = tempfile.mkdtemp(prefix="d1counts_")
+        for src in srcs:
+            db = CATALOG_SHARD_FOR.get(src)
+            path = os.path.join(tmp, f"counts_{src}.sql")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("CREATE TABLE IF NOT EXISTS source_counts("
+                         "source_id TEXT PRIMARY KEY, n INTEGER NOT NULL);\n")
+                fh.write("INSERT OR REPLACE INTO source_counts(source_id, n)\n"
+                         f"  SELECT {_lit(src)}, COUNT(*) FROM series\n"
+                         f"   WHERE series_id >= {_lit(src + ':')} "
+                         f"AND series_id < {_lit(src + ';')};\n")
+            print(f"  refreshing source_counts for {src} on "
+                  f"{db or 'econ-catalog'} ...", flush=True)
+            execute_remote([path], db)
+        print(f"source_counts refreshed for {len(srcs)} source(s); no series rows were sent. "
+              f"Verify with: python tools/audit_d1_source_counts.py --remote-truth")
+        return
+
     if a.source:
         # SAY SOMETHING BEFORE THE SLOW PART (ledger R706 rule 2). This selection used to be the
         # first thing the tool did and it printed nothing, so a run that was still reading looked
