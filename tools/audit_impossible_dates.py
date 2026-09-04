@@ -351,9 +351,14 @@ def main() -> int:
         print("\nNOTE: a local scan of a CLOUD source sees only the scratch mirror of the last "
               "run.\n  Re-check anything found here with --r2 --source <id> before acting.")
     # Exit 2 covers ANY incomplete coverage, not just total failure. The fleet default always
-    # lands in the partial case (5 of 282 sources have no local parquet store, 8 on R2), so a
-    # trichotomy keyed on "every source failed" would have returned 0 on exactly the run shape
-    # that produced R704's false clean.
+    # lands in the partial case, so a trichotomy keyed on "every source failed" would have
+    # returned 0 on exactly the run shape that produced R704's false clean.
+    #
+    # MEASURED 2026-09-03 with the candidate resolution above: 3 of 282 registry sources have no
+    # local parquet store under ANY candidate (gii, pxweb, sipri_polity). Note the figure moved
+    # BECAUSE of this file's own fix -- it was 5 when only clean_full/<source_id> was tried, and
+    # sec_edgar + sec_edgar_xbrl came into range once out_dir and the clean_grouped tier were
+    # followed. Quote the post-fix number, not the one that motivated the change.
     if hits:
         return 1
     return 0 if n_seen == len(sources) else 2
