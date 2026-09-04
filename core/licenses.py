@@ -22,7 +22,6 @@ RESERVABLE = {
     "ecb-attrib-nomodify",   # ECB / Frankfurter (cache RAW, do not modify the values)
     "imf-terms",             # IMF (must disclose the data is free)
     "bis-attrib-nc",         # BIS (NON-COMMERCIAL redistribution only)
-    "zillow-research",       # Zillow ("Data Provided by Zillow Group")
     "defillama-open",        # DeFiLlama
     "dbnomics-passthrough",  # per-series: each series carries its provider's license
 }

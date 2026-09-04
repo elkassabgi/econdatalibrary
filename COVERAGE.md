@@ -21,7 +21,6 @@ Legend: ✅FULL · 🟡PARTIAL/growing · 🔗REFERENCED · ⛔BLOCKED(keys)
 | sec_edgar (fund.) | ✅ | 123,345,899 | all 19,814 companies/taxonomies |
 | imf | ✅ | 120,623,146 | 101/102 flows (102nd has no published data) |
 | edgar_13f | ✅ | 118,176,190 | full 2013q2–2026 |
-| zillow | ✅ | 107,045,505 | all metrics x geos |
 | owid | ✅ | 72,492,801 | 95.7% of what OWID permits redistribution (554 charts non_redistributable by OWID's own license, 18 source-503 resource limits, 151 empty/categorical) |
 | ofr  | ✅ | 425,070 | OFR fnyr (30 series incl. BGCR) + repo (164 series) + mmf (42) + nypd (194). BGCR captured. US public domain. |
 | bea | ✅ | 67,490,269 | all BEA datasets |

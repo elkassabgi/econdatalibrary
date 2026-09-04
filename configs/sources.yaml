@@ -21,7 +21,6 @@ licenses:
   ecb-attrib-nomodify:  {reservable: true,  commercial_ok: true,  attribution: required, no_modify: true}
   imf-terms:            {reservable: true,  commercial_ok: true,  attribution: required, disclose_free: true}
   bis-attrib-nc:        {reservable: true,  commercial_ok: false, attribution: required}   # NON-COMMERCIAL
-  zillow-research:      {reservable: true,  commercial_ok: true,  attribution: required}    # "Data Provided by Zillow Group"
   defillama-open:       {reservable: true,  commercial_ok: true,  attribution: required}
   dbnomics-passthrough: {reservable: per_series, note: "inherit each provider's license at ingest"}
   # NonCommercial + granted licenses (attribution is a binding condition — the .csv
@@ -111,7 +110,6 @@ sources:
   # ---- Free-with-attribution ----
   ecb:              {name: ECB Data Portal / euro reference rates, license: ecb-attrib-nomodify, schedule: "30 16 * * *", attribution: "Source: ECB -- available free at the ECB; values not modified"}
   frankfurter:      {name: Frankfurter API (ECB FX), license: verified-attribution, schedule: "30 16 * * *", attribution: "Source: European Central Bank"}
-  zillow:           {name: Zillow Research, license: audit-restricted, schedule: "0 6 * * 4", attribution: "Data Provided by Zillow Group"}
   defillama:        {name: DeFiLlama, license: defillama-granted, schedule: "0 */6 * * *", attribution: "Source: DeFiLlama"}
 
   # ---- DBnomics: ingest accelerator, NOT a wholesale source ----

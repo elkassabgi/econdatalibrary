@@ -11,7 +11,7 @@ the delta scripts are called separately on their own schedule.
 
 Cadences:
   daily:   EIA, ECB/Frankfurter, Fed H.4.1, OFR, NY Fed, GLEIF (delta), DeFiLlama
-  weekly:  BLS, CFTC, World Bank, Treasury, StatCan, Zillow, FRED releases
+  weekly:  BLS, CFTC, World Bank, Treasury, StatCan, FRED releases
   monthly: BEA, USDA, ILOSTAT, FAOSTAT, IMF, OECD, NOAA, Ember
   annual:  Penn World Table, Fama-French, CEPII BACI, EDGAR full rebuild
 
@@ -59,7 +59,6 @@ SCHEDULE = {
     "worldbank_pink":"weekly",
     "treasury":    "weekly",
     "statcan":     "weekly",
-    "zillow":      "weekly",
     "fred":        "weekly",   # via ingest_fred_releases.py
     "ofr":         "weekly",
     "nyfed":       "weekly",
