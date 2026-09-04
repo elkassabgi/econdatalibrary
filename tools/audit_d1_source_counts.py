@@ -158,6 +158,41 @@ def local_counts(sources) -> dict:
         con.close()
 
 
+def diff_counts(cache: dict, truth: dict, homes: dict, remote: bool) -> list:
+    """Which cached counts disagree with the truth? Returns [(db, source, cached, true), ...].
+
+    Extracted from main() so it can be tested without D1 or an 11.9 GB sqlite file. Two rules
+    here were wrong when this shipped, and both were found by RUNNING it rather than reading it:
+
+    ABSENT AND ZERO ARE THE SAME THING. A registered source with no series rows and no cache row
+    has simply not been ingested; comparing `cv != tv` made `None != 0` a mismatch and produced 27
+    false positives (central_banks, cftc, gii, pxweb ...) that buried the four real findings on
+    the first run. `(cv or 0)` collapses them while KEEPING the case that matters — an absent
+    cache row over a source that does have rows is the vdem shape, a live COUNT(*) per page view.
+
+    REMOTE AND LOCAL MODES KEY DIFFERENTLY. Remote truth is per (database, source), so a source
+    present in both databases must not collapse — that is the state a botched shard migration
+    leaves, and source_id alone would let the second database silently overwrite the first.
+    Local truth is per source, so the cache is summed across databases; that is sound only
+    because a source should have ONE home, which `homes` reports when it fails.
+    """
+    bad = []
+    if remote:
+        for key in sorted(set(cache) | set(truth)):
+            cv, tv = cache.get(key), truth.get(key)
+            if (cv or 0) != (tv or 0):
+                bad.append((key[0], key[1], cv, tv))
+        return bad
+    cache_by_src: dict = {}
+    for (_db, src), n in cache.items():
+        cache_by_src[src] = cache_by_src.get(src, 0) + n
+    for src in sorted(set(cache_by_src) | set(truth)):
+        cv, tv = cache_by_src.get(src), truth.get(src)
+        if (cv or 0) != (tv or 0):
+            bad.append(("/".join(homes.get(src, [])) or None, src, cv, tv))
+    return bad
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -209,28 +244,7 @@ def main(argv=None) -> int:
         homes.setdefault(src, []).append(db)
     dupes = {s: d for s, d in homes.items() if len(d) > 1}
 
-    # ABSENT AND ZERO ARE THE SAME THING HERE, so compare `(cv or 0)` rather than `cv != tv`.
-    # A registered source with no series rows and no cache row is a source that has not been
-    # ingested yet -- 27 of them (central_banks, cftc, gii, pxweb ...) -- and reporting each as
-    # a mismatch of +0 buried the four real findings under noise on the first run after the
-    # union was added. What must still be caught is absent-cache-WITH-rows, which this keeps:
-    # 0 vs 783,100 is a mismatch, 0 vs 0 is not.
-    bad = []
-    if a.remote_truth:
-        for key in sorted(set(cache) | set(truth)):
-            cv, tv = cache.get(key), truth.get(key)
-            if (cv or 0) != (tv or 0):
-                bad.append((key[0], key[1], cv, tv))
-    else:
-        # Local truth is per-source, so compare per source. Summing the cache is correct only
-        # because a source should have ONE home; `dupes` above reports it when that fails.
-        cache_by_src: dict = {}
-        for (db, src), n in cache.items():
-            cache_by_src[src] = cache_by_src.get(src, 0) + n
-        for src in sorted(set(cache_by_src) | set(truth)):
-            cv, tv = cache_by_src.get(src), truth.get(src)
-            if (cv or 0) != (tv or 0):
-                bad.append(("/".join(homes.get(src, [])) or None, src, cv, tv))
+    bad = diff_counts(cache, truth, homes, a.remote_truth)
 
     print(f"  cached sources : {len(homes):,}")
     print(f"  truth sources  : {len({k[1] for k in truth} if a.remote_truth else truth):,}")
