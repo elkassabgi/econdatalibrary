@@ -50,8 +50,15 @@ from core.sync_state_d1 import (CATALOG_SHARD_FOR, MAX_FILE_BYTES,  # noqa: E402
 
 # Ids per `DELETE FROM series_fts WHERE series_id IN (...)`. Deliberately NOT ROWS_PER_STMT:
 # that column is UNINDEXED, so the cost is one full table scan PER STATEMENT regardless of
-# the list length (measured 23,843,482 rows_read for a 20-id list, 2026-08-26). See the
-# rationale block at the emit site in emit_sql.
+# the list length. See the rationale block at the emit site in emit_sql.
+#
+# PER-SCAN CONSTANT, and it MOVED. This comment read "23,843,482 rows_read for a 20-id list,
+# 2026-08-26" until 2026-09-04. The FTS was rebuilt and swapped on 2026-08-31 (commit 44ed89aee)
+# to match the series count exactly, and `updater-daily.yml:361` already recorded the change
+# ("cut the per-scan constant 2.30x, 23,843,482 -> 10,348,426") while this line kept the old
+# figure. MEASURED AGAIN 2026-09-04 against live D1: one id-scoped statement reads 10,348,511.
+# Anyone pricing a batch off the stale number over-estimates by 2.30x -- safe, but it is how a
+# cheap path gets refused as expensive. Re-measure after any FTS rebuild; do not trust this line.
 FTS_DELETE_PER_STMT = 500
 
 

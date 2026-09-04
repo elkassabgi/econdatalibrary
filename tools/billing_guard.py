@@ -1039,8 +1039,11 @@ def main() -> int:
     if breaches:
         body = (report + thresholds + "\n\nBREACHES:\n- " + "\n- ".join(breaches)
                 + "\n\nThe catalogue sync is the usual cause of a D1 spike: `series_fts` is "
-                  "fts5(series_id UNINDEXED), so every id-scoped statement full-scans "
-                  "~23.8M rows. Both call sites are gated behind CATALOG_SYNC_ENABLED; if "
+                  "fts5(series_id UNINDEXED), so every id-scoped statement full-scans the "
+                  "index -- ~10.35M rows, measured 2026-09-04 (it was ~23.8M until the "
+                  "2026-08-31 FTS rebuild cut it 2.30x; re-measure after any rebuild rather "
+                  "than trusting this figure). Both call sites are gated behind "
+                  "CATALOG_SYNC_ENABLED; if "
                   "that variable is set, unset it. Then check `wrangler d1 insights` for "
                   "query shapes (R430).")
         send_alert("BILLING ALERT: " + breaches[0], body)
