@@ -93,7 +93,7 @@ differ). A registry validator **fails CI** if `count != 133` or any unit lacks a
   - **sdmx_nso:** per-provider `?updatedAfter=` + 800MB-XML guard → gaps become `status=partial`, retried.
 - **S5 `bulk_snapshot_if_changed`** (~12–15) — whole-file zip/CSV sources: HEAD `Last-Modified`/
   `Content-Length`/manifest gate, rebuild only changed files. Covers bis_cbs_lbs, sec_edgar, bfs,
-  cepii_baci, cbs_nl, gus_dbw, insee_sirene_bulk, worldbank_wdi/extra, faostat per-domain, zillow, noaa.
+  cepii_baci, cbs_nl, gus_dbw, insee_sirene_bulk, worldbank_wdi/extra, faostat per-domain, noaa.
 - **S6 `manual_vintage`** (~10–12) — publish-rarely / hardcoded-URL / credential-or-WAF-blocked sources
   (stats_nz, ksh WAF, wiid 403, insee_sirene offset-ceiling, barro_lee, qog, cow, sipri, edgar_jrc,
   fraser_efw, yale_epi, harvard_atlas, wid, fsi_fundforpeace, nasa_giss). **Never silently succeeds** —
@@ -196,7 +196,7 @@ Reads purely from StateStore; powers a one-page dashboard (HTML local / Worker r
    0-obs bug). Ship the daily cron for just these.
 4. **S1 broad sweep:** vintage gates on ~70 overwrite/static sources; retrofit atomic-write to the flagged dozen.
 5. **S3 SDMX delta:** ~25–30 medium SDMX/PxWeb NSOs.
-6. **S5 bulk-snapshot gates:** faostat, bis_cbs_lbs, sec_edgar, zillow, noaa, wdi.
+6. **S5 bulk-snapshot gates:** faostat, bis_cbs_lbs, sec_edgar, noaa, wdi.
 7. **S4 GIANTS one at a time behind change-feeds:** statcan → eurostat → oecd → sdmx_nso; each validated
    to touch only changed units before enabling its weekly cron.
 8. **S6 manual-vintage alerts** for hardcoded/blocked sources.

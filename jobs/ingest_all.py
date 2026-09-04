@@ -27,7 +27,7 @@ RUNNER = os.path.join(ROOT, "jobs", "run_connector.py")
 # entry which resurrected the banned puller every five minutes — a violation that survives being
 # forgotten. Nothing in the list said so; it read as one connector name among twenty-three.
 SOURCES = [
-    "frankfurter", "defillama", "treasury", "fed_board", "fhfa", "zillow",
+    "frankfurter", "defillama", "treasury", "fed_board", "fhfa",
     "ember", "owid", "penn_world_table", "worldbank_pink", "boe", "bis",
     "statcan", "abs", "wikidata", "worldbank_esg", "census",
     "faostat", "ilostat", "ecb", "oecd", "imf",

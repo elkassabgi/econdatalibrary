@@ -355,6 +355,5 @@ Before anything else, two facts that mislead people repeatedly:
 | [worldbank_pink](worldbank_pink.md) | yes | yes | 26 | no_change | 2026-08-19T18:23:01+00:00 |
 | [worldbank_wdi](worldbank_wdi.md) | yes | yes | 1,486 | ok | 2026-08-06T05:59:39+00:00 |
 | [yale_epi](yale_epi.md) | yes | yes | 77,240 | no_change | 2026-08-30T20:22:12+00:00 |
-| [zillow](zillow.md) | — | — | 0 | — | **never** |
 
 345 sources.

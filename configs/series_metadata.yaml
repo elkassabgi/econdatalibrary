@@ -214,11 +214,6 @@ sources:
     citation_long: >-
       Ember (electricity data). Retrieved from https://ember-energy.org. Compiled and
       redistributed by the Elkassabgi Data Library.
-  zillow:
-    citation_short: "Zillow Research."
-    citation_long: >-
-      Zillow Research (ZHVI / ZORI). Retrieved from https://www.zillow.com/research/data.
-      Compiled and redistributed by the Elkassabgi Data Library.
   defillama:
     citation_short: "DefiLlama."
     citation_long: >-

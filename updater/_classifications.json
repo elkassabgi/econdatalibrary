@@ -210,7 +210,7 @@
   "cepii_gravity": {
     "source_id": "cepii_gravity",
     "strategy": "bulk_snapshot_if_changed",
-    "strategy_reason": "Whole-file dated bulk download (Gravity_csv_V202211, hard-coded) with no date filter; a hard-coded versioned URL is S5/S1 not S6, and a new release is a new whole zip \u2014 gate on the file and re-download+rebuild only when the vintage changes.",
+    "strategy_reason": "Whole-file dated bulk download (Gravity_csv_V202211, hard-coded) with no date filter; a hard-coded versioned URL is S5/S1 not S6, and a new release is a new whole zip — gate on the file and re-download+rebuild only when the vintage changes.",
     "cadence": "static",
     "vintage_signal": "HEAD on the active GRAVITY_URLS file (CEPII http(s)://www.cepii.fr/.../Gravity_csv_V202211.zip) for Last-Modified/Content-Length; or scrape the CEPII Gravity download page for the latest V-string version token and compare to the stored one.",
     "since_param": "n/a",
@@ -227,7 +227,7 @@
     "cadence": "weekly",
     "vintage_signal": "Date-tail always-fetch: query Socrata with $where report_date_as_yyyy_mm_dd > stored max obs_date; new weekly rows appear when present. (Legacy bulk path would instead need HEAD on per-year deahistfo{year}.zip / fut_disagg_txt_{year}.zip for the current year.)",
     "since_param": "$where=report_date_as_yyyy_mm_dd > '<last_obs_date>' on the CFTC Socrata/publicreporting endpoint (current code uses per-year zips with no date param).",
-    "out_paths_note": "single wide union-schema file: data/clean_full/cftc/cot_all.parquet (all cols as strings); raw zips cached under data/raw/cftc/. Watch de-dup on report-week key \u2014 historical combined + per-year zips can overlap and duplicate rows.",
+    "out_paths_note": "single wide union-schema file: data/clean_full/cftc/cot_all.parquet (all cols as strings); raw zips cached under data/raw/cftc/. Watch de-dup on report-week key — historical combined + per-year zips can overlap and duplicate rows.",
     "rate_note": "no key (US public domain); Socrata app token optional but recommended to lift throttle; current zip path 404s unpublished years gracefully.",
     "key_env": "none (optional SODA_APP_TOKEN if migrating to Socrata)",
     "confidence": "high",
@@ -240,11 +240,11 @@
     "cadence": "daily",
     "vintage_signal": "Date-tail always-fetch: re-pull current year's fixing file (BASE?year=<current_year>) every run and merge rows with obs_date > stored max; the current-year file always contains the newest daily rates.",
     "since_param": "?year=YYYY path param (fetch year >= year(max obs_date), i.e. just the current year in steady state); CNB exposes no finer date filter.",
-    "out_paths_note": "single file: data/clean_full/cnb/cnb.parquet; series_key = CNB_FX:{CCY}_CZK, rates normalized per-1-unit. No append path today (full rebuild) \u2014 add read-existing + append.",
+    "out_paths_note": "single file: data/clean_full/cnb/cnb.parquet; series_key = CNB_FX:{CCY}_CZK, rates normalized per-1-unit. No append path today (full rebuild) — add read-existing + append.",
     "rate_note": "no key; keyless HTTPS; 0.2s sleep between years; UA header set; per-year HTTP errors logged and skipped.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "On Jan 1 boundary, fetch both prior and current year for one run to avoid missing late-December rows \u2014 confirm that handling is acceptable. Also confirm the 'amount' multiplier header regex won't silently drop a currency if CNB changes header format."
+    "open_question": "On Jan 1 boundary, fetch both prior and current year for one run to avoid missing late-December rows — confirm that handling is acceptable. Also confirm the 'amount' multiplier header regex won't silently drop a currency if CNB changes header format."
   },
   "comtrade": {
     "source_id": "comtrade",
@@ -252,21 +252,21 @@
     "strategy_reason": "Annual trade totals; UN Comtrade fetch_totals supports a server-side &period=YYYY[,YYYY] filter, so a real since=last_obs delta is computing missing years per reporter and appending (matrix's incremental_path).",
     "cadence": "annual",
     "vintage_signal": "Server-side period filter: for each reporter request &period=<years from max(obs_date)+1 .. current> and append only returned new annual periods (Dec-31). No separate manifest.",
-    "since_param": "&period=YYYY[,YYYY,...] on comtradeapi.un.org/public/v1/preview (current resume key is series_key/reporter only, which wrongly skips existing reporters \u2014 must change skip key to (reporter, period)).",
+    "since_param": "&period=YYYY[,YYYY,...] on comtradeapi.un.org/public/v1/preview (current resume key is series_key/reporter only, which wrongly skips existing reporters — must change skip key to (reporter, period)).",
     "out_paths_note": "single file: data/clean_full/comtrade/comtrade.parquet (~24k rows, 713 series, annual Dec-31). CRITICAL FIX: resume keyed on series presence silently never extends existing reporters to new years.",
     "rate_note": "no key (public preview endpoint); ~100 req/hr free tier; script self-throttles RATE=2.0s, BATCH=20, 429 backoff 60s*attempt.",
     "key_env": "none (optional COMTRADE_KEY for the authenticated higher-rate endpoint)",
     "confidence": "high",
-    "open_question": "Change the resume/skip key from reporter to (reporter, period) and add &period \u2014 confirm. Should we move to the authenticated Comtrade API key for higher rate limits given the per-reporter year backfill?"
+    "open_question": "Change the resume/skip key from reporter to (reporter, period) and add &period — confirm. Should we move to the authenticated Comtrade API key for higher rate limits given the per-reporter year backfill?"
   },
   "cow": {
     "source_id": "cow",
     "strategy": "bulk_snapshot_if_changed",
-    "strategy_reason": "Static academic releases delivered as whole-history versioned bulk ZIP/CSVs with hard-coded filenames (NMCv7.zip, COW_Trade_4.0.zip, States2024.zip) and no date param; a new release is a new whole file \u2014 gate per-file and rebuild only the changed dataset.",
+    "strategy_reason": "Static academic releases delivered as whole-history versioned bulk ZIP/CSVs with hard-coded filenames (NMCv7.zip, COW_Trade_4.0.zip, States2024.zip) and no date param; a new release is a new whole file — gate per-file and rebuild only the changed dataset.",
     "cadence": "annual",
-    "vintage_signal": "HEAD on each correlatesofwar.org/wp-content/uploads/<file>.zip for Last-Modified/Content-Length, and/or scrape the COW dataset pages for a new version token (e.g. NMCv8, COW_Trade_5.0). Note SSL verify is disabled (expired cert) \u2014 HEAD must use the same relaxed TLS.",
+    "vintage_signal": "HEAD on each correlatesofwar.org/wp-content/uploads/<file>.zip for Last-Modified/Content-Length, and/or scrape the COW dataset pages for a new version token (e.g. NMCv8, COW_Trade_5.0). Note SSL verify is disabled (expired cert) — HEAD must use the same relaxed TLS.",
     "since_param": "n/a",
-    "out_paths_note": "MULTIPLE files: one parquet per dataset under data/clean_full/cow/ \u2014 nmc.parquet, trade.parquet, wrp.parquet, alliances.parquet, mids.parquet, states.parquet, igo.parquet + _cow_log.txt. Each gated independently.",
+    "out_paths_note": "MULTIPLE files: one parquet per dataset under data/clean_full/cow/ — nmc.parquet, trade.parquet, wrp.parquet, alliances.parquet, mids.parquet, states.parquet, igo.parquet + _cow_log.txt. Each gated independently.",
     "rate_note": "no key; SSL verify=False (expired/mis-issued COW cert; urllib3 warnings disabled); RATE=0.5s; hard-coded versioned filenames 404 silently on rename.",
     "key_env": "none",
     "confidence": "high",
@@ -275,12 +275,12 @@
   "cso": {
     "source_id": "cso",
     "strategy": "overwrite_if_changed",
-    "strategy_reason": "CSO PxStat ReadDataset returns whole tables with NO startPeriod param (so not SDMX-delta-able), but the Navigation.Search catalog carries per-table release-date metadata \u2014 gate on that release date and overwrite only changed tables/subjects.",
+    "strategy_reason": "CSO PxStat ReadDataset returns whole tables with NO startPeriod param (so not SDMX-delta-able), but the Navigation.Search catalog carries per-table release-date metadata — gate on that release date and overwrite only changed tables/subjects.",
     "cadence": "irregular",
     "vintage_signal": "Refresh _catalog.json each run via PxStat Navigation.Search and compare each table's release/last-modified field (e.g. RlsLiveDatetimeFrom / RlsArchiveFlag) against the stored value; re-pull and overwrite only tables whose release date moved.",
     "since_param": "n/a (ReadDataset has no startPeriod; whole-table re-pull on change, no server-side date filter)",
-    "out_paths_note": "MULTIPLE files: ~46 per-subject-group parquets keyed by SbjCode (e.g. 26_Labour_Market.parquet, 29_National_Accounts.parquet) + cached _catalog.json. A changed table maps into its owning subject parquet \u2014 must read-existing + append + dedup on (key,date) rather than skip whole subject.",
-    "rate_note": "no key (ws.cso.ie JSON-RPC + REST); self-throttle RATE=0.4s; 429 handled with 30s sleep; stale cached _catalog.json silently freezes the table universe \u2014 must refresh it each run.",
+    "out_paths_note": "MULTIPLE files: ~46 per-subject-group parquets keyed by SbjCode (e.g. 26_Labour_Market.parquet, 29_National_Accounts.parquet) + cached _catalog.json. A changed table maps into its owning subject parquet — must read-existing + append + dedup on (key,date) rather than skip whole subject.",
+    "rate_note": "no key (ws.cso.ie JSON-RPC + REST); self-throttle RATE=0.4s; 429 handled with 30s sleep; stale cached _catalog.json silently freezes the table universe — must refresh it each run.",
     "key_env": "none",
     "confidence": "medium",
     "open_question": "Confirm the exact PxStat catalog field that reliably signals a table revision (RlsLiveDatetimeFrom vs RlsArchiveFlag vs a modified timestamp), and move from per-subject-file skip to per-table changed-detection so existing subjects gain new periods."
@@ -288,7 +288,7 @@
   "damodaran": {
     "source_id": "damodaran",
     "strategy": "overwrite_if_changed",
-    "strategy_reason": "Annual cross-sectional snapshots re-estimated each January (not an appendable time series); a small single file that a re-run rebuilds correctly \u2014 drop the existing-file early-return and overwrite atomically when a new vintage is detected.",
+    "strategy_reason": "Annual cross-sectional snapshots re-estimated each January (not an appendable time series); a small single file that a re-run rebuilds correctly — drop the existing-file early-return and overwrite atomically when a new vintage is detected.",
     "cadence": "annual",
     "vintage_signal": "Probe the date-stamped country-premium filename for the new month/year (ctryprem<Mon><YY>.xlsx, currently ctrypremApr26.xlsx) and HEAD Last-Modified on the stable-name sheets (betas.xls, wacc.xls, ...) at pages.stern.nyu.edu; new January release = new ctryprem file present.",
     "since_param": "n/a",
@@ -296,14 +296,14 @@
     "rate_note": "no key (pages.stern.nyu.edu); needs openpyxl + xlrd; fetch bails on 403/404 and requires >500 bytes; 0.5s between files.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Auto-discover the rotating ctryprem<Mon><YY> filename (probe Jan/Apr current-year variants) so a new annual vintage is picked up without a human edit \u2014 confirm the naming pattern Damodaran uses each year."
+    "open_question": "Auto-discover the rotating ctryprem<Mon><YY> filename (probe Jan/Apr current-year variants) so a new annual vintage is picked up without a human edit — confirm the naming pattern Damodaran uses each year."
   },
   "defillama": {
     "source_id": "defillama",
     "strategy": "overwrite_if_changed",
-    "strategy_reason": "Daily, but every phase re-fetches the full history (which always includes the newest day) and overwrites its parquet idempotently \u2014 a plain re-run already refreshes catalog/overview/chains/tvl correctly; gate is implicit-newest-day, no date param exists.",
+    "strategy_reason": "Daily, but every phase re-fetches the full history (which always includes the newest day) and overwrites its parquet idempotently — a plain re-run already refreshes catalog/overview/chains/tvl correctly; gate is implicit-newest-day, no date param exists.",
     "cadence": "daily",
-    "vintage_signal": "Poll-only: re-pull the full series from api.llama.fi / yields.llama.fi each run (totalDataChartBreakdown, historicalChainTvl, protocol/pool charts) and overwrite \u2014 newest day is implicit in the full history. No ETag/manifest/since filter is offered upstream.",
+    "vintage_signal": "Poll-only: re-pull the full series from api.llama.fi / yields.llama.fi each run (totalDataChartBreakdown, historicalChainTvl, protocol/pool charts) and overwrite — newest day is implicit in the full history. No ETag/manifest/since filter is offered upstream.",
     "since_param": "n/a (no since/startPeriod; full-history endpoints, overwrite per run)",
     "out_paths_note": "MULTIPLE files (~113): catalog parquets, per-(type,dataType) overview files, chains_tvl.parquet, stablecoins_total/circulating.parquet, tvl_protocol_shard00-29 (30) and yields_pool_shard00-59 (60) built from _yields_stage.jsonl. Stray legacy bridge_aggregators_snapshot.parquet on disk.",
     "rate_note": "no key; MAXW=6; yields endpoint heavily throttled (~0.5 req/s), single worker default (DL_YIELDS_WORKERS to raise); 429/5xx retry+backoff with Retry-After.",
@@ -413,7 +413,7 @@
     "rate_note": "No API key. fetch = 3 attempts, 3s*attempt backoff, 60s timeout; 403/404 fatal-skip per URL. policyuncertainty.com asset URLs occasionally change/redirect -> a dead URL silently drops that country.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "CRITICAL: main() early-exits when epu.parquet exists, so the monthly cadence adds NO new months without deleting the file or adding a --force/overwrite path. License is 'free for academic use' only (NOT a reservable/commercial class) \u2014 flag before publishing commercially."
+    "open_question": "CRITICAL: main() early-exits when epu.parquet exists, so the monthly cadence adds NO new months without deleting the file or adding a --force/overwrite path. License is 'free for academic use' only (NOT a reservable/commercial class) — flag before publishing commercially."
   },
   "eurostat": {
     "source_id": "eurostat",
@@ -421,7 +421,7 @@
     "strategy_reason": "One of the 4 named giants; the TOC catalogue carries a per-dataset lastUpdate change-feed, so refresh only whole dataset codes whose lastUpdate moved instead of the blind skip-if-exists crawl.",
     "cadence": "monthly",
     "vintage_signal": "Eurostat TOC catalogue (catalogue/toc/txt) per-dataset lastUpdate/lastModified column; persist code->lastUpdate state map and re-fetch only codes whose upstream lastUpdate is newer (plus brand-new codes).",
-    "since_param": "n/a (no obs-level since; unit-level change-feed via TOC lastUpdate, not startPeriod \u2014 this profile is the bulk SDMX-TSV dissemination path, format=TSV&compressed=true, not the per-obs SDMX query API)",
+    "since_param": "n/a (no obs-level since; unit-level change-feed via TOC lastUpdate, not startPeriod — this profile is the bulk SDMX-TSV dissemination path, format=TSV&compressed=true, not the per-obs SDMX query API)",
     "out_paths_note": "WRITES TO TWO DIRS/STAGES: raw data/raw/eurostat/<code>.tsv.gz (~7,640 files, fetch_eurostat_bulk.py) AND clean_full/eurostat/<CODE>.parquet (~7,753 files, separate ingest_eurostat.py). A true delta must purge/refetch only changed raw codes then reparse only those in ingest (today ingest reparses ALL; its advertised --delta flag is a no-op).",
     "rate_note": "No key. Polite UA, 6 concurrent workers, 4 retries linear backoff on 429/5xx, 300s timeout, atomic .part->replace. Constraint is sheer volume (~7,600 datasets, multi-GB, ~6.1B obs); legacy files/ bulk path is 410 Gone.",
     "key_env": "none",
@@ -439,16 +439,16 @@
     "rate_note": "No key. UA set; single GET per file with NO retry/backoff, 60s timeout, non-200 -> dataset silently skipped (logs success even when several skipped as 'already'). Add retry resilience.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Does the Dartmouth host return a usable Last-Modified/ETag on the factor zips? If not, fall back to re-download + content-hash compare. License is research/educational only (not a reservable/commercial class) \u2014 note in source."
+    "open_question": "Does the Dartmouth host return a usable Last-Modified/ETag on the factor zips? If not, fall back to re-download + content-hash compare. License is research/educational only (not a reservable/commercial class) — note in source."
   },
   "faostat": {
     "source_id": "faostat",
     "strategy": "bulk_snapshot_if_changed",
     "strategy_reason": "Bulk full-domain zips with NO server-side date filter; FAO publishes a machine manifest (datasets_E.json) with FileRows/FileSize per domain, so gate on the manifest and re-download+rebuild only changed domains.",
     "cadence": "monthly",
-    "vintage_signal": "https://bulks-faostat.fao.org/production/datasets_E.json \u2014 persist each domain's FileRows/FileSize (manifest entry) and skip re-download+re-parse of domains whose entry is unchanged. Script currently downloads without reading any date/size field.",
+    "vintage_signal": "https://bulks-faostat.fao.org/production/datasets_E.json — persist each domain's FileRows/FileSize (manifest entry) and skip re-download+re-parse of domains whose entry is unchanged. Script currently downloads without reading any date/size field.",
     "since_param": "n/a",
-    "out_paths_note": "Per-domain grouped parquet data/clean_full/faostat/<DatasetCode>.parquet (68 files) + _ingest_summary.json sidecar; raw zips cached at data/raw/faostat/<CODE>.zip (68). clean_full is unconditionally overwritten per run; the stale-data trap is the raw-zip cache (existing zip is reused, updates silently missed) \u2014 must clear raw or gate on manifest.",
+    "out_paths_note": "Per-domain grouped parquet data/clean_full/faostat/<DatasetCode>.parquet (68 files) + _ingest_summary.json sidecar; raw zips cached at data/raw/faostat/<CODE>.zip (68). clean_full is unconditionally overwritten per run; the stale-data trap is the raw-zip cache (existing zip is reused, updates silently missed) — must clear raw or gate on manifest.",
     "rate_note": "No key. CC-BY-4.0, custom UA, HTTP backoff on 429/5xx (max 5 tries, up to 60s). No documented rate limit but downloads are multi-GB zips (network/disk bound, refresh cost 'large').",
     "key_env": "none",
     "confidence": "high",
@@ -462,7 +462,7 @@
     "vintage_signal": "Date-tail / always-fetch the open quarter: compute max(obs_date) from existing financials.parquet and request the next REPDTE window; meta.total drives pagination. No last-modified header needed since the date filter is authoritative.",
     "since_param": "filters=REPDTE:[<last_obs+1> TO <today>] (REPDTE range filter on the financials endpoint)",
     "out_paths_note": "Per-endpoint parquet data/clean_full/fdic/{financials,institutions,history,failures,summary}.parquet. ONLY financials (LONG, series_key=CERT={cert}:{field}) is date-extendable via REPDTE+append (_append_parquet exists); institutions/summary/history/failures are WIDE snapshots that still need full overwrite. No raw dir.",
-    "rate_note": "No key (public domain). PAGE=10000, 0.3s sleep between pages, 4 retries with 5*(attempt+1)s backoff, no documented hard limit. NOT in daily_update SCHEDULE/BULK_SCRIPTS \u2014 currently manual-run only, no orchestrated cadence.",
+    "rate_note": "No key (public domain). PAGE=10000, 0.3s sleep between pages, 4 retries with 5*(attempt+1)s backoff, no documented hard limit. NOT in daily_update SCHEDULE/BULK_SCRIPTS — currently manual-run only, no orchestrated cadence.",
     "key_env": "none",
     "confidence": "high",
     "open_question": "Replace the 'if output exists: return' early-return guards with max-date + filtered append (today a re-run never extends and a killed mid-financials run can leave a partial file the next run treats as done). Confirm desired cadence and wire into the scheduler (currently unorchestrated)."
@@ -472,7 +472,7 @@
     "strategy": "bulk_snapshot_if_changed",
     "strategy_reason": "Each release is served as a whole ZIP via Output.aspx?rel=<REL>&filetype=zip with no date filter; store an HTTP ETag/Last-Modified per release and re-download+reparse only changed releases.",
     "cadence": "daily",
-    "vintage_signal": "Per-release HTTP ETag / Last-Modified on datadownload/Output.aspx?rel=<REL>&filetype=zip (skip download+parse when unchanged); plus re-scrape the DDP home (discover_releases) to catch newly-added releases. Today there is no etag/last-modified check \u2014 the full release is always re-downloaded.",
+    "vintage_signal": "Per-release HTTP ETag / Last-Modified on datadownload/Output.aspx?rel=<REL>&filetype=zip (skip download+parse when unchanged); plus re-scrape the DDP home (discover_releases) to catch newly-added releases. Today there is no etag/last-modified check — the full release is always re-downloaded.",
     "since_param": "n/a",
     "out_paths_note": "Per-release grouped parquet data/clean_full/fed_board/<REL>.parquet + <REL>__series.parquet + <REL>.meta.json + _summary.json (18 releases); raw zips at data/raw/fed_board/<REL>.zip. CRITICAL: default (no --force) run is a no-op for any release with an existing .meta.json, so a scheduled run skips done releases and never picks up new obs without --force.",
     "rate_note": "No key (US public domain). Custom UA on requests.Session, 5 tries backoff min(60,3*(attempt+1)^2), validates the zip contains *_data.xml. No rate limit; downloads are large (Z.1 alone ~590MB).",
@@ -491,7 +491,7 @@
     "rate_note": "No key (US public domain). urllib3 Retry(total=5, backoff 1.5 on 429/5xx) + inner 3-attempt loop, 0.5s polite sleep. No rate limit. Scheduled refresh MUST pass --download (default/no-flag run only builds from possibly-stale raw); a failed download leaves the OLD raw file and build silently uses stale raw for that one file.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Some FHFA quarterly cubes (e.g. hpi_at_3zip_quarterly) update quarterly while HPI master is monthly \u2014 confirm a single monthly cadence is acceptable or split per-cube. Also confirm static-URL files reliably expose Last-Modified for the gate."
+    "open_question": "Some FHFA quarterly cubes (e.g. hpi_at_3zip_quarterly) update quarterly while HPI master is monthly — confirm a single monthly cadence is acceptable or split per-cube. Also confirm static-URL files reliably expose Last-Modified for the gate."
   },
   "frankfurter": {
     "source_id": "frankfurter",
@@ -513,11 +513,11 @@
     "cadence": "annual",
     "vintage_signal": "none-poll-only: no working endpoint to poll. Detection of a new EFW edition currently requires a human to find/supply a live Fraser Institute or efwdata.com download URL; once a working URL exists this could become overwrite_if_changed (new annual vintage URL / Last-Modified).",
     "since_param": "n/a",
-    "out_paths_note": "Intended single grouped parquet data/clean_full/fraser_efw/fraser_efw.parquet (series_key EFW:{component}:{iso}, obs_date Dec-31 of year, value). CURRENTLY no parquet exists \u2014 only _fraser_log.txt / _fraser_err.txt. In-memory (series_key,date) dedup when working.",
-    "rate_note": "No key. CC-BY-4.0. Blocker is the SOURCE (dead URLs + DNS failure), not auth/rate. Not in daily_update SCHEDULE/BULK_SCRIPTS \u2014 manual run only, no cadence.",
+    "out_paths_note": "Intended single grouped parquet data/clean_full/fraser_efw/fraser_efw.parquet (series_key EFW:{component}:{iso}, obs_date Dec-31 of year, value). CURRENTLY no parquet exists — only _fraser_log.txt / _fraser_err.txt. In-memory (series_key,date) dedup when working.",
+    "rate_note": "No key. CC-BY-4.0. Blocker is the SOURCE (dead URLs + DNS failure), not auth/rate. Not in daily_update SCHEDULE/BULK_SCRIPTS — manual run only, no cadence.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "HUMAN ACTION REQUIRED: supply the current working Fraser Institute / efwdata.com EFW dataset xlsx download URL. The script silently logs 'All URLs failed' and exits ~0 with no error artifact beyond the log, so an orchestrator sees no failure \u2014 also add a non-zero exit / alert when all URLs fail."
+    "open_question": "HUMAN ACTION REQUIRED: supply the current working Fraser Institute / efwdata.com EFW dataset xlsx download URL. The script silently logs 'All URLs failed' and exits ~0 with no error artifact beyond the log, so an orchestrator sees no failure — also add a non-zero exit / alert when all URLs fail."
   },
   "fred": {
     "source_id": "fred",
@@ -526,11 +526,11 @@
     "cadence": "weekly",
     "vintage_signal": "date-tail always-fetch: no ETag/Last-Modified on fredgraph.csv; per series compute max(obs_date) from fred.parquet and request rows after it. Re-fetch ALL series each run (not just missing) gated by the per-series max-date filter.",
     "since_param": "cosd={max_obs_date+1} (start date) on https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}; coed optional as end bound",
-    "out_paths_note": "Writes ONLY data/clean_full/fred/fred.parquet (single grouped parquet: series_key, obs_date, value). SHARES the fred/ dir with the separate fred_releases source which owns release_*.parquet + _manifest.json \u2014 do NOT touch those when refreshing fred, and vice-versa.",
+    "out_paths_note": "Writes ONLY data/clean_full/fred/fred.parquet (single grouped parquet: series_key, obs_date, value). SHARES the fred/ dir with the separate fred_releases source which owns release_*.parquet + _manifest.json — do NOT touch those when refreshing fred, and vice-versa.",
     "rate_note": "Keyless endpoint, rate-sensitive: RATE=0.5s sleep/series, 3 retries (30s wait on 429). Custom UA+Accept required. No documented hard cap but throttle to avoid 429.",
     "key_env": "none (keyless fredgraph.csv)",
     "confidence": "high",
-    "open_question": "SERIES is a hardcoded ~290-id curated list (some duplicate/typo ids 404 harmlessly) \u2014 confirm whether the curated list should stay fixed or be expanded; new series outside the list are never discovered."
+    "open_question": "SERIES is a hardcoded ~290-id curated list (some duplicate/typo ids 404 harmlessly) — confirm whether the curated list should stay fixed or be expanded; new series outside the list are never discovered."
   },
   "fred_releases": {
     "source_id": "fred_releases",
@@ -539,24 +539,24 @@
     "cadence": "weekly",
     "vintage_signal": "date-tail always-fetch per release (seed observation_start from each release's stored max obs_date); plus GET fred/v2/releases each run to detect new release_ids not yet in _manifest.json. No per-release Last-Modified is exposed.",
     "since_param": "observation_start={max_obs_date+1} threaded into params at fred/v2/release/observations (currently only release_id+next_cursor are sent)",
-    "out_paths_note": "Writes ONLY per-release files data/clean_full/fred/release_NNNNN.parquet (~180 files) + _manifest.json in the SAME fred/ dir as the separate fred source. fred.parquet belongs to ingest_fred.py \u2014 must NOT be deleted here. Manifest currently marks 0-obs releases 'done', hiding releases that may later be populated.",
+    "out_paths_note": "Writes ONLY per-release files data/clean_full/fred/release_NNNNN.parquet (~180 files) + _manifest.json in the SAME fred/ dir as the separate fred source. fred.parquet belongs to ingest_fred.py — must NOT be deleted here. Manifest currently marks 0-obs releases 'done', hiding releases that may later be populated.",
     "rate_note": "FRED_API_KEY required (Bearer for v2). Self-throttles sleep 0.1s/page, 0.3s/release, 0.2s/release-list page; 300s per-page timeout. No geo block.",
     "key_env": "FRED_API_KEY",
     "confidence": "high",
-    "open_question": "_manifest.json marks releases with 0 public-domain obs as 'done' (n==0 branch) so they are never re-attempted \u2014 should the delta refresh periodically re-probe these in case upstream adds public-domain series later?"
+    "open_question": "_manifest.json marks releases with 0 public-domain obs as 'done' (n==0 branch) so they are never re-attempted — should the delta refresh periodically re-probe these in case upstream adds public-domain series later?"
   },
   "freedomhouse": {
     "source_id": "freedomhouse",
     "strategy": "overwrite_if_changed",
-    "strategy_reason": "Single small (~12KB) annual wide XLSX (1973-present) with no date-filtered endpoint; correct refresh is to re-pull the newest edition and overwrite, gated on a vintage signal. Not S6 \u2014 the URL is merely hardcoded, the file is freely re-fetchable.",
+    "strategy_reason": "Single small (~12KB) annual wide XLSX (1973-present) with no date-filtered endpoint; correct refresh is to re-pull the newest edition and overwrite, gated on a vintage signal. Not S6 — the URL is merely hardcoded, the file is freely re-fetchable.",
     "cadence": "annual",
     "vintage_signal": "HEAD Last-Modified / Content-Length on the current year-stamped XLSX (e.g. freedomhouse.org/.../2025-03/Country_and_Territory_Ratings_and_Statuses_FIW_1973-2025.xlsx); to catch a NEW edition, probe the freedomhouse.org FIW download page for the latest year-stamped path each ~Feb/Mar.",
     "since_param": "n/a",
-    "out_paths_note": "Single file data/clean_full/freedomhouse/freedomhouse.parquet (series_key=political_rights:/civil_liberties:/freedom_status:Country). Write is non-atomic (no .tmp) \u2014 add atomic replace.",
-    "rate_note": "Keyless direct XLSX from freedomhouse.org, UA header, 120s timeout. Risk: hardcoded CDN path 404s when FH reorganizes \u2014 no fallback discovery. openpyxl required.",
+    "out_paths_note": "Single file data/clean_full/freedomhouse/freedomhouse.parquet (series_key=political_rights:/civil_liberties:/freedom_status:Country). Write is non-atomic (no .tmp) — add atomic replace.",
+    "rate_note": "Keyless direct XLSX from freedomhouse.org, UA header, 120s timeout. Risk: hardcoded CDN path 404s when FH reorganizes — no fallback discovery. openpyxl required.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "New annual edition uses a NEW year-stamped XLSX URL that is not auto-discovered \u2014 need an agreed way to detect/derive the next edition's URL (or a human adds it each Feb/Mar)."
+    "open_question": "New annual edition uses a NEW year-stamped XLSX URL that is not auto-discovered — need an agreed way to detect/derive the next edition's URL (or a human adds it each Feb/Mar)."
   },
   "fsi_fundforpeace": {
     "source_id": "fsi_fundforpeace",
@@ -565,11 +565,11 @@
     "cadence": "annual",
     "vintage_signal": "GitHub commit SHA / API Last-Modified for raw.githubusercontent.com/ksreyes/tidy-fragile-states-index CSV (GET /repos/ksreyes/tidy-fragile-states-index/commits?path=<csv> HEAD SHA); fall back to HEAD on the per-year fragilestatesindex.org XLSX if the mirror is unreachable.",
     "since_param": "n/a",
-    "out_paths_note": "Single file data/clean_full/fsi_fundforpeace/fsi_fundforpeace.parquet (series_key=FSI_FP:{indicator}:{country}). Non-atomic write \u2014 add .tmp+replace.",
+    "out_paths_note": "Single file data/clean_full/fsi_fundforpeace/fsi_fundforpeace.parquet (series_key=FSI_FP:{indicator}:{country}). Non-atomic write — add .tmp+replace.",
     "rate_note": "Keyless; GitHub raw + fragilestatesindex.org. 30s timeout, 0.5s sleep/year. fragilestatesindex.org WordPress upload paths are version-specific/fragile; GitHub mirror is the resilient fallback.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Reliance on a community GitHub mirror (ksreyes) \u2014 if that repo goes stale or disappears, freshness depends on fragile per-year fragilestatesindex.org XLSX URLs; confirm the mirror is acceptable as primary."
+    "open_question": "Reliance on a community GitHub mirror (ksreyes) — if that repo goes stale or disappears, freshness depends on fragile per-year fragilestatesindex.org XLSX URLs; confirm the mirror is acceptable as primary."
   },
   "gapminder": {
     "source_id": "gapminder",
@@ -578,24 +578,24 @@
     "cadence": "irregular",
     "vintage_signal": "GitHub commits API HEAD SHA for open-numbers/ddf--gapminder--systema_globalis (GET /repos/open-numbers/ddf--gapminder--systema_globalis/commits/HEAD); compare to stored SHA, no-op if unchanged. Optional: /compare/{old}...{new} to re-parse only changed datapoint CSVs.",
     "since_param": "n/a",
-    "out_paths_note": "Single file data/clean_full/gapminder/gapminder.parquet (series_key={indicator}:{geo}). Built fully in memory then one non-atomic pq.write_table \u2014 no checkpoint/resume; a late crawl failure loses all progress. FLUSH_EVERY constant is defined but unused.",
+    "out_paths_note": "Single file data/clean_full/gapminder/gapminder.parquet (series_key={indicator}:{geo}). Built fully in memory then one non-atomic pq.write_table — no checkpoint/resume; a late crawl failure loses all progress. FLUSH_EVERY constant is defined but unused.",
     "rate_note": "Unauthenticated GitHub = 60 req/min HARD limit (handles 403 by 60s sleep+retry); hundreds of CSVs + RATE=0.2s/file make a cold pull slow. Adding GITHUB_TOKEN would raise to 5000/hr but code does not read one. get_file_list uses recursive=0 which can truncate very large trees.",
     "key_env": "none (GITHUB_TOKEN recommended to lift the 60/min cap)",
     "confidence": "high",
-    "open_question": "Should we add GITHUB_TOKEN and switch get_file_list to recursive=1 to avoid tree truncation/rate stalls on full re-crawls? Not in daily_update SCHEDULE \u2014 confirm intended cadence/trigger."
+    "open_question": "Should we add GITHUB_TOKEN and switch get_file_list to recursive=1 to avoid tree truncation/rate stalls on full re-crawls? Not in daily_update SCHEDULE — confirm intended cadence/trigger."
   },
   "gcb": {
     "source_id": "gcb",
     "strategy": "overwrite_if_changed",
-    "strategy_reason": "Global Carbon Budget is re-estimated yearly with whole-series back-revisions, so append-merge is unsafe \u2014 correct semantics is full overwrite per vintage. No date filter; gate on the Zenodo latest-version record. Not S6: files are freely fetchable once URLs are bumped.",
+    "strategy_reason": "Global Carbon Budget is re-estimated yearly with whole-series back-revisions, so append-merge is unsafe — correct semantics is full overwrite per vintage. No date filter; gate on the Zenodo latest-version record. Not S6: files are freely fetchable once URLs are bumped.",
     "cadence": "annual",
     "vintage_signal": "Zenodo concept-DOI 'latest version' record id (the GCB Zenodo record, currently 14106218 -> a new id each vintage) via the Zenodo API; plus the globalcarbonbudget.org download page for the current /download/NNNN/ ids. Re-download+overwrite all four parquets when the latest Zenodo version changes.",
     "since_param": "n/a",
-    "out_paths_note": "MULTI-FILE under data/clean_full/gcb/: gcb_budget.parquet, gcb_national_fossil.parquet, gcb_luc.parquet, gcb_fossil_flat.parquet. Each guarded by its own os.path.exists; if URLs are bumped without deleting all four, a partial run can leave a MIX of vintages \u2014 must overwrite all four together. Non-atomic writes.",
+    "out_paths_note": "MULTI-FILE under data/clean_full/gcb/: gcb_budget.parquet, gcb_national_fossil.parquet, gcb_luc.parquet, gcb_fossil_flat.parquet. Each guarded by its own os.path.exists; if URLs are bumped without deleting all four, a partial run can leave a MIX of vintages — must overwrite all four together. Non-atomic writes.",
     "rate_note": "Keyless; globalcarbonbudget.org redirecting /download/NNNN/ links + zenodo.org. 120s timeout, 3 retries w/ backoff, 1s sleep between components.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "globalcarbonbudget.org download-ids and Zenodo record-ids change EVERY vintage \u2014 confirm we drive refresh off the Zenodo concept-DOI 'latest' record (stable across versions) rather than the hardcoded numeric ids, and that all four component URLs are bumped atomically."
+    "open_question": "globalcarbonbudget.org download-ids and Zenodo record-ids change EVERY vintage — confirm we drive refresh off the Zenodo concept-DOI 'latest' record (stable across versions) rather than the hardcoded numeric ids, and that all four component URLs are bumped atomically."
   },
   "ggdc": {
     "source_id": "ggdc",
@@ -604,20 +604,20 @@
     "cadence": "irregular",
     "vintage_signal": "Per source: Dataverse dataset version + datafile id for PWT11 (datafile 554105) and Maddison2023 (421302) via the dataverse.nl API; HEAD Last-Modified on rug.nl/ggdc/docs/pwt100.xlsx and .../maddison/data/mpd2020.xlsx. Re-pull+overwrite a component only when its pinned datafile id / Last-Modified changes.",
     "since_param": "n/a",
-    "out_paths_note": "MULTI-FILE under data/clean_full/ggdc/: pwt10.parquet, pwt11.parquet, maddison2020.parquet, maddison2023.parquet (series_key prefixed PWT10:/PWT11:/MADDISON:/MADDISON23:). Each guarded individually; per-version overwrite is safe (disjoint prefixes). Non-atomic writes. NOTE separate source_ids penn_world_table/maddison/pwt have their own scripts and dirs \u2014 not this batch.",
+    "out_paths_note": "MULTI-FILE under data/clean_full/ggdc/: pwt10.parquet, pwt11.parquet, maddison2020.parquet, maddison2023.parquet (series_key prefixed PWT10:/PWT11:/MADDISON:/MADDISON23:). Each guarded individually; per-version overwrite is safe (disjoint prefixes). Non-atomic writes. NOTE separate source_ids penn_world_table/maddison/pwt have their own scripts and dirs — not this batch.",
     "rate_note": "Keyless; rug.nl + dataverse.nl/api/access/datafile/{id}. 120s timeout, 3 retries, requires response >10KB, 1s sleep between versions. Dataverse HEAD returns 403 but GET works.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "A future PWT12 / Maddison2026 needs a NEW Dataverse datafile id + a new ingest_* function added by a human \u2014 no auto-discovery of new releases; confirm a human is alerted when a new PWT/Maddison vintage ships."
+    "open_question": "A future PWT12 / Maddison2026 needs a NEW Dataverse datafile id + a new ingest_* function added by a human — no auto-discovery of new releases; confirm a human is alerted when a new PWT/Maddison vintage ships."
   },
   "gii": {
     "source_id": "gii",
     "strategy": "manual_vintage",
-    "strategy_reason": "Currently un-auto-fetchable: all 5 hardcoded URLs return HTTP 404 (verified _gii_log.txt 2026-06-09), no parquet exists, and there is NO live URL to poll \u2014 a human must re-point the source to a live WIPO/mirror file before any automation can run. Once repaired the natural strategy is overwrite_if_changed (annual single XLSX, gate on a vintage signal).",
+    "strategy_reason": "Currently un-auto-fetchable: all 5 hardcoded URLs return HTTP 404 (verified _gii_log.txt 2026-06-09), no parquet exists, and there is NO live URL to poll — a human must re-point the source to a live WIPO/mirror file before any automation can run. Once repaired the natural strategy is overwrite_if_changed (annual single XLSX, gate on a vintage signal).",
     "cadence": "annual",
     "vintage_signal": "none-poll-only at present (every candidate URL is dead, so nothing live to gate on). Post-repair: HEAD/commit-SHA on whichever live source is found (e.g. the wipo-analytics/gii-data GitHub repo path, which appears renamed/moved, or the live wipo.int XLSX for the latest edition).",
     "since_param": "n/a",
-    "out_paths_note": "Intended single file data/clean_full/gii/gii.parquet (series_key=GII:{indicator}:{iso3}) \u2014 CURRENTLY ABSENT; dir holds only empty _gii_log.txt/_gii_err.txt. Non-atomic write when working.",
+    "out_paths_note": "Intended single file data/clean_full/gii/gii.parquet (series_key=GII:{indicator}:{iso3}) — CURRENTLY ABSENT; dir holds only empty _gii_log.txt/_gii_err.txt. Non-atomic write when working.",
     "rate_note": "Keyless; 120s timeout, 1s sleep between candidates, openpyxl for XLSX branch. ACTIVE BLOCKER: all sources 404.",
     "key_env": "none",
     "confidence": "high",
@@ -630,7 +630,7 @@
     "cadence": "daily",
     "vintage_signal": "HTTP HEAD on https://leidata.gleif.org/api/v1/concatenated-files/lei2/latest/zip and compare Last-Modified / Content-Length (GLEIF refreshes ~3x/day); only re-pull when either changes vs the value stored at last successful ingest.",
     "since_param": "n/a",
-    "out_paths_note": "single file data/clean_full/gleif/lei_records.parquet (~85MB, ~3.3M rows); raw zip cached at data/raw/gleif/gleif_golden_copy.zip \u2014 must clear BOTH on force-refresh or the zip-skip re-ingests the stale snapshot.",
+    "out_paths_note": "single file data/clean_full/gleif/lei_records.parquet (~85MB, ~3.3M rows); raw zip cached at data/raw/gleif/gleif_golden_copy.zip — must clear BOTH on force-refresh or the zip-skip re-ingests the stale snapshot.",
     "rate_note": "No key/auth; large streamed download, timeout 600s, UA header set; no documented rate limit.",
     "key_env": "none",
     "confidence": "high",
@@ -643,11 +643,11 @@
     "cadence": "annual",
     "vintage_signal": "HEAD/ETag/Last-Modified on the (repaired) live IEP/OWID GPI source URL once it exists; until then there is no usable signal because every hardcoded GPI_URL 404s.",
     "since_param": "n/a",
-    "out_paths_note": "single file data/clean_full/gpi/gpi.parquet (currently absent \u2014 only _gpi_log.txt/_gpi_err.txt exist).",
+    "out_paths_note": "single file data/clean_full/gpi/gpi.parquet (currently absent — only _gpi_log.txt/_gpi_err.txt exist).",
     "rate_note": "No key; UA header set, 2 retries per URL.",
     "key_env": "none",
     "confidence": "low",
-    "open_question": "BLOCKER: all 9 hardcoded GPI_URLS return 404, so the source produces no parquet and exits success silently. Need a working IEP/OWID GPI URL before any strategy can run \u2014 please supply the current download link."
+    "open_question": "BLOCKER: all 9 hardcoded GPI_URLS return 404, so the source produces no parquet and exits success silently. Need a working IEP/OWID GPI URL before any strategy can run — please supply the current download link."
   },
   "gppd": {
     "source_id": "gppd",
@@ -669,11 +669,11 @@
     "cadence": "monthly",
     "vintage_signal": "date-tail always-fetch: read max(year) from each existing K{n}.parquet and request only year>=that from the API (no last-modified header on BDL); merge new (series_key,obs_date) rows.",
     "since_param": "year= (query param on https://bdl.stat.gov.pl/api/v1/data/by-variable/{id}?...&year=since..now)",
-    "out_paths_note": "per-K-subject files data/clean_full/gus/K1.parquet \u2026 K54.parquet (~33 files) plus _catalog.json; matrix source_id is 'gus' (script jobs/ingest_gus_bdl.py) \u2014 distinct from gus_dbw.",
-    "rate_note": "No key; RATE=0.12s between calls + 429 handling (sleep 60s); full crawl is tens of thousands of calls (hours/days) \u2014 the year-filter delta is what makes ongoing refresh affordable.",
+    "out_paths_note": "per-K-subject files data/clean_full/gus/K1.parquet … K54.parquet (~33 files) plus _catalog.json; matrix source_id is 'gus' (script jobs/ingest_gus_bdl.py) — distinct from gus_dbw.",
+    "rate_note": "No key; RATE=0.12s between calls + 429 handling (sleep 60s); full crawl is tens of thousands of calls (hours/days) — the year-filter delta is what makes ongoing refresh affordable.",
     "key_env": "none",
     "confidence": "medium",
-    "open_question": "_catalog.json is cached indefinitely, so brand-new variables/subjects won't appear under a pure date-tail refresh \u2014 confirm an acceptable cadence to invalidate the catalog cache to pick up new variables."
+    "open_question": "_catalog.json is cached indefinitely, so brand-new variables/subjects won't appear under a pure date-tail refresh — confirm an acceptable cadence to invalidate the catalog cache to pick up new variables."
   },
   "gus_dbw": {
     "source_id": "gus_dbw",
@@ -682,33 +682,33 @@
     "cadence": "monthly",
     "vintage_signal": "date-tail always-fetch: store per (var,section) the max year seen and re-fetch only id-rok > that (no last-modified exposed); fetch_year already dedups via a 'seen' set.",
     "since_param": "id-rok= (year filter on the /variable-data-section call)",
-    "out_paths_note": "per-area files area_{id}.parquet built from parts/area_{id}/v{var}_s{sec}.parquet, plus _cache/, _checkpoint.json, logs/gus_dbw.DONE sentinel; area_15.parquet alone ~109MB \u2014 writes to multiple dirs (clean_full/gus_dbw + parts + _cache + logs).",
-    "rate_note": "Optional GUS_DBW_CLIENT_ID (X-ClientId) raises rate tier; anonymous is severe (5/s, 100/15min, 1000/12h, 10000/7d \u2192 SLEEP=45s; registered \u2192 9s; 429 \u2192 sleep 900s). Anonymous full crawl takes weeks \u2014 incremental year-tail is essential.",
-    "key_env": "GUS_DBW_CLIENT_ID (optional, strongly recommended to drop gap 45s\u21929s)",
+    "out_paths_note": "per-area files area_{id}.parquet built from parts/area_{id}/v{var}_s{sec}.parquet, plus _cache/, _checkpoint.json, logs/gus_dbw.DONE sentinel; area_15.parquet alone ~109MB — writes to multiple dirs (clean_full/gus_dbw + parts + _cache + logs).",
+    "rate_note": "Optional GUS_DBW_CLIENT_ID (X-ClientId) raises rate tier; anonymous is severe (5/s, 100/15min, 1000/12h, 10000/7d → SLEEP=45s; registered → 9s; 429 → sleep 900s). Anonymous full crawl takes weeks — incremental year-tail is essential.",
+    "key_env": "GUS_DBW_CLIENT_ID (optional, strongly recommended to drop gap 45s→9s)",
     "confidence": "medium",
     "open_question": "Checkpoint model is binary done/not-done; converting to per-section last_refreshed_year is required for delta. Is registering for a GUS_DBW_CLIENT_ID acceptable so refreshes finish in reasonable time?"
   },
   "hagstofa": {
     "source_id": "hagstofa",
     "strategy": "sdmx_delta",
-    "strategy_reason": "PxWeb source: tables expose an 'updated' timestamp and accept selection queries, so detect changed tables via 'updated' and re-POST only recent time-dim values, upserting per database \u2014 the PxWeb analogue of updatedAfter/startPeriod.",
+    "strategy_reason": "PxWeb source: tables expose an 'updated' timestamp and accept selection queries, so detect changed tables via 'updated' and re-POST only recent time-dim values, upserting per database — the PxWeb analogue of updatedAfter/startPeriod.",
     "cadence": "monthly",
     "vintage_signal": "PxWeb per-table metadata 'updated' field (GET table metadata at https://px.hagstofa.is/pxis/api/v1/...): compare each table's 'updated' to last ingest, re-pull only changed tables.",
-    "since_param": "PxWeb selection 'values' filter on the time dimension (post only the latest period codes, i.e. period >= last_obs+1); no literal startPeriod query string \u2014 selection is a POSTed JSON query.",
+    "since_param": "PxWeb selection 'values' filter on the time dimension (post only the latest period codes, i.e. period >= last_obs+1); no literal startPeriod query string — selection is a POSTed JSON query.",
     "out_paths_note": "per-database files data/clean_full/hagstofa/{Efnahagur,Atvinnuvegir,Ibuar,Samfelag,Umhverfi}.parquet (5 files) plus _catalog.json.",
-    "rate_note": "No key; RATE=0.3s between calls, 429 \u2192 sleep 30s; MAX_CELLS=100000 caps large tables (silently aggregates non-time dims \u2014 coverage limit, not a refresh blocker).",
+    "rate_note": "No key; RATE=0.3s between calls, 429 → sleep 30s; MAX_CELLS=100000 caps large tables (silently aggregates non-time dims — coverage limit, not a refresh blocker).",
     "key_env": "none",
     "confidence": "medium",
-    "open_question": "_catalog.json cached indefinitely so new tables/databases won't appear without invalidation; and the MAX_CELLS auto-aggregation means some series are already truncated \u2014 confirm whether to raise the cell cap when adding incremental support."
+    "open_question": "_catalog.json cached indefinitely so new tables/databases won't appear without invalidation; and the MAX_CELLS auto-aggregation means some series are already truncated — confirm whether to raise the cell cap when adding incremental support."
   },
   "harvard_atlas": {
     "source_id": "harvard_atlas",
     "strategy": "overwrite_if_changed",
     "strategy_reason": "Full annual CSV snapshots downloaded and rewritten whole with no observation-level since-param; gate on the Dataverse dataset version and overwrite each per-dataset parquet only when a new vintage publishes.",
     "cadence": "annual",
-    "vintage_signal": "Dataverse dataset API by DOI (doi:10.7910/DVN/XTAQMC, NDDMSN, YAVJDF) \u2014 compare latest versionNumber / publicationDate (and resolve current datafile IDs automatically) vs last ingest; current code pins FIXED numeric file IDs so it silently re-uses the old vintage.",
+    "vintage_signal": "Dataverse dataset API by DOI (doi:10.7910/DVN/XTAQMC, NDDMSN, YAVJDF) — compare latest versionNumber / publicationDate (and resolve current datafile IDs automatically) vs last ingest; current code pins FIXED numeric file IDs so it silently re-uses the old vintage.",
     "since_param": "n/a",
-    "out_paths_note": "9 per-dataset files: eci_rankings.parquet, services_country_year.parquet, services_cp_{1,2,4,6}.parquet, hs12_country_year.parquet, hs12_cp_{hs1,hs2}.parquet \u2014 refresh is NOT atomic across the 9 (per-job try/except can leave some fresh, some stale).",
+    "out_paths_note": "9 per-dataset files: eci_rankings.parquet, services_country_year.parquet, services_cp_{1,2,4,6}.parquet, hs12_country_year.parquet, hs12_cp_{hs1,hs2}.parquet — refresh is NOT atomic across the 9 (per-job try/except can leave some fresh, some stale).",
     "rate_note": "No key (public Dataverse access endpoint); UA header, timeout 180s, 4 retries with backoff, RATE=0.3s between jobs.",
     "key_env": "none",
     "confidence": "high",
@@ -721,8 +721,8 @@
     "cadence": "monthly",
     "vintage_signal": "date-tail via the aggregate's /periodos endpoint: GET https://servicodados.ibge.gov.br/api/v3/agregados/{agg}/periodos, take periods > stored max(obs_date), fetch only those (no last-modified header exposed).",
     "since_param": "period path segment on /agregados/{agg}/periodos/{period1|period2|...} (restrict the period list to new periods)",
-    "out_paths_note": "per-aggregate files data/clean_full/ibge/<agg_id>.parquet (~8221 files observed); pq.write_table writes directly with no .tmp+rename, so a crash mid-write can leave a corrupt file that is then skipped forever \u2014 add atomic write when converting to delta.",
-    "rate_note": "No key; self-imposed 0.5s sleep between requests, 4-retry backoff; INCLUDE_MUNI=False hard-codes out municipality level N6 (only N1+N3 fetched) \u2014 coverage limit.",
+    "out_paths_note": "per-aggregate files data/clean_full/ibge/<agg_id>.parquet (~8221 files observed); pq.write_table writes directly with no .tmp+rename, so a crash mid-write can leave a corrupt file that is then skipped forever — add atomic write when converting to delta.",
+    "rate_note": "No key; self-imposed 0.5s sleep between requests, 4-retry backoff; INCLUDE_MUNI=False hard-codes out municipality level N6 (only N1+N3 fetched) — coverage limit.",
     "key_env": "none",
     "confidence": "high",
     "open_question": "Confirm we keep INCLUDE_MUNI=False (municipal N6 excluded) under the incremental design, and approve switching pq.write_table to atomic .tmp+rename to avoid the corrupt-then-skipped-forever trap."
@@ -769,7 +769,7 @@
   "imf_dbnomics": {
     "source_id": "imf_dbnomics",
     "strategy": "bulk_snapshot_if_changed",
-    "strategy_reason": "Parameterized per dataset (IFS/DOT/BOP/...) with no since filter on DBnomics v22; DOT/BOP are LARGE so unconditional overwrite is wasteful \u2014 gate a whole-dataset re-download on a DBnomics dataset vintage signal and rebuild only changed datasets.",
+    "strategy_reason": "Parameterized per dataset (IFS/DOT/BOP/...) with no since filter on DBnomics v22; DOT/BOP are LARGE so unconditional overwrite is wasteful — gate a whole-dataset re-download on a DBnomics dataset vintage signal and rebuild only changed datasets.",
     "cadence": "monthly",
     "vintage_signal": "[HISTORICAL - DBnomics BANNED R251] dataset endpoint api.db.nomics.world/v22 for each provider/dataset (e.g. IMF/IFS, IMF/DOT, IMF/BOP): compare dataset indexed_at/converted_at (or nb_series/num_found) against a stored per-dataset value; re-pull+overwrite only when it advances.",
     "since_param": "n/a",
@@ -782,7 +782,7 @@
   "imf_fsi": {
     "source_id": "imf_fsi",
     "strategy": "extend_by_date",
-    "strategy_reason": "The IMF SDMX GetData endpoint supports startPeriod/endPeriod, so read max(obs_date) from the parquet and fetch only newer periods, then merge \u2014 also fixes the hard-coded endPeriod=2025 truncation by parameterizing the window to the current year.",
+    "strategy_reason": "The IMF SDMX GetData endpoint supports startPeriod/endPeriod, so read max(obs_date) from the parquet and fetch only newer periods, then merge — also fixes the hard-coded endPeriod=2025 truncation by parameterizing the window to the current year.",
     "cadence": "monthly",
     "vintage_signal": "Date-tail always-fetch: each run sets startPeriod=last_obs_year and endPeriod=current_year against data.imf.org SDMX GetData (BI), merging any newer periods; no separate manifest needed because the date filter itself bounds the pull.",
     "since_param": "startPeriod (with endPeriod set to current year; currently hard-coded 2000/2025 at lines 145 & 158 and must be parameterized)",
@@ -795,12 +795,12 @@
   "imf": {
     "source_id": "imf",
     "strategy": "bulk_snapshot_if_changed",
-    "strategy_reason": "IMF SDMX 2.1 but the server supports no c[DIM] component filtering or Range resume and queries pull 'all' with no usable per-dataflow last-modified; practical refresh is re-pulling whole CHANGED dataflows, with the re-enumerated catalog as the change feed for new flows. Not S4 \u2014 IMF is not one of the four designated giants (statcan/oecd/eurostat/sdmx_nso).",
+    "strategy_reason": "IMF SDMX 2.1 but the server supports no c[DIM] component filtering or Range resume and queries pull 'all' with no usable per-dataflow last-modified; practical refresh is re-pulling whole CHANGED dataflows, with the re-enumerated catalog as the change feed for new flows. Not S4 — IMF is not one of the four designated giants (statcan/oecd/eurostat/sdmx_nso).",
     "cadence": "monthly",
     "vintage_signal": "Poll api.imf.org SDMX /dataflow each run (already done) -> _catalog.json: new base dataflows auto-detected; for change in existing flows, compare dataflow/DSD version+annotations (and the 91 *_VINTAGE re-release flows) vs _manifest.json, and rebuild only flows whose version advanced.",
     "since_param": "n/a",
     "out_paths_note": "Multi-file (~767): data/clean_full/imf/<DID>.parquet for simple flows; giants split to <DID>__<FREQ>.parquet and MEGA cubes to <DID>__<FREQ>__<VAL>.parquet; state in data/clean_full/imf/_manifest.json and _catalog.json. Watch the freq-only vs sub-split double-count hazard when a flow moves in/out of MEGA between runs.",
-    "rate_note": "No key (api.imf.org/external/sdmx/2.1, SDMX-CSV mandatory \u2014 JSON/SDMX-ML broken server-side). 5-retry backoff, 600-900s timeouts. Host periodically OOM-kills concurrent ingest \u2014 keep requests small/restart-safe; use --skip-existing for resume.",
+    "rate_note": "No key (api.imf.org/external/sdmx/2.1, SDMX-CSV mandatory — JSON/SDMX-ML broken server-side). 5-retry backoff, 600-900s timeouts. Host periodically OOM-kills concurrent ingest — keep requests small/restart-safe; use --skip-existing for resume.",
     "key_env": "none",
     "confidence": "medium",
     "open_question": "IMF /dataflow may not expose a reliable per-dataflow version/last-modified that advances on data revisions; need to confirm a change signal (else fall back to a scheduled periodic full re-pull, or adopt startPeriod=last_obs_year per-dataflow delta as a larger rewrite). Also decide whether to ingest the 91 *_VINTAGE flows (--vintages)."
@@ -808,15 +808,15 @@
   "imf_weo": {
     "source_id": "imf_weo",
     "strategy": "overwrite_if_changed",
-    "strategy_reason": "DataMapper serves whole country x year matrices per indicator with no since filter; WEO is fully re-estimated each release, so a full re-pull rebuilds the single medium file correctly \u2014 drop the existence guard and overwrite when a new WEO edition is detected.",
+    "strategy_reason": "DataMapper serves whole country x year matrices per indicator with no since filter; WEO is fully re-estimated each release, so a full re-pull rebuilds the single medium file correctly — drop the existence guard and overwrite when a new WEO edition is detected.",
     "cadence": "irregular",
-    "vintage_signal": "Poll IMF DataMapper for the WEO release/edition tag (Apr & Oct rounds) \u2014 the code currently ignores the edition tag; surface it and overwrite only when the edition advances; otherwise a blind full re-pull + diff against existing parquet.",
+    "vintage_signal": "Poll IMF DataMapper for the WEO release/edition tag (Apr & Oct rounds) — the code currently ignores the edition tag; surface it and overwrite only when the edition advances; otherwise a blind full re-pull + diff against existing parquet.",
     "since_param": "n/a",
     "out_paths_note": "Single file: data/clean_full/imf_weo/imf_weo.parquet (~588,836 rows; series_key '{indicator}:{country}', annual obs dated Dec 31).",
-    "rate_note": "No key. Public IMF DataMapper; self-imposed RATE=0.5s across ~132 indicator GETs; 429 -> 60s sleep; UA carries admin@hfdatalibrary.com. No temp+rename \u2014 add atomic write since the in-place overwrite can leave a corrupt/absent file on mid-write crash.",
+    "rate_note": "No key. Public IMF DataMapper; self-imposed RATE=0.5s across ~132 indicator GETs; 429 -> 60s sleep; UA carries admin@hfdatalibrary.com. No temp+rename — add atomic write since the in-place overwrite can leave a corrupt/absent file on mid-write crash.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "WEO releases twice yearly (Apr/Oct), so the normalized cadence is 'irregular' rather than monthly \u2014 confirm an every-other-month or post-release poll schedule, and whether DataMapper exposes a stable edition tag to gate on (vs blind re-pull)."
+    "open_question": "WEO releases twice yearly (Apr/Oct), so the normalized cadence is 'irregular' rather than monthly — confirm an every-other-month or post-release poll schedule, and whether DataMapper exposes a stable edition tag to gate on (vs blind re-pull)."
   },
   "ine_spain": {
     "source_id": "ine_spain",
@@ -826,7 +826,7 @@
     "vintage_signal": "Date-tail fetch via DATOS_TABLA nult=N (or date filter); each table's records carry Fecha (unix-ms)/Anyo, so request recent periods and merge anything newer than stored max(obs_date) per (table,cod). New operations still picked up via OPERACIONES_DISPONIBLES enumeration.",
     "since_param": "nult (last-N periods on DATOS_TABLA; or the date-filtered DATOS_TABLA variant keyed on Fecha)",
     "out_paths_note": "Multi-file: one parquet per operation, data/clean_full/ine_spain/op_{op_id}.parquet (~99 files incl. _ine_spain_log.txt; series_key 'table={id}:cod={cod}:nombre={name}'; largest ~25MB op_197).",
-    "rate_note": "No key. RATE=0.3s between table GETs; 429 -> 60s sleep. Oversized ops (e.g. 353 Atlas de renta, 540) are buffered whole-in-memory and can OOM/stall \u2014 deferrable via env INE_SKIP_OPS, which leaves them as a tracked gap.",
+    "rate_note": "No key. RATE=0.3s between table GETs; 429 -> 60s sleep. Oversized ops (e.g. 353 Atlas de renta, 540) are buffered whole-in-memory and can OOM/stall — deferrable via env INE_SKIP_OPS, which leaves them as a tracked gap.",
     "key_env": "INE_SKIP_OPS (optional, to defer oversized ops; not a credential)",
     "confidence": "medium",
     "open_question": "Verify nult/date-filter is supported on the bulk DATOS_TABLA path used here (not only on per-series endpoints); if not, fall back to per-op bulk_snapshot_if_changed gated on a table-level vintage. Also resolve how the deferred INE_SKIP_OPS ops get collected so they aren't a permanent gap."
@@ -946,7 +946,7 @@
     "rate_note": "F5 WAF blocker handled in-code (browser headers required, NOT library UA; escalating WAF_SLEEPS=[60,120,300,600,900]s, 12-attempt get_bytes, main aborts after 3 consecutive WAF losses). RATE=1.2s + 0-0.8s jitter. No API key.",
     "key_env": "none",
     "confidence": "medium",
-    "open_question": "WAF means partial/slow crawls are normal \u2014 should a changed-toc rebuild be allowed to span multiple runs (resume at theme granularity), and is full toc re-diff acceptable given the WAF cost, or should we cap how many themes refresh per run?"
+    "open_question": "WAF means partial/slow crawls are normal — should a changed-toc rebuild be allowed to span multiple runs (resume at theme granularity), and is full toc re-diff acceptable given the WAF cost, or should we cap how many themes refresh per run?"
   },
   "maddison": {
     "source_id": "maddison",
@@ -955,11 +955,11 @@
     "cadence": "irregular",
     "vintage_signal": "HEAD Last-Modified / Content-Length on the mpd2020.xlsx primary URL (and the Dataverse datafile/421302 2023 fallback); re-download+overwrite only when the header changes.",
     "since_param": "n/a",
-    "out_paths_note": "Single file data/clean_full/maddison/maddison.parquet (~208KB), skip-if-exists. NOTE: a separate ingester jobs/ingest_ggdc.py also produces Maddison output to its own path \u2014 keep the two from colliding.",
+    "out_paths_note": "Single file data/clean_full/maddison/maddison.parquet (~208KB), skip-if-exists. NOTE: a separate ingester jobs/ingest_ggdc.py also produces Maddison output to its own path — keep the two from colliding.",
     "rate_note": "No API key (CC BY 4.0, direct XLSX), 300s timeout. Writes nothing if both URLs fail.",
     "key_env": "none",
     "confidence": "medium",
-    "open_question": "The 2020 primary URL is preferred over the newer 2023 Dataverse edition, so refresh keeps the OLDER edition unless URLS is reordered \u2014 should we flip the priority / add the 2023 (or later mpd2025) edition as primary so the vintage check tracks the newest release?"
+    "open_question": "The 2020 primary URL is preferred over the newer 2023 Dataverse edition, so refresh keeps the OLDER edition unless URLS is reordered — should we flip the priority / add the 2023 (or later mpd2025) edition as primary so the vintage check tracks the newest release?"
   },
   "nasa_giss": {
     "source_id": "nasa_giss",
@@ -998,7 +998,7 @@
     "rate_note": "No API key (NCEI public domain). Scale/rate is the blocker: ~214K CSVs, workers capped 1..6, Retry session backoff on 429/5xx; build single-threaded. refresh_cost=large.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Does NCEI emit reliable per-file Last-Modified on the GSOM/GSOY station CSVs? If not, the only fresh-detection option is periodic full re-download of the archive (expensive) or a published manifest \u2014 needs confirmation before relying on conditional GET."
+    "open_question": "Does NCEI emit reliable per-file Last-Modified on the GSOM/GSOY station CSVs? If not, the only fresh-detection option is periodic full re-download of the archive (expensive) or a published manifest — needs confirmation before relying on conditional GET."
   },
   "norgesbank": {
     "source_id": "norgesbank",
@@ -1007,7 +1007,7 @@
     "cadence": "monthly",
     "vintage_signal": "SDMX startPeriod windowed re-fetch per flow (no updatedAfter on this API); request startPeriod=last_obs+1 and append. Always-fetch the short tail per flow as the freshness probe.",
     "since_param": "&startPeriod=<max(obs_date)+1> (per dataflow) appended to GET /api/data/{DATAFLOW}?format=sdmx-json; optional &endPeriod.",
-    "out_paths_note": "Single combined file data/clean_full/norgesbank/norgesbank.parquet (~12MB, 10 dataflows). WARNING: sibling per-dataflow files (EXR.parquet, IR.parquet, ANN_FX_SPU.parquet, MONEY_MARKET.parquet, etc.) in the same dir come from a DIFFERENT/older ingester and are NOT touched by this script \u2014 downstream globbing could double-count.",
+    "out_paths_note": "Single combined file data/clean_full/norgesbank/norgesbank.parquet (~12MB, 10 dataflows). WARNING: sibling per-dataflow files (EXR.parquet, IR.parquet, ANN_FX_SPU.parquet, MONEY_MARKET.parquet, etc.) in the same dir come from a DIFFERENT/older ingester and are NOT touched by this script — downstream globbing could double-count.",
     "rate_note": "No API key (data.norges-bank.no open). Self-throttled RATE=1.0s/flow, 120s timeout, 3 retries (5s*(attempt+1) backoff); 400/404 treated as empty. Only 10 flows.",
     "key_env": "none",
     "confidence": "high",
@@ -1018,13 +1018,13 @@
     "strategy": "extend_by_date",
     "strategy_reason": "Fetched via FRED, which exposes a server-side observation_start date filter; derive it from each series' stored max(obs_date) and pull only the tail.",
     "cadence": "daily",
-    "vintage_signal": "Date-tail always-fetch via FRED observation_start; per series compute max(obs_date) from {name}.parquet and request from there (data tiny \u2014 full overwrite also fine).",
+    "vintage_signal": "Date-tail always-fetch via FRED observation_start; per series compute max(obs_date) from {name}.parquet and request from there (data tiny — full overwrite also fine).",
     "since_param": "observation_start=<max(obs_date) (or +1 day)> on the FRED series/observations call (currently hardcoded 2000-01-01).",
     "out_paths_note": "Multi-file, one parquet per logical series: data/clean_full/nyfed/<name>.parquet for sofr,tgcr,obfr,sofr30d/90d/180d,sofridx,tgcrvol (~8 files). NOTE: duplicate 'tgcr' dict key drops the non-RATE TGCR variant (latent coverage bug); bgcr intentionally absent (unavailable via FRED).",
     "rate_note": "REQUIRES FRED_API_KEY (.env via core.config.load_env; SystemExit if missing). FRED public rate limits; self-throttles 1s between series.",
     "key_env": "FRED_API_KEY",
     "confidence": "high",
-    "open_question": "Confirm the duplicate 'tgcr' key should be fixed (currently only TGCRRATE is fetched, the TGCR variant is silently dropped) \u2014 coverage decision for a human."
+    "open_question": "Confirm the duplicate 'tgcr' key should be fixed (currently only TGCRRATE is fetched, the TGCR variant is silently dropped) — coverage decision for a human."
   },
   "oecd": {
     "source_id": "oecd",
@@ -1033,11 +1033,11 @@
     "cadence": "monthly",
     "vintage_signal": "OECD SDMX catalog as change-feed: re-download the catalog (--catalog -> data/raw/oecd/manifest.json + dataflows_all.xml, ~1509 flows) and diff per-flow last-updated/annotations to select changed dataflows to re-pull. (Per-flow SDMX startPeriod could refine within a changed flow, but selection is unit-level per the giants strategy.)",
     "since_param": "n/a (giant strategy refreshes whole changed units; optionally startPeriod=YYYY-MM on /rest/data/.../all within a changed flow)",
-    "out_paths_note": "Multi-file, one parquet per dataflow: data/clean_full/oecd/<AGENCY>__<DATAFLOW_ID>.parquet (~1,413 files). 'partial' flows (failed REF_AREA/COUNTERPART splits) get skipped forever by resume \u2014 must be force-cleared to repair, so the changed-unit selector must also re-pull partials.",
-    "rate_note": "No API key (CC BY 4.0) but Cloudflare + app-level download quota: HTTP 429 'exceeded number of requests' -> 35s global cooldown; global token-bucket MIN_INTERVAL default 4.0s (env OECD_MIN_INTERVAL); default workers=2. Full re-pull is many hours \u2014 the whole point of changed-units. refresh_cost=giant.",
+    "out_paths_note": "Multi-file, one parquet per dataflow: data/clean_full/oecd/<AGENCY>__<DATAFLOW_ID>.parquet (~1,413 files). 'partial' flows (failed REF_AREA/COUNTERPART splits) get skipped forever by resume — must be force-cleared to repair, so the changed-unit selector must also re-pull partials.",
+    "rate_note": "No API key (CC BY 4.0) but Cloudflare + app-level download quota: HTTP 429 'exceeded number of requests' -> 35s global cooldown; global token-bucket MIN_INTERVAL default 4.0s (env OECD_MIN_INTERVAL); default workers=2. Full re-pull is many hours — the whole point of changed-units. refresh_cost=giant.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Does the OECD catalog (manifest.json/dataflows_all.xml) expose a reliable per-dataflow last-updated timestamp to drive change detection? If not, changed-unit selection has no clean signal and we'd fall back to periodic full or startPeriod-tail per flow \u2014 needs confirmation."
+    "open_question": "Does the OECD catalog (manifest.json/dataflows_all.xml) expose a reliable per-dataflow last-updated timestamp to drive change detection? If not, changed-unit selection has no clean signal and we'd fall back to periodic full or startPeriod-tail per flow — needs confirmation."
   },
   "ofr": {
     "source_id": "ofr",
@@ -1085,7 +1085,7 @@
     "cadence": "static",
     "vintage_signal": "GitHub commit SHA / raw Last-Modified on the OxCGRT raw CSV (HEAD the first reachable of the 3 candidate raw.githubusercontent URLs, or query the GitHub commits API for the file path); only rebuild if it moved. In practice the project ended, so this will essentially never fire.",
     "since_param": "n/a",
-    "out_paths_note": "Single file data/clean_full/oxcgrt/oxcgrt.parquet plus _oxcgrt_log.txt/_oxcgrt_err.txt. Currently main() no-ops if the file exists. WARNING: forced rebuild streams ParquetWriter directly to the final path (non-atomic) so a mid-run crash leaves a truncated parquet \u2014 write to temp+rename if wiring real refreshes.",
+    "out_paths_note": "Single file data/clean_full/oxcgrt/oxcgrt.parquet plus _oxcgrt_log.txt/_oxcgrt_err.txt. Currently main() no-ops if the file exists. WARNING: forced rebuild streams ParquetWriter directly to the final path (non-atomic) so a mid-run crash leaves a truncated parquet — write to temp+rename if wiring real refreshes.",
     "rate_note": "No API key (CC BY 4.0, Oxford via GitHub raw); 2s sleep between the 3 candidate URLs, single GET each (no retry). File must be >10,000 bytes to be accepted.",
     "key_env": "none",
     "confidence": "high",
@@ -1094,15 +1094,15 @@
   "penn_world_table": {
     "source_id": "penn_world_table",
     "strategy": "overwrite_if_changed",
-    "strategy_reason": "Whole annual panel republished as one Excel workbook per version (with back-revisions), and the script already full-overwrites all 42 variable parquets each run \u2014 gate that on a Dataverse vintage signal so it only re-runs when the release changes.",
+    "strategy_reason": "Whole annual panel republished as one Excel workbook per version (with back-revisions), and the script already full-overwrites all 42 variable parquets each run — gate that on a Dataverse vintage signal so it only re-runs when the release changes.",
     "cadence": "annual",
-    "vintage_signal": "Dataverse datafile id / version for pwt110.xlsx (current datafile id 554105) \u2014 compare the upstream datafile id or dataset version metadata before downloading; bump PWT_VERSION + DATA_URL constants on a new release.",
+    "vintage_signal": "Dataverse datafile id / version for pwt110.xlsx (current datafile id 554105) — compare the upstream datafile id or dataset version metadata before downloading; bump PWT_VERSION + DATA_URL constants on a new release.",
     "since_param": "n/a",
     "out_paths_note": "One parquet per VARIABLE: data/clean_full/penn_world_table/<variable>.parquet (42 files) plus _ingest_summary.json; raw workbook cached at data/raw/penn_world_table/pwt110.xlsx. Atomic per-file overwrite already implemented. Distinct from the legacy 'pwt' source (PWT 10.0).",
     "rate_note": "No API key (CC BY 4.0). Single GET to dataverse.nl with 5-try exponential backoff (1/2/4/8/16s); no rate concerns (one file). Needs openpyxl+pandas. Hard guard raises on a column missing a VAR_DEFS legend entry (schema-drift tripwire).",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "A new PWT vintage with renamed/added columns will RAISE (missing_def guard) \u2014 confirm a human updates VAR_DEFS + PWT_VERSION/DATA_URL when version 11.x/12.0 drops; should vintage detection auto-alert on the Dataverse version bump?"
+    "open_question": "A new PWT vintage with renamed/added columns will RAISE (missing_def guard) — confirm a human updates VAR_DEFS + PWT_VERSION/DATA_URL when version 11.x/12.0 drops; should vintage detection auto-alert on the Dataverse version bump?"
   },
   "pip": {
     "source_id": "pip",
@@ -1111,7 +1111,7 @@
     "cadence": "irregular",
     "vintage_signal": "PIP version catalog: GET api.worldbank.org/pip/v1/versions and record the current data vintage string; rebuild only when it changes (replace the top-of-main existence skip at lines 65-67 with a vintage comparison).",
     "since_param": "n/a",
-    "out_paths_note": "Single file data/clean_full/pip/pip.parquet plus _pip_log.txt/_pip_err.txt. Rebuild = 10 bulk calls (one per poverty line in POV_LINES), each all-countries x all-years. WARNING: streaming ParquetWriter writes directly to the final path (non-atomic) \u2014 a crashed force-refresh leaves a partial parquet the next run skips; write temp+rename.",
+    "out_paths_note": "Single file data/clean_full/pip/pip.parquet plus _pip_log.txt/_pip_err.txt. Rebuild = 10 bulk calls (one per poverty line in POV_LINES), each all-countries x all-years. WARNING: streaming ParquetWriter writes directly to the final path (non-atomic) — a crashed force-refresh leaves a partial parquet the next run skips; write temp+rename.",
     "rate_note": "No API key (CC BY 4.0, World Bank). RATE=1.0s between poverty-line calls; 429 handled with 30s sleep. reporting_level='national', welfare_type='all', fill_gaps='false'.",
     "key_env": "none",
     "confidence": "high",
@@ -1120,22 +1120,22 @@
   "pwt": {
     "source_id": "pwt",
     "strategy": "overwrite_if_changed",
-    "strategy_reason": "Legacy PWT 10.0 single-workbook bulk download with no since filter; a small whole table re-estimated per vintage \u2014 gate on the rug.nl file vintage and atomically overwrite. (Superseded by penn_world_table.)",
+    "strategy_reason": "Legacy PWT 10.0 single-workbook bulk download with no since filter; a small whole table re-estimated per vintage — gate on the rug.nl file vintage and atomically overwrite. (Superseded by penn_world_table.)",
     "cadence": "static",
     "vintage_signal": "HTTP Last-Modified / ETag on https://www.rug.nl/ggdc/docs/pwt100.xlsx (HEAD before the cheap full rebuild). PWT 10.0 is a frozen vintage so this will essentially never change.",
     "since_param": "n/a",
-    "out_paths_note": "Single file data/clean_full/pwt/pwt.parquet (note series_key uses ':' separator, unlike penn_world_table's '|'); no raw cache, no summary json. main() no-ops if the file exists. SuperSEDED by jobs/ingest_penn_world_table.py (PWT 11.0) which writes a DIFFERENT dir \u2014 these are two distinct source_ids/dirs covering overlapping data.",
+    "out_paths_note": "Single file data/clean_full/pwt/pwt.parquet (note series_key uses ':' separator, unlike penn_world_table's '|'); no raw cache, no summary json. main() no-ops if the file exists. SuperSEDED by jobs/ingest_penn_world_table.py (PWT 11.0) which writes a DIFFERENT dir — these are two distinct source_ids/dirs covering overlapping data.",
     "rate_note": "No API key (CC BY 4.0). Single GET to rug.nl, 300s timeout, NO retry/backoff (one attempt). Needs openpyxl. write_table to final path only after a fully successful parse (failure leaves prior file intact).",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "RECOMMEND RETIRING this legacy 10.0 script in favor of penn_world_table (11.0) \u2014 confirm with a human whether to keep the frozen 10.0 vintage live or deprecate it to avoid duplicated-effort/two-dir confusion."
+    "open_question": "RECOMMEND RETIRING this legacy 10.0 script in favor of penn_world_table (11.0) — confirm with a human whether to keep the frozen 10.0 vintage live or deprecate it to avoid duplicated-effort/two-dir confusion."
   },
   "pxweb": {
     "source_id": "pxweb",
     "strategy": "bulk_snapshot_if_changed",
-    "strategy_reason": "PxWeb data POST selects explicit per-dimension value lists with no date cutoff, but table metadata exposes an 'updated' timestamp \u2014 gate whole-table re-download on that timestamp (manifest-style change detection); the directory crawl surfaces new tables.",
+    "strategy_reason": "PxWeb data POST selects explicit per-dimension value lists with no date cutoff, but table metadata exposes an 'updated' timestamp — gate whole-table re-download on that timestamp (manifest-style change detection); the directory crawl surfaces new tables.",
     "cadence": "irregular",
-    "vintage_signal": "PxWeb per-table metadata 'updated' (last-updated) field from tableinfo/table meta \u2014 store it alongside each parquet and re-download only when the upstream timestamp is newer (replaces the blind os.path.exists skip at lines 161-164 / DST 329-332). Directory crawl (crawl_pxweb_tables; DST tables list) detects NEW tables.",
+    "vintage_signal": "PxWeb per-table metadata 'updated' (last-updated) field from tableinfo/table meta — store it alongside each parquet and re-download only when the upstream timestamp is newer (replaces the blind os.path.exists skip at lines 161-164 / DST 329-332). Directory crawl (crawl_pxweb_tables; DST tables list) detects NEW tables.",
     "since_param": "n/a",
     "out_paths_note": "MULTI-PROVIDER, multi-dir: one parquet per table under data/clean_full/<provider>/ for provider in {scb,ssb,statfin,dst,cso,bfs} (e.g. dst 705, ssb 186, statfin 135, scb 9, cso 44, bfs 1); 5-col schema provider/table_id/series_key/obs_date/value; DST files named DST__<id>.parquet; ssb/statfin also write _catalog.json. Large cross-products (>MAX_CELLS=50,000) are trimmed to the last 200 time periods, so those tables permanently hold only recent history unless re-pulled. Per-table writes are non-atomic.",
     "rate_note": "No API keys. Per-provider rate: scb 0.5, ssb 1.0, statfin 1.0, dst 0.5, cso 1.0, bfs 2.0; 429 handled (30s*attempt). Quirks: SCB uses '/sv/' base (EN 400s), SSB tree starts at /table/; PxWeb rejects 'all'/'*' wildcards (explicit value lists sent); crawl depth capped at max_depth=8.",
@@ -1150,7 +1150,7 @@
     "cadence": "monthly",
     "vintage_signal": "Scrape https://www.rba.gov.au/statistics/tables/ for /statistics/tables/csv/*.csv hrefs, then per-CSV gate on HTTP Last-Modified (or the in-file 'Publication date' metadata row) compared against a stored per-table state file; re-pull only tables whose signal moved.",
     "since_param": "n/a",
-    "out_paths_note": "Currently single file data/clean_full/rba/rba.parquet holding all ~216 tables; to make S5 effective, move to a per-table parquet layout so only changed tables rebuild (note: no in-run (key,date) dedup today \u2014 overlapping Series IDs across CSVs can dupe).",
+    "out_paths_note": "Currently single file data/clean_full/rba/rba.parquet holding all ~216 tables; to make S5 effective, move to a per-table parquet layout so only changed tables rebuild (note: no in-run (key,date) dedup today — overlapping Series IDs across CSVs can dupe).",
     "rate_note": "No key; RATE=0.5s between files, 4x retry, 60s sleep on 429, 120s timeout; link discovery depends on the HTML/href regex (site redesign breaks it).",
     "key_env": "none",
     "confidence": "high",
@@ -1164,10 +1164,10 @@
     "vintage_signal": "Date-tail always-fetch: for each series request observations after the stored last obs_date; also periodically refresh _series_catalog.json (GET /Series) to detect newly-added series rather than reusing the cache.",
     "since_param": "URL path /swea/v1/Observations/{seriesId}/{from}/{to} where from = stored last_obs_date+1, to = today (or catalog observationMaxDate).",
     "out_paths_note": "Single file: data/clean_full/riksbank/riksbank.parquet (~2.3 MB; key 'RIKSBANK:<seriesId>'), plus sidecar _series_catalog.json and _riksbank_log.txt. One dir; add (key,date) dedup on append.",
-    "rate_note": "No key; api.riksbank.se aggressive limits \u2014 RATE=3.0s between obs calls, 8x retry, parses 'N seconds' from 429 body (default 65s); ~117 series so cold run is several minutes.",
+    "rate_note": "No key; api.riksbank.se aggressive limits — RATE=3.0s between obs calls, 8x retry, parses 'N seconds' from 429 body (default 65s); ~117 series so cold run is several minutes.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Cached _series_catalog.json hides new Riksbank series \u2014 confirm an acceptable cadence for re-pulling the /Series catalog so new series aren't missed."
+    "open_question": "Cached _series_catalog.json hides new Riksbank series — confirm an acceptable cadence for re-pulling the /Series catalog so new series aren't missed."
   },
   "scb": {
     "source_id": "scb",
@@ -1193,7 +1193,7 @@
     "rate_note": "No keys (all keyless); per-provider rate 1.0-2.0s and 180-600s timeouts; 4x retry, 60s on 429; XML flows >800 MB silently skipped (gaps); known flaky hosts (esploradati.istat.it, stat_austria, idb). SDMX_SKIP_FLOWS must be UNSET for completeness.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Which of the ~15 providers actually honor ?updatedAfter (coverage varies by provider) \u2014 those that don't may need startPeriod-only or a structure-version check; and how to handle the >800 MB XML flows that are skipped at parse time so they aren't permanently missing."
+    "open_question": "Which of the ~15 providers actually honor ?updatedAfter (coverage varies by provider) — those that don't may need startPeriod-only or a structure-version check; and how to handle the >800 MB XML flows that are skipped at parse time so they aren't permanently missing."
   },
   "shiller": {
     "source_id": "shiller",
@@ -1215,7 +1215,7 @@
     "cadence": "annual",
     "vintage_signal": "Probe the dated bulk URL on sipri.org/www.sipri.org: HEAD/GET SIPRI-Milex-data-1949-<year>.xlsx auto-discovering current/next year (ahead of the hardcoded 2024/2023 list); first 200 with >10 KB is the live vintage, compare filename/Last-Modified to stored.",
     "since_param": "n/a",
-    "out_paths_note": "Single file: data/clean_full/sipri/sipri.parquet (~435 KB). CAUTION: the same data/clean_full/sipri/ dir also contains milex.parquet written by a DIFFERENT script (sipri_polity) \u2014 do NOT 'clear the sipri dir'; delete only sipri.parquet.",
+    "out_paths_note": "Single file: data/clean_full/sipri/sipri.parquet (~435 KB). CAUTION: the same data/clean_full/sipri/ dir also contains milex.parquet written by a DIFFERENT script (sipri_polity) — do NOT 'clear the sipri dir'; delete only sipri.parquet.",
     "rate_note": "No key; HTTPS GET, 120s timeout, accepts first URL with >10 KB body; hard dependency on openpyxl; header-row/country-column detection is heuristic (could yield 0 obs if layout changes).",
     "key_env": "none",
     "confidence": "high",
@@ -1224,15 +1224,15 @@
   "sipri_polity": {
     "source_id": "sipri_polity",
     "strategy": "overwrite_if_changed",
-    "strategy_reason": "Three tiny annual bulk XLSX/XLS (SIPRI milex + Polity5 + MEPV) with no delta API; the right pattern is overwrite-single-file per source on a new vintage \u2014 drop the skip-if-exists guard and re-parse+overwrite, gated on a vintage signal. Not S6: hosts are fetchable (no 403/WAF/credential wall).",
+    "strategy_reason": "Three tiny annual bulk XLSX/XLS (SIPRI milex + Polity5 + MEPV) with no delta API; the right pattern is overwrite-single-file per source on a new vintage — drop the skip-if-exists guard and re-parse+overwrite, gated on a vintage signal. Not S6: hosts are fetchable (no 403/WAF/credential wall).",
     "cadence": "annual",
-    "vintage_signal": "SIPRI: probe/compare the versioned dated filename SIPRI-Milex-data-1949-<year>_v<X.Y>.xlsx on www.sipri.org (404 = vintage moved) or its Last-Modified. Polity/MEPV: gate on Last-Modified of www.systemicpeace.org p5v2018.xls and MEPVv2018.xls (frozen 2018 vintages \u2014 poll for a newer file).",
+    "vintage_signal": "SIPRI: probe/compare the versioned dated filename SIPRI-Milex-data-1949-<year>_v<X.Y>.xlsx on www.sipri.org (404 = vintage moved) or its Last-Modified. Polity/MEPV: gate on Last-Modified of www.systemicpeace.org p5v2018.xls and MEPVv2018.xls (frozen 2018 vintages — poll for a newer file).",
     "since_param": "n/a",
-    "out_paths_note": "Multi-dir, three files: data/clean_full/sipri/milex.parquet, data/clean_full/polity/polity5.parquet, data/clean_full/polity/mepv.parquet. Note milex.parquet shares the sipri/ dir with the separate sipri source's sipri.parquet \u2014 overwrite per-file, never clear the dir.",
+    "out_paths_note": "Multi-dir, three files: data/clean_full/sipri/milex.parquet, data/clean_full/polity/polity5.parquet, data/clean_full/polity/mepv.parquet. Note milex.parquet shares the sipri/ dir with the separate sipri source's sipri.parquet — overwrite per-file, never clear the dir.",
     "rate_note": "No key; custom User-Agent set; RATE=0.5s between sources; www.systemicpeace.org historically flaky; SIPRI versioned filename and the SIPRI_SHEETS 'Constant (2024) US$' sheet name are hardcoded and may 404/mismatch on a new release.",
     "key_env": "none",
     "confidence": "medium",
-    "open_question": "Polity5 and MEPV have been frozen at 2018 upstream \u2014 confirm whether systemicpeace.org will ever publish newer vintages (else these are effectively static and only need an occasional poll); and how to parameterize the hardcoded SIPRI versioned filename/sheet name for auto-vintage pickup."
+    "open_question": "Polity5 and MEPV have been frozen at 2018 upstream — confirm whether systemicpeace.org will ever publish newer vintages (else these are effectively static and only need an occasional poll); and how to parameterize the hardcoded SIPRI versioned filename/sheet name for auto-vintage pickup."
   },
   "social_progress": {
     "source_id": "social_progress",
@@ -1241,11 +1241,11 @@
     "cadence": "annual",
     "vintage_signal": "none-poll-only: no working upstream URL or last-modified exists today; once a live SPI CSV/XLSX URL is supplied, gate on that file's HEAD Last-Modified/ETag (would become S5/S1).",
     "since_param": "n/a",
-    "out_paths_note": "writes single file data/clean_full/spi/spi.parquet \u2014 COLLIDES on the exact same path as the spi source (ingest_spi.py); last writer wins. Must reconcile to one owning script.",
+    "out_paths_note": "writes single file data/clean_full/spi/spi.parquet — COLLIDES on the exact same path as the spi source (ingest_spi.py); last writer wins. Must reconcile to one owning script.",
     "rate_note": "No API key; custom User-Agent; fetch() rejects HTML and returns None on 403/404.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Two scripts (ingest_social_progress.py and ingest_spi.py) own the identical output path spi/spi.parquet \u2014 which one should be retired, and can a human supply a current working SPI download URL since every hardcoded URL is dead?"
+    "open_question": "Two scripts (ingest_social_progress.py and ingest_spi.py) own the identical output path spi/spi.parquet — which one should be retired, and can a human supply a current working SPI download URL since every hardcoded URL is dead?"
   },
   "spi": {
     "source_id": "spi",
@@ -1254,7 +1254,7 @@
     "cadence": "annual",
     "vintage_signal": "none-poll-only: no live URL or last-modified today; once a working SPI CSV/ZIP URL exists, gate on HEAD Last-Modified/ETag of that file (then S5/S1).",
     "since_param": "n/a",
-    "out_paths_note": "writes single file data/clean_full/spi/spi.parquet \u2014 SAME path as social_progress (ingest_social_progress.py); output-path collision, last writer wins.",
+    "out_paths_note": "writes single file data/clean_full/spi/spi.parquet — SAME path as social_progress (ingest_social_progress.py); output-path collision, last writer wins.",
     "rate_note": "No API key; custom User-Agent; defined-but-unused data.world TABLEAU_URL constant.",
     "key_env": "none",
     "confidence": "high",
@@ -1266,12 +1266,12 @@
     "strategy_reason": "Statistics Norway PxWeb (data.ssb.no) exposes selectable time-dimension values, so a since=last_obs+1 period filter per table is mechanically feasible; pull only newer periods and merge per group rather than re-querying all time values.",
     "cadence": "monthly",
     "vintage_signal": "PxWeb per-table metadata 'updated'/last-modified field on data.ssb.no (GET table metadata) to decide whether to re-query; drive startPeriod off max stored obs_date per series.",
-    "since_param": "PxWeb time-dimension value selection (filter:item on the time variable), set to values > max stored obs_date \u2014 PxWeb has no literal startPeriod token, so restrict the explicit time-value list to newer codes.",
-    "out_paths_note": "per-group parquet files data/clean_full/ssb/grp_<subject>.parquet (~186 files, keyed by first 2 chars of table id) plus cached ssb/_catalog.json \u2014 writes to MANY group files; delta must read-existing, compute max obs_date, merge+overwrite each group.",
+    "since_param": "PxWeb time-dimension value selection (filter:item on the time variable), set to values > max stored obs_date — PxWeb has no literal startPeriod token, so restrict the explicit time-value list to newer codes.",
+    "out_paths_note": "per-group parquet files data/clean_full/ssb/grp_<subject>.parquet (~186 files, keyed by first 2 chars of table id) plus cached ssb/_catalog.json — writes to MANY group files; delta must read-existing, compute max obs_date, merge+overwrite each group.",
     "rate_note": "No API key; custom UA; RATE=0.25s between calls; HTTP 429 -> 30s sleep; MAX_CELLS=80000 cap downsamples oversized tables (time kept full).",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Catalog is cached to _catalog.json and never re-crawled \u2014 should delta runs re-crawl the catalog (delete _catalog.json) to discover newly published tables, or only refresh known groups?"
+    "open_question": "Catalog is cached to _catalog.json and never re-crawled — should delta runs re-crawl the catalog (delete _catalog.json) to discover newly published tables, or only refresh known groups?"
   },
   "stat_estonia": {
     "source_id": "stat_estonia",
@@ -1280,7 +1280,7 @@
     "cadence": "monthly",
     "vintage_signal": "PxWeb table last-modified/'updated' metadata on andmed.stat.ee (or a stored per-table watermark) to gate re-query; startPeriod derived from max stored obs_date.",
     "since_param": "PxWeb time-variable value selection (filter:item on time) limited to codes > max stored obs_date; note query_table must use the path WITHOUT a trailing slash (trailing slash returns empty values).",
-    "out_paths_note": "per-subject parquet files data/clean_full/stat_estonia/<subject>.parquet (7 files: majandus, rahvastik, rahvaloendus, sotsiaalelu, keskkond, eri-valdkondade-statistika, Lepetatud_tabelid) plus cached _catalog.json \u2014 multiple subject files; merge per subject.",
+    "out_paths_note": "per-subject parquet files data/clean_full/stat_estonia/<subject>.parquet (7 files: majandus, rahvastik, rahvaloendus, sotsiaalelu, keskkond, eri-valdkondade-statistika, Lepetatud_tabelid) plus cached _catalog.json — multiple subject files; merge per subject.",
     "rate_note": "No API key; custom UA; RATE=0.3s; HTTP 429 -> 30s sleep; MAX_CELLS=100000 cap downsamples oversized tables (time full).",
     "key_env": "none",
     "confidence": "high",
@@ -1293,11 +1293,11 @@
     "cadence": "monthly",
     "vintage_signal": "PxWeb per-table last-modified/'updated' metadata on data.stat.gov.lv (or stored watermark) to gate re-query; startPeriod from max stored obs_date.",
     "since_param": "PxWeb time-variable value selection (filter:item on time) limited to codes > max stored obs_date; query_table uses a trailing slash on the URL for this source.",
-    "out_paths_note": "per-group parquet files data/clean_full/stat_latvia/<db>_<subject>.parquet (16 files; group = database OSP_PUB/OSP_OD + first path segment, e.g. OSP_PUB_POP, OSP_OD_arhivs) plus cached _catalog.json \u2014 spans TWO databases / many group files; merge per group.",
+    "out_paths_note": "per-group parquet files data/clean_full/stat_latvia/<db>_<subject>.parquet (16 files; group = database OSP_PUB/OSP_OD + first path segment, e.g. OSP_PUB_POP, OSP_OD_arhivs) plus cached _catalog.json — spans TWO databases / many group files; merge per group.",
     "rate_note": "No API key; custom UA; RATE=0.3s; HTTP 429 -> 30s sleep; MAX_CELLS=100000 cap downsamples oversized tables (time full).",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Catalog (BFS over both OSP_PUB and OSP_OD) is cached \u2014 should delta runs re-crawl both databases to discover new tables, or only refresh known groups?"
+    "open_question": "Catalog (BFS over both OSP_PUB and OSP_OD) is cached — should delta runs re-crawl both databases to discover new tables, or only refresh known groups?"
   },
   "stat_slovenia": {
     "source_id": "stat_slovenia",
@@ -1306,24 +1306,24 @@
     "cadence": "monthly",
     "vintage_signal": "PxWeb per-table last-modified/'updated' metadata on pxweb.stat.si (or stored watermark) to gate re-query; startPeriod from max stored obs_date.",
     "since_param": "PxWeb time-variable value selection (filter:item on time) limited to codes > max stored obs_date; table id .px suffix is stripped when building the series-key prefix.",
-    "out_paths_note": "per-group parquet files data/clean_full/stat_slovenia/<grp>.parquet (~143 files; group = first 3 chars of the .px table id, e.g. 021, 05G, 071) plus cached _catalog.json \u2014 many group files; merge per group.",
+    "out_paths_note": "per-group parquet files data/clean_full/stat_slovenia/<grp>.parquet (~143 files; group = first 3 chars of the .px table id, e.g. 021, 05G, 071) plus cached _catalog.json — many group files; merge per group.",
     "rate_note": "No API key; custom UA; RATE=0.3s; HTTP 429 -> 30s sleep; MAX_CELLS=100000 cap downsamples oversized tables (time full).",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Catalog is a single flat GET cached to _catalog.json \u2014 should delta runs re-fetch it to catch newly published tables, or trust the cache?"
+    "open_question": "Catalog is a single flat GET cached to _catalog.json — should delta runs re-fetch it to catch newly published tables, or trust the cache?"
   },
   "statcan": {
     "source_id": "statcan",
     "strategy": "giant_changed_units",
-    "strategy_reason": "One of the 4 giants; getFullTableDownloadCSV is full-table only (no since param) but the WDS change-feed getChangedCubeList(date) lets us refresh only whole CHANGED cubes \u2014 the canonical S4 pattern for this source.",
+    "strategy_reason": "One of the 4 giants; getFullTableDownloadCSV is full-table only (no since param) but the WDS change-feed getChangedCubeList(date) lets us refresh only whole CHANGED cubes — the canonical S4 pattern for this source.",
     "cadence": "weekly",
     "vintage_signal": "StatCan WDS getChangedCubeList(<last_success_date>) change-feed (alternatively each cube's releaseTime from getAllCubesListLite) to select only cubes changed since last run; getAllCubesListLite is already re-enumerated each run so new cubes are caught.",
     "since_param": "n/a (S4 uses the getChangedCubeList change-feed to pick whole cubes to re-pull; for true intra-cube obs delta the alternative would be getBulkVectorDataByRange startRefPeriod=max stored obs_date, but base strategy is whole-changed-cube).",
-    "out_paths_note": "per-cube files data/clean_full/statcan/<productId>.parquet (~8,207 cubes) plus _manifest.jsonl, _errors.log, _sizecache.json, _tmp/ staging and .done/.fail markers \u2014 one file per cube; S4 clears the .done marker for each changed cube only.",
+    "out_paths_note": "per-cube files data/clean_full/statcan/<productId>.parquet (~8,207 cubes) plus _manifest.jsonl, _errors.log, _sizecache.json, _tmp/ staging and .done/.fail markers — one file per cube; S4 clears the .done marker for each changed cube only.",
     "rate_note": "No API key; polite UA; WDS soft limit ~25 req/s/IP; self-limits via SizeAwareGate (4 concurrent small, 1 exclusive large) + heavy-parse semaphore. SANDBOX HAZARD: concurrent large (>8MB) streaming downloads get the process killed by IO watchdog (hence exclusive large lane). Flags: --workers 1-6 (default 6), --budget, --presize, --dry.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": ".fail markers permanently suppress retries (404/BadZip/no-table) so a cube that later becomes available stays skipped until .fail is deleted \u2014 should the change-feed driven refresh also clear stale .fail markers for changed cubes?"
+    "open_question": ".fail markers permanently suppress retries (404/BadZip/no-table) so a cube that later becomes available stays skipped until .fail is deleted — should the change-feed driven refresh also clear stale .fail markers for changed cubes?"
   },
   "statfin": {
     "source_id": "statfin",
@@ -1332,11 +1332,11 @@
     "cadence": "monthly",
     "vintage_signal": "PxWeb per-table last-modified/'updated' metadata on the StatFin PxWeb API (or a stored per-subject watermark) to gate re-query; startPeriod from max stored obs_date. Catalog must be re-crawled (delete _catalog.json) to catch new tables.",
     "since_param": "PxWeb time-variable value selection limited to codes > max stored obs_date; requires adding per-subject state since the in-memory 'seen' dedup spans only one run, plus a per-subject append/merge step.",
-    "out_paths_note": "single parquet per subject area data/clean_full/statfin/<subject>.parquet (~130 files) plus _catalog.json cache \u2014 many subject files; delta needs read-existing-max-date + append/merge per subject.",
+    "out_paths_note": "single parquet per subject area data/clean_full/statfin/<subject>.parquet (~130 files) plus _catalog.json cache — many subject files; delta needs read-existing-max-date + append/merge per subject.",
     "rate_note": "No API key; CC BY 4.0; polite UA; RATE=0.3s; HTTP 429 -> 30s sleep; MAX_CELLS=100000 cap downsamples very large tables (single aggregate member per non-time dim).",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Cadence is undeclared in SCHEDULE (tables update irregularly monthly/quarterly/annual) \u2014 confirm a monthly cron is acceptable, and whether delta runs should always re-crawl the catalog to detect new tables/subjects."
+    "open_question": "Cadence is undeclared in SCHEDULE (tables update irregularly monthly/quarterly/annual) — confirm a monthly cron is acceptable, and whether delta runs should always re-crawl the catalog to detect new tables/subjects."
   },
   "stats_nz": {
     "source_id": "stats_nz",
@@ -1349,7 +1349,7 @@
     "rate_note": "no API key, CC BY 4.0; 10s HEAD-probe timeout per candidate URL; no documented rate limit.",
     "key_env": "none",
     "confidence": "medium",
-    "open_question": "Period strings are hardcoded with no roll-forward \u2014 confirm the current stats.govt.nz URL path scheme for the latest quarter so new vintages are actually discovered (otherwise the pipeline 'succeeds' on year-old data)."
+    "open_question": "Period strings are hardcoded with no roll-forward — confirm the current stats.govt.nz URL path scheme for the latest quarter so new vintages are actually discovered (otherwise the pipeline 'succeeds' on year-old data)."
   },
   "swiid": {
     "source_id": "swiid",
@@ -1375,12 +1375,12 @@
     "rate_note": "no API key; self-throttle RATE=0.05s (~20 req/s); no documented hard limit but full 1996-present rebuild is high request count (~7,800 weekdays).",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Persist non-trading-day 404s to a skip-set and switch checkpoint writes to temp+rename (current in-place pq.write_table has a small crash-time data-loss window) \u2014 improvements, not blockers."
+    "open_question": "Persist non-trading-day 404s to a skip-set and switch checkpoint writes to temp+rename (current in-place pq.write_table has a small crash-time data-loss window) — improvements, not blockers."
   },
   "transparency_ti": {
     "source_id": "transparency_ti",
     "strategy": "overwrite_if_changed",
-    "strategy_reason": "Tiny annual full table; OWID grapher CSV returns ALL years each call so per-obs delta is meaningless \u2014 detect a new edition (newer max year) and overwrite (matrix-recommended).",
+    "strategy_reason": "Tiny annual full table; OWID grapher CSV returns ALL years each call so per-obs delta is meaningless — detect a new edition (newer max year) and overwrite (matrix-recommended).",
     "cadence": "annual",
     "vintage_signal": "Fetch OWID CSV ourworldindata.org/grapher/ti-corruption-perception-index.csv (ETag/Last-Modified or max-year compare vs stored parquet); rewrite only if a newer year appears. Generate the TI CDN xlsx fallback URL (CPI20XX) from current year instead of the hardcoded TI_URLS list.",
     "since_param": "n/a",
@@ -1398,7 +1398,7 @@
     "vintage_signal": "per-endpoint server-side date filter: read existing parquet max obs_date and request only newer rows; underlying endpoints update at mixed freq (daily DTS, monthly MTS).",
     "since_param": "filter={date_field}:gt:{max_stored_date} (date_field is the endpoint's date column, e.g. record_date), with sort already set; paginated page[size]=10000.",
     "out_paths_note": "MULTI-FILE: per-endpoint (cube) parquet under data/clean_full/treasury/ (~181 files) plus _manifest.jsonl, _errors.log, _parts/ checkpoints; external catalog data/_treasury_catalog_final.json (new endpoints auto-detected, new rows in done endpoints not until .done cleared).",
-    "rate_note": "no API key (US public domain); API unstable under load \u2014 Connection: close, MAX_ATTEMPTS=15 jittered backoff, page[size] cap 10000, 0.12s between pages, endpoint concurrency default 4 (--workers); RemoteDisconnected is main failure mode.",
+    "rate_note": "no API key (US public domain); API unstable under load — Connection: close, MAX_ATTEMPTS=15 jittered backoff, page[size] cap 10000, 0.12s between pages, endpoint concurrency default 4 (--workers); RemoteDisconnected is main failure mode.",
     "key_env": "none",
     "confidence": "high",
     "open_question": "Each endpoint's date_field name must be resolved per endpoint to build the correct record_date:gt: filter; confirm the date column for endpoints whose date field is not literally 'record_date'."
@@ -1406,7 +1406,7 @@
   "ucdp": {
     "source_id": "ucdp",
     "strategy": "bulk_snapshot_if_changed",
-    "strategy_reason": "Single annual CSV ZIP with no date/since param and a hardcoded versioned filename; a re-run cannot pick up new data \u2014 must detect a new vintage via the downloads listing and re-download+rebuild the whole (tiny) file.",
+    "strategy_reason": "Single annual CSV ZIP with no date/since param and a hardcoded versioned filename; a re-run cannot pick up new data — must detect a new vintage via the downloads listing and re-download+rebuild the whole (tiny) file.",
     "cadence": "annual",
     "vintage_signal": "scrape ucdp.uu.se/downloads/ for the latest ucdp-prio-acd-*-csv.zip filename/version and compare its version string / Last-Modified against a stored marker; full re-pull on change (currently ACD_URL hardcoded to v24.1 ucdp-prio-acd-241-csv.zip).",
     "since_param": "n/a",
@@ -1427,12 +1427,12 @@
     "rate_note": "no API key; direct HTTPS streamed with custom UA, 300s timeout, 3 retries; handles .gz or .zip.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "A new revision (e.g. WPP2026) requires editing BASE/FILES to the new filename pattern in addition to the HEAD check \u2014 confirm the next-revision URL scheme to fully automate detection."
+    "open_question": "A new revision (e.g. WPP2026) requires editing BASE/FILES to the new filename pattern in addition to the HEAD check — confirm the next-revision URL scheme to fully automate detection."
   },
   "undp_hdr": {
     "source_id": "undp_hdr",
     "strategy": "overwrite_if_changed",
-    "strategy_reason": "Small annual table; the composite CSV already carries the full 1990-present series so per-obs delta is meaningless \u2014 detect a new edition and full-overwrite (cheap), gate on the edition-parameterized composite URL.",
+    "strategy_reason": "Small annual table; the composite CSV already carries the full 1990-present series so per-obs delta is meaningless — detect a new edition and full-overwrite (cheap), gate on the edition-parameterized composite URL.",
     "cadence": "annual",
     "vintage_signal": "probe the composite time-series CSV URL with the edition/year parameterized (next edition, e.g. 2024-25) instead of hardcoded 2023-24; re-pull fully on a successful newer edition (optionally Last-Modified on the current composite URL); URLs currently hardcoded to the 2023-24 HDR.",
     "since_param": "n/a",
@@ -1475,11 +1475,11 @@
     "cadence": "monthly",
     "vintage_signal": "new dated bulk file appearing under data/raw/usda (qs.<sector>_YYYYMMDD.txt.gz; current vintage 20260603), or HEAD Last-Modified/Content-Length on https://www.nass.usda.gov/datasets/qs.<sector>.txt.gz; on change delete the affected cube dirs (+_complete + _manifest.json) and re-ingest.",
     "since_param": "n/a",
-    "out_paths_note": "MULTI-DIR: per-cube part files under data/clean_full/usda/{animals_products,crops,demographics,economics,environmental}/part_NNN.parquet + per-cube _complete sentinel + _manifest.json. NOTE two scripts: bulk jobs/ingest_usda.py (this, S5) vs the orchestrated connectors/usda/connector.py (6 API queries, ignores --since, writes data/clean) \u2014 bulk pipeline is the real data source.",
+    "out_paths_note": "MULTI-DIR: per-cube part files under data/clean_full/usda/{animals_products,crops,demographics,economics,environmental}/part_NNN.parquet + per-cube _complete sentinel + _manifest.json. NOTE two scripts: bulk jobs/ingest_usda.py (this, S5) vs the orchestrated connectors/usda/connector.py (6 API queries, ignores --since, writes data/clean) — bulk pipeline is the real data source.",
     "rate_note": "bulk path no key (curl public-domain .txt.gz); large refresh (57.6M rows), run via run_until_done.sh (MAX=60 restarts) due to sandbox killing long jobs. Orchestrated connector path alone needs a key.",
     "key_env": "none for bulk pipeline; USDA_API_KEY only for the separate connectors/usda connector path",
     "confidence": "high",
-    "open_question": "Vintage refresh MUST delete cube dirs + _complete before dropping a new dated file (skip-rows resume mis-aligns on reordered snapshots) \u2014 confirm download_all.sh vintage bump + cube wipe is automated, not manual; decide whether to keep --with-census off (default, avoids dup rows)."
+    "open_question": "Vintage refresh MUST delete cube dirs + _complete before dropping a new dated file (skip-rows resume mis-aligns on reordered snapshots) — confirm download_all.sh vintage bump + cube wipe is automated, not manual; decide whether to keep --with-census off (default, avoids dup rows)."
   },
   "vdem": {
     "source_id": "vdem",
@@ -1492,7 +1492,7 @@
     "rate_note": "no key (public GitHub raw, custom UA, 300s timeout, streamed, 3 retries); needs pyreadr; large RData download+melt in 200-col chunks is the cost",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Repo tracks unpinned 'master' so version can shift unannounced with no recorded vintage \u2014 pin to a release tag and record it, and remove the skip-if-exists guard that currently makes re-runs no-op."
+    "open_question": "Repo tracks unpinned 'master' so version can shift unannounced with no recorded vintage — pin to a release tag and record it, and remove the skip-if-exists guard that currently makes re-runs no-op."
   },
   "wgi": {
     "source_id": "wgi",
@@ -1510,7 +1510,7 @@
   "who_gho": {
     "source_id": "who_gho",
     "strategy": "extend_by_date",
-    "strategy_reason": "ghoapi is OData v4 and accepts a server-side date filter on TimeDim, so we can fetch only observations newer than each indicator's stored max year and merge \u2014 true obs-level delta.",
+    "strategy_reason": "ghoapi is OData v4 and accepts a server-side date filter on TimeDim, so we can fetch only observations newer than each indicator's stored max year and merge — true obs-level delta.",
     "cadence": "monthly",
     "vintage_signal": "date-tail: per-indicator max obs year from who_gho.parquet drives &$filter=TimeDim ge <last_year>; plus GET /api/Indicator set-difference to add wholly-new indicator codes. The TimeDim filter is the change detector.",
     "since_param": "&$filter=TimeDim ge <last_obs_year> appended to fetch_indicator OData URL (alongside existing &$select=SpatialDim,TimeDim,NumericValue,TimeDimensionValue)",
@@ -1531,7 +1531,7 @@
     "rate_note": "no key; S3 XLSX panels return 403 without a Referer from worldhappiness.report; most OWID grapher CSV slugs now 404",
     "key_env": "none",
     "confidence": "medium",
-    "open_question": "COVERAGE BLOCKER: current output is only the ladder slice because all 6-factor S3 XLSX panels 403 and 6/7 OWID CSVs 404 \u2014 need a human to supply working panel URLs/Referer before any refresh, and the overwrite must compare obs counts so a thin pull doesn't clobber a richer prior file."
+    "open_question": "COVERAGE BLOCKER: current output is only the ladder slice because all 6-factor S3 XLSX panels 403 and 6/7 OWID CSVs 404 — need a human to supply working panel URLs/Referer before any refresh, and the overwrite must compare obs counts so a thin pull doesn't clobber a richer prior file."
   },
   "wid": {
     "source_id": "wid",
@@ -1540,7 +1540,7 @@
     "cadence": "annual",
     "vintage_signal": "HTTP HEAD Last-Modified/ETag (or Content-Length) per https://wid.world/bulk_download/WID_data_{ISO}.csv vs stored marker; re-download+overwrite only changed {CODE}.parquet. (No global manifest; per-file HEAD is the signal.)",
     "since_param": "n/a",
-    "out_paths_note": "MULTI-FILE per-country: data/clean_full/wid/<CODE>.parquet (119 present, ~270 codes); keys WID:{variable}:{percentile}:{age}:{pop}:{country}. WARNING: a legacy single wid.parquet (~328 MB) is never rewritten, stale, and DUPLICATES per-country data \u2014 dedup/exclude on load.",
+    "out_paths_note": "MULTI-FILE per-country: data/clean_full/wid/<CODE>.parquet (119 present, ~270 codes); keys WID:{variable}:{percentile}:{age}:{pop}:{country}. WARNING: a legacy single wid.parquet (~328 MB) is never rewritten, stale, and DUPLICATES per-country data — dedup/exclude on load.",
     "rate_note": "no key (wid.world/bulk_download); RATE=0.3s between countries, 3 retries+backoff, 120s timeout, 404->skip; cold full pull sizeable but each file 1-2 MB; no rate-limit blocker observed",
     "key_env": "none",
     "confidence": "high",
@@ -1566,7 +1566,7 @@
     "cadence": "monthly",
     "vintage_signal": "Run the SPARQL COUNT probes and compare per-cube published_totals against stored _manifest.json; skip the rewrite when counts are unchanged. (Note: count-only gating misses in-place attribute edits, so a periodic forced full re-pull is still advisable.)",
     "since_param": "n/a",
-    "out_paths_note": "Multi-file: data/clean_full/wikidata/{companies,stock_exchanges,currencies}.parquet + _manifest.json (series_key=QID). Separate scheduler path connectors/wikidata/connector.py emits a capped 250-company DEMO slice to data/clean/ \u2014 reconcile: the full pull is jobs/ingest_wikidata.py to clean_full, the connector is a demo and should not be the freshness source.",
+    "out_paths_note": "Multi-file: data/clean_full/wikidata/{companies,stock_exchanges,currencies}.parquet + _manifest.json (series_key=QID). Separate scheduler path connectors/wikidata/connector.py emits a capped 250-company DEMO slice to data/clean/ — reconcile: the full pull is jobs/ingest_wikidata.py to clean_full, the connector is a demo and should not be the freshness source.",
     "rate_note": "No key. Public WDQS SPARQL with strict limits: PAGE=1000, SLEEP_BETWEEN_PAGES=1.0s, MAX_RETRIES=6 honoring Retry-After, polite UA required; risk of 429/timeout on the larger companies cube.",
     "key_env": "none",
     "confidence": "high",
@@ -1579,24 +1579,24 @@
     "cadence": "weekly",
     "vintage_signal": "Per-indicator meta['lastupdated'] (WB data vintage) already captured into _manifest.json; compare new lastupdated vs stored and only rewrite indicators whose vintage advanced.",
     "since_param": "date=<last_stored_year>:<current_year> on api.worldbank.org/v2 (drive last_stored_year from the manifest's per-indicator year_max), as connectors/worldbank_esg/connector.py does (since -> date=YYYY:thisyear).",
-    "out_paths_note": "Per-indicator multi-file: data/clean_full/worldbank_esg/<IND>.parquet (71 files; country/obs_date/value) + _manifest.json; raw mirror data/raw/worldbank_esg/<IND>.json (71). Two scripts for this source_id: jobs/ingest_worldbank_esg.py (full, no date filter wired) vs connectors/worldbank_esg/connector.py (date filter wired) \u2014 reconcile by porting the connector's date wiring into the job.",
+    "out_paths_note": "Per-indicator multi-file: data/clean_full/worldbank_esg/<IND>.parquet (71 files; country/obs_date/value) + _manifest.json; raw mirror data/raw/worldbank_esg/<IND>.json (71). Two scripts for this source_id: jobs/ingest_worldbank_esg.py (full, no date filter wired) vs connectors/worldbank_esg/connector.py (date filter wired) — reconcile by porting the connector's date wiring into the job.",
     "rate_note": "No key. urllib + UA, 6 retries exp backoff (cap 30s), 120s timeout, per_page=20000; 71 indicators pull in minutes, no rate-limit blocker observed.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "If the live catalog enumeration transiently returns <71 indicators, only returned ones are rewritten and the rest are left orphaned (not pruned); also non-ISO3 country-name strings can leak in for unmapped aggregate codes \u2014 decide whether to prune or keep."
+    "open_question": "If the live catalog enumeration transiently returns <71 indicators, only returned ones are rewritten and the rest are left orphaned (not pruned); also non-ISO3 country-name strings can leak in for unmapped aggregate codes — decide whether to prune or keep."
   },
   "worldbank_extra": {
     "source_id": "worldbank_extra",
     "strategy": "extend_by_date",
     "strategy_reason": "Same World Bank v2 API; incremental_path confirms a date filter is feasible (append &date=YYYY:YYYY or mrv=1 to the country/all/indicator query), so fetch only the most-recent year(s) and overwrite-merge per source DB rather than re-pulling full history.",
     "cadence": "irregular",
-    "vintage_signal": "No per-indicator last-updated field in the calls used; detect new data by re-pulling the most-recent year window (date-tail always-fetch) and merging \u2014 i.e. always fetch the open year and concat after dropping it. A full indicator-list scan is still needed to know WHICH indicators changed.",
+    "vintage_signal": "No per-indicator last-updated field in the calls used; detect new data by re-pulling the most-recent year window (date-tail always-fetch) and merging — i.e. always fetch the open year and concat after dropping it. A full indicator-list scan is still needed to know WHICH indicators changed.",
     "since_param": "date=<last_stored_year>:<current_year> (or mrv=N) appended to fetch_indicator()'s country/all/indicator query on api.worldbank.org/v2.",
-    "out_paths_note": "One zstd parquet per WB source DB under data/clean_full/worldbank_extra/ (hnp, ids, gfdd, gender, gem, edstats, poverty, jobs, doing_biz) \u2014 9 units. Transient _<name>_ckpt.parquet/_<name>_done.json checkpoints during the run.",
-    "rate_note": "No key, polite UA, self-throttles (0.1-0.3s sleeps, 4 retries w/ 8s*attempt backoff). Heavy pagination (gfdd ~8450 indicators, edstats ~3588) makes full runs slow; WB API is the rate constraint \u2014 the date-tail delta is the main cost win.",
+    "out_paths_note": "One zstd parquet per WB source DB under data/clean_full/worldbank_extra/ (hnp, ids, gfdd, gender, gem, edstats, poverty, jobs, doing_biz) — 9 units. Transient _<name>_ckpt.parquet/_<name>_done.json checkpoints during the run.",
+    "rate_note": "No key, polite UA, self-throttles (0.1-0.3s sleeps, 4 retries w/ 8s*attempt backoff). Heavy pagination (gfdd ~8450 indicators, edstats ~3588) makes full runs slow; WB API is the rate constraint — the date-tail delta is the main cost win.",
     "key_env": "none",
     "confidence": "medium",
-    "open_question": "Not in daily_update.py SCHEDULE (effectively a manual one-shot backfill) \u2014 confirm desired cadence; and a partial/corrupt prior parquet is trusted by the skip-if-exists guard and never extended (must be deleted to redo)."
+    "open_question": "Not in daily_update.py SCHEDULE (effectively a manual one-shot backfill) — confirm desired cadence; and a partial/corrupt prior parquet is trusted by the skip-if-exists guard and never extended (must be deleted to redo)."
   },
   "worldbank_pink": {
     "source_id": "worldbank_pink",
@@ -1609,7 +1609,7 @@
     "rate_note": "No key, polite UA, 6 retries w/ backoff; requires openpyxl. Scrapes landing page for the live xlsx URL with a hardcoded FALLBACK_DOC (set 2026-06-04) fallback.",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "Silent-staleness risk: if the landing-page scrape breaks AND WB has rotated the doc id, the stale FALLBACK_DOC re-writes the SAME old vintage \u2014 add an alert when the scrape falls back to the hardcoded doc id."
+    "open_question": "Silent-staleness risk: if the landing-page scrape breaks AND WB has rotated the doc id, the stale FALLBACK_DOC re-writes the SAME old vintage — add an alert when the scrape falls back to the hardcoded doc id."
   },
   "worldbank_wdi": {
     "source_id": "worldbank_wdi",
@@ -1622,7 +1622,7 @@
     "rate_note": "No key, polite UA, 300s timeout, 3 retries, two candidate URLs; rejects responses <100KB (api.worldbank.org bulk endpoint is occasionally flaky, hence the databank fallback).",
     "key_env": "none",
     "confidence": "high",
-    "open_question": "A prior truncated/partial parquet is trusted forever by the skip-if-exists guard (only a row-count sanity, no integrity check) \u2014 add a vintage/row-count assertion so a bad parquet is rebuilt."
+    "open_question": "A prior truncated/partial parquet is trusted forever by the skip-if-exists guard (only a row-count sanity, no integrity check) — add a vintage/row-count assertion so a bad parquet is rebuilt."
   },
   "yale_epi": {
     "source_id": "yale_epi",
@@ -1632,23 +1632,10 @@
     "vintage_signal": "Scrape https://epi.yale.edu/downloads for the latest epiYYYYresults.csv link and compare its year/filename to the stored vintage (currently hardcoded RESULT_URLS=[(epi2024results.csv,2024)]); a new year (e.g. 2026) triggers a pull. No catalog/last-modified probe exists today.",
     "since_param": "n/a",
     "out_paths_note": "Single zstd parquet data/clean_full/yale_epi/yale_epi.parquet (small; ~180 countries x ~40 indicators x year; series_key 'EPI:{var}:{iso3}'). Currently only 2024 is ever ingested.",
-    "rate_note": "No key, polite UA, 60s timeout, SINGLE attempt per URL (no retry \u2014 a transient blip = 0 obs), rejects responses <500 bytes.",
+    "rate_note": "No key, polite UA, 60s timeout, SINGLE attempt per URL (no retry — a transient blip = 0 obs), rejects responses <500 bytes.",
     "key_env": "none",
     "confidence": "medium",
     "open_question": "Confirm the 2026 release URL pattern when published and switch from skip-if-exists to read-existing+concat so multiple vintage years coexist; also add a retry since the no-retry single fetch can silently yield 0 obs and a moved/renamed 2024 URL would 404 to an empty file."
-  },
-  "zillow": {
-    "source_id": "zillow",
-    "strategy": "bulk_snapshot_if_changed",
-    "strategy_reason": "Each of ~206 Zillow cubes is a whole-history wide CSV with NO per-period date param; gate per CSV on an HTTP conditional GET / Last-Modified and rebuild only changed cubes (must also fix the stale-raw-cache bug that defeats freshness).",
-    "cadence": "monthly",
-    "vintage_signal": "Per-CSV HTTP conditional GET (If-Modified-Since/ETag) or Last-Modified vs stored mtime; plus catalog re-enumeration via --refresh (re-scrapes the research page 'var data' object into _zillow_files.json) to detect NEW datasets. CRITICAL: today fetch_csv_text() returns the cached RAW copy if present, so re-runs reparse STALE CSVs \u2014 caching must be removed or made conditional.",
-    "since_param": "n/a",
-    "out_paths_note": "~206 grouped cubes under data/clean_full/zillow/: <name>.parquet + <name>__series.parquet sidecar + <name>.meta.json, plus top-level zillow.meta.json; catalog in data/_zillow_files.json; raw CSVs cached in data/raw/zillow/ (~107M obs total) \u2014 writes to multiple files/sidecars per dataset.",
-    "rate_note": "No key, polite UA, requests Session Retry (total=6, backoff 1.5, forcelist 429/5xx) + per-call 5-attempt loop, 300s timeout. Optional --catalog upserts into catalog.db (off by default).",
-    "key_env": "none",
-    "confidence": "high",
-    "open_question": "Headline correctness bug: scheduled re-runs silently reuse cached raw CSVs and write 'fresh' cubes with no new months \u2014 fix by deleting/conditional-GET'ing the raw cache before this strategy can detect change reliably. Page redesign of the 'var data' object would break catalog enumeration."
   },
   "sec_edgar": {
     "source_id": "sec_edgar",

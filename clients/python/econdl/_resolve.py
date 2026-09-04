@@ -586,51 +586,6 @@ def _resolve_ember(series_id: str, root: str) -> Resolution:
     )
 
 
-# --- zillow ----------------------------------------------------------------
-# Headline curated flow per metric (basename of the catalog source_url). Used only
-# as a fallback: the same native series_key recurs across MANY flow cuts (bedroom
-# counts, price tiers, smoothing, sfr/condo), so we MUST pin the exact flow file
-# rather than the whole source directory, or one catalog id would conflate them.
-_ZILLOW_HEADLINE = {
-    "zhvi": "Metro_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month",
-    "zori": "Metro_zori_uc_sfrcondomfr_sm_month",
-}
-
-
-def _resolve_zillow(series_id: str, root: str) -> Resolution:
-    # catalog: zillow:zhvi:102001   (zillow:<metric>:<RegionID>; geo_level dropped)
-    # native file: <stem>.parquet   key_col: series_key   value: 'zillow:zhvi:Metro:102001'
-    # The catalog id splits into metric + region_id and re-joins as the native key
-    # with a constant 'Metro' geo_level segment. The exact curated flow file is
-    # pinned from the catalog metadata.source_url (its basename == the parquet stem),
-    # falling back to the headline flow for the metric.
-    parts = series_id.split(":")
-    if len(parts) != 3:
-        raise ResolveError(f"{series_id}: expected zillow:<metric>:<region_id>")
-    _, metric, region_id = parts
-    stem = _ZILLOW_HEADLINE.get(metric)
-    row = _catalog.get_series(series_id)
-    if row and row.get("metadata"):
-        try:
-            url = json.loads(row["metadata"]).get("source_url")
-            if url:
-                stem = os.path.splitext(url.rsplit("/", 1)[-1])[0]
-        except (ValueError, TypeError):
-            pass
-    if not stem:
-        raise ResolveError(
-            f"{series_id}: cannot determine Zillow flow file for metric {metric!r}"
-        )
-    path = os.path.join(root, "zillow", f"{stem}.parquet")
-    if not os.path.exists(path):
-        raise ResolveError(f"{series_id}: expected Zillow file {path!r} not found")
-    native_key = f"zillow:{metric}:Metro:{region_id}"
-    return Resolution(
-        series_id, "zillow", path, "series_key",
-        pc.equal(ds.field("series_key"), native_key),
-    )
-
-
 # --- bis -------------------------------------------------------------------
 def _resolve_bis(series_id: str, root: str) -> Resolution:
     # catalog: bis:WS_CBPOL:CA   native file: WS_CBPOL.parquet   key_col: series_key   value: 'M.CA'
@@ -1581,7 +1536,6 @@ _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "owid": _resolve_owid,
     "fhfa": _resolve_fhfa,
     "ember": _resolve_ember,
-    "zillow": _resolve_zillow,
     "bis": _resolve_bis,
     "faostat": _resolve_faostat,
     "frankfurter": _resolve_frankfurter,

@@ -1,1721 +1,1712 @@
 [
- {
-  "source_id": "abs",
-  "name": "Australian Bureau of Statistics",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: ABS (CC BY 4.0)",
-  "n_series": 18
- },
- {
-  "source_id": "barro_lee",
-  "name": "Barro Lee",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 43362
- },
- {
-  "source_id": "bcb",
-  "name": "Bcb",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 82
- },
- {
-  "source_id": "bcrp",
-  "name": "Bcrp",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 3
- },
- {
-  "source_id": "bea",
-  "name": "Bureau of Economic Analysis",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "us-public-domain",
-  "attribution": "Source: U.S. BEA (public domain)",
-  "n_series": 240
- },
- {
-  "source_id": "bis",
-  "name": "Bank for International Settlements",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "bis-attrib-nc",
-  "attribution": "Source: BIS (non-commercial reuse, attribution)",
-  "n_series": 49
- },
- {
-  "source_id": "bls",
-  "name": "Bureau of Labor Statistics",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "us-public-domain",
-  "attribution": "Source: U.S. BLS (public domain)",
-  "n_series": 9
- },
- {
-  "source_id": "boc",
-  "name": "Boc",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 12862
- },
- {
-  "source_id": "boe",
-  "name": "Bank of England",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "ogl-uk-3.0",
-  "attribution": "Source: Bank of England (OGL v3.0)",
-  "n_series": 21
- },
- {
-  "source_id": "bundesbank",
-  "name": "Bundesbank",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 6872
- },
- {
-  "source_id": "cboe",
-  "name": "Cboe",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 59
- },
- {
-  "source_id": "census",
-  "name": "U.S. Census Bureau",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "us-public-domain",
-  "attribution": "Source: U.S. Census Bureau (public domain)",
-  "n_series": 22
- },
- {
-  "source_id": "cnb",
-  "name": "Cnb",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 58
- },
- {
-  "source_id": "comtrade",
-  "name": "Comtrade",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 713
- },
- {
-  "source_id": "cow",
-  "name": "Cow",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 19979
- },
- {
-  "source_id": "damodaran",
-  "name": "Damodaran",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 23343
- },
- {
-  "source_id": "dbnomics",
-  "name": "DBnomics (87 providers)",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "dbnomics-passthrough",
-  "attribution": "Via DBnomics -- per-series provider license applies",
-  "n_series": 21
- },
- {
-  "source_id": "defillama",
-  "name": "DeFiLlama",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "defillama-open",
-  "attribution": "Source: DeFiLlama",
-  "n_series": 24
- },
- {
-  "source_id": "ecb",
-  "name": "ECB Data Portal / euro reference rates",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "ecb-attrib-nomodify",
-  "attribution": "Source: ECB -- available free at the ECB; values not modified",
-  "n_series": 35
- },
- {
-  "source_id": "edgar_jrc",
-  "name": "Edgar Jrc",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 3698
- },
- {
-  "source_id": "ei_statreview",
-  "name": "Ei Statreview",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 18464
- },
- {
-  "source_id": "eia",
-  "name": "U.S. Energy Information Administration",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "us-public-domain",
-  "attribution": "Source: U.S. EIA (public domain)",
-  "n_series": 7
- },
- {
-  "source_id": "ember",
-  "name": "Ember (electricity)",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: Ember (CC BY 4.0)",
-  "n_series": 60
- },
- {
-  "source_id": "epu",
-  "name": "Epu",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 36
- },
- {
-  "source_id": "eurostat",
-  "name": "Eurostat",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: Eurostat (CC BY 4.0)",
-  "n_series": 7637
- },
- {
-  "source_id": "famafrench",
-  "name": "Famafrench",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 24
- },
- {
-  "source_id": "fao_ae",
-  "name": "Fao Ae",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 164
- },
- {
-  "source_id": "fao_af",
-  "name": "Fao Af",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 162
- },
- {
-  "source_id": "fao_ec",
-  "name": "Fao Ec",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 49
- },
- {
-  "source_id": "fao_ep",
-  "name": "Fao Ep",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 519
- },
- {
-  "source_id": "fao_es",
-  "name": "Fao Es",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 595
- },
- {
-  "source_id": "fao_et",
-  "name": "Fao Et",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 561
- },
- {
-  "source_id": "fao_ew",
-  "name": "Fao Ew",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 169
- },
- {
-  "source_id": "fao_fo",
-  "name": "Fao Fo",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 16703
- },
- {
-  "source_id": "fao_ga",
-  "name": "Fao Ga",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 15018
- },
- {
-  "source_id": "fao_gb",
-  "name": "Fao Gb",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 6980
- },
- {
-  "source_id": "fao_ge",
-  "name": "Fao Ge",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 11813
- },
- {
-  "source_id": "fao_gf",
-  "name": "Fao Gf",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 2591
- },
- {
-  "source_id": "fao_gl",
-  "name": "Fao Gl",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 3057
- },
- {
-  "source_id": "fao_gn",
-  "name": "Fao Gn",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 4761
- },
- {
-  "source_id": "fao_gr",
-  "name": "Fao Gr",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 617
- },
- {
-  "source_id": "fao_gt",
-  "name": "Fao Gt",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 10506
- },
- {
-  "source_id": "fao_gy",
-  "name": "Fao Gy",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 2491
- },
- {
-  "source_id": "fao_ic",
-  "name": "Fao Ic",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 2468
- },
- {
-  "source_id": "fao_oa",
-  "name": "Fao Oa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1388
- },
- {
-  "source_id": "fao_pp",
-  "name": "Fao Pp",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 4832
- },
- {
-  "source_id": "fao_qa",
-  "name": "Fao Qa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 3182
- },
- {
-  "source_id": "fao_qcl",
-  "name": "Fao Qcl",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 20238
- },
- {
-  "source_id": "fao_ql",
-  "name": "Fao Ql",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 20179
- },
- {
-  "source_id": "fao_qp",
-  "name": "Fao Qp",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 2271
- },
- {
-  "source_id": "fao_rp",
-  "name": "Fao Rp",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 5440
- },
- {
-  "source_id": "faostat",
-  "name": "FAOSTAT",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: FAO FAOSTAT (CC BY 4.0)",
-  "n_series": 47
- },
- {
-  "source_id": "fed_board",
-  "name": "Federal Reserve Board (H.15 etc.)",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "us-public-domain",
-  "attribution": "Source: Federal Reserve Board (public domain)",
-  "n_series": 21
- },
- {
-  "source_id": "fhfa",
-  "name": "FHFA House Price Index",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "us-public-domain",
-  "attribution": "Source: U.S. FHFA (public domain)",
-  "n_series": 61
- },
- {
-  "source_id": "frankfurter",
-  "name": "Frankfurter API (ECB FX)",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "ecb-attrib-nomodify",
-  "attribution": "FX data from the ECB via Frankfurter",
-  "n_series": 46
- },
- {
-  "source_id": "freedomhouse",
-  "name": "Freedomhouse",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 684
- },
- {
-  "source_id": "fsi_fundforpeace",
-  "name": "Fsi Fundforpeace",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 2466
- },
- {
-  "source_id": "gcb",
-  "name": "Gcb",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 3092
- },
- {
-  "source_id": "ggdc",
-  "name": "Ggdc",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 14998
- },
- {
-  "source_id": "gppd",
-  "name": "Gppd",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 45992
- },
- {
-  "source_id": "hf_equities",
-  "name": "HF Data Library intraday US equities",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: HF Data Library (CC BY 4.0)",
-  "n_series": 1391
- },
- {
-  "source_id": "idb",
-  "name": "Idb",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 18838
- },
- {
-  "source_id": "ilostat",
-  "name": "ILOSTAT",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: ILOSTAT (CC BY 4.0)",
-  "n_series": 80
- },
- {
-  "source_id": "imf",
-  "name": "IMF Data",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "imf-terms",
-  "attribution": "Source: IMF -- this data is available free of charge",
-  "n_series": 131
- },
- {
-  "source_id": "imf_afrreo",
-  "name": "Imf Afrreo",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1654
- },
- {
-  "source_id": "imf_apdreo",
-  "name": "Imf Apdreo",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 265
- },
- {
-  "source_id": "imf_bopagg",
-  "name": "Imf Bopagg",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 7801
- },
- {
-  "source_id": "imf_cofer",
-  "name": "Imf Cofer",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 154
- },
- {
-  "source_id": "imf_commodity",
-  "name": "Imf Commodity",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1236
- },
- {
-  "source_id": "imf_cpi",
-  "name": "Imf Cpi",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 28420
- },
- {
-  "source_id": "imf_fas",
-  "name": "Imf Fas",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 13960
- },
- {
-  "source_id": "imf_fdi",
-  "name": "Imf Fdi",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1728
- },
- {
-  "source_id": "imf_fiscaldecentralization",
-  "name": "Imf Fiscaldecentralization",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 8398
- },
- {
-  "source_id": "imf_fm",
-  "name": "Imf Fm",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1356
- },
- {
-  "source_id": "imf_fsire",
-  "name": "Imf Fsire",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 18620
- },
- {
-  "source_id": "imf_gender_budgeting",
-  "name": "Imf Gender Budgeting",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 288
- },
- {
-  "source_id": "imf_gender_equality",
-  "name": "Imf Gender Equality",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 295
- },
- {
-  "source_id": "imf_gfscofog",
-  "name": "Imf Gfscofog",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 34731
- },
- {
-  "source_id": "imf_gfse",
-  "name": "Imf Gfse",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 48750
- },
- {
-  "source_id": "imf_gfsfalcs",
-  "name": "Imf Gfsfalcs",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 20249
- },
- {
-  "source_id": "imf_gfsibs",
-  "name": "Imf Gfsibs",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 29390
- },
- {
-  "source_id": "imf_gfsmab",
-  "name": "Imf Gfsmab",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 43179
- },
- {
-  "source_id": "imf_gfsssuc",
-  "name": "Imf Gfsssuc",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 36901
- },
- {
-  "source_id": "imf_hpdd",
-  "name": "Imf Hpdd",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 191
- },
- {
-  "source_id": "imf_mcdreo",
-  "name": "Imf Mcdreo",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1095
- },
- {
-  "source_id": "imf_namain_idc_n",
-  "name": "Imf Namain Idc N",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1926
- },
- {
-  "source_id": "imf_pctot",
-  "name": "Imf Pctot",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 4320
- },
- {
-  "source_id": "imf_pgcs",
-  "name": "Imf Pgcs",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 2262
- },
- {
-  "source_id": "imf_pgi",
-  "name": "Imf Pgi",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 8891
- },
- {
-  "source_id": "imf_psbsfad",
-  "name": "Imf Psbsfad",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 14018
- },
- {
-  "source_id": "imf_unsdg_imf_inputs",
-  "name": "Imf Unsdg Imf Inputs",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 2515
- },
- {
-  "source_id": "imf_weo",
-  "name": "Imf Weo",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 19242
- },
- {
-  "source_id": "imf_whdreo",
-  "name": "Imf Whdreo",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 322
- },
- {
-  "source_id": "imf_world",
-  "name": "Imf World",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 2268
- },
- {
-  "source_id": "insee_bdm",
-  "name": "Insee Bdm",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 101768
- },
- {
-  "source_id": "ipea",
-  "name": "Ipea",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1241
- },
- {
-  "source_id": "irena",
-  "name": "Irena",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 10754
- },
- {
-  "source_id": "kof_globalization",
-  "name": "Kof Globalization",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 5598
- },
- {
-  "source_id": "ksh",
-  "name": "Ksh",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 25057
- },
- {
-  "source_id": "maddison",
-  "name": "Maddison",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 338
- },
- {
-  "source_id": "nasa_giss",
-  "name": "Nasa Giss",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 68
- },
- {
-  "source_id": "nbp",
-  "name": "Nbp",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 148
- },
- {
-  "source_id": "noaa",
-  "name": "NOAA NCEI / Climate Data Online",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "us-public-domain",
-  "attribution": "Source: NOAA (public domain)",
-  "n_series": 10
- },
- {
-  "source_id": "nyfed",
-  "name": "Nyfed",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 8
- },
- {
-  "source_id": "oecd",
-  "name": "OECD Data Explorer (from 2024-07-01)",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: OECD (CC BY 4.0)",
-  "n_series": 28
- },
- {
-  "source_id": "ofr",
-  "name": "Ofr",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 423
- },
- {
-  "source_id": "owid",
-  "name": "Our World in Data",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: Our World in Data (CC BY 4.0)",
-  "n_series": 64
- },
- {
-  "source_id": "oxcgrt",
-  "name": "Oxcgrt",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 8635
- },
- {
-  "source_id": "penn_world_table",
-  "name": "Penn World Table 11.0",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: Penn World Table 11.0 (CC BY 4.0)",
-  "n_series": 60
- },
- {
-  "source_id": "pip",
-  "name": "Pip",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 32490
- },
- {
-  "source_id": "polity",
-  "name": "Polity",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 5672
- },
- {
-  "source_id": "pwt",
-  "name": "Pwt",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 7159
- },
- {
-  "source_id": "rba",
-  "name": "Rba",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 3822
- },
- {
-  "source_id": "riksbank",
-  "name": "Riksbank",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 70
- },
- {
-  "source_id": "sec_edgar",
-  "name": "U.S. SEC EDGAR",
-  "homepage": "https://www.sec.gov/edgar",
-  "terms_url": "https://www.sec.gov/edgar",
-  "license_id": "us-public-domain",
-  "attribution": "Source: U.S. SEC EDGAR (public domain)",
-  "n_series": 17274
- },
- {
-  "source_id": "shiller",
-  "name": "Shiller",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 9
- },
- {
-  "source_id": "sipri",
-  "name": "Sipri",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1861
- },
- {
-  "source_id": "snb",
-  "name": "Snb",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 762
- },
- {
-  "source_id": "statcan",
-  "name": "Statistics Canada",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "statcan-open",
-  "attribution": "Source: Statistics Canada (Open Licence)",
-  "n_series": 20
- },
- {
-  "source_id": "stats_nz",
-  "name": "Stats Nz",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1320
- },
- {
-  "source_id": "swiid",
-  "name": "Swiid",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1084
- },
- {
-  "source_id": "tcmb",
-  "name": "Tcmb",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 137
- },
- {
-  "source_id": "transparency_ti",
-  "name": "Transparency Ti",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 182
- },
- {
-  "source_id": "treasury",
-  "name": "U.S. Treasury FiscalData + Yield Curve",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "us-public-domain",
-  "attribution": "Source: U.S. Treasury (public domain)",
-  "n_series": 14
- },
- {
-  "source_id": "ucdp",
-  "name": "Ucdp",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1709
- },
- {
-  "source_id": "unctad_bopcaba",
-  "name": "Unctad Bopcaba",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 842
- },
- {
-  "source_id": "unctad_ciocgeaia",
-  "name": "Unctad Ciocgeaia",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 8
- },
- {
-  "source_id": "unctad_cioiuibbicoeair4a",
-  "name": "Unctad Cioiuibbicoeair4A",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 15
- },
- {
-  "source_id": "unctad_cpa",
-  "name": "Unctad Cpa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 50
- },
- {
-  "source_id": "unctad_cpia",
-  "name": "Unctad Cpia",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 637
- },
- {
-  "source_id": "unctad_cpta",
-  "name": "Unctad Cpta",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 177
- },
- {
-  "source_id": "unctad_fdiiaofasa",
-  "name": "Unctad Fdiiaofasa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 5107
- },
- {
-  "source_id": "unctad_fmcpa",
-  "name": "Unctad Fmcpa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 50
- },
- {
-  "source_id": "unctad_fmcpia21",
-  "name": "Unctad Fmcpia21",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 14
- },
- {
-  "source_id": "unctad_gasbeaiogasa",
-  "name": "Unctad Gasbeaiogasa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 5076
- },
- {
-  "source_id": "unctad_gasbtbia",
-  "name": "Unctad Gasbtbia",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 3402
- },
- {
-  "source_id": "unctad_gasbtoia",
-  "name": "Unctad Gasbtoia",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 6776
- },
- {
-  "source_id": "unctad_gdpgbtoevbkoeatasa",
-  "name": "Unctad Gdpgbtoevbkoeatasa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 21158
- },
- {
-  "source_id": "unctad_gdptapccac2pa",
-  "name": "Unctad Gdptapccac2Pa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1734
- },
- {
-  "source_id": "unctad_lscia",
-  "name": "Unctad Lscia",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 344
- },
- {
-  "source_id": "unctad_lsciq",
-  "name": "Unctad Lsciq",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 760
- },
- {
-  "source_id": "unctad_mfbcoboa",
-  "name": "Unctad Mfbcoboa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 155
- },
- {
-  "source_id": "unctad_mmcascioeaiopa",
-  "name": "Unctad Mmcascioeaiopa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 86
- },
- {
-  "source_id": "unctad_mpcadioeaia",
-  "name": "Unctad Mpcadioeaia",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 816
- },
- {
-  "source_id": "unctad_mtba",
-  "name": "Unctad Mtba",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 584
- },
- {
-  "source_id": "unctad_mttasa",
-  "name": "Unctad Mttasa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 704
- },
- {
-  "source_id": "unctad_mttgra",
-  "name": "Unctad Mttgra",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 351
- },
- {
-  "source_id": "unctad_neera",
-  "name": "Unctad Neera",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 280
- },
- {
-  "source_id": "unctad_reericba",
-  "name": "Unctad Reericba",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 352
- },
- {
-  "source_id": "unctad_reerigdba",
-  "name": "Unctad Reerigdba",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 333
- },
- {
-  "source_id": "unctad_rfia",
-  "name": "Unctad Rfia",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 24720
- },
- {
-  "source_id": "unctad_rgdptapcgra",
-  "name": "Unctad Rgdptapcgra",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 867
- },
- {
-  "source_id": "unctad_sbeaiotsvsaga",
-  "name": "Unctad Sbeaiotsvsaga",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 3010
- },
- {
-  "source_id": "unctad_sbtisvsaga",
-  "name": "Unctad Sbtisvsaga",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 7920
- },
- {
-  "source_id": "unctad_soigapotta",
-  "name": "Unctad Soigapotta",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1226
- },
- {
-  "source_id": "unctad_sotwmfvbcoboa",
-  "name": "Unctad Sotwmfvbcoboa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 373
- },
- {
-  "source_id": "unctad_srbca",
-  "name": "Unctad Srbca",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 414
- },
- {
-  "source_id": "unctad_tabbapotta",
-  "name": "Unctad Tabbapotta",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 29358
- },
- {
-  "source_id": "unctad_tabmcioeaiopa",
-  "name": "Unctad Tabmcioeaiopa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 4250
- },
- {
-  "source_id": "unctad_tabmscioeaiopa",
-  "name": "Unctad Tabmscioeaiopa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 4250
- },
- {
-  "source_id": "unctad_tabpcioeaia",
-  "name": "Unctad Tabpcioeaia",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 308
- },
- {
-  "source_id": "unctad_taupa",
-  "name": "Unctad Taupa",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 898
- },
- {
-  "source_id": "unctad_wstbtocabgoea",
-  "name": "Unctad Wstbtocabgoea",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 8
- },
- {
-  "source_id": "undp_hdr",
-  "name": "Undp Hdr",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 8199
- },
- {
-  "source_id": "unesco_clte",
-  "name": "Unesco Clte",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 23868
- },
- {
-  "source_id": "unesco_cltt",
-  "name": "Unesco Cltt",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 6226
- },
- {
-  "source_id": "unesco_dem",
-  "name": "Unesco Dem",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 7080
- },
- {
-  "source_id": "unesco_film",
-  "name": "Unesco Film",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 8527
- },
- {
-  "source_id": "unesco_inno",
-  "name": "Unesco Inno",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 18909
- },
- {
-  "source_id": "unhcr",
-  "name": "Unhcr",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 18367
- },
- {
-  "source_id": "usda",
-  "name": "USDA NASS + ERS",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "us-public-domain",
-  "attribution": "Source: USDA (public domain)",
-  "n_series": 25
- },
- {
-  "source_id": "wgi",
-  "name": "Wgi",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 7752
- },
- {
-  "source_id": "who_hwf",
-  "name": "Who Hwf",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 4421
- },
- {
-  "source_id": "who_rs",
-  "name": "Who Rs",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 2207
- },
- {
-  "source_id": "who_sdg",
-  "name": "Who Sdg",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 28160
- },
- {
-  "source_id": "whr",
-  "name": "Whr",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 178
- },
- {
-  "source_id": "wikidata",
-  "name": "Wikidata (econ/finance subset)",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc0",
-  "attribution": "Source: Wikidata (CC0)",
-  "n_series": 250
- },
- {
-  "source_id": "worldbank",
-  "name": "World Bank Open Data (WDI)",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: World Bank, World Development Indicators (CC BY 4.0)",
-  "n_series": 692
- },
- {
-  "source_id": "worldbank_esg",
-  "name": "World Bank Sovereign ESG",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: World Bank Sovereign ESG (CC BY 4.0)",
-  "n_series": 4447
- },
- {
-  "source_id": "worldbank_pink",
-  "name": "World Bank Pink Sheet (commodities)",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "cc-by-4.0",
-  "attribution": "Source: World Bank Commodity Markets (CC BY 4.0)",
-  "n_series": 26
- },
- {
-  "source_id": "worldbank_wdi",
-  "name": "Worldbank Wdi",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 1486
- },
- {
-  "source_id": "wto_hs_a_0010",
-  "name": "Wto Hs A 0010",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 21778
- },
- {
-  "source_id": "wto_hs_a_0015",
-  "name": "Wto Hs A 0015",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 21866
- },
- {
-  "source_id": "wto_hs_a_0020",
-  "name": "Wto Hs A 0020",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 21778
- },
- {
-  "source_id": "wto_hs_a_0025",
-  "name": "Wto Hs A 0025",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 21866
- },
- {
-  "source_id": "wto_hs_a_0030",
-  "name": "Wto Hs A 0030",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 21905
- },
- {
-  "source_id": "wto_hs_a_0040",
-  "name": "Wto Hs A 0040",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 21905
- },
- {
-  "source_id": "wto_its_mtv_am",
-  "name": "Wto Its Mtv Am",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 3853
- },
- {
-  "source_id": "wto_its_mtv_ax",
-  "name": "Wto Its Mtv Ax",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 3785
- },
- {
-  "source_id": "yale_epi",
-  "name": "Yale Epi",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "NEEDS-REVIEW",
-  "attribution": null,
-  "n_series": 21300
- },
- {
-  "source_id": "zillow",
-  "name": "Zillow Research",
-  "homepage": null,
-  "terms_url": null,
-  "license_id": "zillow-research",
-  "attribution": "Data Provided by Zillow Group",
-  "n_series": 52
- }
+  {
+    "source_id": "abs",
+    "name": "Australian Bureau of Statistics",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: ABS (CC BY 4.0)",
+    "n_series": 18
+  },
+  {
+    "source_id": "barro_lee",
+    "name": "Barro Lee",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 43362
+  },
+  {
+    "source_id": "bcb",
+    "name": "Bcb",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 82
+  },
+  {
+    "source_id": "bcrp",
+    "name": "Bcrp",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 3
+  },
+  {
+    "source_id": "bea",
+    "name": "Bureau of Economic Analysis",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "us-public-domain",
+    "attribution": "Source: U.S. BEA (public domain)",
+    "n_series": 240
+  },
+  {
+    "source_id": "bis",
+    "name": "Bank for International Settlements",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "bis-attrib-nc",
+    "attribution": "Source: BIS (non-commercial reuse, attribution)",
+    "n_series": 49
+  },
+  {
+    "source_id": "bls",
+    "name": "Bureau of Labor Statistics",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "us-public-domain",
+    "attribution": "Source: U.S. BLS (public domain)",
+    "n_series": 9
+  },
+  {
+    "source_id": "boc",
+    "name": "Boc",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 12862
+  },
+  {
+    "source_id": "boe",
+    "name": "Bank of England",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "ogl-uk-3.0",
+    "attribution": "Source: Bank of England (OGL v3.0)",
+    "n_series": 21
+  },
+  {
+    "source_id": "bundesbank",
+    "name": "Bundesbank",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 6872
+  },
+  {
+    "source_id": "cboe",
+    "name": "Cboe",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 59
+  },
+  {
+    "source_id": "census",
+    "name": "U.S. Census Bureau",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "us-public-domain",
+    "attribution": "Source: U.S. Census Bureau (public domain)",
+    "n_series": 22
+  },
+  {
+    "source_id": "cnb",
+    "name": "Cnb",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 58
+  },
+  {
+    "source_id": "comtrade",
+    "name": "Comtrade",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 713
+  },
+  {
+    "source_id": "cow",
+    "name": "Cow",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 19979
+  },
+  {
+    "source_id": "damodaran",
+    "name": "Damodaran",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 23343
+  },
+  {
+    "source_id": "dbnomics",
+    "name": "DBnomics (87 providers)",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "dbnomics-passthrough",
+    "attribution": "Via DBnomics -- per-series provider license applies",
+    "n_series": 21
+  },
+  {
+    "source_id": "defillama",
+    "name": "DeFiLlama",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "defillama-open",
+    "attribution": "Source: DeFiLlama",
+    "n_series": 24
+  },
+  {
+    "source_id": "ecb",
+    "name": "ECB Data Portal / euro reference rates",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "ecb-attrib-nomodify",
+    "attribution": "Source: ECB -- available free at the ECB; values not modified",
+    "n_series": 35
+  },
+  {
+    "source_id": "edgar_jrc",
+    "name": "Edgar Jrc",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 3698
+  },
+  {
+    "source_id": "ei_statreview",
+    "name": "Ei Statreview",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 18464
+  },
+  {
+    "source_id": "eia",
+    "name": "U.S. Energy Information Administration",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "us-public-domain",
+    "attribution": "Source: U.S. EIA (public domain)",
+    "n_series": 7
+  },
+  {
+    "source_id": "ember",
+    "name": "Ember (electricity)",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: Ember (CC BY 4.0)",
+    "n_series": 60
+  },
+  {
+    "source_id": "epu",
+    "name": "Epu",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 36
+  },
+  {
+    "source_id": "eurostat",
+    "name": "Eurostat",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: Eurostat (CC BY 4.0)",
+    "n_series": 7637
+  },
+  {
+    "source_id": "famafrench",
+    "name": "Famafrench",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 24
+  },
+  {
+    "source_id": "fao_ae",
+    "name": "Fao Ae",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 164
+  },
+  {
+    "source_id": "fao_af",
+    "name": "Fao Af",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 162
+  },
+  {
+    "source_id": "fao_ec",
+    "name": "Fao Ec",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 49
+  },
+  {
+    "source_id": "fao_ep",
+    "name": "Fao Ep",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 519
+  },
+  {
+    "source_id": "fao_es",
+    "name": "Fao Es",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 595
+  },
+  {
+    "source_id": "fao_et",
+    "name": "Fao Et",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 561
+  },
+  {
+    "source_id": "fao_ew",
+    "name": "Fao Ew",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 169
+  },
+  {
+    "source_id": "fao_fo",
+    "name": "Fao Fo",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 16703
+  },
+  {
+    "source_id": "fao_ga",
+    "name": "Fao Ga",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 15018
+  },
+  {
+    "source_id": "fao_gb",
+    "name": "Fao Gb",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 6980
+  },
+  {
+    "source_id": "fao_ge",
+    "name": "Fao Ge",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 11813
+  },
+  {
+    "source_id": "fao_gf",
+    "name": "Fao Gf",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 2591
+  },
+  {
+    "source_id": "fao_gl",
+    "name": "Fao Gl",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 3057
+  },
+  {
+    "source_id": "fao_gn",
+    "name": "Fao Gn",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 4761
+  },
+  {
+    "source_id": "fao_gr",
+    "name": "Fao Gr",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 617
+  },
+  {
+    "source_id": "fao_gt",
+    "name": "Fao Gt",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 10506
+  },
+  {
+    "source_id": "fao_gy",
+    "name": "Fao Gy",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 2491
+  },
+  {
+    "source_id": "fao_ic",
+    "name": "Fao Ic",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 2468
+  },
+  {
+    "source_id": "fao_oa",
+    "name": "Fao Oa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1388
+  },
+  {
+    "source_id": "fao_pp",
+    "name": "Fao Pp",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 4832
+  },
+  {
+    "source_id": "fao_qa",
+    "name": "Fao Qa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 3182
+  },
+  {
+    "source_id": "fao_qcl",
+    "name": "Fao Qcl",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 20238
+  },
+  {
+    "source_id": "fao_ql",
+    "name": "Fao Ql",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 20179
+  },
+  {
+    "source_id": "fao_qp",
+    "name": "Fao Qp",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 2271
+  },
+  {
+    "source_id": "fao_rp",
+    "name": "Fao Rp",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 5440
+  },
+  {
+    "source_id": "faostat",
+    "name": "FAOSTAT",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: FAO FAOSTAT (CC BY 4.0)",
+    "n_series": 47
+  },
+  {
+    "source_id": "fed_board",
+    "name": "Federal Reserve Board (H.15 etc.)",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "us-public-domain",
+    "attribution": "Source: Federal Reserve Board (public domain)",
+    "n_series": 21
+  },
+  {
+    "source_id": "fhfa",
+    "name": "FHFA House Price Index",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "us-public-domain",
+    "attribution": "Source: U.S. FHFA (public domain)",
+    "n_series": 61
+  },
+  {
+    "source_id": "frankfurter",
+    "name": "Frankfurter API (ECB FX)",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "ecb-attrib-nomodify",
+    "attribution": "FX data from the ECB via Frankfurter",
+    "n_series": 46
+  },
+  {
+    "source_id": "freedomhouse",
+    "name": "Freedomhouse",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 684
+  },
+  {
+    "source_id": "fsi_fundforpeace",
+    "name": "Fsi Fundforpeace",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 2466
+  },
+  {
+    "source_id": "gcb",
+    "name": "Gcb",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 3092
+  },
+  {
+    "source_id": "ggdc",
+    "name": "Ggdc",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 14998
+  },
+  {
+    "source_id": "gppd",
+    "name": "Gppd",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 45992
+  },
+  {
+    "source_id": "hf_equities",
+    "name": "HF Data Library intraday US equities",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: HF Data Library (CC BY 4.0)",
+    "n_series": 1391
+  },
+  {
+    "source_id": "idb",
+    "name": "Idb",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 18838
+  },
+  {
+    "source_id": "ilostat",
+    "name": "ILOSTAT",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: ILOSTAT (CC BY 4.0)",
+    "n_series": 80
+  },
+  {
+    "source_id": "imf",
+    "name": "IMF Data",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "imf-terms",
+    "attribution": "Source: IMF -- this data is available free of charge",
+    "n_series": 131
+  },
+  {
+    "source_id": "imf_afrreo",
+    "name": "Imf Afrreo",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1654
+  },
+  {
+    "source_id": "imf_apdreo",
+    "name": "Imf Apdreo",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 265
+  },
+  {
+    "source_id": "imf_bopagg",
+    "name": "Imf Bopagg",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 7801
+  },
+  {
+    "source_id": "imf_cofer",
+    "name": "Imf Cofer",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 154
+  },
+  {
+    "source_id": "imf_commodity",
+    "name": "Imf Commodity",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1236
+  },
+  {
+    "source_id": "imf_cpi",
+    "name": "Imf Cpi",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 28420
+  },
+  {
+    "source_id": "imf_fas",
+    "name": "Imf Fas",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 13960
+  },
+  {
+    "source_id": "imf_fdi",
+    "name": "Imf Fdi",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1728
+  },
+  {
+    "source_id": "imf_fiscaldecentralization",
+    "name": "Imf Fiscaldecentralization",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 8398
+  },
+  {
+    "source_id": "imf_fm",
+    "name": "Imf Fm",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1356
+  },
+  {
+    "source_id": "imf_fsire",
+    "name": "Imf Fsire",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 18620
+  },
+  {
+    "source_id": "imf_gender_budgeting",
+    "name": "Imf Gender Budgeting",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 288
+  },
+  {
+    "source_id": "imf_gender_equality",
+    "name": "Imf Gender Equality",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 295
+  },
+  {
+    "source_id": "imf_gfscofog",
+    "name": "Imf Gfscofog",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 34731
+  },
+  {
+    "source_id": "imf_gfse",
+    "name": "Imf Gfse",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 48750
+  },
+  {
+    "source_id": "imf_gfsfalcs",
+    "name": "Imf Gfsfalcs",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 20249
+  },
+  {
+    "source_id": "imf_gfsibs",
+    "name": "Imf Gfsibs",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 29390
+  },
+  {
+    "source_id": "imf_gfsmab",
+    "name": "Imf Gfsmab",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 43179
+  },
+  {
+    "source_id": "imf_gfsssuc",
+    "name": "Imf Gfsssuc",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 36901
+  },
+  {
+    "source_id": "imf_hpdd",
+    "name": "Imf Hpdd",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 191
+  },
+  {
+    "source_id": "imf_mcdreo",
+    "name": "Imf Mcdreo",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1095
+  },
+  {
+    "source_id": "imf_namain_idc_n",
+    "name": "Imf Namain Idc N",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1926
+  },
+  {
+    "source_id": "imf_pctot",
+    "name": "Imf Pctot",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 4320
+  },
+  {
+    "source_id": "imf_pgcs",
+    "name": "Imf Pgcs",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 2262
+  },
+  {
+    "source_id": "imf_pgi",
+    "name": "Imf Pgi",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 8891
+  },
+  {
+    "source_id": "imf_psbsfad",
+    "name": "Imf Psbsfad",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 14018
+  },
+  {
+    "source_id": "imf_unsdg_imf_inputs",
+    "name": "Imf Unsdg Imf Inputs",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 2515
+  },
+  {
+    "source_id": "imf_weo",
+    "name": "Imf Weo",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 19242
+  },
+  {
+    "source_id": "imf_whdreo",
+    "name": "Imf Whdreo",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 322
+  },
+  {
+    "source_id": "imf_world",
+    "name": "Imf World",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 2268
+  },
+  {
+    "source_id": "insee_bdm",
+    "name": "Insee Bdm",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 101768
+  },
+  {
+    "source_id": "ipea",
+    "name": "Ipea",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1241
+  },
+  {
+    "source_id": "irena",
+    "name": "Irena",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 10754
+  },
+  {
+    "source_id": "kof_globalization",
+    "name": "Kof Globalization",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 5598
+  },
+  {
+    "source_id": "ksh",
+    "name": "Ksh",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 25057
+  },
+  {
+    "source_id": "maddison",
+    "name": "Maddison",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 338
+  },
+  {
+    "source_id": "nasa_giss",
+    "name": "Nasa Giss",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 68
+  },
+  {
+    "source_id": "nbp",
+    "name": "Nbp",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 148
+  },
+  {
+    "source_id": "noaa",
+    "name": "NOAA NCEI / Climate Data Online",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "us-public-domain",
+    "attribution": "Source: NOAA (public domain)",
+    "n_series": 10
+  },
+  {
+    "source_id": "nyfed",
+    "name": "Nyfed",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 8
+  },
+  {
+    "source_id": "oecd",
+    "name": "OECD Data Explorer (from 2024-07-01)",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: OECD (CC BY 4.0)",
+    "n_series": 28
+  },
+  {
+    "source_id": "ofr",
+    "name": "Ofr",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 423
+  },
+  {
+    "source_id": "owid",
+    "name": "Our World in Data",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: Our World in Data (CC BY 4.0)",
+    "n_series": 64
+  },
+  {
+    "source_id": "oxcgrt",
+    "name": "Oxcgrt",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 8635
+  },
+  {
+    "source_id": "penn_world_table",
+    "name": "Penn World Table 11.0",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: Penn World Table 11.0 (CC BY 4.0)",
+    "n_series": 60
+  },
+  {
+    "source_id": "pip",
+    "name": "Pip",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 32490
+  },
+  {
+    "source_id": "polity",
+    "name": "Polity",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 5672
+  },
+  {
+    "source_id": "pwt",
+    "name": "Pwt",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 7159
+  },
+  {
+    "source_id": "rba",
+    "name": "Rba",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 3822
+  },
+  {
+    "source_id": "riksbank",
+    "name": "Riksbank",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 70
+  },
+  {
+    "source_id": "sec_edgar",
+    "name": "U.S. SEC EDGAR",
+    "homepage": "https://www.sec.gov/edgar",
+    "terms_url": "https://www.sec.gov/edgar",
+    "license_id": "us-public-domain",
+    "attribution": "Source: U.S. SEC EDGAR (public domain)",
+    "n_series": 17274
+  },
+  {
+    "source_id": "shiller",
+    "name": "Shiller",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 9
+  },
+  {
+    "source_id": "sipri",
+    "name": "Sipri",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1861
+  },
+  {
+    "source_id": "snb",
+    "name": "Snb",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 762
+  },
+  {
+    "source_id": "statcan",
+    "name": "Statistics Canada",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "statcan-open",
+    "attribution": "Source: Statistics Canada (Open Licence)",
+    "n_series": 20
+  },
+  {
+    "source_id": "stats_nz",
+    "name": "Stats Nz",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1320
+  },
+  {
+    "source_id": "swiid",
+    "name": "Swiid",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1084
+  },
+  {
+    "source_id": "tcmb",
+    "name": "Tcmb",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 137
+  },
+  {
+    "source_id": "transparency_ti",
+    "name": "Transparency Ti",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 182
+  },
+  {
+    "source_id": "treasury",
+    "name": "U.S. Treasury FiscalData + Yield Curve",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "us-public-domain",
+    "attribution": "Source: U.S. Treasury (public domain)",
+    "n_series": 14
+  },
+  {
+    "source_id": "ucdp",
+    "name": "Ucdp",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1709
+  },
+  {
+    "source_id": "unctad_bopcaba",
+    "name": "Unctad Bopcaba",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 842
+  },
+  {
+    "source_id": "unctad_ciocgeaia",
+    "name": "Unctad Ciocgeaia",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 8
+  },
+  {
+    "source_id": "unctad_cioiuibbicoeair4a",
+    "name": "Unctad Cioiuibbicoeair4A",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 15
+  },
+  {
+    "source_id": "unctad_cpa",
+    "name": "Unctad Cpa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 50
+  },
+  {
+    "source_id": "unctad_cpia",
+    "name": "Unctad Cpia",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 637
+  },
+  {
+    "source_id": "unctad_cpta",
+    "name": "Unctad Cpta",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 177
+  },
+  {
+    "source_id": "unctad_fdiiaofasa",
+    "name": "Unctad Fdiiaofasa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 5107
+  },
+  {
+    "source_id": "unctad_fmcpa",
+    "name": "Unctad Fmcpa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 50
+  },
+  {
+    "source_id": "unctad_fmcpia21",
+    "name": "Unctad Fmcpia21",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 14
+  },
+  {
+    "source_id": "unctad_gasbeaiogasa",
+    "name": "Unctad Gasbeaiogasa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 5076
+  },
+  {
+    "source_id": "unctad_gasbtbia",
+    "name": "Unctad Gasbtbia",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 3402
+  },
+  {
+    "source_id": "unctad_gasbtoia",
+    "name": "Unctad Gasbtoia",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 6776
+  },
+  {
+    "source_id": "unctad_gdpgbtoevbkoeatasa",
+    "name": "Unctad Gdpgbtoevbkoeatasa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 21158
+  },
+  {
+    "source_id": "unctad_gdptapccac2pa",
+    "name": "Unctad Gdptapccac2Pa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1734
+  },
+  {
+    "source_id": "unctad_lscia",
+    "name": "Unctad Lscia",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 344
+  },
+  {
+    "source_id": "unctad_lsciq",
+    "name": "Unctad Lsciq",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 760
+  },
+  {
+    "source_id": "unctad_mfbcoboa",
+    "name": "Unctad Mfbcoboa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 155
+  },
+  {
+    "source_id": "unctad_mmcascioeaiopa",
+    "name": "Unctad Mmcascioeaiopa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 86
+  },
+  {
+    "source_id": "unctad_mpcadioeaia",
+    "name": "Unctad Mpcadioeaia",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 816
+  },
+  {
+    "source_id": "unctad_mtba",
+    "name": "Unctad Mtba",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 584
+  },
+  {
+    "source_id": "unctad_mttasa",
+    "name": "Unctad Mttasa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 704
+  },
+  {
+    "source_id": "unctad_mttgra",
+    "name": "Unctad Mttgra",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 351
+  },
+  {
+    "source_id": "unctad_neera",
+    "name": "Unctad Neera",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 280
+  },
+  {
+    "source_id": "unctad_reericba",
+    "name": "Unctad Reericba",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 352
+  },
+  {
+    "source_id": "unctad_reerigdba",
+    "name": "Unctad Reerigdba",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 333
+  },
+  {
+    "source_id": "unctad_rfia",
+    "name": "Unctad Rfia",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 24720
+  },
+  {
+    "source_id": "unctad_rgdptapcgra",
+    "name": "Unctad Rgdptapcgra",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 867
+  },
+  {
+    "source_id": "unctad_sbeaiotsvsaga",
+    "name": "Unctad Sbeaiotsvsaga",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 3010
+  },
+  {
+    "source_id": "unctad_sbtisvsaga",
+    "name": "Unctad Sbtisvsaga",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 7920
+  },
+  {
+    "source_id": "unctad_soigapotta",
+    "name": "Unctad Soigapotta",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1226
+  },
+  {
+    "source_id": "unctad_sotwmfvbcoboa",
+    "name": "Unctad Sotwmfvbcoboa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 373
+  },
+  {
+    "source_id": "unctad_srbca",
+    "name": "Unctad Srbca",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 414
+  },
+  {
+    "source_id": "unctad_tabbapotta",
+    "name": "Unctad Tabbapotta",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 29358
+  },
+  {
+    "source_id": "unctad_tabmcioeaiopa",
+    "name": "Unctad Tabmcioeaiopa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 4250
+  },
+  {
+    "source_id": "unctad_tabmscioeaiopa",
+    "name": "Unctad Tabmscioeaiopa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 4250
+  },
+  {
+    "source_id": "unctad_tabpcioeaia",
+    "name": "Unctad Tabpcioeaia",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 308
+  },
+  {
+    "source_id": "unctad_taupa",
+    "name": "Unctad Taupa",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 898
+  },
+  {
+    "source_id": "unctad_wstbtocabgoea",
+    "name": "Unctad Wstbtocabgoea",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 8
+  },
+  {
+    "source_id": "undp_hdr",
+    "name": "Undp Hdr",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 8199
+  },
+  {
+    "source_id": "unesco_clte",
+    "name": "Unesco Clte",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 23868
+  },
+  {
+    "source_id": "unesco_cltt",
+    "name": "Unesco Cltt",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 6226
+  },
+  {
+    "source_id": "unesco_dem",
+    "name": "Unesco Dem",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 7080
+  },
+  {
+    "source_id": "unesco_film",
+    "name": "Unesco Film",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 8527
+  },
+  {
+    "source_id": "unesco_inno",
+    "name": "Unesco Inno",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 18909
+  },
+  {
+    "source_id": "unhcr",
+    "name": "Unhcr",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 18367
+  },
+  {
+    "source_id": "usda",
+    "name": "USDA NASS + ERS",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "us-public-domain",
+    "attribution": "Source: USDA (public domain)",
+    "n_series": 25
+  },
+  {
+    "source_id": "wgi",
+    "name": "Wgi",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 7752
+  },
+  {
+    "source_id": "who_hwf",
+    "name": "Who Hwf",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 4421
+  },
+  {
+    "source_id": "who_rs",
+    "name": "Who Rs",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 2207
+  },
+  {
+    "source_id": "who_sdg",
+    "name": "Who Sdg",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 28160
+  },
+  {
+    "source_id": "whr",
+    "name": "Whr",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 178
+  },
+  {
+    "source_id": "wikidata",
+    "name": "Wikidata (econ/finance subset)",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc0",
+    "attribution": "Source: Wikidata (CC0)",
+    "n_series": 250
+  },
+  {
+    "source_id": "worldbank",
+    "name": "World Bank Open Data (WDI)",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: World Bank, World Development Indicators (CC BY 4.0)",
+    "n_series": 692
+  },
+  {
+    "source_id": "worldbank_esg",
+    "name": "World Bank Sovereign ESG",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: World Bank Sovereign ESG (CC BY 4.0)",
+    "n_series": 4447
+  },
+  {
+    "source_id": "worldbank_pink",
+    "name": "World Bank Pink Sheet (commodities)",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "cc-by-4.0",
+    "attribution": "Source: World Bank Commodity Markets (CC BY 4.0)",
+    "n_series": 26
+  },
+  {
+    "source_id": "worldbank_wdi",
+    "name": "Worldbank Wdi",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 1486
+  },
+  {
+    "source_id": "wto_hs_a_0010",
+    "name": "Wto Hs A 0010",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 21778
+  },
+  {
+    "source_id": "wto_hs_a_0015",
+    "name": "Wto Hs A 0015",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 21866
+  },
+  {
+    "source_id": "wto_hs_a_0020",
+    "name": "Wto Hs A 0020",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 21778
+  },
+  {
+    "source_id": "wto_hs_a_0025",
+    "name": "Wto Hs A 0025",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 21866
+  },
+  {
+    "source_id": "wto_hs_a_0030",
+    "name": "Wto Hs A 0030",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 21905
+  },
+  {
+    "source_id": "wto_hs_a_0040",
+    "name": "Wto Hs A 0040",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 21905
+  },
+  {
+    "source_id": "wto_its_mtv_am",
+    "name": "Wto Its Mtv Am",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 3853
+  },
+  {
+    "source_id": "wto_its_mtv_ax",
+    "name": "Wto Its Mtv Ax",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 3785
+  },
+  {
+    "source_id": "yale_epi",
+    "name": "Yale Epi",
+    "homepage": null,
+    "terms_url": null,
+    "license_id": "NEEDS-REVIEW",
+    "attribution": null,
+    "n_series": 21300
+  }
 ]

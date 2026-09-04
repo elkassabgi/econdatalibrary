@@ -139,3 +139,8 @@ docs/briefs/
 # Internal handoff artefacts for Ahmed: these carry operating-cost figures and
 # per-source status detail that must not be published. THIS REPO IS PUBLIC.
 docs/handoff/
+
+# Backups left by removal/repair scripts (2026-09-04). Never commit these.
+*.pre_zillow_removal.bak
+*.pre_zillow_removal.bak/
+*.pre_tlist_repair.bak

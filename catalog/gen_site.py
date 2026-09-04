@@ -240,7 +240,6 @@ LICENSE_LABEL = {
     "statcan-open": "Statistics Canada Open Licence",
     "ecb-attrib-nomodify": "ECB terms (attribution required, no modification)",
     "bis-attrib-nc": "BIS terms (attribution, non-commercial)",
-    "zillow-research": "Zillow Research terms",
     "defillama-open": "DeFiLlama open terms",
     "defillama-granted": "Written permission (DeFiLlama, 2026) — attribution required, non-commercial",
     "whr-granted": "World Happiness Report (written permission, Figure 2.1 scope)",
@@ -1406,7 +1405,6 @@ _SOURCE_TOPICS = {
     "imf_gfs*": ["Government Finance"],
     "imf_commodity": ["Commodities"],
     "imf_cpi": ["Prices & Inflation"],
-    "zillow": ["Housing & Real Estate"],
     "fhfa": ["Housing & Real Estate"],
     # institutions & society
     "vdem": ["Governance & Institutions"],
@@ -2552,7 +2550,7 @@ _PILLAR_BY_ID = {
     "cboe": "money", "defillama": "money", "frankfurter": "money",
     "cftc": "money", "fdic": "money", "ofr": "money", "treasury": "money",
     "sec_edgar": "money", "edgar_13f": "money", "edgar_insider": "money",
-    "edgar_pointers": "money", "zillow": "money", "fhfa": "money",
+    "edgar_pointers": "money", "fhfa": "money",
     "imf_commodity": "money", "imf_cpi": "money",
 }
 # NOTE: no "monetary" keyword — it would misfile every "International
@@ -2589,7 +2587,7 @@ _REGION_AMERICAS = {"bea", "bls", "census", "fred", "fred_releases", "fed_board"
                     "nyfed", "treasury", "cftc", "fdic", "sec_edgar", "edgar_13f",
                     "edgar_insider", "edgar_pointers", "eia", "fhfa", "ofr",
                     "statcan", "boc", "bcb", "bcrp", "ibge", "ipea", "idb",
-                    "hf_equities", "cboe", "zillow", "shiller", "famafrench",
+                    "hf_equities", "cboe", "shiller", "famafrench",
                     "damodaran", "noaa", "nasa_giss"}
 _REGION_ASIAPAC = {"abs", "rba", "stats_nz", "adb"}
 

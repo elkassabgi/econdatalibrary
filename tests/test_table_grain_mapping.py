@@ -202,7 +202,7 @@ _PINNED_RESOLVERS = [
     "_resolve_istat", "_resolve_noaa", "_resolve_oecd", "_resolve_owid", "_resolve_pwt",
     "_resolve_sec_edgar", "_resolve_statcan_any", "_resolve_treasury", "_resolve_usda",
     "_resolve_wdi", "_resolve_wikidata", "_resolve_worldbank", "_resolve_worldbank_esg",
-    "_resolve_worldbank_pink", "_resolve_zillow",
+    "_resolve_worldbank_pink",
 ]
 
 
