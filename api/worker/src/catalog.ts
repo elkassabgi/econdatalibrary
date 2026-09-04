@@ -206,8 +206,23 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
       total = c?.n ?? results.length;
     } else {
       const cached = await scopedDb.prepare(BROWSE_SOURCE_COUNT_CACHED).bind(src).first<CountRow>();
-      if (cached && typeof cached.n === "number") {
+      if (cached && typeof cached.n === "number" && !(cached.n === 0 && results.length > 0)) {
         total = cached.n;
+      } else if (cached && cached.n === 0 && results.length > 0) {
+        // THE CACHE IS PROVABLY WRONG, so do not serve it. `total: 0` alongside a non-empty
+        // page is self-contradictory: this very request just read rows for the source. It is a
+        // real served state, not a hypothetical — ilo is recorded at
+        // ECONLIB_COMPLETION_PLAN.md:77, and statcan entered it on 2026-09-04 when an aborted
+        // push left 63,000 rows in `series` with source_counts still 0 (source_counts is
+        // written only at the END of a sync, so ANY interrupted push lands here).
+        //
+        // Recount over the PK range rather than trusting the cache. That rides the autoindex
+        // (sql.ts:216-231), so it costs a bounded read of one source instead of a scan, and it
+        // is the population this page is actually paging through. Only reachable when the cache
+        // says zero AND rows came back, so it cannot become a per-view cost on a healthy source.
+        const c = await scopedDb.prepare(browseSourceVisibleCountSql(src))
+          .bind(src + ":", src + ";").first<CountRow>();
+        total = c?.n ?? results.length;
       } else {
         // Fallback: a source synced before its source_counts row exists. Live
         // COUNT once — the sync backfills the row and this path goes cold.
