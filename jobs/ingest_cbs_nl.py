@@ -1677,10 +1677,26 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     only_ids: set[str] = set()
     accept_only = False
-    for a in sys.argv[1:]:
-        if a.startswith("--only"):
-            raw = a.split("=", 1)[-1] if "=" in a else ""
-            only_ids = set(raw.split(","))
+    # THE DOCUMENTED FORM USED TO SELECT NOTHING. This file's own header (line 14) says
+    #     python jobs/ingest_cbs_nl.py --only 83439NED,37230NED
+    # but the parser only ever read the `--only=A,B` form: a bare `--only` produced
+    # `only_ids = {''}`, the following `83439NED,37230NED` fell through to the bare-argument
+    # branch and was added as ONE id, and the filter at "Identifier in only_ids" then matched
+    # nothing. The run logged "Filtered to 0 tables", crawled nothing, and exited 0 - a silent
+    # zero that reads as success, which is the R50 class. Both spellings now work, and so does
+    # the bare-argument form (`... 70170NED 37471`) that already did.
+    argv = list(sys.argv[1:])
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--only":                      # space form: consume the next argument
+            if i + 1 >= len(argv):
+                raise SystemExit("--only needs a comma-separated list of table ids")
+            only_ids |= {x for x in argv[i + 1].split(",") if x}
+            i += 2
+            continue
+        if a.startswith("--only="):
+            only_ids |= {x for x in a.split("=", 1)[1].split(",") if x}
         elif a.startswith("--accept-shrink="):
             ids = [x for x in a.split("=", 1)[1].split(",") if x]
             record_accepts(OUT, ids)   # R598/R600: the yes lives in the store, for the ONE crawler
@@ -1690,6 +1706,7 @@ def main():
             FORCE_SWEEP = True
         elif not a.startswith("-"):
             only_ids.add(a)
+        i += 1
 
     if accept_only and not only_ids:
         log("accept recorded; the guard's crawler will act on it - not starting a second crawler (R600)")
