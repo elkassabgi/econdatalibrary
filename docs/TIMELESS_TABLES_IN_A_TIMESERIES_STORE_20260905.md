@@ -1,6 +1,6 @@
 # Cross-tabulations catalogued as time series (found 2026-09-04/05)
 
-**Status: DELISTED AND VERIFIED 2026-09-05 ~02:05** (Ahmed: "ok delist"), by
+**Status: DELISTED AND VERIFIED 2026-09-05 01:22–01:24 local (apply-log mtime)** (Ahmed: "ok delist"), by
 `tools/delist_timeless_tables.py --apply` after adversarial review of the tool: D1 `series` 27 → 0,
 `series_fts` 0 matching (MATCH-title predicate), R2 31 objects deleted (27 served CSVs, content-verified
 to carry impossible dates before deletion, + the 4 cbs_nl store parquets that also lived on R2),
