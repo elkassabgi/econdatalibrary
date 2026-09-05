@@ -41,6 +41,21 @@ while True:
     tok = p.get("NextContinuationToken")
 print(f"objects under {PREFIX}: {len(remote):,}")
 
+# EVERY file's size, not just the sample's. This is one listing plus a local stat each, so it costs
+# nothing, and it is the difference between "10 files are fine" and "no file is truncated or missing".
+local_names = {os.path.basename(p): os.path.getsize(p)
+               for p in __import__("glob").glob(os.path.join(LOCAL, "*.parquet"))
+               if not os.path.basename(p).startswith("_")}
+missing = sorted(n for n in local_names if n not in remote)
+sized = sorted(n for n, s in local_names.items() if n in remote and remote[n] != s)
+extra = sorted(n for n in remote if n.endswith(".parquet") and n not in local_names)
+print(f"  local cubes {len(local_names):,}   on R2 {sum(1 for n in remote if n.endswith('.parquet')):,}")
+print(f"  MISSING from R2      : {len(missing):,}" + (f"   e.g. {missing[:5]}" if missing else ""))
+print(f"  SIZE MISMATCH        : {len(sized):,}" + (f"   e.g. {sized[:5]}" if sized else ""))
+print(f"  on R2 with no local  : {len(extra):,}" + (f"   e.g. {extra[:5]}" if extra else ""))
+if missing or sized:
+    print("  ^ the restore is INCOMPLETE — re-run tools/upload_statcan_store.py (it resumes)")
+
 # sample from the SMALLER half so the check is cheap; the giants are size-verified at upload
 cands = sorted((s, n) for n, s in remote.items() if n.endswith(".parquet") and s < 20_000_000)
 pick = random.sample(cands, min(N, len(cands)))
