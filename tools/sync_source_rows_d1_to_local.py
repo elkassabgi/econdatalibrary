@@ -59,14 +59,20 @@ def d1_rows(source: str):
     raise RuntimeError(f"D1 read failed: {last}")
 
 
-def local_ids(source: str) -> set:
+def local_rows(source: str) -> dict:
+    """{series_id: (start_date, end_date, title)} by primary-key range."""
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=120)
     con.execute("PRAGMA busy_timeout=120000")
     try:
-        return {r[0] for r in con.execute("SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
-                                          (source + ":", source + ";"))}
+        return {r[0]: (r[1], r[2], r[3]) for r in con.execute(
+            "SELECT series_id, start_date, end_date, title FROM series WHERE series_id >= ? AND series_id < ?",
+            (source + ":", source + ";"))}
     finally:
         con.close()
+
+
+def local_ids(source: str) -> set:
+    return set(local_rows(source))
 
 
 def main() -> int:
@@ -77,30 +83,80 @@ def main() -> int:
                     help="explicit no-write run (already the default without --apply); named in ARGV so the D1 cost "
                          "guard can tell a free run from a charged one (R323)")
     ap.add_argument("--chunk", type=int, default=400)
+    ap.add_argument("--update-differing", action="store_true",
+                    help="also UPDATE local rows whose start_date/end_date/title differ from D1 (D1 is the truth for a "
+                         "CI-catalogued source, R737 item c); reported either way")
     a = ap.parse_args()
     if not os.path.exists(DB):
         print(f"no local catalogue at {DB}"); return 2
     t0 = dt.datetime.now(dt.timezone.utc)
     rows, rows_read = d1_rows(a.source)
-    have = local_ids(a.source)
+    loc = local_rows(a.source)
+    have = set(loc)
     missing = [r for r in rows if r.get("series_id") and r["series_id"] not in have]
+    # THE DIFF (R737 item c): rows present on both sides whose start/end/title disagree. The
+    # served-state verify compares the two stores by COUNT only, so a `--skip-local` respan, a
+    # non-fatal local branch, or a CI-only write leaves them apart invisibly (the control row
+    # sec_edgar:AAPL sat at 2026-04-17 locally and 2026-07-17 on D1).
+    differing = [r for r in rows if r.get("series_id") in loc and
+                 (str(r.get("start_date")), str(r.get("end_date")), r.get("title")) !=
+                 (str(loc[r["series_id"]][0]), str(loc[r["series_id"]][1]), loc[r["series_id"]][2])]
     print(f"{t0:%H:%M:%SZ} {a.source}: D1 rows {len(rows):,} (rows_read {rows_read:,}); local rows {len(have):,}; "
-          f"on D1 and NOT local: {len(missing):,}", flush=True)
+          f"on D1 and NOT local: {len(missing):,}; on both and DIFFERING (start/end/title): {len(differing):,}", flush=True)
+    for r in differing[:8]:
+        l = loc[r["series_id"]]
+        print(f"   differ {r['series_id']:<26} local ({l[0]}, {l[1]}) D1 ({r.get('start_date')}, {r.get('end_date')})"
+              f"{'  title differs' if l[2] != r.get('title') else ''}")
+    if len(differing) > 8:
+        print(f"   ... {len(differing) - 8:,} more differing")
     for r in missing[:12]:
         print(f"   {r['series_id']:<28} {str(r.get('start_date')):10} {str(r.get('end_date')):10} {str(r.get('title'))[:60]}")
     if len(missing) > 12:
         print(f"   ... {len(missing) - 12:,} more")
     receipt = {"utc": t0.isoformat(), "source": a.source, "d1_rows": len(rows), "d1_rows_read": rows_read,
-               "local_rows_before": len(have), "missing": [r["series_id"] for r in missing], "apply": a.apply}
+               "local_rows_before": len(have), "missing": [r["series_id"] for r in missing],
+               "differing": [r["series_id"] for r in differing], "apply": a.apply, "update_differing": a.update_differing}
     rpath = os.path.join("D:/temp/claude" if os.path.isdir("D:/temp/claude") else ROOT,
                          f"sync_rows_{a.source}_{t0:%Y%m%dT%H%M%SZ}.json")
-    if not a.apply or not missing:
+    todo_upd = differing if (a.apply and a.update_differing) else []
+    if not a.apply or (not missing and not todo_upd):
         json.dump(receipt, open(rpath, "w", encoding="utf-8"), indent=1)
-        print(f"dry run - nothing written; receipt {rpath}" if not a.apply else f"nothing to insert; receipt {rpath}")
+        print(f"dry run - nothing written; receipt {rpath}" if not a.apply else f"nothing to write; receipt {rpath}")
         return 0
 
     con = sqlite3.connect(DB, timeout=120, isolation_level=None)
     con.execute("PRAGMA busy_timeout=120000")
+    updated = 0
+    if todo_upd:
+        for k in range(0, len(todo_upd), a.chunk):
+            part = todo_upd[k:k + a.chunk]
+            for attempt in range(12):
+                try:
+                    con.execute("BEGIN IMMEDIATE")
+                    for r in part:
+                        con.execute("UPDATE series SET start_date=?, end_date=?, title=? WHERE series_id=?",
+                                    (r.get("start_date"), r.get("end_date"), r.get("title"), r["series_id"]))
+                        updated += 1
+                    con.execute("COMMIT")
+                    break
+                except sqlite3.OperationalError as e:
+                    print(f"   update chunk {k // a.chunk + 1} attempt {attempt + 1}: {e} - retrying in 20 s", flush=True)
+                    try:
+                        con.execute("ROLLBACK")
+                    except Exception:      # noqa: BLE001
+                        pass
+                    time.sleep(20)
+            else:
+                receipt["updated"] = updated
+                json.dump(receipt, open(rpath, "w", encoding="utf-8"), indent=1)
+                print(f"update chunk never committed after {updated:,} row(s); receipt {rpath}"); return 1
+        print(f"   updated {updated:,} differing local row(s) from D1", flush=True)
+        receipt["updated"] = updated
+    if not missing:
+        json.dump(receipt, open(rpath, "w", encoding="utf-8"), indent=1)
+        print(f"DONE: updated {updated:,} differing row(s), nothing to insert; receipt {rpath}")
+        con.close()
+        return 0
     local_cols = [c[1] for c in con.execute("PRAGMA table_info(series)")]
     d1_cols = [c for c in missing[0].keys() if c in local_cols]
     absent = [c for c in local_cols if c not in d1_cols]
