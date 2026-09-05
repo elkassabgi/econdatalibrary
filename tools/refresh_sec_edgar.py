@@ -199,7 +199,19 @@ def update_catalog(spans, apply_d1):
     db = os.path.join(ROOT, "data", "catalog.db")
     if os.path.exists(db):
         import sqlite3
-        con = sqlite3.connect(db)
+        con = sqlite3.connect(db, timeout=120)
+        con.execute("PRAGMA busy_timeout=120000")
+        # BEGIN IMMEDIATE with retries: the crawlers hold this database for hours and a
+        # deferred transaction only discovers the lock at COMMIT, after every statement has
+        # run (the respan needed three attempts on 2026-09-05).
+        for attempt in range(12):
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower() or attempt == 11:
+                    raise
+                time.sleep(10)
         # UPSERT, not UPDATE. An UPDATE-only path silently does nothing for a company
         # that has no catalog row yet — and a NEW registrant filing for the first time
         # is exactly that case. Two such files (CIK0002084272, SMJF) were written to
@@ -208,10 +220,11 @@ def update_catalog(spans, apply_d1):
         # this repo keeps rediscovering, reintroduced here by me.
         for ident, lo, hi, title, cik in spans:
             sid = f"sec_edgar:{ident}"
-            cur = con.execute("SELECT 1 FROM series WHERE series_id=?", (sid,))
-            if cur.fetchone():
-                con.execute("UPDATE series SET start_date=?, end_date=? WHERE series_id=?",
-                            (str(lo), str(hi), sid))
+            cur = con.execute("SELECT title FROM series WHERE series_id=?", (sid,))
+            row = cur.fetchone()
+            if row:
+                con.execute("UPDATE series SET start_date=?, end_date=?, title=? WHERE series_id=?",
+                            (str(lo), str(hi), title, sid))
                 n_local += 1
             else:
                 con.execute(
@@ -223,16 +236,15 @@ def update_catalog(spans, apply_d1):
                      json.dumps({"cik": cik, "ticker": ident if not
                                  ident.startswith("CIK") else None})))
                 # FTS is a standalone table and does not track `series`; skipping it
-                # would leave the new company unsearchable even once catalogued.
-                try:
-                    # DELETE FIRST: an FTS5 table has no unique constraint, so a re-run that
-                    # reaches this branch for an id already indexed would add a second row
-                    # rather than replace it. Bounded today by the `else`, not by the SQL.
-                    con.execute("DELETE FROM series_fts WHERE series_id = ?", (sid,))
-                    con.execute("INSERT INTO series_fts (series_id, title, geography) "
-                                "VALUES (?,?,?)", (sid, title, "US"))
-                except Exception:                             # noqa: BLE001
-                    pass
+                # would leave the new company unsearchable even once catalogued. INSERT
+                # only, no DELETE first: series_fts is fts5(series_id UNINDEXED, ...), so a
+                # delete by id is a full scan of the index (13.5M rows here, 23.8M on D1 -
+                # R492/R730), and inside this IMMEDIATE transaction it would hold the
+                # crawlers off the database for its whole duration. A duplicate is
+                # impossible on this path: the FTS row and the `series` row land in the same
+                # transaction, and this branch runs only when the `series` row is absent.
+                con.execute("INSERT INTO series_fts (series_id, title, geography) "
+                            "VALUES (?,?,?)", (sid, title, "US"))
                 n_new += 1
         con.commit()
         con.close()
@@ -240,49 +252,120 @@ def update_catalog(spans, apply_d1):
         print(f"   catalogued {n_new:,} NEW company/companies not previously listed",
               flush=True)
     n_d1 = 0
+    d1_failed = False
     if apply_d1 and spans:
-        import subprocess
-        wdir = os.path.join(ROOT, "api", "worker")
         tmp = os.path.join(ROOT, "data", "_sec_spans.sql")
-        def esc(s):
-            return str(s).replace("'", "''")
-        stmts = []
-        for ident, lo, hi, title, cik in spans:
-            sid = f"sec_edgar:{esc(ident)}"
-            # INSERT OR IGNORE then UPDATE: covers both a company already listed and
-            # one filing for the first time, without needing to read D1 first. An
-            # UPDATE-only path leaves a brand-new registrant's data served but
-            # uncatalogued and therefore unfindable.
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        rpath = os.path.join(ROOT, "data", f"_sec_edgar_catalog_receipt_{stamp}.json")
+        sids = [f"sec_edgar:{ident}" for ident, _lo, _hi, _t, _c in spans]
+        # READ D1 FIRST, by primary key (an index seek per id, IN-lists of 40): which of
+        # today's companies already have a row, and under what title. That answer decides
+        # which statements are emitted below, and it is what lets the FTS index be touched
+        # by INSERT alone - see d1_catalog_statements.
+        existing, rows_read = _d1_titles(sids)
+        stmts, n_new_d1, n_title = d1_catalog_statements(spans, existing)
+        assert_no_fts_predicate(stmts)
+        print(f"  D1 pre-read: {len(existing):,} of {len(sids):,} ids already catalogued "
+              f"(rows_read {rows_read:,}); {n_new_d1:,} new -> series + FTS INSERT; "
+              f"{n_title:,} title change(s) -> series only (the FTS title waits for the reindex)",
+              flush=True)
+        receipt = {"spans": [list(map(str, s)) for s in spans], "existing_on_d1": len(existing),
+                   "statements": len(stmts), "new_on_d1": n_new_d1, "title_changed": n_title,
+                   "batches": [], "failed": False}
+        for j in range(0, len(stmts), 400):
+            io.open(tmp, "w", encoding="utf-8").write("\n".join(stmts[j:j + 400]))
+            try:
+                res = _d1_json(["--file", tmp])
+            except Exception as e:                            # noqa: BLE001
+                # Any batch, not only the first: a failure at 400+ used to leave n_d1 > 0
+                # and the run green with half the day's companies uncatalogued.
+                print(f"  D1 catalogue batch FAILED at statement {j}: {str(e)[-300:]}", flush=True)
+                receipt["batches"].append({"from": j, "error": f"{type(e).__name__}: {str(e)[:300]}"})
+                d1_failed = True
+                break
+            # The WHOLE meta is kept (R730): `changes` alone could not explain the +1 the
+            # import endpoint reports per file, and rows_written was gone by then.
+            receipt["batches"].append({"from": j, "n": len(stmts[j:j + 400]),
+                                       "meta": [e.get("meta") for e in res]})
+            n_d1 += len(stmts[j:j + 400])
+        receipt["failed"] = d1_failed
+        json.dump(receipt, open(rpath, "w", encoding="utf-8"), indent=1, default=str)
+        print(f"  D1 receipt: {rpath}", flush=True)
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return n_local, n_d1, d1_failed
+
+
+def _d1_titles(sids):
+    """{series_id: title} for the ids that exist on D1 - primary-key IN-lists of 40, free."""
+    out, rows_read = {}, 0
+    for i in range(0, len(sids), 40):
+        chunk = sids[i:i + 40]
+        sql = ("SELECT series_id, title FROM series WHERE series_id IN ("
+               + ",".join("'" + s.replace("'", "''") + "'" for s in chunk) + ")")
+        for entry in _d1_json(["--command", sql]):
+            rows_read += int((entry.get("meta") or {}).get("rows_read") or 0)
+            for row in entry.get("results") or []:
+                if "series_id" in row:
+                    out[row["series_id"]] = row.get("title")
+    return out, rows_read
+
+
+def assert_no_fts_predicate(stmts):
+    """Refuse any statement that predicates on series_fts.series_id.
+
+    series_fts is fts5(series_id UNINDEXED, title, geography): a WHERE on its series_id is a
+    full scan of the index (~23.8M rows, R492), and on 2026-09-05 11:28Z ONE such statement -
+    `SELECT count(*) FROM series_fts WHERE series_id = 'sec_edgar:AAPL'` - did not finish
+    inside D1's storage timeout (error 7429). The daily path emitted one per changed company
+    (R730) and had never executed it on CI. This guard is code, not a comment: the statement
+    list is checked before wrangler sees it.
+    """
+    for s in stmts:
+        low = " ".join(s.lower().split())
+        if "series_fts" in low and (" where " in low or " match " in low):
+            raise RuntimeError("REFUSED: a statement predicates on series_fts (a full scan of "
+                               "the FTS index, R492/R730): " + s[:160])
+
+
+def d1_catalog_statements(spans, existing):
+    """The D1 statements for one catalogue update - pure, so a test can assert their shape.
+
+    `existing` maps series_id -> title for the spans' ids that already have a D1 row (from
+    `_d1_titles`, a primary-key read). Rules:
+      * an existing id gets ONE `UPDATE series ... WHERE series_id=` (PK seek); when its title
+        changed the same UPDATE carries the title. Its FTS row is NOT touched - the only way
+        to replace an FTS row is a DELETE by id, which is the full scan this file refuses -
+        so a renamed company's FTS title goes stale until the periodic reindex.
+      * a new id gets `INSERT OR IGNORE INTO series` + `INSERT INTO series_fts`. No DELETE
+        first: both rows land in one import and this branch runs only for ids the pre-read
+        did not find, so the duplicate the old DELETE guarded against cannot arise here.
+    Returns (statements, n_new, n_title_changed).
+    """
+    def esc(s):
+        return str(s).replace("'", "''")
+    stmts, n_new, n_title = [], 0, 0
+    for ident, lo, hi, title, _cik in spans:
+        sid = f"sec_edgar:{esc(ident)}"
+        if sid.replace("''", "'") in existing:
+            old = existing[sid.replace("''", "'")]
+            if old != title:
+                n_title += 1
+                stmts.append(f"UPDATE series SET start_date='{lo}', end_date='{hi}', "
+                             f"title='{esc(title)}' WHERE series_id='{sid}';")
+            else:
+                stmts.append(f"UPDATE series SET start_date='{lo}', end_date='{hi}' "
+                             f"WHERE series_id='{sid}';")
+        else:
+            n_new += 1
             stmts.append(
                 f"INSERT OR IGNORE INTO series (series_id, source_id, title, frequency, "
                 f"geography, category, license_id, start_date, end_date) VALUES "
                 f"('{sid}','sec_edgar','{esc(title)}','Q','US','fundamentals',"
                 f"'us-public-domain','{lo}','{hi}');")
-            # DELETE then INSERT. `OR IGNORE` is a NO-OP on an FTS5 virtual table -- it has
-            # no unique constraint for the conflict resolution to act on -- so this line read
-            # as idempotent while adding another copy of every company on EVERY refresh. The
-            # same misreading put 8.00 copies of each boc series in the live index. The
-            # `series` statement above is genuinely OR IGNORE; only this one needed the delete.
-            stmts.append(f"DELETE FROM series_fts WHERE series_id = '{sid}';")
             stmts.append(f"INSERT INTO series_fts (series_id, title, geography) "
                          f"VALUES ('{sid}','{esc(title)}','US');")
-            stmts.append(f"UPDATE series SET start_date='{lo}', end_date='{hi}' "
-                         f"WHERE series_id='{sid}';")
-        for j in range(0, len(stmts), 400):
-            io.open(tmp, "w", encoding="utf-8").write("\n".join(stmts[j:j + 400]))
-            r = subprocess.run(
-                [_wrangler_cmd(), "d1", "execute", "econ-catalog", "--remote",
-                 "--file", tmp, "-y"],
-                cwd=wdir, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", env=_wrangler_env())
-            if r.returncode != 0:
-                msg = (r.stderr or "") + (r.stdout or "") or "(no output)"
-                print(f"  D1 span update FAILED at {j}: {msg[-300:]}", flush=True)
-                break
-            n_d1 += len(stmts[j:j + 400])
-        if os.path.exists(tmp):
-            os.remove(tmp)
-    return n_local, n_d1
+    return stmts, n_new, n_title
 
 
 def audit(client):
@@ -444,9 +527,13 @@ def stamp_freshness_d1(status: str, when_utc: str) -> None:
         encoding="utf-8", errors="replace", env=_wrangler_env())
     if r.returncode != 0:
         msg = (r.stderr or "") + (r.stdout or "") or "(no output)"
-        print(f"  freshness stamp FAILED (non-fatal): {msg[-300:]}", flush=True)
-    else:
-        print(f"  freshness stamped: source_state sec_edgar {status} @ {when_utc}", flush=True)
+        # Fatal to the caller (R730 follow-up d): the 2026-09-04 failure was printed as a
+        # truncated log path and the run stayed green while /v1/sources kept showing
+        # last_updated 2026-09-03. A stamp that did not land is a red run.
+        print(f"  freshness stamp FAILED: {msg[-600:]}", flush=True)
+        return False
+    print(f"  freshness stamped: source_state sec_edgar {status} @ {when_utc}", flush=True)
+    return True
 
 
 def _wrangler_cmd():
@@ -691,6 +778,9 @@ def respan(client, spec, apply=False, apply_d1=False):
         changes = sum(int((e.get("meta") or {}).get("changes") or 0) for e in res)
         print(f"  D1: batch of {len(todo_d)} UPDATE(s): summed meta.changes={changes}; entries={len(res)}")
         receipt["d1_changes"] = changes
+        # the WHOLE meta, not `changes` alone (R730): the import endpoint reports one change
+        # more than the statement count and only rows_written/rows_read can bound it
+        receipt["d1_meta"] = [e.get("meta") for e in res]
         _dump()
         after, rr2 = _d1_dates([p["sid"] for p in todo_d])
         bad = [(p["sid"], after.get(p["sid"])) for p in todo_d if after.get(p["sid"]) != (p["lo"], p["hi"])]
@@ -906,24 +996,29 @@ def main():
     for ident, b, aft, latest in changed[:12]:
         print(f"   {ident:<12} {b:>8,} -> {aft:>8,} facts   newest obs {latest}")
     if a.apply and spans:
-        nl, nd = update_catalog(spans, a.d1)
+        nl, nd, d1_failed = update_catalog(spans, a.d1)
         print(f"catalog coverage updated: local rows={nl:,}  D1 statements={nd:,}"
               + ("" if a.d1 else "   (D1 SKIPPED — pass --d1; the worker reads D1, "
                                  "so served metadata stays stale without it)"))
-        if a.d1 and nd == 0:
+        if a.d1 and (nd == 0 or d1_failed):
             # R726: from 2026-08-25 to 2026-09-04 every CI run printed "D1 span update FAILED at
             # 0" and exited 0 - 181 companies moved on R2 with no catalogue span and no
             # new-registrant row while the workflow stayed green. Data moved but the catalogue
-            # did not: that is a FAILED refresh, and the step must say so.
-            print("FAIL: parquet + CSV were written for changed companies but ZERO D1 statements "
-                  "landed - the served catalogue no longer matches the served data", flush=True)
+            # did not: that is a FAILED refresh, and the step must say so. R730: a failure in
+            # the second or later batch is the same failure for the companies behind it.
+            print("FAIL: parquet + CSV were written for changed companies but the D1 catalogue "
+                  f"batch did not complete ({nd:,} statement(s) landed, failed={d1_failed}) - "
+                  "the served catalogue no longer matches the served data", flush=True)
             return 1
     if a.apply and a.d1:
         # Even a zero-span day is a completed freshness check (weekends have no
         # filings); the stamp is what keeps /v1/sources freshness non-null.
         ok_day = failed == 0 or failed * 20 <= len(todo)   # >=95% fetched
-        stamp_freshness_d1("ok" if ok_day else "partial",
-                           dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"))
+        if not stamp_freshness_d1("ok" if ok_day else "partial",
+                                  dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")):
+            print("FAIL: the freshness stamp did not land - /v1/sources would keep a stale "
+                  "last_updated while this run reported success", flush=True)
+            return 1
     if not a.apply and changed:
         print("\nre-run with --apply to write parquet + CSV and upload to R2")
     return 0
