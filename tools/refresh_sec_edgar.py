@@ -305,9 +305,13 @@ def update_catalog(spans, apply_d1):
                 d1_failed = True
                 break
             # The WHOLE meta is kept (R730): `changes` alone could not explain the +1 the
-            # import endpoint reports per file, and rows_written was gone by then.
-            receipt["batches"].append({"from": j, "n": len(stmts[j:j + 400]),
-                                       "meta": [e.get("meta") for e in res]})
+            # import endpoint reports per file, and rows_written was gone by then. Printed too
+            # (R737 item e): on CI the receipt lands under gitignored data/ and is never uploaded.
+            metas = [e.get("meta") for e in res]
+            receipt["batches"].append({"from": j, "n": len(stmts[j:j + 400]), "meta": metas})
+            print(f"  D1 batch from {j}: {len(stmts[j:j + 400])} statement(s); meta "
+                  f"{[{k: m.get(k) for k in ('changes', 'rows_written', 'rows_read', 'duration')} for m in metas if m]}",
+                  flush=True)
             n_d1 += len(stmts[j:j + 400])
         receipt["failed"] = d1_failed
         json.dump(receipt, open(rpath, "w", encoding="utf-8"), indent=1, default=str)
@@ -408,9 +412,12 @@ def audit(client):
     if not os.path.exists(db):
         print("no local catalog.db — audit needs it; skipping")
         return 0
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=120)
+    con.execute("PRAGMA busy_timeout=120000")
+    # primary-key RANGE, never `WHERE source_id=` (R721/R723/R737): the local catalogue has only
+    # the PK autoindex, so a source_id predicate scans 13.5M rows under the crawlers' locks
     cat = {r[0].split(":", 1)[1] for r in con.execute(
-        "SELECT series_id FROM series WHERE source_id='sec_edgar'")}
+        "SELECT series_id FROM series WHERE series_id >= 'sec_edgar:' AND series_id < 'sec_edgar;'")}
     served, tok = set(), None
     while True:
         kw = {"Bucket": BUCKET, "Prefix": "clean_grouped/sec_edgar/", "MaxKeys": 1000}
@@ -532,7 +539,6 @@ def stamp_freshness_d1(status: str, when_utc: str) -> None:
     refresh worked). A worse day stamps status + attempt but does NOT advance
     last_success_utc (R231's spirit: partial coverage must not look complete).
     """
-    import subprocess
     ok = status == "ok"
     succ_insert = f"'{when_utc}'" if ok else "NULL"
     succ_update = f", last_success_utc='{when_utc}'" if ok else ""
@@ -541,24 +547,30 @@ def stamp_freshness_d1(status: str, when_utc: str) -> None:
            f"('sec_edgar', 'edgar_delta', 'daily', '{status}', {succ_insert}, '{when_utc}') "
            f"ON CONFLICT(source_id) DO UPDATE SET status='{status}', cadence='daily', "
            f"last_attempt_utc='{when_utc}'{succ_update};")
-    r = subprocess.run(
-        [_wrangler_cmd(), "d1", "execute", "econ-catalog", "--remote",
-         "--command", sql, "-y"],
-        cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True,
-        encoding="utf-8", errors="replace", env=_wrangler_env())
-    if r.returncode != 0:
-        # Fatal to the caller (R730 follow-up d): the 2026-09-04 failure was printed as a
-        # truncated log path and the run stayed green while /v1/sources kept showing
-        # last_updated 2026-09-03. A stamp that did not land is a red run.
-        # The two streams are shown SEPARATELY, stderr first (R733): `(stderr + stdout)[-300:]`
-        # ended every failed CI run's message with wrangler's informational banner "To execute
-        # on your local development database, remove the --remote flag" from stdout, and the
-        # actual error at the end of stderr was never seen - for eleven days.
-        print(f"  freshness stamp FAILED (rc={r.returncode}) stderr: {(r.stderr or '')[-700:]!r} | "
-              f"stdout tail: {(r.stdout or '')[-300:]!r}", flush=True)
+    # Through _d1_json (R737 item d): the retrying runner (10000 transient x3, 7403 fallback) rather
+    # than one bare subprocess.run - on a zero-change day this stamp is the run's only D1 write and
+    # its failure exits 1, so a single transient must not make a weekend run red for no data reason.
+    # Fatal to the caller (R730 follow-up d): the 2026-09-04 failure was printed as a truncated
+    # log path and the run stayed green while /v1/sources kept showing last_updated 2026-09-03.
+    # The failure message carries stderr FIRST and separately (R733).
+    try:
+        _d1_json(["--command", sql])
+    except Exception as e:                                    # noqa: BLE001
+        print(f"  freshness stamp FAILED: {str(e)[:900]}", flush=True)
         return False
     print(f"  freshness stamped: source_state sec_edgar {status} @ {when_utc}", flush=True)
     return True
+
+
+def stamp_data_through_from_d1(source: str):
+    """tools/stamp_source_data_through.stamp, imported lazily (this file is imported by tests from the
+    repo root, where tools/ is not on sys.path)."""
+    import importlib.util
+    p = os.path.join(ROOT, "tools", "stamp_source_data_through.py")
+    spec = importlib.util.spec_from_file_location("_stamp_source_data_through", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.stamp(source, apply=True)
 
 
 def _wrangler_cmd():
@@ -612,7 +624,20 @@ def _d1_json(args, timeout=600):
             if start is None:
                 raise RuntimeError(f"no JSON array in wrangler output: {r.stdout[-600:]}")
             return json.loads("\n".join(lines[start:]))
-        last = f"wrangler rc={r.returncode}: {(r.stderr or '')[-800:]} {(r.stdout or '')[-800:]}"
+        # stderr FIRST and labelled, then the API error's own notes parsed out of the JSON body
+        # (R737 item e: the tail of stdout used to hide the cause behind wrangler's banner), then
+        # a short stdout tail
+        notes = []
+        try:
+            body = r.stdout or ""
+            j = json.loads(body[body.index("{"):]) if "{" in body else {}
+            notes = [n.get("text") for n in (j.get("error") or {}).get("notes", []) if n.get("text")]
+            if not notes and (j.get("error") or {}).get("text"):
+                notes = [j["error"]["text"]]
+        except Exception:                                     # noqa: BLE001
+            pass
+        last = (f"wrangler rc={r.returncode} stderr={(r.stderr or '')[-600:]!r} error_notes={notes} "
+                f"stdout_tail={(r.stdout or '')[-300:]!r}")
         if "code: 10000" in (r.stdout or "") + (r.stderr or "") and attempt < 2:
             print(f"   wrangler auth error 10000 (attempt {attempt + 1}/3) - retrying in 10 s", flush=True)
             time.sleep(10)
@@ -863,22 +888,18 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False, local_ch
         rc = 1 if (bad or live_bad or not ctl_ok or not ctl_live_ok) else 0
         _dump()
         if rc == 0:
-            # /v1/sources shows `data_through` from D1's source_data_through, which CI stamps from
-            # MAX(end_date) over the LOCAL catalogue at sync time (the stale coherence copy): it
-            # read 2215-09-30 live on 2026-09-05 (R726). Re-stamp it from D1 itself, by PK, as the
-            # newest coverage end that has actually arrived (<= today).
-            rows = _d1_sec_edgar_rows()
-            today = dt.date.today().isoformat()
-            mx = max((ed for sd, ed in rows.values() if ed and ed <= today), default=None)
-            if mx:
-                _d1_json(["--command", f"UPDATE source_data_through SET data_through='{mx}' WHERE source_id='sec_edgar'"])
-                back = _d1_json(["--command", "SELECT data_through FROM source_data_through WHERE source_id='sec_edgar'"])
-                got = next((r.get("data_through") for e in back for r in (e.get("results") or []) if "data_through" in r), None)
-                print(f"  source_data_through sec_edgar: stamped {mx} (D1 max end_date <= today over {len(rows):,} rows); read back {got}; "
-                      f"/v1/sources shows it within its max-age=300 (no edge cache, measured R730); the next updater-daily sync "
-                      f"recomputes it from the R2 coherence copy under the observed-only cap (core/sync_state_d1.py)")
-                receipt["data_through_stamped"] = mx
-                receipt["data_through_readback"] = got
+            # /v1/sources shows `data_through` from D1's source_data_through. It is stamped from D1's
+            # OWN rows (tools/stamp_source_data_through.py: PK-range MAX of ended periods, one upsert,
+            # read back) because the updater sync's copy of the local catalogue is not this source's
+            # truth and overwrote a correct stamp twice on 2026-09-05 (R730, R737); the sync now
+            # skips sec_edgar (core.sync_state_d1.DATA_THROUGH_FROM_D1).
+            mx, got, rr = stamp_data_through_from_d1("sec_edgar")
+            print(f"  source_data_through sec_edgar: stamped {mx} from D1 (rows_read {rr:,}); read back {got} -> "
+                  f"{'OK' if got == mx else 'MISMATCH'}; /v1/sources shows it within its max-age=300")
+            receipt["data_through_stamped"] = mx
+            receipt["data_through_readback"] = got
+            if got != mx:
+                rc = 1
                 if got != mx:
                     rc = 1
     else:
@@ -1078,6 +1099,17 @@ def main():
                                   dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")):
             print("FAIL: the freshness stamp did not land - /v1/sources would keep a stale "
                   "last_updated while this run reported success", flush=True)
+            return 1
+        # data_through from D1's own rows after EVERY run (R737): the updater sync no longer stamps
+        # this source, so this is the only writer of its /v1/sources data_through.
+        try:
+            mx, got, rr = stamp_data_through_from_d1("sec_edgar")
+        except Exception as e:                                # noqa: BLE001
+            print(f"FAIL: data_through stamp from D1 failed: {str(e)[:600]}", flush=True)
+            return 1
+        print(f"  data_through stamped from D1: {mx} (rows_read {rr:,}); read back {got} -> {'OK' if got == mx else 'MISMATCH'}", flush=True)
+        if got != mx:
+            print("FAIL: data_through read back differs from what was stamped", flush=True)
             return 1
     if not a.apply and changed:
         print("\nre-run with --apply to write parquet + CSV and upload to R2")

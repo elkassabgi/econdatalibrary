@@ -60,9 +60,12 @@ D1_DATABASE = "econ-catalog"             # wrangler.toml [[d1_databases]] databa
 CATALOG_SHARD_FOR = {"noaa": "econ-catalog-climate"}
 ROWS_PER_STMT = 20        # matches core/export_d1.py (D1 statement-length cap)
 
-# Sources whose observations are filed records of periods already ended: data_through can never
-# post-date today for them, and a MAX that does is a typo row in the catalogue copy (R730).
-DATA_THROUGH_OBSERVED_ONLY = frozenset({"sec_edgar"})
+# Sources whose data_through is NOT computed here. sec_edgar is catalogued by its own CI refresher
+# on D1 only (R726), so the catalogue copy this job reads is not that source's truth: it carried
+# filer-typo rows (2215-09-30) and old-rule forward rows, and a "MAX of ended periods" over it
+# stamped a forward row that crept with the calendar (R737). tools/stamp_source_data_through.py
+# stamps these sources from D1's own rows after every refresher run; this job leaves them alone.
+DATA_THROUGH_FROM_D1 = frozenset({"sec_edgar"})
 MAX_FILE_BYTES = 900_000  # per-file cap under wrangler's payload limit
 
 
@@ -167,27 +170,12 @@ def emit_sql(state_db: str, out_dir: str) -> tuple[list[str], dict[str, int]]:
                 "SELECT source_id, MAX(end_date) FROM series "
                 "WHERE end_date IS NOT NULL AND end_date < '2900-01-01' "
                 "GROUP BY source_id").fetchall()
-            # OBSERVED-ONLY SOURCES (R730, 2026-09-05). A filed financial period cannot end
-            # after today, yet sec_edgar's MAX carried filer typos below the 2900 sentinel
-            # (6016-06-30 on VICR, 3015-03-31 on PAMT, 2215-09-30 on CIK0001647705) and
-            # /v1/sources showed data_through 2215 - re-stamped at EVERY sync, because this
-            # job computes it from the catalogue copy it pulls from R2, which lags the curated
-            # one until refresh_r2_catalog.py runs (R250, Ahmed's action). For the sources named
-            # here the stamp is MAX(end_date) among periods that have already ended, read by
-            # primary-key range (series_id is '<source>:<key>'), so the copy's typo rows cannot
-            # reach the display. The set is explicit: boc's projections through 2095 and every
-            # other genuine horizon stay exactly as before.
-            import datetime as _dt
-            today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
-            fixed = []
-            for sid, mx in dt_rows:
-                if sid in DATA_THROUGH_OBSERVED_ONLY and mx is not None and str(mx) > today:
-                    mx = cconn.execute(
-                        "SELECT MAX(end_date) FROM series WHERE series_id >= ? AND series_id < ? "
-                        "AND end_date IS NOT NULL AND end_date <= ?",
-                        (sid + ":", sid + ";", today)).fetchone()[0]
-                fixed.append((sid, mx))
-            dt_rows = fixed
+            # SOURCES STAMPED FROM D1, NOT FROM THIS COPY (R730 -> R737, 2026-09-05). sec_edgar's
+            # rows in the copy are not its truth (its refresher writes D1 only), and any statistic
+            # over them - MAX(<2900) gave 2215-09-30; MAX(<= today) gave a forward row that would
+            # creep with the calendar - overwrote the correct stamp at every sync. Such sources are
+            # left out here entirely and stamped by tools/stamp_source_data_through.py from D1.
+            dt_rows = [(sid, mx) for sid, mx in dt_rows if sid not in DATA_THROUGH_FROM_D1]
         finally:
             cconn.close()
         stmts.append("CREATE TABLE IF NOT EXISTS source_data_through ("
