@@ -564,6 +564,12 @@ def respan(client, spec, apply=False, apply_d1=False):
         else:
             idents = sorted(s.split("sec_edgar:", 1)[1] for s, (sd, ed) in d1_all.items()
                             if (ed and ed > today) or (sd and sd < "1500-01-01"))
+        ctl_ident = CONTROL_ID.split("sec_edgar:", 1)[1]
+        if ctl_ident in idents:
+            # the external control must stay outside the write set; its span is unchanged under the
+            # rule (0 forward/typo rows measured 2026-09-05), so leaving it out costs nothing
+            idents = [i for i in idents if i != ctl_ident]
+            print(f"respan: {CONTROL_ID} left out of the candidate set - it is the external control", flush=True)
         print(f"respan: D1 holds {len(d1_all):,} sec_edgar rows; candidates ({spec}, end_date > {today} or start < 1500): {len(idents):,}", flush=True)
     elif spec.startswith("@"):
         idents = [ln.strip() for ln in open(spec[1:], encoding="utf-8") if ln.strip() and not ln.startswith("#")]
@@ -758,6 +764,9 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="rewrite even when the local fact count already matches "
                          "upstream (repairs an R2 copy that drifted from local)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="explicit no-write run (already the default without --apply); named in ARGV so the "
+                         "D1 cost guard can tell a free run from a charged one (R323)")
     ap.add_argument("--respan", default="",
                     help="recompute start/end coverage from the STORED parquets for these idents "
                          "(comma/space separated, or @file with one per line) and write ONLY the "
