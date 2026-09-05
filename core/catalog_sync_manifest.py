@@ -83,7 +83,25 @@ class Manifest:
         self.db.close()
 
     def count(self) -> int:
+        """Total rows recorded. A FULL SCAN — do not call it to ask whether the manifest is empty.
+
+        This file grows to the size of the catalogue: measured 2026-09-04 at **2.17 GB**, and a
+        `COUNT(*)` over it did not finish inside 120 s. Its only caller was
+        `sync_catalog_d1.py:489`, testing `manifest.count() == 0` to decide whether to print a
+        warning — and Python evaluates left to right, so on a full-source push (`skipped == 0`,
+        `before > 1000`, both true) that scan ran FIRST and stalled the whole job before a single
+        statement was emitted. The statcan push sat at 0.1 s of CPU and zero page faults for
+        fifteen minutes on exactly this.
+        """
         return self.db.execute("SELECT COUNT(*) FROM sent").fetchone()[0]
+
+    def is_empty(self) -> bool:
+        """Has anything ever been recorded? Answers in O(1) instead of scanning 2.17 GB.
+
+        `LIMIT 1` stops at the first row, so this is a seek rather than a count. It is what the
+        caller actually wanted: "is the manifest empty", not "how many rows are in it".
+        """
+        return self.db.execute("SELECT 1 FROM sent LIMIT 1").fetchone() is None
 
     def split(self, cols: list[str], rows: list[dict]) -> tuple[list[dict], int]:
         """(rows_to_send, n_skipped). A row is skipped only if its hash matches exactly."""

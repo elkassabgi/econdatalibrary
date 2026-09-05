@@ -486,7 +486,11 @@ def main(argv: list[str] | None = None) -> None:
               f"sync -> not sent; {len(rows):,} to send "
               f"({-(-len(rows) // FTS_DELETE_PER_STMT):,} FTS delete statement(s), each a "
               f"full scan of series_fts)")
-        if manifest.count() == 0 and skipped == 0 and before > 1000:
+        # is_empty(), NOT count() == 0, and the cheap operands FIRST. count() is a full scan of a
+        # 2.17 GB file; asked left-to-right on a full-source push (where skipped == 0 and
+        # before > 1000 are both true) it ran before either cheap test and stalled the statcan
+        # push for fifteen minutes at 0.1 s of CPU, before a single statement was emitted.
+        if skipped == 0 and before > 1000 and manifest.is_empty():
             print("  [diff] WARNING: the manifest is EMPTY, so nothing can be skipped and "
                   "this run would push the whole queue. Run --seed-manifest first "
                   "(see its help).")
