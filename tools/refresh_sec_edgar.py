@@ -288,7 +288,7 @@ def update_catalog(spans, apply_d1):
         assert_no_fts_predicate(stmts)
         print(f"  D1 pre-read: {len(existing):,} of {len(sids):,} ids already catalogued "
               f"(rows_read {rows_read:,}); {n_new_d1:,} new -> series + FTS INSERT; "
-              f"{n_title:,} title change(s) -> series only (the FTS title waits for the reindex)",
+              f"{n_title:,} title change(s) -> series only (FTS keeps the old title: no reindex tool exists)",
               flush=True)
         receipt = {"spans": [list(map(str, s)) for s in spans], "existing_on_d1": len(existing),
                    "statements": len(stmts), "new_on_d1": n_new_d1, "title_changed": n_title,
@@ -357,7 +357,7 @@ def d1_catalog_statements(spans, existing):
       * an existing id gets ONE `UPDATE series ... WHERE series_id=` (PK seek); when its title
         changed the same UPDATE carries the title. Its FTS row is NOT touched - the only way
         to replace an FTS row is a DELETE by id, which is the full scan this file refuses -
-        so a renamed company's FTS title goes stale until the periodic reindex.
+        so a renamed company's FTS title stays stale (no reindex tool exists yet; open item).
       * a new id gets `INSERT OR IGNORE INTO series` + `INSERT INTO series_fts`. No DELETE
         first: both rows land in one import and this branch runs only for ids the pre-read
         did not find, so the duplicate the old DELETE guarded against cannot arise here.
