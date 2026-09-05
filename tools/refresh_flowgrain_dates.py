@@ -143,11 +143,26 @@ def local_rows(src: str) -> dict:
 
 
 def _wrangler_json(args: list[str], timeout: int = 600):
-    r = subprocess.run([WRANGLER, "d1", "execute", D1_DB, "--remote", "--json", *args],
-                       cwd=WORKER_DIR, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=timeout)
-    if r.returncode != 0:
-        raise RuntimeError(f"wrangler rc={r.returncode}: {r.stderr[-1500:]} {r.stdout[-800:]}")
+    # Bounded retry on "Authentication error [code: 10000]". Seen twice on 2026-09-05 (09:30Z, 09:50Z),
+    # each time on the FIRST call of a run while another wrangler process (a reviewer agent) was
+    # also talking to D1, and `wrangler whoami` succeeded seconds later: the shape of two processes
+    # racing on the OAuth token refresh, not a revoked credential. A genuinely dead token fails
+    # all three times and still raises.
+    last = None
+    for attempt in range(3):
+        r = subprocess.run([WRANGLER, "d1", "execute", D1_DB, "--remote", "--json", *args],
+                           cwd=WORKER_DIR, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout)
+        if r.returncode == 0:
+            break
+        last = f"wrangler rc={r.returncode}: {r.stderr[-1500:]} {r.stdout[-800:]}"
+        if "code: 10000" in (r.stdout or "") + (r.stderr or "") and attempt < 2:
+            print(f"   wrangler auth error 10000 (attempt {attempt + 1}/3) — retrying in 10 s", flush=True)
+            time.sleep(10)
+            continue
+        raise RuntimeError(last)
+    else:
+        raise RuntimeError(last)
     lines = r.stdout.splitlines()
     start = next((i for i, ln in enumerate(lines) if ln.strip() == "["), None)
     if start is None:
@@ -191,7 +206,7 @@ def main() -> int:
     ap.add_argument("--source", required=True)
     ap.add_argument("--dry-run", action="store_true", help="measure and print the plan; write nothing")
     ap.add_argument("--apply", action="store_true", help="write local + D1, then verify")
-    ap.add_argument("--exclude", default="", help="comma-separated series_ids to leave alone (known store defects awaiting re-pull)")
+    ap.add_argument("--exclude", default="", help="comma-separated series_ids to leave alone for this run, in addition to tools/flowgrain_known_store_defects.txt")
     a = ap.parse_args()
     exclude = {s.strip() for s in a.exclude.split(",") if s.strip()}
     # R722 PLAUSIBILITY GATE. "Catalogue == store" is only a repair when the store is sane. On
@@ -208,6 +223,23 @@ def main() -> int:
     if a.dry_run == a.apply:
         raise SystemExit("pass exactly one of --dry-run / --apply")
     src = a.source
+    # KNOWN STORE DEFECTS, persisted (R724 rule 4): the tracked file is read on EVERY run and its ids
+    # are excluded and echoed, so the exclusion does not depend on the operator remembering a
+    # command-line flag. --exclude adds to it for one run.
+    known_path = os.path.join(ROOT, "tools", "flowgrain_known_store_defects.txt")
+    known = {}
+    if os.path.exists(known_path):
+        for ln in open(known_path, encoding="utf-8"):
+            ln = ln.rstrip("\n")
+            if not ln or ln.startswith("#"):
+                continue
+            sid, _, why = ln.partition("\t")
+            known[sid.strip()] = why.strip()
+    known_here = {s: w for s, w in known.items() if s.startswith(f"{src}:")}
+    exclude |= set(known_here)
+    print(f"known store defects for {src} (excluded from any write, {os.path.relpath(known_path, ROOT)}): {len(known_here)}")
+    for s, w in known_here.items():
+        print(f"   {s}  - {w[:110]}")
     cat = _load_cataloguer()
     if src not in cat.SOURCES:
         raise SystemExit(f"{src} is not a flow-grain PxWeb source ({cat.SOURCES}) — refusing")
@@ -262,6 +294,13 @@ def main() -> int:
     for e in excluded:
         print(f"   {e['series_id']}  local={e['local']} -> store={e['truth'][:2]}")
     missing_d1 = [s for s in ids if s not in d1]
+    # R110, the REVERSE direction: store tables that no catalogue row points at (hosted, invisible,
+    # undownloadable). Reported, never acted on here - cataloguing is a D1-headroom decision.
+    cat_keys = {sid.split(f"{src}:", 1)[1] for sid in ids if sid.startswith(f"{src}:")}
+    store_only = sorted(k for k in truth if k not in cat_keys)
+    store_only_rows = sum(truth[k][2] for k in store_only)
+    print(f"store prefixes with NO catalogue row (R110 reverse): {len(store_only):,} prefixes / {store_only_rows:,} rows"
+          + (f"  e.g. {store_only[:3]}" if store_only else ""))
     print(f"already exact — local: {exact_local:,}   D1: {exact_d1:,}")
     print(f"catalogued but no store rows (left alone): {len(nostore)}")
     for s in nostore[:10]:
@@ -282,7 +321,16 @@ def main() -> int:
         print(f"   {p['series_id'].split(':')[-1]:16s} local={p['local']} d1={p['d1']} -> truth={p['truth'][:2]}")
 
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    try:
+        git_hash = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=30).stdout.strip()
+        git_dirty = bool(subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--", os.path.relpath(__file__, ROOT)],
+                                        capture_output=True, text=True, timeout=30).stdout.strip())
+    except Exception:                                          # noqa: BLE001
+        git_hash, git_dirty = None, None
     receipt = {"source": src, "mode": "apply" if a.apply else "dry-run", "utc": stamp,
+               "argv": sys.argv, "tool_commit": git_hash, "tool_uncommitted_changes": git_dirty,
+               "exclude_requested": sorted(exclude), "known_store_defects": known_here,
+               "store_only_prefixes": len(store_only), "store_only_rows": store_only_rows,
                "backend": config.BACKEND, "store_files": files, "tables_in_store": len(truth),
                "local_rows": len(loc), "d1_rows": len(d1), "d1_rows_read_reads": rr,
                "no_store_rows": nostore, "missing_in_d1": missing_d1, "by_kind": by_kind, "plan": plan,
