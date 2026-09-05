@@ -80,11 +80,17 @@ jobs:
 
       - name: Install the pinned wrangler (the D1 span update ran on whatever npx resolved)
         # From 2026-08-25 to 2026-09-04 every run printed "D1 span update FAILED at 0: remove the
-        # --remote flag from your wrangler command" and exited 0: the runner resolved npx wrangler
-        # 4.129.0 while api/worker/package.json pins 3.114.17, which CI never installed. 181
-        # companies moved on R2 with no catalogue span and no new-registrant row (ledger R726).
-        # The refresher now calls api/worker/node_modules/.bin/wrangler and fails the step when
-        # data moved but zero D1 statements landed.
+        # --remote flag from your wrangler command" and exited 0, and 181 companies moved on R2
+        # with no catalogue span and no new-registrant row (ledger R726). That printed line is NOT
+        # the error: it is wrangler's informational banner from stdout, and the tool showed the
+        # last 300 characters of stderr+stdout, so the real error at the end of stderr was never
+        # seen (R733). The version mismatch was real - the runner resolved npx wrangler 4.129.0
+        # while api/worker/package.json pins 3.114.17 - but the 2026-09-05 11:25Z run failed
+        # identically WITH the pinned 3.114.17, so the mismatch was not the cause; the per-company
+        # series_fts DELETE added on 2026-08-24, a full scan that times out on D1 (7429), is the
+        # candidate the tool no longer emits (R730). The refresher calls
+        # api/worker/node_modules/.bin/wrangler, prints both streams separately, and fails the
+        # step when data moved but the D1 batch or the freshness stamp did not land.
         working-directory: api/worker
         run: npm ci --ignore-scripts --no-audit --no-fund
 

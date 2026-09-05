@@ -204,21 +204,34 @@ def update_catalog(spans, apply_d1):
         # BEGIN IMMEDIATE with retries: the crawlers hold this database for hours and a
         # deferred transaction only discovers the lock at COMMIT, after every statement has
         # run (the respan needed three attempts on 2026-09-05).
+        local_ok = True
         for attempt in range(12):
             try:
                 con.execute("BEGIN IMMEDIATE")
                 break
             except sqlite3.OperationalError as e:
                 if "locked" not in str(e).lower() or attempt == 11:
-                    raise
+                    local_ok = False
+                    break
                 time.sleep(10)
+        if not local_ok:
+            # The local catalogue is the curated copy, not what users read; a lock here must not
+            # abort the D1 half after the R2 objects were already written (that is the hosted-but-
+            # unlisted failure again). Say so loudly, leave the local rows for a --respan re-run.
+            con.close()
+            print(f"  LOCAL CATALOGUE NOT UPDATED: catalog.db stayed locked through 12 attempts - "
+                  f"{len(spans)} span(s) still to apply locally (re-run --respan for these idents without --d1); "
+                  f"continuing to D1", flush=True)
+            spans_local = []
+        else:
+            spans_local = spans
         # UPSERT, not UPDATE. An UPDATE-only path silently does nothing for a company
         # that has no catalog row yet — and a NEW registrant filing for the first time
         # is exactly that case. Two such files (CIK0002084272, SMJF) were written to
         # R2 by earlier runs of this very tool and left uncatalogued: data hosted,
         # series invisible, undownloadable. That is the "merged but not served" failure
         # this repo keeps rediscovering, reintroduced here by me.
-        for ident, lo, hi, title, cik in spans:
+        for ident, lo, hi, title, cik in spans_local:
             sid = f"sec_edgar:{ident}"
             cur = con.execute("SELECT title FROM series WHERE series_id=?", (sid,))
             row = cur.fetchone()
@@ -246,8 +259,16 @@ def update_catalog(spans, apply_d1):
                 con.execute("INSERT INTO series_fts (series_id, title, geography) "
                             "VALUES (?,?,?)", (sid, title, "US"))
                 n_new += 1
-        con.commit()
-        con.close()
+        if spans_local:
+            try:
+                con.commit()
+            except sqlite3.OperationalError as e:
+                # rollback-journal COMMIT needs the EXCLUSIVE lock (R734): a long reader wins
+                con.rollback()
+                n_local = n_new = 0
+                print(f"  LOCAL CATALOGUE NOT UPDATED: COMMIT failed ({e}) - rolled back; {len(spans)} span(s) "
+                      f"still to apply locally (re-run --respan for these idents without --d1); continuing to D1", flush=True)
+            con.close()
     if n_new:
         print(f"   catalogued {n_new:,} NEW company/companies not previously listed",
               flush=True)
@@ -526,11 +547,15 @@ def stamp_freshness_d1(status: str, when_utc: str) -> None:
         cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True,
         encoding="utf-8", errors="replace", env=_wrangler_env())
     if r.returncode != 0:
-        msg = (r.stderr or "") + (r.stdout or "") or "(no output)"
         # Fatal to the caller (R730 follow-up d): the 2026-09-04 failure was printed as a
         # truncated log path and the run stayed green while /v1/sources kept showing
         # last_updated 2026-09-03. A stamp that did not land is a red run.
-        print(f"  freshness stamp FAILED: {msg[-600:]}", flush=True)
+        # The two streams are shown SEPARATELY, stderr first (R733): `(stderr + stdout)[-300:]`
+        # ended every failed CI run's message with wrangler's informational banner "To execute
+        # on your local development database, remove the --remote flag" from stdout, and the
+        # actual error at the end of stderr was never seen - for eleven days.
+        print(f"  freshness stamp FAILED (rc={r.returncode}) stderr: {(r.stderr or '')[-700:]!r} | "
+              f"stdout tail: {(r.stdout or '')[-300:]!r}", flush=True)
         return False
     print(f"  freshness stamped: source_state sec_edgar {status} @ {when_utc}", flush=True)
     return True
@@ -631,7 +656,7 @@ def _d1_sec_edgar_rows():
 CONTROL_ID = "sec_edgar:AAPL"     # 0 forward/typo rows measured 2026-09-05: its span must not move
 
 
-def respan(client, spec, apply=False, apply_d1=False):
+def respan(client, spec, apply=False, apply_d1=False, skip_local=False):
     """Recompute start/end coverage for named idents from the STORED parquets and write only the
     catalogue dates. Built for the 2026-09-05 census: 11 companies advertised end_dates of
     2201..6016 (filer typos copied by the old max(obs_date) span) and 130 more advertised
@@ -730,6 +755,16 @@ def respan(client, spec, apply=False, apply_d1=False):
     # local, by PK, BEGIN IMMEDIATE (two crawlers write this db)
     todo_l = [(p["lo"], p["hi"], p["sid"]) for p in plan if p["need_local"]]
     n_local = 0
+    if todo_l and skip_local:
+        # catalog.db is in rollback-journal mode ('delete'): a COMMIT needs the EXCLUSIVE lock
+        # and waits for every reader, while its PENDING lock blocks every NEW reader. On
+        # 2026-09-05 the 4,944-row local UPDATE sat 25 minutes in that state (a pytest full
+        # scan of the catalogue held SHARED), freezing cbs_nl's writes behind it (R734). The
+        # served state is D1; the local rows are re-run later with the same @file and no --d1.
+        print(f"  local: SKIPPED by --skip-local ({len(todo_l)} row(s) still to apply locally - re-run this "
+              f"--respan without --d1 when the crawlers and no long reader hold the catalogue)", flush=True)
+        receipt["local_skipped"] = len(todo_l)
+        todo_l = []
     if todo_l and os.path.exists(db):
         for attempt in range(12):
             con = sqlite3.connect(db, timeout=120, isolation_level=None)
@@ -854,6 +889,9 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="rewrite even when the local fact count already matches "
                          "upstream (repairs an R2 copy that drifted from local)")
+    ap.add_argument("--skip-local", action="store_true",
+                    help="--respan only: write D1 but leave the local catalog.db rows for a later run without --d1 "
+                         "(its rollback-journal COMMIT can block the crawlers for minutes behind a long reader, R734)")
     ap.add_argument("--dry-run", action="store_true",
                     help="explicit no-write run (already the default without --apply); named in ARGV so the "
                          "D1 cost guard can tell a free run from a charged one (R323)")
@@ -870,7 +908,7 @@ def main():
         return audit(r2_util.client())
     if a.respan:
         from core import r2_util
-        return respan(r2_util.client(), a.respan, apply=a.apply, apply_d1=a.d1)
+        return respan(r2_util.client(), a.respan, apply=a.apply, apply_d1=a.d1, skip_local=a.skip_local)
     if a.ciks:
         # Targeted repair. The daily-index path answers "who filed recently"; it
         # cannot reach a company whose data fell behind for some OTHER reason. An
