@@ -470,7 +470,21 @@ jobs:
           # The two scans are deliberate and budgeted; without this the d1_cost_guard's daily
           # ceiling could refuse them on a day that already spent its allowance elsewhere.
           ALLOW_D1_SCAN_BUDGET: "2"
-        run: python tools/audit_d1_source_counts.py --remote-truth
+        # INSTALL WRANGLER IF IT IS NOT ALREADY HERE. The only `npm ci` in this workflow lives
+        # inside "Sync freshness to D1", which is gated on `steps.push_state.outcome == 'success'`
+        # — so on any morning the state push fails, wrangler is absent and this check cannot run.
+        # That is exactly the morning it is most worth running. The tool exits 2 ("could not look")
+        # rather than 1 ("mismatch") in that case, which is honest, but a check that goes blind
+        # whenever something else breaks is a check with the wrong blind spot.
+        #
+        # Conditional so the healthy path costs nothing: if the earlier step already installed it,
+        # this is a single `test -x`.
+        run: |
+          if [ ! -x api/worker/node_modules/.bin/wrangler ]; then
+            echo "wrangler not present (the state-push step did not run) — installing"
+            npm ci --prefix api/worker --no-audit --no-fund
+          fi
+          python tools/audit_d1_source_counts.py --remote-truth
 
       - name: Daily digest email (morning report, like hfdatalibrary's)
         # Runs even when earlier steps failed so a broken morning is REPORTED,
