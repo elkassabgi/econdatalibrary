@@ -22,6 +22,16 @@ is not "correct": the store itself disagrees with the publisher's own title year
 UTA06105 where the publisher's Ár axis reaches 1703; MAN05301 title/table mismatch; MAN02007
 store 2021..2100 n=35). Those are a separate full re-pull + title check, not a date edit.
 
+R722 (2026-09-05, the after-review of the first apply): "equal the store" is NOT a repair when
+the store row is itself a fabrication. The first apply wrote MAN02007 = 2021..2100 into local
+catalog.db and D1 — the store's 29 rows dated 2100-12-31 are a wrong-axis parse (the real year
+is inside the key, `Ár=1998`) and the publisher's axis is 1998..2026 — so the batch removed
+three fabricated dates and ADDED one on the discovery surface. Reverted by hand the same
+morning (two PK writes, live metadata 1998-12-31..2026-12-31 re-read). The gate below now
+refuses any NEW end_date that jumps past today+400 days when the OLD value was inside, refuses
+a new start_date before 1500, and `--exclude` names known store defects explicitly. A refused
+row is a RE-PULL item, printed and receipted, never written.
+
 UNFREEZE HAZARD (reviewer, 2026-09-05). CI's catalogue sync (`CATALOG_SYNC_ENABLED`, frozen,
 R542) reads the R2 coherence copy `_aqueduct/catalog.db.zst` (LastModified 2026-08-27 15:30Z),
 which still carries the old dates. Refresh that copy (`tools/refresh_r2_catalog.py`, Ahmed —
@@ -181,7 +191,19 @@ def main() -> int:
     ap.add_argument("--source", required=True)
     ap.add_argument("--dry-run", action="store_true", help="measure and print the plan; write nothing")
     ap.add_argument("--apply", action="store_true", help="write local + D1, then verify")
+    ap.add_argument("--exclude", default="", help="comma-separated series_ids to leave alone (known store defects awaiting re-pull)")
     a = ap.parse_args()
+    exclude = {s.strip() for s in a.exclude.split(",") if s.strip()}
+    # R722 PLAUSIBILITY GATE. "Catalogue == store" is only a repair when the store is sane. On
+    # hagstofa the first apply moved MAN02007 from 1998..2026 to 2021..2100 because its store
+    # rows carry a wrong-axis fabrication (29 rows dated 2100-12-31 with the real year inside
+    # the key, `Ar=1998`); the publisher's axis is 1998..2026. Promoting that to the discovery
+    # surface ADDED a fabricated date while removing three. So: a NEW end_date more than 400 days
+    # past today, when the OLD one was not, is refused and reported — real projections (bfs 2150,
+    # un_wpp 2101, hagstofa MAN09010 2074) are already catalogued that way and stay untouched
+    # because their OLD value is already far; only a JUMP into the far future is suspicious.
+    # A new start_date before 1500 is refused unconditionally (store bound, R320/R322).
+    far_iso = (dt.date.today() + dt.timedelta(days=400)).isoformat()
     # Exactly one mode, spelled out in ARGV (R323: a run's ARGV, not its printout, says what it did).
     if a.dry_run == a.apply:
         raise SystemExit("pass exactly one of --dry-run / --apply")
@@ -207,6 +229,7 @@ def main() -> int:
         raise SystemExit("D1 read returned 0 rows for a non-empty served id list — instrument broken, refusing to plan")
 
     plan, nostore, exact_local, exact_d1 = [], [], 0, 0
+    excluded, implausible = [], []
     for sid in ids:
         key = sid.split(f"{src}:", 1)[1] if sid.startswith(f"{src}:") else sid
         if key not in truth:
@@ -220,9 +243,24 @@ def main() -> int:
         exact_local += (not need_local)
         exact_d1 += (sid in d1 and not need_d1)
         if need_local or need_d1:
-            plan.append({"series_id": sid, "truth": [mn, mx, n], "local": [lsd, led],
-                         "d1": [dsd, ded] if sid in d1 else None,
-                         "need_local": need_local, "need_d1": need_d1})
+            entry = {"series_id": sid, "truth": [mn, mx, n], "local": [lsd, led],
+                     "d1": [dsd, ded] if sid in d1 else None,
+                     "need_local": need_local, "need_d1": need_d1}
+            if sid in exclude:
+                excluded.append(entry)
+                continue
+            jump_far = (mx > far_iso) and not ((led or "") > far_iso)
+            if jump_far or mn < "1500-01-01":
+                entry["why"] = "new end_date jumps past today+400d" if jump_far else "new start_date before 1500"
+                implausible.append(entry)
+                continue
+            plan.append(entry)
+    print(f"R722 gate — REFUSED as implausible (store defect, needs a re-pull, NOT written): {len(implausible)}")
+    for e in implausible:
+        print(f"   {e['series_id']}  local={e['local']} -> store={e['truth'][:2]}  [{e['why']}]")
+    print(f"excluded by --exclude: {len(excluded)}")
+    for e in excluded:
+        print(f"   {e['series_id']}  local={e['local']} -> store={e['truth'][:2]}")
     missing_d1 = [s for s in ids if s not in d1]
     print(f"already exact — local: {exact_local:,}   D1: {exact_d1:,}")
     print(f"catalogued but no store rows (left alone): {len(nostore)}")
@@ -247,7 +285,8 @@ def main() -> int:
     receipt = {"source": src, "mode": "apply" if a.apply else "dry-run", "utc": stamp,
                "backend": config.BACKEND, "store_files": files, "tables_in_store": len(truth),
                "local_rows": len(loc), "d1_rows": len(d1), "d1_rows_read_reads": rr,
-               "no_store_rows": nostore, "missing_in_d1": missing_d1, "by_kind": by_kind, "plan": plan}
+               "no_store_rows": nostore, "missing_in_d1": missing_d1, "by_kind": by_kind, "plan": plan,
+               "far_iso": far_iso, "implausible_refused": implausible, "excluded": excluded}
     rpath = os.path.join(RECEIPT_DIR, f"refresh_flowgrain_dates_{src}_{stamp}.json")
 
     if not a.apply:
