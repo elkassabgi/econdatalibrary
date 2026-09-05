@@ -656,7 +656,7 @@ def _d1_sec_edgar_rows():
 CONTROL_ID = "sec_edgar:AAPL"     # 0 forward/typo rows measured 2026-09-05: its span must not move
 
 
-def respan(client, spec, apply=False, apply_d1=False, skip_local=False):
+def respan(client, spec, apply=False, apply_d1=False, skip_local=False, local_chunk=400):
     """Recompute start/end coverage for named idents from the STORED parquets and write only the
     catalogue dates. Built for the 2026-09-05 census: 11 companies advertised end_dates of
     2201..6016 (filer typos copied by the old max(obs_date) span) and 130 more advertised
@@ -766,26 +766,43 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False):
         receipt["local_skipped"] = len(todo_l)
         todo_l = []
     if todo_l and os.path.exists(db):
-        for attempt in range(12):
-            con = sqlite3.connect(db, timeout=120, isolation_level=None)
-            con.execute("PRAGMA busy_timeout=120000")
-            try:
-                con.execute("BEGIN IMMEDIATE")
-                cur = con.executemany("UPDATE series SET start_date=?, end_date=? WHERE series_id=?", todo_l)
-                n_local = cur.rowcount
-                con.execute("COMMIT")
-                con.close()
-                break
-            except sqlite3.OperationalError as e:
-                print(f"   local attempt {attempt + 1}: {e} - retrying in 20 s", flush=True)
+        # CHUNKED TRANSACTIONS (R734 rule 2). catalog.db is journal_mode=delete: one transaction of
+        # 4,944 UPDATEs reached COMMIT, waited for a long reader to finish, and meanwhile its PENDING
+        # lock froze the crawlers' writes and every new reader for 25 minutes. A few hundred rows per
+        # IMMEDIATE transaction holds the locks for well under a second each; a long reader delays
+        # one chunk, not the fleet. Each chunk keeps the 12-attempt retry.
+        chunk = max(1, int(local_chunk))
+        committed = 0
+        for j in range(0, len(todo_l), chunk):
+            part = todo_l[j:j + chunk]
+            for attempt in range(12):
+                con = sqlite3.connect(db, timeout=120, isolation_level=None)
+                con.execute("PRAGMA busy_timeout=120000")
                 try:
-                    con.execute("ROLLBACK")
-                except Exception:              # noqa: BLE001
-                    pass
-                con.close()
-                time.sleep(20)
-        else:
-            raise SystemExit("local UPDATE never committed - D1 NOT touched")
+                    con.execute("BEGIN IMMEDIATE")
+                    cur = con.executemany("UPDATE series SET start_date=?, end_date=? WHERE series_id=?", part)
+                    got = cur.rowcount
+                    con.execute("COMMIT")
+                    con.close()
+                    n_local += got
+                    committed += 1
+                    break
+                except sqlite3.OperationalError as e:
+                    print(f"   local chunk {j // chunk + 1} attempt {attempt + 1}: {e} - retrying in 20 s", flush=True)
+                    try:
+                        con.execute("ROLLBACK")
+                    except Exception:              # noqa: BLE001
+                        pass
+                    con.close()
+                    time.sleep(20)
+            else:
+                receipt["local_updated"] = n_local
+                receipt["local_chunks_committed"] = committed
+                _dump_receipt = json.dump(receipt, open(rpath, "w", encoding="utf-8"), indent=1, default=str)  # noqa: F841
+                raise SystemExit(f"local UPDATE chunk {j // chunk + 1} never committed after {n_local} row(s) landed - "
+                                 f"the rest of the local half is pending; D1 NOT touched")
+            if committed % 5 == 0 or j + chunk >= len(todo_l):
+                print(f"   local: {n_local:,}/{len(todo_l):,} row(s) committed in {committed} chunk(s) of {chunk}", flush=True)
     print(f"  local: UPDATE applied to {n_local} row(s) (planned {len(todo_l)})")
     receipt["local_updated"] = n_local
 
@@ -890,6 +907,9 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="rewrite even when the local fact count already matches "
                          "upstream (repairs an R2 copy that drifted from local)")
+    ap.add_argument("--local-chunk", type=int, default=400,
+                    help="--respan only: rows per local IMMEDIATE transaction (default 400; R734 - one big COMMIT held "
+                         "the crawlers off the catalogue for 25 minutes behind a long reader)")
     ap.add_argument("--skip-local", action="store_true",
                     help="--respan only: write D1 but leave the local catalog.db rows for a later run without --d1 "
                          "(its rollback-journal COMMIT can block the crawlers for minutes behind a long reader, R734)")
@@ -909,7 +929,8 @@ def main():
         return audit(r2_util.client())
     if a.respan:
         from core import r2_util
-        return respan(r2_util.client(), a.respan, apply=a.apply, apply_d1=a.d1, skip_local=a.skip_local)
+        return respan(r2_util.client(), a.respan, apply=a.apply, apply_d1=a.d1, skip_local=a.skip_local,
+                      local_chunk=a.local_chunk)
     if a.ciks:
         # Targeted repair. The daily-index path answers "who filed recently"; it
         # cannot reach a company whose data fell behind for some OTHER reason. An
