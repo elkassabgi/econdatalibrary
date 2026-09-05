@@ -4429,11 +4429,20 @@ sources:
   # Routed to the workstation per the owner's standing rule: a database the cloud
   # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
   run_location: local
-  # 20 curated catalogue ids of a ~5.3B-series source (D1-headroom decision, task #29/#45).
-  # MEASURED 2026-08-31 (grain-sweep discovery): a run touching only uncatalogued vectors is
-  # COVERAGE, not a coherence failure - the R497 subset note applies. Adding this key does
-  # NOT change the source count (R347: no EXPECTED_SOURCE_COUNT bump).
-  catalog_scope: subset
+  # catalog_scope RETIRED 2026-09-04: it was `subset` for the 20 curated catalogue ids this
+  # source used to carry (D1-headroom decision, task #29/#45), and the 2026-08-31 grain sweep
+  # relied on it to treat a run touching only uncatalogued vectors as COVERAGE rather than a
+  # coherence failure (R497). That is now false: the catalogue push landed all 466,341
+  # table-grain ids in D1, so every catalogued unit is served and the exception has nothing left
+  # to excuse. Leaving it declared would let a genuine grain or key-form mismatch be waved
+  # through as coverage - the R359 class the demote exists to catch. Removing this key does NOT
+  # change the source count (R347: no EXPECTED_SOURCE_COUNT bump), exactly as adding it did not.
+  #
+  # STILL CONTRADICTORY, deliberately left for Ahmed: `live: false` below, while
+  # api/worker/src/util.ts:344 lists statcan in supportedSources and /v1/sources returns it with
+  # freshness.status "ok". `live` gates HEALTH/SLA judgement (updater/health.py:593,615,658), so
+  # flipping it decides what the daily digest goes red for - a policy call, not a bookkeeping one.
+  catalog_scope: full
   live: false
   scripts:
   - jobs/ingest_statcan.py
