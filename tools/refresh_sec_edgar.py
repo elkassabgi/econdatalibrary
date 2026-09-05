@@ -150,6 +150,35 @@ def parse_companyfacts(data):
     return metric, odate, vals, vint
 
 
+def coverage_span(odate, vint):
+    """(start, end) of REPORTED coverage for a company's facts.
+
+    end = the latest period end among facts whose period had ENDED by the time the fact was
+    filed (end <= filed). A reported period cannot end after its own filing, so this excludes,
+    without any date threshold, both filer typos (VICR carried a fact dated 6016-06-30, PAMT
+    3015-03-31, eleven companies 2201..2215) and forward-looking XBRL contexts (lease-maturity
+    and remaining-performance-obligation schedules legitimately end 2027..2050 — NUE 2027-12-31,
+    CIK0001518171 2053-03-31). Measured 2026-09-05: CIK0000005656 2201-08-31 -> 2017-04-11,
+    ORCL 2199-12-31 -> 2026-03-05, AAPL unchanged (0 forward rows). The facts themselves stay
+    exactly as filed — only the catalogue's coverage changes. Before this rule the span was
+    max(obs_date), which copied the typo into series.end_date and from there into
+    /v1/series/{id}.metadata.json (ledger: the 19-row impossible-date census, 11 sec_edgar).
+    Falls back to max(obs_date) only when no fact carries a filed date at all.
+    """
+    if not odate:
+        return None, None
+    lo = min(odate)
+    reported = [e for e, f in zip(odate, vint) if f is not None and e <= f]
+    if reported:
+        return lo, max(reported)
+    # No fact has a filed date at or after its period end (measured 2026-09-05: never happens
+    # in the 161 companies read - every row carries vintage_date). Fall back to the latest
+    # period that has at least ENDED, never straight to max(obs_date), which is the typo.
+    today = dt.date.today()
+    ended = [e for e in odate if e <= today]
+    return lo, (max(ended) if ended else max(odate))
+
+
 def update_catalog(spans, apply_d1):
     """Move series.start_date/end_date with the data.
 
@@ -242,10 +271,10 @@ def update_catalog(spans, apply_d1):
         for j in range(0, len(stmts), 400):
             io.open(tmp, "w", encoding="utf-8").write("\n".join(stmts[j:j + 400]))
             r = subprocess.run(
-                ["npx", "wrangler", "d1", "execute", "econ-catalog", "--remote",
+                [_wrangler_cmd(), "d1", "execute", "econ-catalog", "--remote",
                  "--file", tmp, "-y"],
                 cwd=wdir, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", shell=(os.name == "nt"))
+                encoding="utf-8", errors="replace", env=_wrangler_env())
             if r.returncode != 0:
                 msg = (r.stderr or "") + (r.stdout or "") or "(no output)"
                 print(f"  D1 span update FAILED at {j}: {msg[-300:]}", flush=True)
@@ -305,7 +334,7 @@ def audit(client):
     return 1 if (missing or orphan) else 0
 
 
-def prior_facts(client, path):
+def prior_facts(client, path, prefer_r2=False):
     """What the store already holds for this company — mirror first, else R2. None if new.
 
     READ R2, NOT JUST THE LOCAL FILE. A CI runner has no local store, so a local-only lookup
@@ -314,16 +343,27 @@ def prior_facts(client, path):
     environment.
     """
     import pyarrow.parquet as pq
-    if os.path.exists(path):
+    # prefer_r2: read the SERVED object first. The local mirror can be months behind R2 (ETD:
+    # mirror 20,451 rows to 2026-04-22, served 21,003 to 2026-08-27 on 2026-09-05) and a span
+    # or a merge computed from it describes a store nobody is served from (R383, R726). The
+    # daily merge keeps mirror-first because its payload is the company's FULL history and the
+    # union cannot lose served rows; anything that only READS the store must ask R2.
+    t = None
+    key = f"clean_grouped/sec_edgar/{os.path.basename(path)}"
+    if prefer_r2 and client is not None:
+        try:
+            t = pq.read_table(io.BytesIO(client.get_object(Bucket=BUCKET, Key=key)["Body"].read()))
+        except Exception:                                     # noqa: BLE001  (absent on R2)
+            t = None
+    if t is None and os.path.exists(path):
         t = pq.read_table(path)
-    elif client is not None:
-        key = f"clean_grouped/sec_edgar/{os.path.basename(path)}"
+    elif t is None and client is not None:
         try:
             t = pq.read_table(io.BytesIO(
                 client.get_object(Bucket=BUCKET, Key=key)["Body"].read()))
         except Exception:                                     # noqa: BLE001  (absent = new)
             return None
-    else:
+    elif t is None:
         return None
     return {c: t.column(c).to_pylist() for c in ("metric", "obs_date", "value", "vintage_date")}
 
@@ -398,15 +438,305 @@ def stamp_freshness_d1(status: str, when_utc: str) -> None:
            f"ON CONFLICT(source_id) DO UPDATE SET status='{status}', cadence='daily', "
            f"last_attempt_utc='{when_utc}'{succ_update};")
     r = subprocess.run(
-        ["npx", "wrangler", "d1", "execute", "econ-catalog", "--remote",
+        [_wrangler_cmd(), "d1", "execute", "econ-catalog", "--remote",
          "--command", sql, "-y"],
         cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True,
-        encoding="utf-8", errors="replace", shell=(os.name == "nt"))
+        encoding="utf-8", errors="replace", env=_wrangler_env())
     if r.returncode != 0:
         msg = (r.stderr or "") + (r.stdout or "") or "(no output)"
         print(f"  freshness stamp FAILED (non-fatal): {msg[-300:]}", flush=True)
     else:
         print(f"  freshness stamped: source_state sec_edgar {status} @ {when_utc}", flush=True)
+
+
+def _wrangler_cmd():
+    """The version-pinned local wrangler (never `npx wrangler`, which resolves whatever is on
+    PATH — R218/R220 class)."""
+    exe = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler.cmd")
+    if not os.path.exists(exe):
+        exe = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler")
+    return exe
+
+
+_WRANGLER_ENV = {"env": None, "mode": "inherited"}
+
+
+def _wrangler_env():
+    """The environment wrangler runs with. Inherited by default (on CI the workflow's
+    CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets are the credential). If a D1 call answers 7403 -
+    'not authorized to access this service' - the inherited token lacks D1 rights (locally,
+    core.r2_util loads .env, whose CF token has R2 and Pages rights only) and the fallback is
+    the machine's wrangler OAuth login: the same CLOUDFLARE_* variables removed. Decided once,
+    printed once."""
+    if _WRANGLER_ENV["env"] is None:
+        _WRANGLER_ENV["env"] = dict(os.environ)
+    return _WRANGLER_ENV["env"]
+
+
+def _wrangler_env_fallback():
+    stripped = {k: v for k, v in os.environ.items() if not k.startswith("CLOUDFLARE_")}
+    _WRANGLER_ENV["env"] = stripped
+    _WRANGLER_ENV["mode"] = "oauth (CLOUDFLARE_* stripped after 7403)"
+    print(f"   wrangler auth: {_WRANGLER_ENV['mode']}", flush=True)
+
+
+def _d1_json(args, timeout=600):
+    """Run `wrangler d1 execute econ-catalog --remote --json <args>` and parse the JSON array.
+    Retries a transient 'Authentication error [code: 10000]' twice (an OAuth-refresh race between
+    two wrangler processes, seen 2026-09-05; a dead token fails all three times and raises);
+    on 7403 switches once to the OAuth environment (see _wrangler_env)."""
+    import subprocess
+    last = None
+    for attempt in range(4):
+        r = subprocess.run([_wrangler_cmd(), "d1", "execute", "econ-catalog", "--remote", "--json", *args],
+                           cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout, env=_wrangler_env())
+        if r.returncode != 0 and "code: 7403" in (r.stdout or "") + (r.stderr or "") and _WRANGLER_ENV["mode"] == "inherited":
+            _wrangler_env_fallback()
+            continue
+        if r.returncode == 0:
+            lines = r.stdout.splitlines()
+            start = next((i for i, ln in enumerate(lines) if ln.strip() == "["), None)
+            if start is None:
+                raise RuntimeError(f"no JSON array in wrangler output: {r.stdout[-600:]}")
+            return json.loads("\n".join(lines[start:]))
+        last = f"wrangler rc={r.returncode}: {(r.stderr or '')[-800:]} {(r.stdout or '')[-800:]}"
+        if "code: 10000" in (r.stdout or "") + (r.stderr or "") and attempt < 2:
+            print(f"   wrangler auth error 10000 (attempt {attempt + 1}/3) - retrying in 10 s", flush=True)
+            time.sleep(10)
+            continue
+        break
+    raise RuntimeError(last)
+
+
+def _d1_dates(sids):
+    """{series_id: (start, end)} from D1 by primary key, in IN-lists of 40 (an index seek per id;
+    `--file` returns only a summary, so reads go through --command)."""
+    out, rows_read = {}, 0
+    for i in range(0, len(sids), 40):
+        chunk = sids[i:i + 40]
+        sql = ("SELECT series_id, start_date, end_date FROM series WHERE series_id IN ("
+               + ",".join("'" + s.replace("'", "''") + "'" for s in chunk) + ")")
+        for entry in _d1_json(["--command", sql]):
+            rows_read += int((entry.get("meta") or {}).get("rows_read") or 0)
+            for row in entry.get("results") or []:
+                if "series_id" in row:
+                    out[row["series_id"]] = (row.get("start_date"), row.get("end_date"))
+    return out, rows_read
+
+
+def _d1_sec_edgar_rows():
+    """{series_id: (start, end)} for EVERY sec_edgar row on D1, by primary-key RANGE
+    (`>= 'sec_edgar:' AND < 'sec_edgar;'`) - an index range read, measured 17,438 rows / 35 ms,
+    never `WHERE source_id=` (R721/R723). D1, not the local catalogue, is the population: the CI
+    refresher writes D1 only (no catalog.db on the runner), so D1 holds rows local never saw
+    (17,437 vs 17,276 on 2026-09-05, R726)."""
+    out = {}
+    res = _d1_json(["--command", "SELECT series_id, start_date, end_date FROM series "
+                                  "WHERE series_id >= 'sec_edgar:' AND series_id < 'sec_edgar;'"])
+    for entry in res:
+        for row in entry.get("results") or []:
+            if "series_id" in row:
+                out[row["series_id"]] = (row.get("start_date"), row.get("end_date"))
+    return out
+
+
+CONTROL_ID = "sec_edgar:AAPL"     # 0 forward/typo rows measured 2026-09-05: its span must not move
+
+
+def respan(client, spec, apply=False, apply_d1=False):
+    """Recompute start/end coverage for named idents from the STORED parquets and write only the
+    catalogue dates. Built for the 2026-09-05 census: 11 companies advertised end_dates of
+    2201..6016 (filer typos copied by the old max(obs_date) span) and 130 more advertised
+    forward-looking context ends (2027..2113) as coverage. Nothing but series.start_date /
+    series.end_date changes: no facts, no CSV, no FTS statement (an FTS delete by id is a full
+    scan of the 23.8M-row index, R492), no insert, no delete."""
+    import sqlite3
+    import urllib.request
+    d1_all = None
+    if spec in ("d1-scan", "all"):
+        # Candidates from D1, the served population, not from a snapshot of the local catalogue
+        # (R726: the 08-16 snapshot missed AERT, CRTD, PFIS, refreshed by CI in between).
+        d1_all = _d1_sec_edgar_rows()
+        today = dt.date.today().isoformat()
+        if spec == "all":
+            idents = sorted(s.split("sec_edgar:", 1)[1] for s in d1_all)
+        else:
+            idents = sorted(s.split("sec_edgar:", 1)[1] for s, (sd, ed) in d1_all.items()
+                            if (ed and ed > today) or (sd and sd < "1500-01-01"))
+        print(f"respan: D1 holds {len(d1_all):,} sec_edgar rows; candidates ({spec}, end_date > {today} or start < 1500): {len(idents):,}", flush=True)
+    elif spec.startswith("@"):
+        idents = [ln.strip() for ln in open(spec[1:], encoding="utf-8") if ln.strip() and not ln.startswith("#")]
+    else:
+        idents = [s for s in re.split(r"[,\s]+", spec) if s]
+    idents = [s.split("sec_edgar:", 1)[1] if s.startswith("sec_edgar:") else s for s in idents]
+    sids = [f"sec_edgar:{i}" for i in idents]
+    if CONTROL_ID in sids:
+        raise SystemExit(f"{CONTROL_ID} is the external control and is in the candidate set - pick another control")
+    print(f"respan: {len(idents):,} ident(s)  mode={'APPLY' if apply else 'DRY-RUN'}  d1={'yes' if apply_d1 else 'no'}  store read: R2 first", flush=True)
+
+    # store truth
+    truth, missing = {}, []
+    for ident in idents:
+        safe = ident.replace("/", "_").replace(":", "_")
+        path = os.path.join(GROUPED, safe + ".parquet")
+        prior = prior_facts(client, path, prefer_r2=True)
+        if not prior or not prior.get("obs_date"):
+            missing.append(ident)
+            continue
+        lo, hi = coverage_span(prior["obs_date"], prior.get("vintage_date") or [None] * len(prior["obs_date"]))
+        n_fwd = sum(1 for e, f in zip(prior["obs_date"], prior.get("vintage_date") or []) if f is not None and e > f)
+        truth[f"sec_edgar:{ident}"] = (str(lo), str(hi), max(prior["obs_date"]), n_fwd, len(prior["obs_date"]))
+    print(f"  store parquets read: {len(truth):,}; no store object: {len(missing)} {missing[:5]}")
+
+    # catalogue state: local by PK, D1 by PK
+    db = os.path.join(ROOT, "data", "catalog.db")
+    local = {}
+    if os.path.exists(db):
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con.execute("PRAGMA busy_timeout=120000")
+        for i in range(0, len(sids), 400):
+            chunk = sids[i:i + 400]
+            q = "SELECT series_id, start_date, end_date FROM series WHERE series_id IN (" + ",".join("?" * len(chunk)) + ")"
+            for sid, sd, ed in con.execute(q, chunk):
+                local[sid] = (sd, ed)
+        con.close()
+    d1, rr = _d1_dates(sids)
+    ctl_before = _d1_dates([CONTROL_ID])[0].get(CONTROL_ID)
+    print(f"  local rows: {len(local):,}   D1 rows: {len(d1):,} (rows_read {rr:,})   control {CONTROL_ID} before: {ctl_before}")
+    if sids and not d1:
+        raise SystemExit("D1 read returned 0 rows for a non-empty served id list - instrument broken (R338), refusing")
+    if ctl_before is None:
+        raise SystemExit(f"external control {CONTROL_ID} not found on D1 - the verify would be blind (R338), refusing")
+
+    plan = []
+    for sid in sids:
+        if sid not in truth:
+            continue
+        lo, hi, raw_max, n_fwd, n = truth[sid]
+        l = local.get(sid)
+        d = d1.get(sid)
+        need_l = l is not None and (l[0], l[1]) != (lo, hi)
+        need_d = d is not None and (d[0], d[1]) != (lo, hi)
+        if need_l or need_d:
+            plan.append({"sid": sid, "lo": lo, "hi": hi, "raw_max": str(raw_max), "n_forward_or_typo": n_fwd,
+                         "n": n, "local": l, "d1": d, "need_local": need_l, "need_d1": need_d})
+    print(f"  PLAN: {len(plan)} row(s) (local {sum(p['need_local'] for p in plan)}, D1 {sum(p['need_d1'] for p in plan)}); "
+          f"already equal: {len(truth) - len(plan)}")
+    for p in sorted(plan, key=lambda p: (p["local"] or ("", ""))[1] or "", reverse=True)[:15]:
+        print(f"   {p['sid'].split(':')[1]:16s} local={p['local']} d1={p['d1']} -> ({p['lo']}, {p['hi']})  raw_max={p['raw_max']} fwd/typo rows={p['n_forward_or_typo']}")
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    receipt = {"utc": stamp, "mode": "apply" if apply else "dry-run", "idents": len(idents), "truth": truth,
+               "missing_store": missing, "plan": plan}
+    rpath = os.path.join("D:/temp/claude" if os.path.isdir("D:/temp/claude") else ROOT, f"sec_edgar_respan_{stamp}.json")
+    if not apply or not plan:
+        json.dump(receipt, open(rpath, "w", encoding="utf-8"), indent=1, default=str)
+        print(f"  {'dry run - nothing written' if not apply else 'nothing to write'}; receipt {rpath}")
+        return 0
+
+    # local, by PK, BEGIN IMMEDIATE (two crawlers write this db)
+    todo_l = [(p["lo"], p["hi"], p["sid"]) for p in plan if p["need_local"]]
+    n_local = 0
+    if todo_l and os.path.exists(db):
+        for attempt in range(12):
+            con = sqlite3.connect(db, timeout=120, isolation_level=None)
+            con.execute("PRAGMA busy_timeout=120000")
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                cur = con.executemany("UPDATE series SET start_date=?, end_date=? WHERE series_id=?", todo_l)
+                n_local = cur.rowcount
+                con.execute("COMMIT")
+                con.close()
+                break
+            except sqlite3.OperationalError as e:
+                print(f"   local attempt {attempt + 1}: {e} - retrying in 20 s", flush=True)
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:              # noqa: BLE001
+                    pass
+                con.close()
+                time.sleep(20)
+        else:
+            raise SystemExit("local UPDATE never committed - D1 NOT touched")
+    print(f"  local: UPDATE applied to {n_local} row(s) (planned {len(todo_l)})")
+    receipt["local_updated"] = n_local
+
+    def _dump():
+        # The receipt is written after EVERY store transition, so a failure between the local
+        # COMMIT and the D1 batch still leaves a record of what moved (R726 item 4).
+        json.dump(receipt, open(rpath, "w", encoding="utf-8"), indent=1, default=str)
+    _dump()
+
+    # D1, one --file batch of PK UPDATEs
+    todo_d = [p for p in plan if p["need_d1"]]
+    rc = 0
+    if apply_d1 and todo_d:
+        sqlp = os.path.join(os.path.dirname(rpath), f"sec_edgar_respan_{stamp}.sql")
+        with open(sqlp, "w", encoding="utf-8") as fh:
+            for p in todo_d:
+                fh.write(f"UPDATE series SET start_date='{p['lo']}', end_date='{p['hi']}' WHERE series_id='{p['sid']}';\n")
+        receipt["d1_sql"] = sqlp
+        try:
+            res = _d1_json(["--file", sqlp])
+        except Exception as e:                                # noqa: BLE001
+            receipt["d1_error"] = f"{type(e).__name__}: {str(e)[:300]}"
+            _dump()
+            raise
+        changes = sum(int((e.get("meta") or {}).get("changes") or 0) for e in res)
+        print(f"  D1: batch of {len(todo_d)} UPDATE(s): summed meta.changes={changes}; entries={len(res)}")
+        receipt["d1_changes"] = changes
+        _dump()
+        after, rr2 = _d1_dates([p["sid"] for p in todo_d])
+        bad = [(p["sid"], after.get(p["sid"])) for p in todo_d if after.get(p["sid"]) != (p["lo"], p["hi"])]
+        print(f"  verify D1: {len(todo_d) - len(bad)}/{len(todo_d)} equal the store truth (rows_read {rr2:,})")
+        for s, v in bad[:10]:
+            print("   MISMATCH", s, v)
+        ctl_after = _d1_dates([CONTROL_ID])[0].get(CONTROL_ID)
+        ctl_ok = ctl_after == ctl_before
+        print(f"  control {CONTROL_ID} on D1: before {ctl_before} after {ctl_after} -> {'unchanged' if ctl_ok else 'CHANGED - FAIL'}")
+        probe = [p["sid"] for p in todo_d] + [CONTROL_ID]
+        live = {}
+        for s in probe:
+            url = f"https://econdl-api.elkassabgi.workers.dev/v1/series/{urllib.parse.quote(s, safe='')}.metadata.json?v={int(time.time())}"
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 econdl-respan"}), timeout=60) as f:
+                    m = json.loads(f.read())
+                    live[s] = (m.get("start_date"), m.get("end_date"))
+            except Exception as e:                            # noqa: BLE001
+                live[s] = ("ERR", str(e)[:40])
+        live_bad = [(p["sid"], live.get(p["sid"])) for p in todo_d if live.get(p["sid"]) != (p["lo"], p["hi"])]
+        ctl_live_ok = live.get(CONTROL_ID) == ctl_before
+        print(f"  verify LIVE metadata.json: {len(todo_d) - len(live_bad)}/{len(todo_d)} equal; control live {live.get(CONTROL_ID)} "
+              f"(expected {ctl_before}) -> {'ok' if ctl_live_ok else 'MISMATCH'}")
+        for s, v in live_bad[:10]:
+            print("   LIVE MISMATCH", s, v)
+        receipt.update({"d1_verify_bad": bad, "live_verify_bad": live_bad, "control": CONTROL_ID,
+                        "control_before": ctl_before, "control_after_d1": ctl_after, "control_live": live.get(CONTROL_ID)})
+        rc = 1 if (bad or live_bad or not ctl_ok or not ctl_live_ok) else 0
+        _dump()
+        if rc == 0:
+            # /v1/sources shows `data_through` from D1's source_data_through, which CI stamps from
+            # MAX(end_date) over the LOCAL catalogue at sync time (the stale coherence copy): it
+            # read 2215-09-30 live on 2026-09-05 (R726). Re-stamp it from D1 itself, by PK, as the
+            # newest coverage end that has actually arrived (<= today).
+            rows = _d1_sec_edgar_rows()
+            today = dt.date.today().isoformat()
+            mx = max((ed for sd, ed in rows.values() if ed and ed <= today), default=None)
+            if mx:
+                _d1_json(["--command", f"UPDATE source_data_through SET data_through='{mx}' WHERE source_id='sec_edgar'"])
+                back = _d1_json(["--command", "SELECT data_through FROM source_data_through WHERE source_id='sec_edgar'"])
+                got = next((r.get("data_through") for e in back for r in (e.get("results") or []) if "data_through" in r), None)
+                print(f"  source_data_through sec_edgar: stamped {mx} (D1 max end_date <= today over {len(rows):,} rows); read back {got}; "
+                      f"/v1/sources may show the old value for up to 6 h (edge cache)")
+                receipt["data_through_stamped"] = mx
+                receipt["data_through_readback"] = got
+                if got != mx:
+                    rc = 1
+    else:
+        print("  D1: skipped (pass --d1) - the worker reads D1, so served metadata stays stale without it")
+    _dump()
+    print(f"  receipt {rpath}")
+    return rc
 
 
 def main():
@@ -428,12 +758,20 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="rewrite even when the local fact count already matches "
                          "upstream (repairs an R2 copy that drifted from local)")
+    ap.add_argument("--respan", default="",
+                    help="recompute start/end coverage from the STORED parquets for these idents "
+                         "(comma/space separated, or @file with one per line) and write ONLY the "
+                         "catalogue dates — local by primary key and, with --d1, D1 by primary key "
+                         "in one batch; no facts, CSVs or FTS rows are touched. Dry run unless --apply.")
     a = ap.parse_args()
 
     os.makedirs(GROUPED, exist_ok=True)
     if a.audit:
         from core import r2_util
         return audit(r2_util.client())
+    if a.respan:
+        from core import r2_util
+        return respan(r2_util.client(), a.respan, apply=a.apply, apply_d1=a.d1)
     if a.ciks:
         # Targeted repair. The daily-index path answers "who filed recently"; it
         # cannot reach a company whose data fell behind for some OTHER reason. An
@@ -507,13 +845,14 @@ def main():
         # from a successor CIK adds rows without removing the predecessor's.
         if len(metric) == before and not a.force:
             continue                       # nothing new filed
-        changed.append((ident, before, len(metric), max(odate)))
+        lo, hi = coverage_span(odate, vint)
+        changed.append((ident, before, len(metric), hi))
         # Title carries every ticker SEC maps to this CIK, matching the convention
         # applied across the source — searching GOOG must find Alphabet even though
         # the series is keyed GOOGL.
         ent = data.get("entityName") or ident
         title = f"{ent} ({', '.join(ticks)})" if ticks else str(ent)
-        spans.append((ident, min(odate), max(odate), title, cik))
+        spans.append((ident, lo, hi, title, cik))
         if a.apply:
             tbl = pa.table({
                 "metric": metric,
@@ -562,6 +901,14 @@ def main():
         print(f"catalog coverage updated: local rows={nl:,}  D1 statements={nd:,}"
               + ("" if a.d1 else "   (D1 SKIPPED — pass --d1; the worker reads D1, "
                                  "so served metadata stays stale without it)"))
+        if a.d1 and nd == 0:
+            # R726: from 2026-08-25 to 2026-09-04 every CI run printed "D1 span update FAILED at
+            # 0" and exited 0 - 181 companies moved on R2 with no catalogue span and no
+            # new-registrant row while the workflow stayed green. Data moved but the catalogue
+            # did not: that is a FAILED refresh, and the step must say so.
+            print("FAIL: parquet + CSV were written for changed companies but ZERO D1 statements "
+                  "landed - the served catalogue no longer matches the served data", flush=True)
+            return 1
     if a.apply and a.d1:
         # Even a zero-span day is a completed freshness check (weekends have no
         # filings); the stamp is what keeps /v1/sources freshness non-null.
