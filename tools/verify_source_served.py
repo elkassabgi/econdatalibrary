@@ -112,7 +112,12 @@ def main() -> int:
     con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
     con.execute("PRAGMA busy_timeout = 180000")
     cat = {r[0] for r in con.execute(
-        "select series_id from series where source_id=?", (a.source,))}
+        # PK RANGE, not WHERE source_id=?: series has only its primary-key index, so the
+        # source_id form is a full scan of the 13.5M-row live catalogue and, while the crawlers
+        # write it, holds a SHARED lock that stalls every writer (R715/R721; same fix as
+        # a572208f8 in sync_catalog_d1). ";" is the byte after ":".
+        "select series_id from series where series_id >= ? and series_id < ?",
+        (a.source + ":", a.source + ";"))}
     print(f"catalogue rows : {len(cat):,}")
 
     from core import r2_util
