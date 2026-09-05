@@ -31,6 +31,34 @@ HONEST-STATUS: one dataset is one sub-unit. A failure there is transient (existi
 retried next tick). Zero usable rows across the WHOLE run -> TransientError rather than a
 hollow success. BEA_API_KEY absent -> TransientError, never a silent no-op, because a source
 that quietly does nothing looks identical to one that is up to date.
+
+WHAT THIS FETCHER DOES *NOT* COVER - read this before believing any "bea is fresh" statement.
+Measured 2026-09-05 (ledger R762), from R2 row-group statistics and the local catalogue:
+
+    catalogued bea series                                        913,230
+      reachable by this fetcher (in bea.parquet)                  17,699   1.94 %
+      served ONLY from dataset subdirectories nothing refreshes  895,531  98.06 %
+
+The loop below iterates exactly two datasets, NIPA and NIUnderlyingDetail, and writes one file.
+The store has twelve dataset directories, built once by jobs/ingest_bea_full.py and never
+revisited: Regional (105 files, 58,537,714 rows, frozen at 2025-12-31), GDPbyIndustry / IIP /
+ITA (2025-12-31), MNE / FixedAssets / InputOutput / UnderlyingGDPbyIndustry / IntlServTrade
+(2024-12-31), IntlServSTA (2023-12-31). At least ITA and Regional-quarterly are BEHIND the
+publisher, not merely complete: BEA served 2026Q1 while the store held 2025-12-31.
+
+Two consequences worth stating plainly, because both are invisible from the outside:
+
+  * `_tree_frontier` takes the MAX over the whole tree, so `last_obs_date` is reported by the
+    freshest 1.94 % and is structurally blind to the frozen 98 %. A green freshness reading
+    here says nothing about most of what users can download.
+  * the client resolver `_resolve_bea` opens the whole tree as one dataset on the written
+    assumption that duplicate keys are "byte-identically" replicated. They are not: over 41
+    keys there are 153 (key, date) disagreements between this fetcher's fresh file and the
+    frozen subdirectory copy, and the FROZEN copy wins all 153. So the trailing-window
+    revisions this fetcher exists to collect do not reach users at all.
+
+Neither is fixed here. Extending the loop, or excluding the superseded copies from the
+resolver, changes what a user downloads and is the owner's decision.
 """
 from __future__ import annotations
 
