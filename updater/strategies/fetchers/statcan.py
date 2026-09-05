@@ -377,6 +377,14 @@ def update(unit, since) -> Result:
     changed_all: dict = {}
     changed_complete = True
     maxd = None
+    # THE STORE-ABSENT GUARD. "Skip a changed cube we do not hold" is correct for a brand-new cube,
+    # but it is silent — and if the WHOLE store is unreachable, every changed cube takes that branch,
+    # the tally stays empty and finalize() books `no_change`: a healthy status over a fetch that read
+    # nothing. That is exactly what happened here: statcan's ~8,207 cubes were deleted from R2 on
+    # 2026-08-18 (a deliberate cost action) while the local route runs with AQUEDUCT_BACKEND=r2, so
+    # from 2026-08-22 every run finished in seconds reporting "no new rows" while StatCan published
+    # 337 cube-changes in 15 days. A source must never report green over data it did not look at.
+    absent_pids: list = []
     # advance the watermark only to the OLDEST release time that we have NOT fully
     # processed; on full success it becomes `today`. On any transient sub-fault we
     # leave it unchanged so the whole window is retried.
@@ -388,6 +396,7 @@ def update(unit, since) -> Result:
             # brand-new cube — out of scope for the incremental fetcher (bulk ingester
             # owns first ingest; vector endpoint lacks the dimension metadata to build
             # a faithful cube from scratch). Skip without counting as a sub-unit.
+            absent_pids.append(pid)
             continue
         try:
             vmap = _disk_vector_map(path)
@@ -454,6 +463,32 @@ def update(unit, since) -> Result:
                     maxd = md_d
             except ValueError:
                 pass
+
+    # THE STORE-ABSENT GUARD (see `absent_pids` above). Distinguish two look-alikes:
+    #   the publisher changed cubes we simply do not hold  -> coverage, the bulk ingester's job,
+    #                                                         skip silently as before;
+    #   the publisher changed cubes and we hold NOTHING AT ALL -> the store is unreachable from
+    #                                                         this backend, and reporting no_change
+    #                                                         would be green over an empty read.
+    # The listing runs only in the second case (every changed cube absent), so a normal pass pays
+    # nothing for it.
+    if changed and not tally.attempted and absent_pids:
+        try:
+            held = [f for f in blob.list_parquets(OUT_DIR)
+                    if not os.path.basename(f).startswith("_")]
+        except Exception as e:                                       # noqa: BLE001
+            raise DefinitiveError(
+                f"statcan: {len(absent_pids)} changed cube(s) are all absent from the store and the store "
+                f"could not even be listed ({type(e).__name__}: {e}) — refusing to report no_change over "
+                f"a store this run could not read (backend={config.BACKEND})") from e
+        if not held:
+            raise DefinitiveError(
+                f"statcan: the store holds ZERO cubes under {OUT_DIR} (backend={config.BACKEND}) while the "
+                f"change-feed lists {len(changed)} changed cube(s) — every one was skipped as 'not held', so "
+                f"this run read nothing. This is the store being unreachable, not a quiet publisher: the "
+                f"~8,207 cubes were removed from R2 on 2026-08-18 and the local route runs with "
+                f"AQUEDUCT_BACKEND=r2. Restore the store (or point this source's backend at the copy that "
+                f"holds it) before trusting any statcan status.")
 
     # Advance the watermark only on a clean pass (no transient/structural sub-fault),
     # so an interrupted/throttled run re-polls the same release window next time.
