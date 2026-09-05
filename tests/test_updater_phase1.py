@@ -425,6 +425,11 @@ class TestD1Sync:
     def test_dry_run_executes_nothing(self, tmp_path, capsys, monkeypatch):
         db = str(tmp_path / "state.db")
         _scratch_state_db(db)
+        # Pin the catalogue away from the developer's real one, as the sibling test does: unpinned,
+        # main() projects source_data_through with a GROUP BY over the real 13.5M-row catalog.db -
+        # an hour-long local test that also holds a SHARED lock the crawlers' COMMITs wait on
+        # (2026-09-05, R734). What this test proves is that execute_remote never runs.
+        monkeypatch.setenv("ECONDL_CATALOG", str(tmp_path / "no_such_catalog.db"))
 
         def boom(files):  # any wrangler attempt = test failure
             raise AssertionError("execute_remote must not run under --dry-run")
