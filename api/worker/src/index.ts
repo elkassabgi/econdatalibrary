@@ -124,6 +124,9 @@ export default {
         if (statsHit) return statsHit;
         const SUM_COUNTS = "SELECT SUM(n) AS c FROM source_counts";
         let catTotal: number | null = null;
+        // Set only when one catalogue database answered and the other did not, so a knowingly
+        // incomplete total is labelled rather than served as if it were the whole fleet.
+        let catPartial = false;
         try {
           const [sp, ss] = await Promise.all([
             env.CATALOG.prepare(SUM_COUNTS).first<{ c: number | null }>(),
@@ -134,11 +137,33 @@ export default {
           catTotal = null; // table missing -> live COUNT fallback below
         }
         if (catTotal === null) {
-          const [catP, catS] = await Promise.all([
+          // THE FALLBACK MUST NOT BE ABLE TO 500 THE WHOLE ENDPOINT. This used to be a bare
+          // Promise.all over BOTH databases: a failure on EITHER threw to the outer handler and
+          // /v1/stats returned 500 — which every site renders as zero, so a D1 incident showed up
+          // to users as an empty library rather than an honest error (R50's silent-zero on the
+          // serving surface, and exactly the R709 shape). It also defeated most of the point of
+          // sharding: an incident confined to one database still took the front-page number down.
+          //
+          // Settled per database instead. A partial count from the database that IS answering is
+          // strictly better than failing outright, and `catalog_partial` says so rather than
+          // letting a quietly-low number pass as complete.
+          const [catP, catS] = await Promise.allSettled([
             env.CATALOG.prepare("SELECT COUNT(*) AS c FROM series").first<{ c: number }>(),
             env.CATALOG_CLIMATE.prepare("SELECT COUNT(*) AS c FROM series").first<{ c: number }>(),
           ]);
-          catTotal = (catP?.c ?? 0) + (catS?.c ?? 0);
+          const okP = catP.status === "fulfilled" ? (catP.value?.c ?? null) : null;
+          const okS = catS.status === "fulfilled" ? (catS.value?.c ?? null) : null;
+          if (okP === null && okS === null) {
+            // Neither answered: say so explicitly. A 503 with a detail is honest; a 500 that the
+            // client turns into `0` is not.
+            return json({
+              error: "catalog_unavailable",
+              detail: "Both catalogue databases failed to answer a count. This is a temporary " +
+                "backend condition, NOT a statement that the catalogue is empty.",
+            }, 503);
+          }
+          catTotal = (okP ?? 0) + (okS ?? 0);
+          if (okP === null || okS === null) catPartial = true;
         }
         const cat = { c: catTotal };
         const obj = await env.SERIES_BUCKET.get("_aqueduct/stats.json");
@@ -169,6 +194,10 @@ export default {
         const statsResp = json({
           ...measured,
           catalog_entries: cat?.c ?? null,
+          // Present ONLY when one catalogue database failed to answer and the other did. Absent
+          // means the total covers both. Without this a partial count is indistinguishable from a
+          // complete one, which is the failure this whole branch exists to avoid.
+          ...(catPartial ? { catalog_entries_partial: true } : {}),
           recalculating: true,
           recalculating_note:
             "These headline totals are being recalculated while the database is completed. " +
