@@ -858,7 +858,8 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False):
                 back = _d1_json(["--command", "SELECT data_through FROM source_data_through WHERE source_id='sec_edgar'"])
                 got = next((r.get("data_through") for e in back for r in (e.get("results") or []) if "data_through" in r), None)
                 print(f"  source_data_through sec_edgar: stamped {mx} (D1 max end_date <= today over {len(rows):,} rows); read back {got}; "
-                      f"/v1/sources may show the old value for up to 6 h (edge cache)")
+                      f"/v1/sources shows it within its max-age=300 (no edge cache, measured R730); the next updater-daily sync "
+                      f"recomputes it from the R2 coherence copy under the observed-only cap (core/sync_state_d1.py)")
                 receipt["data_through_stamped"] = mx
                 receipt["data_through_readback"] = got
                 if got != mx:
