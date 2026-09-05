@@ -1,0 +1,11 @@
+# Flow-grain catalogue rows whose STORE range is itself a defect (a wrong-axis parse or residual
+# old-grain rows), so "catalogue == store" is not a repair for them (ledger R722, R724).
+# tools/refresh_flowgrain_dates.py reads this file on every run, EXCLUDES these ids from any write,
+# and prints them. Remove a line only after the table has been re-pulled and the store re-measured.
+# Format: series_id<TAB>reason
+hagstofa:ICE:Ibuar:mannfjoldi:2_byggdir:Byggdakjarnarhverfi:MAN02007.px	wrong-axis parse: 29 store rows dated 2100-12-31 with the real year inside the key (publisher Ar axis 1998..2026); R722
+scb:AA:AA0003:AA0003B:MotFlyktLanBAS	3,073 residual old-grain rows: a "year of reception" axis read as time (publisher Tid 2022..2023); R724
+scb:AA:AA0003:AA0003B:MotFlyktAldBAS	938 residual old-grain rows, same axis defect; R724
+scb:AA:AA0003:AA0003B:MotFlyktUtbBAS	795 residual old-grain rows, same axis defect; R724
+scb:BE:BE0101:BE0101K:Adopterade	34,200 residual old-grain rows: a "year of birth" axis read as time (store 1911..2024, publisher Tid 2000..2024); R724
+scb:BE:BE0101:BE0101K:AdopteradeCKM	1,725 residual old-grain rows, same axis defect (publisher Tid 2025); R724
