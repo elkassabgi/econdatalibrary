@@ -73,12 +73,31 @@ Summary (lines 13-21): CLEARED-attribution 144, RESTRICTED-keep-gated 18, NEEDS 
 | worldbank | CC BY with third-party exceptions — embedded UN/IMF/WHO/ILO/IEA/UNESCO series may NOT be redistributed | 56, 2769-2788 |
 | worldbank_pink | restricted — LME/Cotlook/SICOM/ICCO/ICO proprietary series; NEEDS-REVIEW pending per-series clearance | 57, 2994-3016 |
 
-**RESTRICTED/permission_required (CONFIRMED, stay gated)** (lines 37-58): WTO (8 dbs), cboe, cow, damodaran (unclear_not_found), defillama, Energy Institute, Kenneth French, frankfurter (unclear), irena (unclear), nbp, polity5, shiller (unclear), sipri, tcmb, zillow. Plus **fred — RESTRICTED, keep gated** (3519-3566): mirroring and "essential experience" prohibitions apply to ALL use including non-commercial; serving only the public-domain tier does NOT rescue it; 48.2M local obs must stay uncatalogued/underived — "It must STAY that way. Do not catalogue, do not derive CSVs, do not add a fetcher or a registry entry" (3563-3564); deleting the local copy is Ahmed's call (3564-3566). Also an ML/LLM-training clause binding even internal use (3537, 3557-3559).
+**RESTRICTED/permission_required (CONFIRMED, stay gated)** (lines 37-58): WTO (8 dbs), cboe, cow, Energy Institute, Kenneth French, irena (unclear), nbp, polity5, shiller (unclear), sipri, tcmb, zillow.
+
+> **THREE SOURCES WERE REMOVED FROM THAT LIST 2026-09-06 AND THE LIST WAS WRONG ABOUT THEM.**
+> `damodaran`, `defillama` and `frankfurter` are all SERVED today, and this summary still said
+> "stay gated" — which is how a session reading THIS file first concludes a live source is a
+> licence breach. I reached that conclusion twice in one day before checking the canonical record.
+> Verified against `DATABASE_LICENSES_VERBATIM.md` and `REDISTRIBUTION_EMAIL_TRAIL.md`:
+>
+> * **damodaran** — WRITTEN PERMISSION 2026-07-15 ("I don't have a problem with you hosting this
+>   data"), un-gated the same day. 24,687 rows live, licence row `custom-terms-damodaran`
+>   (reservable, NC, attribution).
+> * **defillama** — WRITTEN PERMISSION 2026-07-16 (NC, properly cited), un-gated. 24 rows live.
+> * **frankfurter** — still `NEEDS HUMAN REVIEW` and still SERVED (46 rows). Its own entry says
+>   the operative authority is the ECB, not Frankfurter, and asks that the ECB's policy be
+>   recorded in a dedicated entry — **that entry exists and is CLEARED**. An owner one-liner
+>   closes it; the attribution should name the European Central Bank.
+>
+> Also **fdic** below. THE RULE: this summary AGES; the canonical file and the email trail do not.
+> Check both before calling anything gated — a "stay gated" line here is a hypothesis about a
+> file, not a fact about the serving surface. Plus **fred — RESTRICTED, keep gated** (3519-3566): mirroring and "essential experience" prohibitions apply to ALL use including non-commercial; serving only the public-domain tier does NOT rescue it; 48.2M local obs must stay uncatalogued/underived — "It must STAY that way. Do not catalogue, do not derive CSVs, do not add a fetcher or a registry entry" (3563-3564); deleting the local copy is Ahmed's call (3564-3566). Also an ML/LLM-training clause binding even internal use (3537, 3557-3559).
 
 **Written permissions on file** (lines 25-31): comtrade (holdings must stay ≤100,000 records), kof_globalization (NC academic, cite KOF/ETH), whr — **OPEN gate**: "GRANTED in writing (Gallup/WHR) but SCOPED to the Figure 2.1 summary ONLY; currently re-gated pending trim to that scope" (line 31).
 
 **Open / pending items:**
-- **fdic** — NEEDS HUMAN REVIEW, keep gated (3441-3479): no licence stated anywhere; §105 public-domain inference explicitly rejected ("'probably fine' is not a quote", 3473); answerable by writing webmaster@fdic.gov (reserved: sending email).
+- **fdic** — ~~NEEDS HUMAN REVIEW, keep gated~~ → **SERVE, owner decision (Ahmed, 2026-08-17)**, corrected here 2026-09-06. The finding stands and is unchanged: no licence is stated anywhere, and the §105 public-domain inference is explicitly rejected ("'probably fine' is not a quote"). It was presented to Ahmed verbatim, including that rejection and the alternative of a permission email, and he directed "serve" — recorded in the canonical file as an informed owner decision on the 17 U.S.C. §105 federal-works basis, NOT as a licence finding. It is live today at **298,869 catalogue rows**, in `SUPPORTED_SOURCES`, not denylisted. If FDIC ever states terms, re-audit. (Writing webmaster@fdic.gov remains the way to convert the decision into a grant, and sending email is still reserved.)
 - **istat, fdic, gleif** — RESEARCHER-ASSESSED single pass, "verdict field as pending that second reader" (3404-3407, 3450-3451, 3490-3491). istat itself CLEARED CC BY 4.0 (3397-3437).
 - **gleif** — licence CLEARED (CC0, 3483-3517) but "the blocker here is SHAPE, not licence": entity registry, no series model fits; serving needs an entity-lookup surface = product decision (3512-3517).
 - **un_wpp** — CLEARED CC BY 3.0 IGO locally, but **D1 still records NEEDS-REVIEW**; D1 must be aligned before un_wpp is ever hosted (3311-3314).

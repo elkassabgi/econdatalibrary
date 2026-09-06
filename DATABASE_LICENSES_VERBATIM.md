@@ -73,19 +73,19 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `bls` | bls | redistributable_open | CONFIRMED | CLEARED - re-host OK |
 | `boc` | Bank of Canada Valet | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `boe` | boe | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `bundesbank` | Deutsche Bundesbank time series | non_redistributable — use-only grant. Personal/professional use, forwarding, and reproduction are permitted with mandatory attribution ("Source: Deutsche Bundesbank") and no alteration (no-derivatives). The terms grant NO right to republish, redistribute, or make the data publicly available to third parties, so a library re-hosting the data for public download is not covered. Treat as metadata-only / link-out unless the Bundesbank grants prior written permission for redistribution. | DISPUTED | NEEDS HUMAN REVIEW |
+| `bundesbank` | Deutsche Bundesbank time series | non_redistributable — use-only grant. Personal/professional use, forwarding, and reproduction are permitted with mandatory attribution ("Source: Deutsche Bundesbank") and no alteration (no-derivatives). The terms grant NO right to republish, redistribute, or make the data publicly available to third parties, so a library re-hosting the data for public download is not covered. Treat as metadata-only / link-out unless the Bundesbank grants prior written permission for redistribution. | DISPUTED | SERVE - written permission 2026-07-15 (Bundesbank inquiry 2026/005812): distribute/reproduce free of charge, UNALTERED, exact credit, send a copy. Was NEEDS HUMAN REVIEW. |
 | `cboe` | cboe | permission_required | CONFIRMED | RESTRICTED (keep gated) |
 | `cbs_nl` | CBS (Statistics Netherlands) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `census` | census | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `cnb` | Czech National Bank (CNB) ARAD | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `comtrade` | UN Comtrade | permission_required | CONFIRMED | CLEARED by WRITTEN PERMISSION |
 | `cow` | Correlates of War | permission_required | CONFIRMED | RESTRICTED (keep gated) |
-| `damodaran` | Aswath Damodaran (NYU Stern) datas | unclear_not_found | CONFIRMED | NEEDS HUMAN REVIEW |
+| `damodaran` | Aswath Damodaran (NYU Stern) datas | unclear_not_found | CONFIRMED | SERVE — written permission 2026-07-15 (was NEEDS HUMAN REVIEW; see section) |
 | `dbnomics` | DBnomics (per-provider passthrough | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `defillama` | defillama | permission_required | CONFIRMED | RESTRICTED (keep gated) |
+| `defillama` | defillama | permission_required | CONFIRMED | SERVE — written permission 2026-07-16, NC + attribution (was RESTRICTED; see section) |
 | `ecb` | ecb | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `edgar_jrc` | EU JRC EDGAR (Emissions Database f | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `ei_statreview` | Energy Institute Statistical Revie | permission_required | CONFIRMED | RESTRICTED (keep gated) |
+| `ei_statreview` | Energy Institute Statistical Revie | permission_required | CONFIRMED | SERVE - written permission 2026-07-06 (Energy Institute, Gemma): NC-only, EI-2026 citation, prominent link-back, EXCLUDE S&P Platts/Commodity Insights price series. Was RESTRICTED (keep gated). |
 | `efw` | Fraser Institute Economic Freedom of the World | written_permission | CONFIRMED | CLEARED by WRITTEN PERMISSION (non-commercial, attribution; grant recorded in the efw verbatim section) |
 | `eia` | eia | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `ember` | ember | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
@@ -120,7 +120,7 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `faostat` | faostat | redistributable_attribution_noncommercial (with third-party-data carve-out) — re-dissemination is permitted with FAO attribution, but subject to (a) a non-commercial/anti-endorsement restriction that CC BY 4.0 does not impose, and (b) a subset of embedded third-party data that cannot be redistributed without the original provider's consent. | DISPUTED | NEEDS HUMAN REVIEW |
 | `fed_board` | fed_board | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `fhfa` | fhfa | redistributable_open | CONFIRMED | CLEARED - re-host OK |
-| `frankfurter` | frankfurter | unclear_not_found | CONFIRMED | NEEDS HUMAN REVIEW |
+| `frankfurter` | frankfurter | unclear_not_found | CONFIRMED | NEEDS HUMAN REVIEW — but SERVED today (46 rows); governed upstream by `ecb`, which is CLEARED. See section. |
 | `freedomhouse` | Freedom House | noncommercial_permission_required / no_open_redistribution — noncommercial USE with citation is permitted, but the FIW dataset is gated behind a Freedom House "FIW Data Request" (must state intended use), and third-party re-hosting for open public download is not authorized. Treat as not-freely-redistributable: link out to Freedom House's data request rather than mirror the files (or gate to metadata-only), and note commercial use requires prior formal permission. | DISPUTED | NEEDS HUMAN REVIEW |
 | `fsi_fundforpeace` | Fund for Peace Fragile States Inde | noncommercial_only | CONFIRMED | CLEARED - non-commercial only |
 | `gcb` | Global Carbon Budget / Global Carb | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
@@ -128,7 +128,7 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `gppd` | Global Power Plant Database (WRI) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `gus_dbw` | GUS (Statistics Poland) Knowledge Databases | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution + PSI disclosure) |
 | `hf_equities` | hf_equities | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `idb` | Inter-American Development Bank (I | noncommercial_no_derivatives (CC BY-NC-ND: NonCommercial AND NoDerivatives). Only verbatim, non-commercial, attributed copies may be redistributed. Separately, per the finding's own license_name note, ~86% of IDB datasets carry NO declared license (no redistribution grant) and a minority are CC BY 4.0 — so a single source-level bucket is not accurate; the unlicensed majority should be treated as not-redistributable / needs-review, not noncommercial. | DISPUTED | NEEDS HUMAN REVIEW |
+| `idb` | Inter-American Development Bank (I | noncommercial_no_derivatives (CC BY-NC-ND: NonCommercial AND NoDerivatives). Only verbatim, non-commercial, attributed copies may be redistributed. Separately, per the finding's own license_name note, ~86% of IDB datasets carry NO declared license (no redistribution grant) and a minority are CC BY 4.0 — so a single source-level bucket is not accurate; the unlicensed majority should be treated as not-redistributable / needs-review, not noncommercial. | DISPUTED | SERVE - written permission 2026-07-15 (IDB Open Data): full permission to re-host and redistribute, CC-BY 4.0, EXCLUDE third-party-sourced series, citation format, live links. Was NEEDS HUMAN REVIEW. |
 | `ilostat` | ilostat | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `imf` | imf | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `imf_afrreo` | International Monetary Fund (IMF)  | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
@@ -305,7 +305,18 @@ JUDGMENT: The classification redistributable_attribution (CC BY 4.0) is DEFENSIB
 - **Classification:** unclear_not_found
 - **Commercial OK:** None · **Attribution required:** False · **ShareAlike:** None · **Fetch:** fetched_ok
 - **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** NEEDS HUMAN REVIEW
+- **Decision tier:** ~~NEEDS HUMAN REVIEW~~ → **SERVE — WRITTEN PERMISSION OBTAINED**
+  (Aswath Damodaran, 2026-07-15). The finding below is unchanged and still correct about the
+  published usage rules; it was SUPERSEDED by a direct grant, not overturned. The researcher
+  reasoning below closes by recommending exactly this — "email Damodaran for explicit written
+  permission to mirror the files (he is known to be approachable and permissive, but the written
+  grant should exist before re-hosting)" — and that is what happened: Ahmed asked
+  adamodar@stern.nyu.edu on 2026-07-14 and the reply came seventeen minutes later on 07-15,
+  recorded verbatim in `REDISTRIBUTION_EMAIL_TRAIL.md`: "I don't have a problem with you hosting
+  this data." Un-gated 2026-07-15; live today at 24,687 catalogue rows, in `SUPPORTED_SOURCES`,
+  not denylisted, under licence row `custom-terms-damodaran` (reservable, NC, attribution).
+  Annotation added 2026-09-06 because the tier line still read NEEDS HUMAN REVIEW seven weeks
+  after the grant — a reader of THIS file alone would conclude a live source is a breach.
 
 **Verbatim quote:**
 > If you do use my data and wish to acknowledge that you did get the data off my site, I thank you. If not, I will not lose any sleep and you should not either.
@@ -773,7 +784,16 @@ fetch_status = fetched_ok: the official DBnomics About page and the official ODb
 - **Classification:** permission_required
 - **Commercial OK:** False · **Attribution required:** None · **ShareAlike:** None · **Fetch:** fetched_ok
 - **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** RESTRICTED (keep gated)
+- **Decision tier:** ~~RESTRICTED (keep gated)~~ → **SERVE — WRITTEN PERMISSION OBTAINED**
+  (DeFiLlama, 2026-07-16). The finding below is unchanged and still correct about the published
+  Terms of Use; it was SUPERSEDED by a direct grant, not overturned. Ahmed asked
+  support@defillama.com on 2026-07-14 and "Rick" replied 2026-07-16 — recorded verbatim in
+  `REDISTRIBUTION_EMAIL_TRAIL.md` — permitting use "non-commercial … properly cited". The source
+  was un-gated on that basis and is live today (24 catalogue rows, in `SUPPORTED_SOURCES`, not
+  denylisted). Conditions carried by the grant: NON-COMMERCIAL and attribution to DeFiLlama.
+  Annotation added 2026-09-06 because the tier line still read "keep gated" seven weeks after
+  the grant, which is how a reader of THIS file alone concludes a live source is a breach — I
+  reached that conclusion myself today before checking the email trail.
 
 **Verbatim quote:**
 > republish the data in any form without permission
@@ -1302,6 +1322,20 @@ Classification: redistributable_open — public-domain U.S. government work, red
 - **Official terms URL:** https://frankfurter.dev/
 - **License:** MIT License (software code only); underlying data terms explicitly deferred to source provider (European Central Bank / central banks)
 - **Classification:** unclear_not_found
+- **STATE NOTE (2026-09-06), not a verdict change:** `frankfurter` is SERVED today — 46 catalogue
+  rows, present in `SUPPORTED_SOURCES`, not on the worker denylist — while this entry's decision
+  tier still reads NEEDS HUMAN REVIEW and no owner decision is recorded for it anywhere. That
+  combination is the one this file exists to catch, so it is written down rather than left to be
+  rediscovered. **The outstanding question is small and already answered in this file.** The
+  ACTIONABLE paragraph below states that the operative redistribution authority is the ECB, not
+  Frankfurter, and asks that the ECB's own policy "be verified and recorded in its own dedicated
+  ECB provider entry with a verbatim quote from the ECB site". **That entry exists** — `### ecb`
+  in this same file, classified `redistributable_attribution`, adversarial verdict CONFIRMED,
+  decision tier CLEARED - re-host OK (attribution). So the condition this entry set for itself is
+  satisfied by this file's own record. What remains is the owner's one-line call to say so, plus
+  making the served attribution name the EUROPEAN CENTRAL BANK (the operative licensor) and not
+  only Frankfurter. Nothing here re-derives a verdict: the classification, the quote and the
+  verifier notes are untouched.
 - **Commercial OK:** True · **Attribution required:** None · **ShareAlike:** None · **Fetch:** fetched_ok
 - **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
 - **Decision tier:** NEEDS HUMAN REVIEW
