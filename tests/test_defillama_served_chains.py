@@ -355,3 +355,77 @@ def test_a_genuinely_fresh_parse_is_NOT_refused(monkeypatch):
     tbl, _dk, _k, _d, _e = defillama._chains_tvl_aggregate(None, t)
     assert "Alpha" in set(tbl.column("series_key").to_pylist()), t.transient_ids
     assert t.transient == 0, t.transient_ids
+
+
+# ------------------------------------------------------- R795: the sibling branch, and the class
+
+def test_the_BULK_branch_gets_the_same_partial_parse_guard_as_the_chains(monkeypatch):
+    """R795 #1, the blocker, and the ninth appearance of 'one example is a class' on this file. I
+    put the partial-parse guard in the per-chain loop and NOT in the `__ALL__` branch thirty lines
+    above it in the SAME function. __ALL__ is `defillama:tvl:total`, the headline series, and its
+    silent freeze is invisible to health._recency_signal (a max over the whole unit)."""
+    day = 86400
+    now = int(_dt.datetime.now(_dt.timezone.utc).timestamp())
+    old_ok = [{"date": now - (60 + i) * day, "tvl": 1.0 + i} for i in range(3)]
+    new_broken = [{"date": now - i * day, "tvl": "1234.5"} for i in range(3)]
+    monkeypatch.setattr(defillama, "SERVED_CHAINS", ("Alpha",))
+    _record_calls(monkeypatch, bulk_resp=old_ok + new_broken,
+                  chain_resp=[{"date": now, "tvl": 7.0}])
+    t = Tally()
+    tbl, _dk, _k, _d, _e = defillama._chains_tvl_aggregate(None, t)
+    assert "__ALL__" not in set(tbl.column("series_key").to_pylist()), (
+        "a partial parse of the BULK call was merged - tvl:total freezes behind a fresh file")
+    assert any("__ALL__" in s and "PARTIAL parse" in s for s in t.transient_ids), t.transient_ids
+
+
+def test_ONE_call_site_decides_partial_for_every_branch():
+    """The structural half of R795 #1: a shared helper cannot be applied to one sibling and not the
+    other. If this count ever drops, the branches have drifted apart again."""
+    import inspect
+    src = inspect.getsource(defillama._chains_tvl_aggregate)
+    assert src.count("_partial_parse_reason(") == 2, (
+        "the bulk branch and the per-chain loop must BOTH go through the shared helper")
+
+
+def test_a_FUTURE_date_cannot_switch_the_staleness_guard_off():
+    """R795 #4: the frontier was `max(dates)`, so one 2999-12-31 point turned the guard off
+    entirely - and 2999-12-31 is not hypothetical, R320 records it already published across six
+    sources of this store."""
+    import datetime as d2
+    today = d2.date.today()
+    stale = today - d2.timedelta(days=60)
+    assert defillama._partial_parse_reason([stale, d2.date(2999, 12, 31)]), (
+        "a single future-dated point masked a 60-day-stale parse")
+    assert defillama._partial_parse_reason([d2.date(2999, 12, 31)]), "all-future is itself a defect"
+    assert defillama._partial_parse_reason([today, stale]) is None, "a sound parse was refused"
+
+
+@pytest.mark.parametrize("fn,payload", [
+    ("_catalog_protocols",   [None, {"name": "x", "chains": ["Ethereum"]}]),
+    ("_catalog_chains",      [None, {"name": "x"}]),
+    ("_catalog_stablecoins", {"peggedAssets": [None, {"id": 1, "name": "x"}]}),
+    ("_catalog_yield_pools", {"data": [None, {"pool": "p", "project": "x"}]}),
+])
+def test_every_catalog_loop_survives_a_non_dict_element(monkeypatch, fn, payload):
+    """R795 #2: `_catalog_stablecoins` was the one of five loops that did NOT get the guard, while
+    my commit message said 'All five loops guarded' - true of the count, false of the set. It runs
+    third of four catalog fetches, BEFORE the chains merge, so an AttributeError there takes the
+    whole source to transient_fail: no derive, no last_success, no vintage.
+
+    Enumerated with a parser rather than by eye, which is what found it."""
+    monkeypatch.setattr(defillama, "_get", lambda sess, url, timeout=120: payload)
+    tbl, _dk, _err = getattr(defillama, fn)(None)
+    assert tbl is not None, fn
+
+
+@pytest.mark.parametrize("value,expected", [
+    (["Ethereum", "Base"], "Ethereum,Base"),
+    ("Ethereum",           ""),        # a STRING would join character by character
+    ([{"x": 1}, "Base"],   "Base"),    # a dict inside would raise TypeError
+    (None,                 ""),
+    (123,                  ""),
+])
+def test_join_names_refuses_everything_that_is_not_a_list_of_strings(value, expected):
+    """R795 #3, same class, two call sites in two functions. The silent half is the string case:
+    `",".join("Ethereum")` publishes 'E,t,h,e,r,e,u,m' into the catalogue snapshot."""
+    assert defillama._join_names(value) == expected

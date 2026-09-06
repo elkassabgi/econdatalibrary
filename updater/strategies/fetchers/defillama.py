@@ -250,6 +250,20 @@ def _ts_maxes(keys, dates):
 # --------------------------------------------------------------------------- #
 # per-file refreshers — each returns (tbl, dedup_keys, err) ; tbl=None on transient
 # --------------------------------------------------------------------------- #
+def _join_names(v):
+    """Comma-join a list of names, refusing anything that is not a list of strings.
+
+    R795 #3, the same class as the per-element dict guard and found in the same mechanical
+    sweep: `",".join(v or [])` raises TypeError on a list containing a dict, and - worse,
+    because it is silent - a STRING `chains` value joins CHARACTER BY CHARACTER, publishing
+    "E,t,h,e,r,e,u,m" into the catalogue snapshot. Two call sites, two functions; enumerating
+    them with a parser rather than by eye is what found the second.
+    """
+    if isinstance(v, str) or not isinstance(v, (list, tuple)):
+        return ""
+    return ",".join(x for x in v if isinstance(x, str))
+
+
 def _catalog_protocols(sess):
     d = _get(sess, "https://api.llama.fi/protocols")
     if _is_err(d):
@@ -267,7 +281,7 @@ def _catalog_protocols(sess):
         cols["slug"].append(p.get("slug") or "")
         cols["category"].append(p.get("category") or "")
         cols["chain"].append(p.get("chain") or "")
-        cols["chains"].append(",".join(p.get("chains") or []))
+        cols["chains"].append(_join_names(p.get("chains")))
         cols["gecko_id"].append(p.get("gecko_id") or "")
         cols["cmc_id"].append(str(p.get("cmcId") or ""))
         cols["symbol"].append(p.get("symbol") or "")
@@ -309,6 +323,8 @@ def _catalog_stablecoins(sess):
     cols = {k: [] for k in ["stablecoin_id", "name", "symbol", "gecko_id",
                             "peg_type", "peg_mechanism", "price", "chains"]}
     for a in assets:
+        if not isinstance(a, dict):          # R795 #2 - the one of five my last round missed
+            continue
         cols["stablecoin_id"].append(str(a.get("id", "")))
         cols["name"].append(a.get("name") or "")
         cols["symbol"].append(a.get("symbol") or "")
@@ -316,7 +332,7 @@ def _catalog_stablecoins(sess):
         cols["peg_type"].append(a.get("pegType") or "")
         cols["peg_mechanism"].append(a.get("pegMechanism") or "")
         cols["price"].append(_f(a.get("price")))
-        cols["chains"].append(",".join(a.get("chains") or []))
+        cols["chains"].append(_join_names(a.get("chains")))
     return _table_from_cols(cols), ("stablecoin_id",), None
 
 
@@ -409,7 +425,22 @@ the MODULE session at timeout=120, worth 765 s on its own — larger than everyt
 and entirely outside the figure I published, which was understated 2.34x. The whole chains family
 now runs on `_chain_session()`:
 
-    15 calls x 2 attempts x 20 s + 0 s backoff = 600 s = 10 minutes, hard.
+    15 calls x 2 attempts x 2 transactions x 20 s = 1,200 s = 20 minutes.
+
+R795 #5 corrected this a THIRD time and I am writing the derivation out so the next correction is
+cheaper than the last three. A "call" is not one transaction: `max_redirects = 1` permits one
+redirect, and urllib3's retry budget is per transaction, so one `_get` is up to 4 transactions of
+20 s. 1,200 s is inside orchestrate's 45-minute per-unit SIGALRM and that is the claim - not that
+it is small.
+
+TWO THINGS THIS BOUND DOES NOT COVER, said here rather than discovered in round eight:
+  * `timeout` is a SOCKET timeout - silence between bytes, not wall time for the call. A server
+    dripping one byte every 19 s holds a connection open indefinitely and was measured at 24.02 s
+    on a 20 s timeout, succeeding. Nothing here clips that; only the SIGALRM does.
+  * The other 19 calls this source makes are on the MODULE session (total=5, Retry-After honoured)
+    and are 5.44 h unbounded. The chains family is 3.0% of the unit. That is real, it is separate
+    work, and it is deliberately not pinned by a test - R794 #2 found the previous version pinning
+    the module session at total=5, which would have made hardening it FAIL the suite.
 
 No state, no bookmark, no deferral: every chain is attempted every run, so there is no fixed-order
 prefix to re-walk and nothing for a rotation to resume. A chain that times out is named transient
@@ -444,6 +475,36 @@ left the whole file green): every chains call goes through `_chain_session()`, i
 # fetcher's declared strategy, so taking the publisher's current numbers is right.
 SERVED_CHAINS = ("Aptos", "Arbitrum", "Avalanche", "BSC", "Base", "Bitcoin", "Ethereum",
                  "Near", "OP Mainnet", "Polygon", "Solana", "Starknet", "Sui", "Tron")
+
+
+def _partial_parse_reason(parsed_dates):
+    """Why this parse looks PARTIAL rather than merely quiet, or None if it looks sound.
+
+    ONE HELPER, USED BY BOTH BRANCHES, and that is the whole point (R795 #1). I put this check in
+    the per-chain loop and not in the `__ALL__` branch thirty lines above it IN THE SAME FUNCTION -
+    the ninth appearance of "one example is a class" on this file, and the one that mattered most,
+    because __ALL__ is `defillama:tvl:total`, the headline series. Its silent freeze is invisible to
+    `health._recency_signal`, which is a max over the whole unit. A shared function cannot be
+    applied to one sibling and not the other.
+
+    THE FRONTIER IGNORES FUTURE DATES (R795 #4). `max(dates)` let a single "2999-12-31" switch the
+    guard off entirely, and 2999-12-31 is not hypothetical here - R320 records it already published
+    across six sources of this store. A parse whose only recent-looking point is in the future is
+    the defect, not the evidence against it.
+    """
+    if not parsed_dates:
+        return "200 but parsed 0 points"
+    today = dt.date.today()
+    settled = [d for d in parsed_dates if d <= today]
+    if not settled:
+        return (f"every parsed point is in the FUTURE (newest {max(parsed_dates)}) - a sentinel or "
+                f"a unit error, not data")
+    age = (today - max(settled)).days
+    if age > CHAIN_MAX_OBS_AGE_D:
+        return (f"parsed {len(parsed_dates)} points but the newest settled one is {max(settled)}, "
+                f"{age} days old on a daily series - a PARTIAL parse looks exactly like this, so "
+                f"the rows are refused rather than merged over the top of fresher stored data")
+    return None
 
 
 def _chain_session():
@@ -553,9 +614,14 @@ def _chains_tvl_aggregate(sess, tally=None):
             od = _to_date(pt.get("date"))
             if od is not None and isinstance(pt.get("tvl"), (int, float)):
                 keys.append("__ALL__"); dates.append(od); vals.append(float(pt["tvl"]))
-        if not keys and tally is not None:
-            tally.transient_unit("chains_tvl.parquet:__ALL__ (200 but parsed 0 points - the bulk "
-                                 "shape changed; tvl:total would freeze behind a fresh file)")
+        why = _partial_parse_reason(dates)
+        if why and tally is not None:
+            # THE SAME CHECK THE CHAINS GET (R795 #1). tvl:total is the headline series; a partial
+            # parse here merges rows, leaves the tally empty and advances the vintage, which is
+            # R778 #1's freeze wearing a non-empty result on the most-used series in the source.
+            keys.clear(); dates.clear(); vals.clear()
+            tally.transient_unit(f"chains_tvl.parquet:__ALL__ ({why}; the bulk shape changed and "
+                                 f"tvl:total would freeze behind a fresh-looking file)")
         elif len(set(dates)) != len(dates) and tally is not None:
             # R792 #5: the docstring claimed a duplicate-date refusal for this endpoint and only
             # the per-chain loop had one, so a duplicated bulk date reached merge and was deduped
@@ -598,22 +664,12 @@ def _chains_tvl_aggregate(sess, tally=None):
                 tally.transient_unit(f"{label} (publisher returned a repeated obs_date - shape "
                                      f"changed; refusing to guess which value is the daily close)")
             continue
-        # DID WE GET THE NEWEST THING, not merely something (R794 #4). Every guard above asks "did
-        # we parse nothing"; a PARTIAL parse defeats all of them. Measured by the reviewer: six
-        # points whose three newest carry `tvl` as a string parse to 45 rows with max obs_date
-        # 2020-09-15 - tally empty, err None, status ok, vintage ADVANCED. That is R778 #1's freeze
-        # wearing a non-empty result, and it is the shape a type change upstream produces first,
-        # because the newest rows are the ones a publisher reformats.
-        # These fourteen are daily chains that were all current to the day when measured; a week of
-        # silence in a parsed body means the body changed, not that DeFiLlama stopped.
-        newest = max(cd)
-        age = (dt.date.today() - newest).days
-        if age > CHAIN_MAX_OBS_AGE_D:
+        # DID WE GET THE NEWEST THING, not merely something (R794 #4) - the same helper the bulk
+        # branch uses, so the two cannot drift apart again.
+        why = _partial_parse_reason(cd)
+        if why:
             if tally is not None:
-                tally.transient_unit(
-                    f"{label} (parsed {len(ck)} points but the newest is {newest}, {age} days old "
-                    f"on a daily chain - a PARTIAL parse looks exactly like this, so the rows are "
-                    f"refused rather than merged over the top of fresher stored data)")
+                tally.transient_unit(f"{label} ({why})")
             continue
         keys.extend(ck); dates.extend(cd); vals.extend(cv)
 
