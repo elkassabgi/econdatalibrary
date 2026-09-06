@@ -14,6 +14,7 @@ be a lie.
 
 What remains is the set of properties the change actually has.
 """
+import datetime as _dt
 import os
 import sqlite3
 import sys
@@ -29,7 +30,12 @@ from updater.strategies.fetchers._common import Tally                 # noqa: E4
 # Same resolution as orchestrate.py:1067, so the test reads the catalogue the fetcher would.
 CATALOG = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
 PREFIX = "defillama:chain_tvl:"
-TS = 1_700_000_000
+
+# A RECENT timestamp, not a frozen 2023 one. The partial-parse guard (R794 #4) refuses a chain
+# whose newest parsed point is more than CHAIN_MAX_OBS_AGE_D days old, so a fixed fixture epoch
+# would make every one of these fixtures look like the defect. That the guard caught my own
+# fixtures the moment it was added is the cheapest possible evidence that it fires.
+TS = int((_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).timestamp())
 
 
 def _catalogued_chains():
@@ -105,17 +111,30 @@ def test_the_chain_session_has_the_policy_the_bound_assumes():
     added a `backoff_factor` term urllib3 does not apply before a first retry, and it omitted the
     bulk GET, which was then still on the module session at 765 s - larger than everything else
     combined. The arithmetic now lives where the calls are observed, not here."""
-    retry = defillama._chain_session().get_adapter("https://api.llama.fi").max_retries
+    # PROBE THE URL THE FETCHER ACTUALLY CALLS (R794 #8). requests resolves adapters by LONGEST
+    # prefix, so probing "https://api.llama.fi" while the code calls
+    # ".../v2/historicalChainTvl/<name>" let a mount on a longer prefix keep every assertion true
+    # while every real call used total=5 and honoured Retry-After. Measured by the reviewer: 22
+    # passed with the worst case back to 2,475 s + 5 x 21,600 s per call.
+    s = defillama._chain_session()
+    url = "https://api.llama.fi/v2/historicalChainTvl/Ethereum"
+    retry = s.get_adapter(url).max_retries
     assert retry.total == 1, f"the chain session must retry once, got total={retry.total}"
-    assert retry.respect_retry_after_header is False, (
-        "urllib3 caps a Retry-After sleep at retry_after_max=21,600 s and 429 is in this session's "
-        "own status_forcelist, so honouring it makes one 429 worth up to six hours on one call - "
-        "and the Deadline that used to clip that is deliberately gone (R792 #1)")
+    assert retry.respect_retry_after_header is False, "Retry-After must not be honoured here"
+    # urllib3 honours Retry-After only for {413, 429, 503}, so keeping those OUT of the forcelist
+    # is what actually makes the header unreachable - and it costs the publisher nothing, where
+    # respect_retry_after_header=False alone sent the retry 0.00 s later (R794 #7).
+    assert 429 not in retry.status_forcelist and 503 not in retry.status_forcelist, (
+        f"429/503 must not be retried here: urllib3 honours Retry-After for exactly those and "
+        f"caps the sleep at 21,600 s. forcelist={sorted(retry.status_forcelist)}")
+    # Redirects are TRANSACTIONS and each gets its own retry budget; Session.max_redirects defaults
+    # to 30, which the reviewer measured as 31 transactions and 1,240 s for ONE call (R794 #1).
+    assert s.max_redirects <= 1, f"max_redirects={s.max_redirects} makes the per-call bound a lie"
 
-    # The module session is deliberately NOT this: the other families are one bulk request each and
-    # keep the full retry stack. If the two ever converge, the bound is being computed on the wrong
-    # policy.
-    assert defillama._session().get_adapter("https://api.llama.fi").max_retries.total == 5
+    # NOT asserted here: what the MODULE session's retry policy is. R794 #2 showed the previous
+    # version pinning it at total=5, which would have made hardening it FAIL this suite - a test
+    # standing guard over the defect. The module session's 19 calls are 5.44 h and unbounded; that
+    # is real, it is NOT fixed by this change, and it is recorded rather than pinned.
 
 
 def _stub(monkeypatch, bulk, chain):
@@ -273,3 +292,66 @@ def test___ALL___refuses_a_repeated_obs_date(monkeypatch):
     tbl, _dk, _k, _d, _e = defillama._chains_tvl_aggregate(None, t)
     assert any("__ALL__" in s and "repeated obs_date" in s for s in t.transient_ids), t.transient_ids
     assert "__ALL__" not in set(tbl.column("series_key").to_pylist())
+
+
+# ------------------------------------------------------- R794: partial parses and element shapes
+
+@pytest.mark.parametrize("label,body", [
+    ("null element",       [None, {"date": TS, "tvl": 7.0}]),
+    ("string element",     ["oops", {"date": TS, "tvl": 7.0}]),
+    ("nested-dict date",   [{"date": {"n": 1}, "tvl": 7.0}, {"date": TS, "tvl": 7.0}]),
+    ("nested-list date",   [{"date": [1], "tvl": 7.0}, {"date": TS, "tvl": 7.0}]),
+])
+def test_no_response_SHAPE_escapes_as_an_exception(monkeypatch, label, body):
+    """R794 #3. The element guard reached 2 of 7 loops, and `_to_date` caught ValueError but not
+    TypeError - so `{"date": {...}}` raised straight THROUGH the guard it did have. An uncaught
+    AttributeError/TypeError leaves update() entirely, taking the chains merge, stablecoins, the
+    obs total, the cursor map and finalize() with it: a worse blast radius than the whole-source
+    veto the None path exists to avoid."""
+    monkeypatch.setattr(defillama, "SERVED_CHAINS", ("Alpha",))
+    _record_calls(monkeypatch, chain_resp=body, bulk_resp=body)
+    tbl, _dk, _k, _d, _e = defillama._chains_tvl_aggregate(None, Tally())
+    assert set(tbl.column("series_key").to_pylist()) == {"__ALL__", "Alpha"}, label
+
+
+def test__to_date_answers_None_for_any_shape_it_cannot_read():
+    """A date parser's contract is to refuse, not to raise, whatever arrives."""
+    for bad in ({"n": 1}, [1], (1,), object(), b"x", None, "", "not-a-date"):
+        assert defillama._to_date(bad) is None, bad
+    assert defillama._to_date(TS) is not None      # the positive control
+
+
+def test_a_PARTIAL_parse_is_refused_rather_than_merged(monkeypatch):
+    """R794 #4, and the sharpest of the class. Every other guard asks 'did we parse NOTHING'; a
+    partial parse defeats all of them. Six points whose newest three carry `tvl` as a string parse
+    to real rows with an old max date - tally empty, err None, status ok, vintage ADVANCED - which
+    is R778 #1's freeze wearing a non-empty result. It is also the shape a type change upstream
+    produces FIRST, because the newest rows are the ones a publisher reformats."""
+    import datetime as _dt
+    day = 86400
+    now = int(_dt.datetime.now(_dt.timezone.utc).timestamp())
+    old_ok = [{"date": now - (60 + i) * day, "tvl": 1.0 + i} for i in range(3)]
+    new_broken = [{"date": now - i * day, "tvl": "1234.5"} for i in range(3)]   # strings
+    monkeypatch.setattr(defillama, "SERVED_CHAINS", ("Alpha",))
+    _record_calls(monkeypatch, chain_resp=old_ok + new_broken,
+                  bulk_resp=[{"date": now, "tvl": 1.0}])
+    t = Tally()
+    tbl, _dk, _k, _d, _e = defillama._chains_tvl_aggregate(None, t)
+    assert "Alpha" not in set(tbl.column("series_key").to_pylist()), (
+        "a partial parse was merged over the top of fresher stored data")
+    assert any("PARTIAL parse" in s for s in t.transient_ids), t.transient_ids
+
+
+def test_a_genuinely_fresh_parse_is_NOT_refused(monkeypatch):
+    """The positive control for the staleness guard: without it the test above is satisfied by a
+    function that refuses everything (R783)."""
+    import datetime as _dt
+    day = 86400
+    now = int(_dt.datetime.now(_dt.timezone.utc).timestamp())
+    fresh = [{"date": now - i * day, "tvl": 1.0 + i} for i in range(5)]
+    monkeypatch.setattr(defillama, "SERVED_CHAINS", ("Alpha",))
+    _record_calls(monkeypatch, chain_resp=fresh, bulk_resp=fresh)
+    t = Tally()
+    tbl, _dk, _k, _d, _e = defillama._chains_tvl_aggregate(None, t)
+    assert "Alpha" in set(tbl.column("series_key").to_pylist()), t.transient_ids
+    assert t.transient == 0, t.transient_ids

@@ -204,7 +204,12 @@ def _to_date(ts):
         if ts > 1e12:
             ts /= 1000.0
         return dt.datetime.utcfromtimestamp(ts).date()
-    except (ValueError, OverflowError, OSError):
+    except (TypeError, ValueError, OverflowError, OSError):
+        # TypeError added per R794 #3: `float({...})` and `float([...])` raise TypeError, not
+        # ValueError, so a `{"date": {...}}` point raised straight THROUGH the new per-element
+        # dict guard and through _overview's - the guard checked the element's type and then handed
+        # a nested container to a parser that could not refuse it. A date parser's contract is to
+        # answer None for anything it cannot read, whatever shape arrives.
         return None
 
 
@@ -255,6 +260,8 @@ def _catalog_protocols(sess):
                             "chains", "gecko_id", "cmc_id", "symbol", "url",
                             "twitter", "parent", "tvl", "mcap", "listed_at"]}
     for p in d:
+        if not isinstance(p, dict):        # R794 #3, one example is a class
+            continue
         cols["protocol_id"].append(str(p.get("id", "")))
         cols["name"].append(p.get("name") or "")
         cols["slug"].append(p.get("slug") or "")
@@ -281,6 +288,8 @@ def _catalog_chains(sess):
         return _table_from_cols({"name": []}), ("name",), None
     cols = {k: [] for k in ["name", "chain_id", "gecko_id", "token_symbol", "cmc_id", "tvl"]}
     for c in d:
+        if not isinstance(c, dict):        # R794 #3, one example is a class
+            continue
         cols["name"].append(c.get("name") or "")
         cols["chain_id"].append(str(c.get("chainId") or ""))
         cols["gecko_id"].append(c.get("gecko_id") or "")
@@ -322,6 +331,8 @@ def _catalog_yield_pools(sess):
                             "apy", "apy_base", "apy_reward", "stablecoin", "il_risk",
                             "exposure", "pool_meta"]}
     for p in pools:
+        if not isinstance(p, dict):        # R794 #3, one example is a class
+            continue
         cols["pool_id"].append(p.get("pool") or "")
         cols["chain"].append(p.get("chain") or "")
         cols["project"].append(p.get("project") or "")
@@ -369,6 +380,16 @@ def _overview(sess, typ, dtype):
             keys.append(str(proto)); dates.append(od); vals.append(float(vv))
     tbl = _table_from_cols({"series_key": keys, "obs_date": dates, "value": vals})
     return tbl, DEDUP_TS, keys, dates, None
+CHAIN_MAX_OBS_AGE_D = 7
+"""How stale a per-chain parse may be before it is refused as a probable PARTIAL parse (R794 #4).
+
+All fourteen were current to the day when measured (2026-09-06T02:57:06Z, 14/14). Seven days of
+slack absorbs a genuine publisher pause; beyond that, on a chain whose whole point is a daily TVL
+series, "we parsed rows but none of them are recent" is far likelier to mean the newest points
+changed shape than that DeFiLlama stopped publishing. Refusing is the safe direction: the stored
+data stays, the run says why, and a real week-long outage costs one honest transient a day.
+"""
+
 CHAIN_TIMEOUT_S = 20
 """Per-request timeout for the per-chain GETs, on a session that retries ONCE.
 
@@ -444,9 +465,23 @@ def _chain_session():
     """
     s = requests.Session()
     s.headers.update({"User-Agent": UA})
+    # NO 429 OR 503 IN THE FORCELIST — R794 #7's third option, which is better than the answer I
+    # shipped. urllib3 honours Retry-After only for {413, 429, 503}, so leaving them out makes the
+    # header unreachable WITHOUT the rudeness `respect_retry_after_header=False` bought: measured,
+    # that setting made the second request go out 0.00 s after a 429, which is worse for a
+    # publisher we are here on a personal non-commercial grant. `_get` already maps a returned 429
+    # to a named transient, so the run still reports it and retries next day. Zero extra requests
+    # on the 429 path. 500/502/504 still get their one retry, so the WORST case stays
+    # 15 x 2 x 20 = 600 s; what changed is that no response header can lift it any more.
     retry = Retry(total=1, backoff_factor=0.5,
-                  status_forcelist=[429, 500, 502, 503, 504],
+                  status_forcelist=[500, 502, 504],
                   allowed_methods=["GET"], respect_retry_after_header=False)
+    # REDIRECTS ARE TRANSACTIONS (R794 #1). urllib3's retry budget is per HTTP transaction and
+    # `Session.max_redirects` is 30, so one `_get` was measured at 31 transactions = 1,240 s. The
+    # chains endpoints are direct; a redirect here is a sign something moved, which belongs in the
+    # run note rather than in a silent 30-hop chase. istat's 302 self-redirect is this repo's own
+    # precedent for exactly that (TooManyRedirects, ledger R62/R63).
+    s.max_redirects = 1
     s.mount("https://", HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=4))
     return s
 
@@ -563,6 +598,23 @@ def _chains_tvl_aggregate(sess, tally=None):
                 tally.transient_unit(f"{label} (publisher returned a repeated obs_date - shape "
                                      f"changed; refusing to guess which value is the daily close)")
             continue
+        # DID WE GET THE NEWEST THING, not merely something (R794 #4). Every guard above asks "did
+        # we parse nothing"; a PARTIAL parse defeats all of them. Measured by the reviewer: six
+        # points whose three newest carry `tvl` as a string parse to 45 rows with max obs_date
+        # 2020-09-15 - tally empty, err None, status ok, vintage ADVANCED. That is R778 #1's freeze
+        # wearing a non-empty result, and it is the shape a type change upstream produces first,
+        # because the newest rows are the ones a publisher reformats.
+        # These fourteen are daily chains that were all current to the day when measured; a week of
+        # silence in a parsed body means the body changed, not that DeFiLlama stopped.
+        newest = max(cd)
+        age = (dt.date.today() - newest).days
+        if age > CHAIN_MAX_OBS_AGE_D:
+            if tally is not None:
+                tally.transient_unit(
+                    f"{label} (parsed {len(ck)} points but the newest is {newest}, {age} days old "
+                    f"on a daily chain - a PARTIAL parse looks exactly like this, so the rows are "
+                    f"refused rather than merged over the top of fresher stored data)")
+            continue
         keys.extend(ck); dates.extend(cd); vals.extend(cv)
 
     if not keys:
@@ -584,6 +636,8 @@ def _stablecoins_total(sess):
             DEDUP_TS, [], [], None
     keys, dates, vals = [], [], []
     for pt in d:
+        if not isinstance(pt, dict):        # R794 #3, one example is a class
+            continue
         od = _to_date(pt.get("date"))
         cu = pt.get("totalCirculatingUSD")
         if isinstance(cu, dict):
