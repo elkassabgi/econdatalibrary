@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""The third leg: how many OBJECTS does R2 hold per source, against the catalogue?
+
+WHY THIS EXISTS. `tools/audit_store_vs_catalog.py` compares the CATALOGUE against the LOCAL
+PARQUET STORE. Neither of those is what a user receives, and the tool cannot see R2 at all - which
+is exactly how it came to print "hosted but not catalogued" about data that had never been
+published (corrected 2026-09-06, R834). Its ORPHAN verdict had the mirror-image defect a day
+earlier (R825, "ORPHAN is not a 404 count").
+
+Three quantities, three different answers:
+
+    local store keys   what we HOLD          data/clean_full/<source>/*.parquet
+    R2 objects         what we HOST          series/<source>%3A...
+    catalogue rows     what we LIST          data/catalog.db (and D1, which serves it)
+
+A gap between the first and the third is "held, not published" - the fix is a derive.
+A gap between the second and the third is "published but unlisted", or "listed but 404" - the fix
+is a catalogue write, or a delist. Those are different jobs with different costs, and the words
+are not interchangeable.
+
+MEASURED 2026-09-06, the run that prompted this tool:
+
+    source     R2 objects     catalogue rows     local store keys
+    abs                18                 18          376,333,085
+    bls                 9                  9          154,190,127
+    bis                49                 49            1,521,257
+    ember              60                 60              255,898
+    ecb                35                 35            3,733,574
+    census          2,993              2,993              440,414
+    gus                 0                  0              151,236
+
+R2 and the catalogue agreed EXACTLY in all seven, which is what settled the question.
+
+COST. `list_objects_v2` at 1,000 keys per page, so roughly one Class A call per 1,000 objects -
+about $4.50 per million calls. Listing statcan's 466,341 keys is ~470 calls, well under a cent.
+It touches D1 not at all. `--max` bounds a runaway prefix and SAYS it stopped rather than
+reporting a truncated count as a total.
+
+    python tools/audit_r2_vs_catalog.py abs bls bis
+    python tools/audit_r2_vs_catalog.py --all          # every source with catalogue rows
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sqlite3
+import sys
+import urllib.parse
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+
+def count_prefix(s3, bucket: str, prefix: str, cap: int) -> tuple[int, bool]:
+    """Objects under `prefix`. Returns (count, truncated). Truncated is NEVER silent."""
+    n, token = 0, None
+    while True:
+        kw = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
+        if token:
+            kw["ContinuationToken"] = token
+        r = s3.list_objects_v2(**kw)
+        n += r.get("KeyCount", 0)
+        token = r.get("NextContinuationToken")
+        if not token:
+            return n, False
+        if cap and n >= cap:
+            return n, True
+
+
+def catalogue_counts() -> dict:
+    con = sqlite3.connect(
+        f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True)
+    try:
+        return dict(con.execute("SELECT source_id, count(*) FROM series GROUP BY 1"))
+    finally:
+        con.close()
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("sources", nargs="*")
+    ap.add_argument("--all", action="store_true",
+                    help="every source holding catalogue rows (hundreds of prefixes; slow)")
+    ap.add_argument("--bucket", default="econ-data")
+    ap.add_argument("--prefix", default="series")
+    ap.add_argument("--max", type=int, default=2_000_000,
+                    help="stop counting a single prefix past this and SAY SO, rather than "
+                         "reporting a truncated figure as a total")
+    a = ap.parse_args()
+
+    counts = catalogue_counts()
+    names = a.sources or (sorted(counts) if a.all else [])
+    if not names:
+        print("name at least one source, or pass --all")
+        return 2
+
+    from core import r2_util                                   # noqa: PLC0415  (boto3 late)
+    s3 = r2_util.client()
+
+    print(f"{'source':<24}{'R2 objects':>14}{'catalogue rows':>16}{'difference':>13}  verdict")
+    agree = disagree = 0
+    for src in names:
+        pre = f"{a.prefix}/{urllib.parse.quote(src + ':', safe='')}"
+        try:
+            n, truncated = count_prefix(s3, a.bucket, pre, a.max)
+        except Exception as e:                                 # noqa: BLE001
+            # NEVER a silent skip. An unlistable prefix is UNCHECKED, not clean (R390).
+            print(f"  {src:<22}{'UNCHECKED':>14}{counts.get(src, 0):>16,}"
+                  f"{'':>13}  LIST FAILED {type(e).__name__}")
+            continue
+        cat = counts.get(src, 0)
+        if truncated:
+            print(f"  {src:<22}{n:>13,}+{cat:>16,}{'':>13}  STOPPED at --max — not a total")
+            continue
+        d = n - cat
+        if d == 0:
+            verdict, agree = "agree", agree + 1
+        elif d > 0:
+            verdict, disagree = "OBJECTS WITH NO CATALOGUE ROW — published, unlisted", disagree + 1
+        else:
+            verdict, disagree = "CATALOGUE ROWS WITH NO OBJECT — listed ids that 404", disagree + 1
+        print(f"  {src:<22}{n:>14,}{cat:>16,}{d:>+13,}  {verdict}")
+
+    print()
+    print(f"  {agree} source(s) where R2 and the catalogue agree; {disagree} where they do not.")
+    print("  This says nothing about the LOCAL STORE — a source can agree here and still hold")
+    print("  hundreds of millions of unpublished keys locally. That is "
+          "tools/audit_store_vs_catalog.py.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
