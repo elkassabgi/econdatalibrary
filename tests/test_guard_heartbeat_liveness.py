@@ -80,6 +80,35 @@ def test_a_dash_m_or_dash_c_invocation_never_yields_a_script():
     assert gh._script_of(Q + ' -c "print(1) ingest_cbs_nl.py"') is None
 
 
+def test_the_THREE_FORGERIES_ROUND_TWO_DEMONSTRATED_ON_REAL_PROCESSES():
+    """R804 finding 1. Naming `-m` and `-c` as the dangerous flags left these open, and all three
+    were reproduced as real spawned processes reported ALIVE with a pid and an age. `python -`
+    reads the program from stdin and is this session's own tooling shape - two such processes
+    were live on the box at the time."""
+    assert gh._script_of(Q + " - jobs/ingest_cbs_nl.py") is None          # program on stdin
+    assert gh._script_of(Q + ' -c"print(1)" jobs/ingest_cbs_nl.py') is None   # bundled -c
+    assert gh._script_of(Q + " -mpdb jobs/ingest_cbs_nl.py") is None      # bundled -m
+    assert gh._script_of(Q + " -mpy_compile ingest_cbs_nl.py") is None
+    assert gh._script_of(Q + " -mflake8 ingest_cbs_nl.py") is None
+
+
+def test_an_UNKNOWN_flag_refuses_rather_than_scanning_past_it():
+    """The allow-list is the point: a flag this module does not recognise makes the command line
+    unrecognised, instead of being skipped in the hope the next .py token is the script."""
+    assert gh._script_of(Q + " --some-future-flag jobs/ingest_cbs_nl.py") is None
+    assert gh._script_of(Q + " -Z jobs/ingest_cbs_nl.py") is None
+
+
+def test_the_HARMLESS_flags_the_repo_actually_uses_still_resolve():
+    """The measured price. RELAUNCH_GUARD.ps1:25-40 launches `$python jobs/ingest_<x>.py`, and
+    its long-job shim at :231 documents `python -u ... <script>` - both must resolve, or failing
+    closed would blind the beat to the very jobs it tracks."""
+    assert gh._script_of(Q + " -u jobs/ingest_cbs_nl.py") == "ingest_cbs_nl.py"
+    assert gh._script_of(Q + " -u -B jobs/ingest_cbs_nl.py") == "ingest_cbs_nl.py"
+    assert gh._script_of(Q + " -X utf8 jobs/ingest_cbs_nl.py") == "ingest_cbs_nl.py"
+    assert gh._script_of(Q + " -W ignore jobs/ingest_cbs_nl.py") == "ingest_cbs_nl.py"
+
+
 def test_a_longer_name_containing_the_tracked_one_is_not_that_job():
     assert gh._script_of(Q + " jobs/my_ingest_cbs_nl.py") == "my_ingest_cbs_nl.py"
     assert gh._script_of(Q + " jobs/ingest_cbs_nl.pyz") is None
@@ -117,23 +146,39 @@ def test_no_python_processes_reads_as_empty_not_as_unknown(monkeypatch):
     assert gh._alive_jobs_detail() == []
 
 
-def test_UNDECODABLE_output_is_UNKNOWN_not_empty(monkeypatch):
-    """R802 finding 3, the critical one. PowerShell's stdout is OEM-encoded; `text=True` decoded
-    it with the ANSI code page, so ONE unrelated process with a non-ASCII path raised
-    UnicodeDecodeError, the bare except swallowed it, and the beat said nothing was running
-    while both crawlers were up. Now the bytes are decoded with errors='replace' and the row
-    survives."""
-    rows = [dict(REAL)]
-    raw = json.dumps(rows[0]).encode("utf-8").replace(
-        b"jobs/", "jobs/\udce9".encode("utf-8", "surrogatepass"))
-    _table(monkeypatch, rows, raw=raw)
-    got = gh._alive_jobs_detail()
-    assert got is not None, "an undecodable byte must not silently empty the table"
+def test_the_REAL_DECODE_survives_a_byte_cp1252_cannot_read():
+    """R802 finding 3, and R804 finding 3 on how I tested it. My previous version of this test
+    stubbed `subprocess.run`, so the decode it existed to pin NEVER RAN and it passed against the
+    broken code too. `_parse_process_table` now takes the bytes, so this drives the real decode.
+
+    The byte matters: U+0141 encodes as C5 81, and 0x81 is UNDEFINED in cp1252. An o-umlaut probe
+    proves nothing because cp1252 has it — which is how my first live check of this fix came back
+    green while demonstrating nothing.
+    """
+    other = {"ProcessId": 999, "AgeS": 5,
+             "CommandLine": PY + " D:\\tmp\\pr\u0141be\\x.py"}
+    raw = json.dumps([other, REAL], ensure_ascii=False).encode("utf-8")   # as ConvertTo-Json emits
+    assert b"\xc5\x81" in raw and b"\x81" in raw
+
+    import pytest
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("cp1252")                     # the OLD path, on these exact bytes
+
+    rows = gh._parse_process_table(raw, 0)
+    assert rows is not None and len(rows) == 2
+    assert [d["name"] for d in gh._match_tracked(rows)] == ["ingest_cbs_nl.py"]
 
 
-def test_a_FAILED_process_query_is_UNKNOWN_not_empty(monkeypatch):
-    _table(monkeypatch, [REAL], rc=1)
-    assert gh._alive_jobs_detail() is None
+def test_a_FAILED_process_query_is_UNKNOWN_not_empty():
+    assert gh._parse_process_table(json.dumps([REAL]).encode(), 1) is None
+
+
+def test_unparseable_json_is_UNKNOWN_not_empty():
+    assert gh._parse_process_table(b"{not json", 0) is None
+
+
+def test_a_successful_query_with_no_rows_is_EMPTY_not_unknown():
+    assert gh._parse_process_table(b"", 0) == []
 
 
 def test_a_raising_process_query_is_UNKNOWN_not_empty(monkeypatch):
@@ -183,7 +228,7 @@ def test_an_unreadable_table_is_published_as_UNKNOWN(monkeypatch):
     assert body["table_ok"] is False and body["jobs_alive"] == []
 
 
-def _check_out(capsys, **over):
+def _check_out(capsys, _drop=(), **over):
     import datetime as dt
     import unittest.mock as m
 
@@ -202,6 +247,8 @@ def _check_out(capsys, **over):
         "emptiness": {"ran": True, "fetch_without_write": 0},
     }
     payload.update(over)
+    for k in _drop:                     # a real OLD beat has the key ABSENT, not set to None
+        payload.pop(k, None)
 
     class _C:
         def get_object(self, Bucket=None, Key=None):        # noqa: N803
@@ -217,14 +264,14 @@ def test_the_check_NAMES_the_job_that_was_just_restarted(capsys):
     sees istat's age and is told to read its log."""
     rc, out = _check_out(capsys)
     assert rc == 0
-    assert "RESTARTED within the last guard tick" in out
-    assert "ingest_istat_sliced.py (2s old)" in out, out
+    assert "restarted within the last guard tick" in out
+    assert "ingest_istat_sliced.py 2s ago" in out, out
     assert "ingest_istat_sliced.py (pid 3, 2s)" in out, out
 
 
 def test_the_ages_are_printed_UNDER_the_line_they_annotate(capsys):
     _rc, out = _check_out(capsys)
-    assert out.index("guard heartbeat OK") < out.index("RESTARTED within"), out
+    assert out.index("guard heartbeat OK") < out.index("restarted within"), out
 
 
 def test_an_unreadable_table_does_not_read_as_finished_or_dead(capsys):
@@ -235,10 +282,19 @@ def test_an_unreadable_table_does_not_read_as_finished_or_dead(capsys):
 
 
 def test_an_older_beat_without_the_new_fields_still_reads_cleanly(capsys):
-    """A beat published before this change has no jobs_detail/table_ok. It must not crash the
-    gate or be reported as unreadable."""
-    rc, out = _check_out(capsys, jobs_detail=None, table_ok=None)
+    """A beat published before this change has no jobs_detail and no table_ok AT ALL. My previous
+    version of this test set them to None, which takes a different branch entirely (R804 #3), so
+    it never exercised the case it named. The keys are now DELETED, as in a real old beat."""
+    rc, out = _check_out(capsys, _drop=("jobs_detail", "table_ok", "relaunch_window_s"))
     assert rc == 0 and "guard heartbeat OK" in out
+    assert "jobs:" not in out and "restarted within" not in out
+
+
+def test_an_age_that_could_not_be_read_prints_words_not_None(capsys):
+    """A skewed clock made age_s None, and the line rendered '(pid 55524, Nones)' (R804 #7)."""
+    _rc, out = _check_out(capsys, jobs_detail=[{"name": "ingest_cbs_nl.py", "pid": 7,
+                                               "age_s": None}])
+    assert "age unknown" in out and "Nones" not in out, out
 
 
 # ------------------------------------------------------------------ DISCRIMINATION CONTROL

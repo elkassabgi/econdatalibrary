@@ -60,34 +60,49 @@ DEFAULT_MAX_AGE_MIN = 45.0
 TRACKED = ("ingest_cbs_nl.py", "ingest_gus_dbw.py", "ingest_istat_sliced.py")
 
 
-# One guard tick is ~316 s measured over logs/_guard.log (median, n=1568), so a tracked process
-# younger than this was (re)started within the last tick. That is a FACT worth printing, not a
-# verdict: cbs_nl is relaunched legitimately every ~68 min and gus_dbw every ~53 min, so roughly
-# one beat in six catches a perfectly healthy crawler in its first seconds.
+# A tracked process younger than this was (re)started within the last guard tick, which is a FACT
+# worth printing and never a verdict. Measured by me over logs/_guard.log (2026-06-15..2026-09-06,
+# scratchpad/measure_relaunch_cadence.py) rather than copied: tick cadence median 315.0 s
+# (n=2,850 gaps under 1 h), and the relaunch cadences the window has to tolerate are
+# istat_sliced 5.3 min (n=1,642), cbs_nl 68.2 min (n=372) and gus_dbw 22.2 h (n=38).
+# An earlier draft of this comment said gus_dbw was "every ~53 min" — I had taken that from a
+# review instead of measuring it and it was wrong by a factor of ~25 (R804 #4). A number in a
+# shipped comment needs its own instrument, same as a number in a report.
 RELAUNCH_WINDOW_S = 330
+
+
+# Interpreter flags that do NOT change which file python runs. Anything not on these two lists -
+# including `-`, `-c`, `-m`, a combined `-mpdb`, a bundled `-c"..."`, or any long option - makes
+# the command line unrecognised and `_script_of` refuses it. An ALLOW-list, because the deny-list
+# is what kept leaking: two rounds of review found `python - X.py`, `python -c"..." X.py` and
+# `python -mpdb X.py` each forging a match against a rule that named `-m` and `-c` (R802, R804).
+_SAFE_FLAGS = frozenset(("-u", "-B", "-E", "-s", "-S", "-O", "-OO", "-q", "-I", "-b", "-d", "-v"))
+_SAFE_FLAGS_WITH_ARG = frozenset(("-X", "-W"))
 
 
 def _script_of(cmdline: str) -> "str | None":
     """The basename of the script a python command line is RUNNING, or None.
 
-    THE SCRIPT IS THE FIRST .py TOKEN, AND ONLY THAT ONE. Returning every .py token was the
-    previous version's bug and it re-opened the hole it was written to close: a tracked name
-    passed as an ARGUMENT counted as the job running, so `python other.py --note ingest_x.py`,
-    `python -m py_compile ingest_x.py` and `pytest tests/t.py ingest_x.py` all forged a beat.
-    Those are precisely the command lines a session runs while investigating a sick crawler, so
-    the instrument would lie hardest exactly when someone was looking at it (R260: the observer
-    must not be able to fake the beat).
+    FAIL CLOSED. The script is the first NON-FLAG token, every flag before it must be one this
+    module recognises as harmless, and anything else refuses. Two earlier shapes both leaked:
+    scanning for any .py token let `python audit_x.py --script ingest_x.py` forge a beat (R802),
+    and then naming `-m`/`-c` as the only dangerous flags let `python - X.py`,
+    `python -c"..." X.py` and `python -mpdb X.py` through (R804) - all three demonstrated on
+    real spawned processes, and `python -` is this session's own tooling shape. The set of ways
+    to make python run something other than its first path argument is not closed, so a
+    matcher over that set cannot be either; the allow-list is.
 
-    `-m` and `-c` take a module or a program text rather than a path, so any .py token after one
-    of them is an argument and never the script.
+    THE PRICE IS MEASURED, not assumed. `RELAUNCH_GUARD.ps1:25-40` launches each tracked job as
+    `$python jobs/ingest_<x>.py`, which resolves. Its long-job shim (`:231`) documents the form
+    `python -u ... <script>`, and `-u` is on the allow-list, so that resolves too. A form nobody
+    uses is refused loudly as "not running" rather than silently mis-attributed.
+
+    Why refusing is the safe direction here: this feeds only the HEARTBEAT. The guard's own
+    relaunch decision lives in RELAUNCH_GUARD.ps1 and reads its own process list, so a refusal
+    here under-reports a beat and can never cause a duplicate crawler.
 
     Basenames, so `jobs/ingest_x.py` and `"E:\\...\\jobs\\ingest_x.py"` agree while
     `my_ingest_x.py` and `ingest_x.pyz` match nothing.
-
-    An unparseable command line returns None - "not running" - rather than falling back to a
-    whitespace split, which is how the previous version restored the very substring bug it
-    replaced. This function only feeds the HEARTBEAT; the guard's own relaunch decision lives in
-    RELAUNCH_GUARD.ps1, so failing closed here mis-reports and never mis-relaunches.
     """
     if not cmdline:
         return None
@@ -95,12 +110,19 @@ def _script_of(cmdline: str) -> "str | None":
         parts = shlex.split(cmdline, posix=False)
     except ValueError:
         return None
-    for raw in parts[1:]:                       # [0] is the interpreter
-        tok = raw.strip("\"'")
-        if tok in ("-m", "-c"):
-            return None
-        if tok.lower().endswith(".py"):
-            return os.path.basename(tok.replace("\\", "/"))
+    i = 1                                       # [0] is the interpreter
+    while i < len(parts):
+        tok = parts[i].strip("\"'")
+        if tok.startswith("-"):
+            if tok in _SAFE_FLAGS:
+                i += 1
+                continue
+            if tok in _SAFE_FLAGS_WITH_ARG:
+                i += 2
+                continue
+            return None                         # unknown flag: refuse, do not scan past it
+        return (os.path.basename(tok.replace("\\", "/"))
+                if tok.lower().endswith(".py") else None)
     return None
 
 
@@ -123,18 +145,23 @@ def _alive_jobs_detail() -> "list[dict]":
     by exactly the nine seconds that failure lived in.
 
     THE AGE IS REPORTED, NOT JUDGED. An earlier version of this fix dropped young processes out
-    of `jobs_alive` on a 60-second floor, which is wrong: measured over logs/_guard.log,
-    cbs_nl is legitimately relaunched 372 times at a 68.2-minute median and gus_dbw 38 times at
-    53.3 minutes, and `publish` runs ~2 s after a tick — so about one beat in six would have
-    called a perfectly healthy crawler dead, and the existing "not running" note would then have
-    printed something false. One sample per tick cannot separate a restart from a crash loop
-    (R54), so this publishes the fact — pid and age — and leaves the verdict to a reader who can
-    look at the job's own log.
+    of `jobs_alive` on a 60-second floor, which is wrong: measured over logs/_guard.log, cbs_nl
+    is legitimately relaunched 372 times at a 68.2-minute median, and `publish` runs ~2 s after a
+    tick — so roughly one beat in six would have called a perfectly healthy crawler dead, and the
+    existing "not running" note would then have printed something false. One sample per tick
+    cannot separate a restart from a crash loop (R54), so this publishes the fact — pid and age —
+    and leaves the verdict to a reader who can look at the job's own log.
+
+    THIS DOES NOT REDDEN CI, AND THAT IS A CHOICE. Two reviews asked why the gate still cannot
+    fail on the R799 condition. Failing on it needs a signal one sample does not carry: the same
+    job young on CONSECUTIVE beats, or a changed pid between them, and this publisher keeps no
+    state across ticks. Guessing from one sample is precisely the 60-second floor that had to be
+    reverted. Until the two-tick comparison exists, the honest position is that the beat now
+    CARRIES the fact a reader needs and stops asserting a health it cannot establish.
 
     Returns None, never [], when the process table could not be read: "unknown" and "nothing is
     running" are different, and a blind instrument must not read as a clean one.
     """
-    ok, data = False, []
     try:
         import subprocess
         ps = subprocess.run(
@@ -152,25 +179,48 @@ def _alive_jobs_detail() -> "list[dict]":
             # function from two live crawlers to zero. This fleet crawls Dutch, Polish and
             # Italian sources. `_emptiness_verdict` below already got this right.
             capture_output=True, timeout=60)
-        if ps.returncode == 0:
-            data = json.loads(ps.stdout.decode("utf-8", "replace") or "null")
-            ok = True
     except Exception:                                        # noqa: BLE001
-        ok, data = False, []
-    if not ok:
-        # An unreadable process table is UNKNOWN, never "nothing is running". The caller marks
-        # the beat so a reader cannot mistake a blind sample for an empty machine.
         return None
-    if data is None:
-        # A SUCCESSFUL query with no rows: PowerShell prints nothing, which becomes "null". That
-        # is a machine with no python processes - genuinely empty, and NOT the unknown above.
-        # Collapsing the two was a real regression, caught by this file's own test.
-        data = []
+    rows = _parse_process_table(ps.stdout, ps.returncode)
+    return None if rows is None else _match_tracked(rows)
+
+
+def _parse_process_table(stdout: bytes, returncode: int) -> "list | None":
+    """Raw PowerShell bytes -> rows, or None when the sample is not trustworthy.
+
+    SPLIT OUT SO A TEST CAN DRIVE THE REAL DECODE. The previous version's headline encoding test
+    stubbed `subprocess.run`, so the decode it existed to pin never executed and the test passed
+    against the broken code too (R804 finding 3). Here the bytes are the argument, so a test can
+    hand it the real 0x81 that used to blind the instrument.
+
+    ENCODING IS NOT OPTIONAL. `text=True` decoded PowerShell's stdout with the ANSI code page, so
+    ONE unrelated process anywhere on the box with a path outside cp1252 raised
+    UnicodeDecodeError, a bare except swallowed it, and the beat reported jobs_alive=[] while
+    both crawlers were running - a BLIND instrument reading as a clean one. Demonstrated with a
+    path containing U+0141 (UTF-8 C5 81; 0x81 is undefined in cp1252, and an o-umlaut probe
+    proves nothing because cp1252 has it). This fleet crawls Dutch, Polish and Italian sources.
+
+    None means UNKNOWN; [] means a successful query that found no python processes. Those are
+    different, and collapsing them made a blind sample read as an empty machine.
+    """
+    if returncode != 0:
+        return None
+    try:
+        data = json.loads(stdout.decode("utf-8", "replace") or "null")
+    except Exception:                                        # noqa: BLE001
+        return None
+    if data is None:                  # a successful query with no rows prints nothing
+        return []
     if isinstance(data, dict):        # ConvertTo-Json emits a bare object when there is one row
-        data = [data]
+        return [data]
+    return data if isinstance(data, list) else None
+
+
+def _match_tracked(rows: list) -> "list[dict]":
+    """Rows -> the tracked ingesters among them, with pid and age."""
     out = []
     for t in TRACKED:
-        for p in data:
+        for p in rows:
             if not isinstance(p, dict):
                 continue
             if _script_of(p.get("CommandLine") or "") == t:
@@ -179,11 +229,6 @@ def _alive_jobs_detail() -> "list[dict]":
                             "age_s": age if isinstance(age, int) and age >= 0 else None})
                 break
     return out
-
-
-def _alive_jobs() -> "list[str]":
-    """Names of the tracked ingesters currently running ([] if the table was unreadable)."""
-    return [d["name"] for d in (_alive_jobs_detail() or [])]
 
 
 def _emptiness_verdict() -> dict:
@@ -292,16 +337,22 @@ def check(max_age_min: float) -> int:
     window = body.get("relaunch_window_s", RELAUNCH_WINDOW_S)
     young = [d for d in detail
              if isinstance(d, dict) and isinstance(d.get("age_s"), int) and d["age_s"] < window]
+
+    def _age(d):
+        a = d.get("age_s")
+        return f"{a}s" if isinstance(a, int) else "age unknown"
+
     if detail:
-        print("  jobs: " + ", ".join(
-            f"{d.get('name')} (pid {d.get('pid')}, {d.get('age_s')}s)"
-            for d in detail if isinstance(d, dict)))
+        print("  jobs: " + ", ".join(f"{d.get('name')} (pid {d.get('pid')}, {_age(d)})"
+                                     for d in detail if isinstance(d, dict)))
     if young:
-        print(f"  RESTARTED within the last guard tick ({window}s): "
-              + ", ".join(f"{d.get('name')} ({d.get('age_s')}s old)" for d in young)
-              + " — one sample cannot tell a normal relaunch from a crash loop (R54). If the "
-                "same job is this young on consecutive beats, read its own log: a process that "
-                "exists is not a crawler that is working (R457/R799).")
+        # ONE LINE, not a paragraph. istat_sliced is relaunched on a 5.3-minute median (n=1,642),
+        # so this fires on essentially every run; a lecture repeated for ever is how a signal
+        # stops being read, which is the failure that let a 44-day red streak go unexamined.
+        # The ages above are the information; this only says which one to look at.
+        print(f"  restarted within the last guard tick ({window}s): "
+              + ", ".join(f"{d.get('name')} {_age(d)} ago" for d in young)
+              + " — read that job's log; one sample cannot tell a relaunch from a crash loop.")
 
     if not table_ok:
         print("  NOTE: the workstation could not read its own process table, so job liveness is "
