@@ -106,3 +106,64 @@ def test_missing_summary_says_so(tmp_path):
     assert "derive summary unreadable" in out, out
     assert "does NOT record max_rows" in out, out
     assert rc == 1
+
+# --------------------------------------------------------------------------------------------
+# A CAP IS ONLY EVIDENCE IF THE RUN THAT SET IT COVERED THE STORE.
+#
+# `derive_statcan_tables.py` guards the split map behind `if a.dry_run` but writes the SUMMARY
+# unconditionally - and the summary is where max_rows lives. So a dry run, or a one-table --only
+# run, at a different cap would stamp the whole 8,207-table store's provenance, and the cataloguer
+# would adopt it AS FACT. That reconstitutes R832's refusal with a confident provenance line
+# attached, which is strictly worse than the shared-constant guess it replaced: the wrong number
+# now looks measured. Found by adversarial review of PR #13.
+
+
+def test_a_dry_run_cap_is_NOT_adopted(tmp_path):
+    rc, out, _ = _run(tmp_path, dict(BASE, max_rows=500_000, dry_run=True, scope="dry_run"), [])
+    assert "IGNORING the recorded cap 500000" in out, out
+    assert "scoped 'dry_run'" in out, out
+    assert "does NOT record max_rows" in out, out     # falls back, and says the cap is unknown
+    assert "cap 500,000 adopted" not in out, out
+    assert rc == 1
+
+
+def test_an_only_scoped_cap_is_NOT_adopted(tmp_path):
+    """--only and --limit have the same shape: a subset run is not evidence about the store."""
+    rc, out, _ = _run(tmp_path, dict(BASE, max_rows=500_000, scope="only"), [])
+    assert "IGNORING the recorded cap" in out and "scoped 'only'" in out, out
+    assert "cap 500,000 adopted" not in out, out
+    assert rc == 1
+
+
+def test_a_full_scope_cap_IS_adopted(tmp_path):
+    """The guard must not fire on the case it exists to allow."""
+    rc, out, _ = _run(tmp_path, dict(BASE, max_rows=3_000_000, scope="full"), [])
+    assert "cap 3,000,000 adopted from the derive's recorded max_rows" in out, out
+    assert "IGNORING" not in out, out
+    assert rc == 1 and "need --r2-keys" in out
+
+
+def test_a_legacy_summary_with_dry_run_true_is_caught_without_a_scope_key(tmp_path):
+    """Summaries written before `scope` existed still carry `dry_run`. Use it."""
+    rc, out, _ = _run(tmp_path, dict(BASE, max_rows=500_000, dry_run=True), [])
+    assert "IGNORING the recorded cap" in out and "dry_run" in out, out
+    assert rc == 1
+
+
+def test_a_non_integer_cap_is_refused_not_crashed(tmp_path):
+    """A corrupt VALUE used to raise ValueError/TypeError out of int(), i.e. a traceback instead
+    of this file's own fail-closed message style."""
+    for bad in ("lots", [3_000_000], 3_000_000.7, None):
+        rc, out, _ = _run(tmp_path, dict(BASE, max_rows=bad, scope="full"), [])
+        assert rc == 1, (bad, out)
+        assert "Traceback" not in out, (bad, out)
+        assert ("IGNORING the recorded cap" in out or "does NOT record max_rows" in out), (bad, out)
+
+
+def test_a_zero_or_negative_or_boolean_cap_is_refused(tmp_path):
+    """`0` made every table read as over-cap; JSON `true` is a Python int and became `cap 1`."""
+    for bad in (0, -5, True):
+        rc, out, _ = _run(tmp_path, dict(BASE, max_rows=bad, scope="full"), [])
+        assert "a cap must be a positive integer" in out or "not an integer" in out, (bad, out)
+        assert "adopted from the derive" not in out, (bad, out)
+        assert rc == 1

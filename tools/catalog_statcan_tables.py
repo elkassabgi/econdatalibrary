@@ -575,11 +575,31 @@ def main() -> int:
     # removes the inference that made a 500,000-vs-3,000,000 mismatch look like a frozen
     # pipeline: 367 tables the derive had correctly written whole reported as 'no split-map
     # entry', and I escalated a multi-day re-derive that was never needed.
-    recorded = None
+    recorded, rec_scope = None, None
     try:
-        recorded = json.load(open(os.path.join(ROOT, "logs",
-                                               "statcan_tables_summary.json"),
-                                  encoding="utf-8")).get("max_rows")
+        _sum = json.load(open(os.path.join(ROOT, "logs",
+                                           "statcan_tables_summary.json"),
+                              encoding="utf-8"))
+        recorded = _sum.get("max_rows")
+        # A CAP IS ONLY EVIDENCE IF THE RUN THAT SET IT COVERED THE STORE. The summary is
+        # written unconditionally, including by --dry-run/--only/--limit, so a one-table
+        # dry run at another cap would otherwise be adopted as fact and reconstitute the
+        # very refusal R832 records - this time with a provenance line attached.
+        rec_scope = _sum.get("scope") or ("dry_run" if _sum.get("dry_run") else None)
+        if recorded is not None and rec_scope not in (None, "full"):
+            print(f"IGNORING the recorded cap {recorded!r}: the derive run that wrote it\n"
+                  f"  was scoped {rec_scope!r}, not a full-store run, so it is not\n"
+                  f"  evidence about this store's cap. Pass --max-rows explicitly.")
+            recorded = None
+        if recorded is not None and not isinstance(recorded, int):
+            # a JSON string/float/list would crash int() with a traceback; refuse in the
+            # file's own fail-closed style instead.
+            print(f"IGNORING the recorded cap {recorded!r}: not an integer.")
+            recorded = None
+        if isinstance(recorded, bool) or (isinstance(recorded, int) and recorded <= 0):
+            print(f"IGNORING the recorded cap {recorded!r}: a cap must be a positive "
+                  f"integer.")
+            recorded = None
     except Exception as e:                                     # noqa: BLE001
         print(f"derive summary unreadable ({type(e).__name__}) - cannot confirm the cap")
     if a.max_rows is None:

@@ -452,6 +452,13 @@ def main() -> int:
                # inference from min(split rows), which bounds the cap from ABOVE and not
                # below - so a cataloguer run at the wrong cap read as a frozen pipeline.
                "max_rows": int(a.max_rows),
+               # THE SCOPE OF THE RUN THAT SET max_rows. A --dry-run, --only or --limit
+               # run is not evidence about the whole store's cap, and the cataloguer
+               # refuses to adopt one that says so (R833 follow-up): without this, a
+               # one-table dry run at another cap stamps the 8,207-table store.
+               "scope": ("dry_run" if a.dry_run else
+                         "only" if getattr(a, "only", None) else
+                         "limit" if getattr(a, "limit", None) else "full"),
                "dry_run": bool(a.dry_run)}, open(summary, "w"), indent=1)
     print(f"summary -> {summary}")
     return 0
