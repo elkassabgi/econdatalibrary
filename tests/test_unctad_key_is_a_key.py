@@ -8,9 +8,14 @@ Measured on `US.TradeFoodProcCat_Cat_RCA`: the fact table carries `Flow` (01 Imp
 02 Exports) on no axis, so both flows arrive under one key. The store holds 648,241 observations
 over 362,203 distinct (series_key, obs_date) pairs - max group size exactly 2, never 3, which is
 what a binary dimension predicts - and its sibling 712,550 over 395,121. Both figures are the CI
-errors verbatim (`refusing shrink 648241->362203`, `712550->395121`): never-shrink has been
-correctly refusing to collapse 44% of each file since 2026-08-30, so the fetch was never the
-problem and the sources are not broken in the way the digest's "SHRINK" label suggests.
+errors verbatim (`refusing shrink 648241->362203`, `712550->395121`): never-shrink refuses to
+collapse 44% of each file on EVERY recorded run - 5 runs each in `runs`, earliest
+2026-08-10T12:28:21Z, with `last_success_utc` NULL for both, so neither source has ever once
+succeeded - so the fetch was never the problem and the sources are not broken in the way the
+digest's "SHRINK" label suggests. (An earlier draft said "since 2026-08-30": 20 days and three
+runs late, and it invites a hunt for a late-August regression that does not exist. Corrected
+against state.db 2026-09-06 - the same "points at the wrong half" misdirection this file
+criticises in the SHRINK label.)
 
 THE GUARD IS IN `pull_rows` AND NOT IN `ingest()` ON PURPOSE. That function's own docstring calls
 itself "THE single row-building path - the ingest below and every fetcher call this", and

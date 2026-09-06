@@ -524,9 +524,12 @@ def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None,
     # projection does not aggregate, it duplicates. Measured on US.TradeFoodProcCat_Cat_RCA:
     # `Flow` (01 Imports, 02 Exports) is on no axis, so both flows arrive under one key and the
     # store holds 648,241 rows over 362,203 distinct (series_key, obs_date) pairs, max group
-    # size exactly 2. Its sibling: 712,550 over 395,121. Both have been `partial` since
-    # 2026-08-30 because never-shrink correctly refuses to collapse 44% of the file - the fetch
-    # was never the problem.
+    # size exactly 2. Its sibling: 712,550 over 395,121. Both are `partial` on EVERY recorded run
+    # - 5 runs each in `runs`, earliest 2026-08-10T12:28:21Z, and `last_success_utc` is NULL for
+    # both, so neither has ever succeeded - because never-shrink correctly refuses to collapse
+    # 44% of the file. The fetch was never the problem. (An earlier draft of this comment said
+    # "since 2026-08-30", which is 20 days and three runs late and invites a hunt for a
+    # late-August regression that does not exist; corrected against state.db 2026-09-06.)
     #
     # THIS FUNCTION, not `ingest()`: the docstring above calls pull_rows "THE single row-building
     # path - the ingest below and every fetcher call this", and `_unctad.py:64` does exactly
