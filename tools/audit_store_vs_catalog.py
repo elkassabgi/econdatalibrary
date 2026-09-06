@@ -8,7 +8,23 @@ whole surface gets swept rather than the two I tripped over.
 Three outcomes matter:
   UNCATALOGUED  data present, no catalogue row      -> hosted and invisible
   PARTIAL       catalogue covers part of the store
-  ORPHAN        catalogue rows with no store key    -> listed and undownloadable, which is worse
+  ORPHAN        catalogue rows with no LOCAL STORE KEY
+
+ORPHAN DOES NOT MEAN "404", AND THIS FILE USED TO SAY IT DID (corrected 2026-09-06, R825). The
+old line on ORPHAN asserted that such series were listed but could not be downloaded, and called
+that the worse of the three outcomes. That is not what this tool measures:
+every comparison here is the CATALOGUE against the LOCAL PARQUET STORE, and neither of those is
+what a user receives — the worker serves pre-derived CSVs from R2. Measured on fed_board, whose
+638 orphans are the largest set this tool has ever reported: **60 of 60 sampled had a live CSV**,
+with a present control at 20/20 and a fabricated id correctly 404ing. They are series the store
+can no longer regenerate, not dead links — the same shape already recorded for cso's 290.
+
+AND THE NUMBER IS A FLOOR, because `gap` is a NET. A source with as many uncatalogued store keys
+as uncatalogued catalogue rows reports gap 0 and never reaches the ORPHAN branch at all.
+fed_board's true split is 638 catalogue ids with no store key against 406 store keys with no
+catalogue row; this tool can only ever show their difference, 232 — a number matching neither
+side, whose two halves have opposite fixes. Getting the split requires the actual key SETS, which
+is the expensive thing this tool exists to avoid; when you need it, compute it per source.
 
 THE FIRST VERSION OF THIS TOOL WAS THE DEFECT IT LOOKS FOR. It ran `count(distinct series_key)`
 over every store in one DuckDB connection with no memory limit and printed nothing until the
@@ -131,7 +147,7 @@ def main() -> int:
             # fhfa:annual_cbsa:01 - which is exactly what derive_csv_bulk's --qualify-with-shard
             # exists for. A bare `count(distinct series_key)` then UNDERCOUNTS them: one key
             # appearing in two shards is two catalogue rows but one distinct value, so the source
-            # reports as ORPHAN ("listed and undownloadable") when nothing is wrong at all.
+            # reports as ORPHAN (catalogued with no store key) when nothing is wrong at all.
             #
             # Measured 2026-08-04: this produced fed_board -29 and fhfa -2,021, i.e. 2,050 of the
             # run's 2,408 reported orphans. All 2,050 were phantom -- re-counted with the shard
@@ -201,8 +217,18 @@ def main() -> int:
               f"{note:14s} {gb:,.1f} GB {time.time()-t0:,.0f}s{tag}", flush=True)
 
     fh.close()
-    print(f"\nhosted but not catalogued : {unc:,} series")
-    print(f"catalogued but not hosted : {orph:,} series")
+    print(f"\nhosted but not catalogued          : {unc:,} series")
+    # NOT "not hosted", and not a 404 count (R825). Say what was compared, in the line itself:
+    # someone reading only the summary must not be able to take this for user impact.
+    print(f"catalogued with no LOCAL STORE KEY : {orph:,} series"
+          f"   <- a FLOOR, and NOT a count of 404s")
+    if orph:
+        print("   These are compared against the LOCAL parquet store, not against what users get")
+        print("   (the worker serves pre-derived CSVs from R2). Measured 2026-09-06 on fed_board:")
+        print("   60 of 60 sampled such ids HAD a live CSV — series the store can no longer")
+        print("   regenerate, not dead links. FLOOR because `gap` is a net: a source with as many")
+        print("   uncatalogued store keys as uncatalogued rows reports 0 here. fed_board's real")
+        print("   split is 638 / 406, which nets to the 232 this line would otherwise show alone.")
     if skipped_big:
         # DISCLOSED, never silent: a bounded pass that did not say what it skipped reads as
         # full coverage.
