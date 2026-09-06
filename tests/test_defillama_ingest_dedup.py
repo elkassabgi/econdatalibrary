@@ -45,9 +45,16 @@ def test_the_settled_close_is_kept_and_the_intraday_point_is_dropped():
     assert out["obs_date"] == [D2]
 
 
-def test_a_lone_non_midnight_point_SURVIVES():
-    """The 145 lido observations a timestamp-based rule would have deleted. Each is the ONLY
-    point for its date, so it is the observation, not a duplicate."""
+def test_a_lone_point_for_its_date_SURVIVES():
+    """The 145 lido observations a timestamp-based rule would have deleted are non-midnight
+    points that are the ONLY point for their date.
+
+    HONEST LIMIT, and it is the reason this seam was chosen (R805 finding 4): no timestamp
+    reaches `_dedup_first` — by here a row is (key, date, value) — so the rival "drop anything
+    not at 00:00 UTC" rule is not merely wrong, it is UNIMPLEMENTABLE at this seam. This test
+    therefore pins the invariant (a lone point for a date is kept) and cannot discriminate
+    between the two rules; the measurement that ruled the other one out is in the commit message
+    and in `scratchpad/measure_defillama_dupe.py`, not here."""
     cols = {"series_key": ["lido|__total__"] * 2,
             "obs_date": [D1, D2],
             "value": [1.0, 2.0]}
@@ -101,17 +108,39 @@ def test_an_empty_column_set_still_writes_nothing(tmp_path):
 
 
 # ------------------------------------------------------------------ DISCRIMINATION CONTROL
-def test_the_OLD_behaviour_wrote_both_rows(tmp_path):
-    """Without the dedup, these exact fixtures produce the defect: one key, one date, two values.
-    If this ever stops holding, the tests above are no longer measuring anything."""
-    import pyarrow as pa
-    keys = ["aave|__total__", "aave|__total__"]
-    dates = [D2, D2]
-    vals = [18309869039.0, 18397673946.0]
-    p = str(tmp_path / "old.parquet")
-    pq.write_table(pa.table({"series_key": pa.array(keys), "obs_date": pa.array(dates, pa.date32()),
-                             "value": pa.array(vals, pa.float64())}), p)
+def test_NEUTRALISING_the_dedup_brings_the_defect_straight_back(tmp_path, monkeypatch):
+    """A control has to exercise the MODULE. My first version of this test built a duplicated
+    parquet with pyarrow directly and asserted it was duplicated — it never called
+    `write_parquet`, so it could not fail unless pyarrow itself changed. It was theatre.
+
+    This replaces `_dedup_first` with a pass-through and asserts the defect returns through the
+    real writer, which is what proves the seam is load-bearing rather than decorative."""
+    monkeypatch.setattr(_mod, "_dedup_first", lambda cols: (cols, 0))
+    p = str(tmp_path / "neutralised.parquet")
+    n = _mod.write_parquet(p, {"series_key": ["aave|__total__"] * 2,
+                               "obs_date": [D2, D2],
+                               "value": [18309869039.0, 18397673946.0]})
     t = pq.read_table(p)
     pairs = list(zip(t.column("series_key").to_pylist(), t.column("obs_date").to_pylist()))
-    assert len(pairs) == 2 and len(set(pairs)) == 1, "the control no longer reproduces R773"
+    assert n == 2 and len(pairs) == 2 and len(set(pairs)) == 1, (
+        "with the dedup neutralised the writer must reproduce R773 — if it does not, "
+        "`write_parquet` is not the seam these tests think it is")
     assert len(set(t.column("value").to_pylist())) == 2
+
+
+def test_the_SECOND_producer_shares_the_one_rule(tmp_path):
+    """R805 finding 1: `tools/defillama_parent_protocols.py` is a SECOND raw writer, and it held
+    147 duplicate pairs (141 contradictory) reaching six of the seven corrupted served CSVs. Its
+    own docstring said its rows were built "with the ingester's own construction" — copied, not
+    imported, which is why fixing one producer left the other writing the defect. A rule that
+    lives in two places gets fixed in one, so this pins that it is IMPORTED."""
+    import ast
+    src = open(os.path.join(ROOT, "tools", "defillama_parent_protocols.py"),
+               encoding="utf-8").read()
+    tree = ast.parse(src)
+    imported = any(isinstance(n, ast.ImportFrom)
+                   and n.module == "jobs.ingest_defillama"
+                   and any(a.name == "_dedup_first" for a in n.names)
+                   for n in ast.walk(tree))
+    assert imported, ("the parent-protocols tool must IMPORT _dedup_first, not re-implement it")
+    assert "_dedup_first(" in src, "imported but never called"
