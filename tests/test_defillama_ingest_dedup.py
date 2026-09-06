@@ -14,7 +14,7 @@ Measured from the publisher on 2026-09-06, which is what fixes the rule:
     /protocol/lido   2,088 points, same shape, and 146 points NOT at midnight of which only
                      one is part of a duplicated pair
 
-That second number is why `test_a_lone_non_midnight_point_SURVIVES` exists: the obvious rule -
+That second number is why `test_a_lone_point_for_its_date_SURVIVES` exists: the obvious rule -
 "drop anything not at 00:00 UTC" - would have deleted 145 legitimate lido observations. A test
 that only checked the duplicate would have passed for both rules and caught nothing.
 """
@@ -54,7 +54,9 @@ def test_a_lone_point_for_its_date_SURVIVES():
     not at 00:00 UTC" rule is not merely wrong, it is UNIMPLEMENTABLE at this seam. This test
     therefore pins the invariant (a lone point for a date is kept) and cannot discriminate
     between the two rules; the measurement that ruled the other one out is in the commit message
-    and in `scratchpad/measure_defillama_dupe.py`, not here."""
+    the measurement that ruled the other rule out is quoted in full in `_dedup_first`'s own
+    docstring, where it travels with the code — an earlier version of this line cited a session
+    scratch path no reader could open, which is a citation to nowhere."""
     cols = {"series_key": ["lido|__total__"] * 2,
             "obs_date": [D1, D2],
             "value": [1.0, 2.0]}
@@ -126,6 +128,52 @@ def test_NEUTRALISING_the_dedup_brings_the_defect_straight_back(tmp_path, monkey
         "with the dedup neutralised the writer must reproduce R773 — if it does not, "
         "`write_parquet` is not the seam these tests think it is")
     assert len(set(t.column("value").to_pylist())) == 2
+
+
+def test_the_SECOND_producer_ACTUALLY_writes_no_duplicate_pair(tmp_path, monkeypatch):
+    """R807 finding 2: the only test covering the second producer parsed it with `ast`, so
+    deleting the ONE line that consumes `_dedup_first`'s return left the log still printing
+    "dropped 12 row(s)" while the duplicates went back into the file — and all nine tests passed.
+    A static assertion cannot see a discarded return value. This drives the tool's real `main()`.
+    """
+    from jobs import ingest_defillama                              # noqa: F401
+    import tools.defillama_parent_protocols as tool
+
+    out = tmp_path / "tvl_protocol_shard_parents.parquet"
+    monkeypatch.setattr(tool, "OUT", str(out))
+    monkeypatch.setattr(tool, "SLUGS", ["aave"])
+
+    SETTLED, INTRADAY = 1788652800, 1788665243        # 00:00:00Z and 03:27:23Z, same UTC day
+    payload = {"tvl": [{"date": 1788566400, "totalLiquidityUSD": 1.0},
+                       {"date": SETTLED, "totalLiquidityUSD": 18309869039.0},
+                       {"date": INTRADAY, "totalLiquidityUSD": 18397673946.0}],
+               "chainTvls": {"Ethereum": {"tvl": [
+                   {"date": SETTLED, "totalLiquidityUSD": 5.0},
+                   {"date": INTRADAY, "totalLiquidityUSD": 6.0}]}}}
+
+    class _R:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return payload
+
+    class _S:
+        headers = {}
+        def get(self, *a, **k): return _R()
+
+    monkeypatch.setattr(tool.requests, "Session", lambda: _S())
+    assert tool.main() == 0
+
+    t = pq.read_table(str(out))
+    pairs = list(zip(t.column("series_key").to_pylist(), t.column("obs_date").to_pylist()))
+    assert len(pairs) == len(set(pairs)), (
+        f"the second producer still wrote a duplicated (series_key, obs_date): {pairs}")
+    vals = t.column("value").to_pylist()
+    dup_day = max(d for _k, d in pairs)
+    total = [v for (k, d), v in zip(pairs, vals) if k == "aave|__total__" and d == dup_day]
+    chain = [v for (k, d), v in zip(pairs, vals) if k == "aave|Ethereum" and d == dup_day]
+    assert total == [18309869039.0], (
+        f"the survivor must be the 00:00 settled close, got {total}")
+    assert chain == [5.0], f"chainTvls must be deduped the same way, got {chain}"
 
 
 def test_the_SECOND_producer_shares_the_one_rule(tmp_path):

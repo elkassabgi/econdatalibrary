@@ -155,7 +155,7 @@ def write_parquet(path, cols):
         if dropped:
             n = len(cols["series_key"])
             print(f"    dedup: dropped {dropped:,} row(s) repeating a (series_key, obs_date) "
-                  f"pair in {os.path.basename(path)} — the intraday 'now' point (R773)",
+                  f"pair in {os.path.basename(path)} - the intraday 'now' point (R773)",
                   flush=True)
     FLOATCOLS = {"value", "tvl_usd", "apy", "apy_base", "apy_reward",
                  "circulating_usd", "circulating", "tvl", "mcap", "price"}

@@ -34,7 +34,13 @@ if ROOT not in sys.path:
 # fixed in one.
 from jobs.ingest_defillama import _dedup_first                # noqa: E402
 
-OUT = r"E:\research\econfindatalibrary\data\clean_full\defillama\tvl_protocol_shard_parents.parquet"
+# DERIVED, NEVER HARDCODED. This was an absolute E:\ path sitting beside a computed-and-unused
+# ROOT, and the combination is worse than either half: the module's IMPORTS resolve from
+# __file__, so loading the tool from the R803 isolation worktree gave it the worktree's ingester
+# and PRODUCTION's output path. The one place branch work is supposed to be unable to touch
+# production is exactly where this wrote to it.
+OUT = os.path.join(ROOT, "data", "clean_full", "defillama",
+                   "tvl_protocol_shard_parents.parquet")
 SLUGS = ["aave", "makerdao", "uniswap", "compound-finance", "pancakeswap", "eigenlayer"]
 
 
@@ -79,7 +85,7 @@ def main():
         return 1
     cols, dropped = _dedup_first({"series_key": keys, "obs_date": dates, "value": vals})
     if dropped:
-        print(f"  dedup: dropped {dropped:,} row(s) repeating a (series_key, obs_date) pair — "
+        print(f"  dedup: dropped {dropped:,} row(s) repeating a (series_key, obs_date) pair - "
               f"the intraday 'now' point (R773)", flush=True)
     keys, dates, vals = cols["series_key"], cols["obs_date"], cols["value"]
 
