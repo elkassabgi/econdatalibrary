@@ -62,7 +62,7 @@ TRACKED = ("ingest_cbs_nl.py", "ingest_gus_dbw.py", "ingest_istat_sliced.py")
 
 # A tracked process younger than this was (re)started within the last guard tick, which is a FACT
 # worth printing and never a verdict. Measured by me over logs/_guard.log (2026-06-15..2026-09-06,
-# scratchpad/measure_relaunch_cadence.py) rather than copied: tick cadence median 315.0 s
+# tools/measure_relaunch_cadence.py) rather than copied: tick cadence median 315.0 s
 # (n=2,850 gaps under 1 h), and the relaunch cadences the window has to tolerate are
 # istat_sliced 5.3 min (n=1,642), cbs_nl 68.2 min (n=372) and gus_dbw 22.2 h (n=38).
 # An earlier draft of this comment said gus_dbw was "every ~53 min" — I had taken that from a
