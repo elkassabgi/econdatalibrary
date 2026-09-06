@@ -75,6 +75,27 @@ def test_the_queries_use_the_detected_key():
     )
 
 
+def test_a_catalogued_source_with_no_store_directory_is_named():
+    """`names` comes from os.listdir(STORE), so such a source is invisible to every verdict.
+
+    Measured 2026-09-06: exactly one, sec_edgar at 17,467 catalogue rows — 75x the orphan total
+    the tool did report, and it could never appear even as an ORPHAN.
+    """
+    assert "nostore" in SRC, "catalogued sources with no store directory must be collected"
+    assert "no directory under" in SRC, (
+        "they must appear in the summary; being absent from os.listdir is not a verdict"
+    )
+
+
+def test_a_missing_clean_full_dir_is_not_called_missing_data():
+    """R289: serving reads clean_grouped/, so an empty clean_full prefix is a false darkness signal."""
+    assert "clean_grouped" in SRC, (
+        "the check must look in clean_grouped before implying the data is absent — sec_edgar "
+        "lives there and is served from there"
+    )
+    assert "R289" in SRC, "cite the rule, so the next reader knows why the second tree is checked"
+
+
 def test_the_tool_still_parses():
     import ast
     ast.parse(SRC)

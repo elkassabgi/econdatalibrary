@@ -228,6 +228,27 @@ def main() -> int:
         print(f"[{i}/{len(names)}] {d:24s} store {n:>12,}  cat {cat:>12,}  {gap:>+12,}  "
               f"{note:14s} {gb:,.1f} GB {time.time()-t0:,.0f}s{tag}", flush=True)
 
+    # CATALOGUED SOURCES WITH NO STORE DIRECTORY AT ALL. `names` comes from os.listdir(STORE),
+    # so a source that is catalogued but has no directory under clean_full is never visited and
+    # can never be reported — it is invisible to every verdict this tool prints, including
+    # ORPHAN. Measured 2026-09-06: exactly one, sec_edgar at 17,467 catalogue rows, which is 75x
+    # the orphan total the tool did report.
+    #
+    # It is NOT an orphan, and saying so would be the R289 error: serving reads clean_grouped/,
+    # not clean_full/, so "prefix empty" is a false darkness signal for exactly this source. The
+    # honest output is a NAMED omission that says which tree was searched.
+    grouped_dir = os.path.join(ROOT, "data", "clean_grouped")
+    grouped = set(os.listdir(grouped_dir)) if os.path.isdir(grouped_dir) else set()
+    nostore = sorted((s, c) for s, c in counts.items() if c and s not in set(names))
+    if nostore:
+        print(f"\nNOT MEASURED — {len(nostore)} catalogued source(s) with no directory under "
+              f"data/clean_full:")
+        for s, c in nostore:
+            where = ("present under data/clean_grouped — serving reads THAT tree (R289), so this "
+                     "is not missing data" if s in grouped else
+                     "absent from clean_grouped too — genuinely no local store")
+            print(f"   {s:24s} catalogued {c:>10,}   {where}")
+
     fh.close()
     print(f"\nhosted but not catalogued          : {unc:,} series")
     # NOT "not hosted", and not a 404 count (R825). Say what was compared, in the line itself:
