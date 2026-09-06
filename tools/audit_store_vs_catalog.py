@@ -87,6 +87,26 @@ def grain_index() -> dict:
         out[s] = "flow"
     for s in getattr(_resolve, "_DOT_TABLE_GRAIN", ()):
         out[s] = "dot-table"
+    # THE SIXTH HOLDER, and it overlaps neither of the two above. Measured 2026-09-06:
+    #   _resolve._FLOW_GRAIN 11 | _resolve._DOT_TABLE_GRAIN 18 | orchestrate._TABLE_GRAIN 14
+    #   in orchestrate but in NEITHER _resolve set: all 14 (every imf_*_direct)
+    #   in _resolve's sets but not in orchestrate  : all 29
+    # tests/test_table_grain_mapping.py pins it, and says why: those stores are at SERIES
+    # grain while their catalogue is at TABLE grain, so an unmapped count equal to the key
+    # count is "GRAIN mismatch, not a missing catalogue" - this tool's exact question,
+    # already answered elsewhere on a set it did not consult.
+    try:
+        import importlib                                            # noqa: PLC0415
+        for s in getattr(importlib.import_module("updater.orchestrate"),
+                         "_TABLE_GRAIN", ()):
+            out[s] = "table"
+    except Exception as e:                                          # noqa: BLE001
+        # NOT SILENT. Raising is right: without it 14 declared table-grain sources would be
+        # downgraded to "unestablished" and inflate the headline with a designed difference,
+        # which is the mirror of the bug this file exists to fix.
+        raise RuntimeError(
+            f"updater.orchestrate._TABLE_GRAIN unreadable ({type(e).__name__}: {e}); "
+            f"14 declared table-grain sources would be misclassified") from e
     file_grain = getattr(_resolve, "_resolve_file_grain", None)
     for s, fn in getattr(_resolve, "_RESOLVERS", {}).items():
         # "custom" IS NOT A CLAIM THAT THE SOURCE IS TABLE-GRAIN. A bespoke resolver may
@@ -97,7 +117,7 @@ def grain_index() -> dict:
     return out
 
 
-DECLARED_GRAINS = ("flow", "dot-table", "file")
+DECLARED_GRAINS = ("flow", "dot-table", "file", "table")
 
 
 def summarise(path: str) -> int:

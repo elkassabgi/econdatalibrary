@@ -222,3 +222,36 @@ def test_summarise_fails_closed_without_a_grain_index(tmp_path):
     assert "GRAIN INDEX UNAVAILABLE" in out and "UNQUALIFIED" in out, out
     # nothing excused: 30 + 95 + 50 all land in the headline
     assert "hosted but not catalogued          : 175 series" in out, out
+
+
+def test_grain_index_reads_every_machine_readable_holder():
+    """Grain is declared in SIX places here, and they do not overlap. Measured 2026-09-06:
+
+        _resolve._FLOW_GRAIN        11
+        _resolve._DOT_TABLE_GRAIN   18   (api/worker/src/catalog.ts said 13; corrected)
+        _resolve_file_grain routing  5
+        orchestrate._TABLE_GRAIN    14   (every imf_*_direct)
+
+    The last one is DISJOINT from both _resolve sets - zero overlap either way - and the audit
+    did not consult it, so 14 sources whose catalogue is deliberately at TABLE grain while their
+    stores are at SERIES grain would have been counted as coverage gaps. This test is the pin:
+    a new holder that is not read here is a silent regression.
+
+    Reads the real repo on purpose. A fixture cannot catch a registry moving.
+    """
+    import importlib
+
+    m = _load()
+    g = m.grain_index()
+    assert "table" in m.DECLARED_GRAINS
+
+    tg = getattr(importlib.import_module("updater.orchestrate"), "_TABLE_GRAIN")
+    assert tg, "orchestrate._TABLE_GRAIN vanished - the audit would silently misclassify it"
+    missing = sorted(s for s in tg if g.get(s) != "table")
+    assert not missing, f"declared table-grain sources not classified as such: {missing}"
+
+    from econdl import _resolve
+    for s in _resolve._FLOW_GRAIN:
+        assert g.get(s) == "flow", s
+    for s in _resolve._DOT_TABLE_GRAIN:
+        assert g.get(s) == "dot-table", s
