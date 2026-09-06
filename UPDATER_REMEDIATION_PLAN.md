@@ -41,7 +41,7 @@ The promotion contract for EVERY source (learned the hard way — ledger R35/R36
 > A green badge or a local run proves nothing.
 
 ### Phase 0 — CI-safety (DONE, proven)
-The 12 store-backed fetchers (`abs adb bls ecb eurostat insee_bdm insee_melodi istat scb sdmx_nso
+The 12 store-backed fetchers (`abs adb bls ecb eurostat insee_bdm insee_melodi istat scb GATED
 stat_estonia treasury`) read the store via the R2-routed `blob` layer. Proven live: `scb` processed
 2,741 sub-units in CI where pre-patch it died at "source dir missing". `fcae3eb`.
 
@@ -54,7 +54,7 @@ order (daily/weekly first, they benefit most)**:
 - **Monthly:** `bundesbank`, `epu`, `nasa_giss`, `dst`, `eurostat`, `oecd`, `faostat`,
   `insee_melodi`, `worldbank_wdi`.
 - **Annual/irregular (lowest urgency — rarely change):** `damodaran`, `gcb`, `wgi`,
-  `transparency_ti`, `undp_hdr`, `kof_globalization`, `sipri_polity`, `swiid`, `ei_statreview`,
+  `transparency_ti`, `undp_hdr`, `kof_globalization`, `GATED`, `swiid`, `ei_statreview`,
   `gpi/gti/etr`, `harvard_atlas`, `edgar_jrc`, `fsi_fundforpeace`, `penn_world_table`, `ggdc`,
   `yale_epi`, `sec_edgar`, `adb`, `ksh`.
 - **Static (flip live harmlessly; they self-report no_change):** `barro_lee`, `pwt`, `gppd`,
@@ -91,13 +91,13 @@ do that first.)
 ### Phase 5 — Build the 43 missing fetchers, cadence-prioritised
 `bea bis boe census cbs_nl cepii_baci cepii_gravity cftc comtrade edgar_13f eia ember fdic fed_board
 fhfa gii gleif gus_dbw idb ilostat imf imf_fsi insee_sirene ipea ksh_stadat maddison noaa nyfed
-ons_uk owid pxweb rba riksbank sec_edgar_xbrl stats_nz ucdp un_wpp unhcr usda worldbank_esg
-worldbank_extra worldbank_pink zillow`
+ons_uk GATED pxweb rba riksbank sec_edgar_xbrl stats_nz ucdp un_wpp unhcr usda worldbank_esg
+worldbank_extra GATED zillow`
 
 - **Daily/weekly first** (`eia fed_board gleif nyfed riksbank cftc fdic sec_edgar_xbrl
   worldbank_esg`) — they go stale fastest.
-- **Monthly next** (`bea bis boe census ember fhfa ilostat imf imf_fsi noaa ons_uk owid rba usda
-  worldbank_pink zillow gus_dbw ipea insee_sirene`).
+- **Monthly next** (`bea bis boe census ember fhfa ilostat imf imf_fsi noaa ons_uk GATED rba usda
+  GATED zillow gus_dbw ipea insee_sirene`).
 - **Annual/irregular/static last** (`comtrade cepii_* gii idb ksh_stadat maddison ucdp un_wpp unhcr
   edgar_13f cbs_nl stats_nz worldbank_extra`) — many change once a year.
 - ~20 already have bulk data on disk (20.5 GB) but are un-catalogued — those also need the
@@ -139,7 +139,7 @@ second reviewer's note; attribution matters for knowing which loop caught what).
 | | bls | real | `finalize()` called without `series_cursors=` | populate series_cursors |
 | | stat_latvia | real | Grain-aligned but catalog **never uploaded to R2** (R28) | upload its catalog to R2 |
 | | norgesbank, unsdg | stale | Already deleted/denylisted | clear stale state |
-| Transient | bundesbank, cso, defillama, fred_releases, stat_slovenia | **by design** | Self-healing; data preserved, retries next tick | none (auto-retry once live) |
+| Transient | bundesbank, cso, defillama, GATED, stat_slovenia | **by design** | Self-healing; data preserved, retries next tick | none (auto-retry once live) |
 | Memory | vdem | real | 77M-row OOM, mislabeled "transient" | overwrite-mode + keep OFF CI (giant → workstation) |
 | "dir missing" | abs, adb | **stale** | Already fixed by fcae3eb; stale recorded state | re-dispatch to clear |
 

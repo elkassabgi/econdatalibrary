@@ -55,7 +55,7 @@ all eleven UNCTAD giants. Any freshness instrument keyed on that table reports n
 
 Written to `docs/briefs/PHASE0_BRIEFS.md`. Both re-measured today; nothing changed.
 
-* **`worldbank_pink` — RESERVED, awaiting Ahmed.** 26 series rows in local `catalog.db` **and** 26
+* **`GATED` — RESERVED, awaiting Ahmed.** 26 series rows in local `catalog.db` **and** 26
   in live D1, plus a `source_counts` row advertising `n=26`, all behind a 451 gate.
   Instrument: one PK-range D1 query, `rows_read: 28` (index seek — C8's PK-range principle
   confirmed in practice). Canonical verdict is **DISPUTED / NEEDS HUMAN REVIEW**: the Pink Sheet
@@ -64,7 +64,7 @@ Written to `docs/briefs/PHASE0_BRIEFS.md`. Both re-measured today; nothing chang
   and the cache row as defence in depth (a mistaken un-gating would expose LME-derived prices
   instantly; R429 shows a push to `main` silently reverting worker state). Re-crawlable, so
   recoverable. **Not proceeding — C14.**
-* **`sdmx_nso` — NOT a reserved item; the plan's premise does not hold.** Re-measured: **0** series
+* **`GATED` — NOT a reserved item; the plan's premise does not hold.** Re-measured: **0** series
   rows locally, and in live D1 **0 series, 0 `source_counts`, 0 `source` rows — it does not exist
   in D1 at all**. The plan describes it as a live drift between two records; only the local record
   exists. It is a stale local `source` row naming ISTAT, which is separately live as `istat`.
@@ -160,7 +160,7 @@ fail-opens I had found and fixed, and added four findings I had missed:
    not back into the file the skill loads — so the next session would have read the wrong figures.
    **Fixed at source:** W5 (155 invisible ids not 100; 147 distinct / 174 occurrences; the 171
    M-form entries and the 62.6% coverage; the 27 id collisions; the enumerated-allowlist design),
-   W3 (26 sources attributed, cadence-blind audit, `idb` the one real fault), W6 (sdmx_nso premise
+   W3 (26 sources attributed, cadence-blind audit, `idb` the one real fault), W6 (GATED premise
    withdrawn), W7 (statcan complete; the parquet re-upload CANCELLED per R520).
 4. **Phase 0 task 2 self-deadlocks and prescribes a refuted design.** Executing it correctly makes
    `ledger_check --digest` red, which `skill_check.py` treats as a HARD failure, bricking every
@@ -265,8 +265,8 @@ preflight stays green. Verified: `skill_check.py` → all 8 checks OK, `RESULT: 
 
 **PHASE 0 EXIT GATE: PASSED.** `--digest` now covers every entry heading and states its scope
 explicitly; the enumerated backlog can only shrink; every baseline row above carries an instrument
-and a date; both briefs are filed (`docs/briefs/PHASE0_BRIEFS.md`), with `sdmx_nso` resolved as
-not-a-reserved-item and `worldbank_pink` awaiting Ahmed.
+and a date; both briefs are filed (`docs/briefs/PHASE0_BRIEFS.md`), with `GATED` resolved as
+not-a-reserved-item and `GATED` awaiting Ahmed.
 
 **Two Phase-1/2 tasks are removed by these measurements**, which is worth stating because the plan
 still lists them: the sources-endpoint materialisation (the cost is 1,442 rows, not millions), and
@@ -340,8 +340,8 @@ would have been a correctness regression, worse than what it replaced.** Not dep
 before shipping, which is the whole point of running the reviewer in parallel.
 
 Two further corrections from the same review, both verified here:
-- **Served = 321, not 322.** `SUPPORTED_SOURCES ∩ NON_REDISTRIBUTABLE = {dbnomics,
-  worldbank_pink}` — I had missed `worldbank_pink`, which is the very source I filed a RESERVED
+- **Served = 321, not 322.** `SUPPORTED_SOURCES ∩ NON_REDISTRIBUTABLE = {GATED,
+  GATED}` — I had missed `GATED`, which is the very source I filed a RESERVED
   brief about. `docs/ECONLIB_COMPLETION_PLAN.md:78` carries the same 322.
 - **`unctad_cpia` is a LIVE array member**, not comment-only as my new `util.ts` comment claimed.
   Only `ksh` is comment-only. Corrected in place.
@@ -454,8 +454,8 @@ index-resident (billed `rows_read` unmoved), and only the 2–3 carve-out source
 PK-range count instead of the carved-inclusive `source_counts`.
 
 Two latent SQL defects closed with it: the `<src>:<ind>:` prefix could never match a **two-part**
-id (so `worldbank_wdi` and `worldbank_pink`'s SQL exclusion had always matched zero rows — the JS
-gate covered them, but `worldbank_pink`'s seven REFUSED-in-writing metals would be exposed the
+id (so `worldbank_wdi` and `GATED`'s SQL exclusion had always matched zero rows — the JS
+gate covered them, but `GATED`'s seven REFUSED-in-writing metals would be exposed the
 day that source is un-gated), and `_` is a LIKE wildcard present in two of the three carve-out
 source ids.
 
@@ -672,10 +672,8 @@ Each is now a named item, not a bucket:
 | `eia` | 50,000 keys (=CURSOR_CAP) none matched — grain/key-form | **gated on Ahmed's "do the four"** (its dedup-key fix) |
 | `eurostat` | re-key migration incomplete: `_rekeyed.json` says 7213, store holds **7214** | run `tools/rekey_eurostat.py --apply` to completion (its own documented remedy) — queued with review |
 | `noaa` | **fetcher reported NO series_cursors for 550,347,528 merged obs — CSVs not re-derived** | investigate next: potential user-facing CSV staleness at scale |
-| `owid` | 12,192 changed keys, catalogue has NO rows — "not catalogued, purged, or stale coherence catalog" | licence-sensitive (DISPUTED source, R150 forbids auto-cataloguing) — diagnose which of the three |
 | `oecd` | the 60 no-TimeDimension structural | **fixed** (f9f529d41); clears on its next run |
 | `hagstofa` | 33/1170 structural (PxWeb sentinel family, R269) | per-table reads queued |
 | `stat_slovenia` | 2/83 "time axis parses to no dates" | R269's verified benign class; confirm & annotate |
-| `sipri_polity` | 6,513 unmapped + over derive-all cap | dark-series cataloguing item |
 | `treasury` | 177 keys vs 14 catalog rows | R281's per-file identity-key special case |
 | `norgesbank` | 9 keys grain-mismatch | cursor-contract class member (brief filed) |

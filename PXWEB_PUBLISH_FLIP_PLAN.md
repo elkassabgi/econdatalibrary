@@ -34,8 +34,8 @@ Run from a shell where `econfindatalibrary/.env` has the R2 write creds + wrangl
    - SAFE (single-source licenses): `UPDATE license SET reservable=1 WHERE license_id IN
      ('nlod-2.0','surs-terms','opendata-swiss-by-ask');`  (used only by ssb / stat_slovenia / bfs)
    - stat_latvia: `UPDATE source SET license_id='cc-by-4.0' WHERE source_id='stat_latvia';`
-     — its current `NEEDS-REVIEW` license is **shared by 8 restricted sources** (nbp, unicef,
-     wid, whr, shiller, social_progress, spi, wiid); do **NOT** flip NEEDS-REVIEW.
+     — its current `NEEDS-REVIEW` license is **shared by 8 restricted sources** (several GATED sources,
+     wid, whr, several GATED sources); do **NOT** flip NEEDS-REVIEW.
    - **stat_estonia — AHMED DECISION.** Its `cc-by-sa-4.0` is shared with **8 `unesco_*`**
      sources (5 of which are NOT in the denylist). If those unesco_* are redistributable, flip
      `cc-by-sa-4.0` globally; if not, give stat_estonia its own row (e.g. `cc-by-sa-4.0-ee`,

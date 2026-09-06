@@ -37,7 +37,7 @@ timed-out datasets and used the old naming, so they were **deleted** and ISTAT i
 so it enumerates the ISTAT catalog first, then pulls.
 
 ## Verify when done
-`data/clean_full/dbnomics/ISTAT/_DONE` exists and `logs/dbnomics_istat.DONE`
+`data/clean_full/GATED/ISTAT/_DONE` exists and `logs/dbnomics_istat.DONE`
 appears; `_failed_datasets.json` absent. Then recount before the grand total.
 
 See also [GUS_REPAIR_2026-06-18.md](GUS_REPAIR_2026-06-18.md) (same bug class).

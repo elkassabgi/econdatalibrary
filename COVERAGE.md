@@ -21,7 +21,6 @@ Legend: ✅FULL · 🟡PARTIAL/growing · 🔗REFERENCED · ⛔BLOCKED(keys)
 | sec_edgar (fund.) | ✅ | 123,345,899 | all 19,814 companies/taxonomies |
 | imf | ✅ | 120,623,146 | 101/102 flows (102nd has no published data) |
 | edgar_13f | ✅ | 118,176,190 | full 2013q2–2026 |
-| owid | ✅ | 72,492,801 | 95.7% of what OWID permits redistribution (554 charts non_redistributable by OWID's own license, 18 source-503 resource limits, 151 empty/categorical) |
 | ofr  | ✅ | 425,070 | OFR fnyr (30 series incl. BGCR) + repo (164 series) + mmf (42) + nypd (194). BGCR captured. US public domain. |
 | bea | ✅ | 67,490,269 | all BEA datasets |
 | usda | ✅ | 57,631,852 | = API published total |
@@ -31,7 +30,6 @@ Legend: ✅FULL · 🟡PARTIAL/growing · 🔗REFERENCED · ⛔BLOCKED(keys)
 | defillama | 🟡 | 31,223,909 | 82%; yields per-pool history still downloading |
 | edgar_pointers | ✅ | 26,862,039 | rebuilt clean (256 shards, full history) |
 | fed_board | ✅ | 13,982,879 | all DDP datasets |
-| dbnomics | 🟡 | 13,248,246 | aggregator ~60% dup; unique slice pulled |
 | worldbank_wdi | ✅ | 8,894,931 | all 1,486 indicators |
 | ember | ✅ | 8,107,323 | all datasets |
 | treasury | ✅ | 18,555,857 | 181/181 endpoints, 53 datasets — full FiscalData catalog |
@@ -40,7 +38,6 @@ Legend: ✅FULL · 🟡PARTIAL/growing · 🔗REFERENCED · ⛔BLOCKED(keys)
 | worldbank_esg | ✅ | 599,099 | full ESG set |
 | frankfurter | ✅ | 527,315 | all currencies, full history |
 | penn_world_table | ✅ | 422,767 | full PWT 11.0 |
-| worldbank_pink | ✅ | 93,495 | all commodities (monthly + annual) |
 | wikidata | ✅ | 22,843 | full econ/finance entity set |
 | insee_bdm | ✅ | 10,799,719 | BDM 201/243 active dataflows (42 empty/discontinued). Full French macro: national accounts, employment, prices, trade, industry. Keyless. |
 | insee_sirene | ✅ | 247,461,408 | 6 stock files from data.gouv.fr: 29.7M legal units + 43.5M establishments + historical periods + succession links. Full registry. |
@@ -60,12 +57,10 @@ Legend: ✅FULL · 🟡PARTIAL/growing · 🔗REFERENCED · ⛔BLOCKED(keys)
 ## New sources added (session 3)
 | gleif | ✅ | 3,330,161 | Full GLEIF golden copy (CC0) — join key for EDGAR/13F ownership |
 | cftc | ✅ | 625,856 | Full CoT history 1986–2026, all report types (public domain) |
-| famafrench | ✅ | 238,797 | 3-factor/5-factor/momentum daily+monthly (educational use) |
 | treasury | ✅ | 18,555,857 | 181/181 FiscalData endpoints (was 29 datasets / 6.6M) |
 | cepii_baci | ✅ | 308,561,322 | BACI bilateral trade HS17 (65.6M) + HS96 (242.9M); Etalab 2.0 |
 | worldbank_extra | 🔄 | 8,817,027 | 2/9 done (hnp 8.5M, ids 268K). gfdd/gender/gem returned 0 obs. EdStats (8,450 ind) running. |
 | nyfed | ✅ | 16,656 | SOFR/OBFR/SOFR-averages/SOFR-index/TGCR/TGCR-volume via FRED API; BGCR → see OFR fnyr above |
-| fred | ✅ | 48,048,976 | 325/325 releases, copyright filter = 0 copyrighted series stored; top: State employment 10.5M, Z.1 flow-of-funds 8.2M, state unemployment 6.1M |
 | bis_cbs_lbs | 🔄 | — | CBS+LBS bulk downloading (resumable) |
 
 ## Still needed before catalog ingest + cloud build
