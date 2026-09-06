@@ -91,6 +91,7 @@ def main() -> int:
         fh.write("source\tin_store\tcatalogued\tgap\tnote\n")
 
     skipped_big, unc, orph = [], 0, 0
+    nokey = []               # stores with no recognised key column — reported, never silent
     names = sorted(d for d in os.listdir(STORE) if os.path.isdir(os.path.join(STORE, d)))
     for i, d in enumerate(names, 1):
         if d in done:
@@ -121,12 +122,23 @@ def main() -> int:
                   flush=True)
             continue
         try:
-            if "series_key" not in pq.read_schema(files[0]).names:
-                line = f"{d}\t\t{cat}\t\tnot a series store"
-                fh.write(line + "\n"); fh.flush()
-                print(f"[{i}/{len(names)}] {d:24s} not a series store "
-                      f"(catalogued {cat:,})", flush=True)
+            # THE KEY COLUMN IS NOT ALWAYS `series_key`, and assuming it was silently excluded
+            # whole sources from this audit (R825/R821). bls keys on `series_id` and holds
+            # 154,190,127 distinct series; eia likewise, at 3,862,801. Both were booked "not a
+            # series store" and vanished from every total this tool printed - 157,784,417 series
+            # of real gap, larger than most of what it did report. The candidate list is the one
+            # core/broaden_catalog.py::_key_col already uses, so the two agree by construction
+            # rather than by both being edited.
+            cols = set(pq.read_schema(files[0]).names)
+            key = next((c for c in ("series_key", "series_id", "idbank") if c in cols), None)
+            if key is None:
+                nokey.append((d, cat, sorted(cols)[:6]))
+                fh.write(f"{d}\t\t{cat}\t\tno key column\n"); fh.flush()
+                print(f"[{i}/{len(names)}] {d:24s} NO KEY COLUMN — not measured "
+                      f"(catalogued {cat:,}; columns {sorted(cols)[:6]})", flush=True)
                 continue
+            if key != "series_key":
+                print(f"[{i}/{len(names)}] {d:24s} keyed on {key!r}, not series_key", flush=True)
         except Exception as e:                                 # noqa: BLE001
             fh.write(f"{d}\t\t{cat}\t\tunreadable {type(e).__name__}\n"); fh.flush()
             print(f"[{i}/{len(names)}] {d:24s} UNREADABLE {type(e).__name__}", flush=True)
@@ -139,7 +151,7 @@ def main() -> int:
             q.execute(f"SET memory_limit='{a.memory_limit}'")
             q.execute(f"SET temp_directory='{os.path.join(ROOT, 'logs', '_duckspill')}'")
             lst = "[" + ",".join(f"'{f}'".replace("\\", "/") for f in files) + "]"
-            n = q.execute(f"select count(distinct series_key) from "
+            n = q.execute(f'select count(distinct "{key}") from '
                           f"read_parquet({lst}, union_by_name=true)").fetchone()[0]
             # SHARD-QUALIFIED RETRY, only when the bare count says ORPHAN.
             #
@@ -164,7 +176,7 @@ def main() -> int:
                 # as the invalid class `[/\]` and threw. A builtin has no escaping to get wrong.
                 qn = q.execute(
                     f"select count(distinct (parse_filename(filename, true) || ':' || "
-                    f"series_key)) from read_parquet({lst}, union_by_name=true, "
+                    f'"{key}")) from read_parquet({lst}, union_by_name=true, '
                     f"filename=true)").fetchone()[0]
                 if abs(qn - cat) < abs(n - cat):
                     n, qualified = qn, True
@@ -174,7 +186,7 @@ def main() -> int:
             # Without this the five biggest stores have no figure at all, so the fleet total
             # silently excludes the library's two largest sources.
             try:
-                n = q.execute(f"select approx_count_distinct(series_key) from "
+                n = q.execute(f'select approx_count_distinct("{key}") from '
                               f"read_parquet({lst}, union_by_name=true)").fetchone()[0]
                 approx = True
             except Exception as e2:                            # noqa: BLE001
@@ -229,6 +241,14 @@ def main() -> int:
         print("   regenerate, not dead links. FLOOR because `gap` is a net: a source with as many")
         print("   uncatalogued store keys as uncatalogued rows reports 0 here. fed_board's real")
         print("   split is 638 / 406, which nets to the 232 this line would otherwise show alone.")
+    if nokey:
+        # DISCLOSED, never silent — the same rule --max-gb already follows. A guard keyed on one
+        # column name once removed bls (154,190,127 series) and eia (3,862,801) from every total
+        # this tool printed, without a line saying so.
+        print(f"\nNOT MEASURED — {len(nokey)} store(s) with no recognised key column "
+              f"(tried series_key, series_id, idbank):")
+        for d, cat, cols in sorted(nokey):
+            print(f"   {d:24s} catalogued {cat:>10,}   columns {cols}")
     if skipped_big:
         # DISCLOSED, never silent: a bounded pass that did not say what it skipped reads as
         # full coverage.
