@@ -517,6 +517,37 @@ def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None,
             rows_v.append(v)
         if progress:
             progress(f"  M{mcode}: {len(rows_k) - n0:,} obs")
+
+    # THE KEY HAS TO BE A KEY, AND THIS IS THE ONLY PLACE THAT CAN CHECK IT (R814).
+    # `dataset_layout` derives kfields from the DEFAULT LAYOUT's axes, so a dimension the
+    # publisher does not place on an axis is projected away by the `$select` above - and a
+    # projection does not aggregate, it duplicates. Measured on US.TradeFoodProcCat_Cat_RCA:
+    # `Flow` (01 Imports, 02 Exports) is on no axis, so both flows arrive under one key and the
+    # store holds 648,241 rows over 362,203 distinct (series_key, obs_date) pairs, max group
+    # size exactly 2. Its sibling: 712,550 over 395,121. Both are `partial` on EVERY recorded run
+    # - 5 runs each in `runs`, earliest 2026-08-10T12:28:21Z, and `last_success_utc` is NULL for
+    # both, so neither has ever succeeded - because never-shrink correctly refuses to collapse
+    # 44% of the file. The fetch was never the problem. (An earlier draft of this comment said
+    # "since 2026-08-30", which is 20 days and three runs late and invites a hunt for a
+    # late-August regression that does not exist; corrected against state.db 2026-09-06.)
+    #
+    # THIS FUNCTION, not `ingest()`: the docstring above calls pull_rows "THE single row-building
+    # path - the ingest below and every fetcher call this", and `_unctad.py:64` does exactly
+    # that. A guard in `ingest()` would leave the nightly path unprotected, which is the
+    # two-producers-one-rule mistake made in defillama a few hours ago (R805).
+    #
+    # Refusing is the safe direction: the store keeps what it has and the run says why, rather
+    # than writing a file whose ids do not identify anything.
+    pairs = len(set(zip(rows_k, rows_d)))
+    if rows_k and pairs != len(rows_k):
+        dup = len(rows_k) - pairs
+        raise UnsupportedLayout(
+            f"{ds_name}: the key does not identify a row - {len(rows_k):,} observations "
+            f"collapse to {pairs:,} distinct (series_key, obs_date) pairs, {dup:,} duplicated "
+            f"({dup / len(rows_k) * 100:.1f}%). A dimension the fact table varies along is "
+            f"absent from the layout's axes and is being projected away by the $select; the "
+            f"declared fact key in the dataset's $metadata names it. Existing data kept.")
+
     return rows_k, rows_d, rows_v
 
 
