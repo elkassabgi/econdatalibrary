@@ -29,7 +29,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from updater import config                                            # noqa: E402
 from updater.strategies.fetchers import defillama                     # noqa: E402
 
-CATALOG = os.path.join(os.path.dirname(config.DATA_ROOT), "catalog.db")
+# R780 #9: this ignored ECONDL_CATALOG while the code it pins honours it, so the test could read a
+# different catalogue from the fetcher. Same resolution as orchestrate.py:1067 and _served_chains.
+CATALOG = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
 PREFIX = "defillama:chain_tvl:"
 
 
@@ -107,3 +109,48 @@ def test_the_tuple_has_no_duplicates_and_no_blanks():
     s = defillama.SERVED_CHAINS
     assert len(set(s)) == len(s), f"duplicate chain name in SERVED_CHAINS: {s}"
     assert all(isinstance(n, str) and n.strip() == n and n for n in s), s
+
+
+# --------------------------------------------------------------- the RETIRED classifier (R780 #9)
+# "No test anywhere covers the classifier" was the reviewer's finding, and the classifier is the
+# part that decides whether a real outage is silently filed as a retirement. These need no network:
+# _get is stubbed, so they exercise the decision, which is the thing that was wrong twice.
+
+_BIG = [{"name": f"Filler{i}"} for i in range(500)]
+
+
+def _stub(monkeypatch, listing):
+    monkeypatch.setattr(defillama, "_get", lambda sess, url, timeout=120: listing)
+
+
+@pytest.mark.parametrize("shape,listing", [
+    ("empty list",       []),
+    ("renamed `name`",   [{"chain": f"F{i}"} for i in range(500)]),
+    ("list of strings",  [f"F{i}" for i in range(500)]),
+    ("not a list",       {"__http__": 404}),
+    ("below the floor",  [{"name": f"F{i}"} for i in range(10)]),
+])
+def test_a_broken_listing_is_UNKNOWN_not_empty(monkeypatch, shape, listing):
+    """R780 #2: each of these used to yield a non-None, empty-ish set, under which EVERY chain
+    reads as absent and therefore retired. An absence check needs a known-PRESENT control in the
+    same call (R338); the size floor is that control, because every broken shape yields zero
+    usable names."""
+    _stub(monkeypatch, listing)
+    assert defillama._live_chain_names(None, ["Ethereum", "Bitcoin"]) is None, shape
+
+
+def test_mass_absence_is_an_instrument_failure_not_mass_retirement(monkeypatch):
+    """A healthy 500-name listing holding NONE of ours is a listing change, not 14 simultaneous
+    retirements."""
+    _stub(monkeypatch, _BIG)
+    assert defillama._live_chain_names(None, ["Ethereum", "Bitcoin", "Solana"]) is None
+
+
+def test_one_missing_chain_IS_trusted_as_retired(monkeypatch):
+    """The positive control, and the one that stops the rest being vacuous: my first version of
+    this rule required at least one of OUR chains to be present, which made the retired path
+    UNREACHABLE - the condition defining retirement also tripped the trust check."""
+    _stub(monkeypatch, [{"name": "Bitcoin"}, {"name": "Solana"}] + _BIG)
+    names = defillama._live_chain_names(None, ["Ethereum", "Bitcoin", "Solana"])
+    assert names is not None
+    assert "Ethereum" not in names and "Bitcoin" in names

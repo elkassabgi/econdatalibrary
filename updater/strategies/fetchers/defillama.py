@@ -66,7 +66,8 @@ from urllib3.util.retry import Retry
 
 from ... import config, blob, merge
 from ..base import Result
-from ._common import CURSOR_CAP, Tally, finalize, merge_cursor_map
+from ._common import (CURSOR_CAP, Deadline, Tally, finalize, load_rotation, merge_cursor_map,
+                      rotate_after, save_rotation)
 from ._vintage import UA as UA_HDR
 
 SOURCE = "defillama"
@@ -400,6 +401,55 @@ SERVED_CHAINS = ("Aptos", "Arbitrum", "Avalanche", "BSC", "Base", "Bitcoin", "Et
                  "Near", "OP Mainnet", "Polygon", "Solana", "Starknet", "Sui", "Tron")
 
 
+CHAINS_BUDGET_MIN = 12
+CHAINS_ROTATION = "_chains_rotation.json"
+# /v2/chains returned 473 names at 02:37Z and 466 at 04:46Z. A listing far below that is not a
+# smaller world, it is a broken read, and treating it as truth marks every chain retired.
+CHAIN_LISTING_FLOOR = 50
+
+
+def _live_chain_names(sess, work):
+    """The publisher's chain listing, or None meaning UNKNOWN - classify nothing as retired.
+
+    R780 #2: this was guarded only by `isinstance(lc, list)`, so an empty list gave set(), a
+    renamed `name` field gave {None}, and a list of strings gave set() - each non-None and each
+    making EVERY chain read as 'absent from the listing', i.e. retired. An absence check is void
+    without a known-PRESENT control in the same call (R338/R346), and my own two-sided control
+    used `[]` as its stand-in for 'retired' - the same bytes a broken listing produces - so it
+    pinned the misclassification as the expected result.
+
+    Two controls, both cheap: the listing must be plausibly large, and it must contain at least
+    one chain we are actually asking about. Either failing makes the oracle UNKNOWN rather than
+    empty, and an unknown oracle downgrades every failure to an honest transient."""
+    lc = _get(sess, "https://api.llama.fi/v2/chains")
+    if not isinstance(lc, list):
+        print("  [defillama] chain listing unavailable; no chain will be classed as retired",
+              flush=True)
+        return None
+    names = {c.get("name") for c in lc if isinstance(c, dict) and isinstance(c.get("name"), str)}
+    # THE FLOOR IS THE CONTROL, and it is the one that discriminates: every broken shape the
+    # reviewer named - `[]`, a renamed `name` field, a list of bare strings - yields ZERO usable
+    # names, so a plausible size is exactly the evidence that the read worked.
+    if len(names) < CHAIN_LISTING_FLOOR:
+        print(f"  [defillama] chain listing failed its size control ({len(names)} usable names, "
+              f"floor {CHAIN_LISTING_FLOOR}) - NOT trusting it, so no chain will be classed as "
+              f"retired", flush=True)
+        return None
+    # MASS ABSENCE IS AN INSTRUMENT FAILURE, NOT FOURTEEN SIMULTANEOUS RETIREMENTS. My first
+    # version required at least one of OUR chains to be present, which my own positive control
+    # then proved made the retired path UNREACHABLE - the very condition that defines retirement
+    # (this chain is absent) also tripped the trust check, so 150 green cases were vacuous. The
+    # honest split is by proportion: one chain gone is a retirement, most of them gone at once is
+    # the listing having changed shape under us.
+    present = len(names & set(work))
+    if work and present < max(1, len(work) // 2):
+        print(f"  [defillama] chain listing holds only {present} of our {len(work)} chains - that "
+              f"is a listing change, not {len(work) - present} simultaneous retirements; NOT "
+              f"trusting it for retirement classification", flush=True)
+        return None
+    return names
+
+
 def _served_chains(say=True):
     """The work list, read from the CATALOGUE at runtime where it exists, falling back to the
     pinned tuple only when it genuinely is not there.
@@ -424,16 +474,34 @@ def _served_chains(say=True):
             names = tuple(sorted(r[0].split("chain_tvl:", 1)[1] for r in rows if r[0]))
             if names:
                 if say:
-                    print(f"  [defillama] chain work list: {len(names)} from the CATALOGUE {cat}",
+                    # R780 #6: DIFF against the pin and say so. The catalogue this reads can be
+                    # stale - ECONDL_CATALOG points at the R2 coherence copy, measured ten days
+                    # old (LastModified 2026-08-27T15:30:12Z) and refreshed only by a tool that is
+                    # classifier-blocked (R250) - so silently preferring it would hide a drift in
+                    # either direction.
+                    gone = sorted(set(SERVED_CHAINS) - set(names))
+                    new = sorted(set(names) - set(SERVED_CHAINS))
+                    print(f"  [defillama] chain work list: {len(names)} from the CATALOGUE {cat}"
+                          + (f"; not in the pinned list: {new}" if new else "")
+                          + (f"; pinned but no longer catalogued: {gone}" if gone else "")
+                          + ("; identical to the pinned list" if not new and not gone else ""),
                           flush=True)
                 return names
+            if say:
+                # R780 #6: this used to print "no catalogue at <path>" for a catalogue that EXISTS
+                # and simply holds no chain rows - R335's own rule (print what RESOLVED, not what
+                # was configured) broken inside a docstring citing R335.
+                print(f"  [defillama] catalogue {cat} EXISTS but holds no defillama chain_tvl "
+                      f"rows; falling back to the pinned list of {len(SERVED_CHAINS)}", flush=True)
+            return SERVED_CHAINS
         except Exception as ex:                      # a broken read must not stop the fetch
             if say:
-                print(f"  [defillama] catalogue unreadable ({type(ex).__name__}: {ex}); "
-                      f"falling back to the pinned list", flush=True)
+                print(f"  [defillama] catalogue {cat} unreadable ({type(ex).__name__}: {ex}); "
+                      f"falling back to the pinned list of {len(SERVED_CHAINS)}", flush=True)
+            return SERVED_CHAINS
     if say:
         print(f"  [defillama] chain work list: {len(SERVED_CHAINS)} from the PINNED constant "
-              f"(no catalogue at {cat})", flush=True)
+              f"(no catalogue file at {cat})", flush=True)
     return SERVED_CHAINS
 
 
@@ -510,12 +578,25 @@ def _chains_tvl_aggregate(sess, tally=None):
     # listing absence alone never delists anything, it only classifies a failure that already
     # happened. The real detector for "a served series stopped moving" is the health gate's
     # RED-DATA, which watches the observation frontier, not the run status.
-    listed = None
-    lc = _get(sess, "https://api.llama.fi/v2/chains")
-    if isinstance(lc, list):
-        listed = {c.get("name") for c in lc if isinstance(c, dict)}
+    work = list(_served_chains())
+    listed = _live_chain_names(sess, work)
 
-    for name in _served_chains():
+    # R780 #8: fifteen NEW GETs with no budget at all, on a fetcher whose observed runs are
+    # 88.7-165.3 s. Worst case per GET is the retry stack - 766.5 s - so fifteen of them is 3.19 h
+    # against orchestrate's 45-minute SIGALRM. A budget alone would be a TRUNCATION though, not a
+    # bound (R190, and Deadline's own docstring): fourteen names in a FIXED order re-walk the same
+    # prefix for ever. So the budget comes WITH a rotation bookmark, saved after every sub-unit and
+    # after a complete pass, so the next run always starts somewhere new.
+    dl = Deadline(minutes=CHAINS_BUDGET_MIN)
+    out_dir = config.source_dir(SOURCE)
+    work = rotate_after(work, load_rotation(out_dir, CHAINS_ROTATION))
+
+    for name in work:
+        if dl.spent():
+            if tally is not None:
+                tally.deferred_unit(f"chains_tvl.parquet:{name} (budget {CHAINS_BUDGET_MIN} min "
+                                    f"spent; the rotation bookmark starts the next run here)")
+            continue
         url = "https://api.llama.fi/v2/historicalChainTvl/" + _urlquote(name, safe="")
         c = _get(sess, url)
         label = f"chains_tvl.parquet:{name}"
@@ -525,32 +606,60 @@ def _chains_tvl_aggregate(sess, tally=None):
             continue                       # retry may help; the other chains still publish
         if _is_http(c) or not isinstance(c, list):
             code = c.get("__http__") if _is_http(c) else "shape"
-            retired = (listed is not None and name not in listed)
+            # R780 #7: `_get` maps BOTH 402 and 404 to __http__, so a Pro-gate paywall read as
+            # "the publisher no longer has this chain". Only a 404 is even a candidate.
+            retired = (code == 404 and listed is not None and name not in listed)
             if tally is not None:
                 if retired:
-                    # Named, loud, and NON-demoting: retrying cannot fix a chain the publisher no
-                    # longer has, and pinning the source at partial for ever would hide every other
-                    # failure behind it (R231/R299).
-                    tally.empty_unit(f"{label} (HTTP {code} AND absent from /v2/chains - RETIRED "
-                                     f"upstream; re-catalogue it or drop it from the work list)")
+                    # DEMOTING, and I reverted to that on measurement. I had booked this
+                    # non-demoting on the argument that the health gate's RED-DATA would catch a
+                    # served chain that stopped moving. R780 #3 measured the opposite with the real
+                    # function: `health._recency_signal` is max(observed) across the whole unit and
+                    # defillama is ONE unit, so 14 frozen chains and 1 frozen chain both report
+                    # obs_age 0.2d and RED-DATA NO - it had ALREADY missed this very freeze while
+                    # all fourteen sat 93 days stale. With no detector behind it, "non-demoting"
+                    # just means silent, so coverage being incomplete is reported as what it is.
+                    # R299 is satisfied by the MESSAGE naming the permanent cause and the action,
+                    # which is what that rule actually asks for - not by the class.
+                    tally.transient_unit(
+                        f"{label} (HTTP 404 AND absent from /v2/chains - RETIRED upstream. This "
+                        f"will not clear by retrying: re-catalogue it or delist it.)")
                     print(f"  [defillama] RETIRED UPSTREAM: {name} is catalogued but the publisher "
                           f"no longer serves or lists it - a human must re-catalogue or delist it",
                           flush=True)
                 else:
-                    tally.transient_unit(f"{label} (HTTP {code}; still in /v2/chains, so retry "
-                                         f"may help)")
+                    tally.transient_unit(f"{label} (HTTP {code}"
+                                         + ("; still in /v2/chains, so retry may help"
+                                            if listed is not None else
+                                            "; the chain listing could not be trusted, so this is "
+                                            "NOT classified as retired")
+                                         + ")")
             continue
         ck, cd, cv = [], [], []
         for pt in c:
             od = _to_date(pt.get("date"))
             if od is not None and isinstance(pt.get("tvl"), (int, float)):
                 ck.append(name); cd.append(od); cv.append(float(pt["tvl"]))
+        # R780 #1 - THE BRANCH THAT WAS NOT THERE, and a regression against the parent commit.
+        # A 200 carrying a list that parses to ZERO points fell through everything: not _is_err,
+        # not _is_http, it IS a list, `len(set([])) != len([])` is `0 != 0`, and `extend([])` is a
+        # no-op - so a renamed `tvl` field, a string `tvl`, a renamed date or an all-null series
+        # produced status ok, "+N new rows" and NO tally call anywhere. Before this change that
+        # body gave a zero-row table and _merge_file booked structural_unit. It is R778 #1
+        # verbatim, which I fixed for __ALL__ and did not carry to the fourteen - and it is silent
+        # on exactly the shape RETIRED_UPSTREAM exists to document.
+        if not ck:
+            if tally is not None:
+                tally.transient_unit(f"{label} (200 but parsed 0 points - the per-chain shape "
+                                     f"changed; this series would freeze behind a fresh file)")
+            continue
         if len(set(cd)) != len(cd):
             if tally is not None:
                 tally.transient_unit(f"{label} (publisher returned a repeated obs_date - shape "
                                      f"changed; refusing to guess which value is the daily close)")
             continue
         keys.extend(ck); dates.extend(cd); vals.extend(cv)
+        save_rotation(out_dir, name, CHAINS_ROTATION)
 
     if not keys:
         # NOTHING parsed - bulk and every chain failed. Returning an empty TABLE here would be
