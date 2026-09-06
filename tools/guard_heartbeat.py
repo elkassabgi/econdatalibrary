@@ -60,28 +60,48 @@ DEFAULT_MAX_AGE_MIN = 45.0
 TRACKED = ("ingest_cbs_nl.py", "ingest_gus_dbw.py", "ingest_istat_sliced.py")
 
 
-FLAP_FLOOR_S = 60     # a tracked crawler younger than this is being RELAUNCHED, not working
+# One guard tick is ~316 s measured over logs/_guard.log (median, n=1568), so a tracked process
+# younger than this was (re)started within the last tick. That is a FACT worth printing, not a
+# verdict: cbs_nl is relaunched legitimately every ~68 min and gus_dbw every ~53 min, so roughly
+# one beat in six catches a perfectly healthy crawler in its first seconds.
+RELAUNCH_WINDOW_S = 330
 
 
-def _script_tokens(cmdline: str) -> "set[str]":
-    """The BASENAMES of the .py arguments in a command line.
+def _script_of(cmdline: str) -> "str | None":
+    """The basename of the script a python command line is RUNNING, or None.
 
-    Comparing basenames of whitespace/quote-delimited tokens is the whole anti-substring rule:
-    `jobs/ingest_cbs_nl.py` and `"E:/x/jobs/ingest_cbs_nl.py"` both yield `ingest_cbs_nl.py`,
-    while `my_ingest_cbs_nl.py` and `ingest_cbs_nl.pyz` yield themselves and match nothing. A
-    token that is not a .py path is ignored entirely, so a `--source` value or a prose fragment
-    cannot masquerade as the script being run.
+    THE SCRIPT IS THE FIRST .py TOKEN, AND ONLY THAT ONE. Returning every .py token was the
+    previous version's bug and it re-opened the hole it was written to close: a tracked name
+    passed as an ARGUMENT counted as the job running, so `python other.py --note ingest_x.py`,
+    `python -m py_compile ingest_x.py` and `pytest tests/t.py ingest_x.py` all forged a beat.
+    Those are precisely the command lines a session runs while investigating a sick crawler, so
+    the instrument would lie hardest exactly when someone was looking at it (R260: the observer
+    must not be able to fake the beat).
+
+    `-m` and `-c` take a module or a program text rather than a path, so any .py token after one
+    of them is an argument and never the script.
+
+    Basenames, so `jobs/ingest_x.py` and `"E:\\...\\jobs\\ingest_x.py"` agree while
+    `my_ingest_x.py` and `ingest_x.pyz` match nothing.
+
+    An unparseable command line returns None - "not running" - rather than falling back to a
+    whitespace split, which is how the previous version restored the very substring bug it
+    replaced. This function only feeds the HEARTBEAT; the guard's own relaunch decision lives in
+    RELAUNCH_GUARD.ps1, so failing closed here mis-reports and never mis-relaunches.
     """
-    toks = set()
+    if not cmdline:
+        return None
     try:
-        parts = shlex.split(cmdline, posix=False) if cmdline else []
+        parts = shlex.split(cmdline, posix=False)
     except ValueError:
-        parts = cmdline.split()      # unbalanced quote: degrade, never raise
-    for raw in parts:
+        return None
+    for raw in parts[1:]:                       # [0] is the interpreter
         tok = raw.strip("\"'")
+        if tok in ("-m", "-c"):
+            return None
         if tok.lower().endswith(".py"):
-            toks.add(os.path.basename(tok.replace("\\", "/")))
-    return toks
+            return os.path.basename(tok.replace("\\", "/"))
+    return None
 
 
 def _alive_jobs_detail() -> "list[dict]":
@@ -97,29 +117,55 @@ def _alive_jobs_detail() -> "list[dict]":
     `jobs_alive=3/3` while istat had crawled nothing at all. R457 is "a name match is not
     liveness", and this is that rule reintroduced in the publisher that watches the guard.
 
-    Two changes. The name must appear as its own PATH COMPONENT within a SINGLE process's
-    command line, so a mention inside a longer word or an unrelated argument cannot count. And
-    every match carries its AGE, because "a process exists" and "a crawler is working" differ by
-    exactly the nine seconds that failure lived in — `publish` uses the age to separate the two
-    rather than reporting a flapping relaunch as a healthy crawl.
+    Two changes. A tracked name counts only when it is the SCRIPT a single process is running
+    (see `_script_of`), never a mention anywhere in the concatenated blob. And every match
+    carries its process id and AGE, because "a process exists" and "a crawler is working" differ
+    by exactly the nine seconds that failure lived in.
 
-    Best-effort and never raises: an unreadable process table yields [], which upstream reports
-    as fewer jobs than tracked, never as healthy.
+    THE AGE IS REPORTED, NOT JUDGED. An earlier version of this fix dropped young processes out
+    of `jobs_alive` on a 60-second floor, which is wrong: measured over logs/_guard.log,
+    cbs_nl is legitimately relaunched 372 times at a 68.2-minute median and gus_dbw 38 times at
+    53.3 minutes, and `publish` runs ~2 s after a tick — so about one beat in six would have
+    called a perfectly healthy crawler dead, and the existing "not running" note would then have
+    printed something false. One sample per tick cannot separate a restart from a crash loop
+    (R54), so this publishes the fact — pid and age — and leaves the verdict to a reader who can
+    look at the job's own log.
+
+    Returns None, never [], when the process table could not be read: "unknown" and "nothing is
+    running" are different, and a blind instrument must not read as a clean one.
     """
+    ok, data = False, []
     try:
         import subprocess
         ps = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
+             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
              "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
              "Select-Object ProcessId, "
              "@{n='AgeS';e={[int]((Get-Date) - $_.CreationDate).TotalSeconds}}, "
              "CommandLine | ConvertTo-Json -Compress"],
-            capture_output=True, text=True, timeout=60)
-        data = json.loads(ps.stdout or "null")
+            # ENCODING IS NOT OPTIONAL HERE. `text=True` decodes PowerShell's stdout with the
+            # ANSI code page, so ONE unrelated process anywhere on the box with a non-ASCII path
+            # raises UnicodeDecodeError, the bare except swallows it, and the beat reports
+            # jobs_alive=[] while both crawlers are running - a BLIND instrument reading as a
+            # clean one. Reproduced: a throwaway process with "u-umlaut" in its path took this
+            # function from two live crawlers to zero. This fleet crawls Dutch, Polish and
+            # Italian sources. `_emptiness_verdict` below already got this right.
+            capture_output=True, timeout=60)
+        if ps.returncode == 0:
+            data = json.loads(ps.stdout.decode("utf-8", "replace") or "null")
+            ok = True
     except Exception:                                        # noqa: BLE001
-        return []
+        ok, data = False, []
+    if not ok:
+        # An unreadable process table is UNKNOWN, never "nothing is running". The caller marks
+        # the beat so a reader cannot mistake a blind sample for an empty machine.
+        return None
     if data is None:
-        return []
+        # A SUCCESSFUL query with no rows: PowerShell prints nothing, which becomes "null". That
+        # is a machine with no python processes - genuinely empty, and NOT the unknown above.
+        # Collapsing the two was a real regression, caught by this file's own test.
+        data = []
     if isinstance(data, dict):        # ConvertTo-Json emits a bare object when there is one row
         data = [data]
     out = []
@@ -127,17 +173,17 @@ def _alive_jobs_detail() -> "list[dict]":
         for p in data:
             if not isinstance(p, dict):
                 continue
-            if t in _script_tokens(p.get("CommandLine") or ""):
+            if _script_of(p.get("CommandLine") or "") == t:
                 age = p.get("AgeS")
                 out.append({"name": t, "pid": p.get("ProcessId"),
-                            "age_s": age if isinstance(age, int) else None})
+                            "age_s": age if isinstance(age, int) and age >= 0 else None})
                 break
     return out
 
 
 def _alive_jobs() -> "list[str]":
-    """Names of the tracked ingesters currently running, flapping ones included."""
-    return [d["name"] for d in _alive_jobs_detail()]
+    """Names of the tracked ingesters currently running ([] if the table was unreadable)."""
+    return [d["name"] for d in (_alive_jobs_detail() or [])]
 
 
 def _emptiness_verdict() -> dict:
@@ -163,20 +209,20 @@ def _emptiness_verdict() -> dict:
 
 
 def publish() -> int:
-    # `jobs_alive` now means WORKING, not merely present. A tracked crawler younger than
-    # FLAP_FLOOR_S is one the guard has just relaunched, and counting it as alive is what let
-    # `jobs_alive=3/3` be published while istat_sliced was exiting after nine seconds every
-    # cycle (R799). Flapping jobs are carried in their own field so the distinction reaches the
-    # reader instead of being averaged away.
+    # `jobs_alive` keeps its meaning - the tracked ingesters PRESENT - so every existing reader
+    # is unchanged. What was missing is why `3/3` could be published while istat_sliced was
+    # exiting after nine seconds (R799): the beat carried no way to tell a crawl from a
+    # relaunch. `jobs_detail` adds the pid and age of each one, and `table_ok` says whether the
+    # process table was readable at all, so a blind sample can never be read as an empty
+    # machine.
     detail = _alive_jobs_detail()
-    working = [d for d in detail if (d.get("age_s") or 0) >= FLAP_FLOOR_S]
-    flapping = [d for d in detail if (d.get("age_s") or 0) < FLAP_FLOOR_S]
     body = {
         "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "host": socket.gethostname(),
-        "jobs_alive": [d["name"] for d in working],
-        "jobs_flapping": flapping,
-        "flap_floor_s": FLAP_FLOOR_S,
+        "jobs_alive": [d["name"] for d in (detail or [])],
+        "jobs_detail": detail or [],
+        "table_ok": detail is not None,
+        "relaunch_window_s": RELAUNCH_WINDOW_S,
         "tracked": list(TRACKED),
         "emptiness": _emptiness_verdict(),
     }
@@ -185,8 +231,8 @@ def publish() -> int:
                  Body=json.dumps(body, indent=2).encode("utf-8"),
                  ContentType="application/json")
     print(f"published {KEY}: {body['utc']} host={body['host']} "
-          f"jobs_alive={len(body['jobs_alive'])}/{len(TRACKED)}"
-          + (f" FLAPPING={len(flapping)}" if flapping else ""))
+          + (f"jobs_alive={len(body['jobs_alive'])}/{len(TRACKED)}" if detail is not None
+             else "jobs_alive=UNKNOWN (process table unreadable)"))
     return 0
 
 
@@ -210,9 +256,12 @@ def check(max_age_min: float) -> int:
         beat = beat.replace(tzinfo=dt.timezone.utc)
     age = (dt.datetime.now(dt.timezone.utc) - beat).total_seconds() / 60.0
     alive, tracked = body.get("jobs_alive") or [], body.get("tracked") or []
-    flapping = body.get("jobs_flapping") or []
+    detail = body.get("jobs_detail")
+    detail = detail if isinstance(detail, list) else []
+    table_ok = body.get("table_ok", True)          # older beats have no such field
     where = (f"host={body.get('host','?')} jobs_alive={len(alive)}/{len(tracked)}"
-             + (f" FLAPPING={len(flapping)}" if flapping else ""))
+             if table_ok else
+             f"host={body.get('host','?')} jobs_alive=UNKNOWN (process table unreadable)")
 
     if age > max_age_min:
         print(f"GUARD HEARTBEAT STALE: last tick {beat.isoformat()} "
@@ -220,18 +269,6 @@ def check(max_age_min: float) -> int:
         print("  The workstation watchdog is not ticking. The 17 run_location=local sources "
               "have NO other update path; nothing else in CI will notice this.")
         return 1
-
-    if flapping:
-        # Reported, never failed: this run is already red for other reasons on most days, and a
-        # crawler restarting is a workstation condition, not a CI one. But it must be SAID —
-        # the whole point of R799 is that `3/3` was published while one of the three was dying
-        # after nine seconds every cycle, and nobody could see the difference.
-        floor = body.get("flap_floor_s", FLAP_FLOOR_S)
-        names = ", ".join(f"{f.get('name')} ({f.get('age_s')}s old)"
-                          for f in flapping if isinstance(f, dict))
-        print(f"  FLAPPING: {names} — younger than {floor}s, so the guard is RELAUNCHING these, "
-              f"not watching them work. A name match is not liveness (R457/R799); check the "
-              f"job's own log before reading the count above as health.")
 
     emp = body.get("emptiness") or {}
     if emp.get("ran") and emp.get("fetch_without_write"):
@@ -247,7 +284,29 @@ def check(max_age_min: float) -> int:
     print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) — {where}"
           + (f", emptiness clean ({emp.get('fetch_without_write', 0)} defect units)"
              if emp.get("ran") else ""))
-    if tracked and len(alive) < len(tracked):
+    # The ages, under the line they annotate. This is the half R799 found missing: `3/3` was
+    # published every tick while istat_sliced exited after nine seconds, and nothing in the beat
+    # let a reader see it. A job restarted within the last guard tick is FLAGGED, not judged —
+    # cbs_nl is legitimately relaunched every ~68 min, so this fires on a healthy crawler about
+    # one beat in six, and calling that dead is a worse lie than the one being fixed.
+    window = body.get("relaunch_window_s", RELAUNCH_WINDOW_S)
+    young = [d for d in detail
+             if isinstance(d, dict) and isinstance(d.get("age_s"), int) and d["age_s"] < window]
+    if detail:
+        print("  jobs: " + ", ".join(
+            f"{d.get('name')} (pid {d.get('pid')}, {d.get('age_s')}s)"
+            for d in detail if isinstance(d, dict)))
+    if young:
+        print(f"  RESTARTED within the last guard tick ({window}s): "
+              + ", ".join(f"{d.get('name')} ({d.get('age_s')}s old)" for d in young)
+              + " — one sample cannot tell a normal relaunch from a crash loop (R54). If the "
+                "same job is this young on consecutive beats, read its own log: a process that "
+                "exists is not a crawler that is working (R457/R799).")
+
+    if not table_ok:
+        print("  NOTE: the workstation could not read its own process table, so job liveness is "
+              "UNKNOWN this tick, not empty. An unreadable instrument is not a clean one.")
+    elif tracked and len(alive) < len(tracked):
         # The loop is alive but not doing its job — a different failure from a dead loop, and
         # one a bare timestamp would hide. Reported, not failed: a crawler that has FINISHED is
         # legitimately absent, and this tool cannot tell finished from dead.
