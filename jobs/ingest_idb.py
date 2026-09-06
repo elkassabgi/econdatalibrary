@@ -73,6 +73,16 @@ def parse_date(s: str | int | None) -> dt.date | None:
     return None
 
 
+def _clean(x) -> str:
+    """Make a value safe to put inside a series key.
+
+    ":" is the key's own separator, so a part containing one would make the key ambiguous - two
+    different breakdowns could produce the same string. Whitespace is stripped for the same
+    reason a trailing space is invisible in a URL and in a CSV cell.
+    """
+    return str(x).strip().replace(":", "_")
+
+
 def detect_columns(fields: list[dict]) -> dict:
     """Detect date, country, indicator, value columns by name heuristics."""
     names = {f["id"].lower(): f["id"] for f in fields if f["id"] != "_id"}
@@ -147,6 +157,39 @@ def rows_to_long(rows: list[dict], pkg_slug: str, res_name: str,
                      "integer", "bigint", "real"):
             numeric_fields.append(fname)
 
+    # ---- THE BREAKDOWN COLUMNS BELONG IN THE KEY (R669, unfixed for four days).
+    # The key was [pkg_slug, indicator, country] and nothing else, so every OTHER descriptive
+    # column a resource ships - sex, area, age band, income quintile, education level, whatever
+    # this particular table happens to carry - was dropped before the row was written. All of a
+    # cell's breakdowns then landed on the SAME (series_key, obs_date) with different values, and
+    # the served CSV handed the user each of them in turn with nothing to tell them apart.
+    # Measured on the store 2026-09-06: 15,066,444 rows resolve to 331,386 distinct (key, date)
+    # pairs - 2.20% unique - and 11,339 of 18,854 series (60.1%) carry contradictory values under
+    # one id. The worst single cell is prangoedad_16_30_PHC at 1990-12-31: 1,380 rows, 1,353
+    # distinct values, one id.
+    #
+    # This is deliberately NOT a list of the four column names R669 happened to observe. Those
+    # were examples of a class, and treating an example as the class is the error this repo keeps
+    # repeating (R797). The class is "every column that is not the date, not the geography, not
+    # the indicator, and not a measure", so whatever a future resource adds is carried with no
+    # further edit.
+    #
+    # Which columns count as MEASURES depends on the shape, and getting it backwards silently
+    # drops a dimension: in the NARROW shape the only measure is the value column, so a numeric
+    # extra column - quintile 1-5, an age code - is a dimension and must be kept; in the WIDE
+    # shape every numeric column IS its own series, so only the leftover non-numeric columns are
+    # dimensions. `numeric_fields` is therefore the wrong exclusion set for the narrow case.
+    _names = {f["id"].lower() for f in fields}
+    date_field = col.get("date") or ("year" if "year" in _names else "")
+    fixed = {"_id", date_field.lower(),
+             col.get("country", "").lower(), col.get("indicator", "").lower()} - {""}
+    measures = ({col["value"].lower()} if "value" in col
+                else {n.lower() for n in numeric_fields})
+    dim_fields = [f["id"] for f in fields
+                  if f["id"].lower() not in fixed and f["id"].lower() not in measures]
+    # Sorted, so the key does not depend on the order CKAN happens to return columns in.
+    dim_fields.sort(key=str.lower)
+
     for rec in rows:
         # Get date
         d = None
@@ -169,13 +212,25 @@ def rows_to_long(rows: list[dict], pkg_slug: str, res_name: str,
         if "indicator" in col:
             ind = str(rec.get(col["indicator"], "") or "")
 
+        # The breakdown that distinguishes this row from its siblings. Written name=value so the
+        # id says what it is instead of ending in a run of bare codes, and emitted in the sorted
+        # order fixed above. A column that is empty on THIS row contributes nothing, so a
+        # resource with no breakdown columns - or a row where they are all blank - keeps exactly
+        # the key it had before this change, and only the collapsed series are re-keyed.
+        dims = []
+        for fname in dim_fields:
+            dv = rec.get(fname)
+            if dv in (None, ""):
+                continue
+            dims.append(_clean(fname) + "=" + _clean(dv))
+
         if "value" in col:
             # Already narrow format: one value column
             raw_v = rec.get(col["value"])
             if raw_v not in (None, "", "N/A", "NA"):
                 try:
                     v = float(raw_v)
-                    parts = [x for x in [pkg_slug, ind, ctry] if x]
+                    parts = [x for x in [pkg_slug, ind, ctry] if x] + dims
                     key = "IDB:" + ":".join(parts)
                     all_keys.append(key); all_dates.append(d); all_vals.append(v)
                 except (TypeError, ValueError):
@@ -187,7 +242,7 @@ def rows_to_long(rows: list[dict], pkg_slug: str, res_name: str,
                 if raw_v not in (None, "", "N/A", "NA"):
                     try:
                         v = float(raw_v)
-                        parts = [x for x in [pkg_slug, fname, ctry] if x]
+                        parts = [x for x in [pkg_slug, fname, ctry] if x] + dims
                         key = "IDB:" + ":".join(parts)
                         all_keys.append(key); all_dates.append(d); all_vals.append(v)
                     except (TypeError, ValueError):
