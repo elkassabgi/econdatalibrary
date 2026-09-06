@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import io
 import os
 import sqlite3
 import sys
@@ -99,6 +100,75 @@ def grain_index() -> dict:
 DECLARED_GRAINS = ("flow", "dot-table", "file")
 
 
+def summarise(path: str) -> int:
+    """Re-classify a finished run's rows. Reads the TSV, never the store."""
+    try:
+        grain, grain_ok = grain_index(), True
+    except Exception as e:                                     # noqa: BLE001
+        grain, grain_ok = {}, False
+        print(f"GRAIN INDEX UNAVAILABLE ({type(e).__name__}: {e}) — nothing below is "
+              f"qualified.")
+    unc = graingap = unkgap = 0
+    grainsrc, unkgrain, orph, unread = [], [], 0, []
+    rows = 0
+    with io.open(path, encoding="utf-8") as fh:
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if len(f) < 5 or f[0] == "source":
+                continue
+            d, in_store, cat = f[0], f[1], f[2]
+            rows += 1
+            if not in_store:
+                # no parquet / no key column / unreadable — NOT MEASURED, never clean
+                unread.append((d, f[4]))
+                continue
+            n, c = int(in_store), int(cat or 0)
+            gap, g = n - c, grain.get(d)
+            if c == 0 and n > 0:
+                if g:
+                    graingap += n
+                    (grainsrc if g in DECLARED_GRAINS else unkgrain).append((d, n, c, g))
+                else:
+                    unc += n
+            elif gap > 0 and g in DECLARED_GRAINS:
+                graingap += gap
+                grainsrc.append((d, n, c, g))
+            elif gap > 0 and g:
+                unkgap += gap
+                unkgrain.append((d, n, c, g))
+            elif gap > 0:
+                unc += gap
+            elif gap < 0:
+                orph -= gap
+    print(f"re-read {rows:,} row(s) from {path} — MEASURED NOTHING, only re-classified")
+    print(f"\nhosted but not catalogued          : {unc:,} series"
+          f"   <- SERIES-GRAIN sources only")
+    if not grain_ok:
+        print("   WARNING: grain index missing — this total is UNQUALIFIED. Do not report "
+              "it.")
+    print(f"catalogued with no LOCAL STORE KEY : {orph:,} series"
+          f"   <- a FLOOR, and NOT a count of 404s")
+    if grainsrc:
+        print(f"\nNOT COMPARABLE — {len(grainsrc)} source(s) at a DECLARED non-series "
+              f"grain, {graingap:,} store keys")
+        for d, n, c, g in sorted(grainsrc, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  cat {c:>10,}  grain:{g}")
+        if len(grainsrc) > 15:
+            print(f"   ... and {len(grainsrc) - 15} more")
+    if unkgrain:
+        print(f"\nGRAIN UNESTABLISHED — {len(unkgrain)} source(s) with a bespoke resolver, "
+              f"{unkgap:,} store keys unaccounted")
+        for d, n, c, g in sorted(unkgrain, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  cat {c:>10,}  resolver:{g}")
+        if len(unkgrain) > 15:
+            print(f"   ... and {len(unkgrain) - 15} more")
+    if unread:
+        print(f"\nNOT MEASURED — {len(unread)} source(s) the run could not count:")
+        for d, why in sorted(unread):
+            print(f"   {d:24s} {why}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(ROOT, "logs", "store_audit.tsv"))
@@ -106,7 +176,15 @@ def main() -> int:
                     help="skip stores larger than this (0 = no bound)")
     ap.add_argument("--memory-limit", default="6GB")
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--summarise", metavar="TSV",
+                    help="re-read a FINISHED tsv through the current grain index and print "
+                         "the summary only. Measures nothing; the numbers are the ones that "
+                         "run already produced. Use it when the classification changed but "
+                         "the measurement did not, instead of spending hours re-scanning.")
     a = ap.parse_args()
+
+    if a.summarise:
+        return summarise(a.summarise)
 
     con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
     con.execute("PRAGMA busy_timeout = 180000")

@@ -138,3 +138,76 @@ def test_fail_closed_when_the_grain_index_cannot_be_built(tmp_path):
     assert "hosted but not catalogued          : 175 series" in stdout, stdout
     assert "NOT COMPARABLE" not in stdout
     assert "GRAIN UNESTABLISHED" not in stdout
+
+# --------------------------------------------------------------------------------------------
+# --summarise: re-read a finished run's numbers through the current grain index.
+#
+# A full audit takes hours. When the CLASSIFICATION changes but the MEASUREMENT does not,
+# re-running it is waste - and a run interrupted to pick up new code leaves a TSV carrying two
+# generations of note strings. Measured on the 39 sources finished at the time this was written:
+# the old headline summed every positive gap to 1,246,546,145 "hosted but not catalogued", of
+# which 1,244,726,514 (99.85%) was grain. The honest figure was 1,819,631.
+
+
+def _tsv(tmp_path, body):
+    p = tmp_path / "audit.tsv"
+    io.open(str(p), "w", encoding="utf-8").write(
+        "source\tin_store\tcatalogued\tgap\tnote\n" + body)
+    return str(p)
+
+
+def _summarise(tmp_path, body, grain):
+    m = _load()
+    m.grain_index = lambda: dict(grain)
+    buf, real = io.StringIO(), sys.stdout
+    sys.stdout = buf
+    try:
+        rc = m.summarise(_tsv(tmp_path, body))
+    finally:
+        sys.stdout = real
+    assert rc == 0
+    return buf.getvalue()
+
+
+BODY = (
+    "alpha\t40\t10\t30\tpartial\n"           # series grain, a real gap
+    "bravo\t100\t5\t95\tpartial\n"           # declared flow grain
+    "charlie\t60\t10\t50\tpartial\n"         # bespoke resolver
+    "delta\t10\t25\t-15\tORPHAN\n"           # catalogue rows with no store key
+    "echo\t\t7\t\tno key column\n"           # NOT MEASURED - must not read as clean
+)
+
+
+def test_summarise_reclassifies_without_measuring(tmp_path):
+    out = _summarise(tmp_path, BODY, GRAIN)
+    assert "MEASURED NOTHING, only re-classified" in out, out
+    assert "hosted but not catalogued          : 30 series" in out, out
+    assert "catalogued with no LOCAL STORE KEY : 15 series" in out, out
+    assert "1 source(s) at a DECLARED non-series grain, 95 store keys" in out, out
+    assert "50 store keys unaccounted" in out, out
+
+
+def test_summarise_never_lets_an_unmeasured_source_read_as_clean(tmp_path):
+    """A row the run could not count is a THIRD answer. Dropping it silently is how a bounded
+    pass reads as full coverage."""
+    out = _summarise(tmp_path, BODY, GRAIN)
+    assert "NOT MEASURED — 1 source(s) the run could not count" in out, out
+    assert "echo" in out and "no key column" in out, out
+
+
+def test_summarise_fails_closed_without_a_grain_index(tmp_path):
+    m = _load()
+
+    def _boom():
+        raise ImportError("simulated")
+    m.grain_index = _boom
+    buf, real = io.StringIO(), sys.stdout
+    sys.stdout = buf
+    try:
+        m.summarise(_tsv(tmp_path, BODY))
+    finally:
+        sys.stdout = real
+    out = buf.getvalue()
+    assert "GRAIN INDEX UNAVAILABLE" in out and "UNQUALIFIED" in out, out
+    # nothing excused: 30 + 95 + 50 all land in the headline
+    assert "hosted but not catalogued          : 175 series" in out, out
