@@ -96,22 +96,25 @@ def test_the_tuple_has_no_duplicates_and_no_blanks():
     assert all(isinstance(n, str) and n.strip() == n and n for n in s), s
 
 
-def test_the_chain_sweep_is_bounded_by_ARITHMETIC_not_by_a_budget():
+def test_the_chain_session_has_the_policy_the_bound_assumes():
     """R788 #1 and its three predecessors all lived in machinery that existed to survive the module
-    session's retry stack. This pins the replacement: the chain session retries ONCE, and 14 chains
-    x (2 attempts x CHAIN_TIMEOUT_S + backoff) must sit well inside orchestrate's 45-minute per-unit
-    SIGALRM - with no bookmark, no deferral and no state, because every chain is attempted every run
-    and there is no fixed-order prefix for a rotation to resume."""
-    s = defillama._chain_session()
-    retry = s.get_adapter("https://api.llama.fi").max_retries
-    assert retry.total == 1, f"the chain session must retry once, got total={retry.total}"
-    attempts = retry.total + 1
-    worst = len(defillama.SERVED_CHAINS) * (attempts * defillama.CHAIN_TIMEOUT_S
-                                            + retry.backoff_factor)
-    assert worst < 15 * 60, f"worst case {worst:.0f}s is not comfortably inside the 45-min cap"
+    session's retry stack. This pins the replacement's POLICY; the two tests at the bottom of this
+    file pin that every call actually uses it, which is the half R792 #3 found missing.
 
-    # The module session is deliberately NOT this - the bulk and catalog calls are one request each
-    # and keep the full retry stack. If the two ever converge, the arithmetic above is wrong.
+    My first version of this test also computed the bound and got it wrong twice over (R792 #2): it
+    added a `backoff_factor` term urllib3 does not apply before a first retry, and it omitted the
+    bulk GET, which was then still on the module session at 765 s - larger than everything else
+    combined. The arithmetic now lives where the calls are observed, not here."""
+    retry = defillama._chain_session().get_adapter("https://api.llama.fi").max_retries
+    assert retry.total == 1, f"the chain session must retry once, got total={retry.total}"
+    assert retry.respect_retry_after_header is False, (
+        "urllib3 caps a Retry-After sleep at retry_after_max=21,600 s and 429 is in this session's "
+        "own status_forcelist, so honouring it makes one 429 worth up to six hours on one call - "
+        "and the Deadline that used to clip that is deliberately gone (R792 #1)")
+
+    # The module session is deliberately NOT this: the other families are one bulk request each and
+    # keep the full retry stack. If the two ever converge, the bound is being computed on the wrong
+    # policy.
     assert defillama._session().get_adapter("https://api.llama.fi").max_retries.total == 5
 
 
@@ -191,3 +194,82 @@ def test_a_healthy_run_names_nothing_and_carries_every_chain(monkeypatch):
     assert keys == {"__ALL__", "Alpha", "Beta"}, keys
     pairs = list(zip(tbl.column("series_key").to_pylist(), tbl.column("obs_date").to_pylist()))
     assert len(set(pairs)) == len(pairs), "the table must stay uniquely keyed on (series_key, date)"
+
+
+# ---------------------------------------------------------- the bound, pinned where it can BREAK
+# R792 #3: the previous version asserted the CONSTANTS and nothing else, so mutating `csess` back
+# to the module session, or `timeout=CHAIN_TIMEOUT_S` back to 120, left all 16 tests green while
+# restoring a 2.98-hour worst case. A bound is a property of the CALLS, so these observe the calls.
+
+def _record_calls(monkeypatch, chain_resp=None, bulk_resp=None):
+    """Capture (session, url, timeout) for every _get the chains family makes."""
+    seen = []
+    bulk = bulk_resp if bulk_resp is not None else [{"date": TS, "tvl": 1.0}]
+    chain = chain_resp if chain_resp is not None else [{"date": TS, "tvl": 7.0}]
+
+    def _get(sess, url, timeout=120):
+        seen.append((sess, url, timeout))
+        return bulk if url.endswith("historicalChainTvl") else chain
+    monkeypatch.setattr(defillama, "_get", _get)
+    return seen
+
+
+def test_EVERY_chains_call_uses_the_bounded_session_and_timeout(monkeypatch):
+    """Both halves of the bound, observed rather than read. The module session is handed in and
+    must be ignored; if it is ever used the 20 s cap and the retry-once policy do not apply."""
+    monkeypatch.setattr(defillama, "SERVED_CHAINS", ("Alpha", "Beta"))
+    seen = _record_calls(monkeypatch)
+    handed_in = defillama._session()
+    defillama._chains_tvl_aggregate(handed_in, Tally())
+
+    assert len(seen) == 3, [u for _s, u, _t in seen]          # bulk + two chains
+    for s, url, timeout in seen:
+        assert s is not handed_in, f"{url} used the module session - the bound does not apply to it"
+        r = s.get_adapter("https://api.llama.fi").max_retries
+        assert r.total == 1, f"{url} used a session with total={r.total}"
+        assert r.respect_retry_after_header is False, (
+            f"{url} honours Retry-After; urllib3 caps that sleep at 21,600 s, so one 429 is up to "
+            f"six hours on one call and nothing else clips it now the Deadline is gone")
+        assert timeout == defillama.CHAIN_TIMEOUT_S, f"{url} was called with timeout={timeout}"
+
+
+def test_the_stated_bound_covers_every_call_including_the_bulk(monkeypatch):
+    """R792 #2: the published figure omitted the bulk GET, which was 765 s on the module session -
+    larger than everything else combined - and added a backoff term urllib3 does not apply before a
+    first retry. The arithmetic must be over the calls actually made."""
+    monkeypatch.setattr(defillama, "SERVED_CHAINS", tuple(f"C{i}" for i in range(14)))
+    seen = _record_calls(monkeypatch)
+    defillama._chains_tvl_aggregate(defillama._session(), Tally())
+    worst = sum(2 * t for _s, _u, t in seen)                  # 2 attempts, 0 backoff before retry 1
+    assert len(seen) == 15, len(seen)
+    assert worst == 600, worst
+    assert worst < 45 * 60, f"{worst}s is not inside orchestrate's 45-minute per-unit SIGALRM"
+
+
+@pytest.mark.parametrize("label,body", [
+    ("null element",   [None, {"date": TS, "tvl": 7.0}]),
+    ("string element", ["oops", {"date": TS, "tvl": 7.0}]),
+    ("int element",    [123, {"date": TS, "tvl": 7.0}]),
+])
+def test_a_non_dict_ELEMENT_does_not_crash_out_of_the_fetcher(monkeypatch, label, body):
+    """R792 #4, the seventh disposition. Both loops guarded the CONTAINER and then called .get on
+    whatever was inside it, so `[null, {...}]` raised an uncaught AttributeError out of update() -
+    taking the chains merge, all of stablecoins_total, the obs total, the cursor map and finalize()
+    with it. That is a worse blast radius than the whole-source veto the None path exists to avoid."""
+    monkeypatch.setattr(defillama, "SERVED_CHAINS", ("Alpha",))
+    _record_calls(monkeypatch, chain_resp=body, bulk_resp=body)
+    tbl, _dk, _k, _d, _e = defillama._chains_tvl_aggregate(None, Tally())
+    keys = set(tbl.column("series_key").to_pylist())
+    assert keys == {"__ALL__", "Alpha"}, (label, keys)        # the good element still lands
+
+
+def test___ALL___refuses_a_repeated_obs_date(monkeypatch):
+    """R792 #5: the docstring claimed this refusal for the endpoint and only the per-chain loop had
+    it, so a duplicated bulk date reached merge and was deduped silently on the HEADLINE series -
+    R773's pathology, on tvl:total."""
+    monkeypatch.setattr(defillama, "SERVED_CHAINS", ("Alpha",))
+    _record_calls(monkeypatch, bulk_resp=[{"date": TS, "tvl": 1.0}, {"date": TS, "tvl": 9.0}])
+    t = Tally()
+    tbl, _dk, _k, _d, _e = defillama._chains_tvl_aggregate(None, t)
+    assert any("__ALL__" in s and "repeated obs_date" in s for s in t.transient_ids), t.transient_ids
+    assert "__ALL__" not in set(tbl.column("series_key").to_pylist())

@@ -374,18 +374,31 @@ CHAIN_TIMEOUT_S = 20
 
 THIS CONSTANT REPLACES A BUDGET, A ROTATION BOOKMARK AND A DEFERRAL CLASS, and that is the point.
 The module session is `Retry(total=5, backoff_factor=1.5)` against a 120 s timeout: 6 attempts plus
-46.5 s of backoff = the 766.5 s worst case per URL that four consecutive reviews then tried to
-survive. R780 #8 asked for a budget; the budget needed a rotation bookmark or it was a truncation
-(R190); the bookmark then recorded successes instead of attempts (R784 #1); moving the clock above
-the bulk GET to fix its scope then let a slow-but-successful bulk call spend the whole budget and
-starve 14 of 14 (R788 #1). Four rounds, each fix creating the next defect, all of it downstream of
-one number.
+45 s of backoff = the ~765 s worst case per URL that four consecutive reviews then tried to survive.
+R780 #8 asked for a budget; the budget needed a rotation bookmark or it was a truncation (R190);
+the bookmark then recorded successes instead of attempts (R784 #1); moving the clock above the bulk
+GET to fix its scope then let a slow-but-successful bulk call spend the whole budget and starve
+14 of 14 (R788 #1). Four rounds, each fix creating the next defect, all of it downstream of one
+number.
 
-So bound the number instead of managing it. Two attempts x 20 s + 0.5 s backoff = 40.5 s worst
-case per chain, 14 chains = 567 s = 9.5 minutes, hard, with no state, no bookmark and no deferral -
-every chain is attempted every run, so there is no fixed-order prefix to re-walk and nothing for a
-rotation to resume. A chain that times out is named transient and retried next run, which is what
-transient has always promised.
+THE BOUND, MEASURED RATHER THAN REASONED (R792 #2 corrected both terms of my first attempt).
+`Retry(total=1)` is 2 attempts, and urllib3 returns ZERO backoff before a first retry, so
+backoff_factor contributes 0.0 s and my "+0.5" was wrong. The bulk __ALL__ call was also still on
+the MODULE session at timeout=120, worth 765 s on its own — larger than everything else combined
+and entirely outside the figure I published, which was understated 2.34x. The whole chains family
+now runs on `_chain_session()`:
+
+    15 calls x 2 attempts x 20 s + 0 s backoff = 600 s = 10 minutes, hard.
+
+No state, no bookmark, no deferral: every chain is attempted every run, so there is no fixed-order
+prefix to re-walk and nothing for a rotation to resume. A chain that times out is named transient
+and retried next run, which is what transient has always promised. Measured against the live
+publisher: 2.6 s.
+
+The bound holds only while THREE things are true, so all three are pinned by behaviour rather than
+by reading the constant (R792 #3 — mutating `csess` back to `sess`, or the timeout back to 120,
+left the whole file green): every chains call goes through `_chain_session()`, it is called with
+`timeout=CHAIN_TIMEOUT_S`, and that session does not honour Retry-After.
 """
 
 # The FOURTEEN chains whose per-chain series are CATALOGUED - the only ones a user can download.
@@ -413,20 +426,39 @@ SERVED_CHAINS = ("Aptos", "Arbitrum", "Avalanche", "BSC", "Base", "Bitcoin", "Et
 
 
 def _chain_session():
-    """A session for the per-chain sweep that retries ONCE, so the cost is bounded by arithmetic
-    rather than by a budget. Separate from `_session()` because the bulk and catalog calls are one
-    request each and are worth the module's full retry stack."""
+    """The session for the whole chains family — bulk __ALL__ and the fourteen per-chain calls —
+    bounded by arithmetic rather than by a budget.
+
+    `respect_retry_after_header=False` IS THE POINT (R792 #1). I inherited True from `_session()`
+    and it silently re-opened the very hole the budget had been closing: urllib3 2.6.3 caps a
+    Retry-After sleep at `retry_after_max = 21,600 s`, 429 is in this session's own status_forcelist,
+    and this publisher's registry note says it sends Retry-After. One 429 was therefore up to SIX
+    HOURS on one chain and 84 hours across fourteen — unbounded by anything, since the Deadline I
+    deleted had been the only clip. A bound that a single response header can lift is not a bound.
+    A 429 now surfaces as a named transient and is retried next run, which is what transient means.
+
+    The BULK call uses this session too (R792 #2). It used to run on the module session at
+    timeout=120 with total=5, i.e. 6 x 120 + 45 = 765 s — larger than everything else combined and
+    entirely outside the figure I published. Nothing about it deserves a different retry policy from
+    the fourteen calls beside it.
+    """
     s = requests.Session()
     s.headers.update({"User-Agent": UA})
     retry = Retry(total=1, backoff_factor=0.5,
                   status_forcelist=[429, 500, 502, 503, 504],
-                  allowed_methods=["GET"], respect_retry_after_header=True)
+                  allowed_methods=["GET"], respect_retry_after_header=False)
     s.mount("https://", HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=4))
     return s
 
 
 def _chains_tvl_aggregate(sess, tally=None):
     """Refresh the __ALL__ aggregate AND the fourteen SERVED per-chain series of chains_tvl.parquet.
+
+    `sess` IS DELIBERATELY UNUSED. Every call in this family goes through `_chain_session()` so the
+    bound stated at CHAIN_TIMEOUT_S holds for all fifteen; the parameter stays only because the call
+    site passes the module session the way it does for every other family. Silently falling back to
+    `sess` is one of the two mutations R792 #3 showed the whole test file failing to notice, so it
+    is pinned by behaviour in tests/test_defillama_served_chains.py, not by this sentence.
 
     WHY THEY WERE FROZEN. The bulk /v2/historicalChainTvl call carries only the __ALL__ total, so
     the catalogued per-chain series were left to jobs/ingest_defillama.py, which nothing schedules.
@@ -461,9 +493,10 @@ def _chains_tvl_aggregate(sess, tally=None):
     here would mean the shape CHANGED, so it is a named refusal rather than a quiet dedup.
     """
     keys, dates, vals = [], [], []
+    csess = _chain_session()
 
     # ---- the bulk __ALL__ call -------------------------------------------------------------
-    d = _get(sess, "https://api.llama.fi/v2/historicalChainTvl")
+    d = _get(csess, "https://api.llama.fi/v2/historicalChainTvl", timeout=CHAIN_TIMEOUT_S)
     if _is_err(d):
         if tally is not None:
             tally.transient_unit(f"chains_tvl.parquet:__ALL__ ({d['__err__']})")
@@ -473,15 +506,30 @@ def _chains_tvl_aggregate(sess, tally=None):
             tally.transient_unit(f"chains_tvl.parquet:__ALL__ (HTTP/shape {code})")
     else:
         for pt in d:
+            # GUARD THE ELEMENT, NOT ONLY THE CONTAINER (R792 #4). Both loops checked that the
+            # response was a list and then called `.get` on whatever was inside it, so `[null, {...}]`
+            # - or a list of strings, or of ints - raised an uncaught AttributeError straight out of
+            # update(). That is a WORSE blast radius than the whole-source veto the None path exists
+            # to avoid: it takes the chains merge, all of stablecoins_total, the obs total, the
+            # cursor map and finalize() with it. `_overview` in this same file already guards its
+            # element; the deleted `_live_chain_names` had been hardened against exactly this.
+            if not isinstance(pt, dict):
+                continue
             od = _to_date(pt.get("date"))
             if od is not None and isinstance(pt.get("tvl"), (int, float)):
                 keys.append("__ALL__"); dates.append(od); vals.append(float(pt["tvl"]))
         if not keys and tally is not None:
             tally.transient_unit("chains_tvl.parquet:__ALL__ (200 but parsed 0 points - the bulk "
                                  "shape changed; tvl:total would freeze behind a fresh file)")
+        elif len(set(dates)) != len(dates) and tally is not None:
+            # R792 #5: the docstring claimed a duplicate-date refusal for this endpoint and only
+            # the per-chain loop had one, so a duplicated bulk date reached merge and was deduped
+            # silently on the HEADLINE series - R773's pathology, on tvl:total.
+            keys.clear(); dates.clear(); vals.clear()
+            tally.transient_unit("chains_tvl.parquet:__ALL__ (publisher returned a repeated "
+                                 "obs_date - shape changed; refusing to guess the daily close)")
 
     # ---- the served per-chain series, every one attempted every run -------------------------
-    csess = _chain_session()
     for name in SERVED_CHAINS:
         url = "https://api.llama.fi/v2/historicalChainTvl/" + _urlquote(name, safe="")
         c = _get(csess, url, timeout=CHAIN_TIMEOUT_S)
@@ -500,6 +548,8 @@ def _chains_tvl_aggregate(sess, tally=None):
             continue
         ck, cd, cv = [], [], []
         for pt in c:
+            if not isinstance(pt, dict):          # R792 #4, see the bulk loop above
+                continue
             od = _to_date(pt.get("date"))
             if od is not None and isinstance(pt.get("tvl"), (int, float)):
                 ck.append(name); cd.append(od); cv.append(float(pt["tvl"]))
