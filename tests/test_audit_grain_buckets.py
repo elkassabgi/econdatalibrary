@@ -255,3 +255,36 @@ def test_grain_index_reads_every_machine_readable_holder():
         assert g.get(s) == "flow", s
     for s in _resolve._DOT_TABLE_GRAIN:
         assert g.get(s) == "dot-table", s
+
+def test_grain_index_works_when_run_AS_A_SCRIPT(tmp_path):
+    """The test suite is not the tool. pytest puts the repo root on sys.path; running
+    `python tools/audit_store_vs_catalog.py` does not - sys.path[0] is tools/. So every test
+    above passed while the real command refused every run with
+
+        GRAIN INDEX UNAVAILABLE (RuntimeError: ... ModuleNotFoundError: No module named 'updater')
+
+    and reported an unqualified 1,246,546,145. Caught by the tool's own fail-closed guard on the
+    first live invocation, which is the only reason it was caught at all.
+
+    So this one runs the actual command in a subprocess, the way a person does.
+    """
+    import subprocess
+
+    repo = os.path.dirname(_HERE)
+    tsv = tmp_path / "audit.tsv"
+    io.open(str(tsv), "w", encoding="utf-8").write(
+        "source\tin_store\tcatalogued\tgap\tnote\n"
+        "bfs\t483667\t582\t483085\tpartial\n"
+        "abs\t376333085\t18\t376333067\tpartial\n")
+
+    r = subprocess.run(
+        [sys.executable, os.path.join("tools", "audit_store_vs_catalog.py"),
+         "--summarise", str(tsv)],
+        cwd=repo, capture_output=True, text=True)
+
+    assert r.returncode == 0, r.stderr[-800:]
+    assert "GRAIN INDEX UNAVAILABLE" not in r.stdout, r.stdout
+    assert "UNQUALIFIED" not in r.stdout, r.stdout
+    # bfs is declared flow grain -> excluded; abs is unestablished -> counted
+    assert "hosted but not catalogued          : 376,333,067 series" in r.stdout, r.stdout
+    assert "grain:flow" in r.stdout, r.stdout

@@ -80,7 +80,13 @@ def grain_index() -> dict:
     and the resolver agree BY CONSTRUCTION and not by both being edited — the same reason
     the key-column candidates are shared with core/broaden_catalog.py::_key_col.
     """
+    # BOTH paths. Run as a script, sys.path[0] is tools/, so neither the client package nor
+    # the repo root is importable - and the orchestrate import below then fails, which
+    # (correctly) refuses the whole run. Caught by the guard itself, on the first live run:
+    # the tests passed because pytest puts the repo root on sys.path and the script does not.
     sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
     from econdl import _resolve                                   # noqa: PLC0415
     out: dict[str, str] = {}
     for s in getattr(_resolve, "_FLOW_GRAIN", ()):
