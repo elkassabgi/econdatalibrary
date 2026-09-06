@@ -92,10 +92,19 @@ def _script_of(cmdline: str) -> "str | None":
     to make python run something other than its first path argument is not closed, so a
     matcher over that set cannot be either; the allow-list is.
 
-    THE PRICE IS MEASURED, not assumed. `RELAUNCH_GUARD.ps1:25-40` launches each tracked job as
-    `$python jobs/ingest_<x>.py`, which resolves. Its long-job shim (`:231`) documents the form
-    `python -u ... <script>`, and `-u` is on the allow-list, so that resolves too. A form nobody
-    uses is refused loudly as "not running" rather than silently mis-attributed.
+    THE PRICE, STATED HONESTLY. The only form that launches a TRACKED job today is
+    `RELAUNCH_GUARD.ps1:25-40`'s `$python jobs/ingest_<x>.py`, and it resolves. An earlier
+    version of this comment claimed the long-job shim's `python -u ... <script>` as a second
+    measured case; it is not one. `$longJobs` is `@()` and has never held a tracked job, and the
+    argv actually preserved at `:101` is `-u -m core.derive_csv`, which this rule REFUSES — `-m`
+    means python runs a module, not that path. That refusal is correct and irrelevant here,
+    because core.derive_csv is not a tracked ingester. `-u`, `-X` and `-W` are on the list
+    because they are harmless, not because anything currently uses them.
+
+    A refused form is reported as "not running", which under-reports rather than mis-attributes.
+    That is the safe direction for a beat, and it is NOT loud: the beat says `2/3` and "finished
+    or dead" like any other absence. Nothing binds this list to RELAUNCH_GUARD.ps1's argv, so a
+    launcher change is a silent coverage loss until someone re-reads both.
 
     Why refusing is the safe direction here: this feeds only the HEARTBEAT. The guard's own
     relaunch decision lives in RELAUNCH_GUARD.ps1 and reads its own process list, so a refusal
@@ -152,12 +161,19 @@ def _alive_jobs_detail() -> "list[dict]":
     cannot separate a restart from a crash loop (R54), so this publishes the fact — pid and age —
     and leaves the verdict to a reader who can look at the job's own log.
 
-    THIS DOES NOT REDDEN CI, AND THAT IS A CHOICE. Two reviews asked why the gate still cannot
-    fail on the R799 condition. Failing on it needs a signal one sample does not carry: the same
-    job young on CONSECUTIVE beats, or a changed pid between them, and this publisher keeps no
-    state across ticks. Guessing from one sample is precisely the 60-second floor that had to be
-    reverted. Until the two-tick comparison exists, the honest position is that the beat now
-    CARRIES the fact a reader needs and stops asserting a health it cannot establish.
+    THIS DOES NOT REDDEN CI, AND THAT IS A CHOICE I AM NOT DRESSING UP. Three reviews asked why
+    the gate still cannot fail on the R799 condition. Failing on it needs a two-tick signal — the
+    same job young on CONSECUTIVE beats, or a changed pid between them — and one sample cannot
+    carry that; guessing from one sample is exactly the 60-second floor that had to be reverted.
+
+    I previously wrote that this publisher "keeps no state across ticks", and that was false: it
+    could read the PREVIOUS beat it just wrote, and `logs/_guard.log` records every relaunch with
+    a timestamp (110 istat relaunches in 24 h, measured). Both signals are free and sitting
+    beside this function. Implementing the comparison is real work with its own failure modes,
+    and I chose not to bundle it into a change that had already failed review three times — but
+    the reason is scope, not impossibility, and pretending otherwise put a wrong claim in a
+    comment (R808 #6). Until it exists, this beat CARRIES the fact and asserts no health it
+    cannot establish.
 
     Returns None, never [], when the process table could not be read: "unknown" and "nothing is
     running" are different, and a blind instrument must not read as a clean one.

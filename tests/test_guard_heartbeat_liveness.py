@@ -169,6 +169,41 @@ def test_the_REAL_DECODE_survives_a_byte_cp1252_cannot_read():
     assert [d["name"] for d in gh._match_tracked(rows)] == ["ingest_cbs_nl.py"]
 
 
+def test_the_CALL_ITSELF_asks_for_bytes_and_sets_the_console_encoding(monkeypatch):
+    """R808 finding 1: putting `text=True` back — the R802 defect, one token — left the whole
+    suite green at `26 passed`, while on this box it makes `_alive_jobs_detail()` return None for
+    ever. Every other test drives `_parse_process_table` directly, so none of them can see how
+    the subprocess was invoked. This asserts the CALL.
+
+    `text=True` (or `encoding=`/`universal_newlines=`) makes `subprocess` decode with the ANSI
+    code page before this module ever sees the bytes, and the `[Console]::OutputEncoding` prelude
+    is what makes those bytes UTF-8 in the first place. Both are load-bearing and neither was
+    pinned."""
+    seen = {}
+
+    class _R:
+        returncode, stdout, stderr = 0, b"null", b""
+
+    def _spy(cmd, **kw):
+        seen["cmd"], seen["kw"] = cmd, kw
+        return _R()
+
+    monkeypatch.setattr(subprocess, "run", _spy)
+    gh._alive_jobs_detail()
+
+    for banned in ("text", "encoding", "universal_newlines"):
+        assert banned not in seen["kw"], (
+            f"subprocess.run was given {banned}={seen['kw'][banned]!r} — the bytes are then "
+            f"decoded with the ANSI code page and one non-cp1252 path anywhere on the box "
+            f"blinds the beat (R802)")
+    assert seen["kw"].get("capture_output") is True
+    assert isinstance(seen["kw"].get("timeout"), (int, float)) and seen["kw"]["timeout"] > 0, (
+        "a process query with no timeout can wedge the guard tick that publishes the beat")
+    script = " ".join(seen["cmd"])
+    assert "[Console]::OutputEncoding" in script and "UTF8" in script, (
+        "without the prelude PowerShell emits OEM bytes and the utf-8 decode mangles them")
+
+
 def test_a_FAILED_process_query_is_UNKNOWN_not_empty():
     assert gh._parse_process_table(json.dumps([REAL]).encode(), 1) is None
 
@@ -257,6 +292,53 @@ def _check_out(capsys, _drop=(), **over):
     with m.patch.object(gh.r2_util, "client", lambda write=False: _C()):
         rc = gh.check(45.0)
     return rc, capsys.readouterr().out
+
+
+def test_one_entry_per_tracked_job_even_if_two_processes_run_it(monkeypatch):
+    """R808 finding 1: deleting `_match_tracked`'s `break` went undetected. Two processes running
+    the same script is not hypothetical — it is what a guard double-relaunch looks like (R427),
+    and `jobs_alive` is counted against `tracked`, so a duplicate would publish 4/3."""
+    twin = dict(REAL, ProcessId=112, AgeS=30)
+    _table(monkeypatch, [REAL, twin])
+    d = gh._alive_jobs_detail()
+    assert [x["name"] for x in d] == ["ingest_cbs_nl.py"], d
+    assert d[0]["pid"] == 111, "the first match is the one reported"
+
+
+def test_the_relaunch_window_decides_what_counts_as_just_restarted(capsys):
+    """R808 finding 7: `RELAUNCH_WINDOW_S` was pinned by no test, so any value passed."""
+    w = 330
+    _rc, out = _check_out(capsys, relaunch_window_s=w, jobs_detail=[
+        {"name": "ingest_cbs_nl.py", "pid": 1, "age_s": w - 1},
+        {"name": "ingest_gus_dbw.py", "pid": 2, "age_s": w},
+    ])
+    assert "ingest_cbs_nl.py" in out.split("restarted within")[1]
+    assert "ingest_gus_dbw.py" not in out.split("restarted within")[1], (
+        "a job exactly at the window is NOT inside it")
+
+
+def test_the_WINDOW_CONSTANT_matches_the_measured_tick_cadence(capsys, monkeypatch):
+    """The test above passes the window IN the beat, so it never reads the module constant and
+    widening `RELAUNCH_WINDOW_S` to a day survived it. Two pins for the constant itself: it must
+    be published, and it must bracket the measured tick cadence.
+
+    The cadence is 315.0 s median over 2,850 gaps in logs/_guard.log
+    (tools/measure_relaunch_cadence.py). A window BELOW that never fires on a job the guard just
+    restarted; a window of two ticks or more calls a job "just restarted" long after the next
+    tick has already been and gone."""
+    body = _publish_body(monkeypatch, [])
+    assert body["relaunch_window_s"] == gh.RELAUNCH_WINDOW_S
+    assert 315 <= gh.RELAUNCH_WINDOW_S < 2 * 315, (
+        f"RELAUNCH_WINDOW_S={gh.RELAUNCH_WINDOW_S} does not bracket one guard tick (315.0 s "
+        f"measured); it must be at least a tick and less than two")
+
+
+def test_an_OLD_beat_falls_back_to_the_module_constant(capsys):
+    """A beat published before this change carries no `relaunch_window_s`, so `check` uses the
+    constant — the path the test above cannot reach."""
+    _rc, out = _check_out(capsys, _drop=("relaunch_window_s",), jobs_detail=[
+        {"name": "ingest_cbs_nl.py", "pid": 1, "age_s": gh.RELAUNCH_WINDOW_S - 1}])
+    assert f"({gh.RELAUNCH_WINDOW_S}s)" in out, out
 
 
 def test_the_check_NAMES_the_job_that_was_just_restarted(capsys):
