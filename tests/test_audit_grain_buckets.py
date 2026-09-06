@@ -98,9 +98,13 @@ def _run(tmp_path, spec, grain, fail_index=False):
 # alpha: plain series grain, a REAL 30-key coverage gap (40 keys, 10 catalogue rows)
 # bravo: DECLARED flow grain, a 95-key "gap" that is the design (100 keys, 5 rows)
 # charlie: bespoke resolver, 50-key gap - the abs/bls/bis shape: unknown, therefore COUNTED
-SPEC = {"alpha": (40, 10), "bravo": (100, 5), "charlie": (60, 10)}
-GRAIN = {"bravo": "flow", "charlie": "custom"}
-HEADLINE = "held locally but not catalogued    : 80 series"      # alpha 30 + charlie 50
+# zulu: a bespoke resolver with ZERO catalogue rows. The suite had no such case, which is
+# exactly why the cat == 0 branch kept the pre-review behaviour and dropped 5,353,886 real
+# store keys (imf 4,304,918 + owid 1,048,968) out of the headline on the last complete run.
+SPEC = {"alpha": (40, 10), "bravo": (100, 5), "charlie": (60, 10), "zulu": (500, 0)}
+GRAIN = {"bravo": "flow", "charlie": "custom", "zulu": "custom"}
+# alpha 30 + charlie 50 + zulu 500
+HEADLINE = "held locally but not catalogued    : 580 series"
 
 
 def test_real_series_grain_gap_is_still_counted(tmp_path):
@@ -117,7 +121,7 @@ def test_declared_grain_gap_is_excluded_and_named(tmp_path):
     assert "NOT COMPARABLE" in stdout and "1 source(s) served at a NON-SERIES grain" in stdout
     assert "95 store keys" in stdout, stdout
     assert "grain:flow" in tsv
-    assert "held locally but not catalogued    : 175 series" not in stdout   # bravo not counted
+    assert "held locally but not catalogued    : 675 series" not in stdout   # bravo not counted
     assert HEADLINE in stdout
 
 
@@ -143,8 +147,8 @@ def test_fail_closed_when_the_grain_index_cannot_be_built(tmp_path):
     stdout, _tsv = _run(tmp_path, SPEC, GRAIN, fail_index=True)
     assert "GRAIN INDEX UNAVAILABLE" in stdout, stdout
     assert "the grain index failed to build" in stdout, stdout
-    # 30 + 95 + 50 = 175: nothing was excused
-    assert "held locally but not catalogued    : 175 series" in stdout, stdout
+    # 30 + 95 + 50 + 500 = 675: nothing was excused
+    assert "held locally but not catalogued    : 675 series" in stdout, stdout
     assert "NOT COMPARABLE" not in stdout
     assert "GRAIN UNESTABLISHED" not in stdout
 
@@ -184,6 +188,7 @@ BODY = (
     "alpha\t40\t10\t30\tpartial\n"           # series grain, a real gap
     "bravo\t100\t5\t95\tpartial\n"           # declared flow grain
     "charlie\t60\t10\t50\tpartial\n"         # bespoke resolver
+    "zulu\t500\t0\t500\tUNCATALOGUED\n"      # bespoke resolver, ZERO catalogue rows
     "delta\t10\t25\t-15\tORPHAN\n"           # catalogue rows with no store key
     "echo\t\t7\t\tno key column\n"           # NOT MEASURED - must not read as clean
 )
@@ -196,6 +201,7 @@ def test_summarise_reclassifies_without_measuring(tmp_path):
     assert "catalogued with no LOCAL STORE KEY : 15 series" in out, out
     assert "1 source(s) at a DECLARED non-series grain, 95 store keys" in out, out
     assert "50 store keys — INCLUDED in the total above" in out, out
+    assert "NO CATALOGUE ROWS AT ALL — 1 source(s), 500 store keys" in out, out
 
 
 def test_summarise_never_lets_an_unmeasured_source_read_as_clean(tmp_path):
@@ -220,8 +226,8 @@ def test_summarise_fails_closed_without_a_grain_index(tmp_path):
         sys.stdout = real
     out = buf.getvalue()
     assert "GRAIN INDEX UNAVAILABLE" in out and "UNQUALIFIED" in out, out
-    # nothing excused: 30 + 95 + 50 all land in the headline
-    assert "held locally but not catalogued    : 175 series" in out, out
+    # nothing excused: 30 + 95 + 50 + 500 all land in the headline
+    assert "held locally but not catalogued    : 675 series" in out, out
 
 
 def test_grain_index_reads_every_machine_readable_holder():
@@ -288,3 +294,85 @@ def test_grain_index_works_when_run_AS_A_SCRIPT(tmp_path):
     # bfs is declared flow grain -> excluded; abs is unestablished -> counted
     assert "held locally but not catalogued    : 376,333,067 series" in r.stdout, r.stdout
     assert "grain:flow" in r.stdout, r.stdout
+
+def test_zero_catalogue_rows_is_its_own_bucket_and_is_COUNTED(tmp_path):
+    """THE BLOCKER an adversarial review found, and the suite could not see.
+
+    A source with ZERO catalogue rows reaches nobody whatever its grain - `series.ts` 404s an id
+    absent from the catalogue. The pre-review code added such a source's keys to the DECLARED
+    grain tally ("NOT a coverage gap") and to NEITHER the headline nor the unestablished tally, so
+    on the last complete run it printed "0 store keys" under a heading reading "INCLUDED in the
+    total above" while listing two sources, and dropped imf (4,304,918) and owid (1,048,968) out
+    of the headline entirely. It also booked ilo - file grain, 29,447,518 keys, no catalogue at
+    all - as design.
+    """
+    stdout, tsv = _run(tmp_path, SPEC, GRAIN)
+    assert HEADLINE in stdout, stdout                       # zulu's 500 IS in the total
+    assert "NO CATALOGUE ROWS AT ALL — 1 source(s), 500 store keys" in stdout, stdout
+    assert "INCLUDED in the total above" in stdout, stdout
+    assert "UNCATALOGUED — 0 catalogue rows" in tsv, tsv
+    # and it is in NEITHER gap bucket: those two now partition cleanly
+    assert "1 source(s) served at a NON-SERIES grain" in stdout, stdout   # bravo only
+    assert "GRAIN UNESTABLISHED — 1 source(s)" in stdout, stdout          # charlie only
+
+
+def test_a_gated_source_is_not_reported_as_forgotten(tmp_path):
+    """R838 - the rule I broke by hand, twice in one hour, now in the instrument.
+
+    A denylisted source holds data, has no catalogue row and no R2 object BY DECISION (the
+    2026-07-22/23 licence purge). Reporting it beside genuinely forgotten data is how I came to
+    write that `gus` was "a dead store directory nothing owns" when it has a working fetcher and
+    sits on the denylist.
+    """
+    m = _load()
+    m.denylisted = lambda: {"zulu"} | {f"pad{i}" for i in range(12)}
+    m.grain_index = lambda: dict(GRAIN)
+    buf, real = io.StringIO(), sys.stdout
+    sys.stdout = buf
+    try:
+        m.summarise(_tsv(tmp_path, BODY))
+    finally:
+        sys.stdout = real
+    out = buf.getvalue()
+    assert "GATED BY DECISION — 1 of them are on the worker's denylist (500 keys)" in out, out
+    assert "do not read these as forgotten data" in out, out
+    assert "UNEXPLAINED — 0 source(s)" in out, out
+
+
+def test_the_denylist_read_fails_CLOSED(tmp_path):
+    """If the denylist cannot be parsed, gated sources would be reported as forgotten ones - so
+    the run must say so rather than print a confident bucket."""
+    m = _load()
+
+    def _boom():
+        raise RuntimeError("simulated: denylist.ts unreadable")
+    m.denylisted = _boom
+    m.grain_index = lambda: dict(GRAIN)
+    buf, real = io.StringIO(), sys.stdout
+    sys.stdout = buf
+    try:
+        m.summarise(_tsv(tmp_path, BODY))
+    finally:
+        sys.stdout = real
+    out = buf.getvalue()
+    assert "DENYLIST UNAVAILABLE" in out, out
+    assert "reported as forgotten ones" in out, out
+
+
+def test_summarise_refuses_to_assert_ORPHAN_from_an_estimate(tmp_path):
+    """main() deliberately has no ORPHAN branch on the HLL path - measured error +19/-14% - and
+    summarise must agree, or a giant that OOM'd into that path invents an orphan count from
+    noise."""
+    m = _load()
+    m.grain_index = lambda: {}
+    m.denylisted = lambda: {f"pad{i}" for i in range(12)}
+    body = "giant\t900000\t1000000\t-100000\tinconclusive  [approx +19/-14%]\n"
+    buf, real = io.StringIO(), sys.stdout
+    sys.stdout = buf
+    try:
+        m.summarise(_tsv(tmp_path, body))
+    finally:
+        sys.stdout = real
+    out = buf.getvalue()
+    assert "catalogued with no LOCAL STORE KEY : 0 series" in out, out
+    assert "100,000" not in out, out
