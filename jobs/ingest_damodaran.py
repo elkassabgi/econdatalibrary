@@ -89,10 +89,16 @@ ANNUAL_DATASETS = [
     ("psdata",       f"{BASE}/psdata.xls",          "country",  None),
     # Working capital
     ("wcdata",       f"{BASE}/wcdata.xls",          "industry", None),
-    # EV/Sales
-    ("evsales",      f"{BASE}/evsales.xls",         "industry", None),
-    # Profitability
-    ("profitability", f"{BASE}/profit.xls",         "industry", None),
+    # RETIRED BY THE PUBLISHER, removed 2026-09-06 — measured, not assumed:
+    #   ("evsales",       f"{BASE}/evsales.xls", "industry", None)
+    #   ("profitability", f"{BASE}/profit.xls",  "industry", None)
+    # Both HEAD 404 with this module's own UA; both hold 0 series in the store, so they have
+    # never contributed a row; and Damodaran's current data page links 236 dataset files with
+    # no `evsales`/`profit` match. The concepts are not lost — `psdata.xls` (price/sales) and
+    # `margin.xls` are both still published and both already in this list. Leaving the entries
+    # cost two requests per run and booked two `empty_unit` tallies that read like a rotated
+    # workbook rather than a retirement. If either name ever returns to the data page, re-add
+    # it; do not re-add on memory alone.
 ]
 
 
