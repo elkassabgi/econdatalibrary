@@ -12,7 +12,7 @@ Output: data/clean_full/damodaran/damodaran.parquet
 Run: python jobs/ingest_damodaran.py
 """
 from __future__ import annotations
-import datetime as dt, io, os, re, time
+import collections, datetime as dt, io, os, re, time
 import requests, openpyxl, xlrd
 import pyarrow as pa, pyarrow.parquet as pq
 
@@ -183,6 +183,40 @@ def _obs_date_from_year(yr_val, snapshot_date: dt.date) -> dt.date:
 # ─────────────────────────────────────────────────────────────────
 # Core row parser (shared between xlsx and xls)
 # ─────────────────────────────────="─────────────────────────────
+def _group_span(rows, header_idx, width):
+    """{column index -> the group label spanning it}, from the sparse row above the header.
+
+    Damodaran's workbooks put a GROUP row above the label row and fill only the first cell of
+    each group: vebitda.xls 'Industry Averages' row 7 is
+    `[None, None, 'Only positive EBITDA firms', None, None, None, 'All firms', ...]` over a row 8
+    that repeats EV/EBITDA once per group. Forward-filling that row gives each column the group
+    it belongs to, which is what makes the two EV/EBITDA columns distinguishable.
+
+    A group row is exactly the shape the header search REJECTS -- column 0 empty, other cells
+    populated -- which is why the header lands on row 8 and why this has to read it separately.
+    Looks at most 3 rows up so an unrelated banner cannot be mistaken for one, and returns {}
+    when there is none (then the caller falls back to the column index).
+    """
+    for gi in range(header_idx - 1, max(-1, header_idx - 4), -1):
+        row = rows[gi] if gi >= 0 else None
+        if not row:
+            continue
+        c0 = row[0] if len(row) else None
+        if isinstance(c0, str) and c0.strip():
+            continue                      # a real header or metadata row, not a group row
+        cells = {i: str(c).strip() for i, c in enumerate(row)
+                 if c is not None and str(c).strip() and str(c).strip() != "None"}
+        if not cells:
+            continue
+        span, cur = {}, ""
+        for i in range(width):
+            if i in cells:
+                cur = cells[i]
+            span[i] = cur
+        return span
+    return {}
+
+
 def _parse_rows(rows, dataset: str, sheet_name: str) -> tuple[list, list, list]:
     """Parse a list-of-tuples (from either xlsx or xls) into (keys, dates, vals).
 
@@ -265,6 +299,35 @@ def _parse_rows(rows, dataset: str, sheet_name: str) -> tuple[list, list, list]:
         label = re.sub(r"[^a-zA-Z0-9_]", "_", h)[:25].strip("_")
         if label:
             val_cols.append((i, label))
+
+    # A KEY THAT REPEATS IS NOT A KEY. Two columns can reduce to the SAME label, and then two
+    # different quantities are emitted under one series_key at one obs_date -- the user gets two
+    # numbers for one date and which one they see depends on row order. Measured in the served
+    # store 2026-09-06: 721 of 24,687 keys, worst in evmultiples (353 of 462 = 76.4%), then
+    # taxrate 179, divfcfe 72, ctryprem 87, ctryprem_old 30; the other 15 datasets are clean.
+    #
+    # Two causes, both producing a repeated label:
+    #   * a TWO-LEVEL header. vebitda.xls 'Industry Averages' row 7 is a sparse group row
+    #     ('Only positive EBITDA firms' ... 'All firms') over a row 8 that repeats EV/EBITDA,
+    #     EV/EBIT, EV/EBITDAR&D and EV/EBIT (1-t) once per group, so Advertising's EV/EBITDA is
+    #     both 11.998 and 15.118. The group row is already known to this function -- the header
+    #     search above deliberately skips it (see the margin.xls comment) -- and skipping it is
+    #     right for FINDING the header and wrong for BUILDING the label.
+    #   * the 25-character truncation itself: 'Net Cash Returned/FCFE (pre-debt)' and
+    #     '(post-debt)' both become 'Net_Cash_Returned_FCFE__p'.
+    #
+    # ONLY COLLIDING LABELS ARE TOUCHED. A keying change is a RE-GRAIN needing a clean re-pull
+    # (R22/R333), so every id that moves has a cost, and a fix that silently re-keyed the clean
+    # datasets would be worse than the defect. An earlier draft raised the cap to 80 chars and
+    # terminated the table at the first blank header column; both are global, and measured over
+    # all 20 datasets they moved 6,656 ids across 13 datasets that had NO conflict (R820). This
+    # version moves 959 and leaves all 15 clean datasets byte-identical.
+    _dupes = {lab for lab, n in collections.Counter(l for _, l in val_cols).items() if n > 1}
+    if _dupes:
+        _span = _group_span(rows, header_idx, len(header))
+        val_cols = [(i, (re.sub(r"[^a-zA-Z0-9_]", "_", f"{lab}__{_span.get(i) or f'col{i}'}")
+                         [:60].strip("_")) if lab in _dupes else lab)
+                    for i, lab in val_cols]
 
     if not val_cols:
         return [], [], []
