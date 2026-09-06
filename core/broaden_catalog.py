@@ -40,6 +40,53 @@ except ImportError:      # running as a script rather than a module
     _sys.path.insert(0, ROOT)
     from core.gen_denylist import LEGACY_KEEP as _GATE_FLOOR
 UNHOSTABLE = set(_GATE_FLOOR)
+
+
+def _served_ids():
+    """The ids the DEPLOYED worker resolves, read from api/worker/src/util.ts.
+
+    Reuses tools/audit_schedule_coverage.supported_sources() instead of re-parsing:
+    that function strips line AND block comments before harvesting quoted strings,
+    which is the R137 failure shape — util.ts carries retired ids inside comments
+    (`// "ksh" RETIRED 2026-07-29`), so a naive quoted-string scan reports them as
+    served. It raises SystemExit when the array cannot be located, which is the
+    fail-CLOSED behaviour a safety gate needs.
+    """
+    from tools.audit_schedule_coverage import supported_sources
+    return supported_sources()
+
+
+def _allowed_to_catalog(d, cataloged, served, allow_new):
+    """DEFAULT-DENY: may store directory `d` be catalogued at all?
+
+    R819. A fleet-wide `--dry-run` proposed KEEP for 24 uncatalogued store dirs holding
+    308,555 series, and every one of them was retired or reserved: the 22 legacy `imf_*`
+    ids from the 2026-08-07 retirement wave, `ksh` (withdrawn 2026-08-02 after being
+    re-served — R226), and `unctad_cpa` (one of the 38 UNCTAD ids reserved to Ahmed).
+
+    Neither existing gate could see them, and the second reason is the interesting one:
+      * `UNHOSTABLE` (= gen_denylist.LEGACY_KEEP) was frozen at the 2026-07-22/23 purge,
+        so it lists nothing retired afterwards; and
+      * `not_reservable` is computed from a `source ⋈ license` join, but
+        `tools/retire_source.py` deletes the `source` row along with the `series` rows —
+        so a retired id produces NO row for that join. The more completely a source is
+        retired, the blinder that guard becomes.
+
+    A longer id-list cannot fix this: it can only name retirements that already happened,
+    and it is blind by construction to a directory like `zillow.pre_zillow_removal.bak`,
+    which passed both gates in that same run and was stopped only by SERIES_CAP — a cap
+    `--series-cap` overrides, and not a permission gate at all (zillow is the library's
+    one recorded live licence breach, R213/R227).
+
+    So the gate is inverted. An uncatalogued store dir is refused unless the deployed
+    worker already serves that id, or the operator names it with `--allow-new`. Adding a
+    genuinely new source therefore becomes a deliberate act — which is the point, since
+    the documented pipeline (Checklist B) catalogues BEFORE util.ts is edited, so a real
+    new source is legitimately absent here and must be named.
+    """
+    return d in cataloged or d in served or d in allow_new
+
+
 SERIES_CAP = 50_000      # per-source; above this the per-series grain is wrong -> defer
 FILE_CAP = 2_000         # ibge (8221 tiny files) etc. -> defer (flow-grain, later wave)
 _SKIP = ("__series.parquet",)
@@ -86,6 +133,10 @@ def main():
     ap.add_argument("--source", action="append", help="limit to specific source(s)")
     ap.add_argument("--series-cap", type=int, default=None,
                     help="override SERIES_CAP for this run (e.g. catalog a >50k real source per-series)")
+    ap.add_argument("--allow-new", action="append", default=[], metavar="SOURCE_ID",
+                    help="catalog a source the deployed worker does not serve yet. REQUIRED for "
+                         "a genuinely new source, because the gate is default-deny (R819) — "
+                         "repeat the flag per id.")
     a = ap.parse_args()
     if a.series_cap:
         global SERIES_CAP
@@ -103,14 +154,23 @@ def main():
         "SELECT s.source_id FROM source s LEFT JOIN license l ON s.license_id = l.license_id "
         "WHERE COALESCE(l.reservable, 0) = 0")}
 
+    # DEFAULT-DENY (R819): what the deployed worker serves is the authoritative local record
+    # of what may be catalogued. retire_source.py already removes a retired id from it.
+    served = _served_ids()
+    allow_new = set(a.allow_new or ())
+
     todo = []
     skipped_unhostable = []
+    refused_unlisted = []
     for d in sorted(os.listdir(STORE)):
         p = os.path.join(STORE, d)
         if not os.path.isdir(p) or d.startswith("_") or d in cataloged or d in PROTECTED:
             continue
         if d in UNHOSTABLE or d in not_reservable:
             skipped_unhostable.append(d)
+            continue
+        if not _allowed_to_catalog(d, cataloged, served, allow_new):
+            refused_unlisted.append(d)
             continue
         if a.source and d not in a.source:
             continue
@@ -196,6 +256,11 @@ def main():
     if skipped_unhostable:
         print(f"SKIPPED as un-hostable ({len(skipped_unhostable)}): "
               + ", ".join(sorted(skipped_unhostable)))
+    # Named, never a bare count: R819's whole failure was reading a refusal total out of a
+    # log that had not finished writing it. The ids are the evidence; the number is not.
+    if refused_unlisted:
+        print(f"REFUSED — not served by the deployed worker and not --allow-new "
+              f"({len(refused_unlisted)}): " + ", ".join(sorted(refused_unlisted)))
 
 
 if __name__ == "__main__":
