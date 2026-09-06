@@ -6,9 +6,30 @@ by accident while chasing something else. A reported example is one instance of 
 whole surface gets swept rather than the two I tripped over.
 
 Three outcomes matter:
-  UNCATALOGUED  data present, no catalogue row      -> hosted and invisible
-  PARTIAL       catalogue covers part of the store
+  UNCATALOGUED  data present LOCALLY, no catalogue row
+  PARTIAL       catalogue covers part of the local store
   ORPHAN        catalogue rows with no LOCAL STORE KEY
+
+"UNCATALOGUED" DOES NOT MEAN "HOSTED AND INVISIBLE", and this file used to say it did
+(corrected 2026-09-06). Every comparison here is CATALOGUE vs LOCAL PARQUET STORE, and
+neither is R2. Listing R2 under series/<source>%3A for every source with a large positive
+gap in the run then in flight:
+
+    source     R2 objects     catalogue rows     local store keys
+    abs                18                 18          376,333,085
+    bls                 9                  9          154,190,127
+    bis                49                 49            1,521,257
+    ember              60                 60              255,898
+    ecb                35                 35            3,733,574
+    census          2,993              2,993              440,414
+    gus                 0                  0              151,236
+
+R2 and the catalogue agree EXACTLY in all seven. So the gap is data that was never derived
+to R2 at all - HELD, not hosted. It is still a real coverage gap, because a user cannot get
+it; but the fix is "derive and publish", not "add a catalogue row", and the two are not the
+same job. This is the R825 correction in the opposite direction: there the file wrongly said
+ORPHAN meant a 404, here it wrongly said a gap meant hosted. Both came from describing the
+SERVED system with a LOCAL measurement.
 
 ORPHAN DOES NOT MEAN "404", AND THIS FILE USED TO SAY IT DID (corrected 2026-09-06, R825). The
 old line on ORPHAN asserted that such series were listed but could not be downloaded, and called
@@ -167,8 +188,8 @@ def summarise(path: str) -> int:
             elif gap < 0:
                 orph -= gap
     print(f"re-read {rows:,} row(s) from {path} — MEASURED NOTHING, only re-classified")
-    print(f"\nhosted but not catalogued          : {unc:,} series"
-          f"   <- SERIES-GRAIN sources only")
+    print(f"\nheld locally but not catalogued    : {unc:,} series"
+          f"   <- SERIES-GRAIN sources only; NOT a claim about R2")
     if not grain_ok:
         print("   WARNING: grain index missing — this total is UNQUALIFIED. Do not report "
               "it.")
@@ -439,8 +460,8 @@ def main() -> int:
             print(f"   {s:24s} catalogued {c:>10,}   {where}")
 
     fh.close()
-    print(f"\nhosted but not catalogued          : {unc:,} series"
-          f"   <- SERIES-GRAIN sources only")
+    print(f"\nheld locally but not catalogued    : {unc:,} series"
+          f"   <- SERIES-GRAIN sources only; NOT a claim about R2")
     if not grain_ok:
         print("   WARNING: the grain index failed to build, so this total is UNQUALIFIED "
               "and may be dominated by designed grain differences. Do not report it.")

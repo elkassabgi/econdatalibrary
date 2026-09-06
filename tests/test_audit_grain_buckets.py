@@ -100,7 +100,7 @@ def _run(tmp_path, spec, grain, fail_index=False):
 # charlie: bespoke resolver, 50-key gap - the abs/bls/bis shape: unknown, therefore COUNTED
 SPEC = {"alpha": (40, 10), "bravo": (100, 5), "charlie": (60, 10)}
 GRAIN = {"bravo": "flow", "charlie": "custom"}
-HEADLINE = "hosted but not catalogued          : 80 series"      # alpha 30 + charlie 50
+HEADLINE = "held locally but not catalogued    : 80 series"      # alpha 30 + charlie 50
 
 
 def test_real_series_grain_gap_is_still_counted(tmp_path):
@@ -117,7 +117,7 @@ def test_declared_grain_gap_is_excluded_and_named(tmp_path):
     assert "NOT COMPARABLE" in stdout and "1 source(s) served at a NON-SERIES grain" in stdout
     assert "95 store keys" in stdout, stdout
     assert "grain:flow" in tsv
-    assert "hosted but not catalogued          : 175 series" not in stdout   # bravo not counted
+    assert "held locally but not catalogued    : 175 series" not in stdout   # bravo not counted
     assert HEADLINE in stdout
 
 
@@ -144,7 +144,7 @@ def test_fail_closed_when_the_grain_index_cannot_be_built(tmp_path):
     assert "GRAIN INDEX UNAVAILABLE" in stdout, stdout
     assert "the grain index failed to build" in stdout, stdout
     # 30 + 95 + 50 = 175: nothing was excused
-    assert "hosted but not catalogued          : 175 series" in stdout, stdout
+    assert "held locally but not catalogued    : 175 series" in stdout, stdout
     assert "NOT COMPARABLE" not in stdout
     assert "GRAIN UNESTABLISHED" not in stdout
 
@@ -221,7 +221,7 @@ def test_summarise_fails_closed_without_a_grain_index(tmp_path):
     out = buf.getvalue()
     assert "GRAIN INDEX UNAVAILABLE" in out and "UNQUALIFIED" in out, out
     # nothing excused: 30 + 95 + 50 all land in the headline
-    assert "hosted but not catalogued          : 175 series" in out, out
+    assert "held locally but not catalogued    : 175 series" in out, out
 
 
 def test_grain_index_reads_every_machine_readable_holder():
@@ -286,5 +286,5 @@ def test_grain_index_works_when_run_AS_A_SCRIPT(tmp_path):
     assert "GRAIN INDEX UNAVAILABLE" not in r.stdout, r.stdout
     assert "UNQUALIFIED" not in r.stdout, r.stdout
     # bfs is declared flow grain -> excluded; abs is unestablished -> counted
-    assert "hosted but not catalogued          : 376,333,067 series" in r.stdout, r.stdout
+    assert "held locally but not catalogued    : 376,333,067 series" in r.stdout, r.stdout
     assert "grain:flow" in r.stdout, r.stdout
