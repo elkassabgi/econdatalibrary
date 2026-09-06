@@ -104,11 +104,59 @@ def to_date(ts):
         return None
 
 
+def _dedup_first(cols):
+    """Drop later rows repeating a (series_key, obs_date) pair. Returns (cols, n_dropped).
+
+    WHY, AND WHY *FIRST* (R773). `/protocol/<slug>` ends its `tvl` array with an intraday "now"
+    point whose timestamp falls on the current day, and the settled 00:00 UTC close for that
+    same day is already in the array. Both map to the same obs_date, this ingester wrote both,
+    and the served CSV then hands a user one date twice with two different values: 33 of 107
+    store objects carry 21,759 such pairs, and seven of the eight served protocol CSVs are
+    affected.
+
+    KEEPING THE FIRST OCCURRENCE IS MEASURED, NOT ASSUMED. Fetched 2026-09-06:
+
+        /protocol/aave   2,302 points, exactly ONE duplicated date (today)
+                         index 2300  ts=1788652800  00:00:00Z  18309869039   <- settled close
+                         index 2301  ts=1788665243  03:27:23Z  18397673946   <- intraday "now"
+        /protocol/lido   2,088 points, same shape (00:00:00Z then 01:53:59Z)
+
+    So the settled close comes first and the intraday point is appended after it.
+
+    AND THIS IS WHY THE OBVIOUS RULE WOULD HAVE BEEN WRONG. "Drop points that are not at
+    midnight UTC" looks equivalent and is not: lido carries 146 non-midnight points out of
+    2,088, only ONE of which is part of a duplicated pair. That rule would have deleted 145
+    legitimate observations. Deduplicating on the pair keeps a lone non-midnight point as the
+    only observation for its date and drops only the genuine repeat.
+
+    One pass, one set (R85): rebuilding the seen-set per row is how a 90-minute repair happened.
+    """
+    keys, dates = cols["series_key"], cols["obs_date"]
+    seen, keep = set(), []
+    for i, pair in enumerate(zip(keys, dates)):
+        if pair not in seen:
+            seen.add(pair)
+            keep.append(i)
+    if len(keep) == len(keys):
+        return cols, 0
+    return {k: [v[i] for i in keep] for k, v in cols.items()}, len(keys) - len(keep)
+
+
 def write_parquet(path, cols):
     """cols = dict of name->list (parallel). Writes if any rows."""
     n = len(next(iter(cols.values()))) if cols else 0
     if n == 0:
         return 0
+    # Applied HERE rather than in phase_tvl because every grouped file this job writes is keyed
+    # on (series_key, obs_date) and none of them goes through merge_and_write, which is the only
+    # thing that dedups elsewhere. The catalogue phases have no obs_date column and are skipped.
+    if "series_key" in cols and "obs_date" in cols:
+        cols, dropped = _dedup_first(cols)
+        if dropped:
+            n = len(cols["series_key"])
+            print(f"    dedup: dropped {dropped:,} row(s) repeating a (series_key, obs_date) "
+                  f"pair in {os.path.basename(path)} — the intraday 'now' point (R773)",
+                  flush=True)
     FLOATCOLS = {"value", "tvl_usd", "apy", "apy_base", "apy_reward",
                  "circulating_usd", "circulating", "tvl", "mcap", "price"}
     arrays = {}
