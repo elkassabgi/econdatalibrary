@@ -446,6 +446,12 @@ def main() -> int:
                "refused": [{"table": st, "rows": nr} for st, nr in refused],
                "refused_rows": sum(nr for _st, nr in refused),
                "duplicates_collapsed": dropped_total, "seconds": round(dt),
+               # THE PARAMETER THE CATALOGUER MUST MATCH, RECORDED WHERE IT CAN READ IT
+               # (R833). Persisted nowhere before: not here, and not in _split_map.json,
+               # whose entries are {dim, parts, rows}. It was recoverable only by
+               # inference from min(split rows), which bounds the cap from ABOVE and not
+               # below - so a cataloguer run at the wrong cap read as a frozen pipeline.
+               "max_rows": int(a.max_rows),
                "dry_run": bool(a.dry_run)}, open(summary, "w"), indent=1)
     print(f"summary -> {summary}")
     return 0

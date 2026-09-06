@@ -520,9 +520,11 @@ def sidecars() -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
-    ap.add_argument("--max-rows", type=int, default=MAX_ROWS_DEFAULT,
+    ap.add_argument("--max-rows", type=int, default=None,
                     help="must match the value the derive ran with, or the completeness guard "
-                         "below compares against the wrong set of oversized tables")
+                         "below compares against the wrong set of oversized tables. Default: "
+                         "whatever the derive RECORDED in its summary; falls back to "
+                         f"{MAX_ROWS_DEFAULT:,} only when the summary predates that record.")
     ap.add_argument("--r2-keys", metavar="PATH",
                     help="a listing of the R2 keys under series/<source>%%3A (one per line). With "
                          "it, (1) an over-cap table with no split entry AND no object in R2 is "
@@ -568,6 +570,38 @@ def main() -> int:
     ap.add_argument("--expect-dropped", type=int, default=None,
                     help="refuse unless exactly this many rows are dropped by the listing gate")
     a = ap.parse_args()
+
+    # THE CAP IS THE DERIVE'S, NOT OURS (R833). Reading it from the derive's own summary
+    # removes the inference that made a 500,000-vs-3,000,000 mismatch look like a frozen
+    # pipeline: 367 tables the derive had correctly written whole reported as 'no split-map
+    # entry', and I escalated a multi-day re-derive that was never needed.
+    recorded = None
+    try:
+        recorded = json.load(open(os.path.join(ROOT, "logs",
+                                               "statcan_tables_summary.json"),
+                                  encoding="utf-8")).get("max_rows")
+    except Exception as e:                                     # noqa: BLE001
+        print(f"derive summary unreadable ({type(e).__name__}) - cannot confirm the cap")
+    if a.max_rows is None:
+        if recorded is None:
+            # NEVER SILENT. A summary written before max_rows was recorded cannot confirm
+            # the cap, and a default that merely LOOKS shared is exactly the trap.
+            a.max_rows = MAX_ROWS_DEFAULT
+            print(f"WARNING: the derive summary does NOT record max_rows, so the cap it ran"
+                  f" with is UNKNOWN.\n  Falling back to {MAX_ROWS_DEFAULT:,}. If the derive"
+                  f" used another value every 'no split-map entry'\n  below is an artifact -"
+                  f" re-run the derive, or pass --max-rows explicitly.")
+        else:
+            a.max_rows = int(recorded)
+            print(f"cap {a.max_rows:,} adopted from the derive's recorded max_rows")
+    elif recorded is not None and int(recorded) != int(a.max_rows):
+        # FAIL CLOSED. A disagreement here silently changes which tables are checked for a
+        # split entry, which is the entire completeness guard.
+        print(f"REFUSING: --max-rows {a.max_rows:,} disagrees with the cap the derive"
+              f" recorded ({int(recorded):,}).\n  The completeness guard would compare"
+              f" against the wrong set of oversized tables.\n  Pass the recorded value, or"
+              f" re-run the derive at the one you want.")
+        return 1
     if a.list_r2_keys:
         n = write_r2_listing(a.list_r2_keys, a.prefix, a.bucket)
         print(f"{n:,} key(s) listed under {key_prefix(a.prefix)} -> {a.list_r2_keys} "
