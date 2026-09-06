@@ -80,6 +80,55 @@ def _series_maxes(keys, dates):
     return {k: v.isoformat() for k, v in out.items()}
 
 
+_QUAL = "__"          # the separator ingest_damodaran uses when it disambiguates a label
+
+
+def _stale_grain_keys(path, new_keys, before=0, limit=5):
+    """Keys the store holds in their PRE-FIX, unqualified form. Empty means safe to merge.
+
+    A qualified key looks like `DAMODARAN:<ds>:<label>__<qualifier>:<entity>`; its pre-fix form
+    is the same key with `__<qualifier>` removed. If the store still contains that form, the
+    store was written by the old parser and a merge would leave BOTH — which is the whole
+    failure mode this guard exists for, and one that never-shrink cannot see because the file
+    grows.
+
+    Reads only the series_key column, through blob so it works under AQUEDUCT_BACKEND=r2 (R36).
+
+    FAILS CLOSED WHEN THERE IS SOMETHING TO PROTECT. `before` is the store's row count, already
+    computed by the caller. If it is 0 there is no store and no first publish should ever be
+    blocked by this guard, so an unreadable path yields no stale keys. If it is non-zero the
+    store exists and we could not read it — and a guard that waves a doubling merge through on
+    a transient read error is the fail-open branch R503 was written about, so it reports the
+    failure as stale instead.
+    """
+    qualified = {k for k in new_keys if _QUAL in k}
+    if not qualified:
+        return []
+    try:
+        have = set(blob.read_table(path, columns=["series_key"])
+                   .column("series_key").to_pylist())
+    except Exception as e:                                            # noqa: BLE001
+        if before:
+            return [f"<store holds {before:,} rows but could not be read: "
+                    f"{type(e).__name__}; refusing to merge blind>"]
+        return []                                # genuinely no store yet -> nothing to protect
+    # a SET: every qualified sibling of one old key derives back to that same key, so
+    # EV_EBITDA__All_firms and EV_EBITDA__Only_positive_EBITDA_firms would otherwise report
+    # `...:EV_EBITDA:Advertising` twice and the count would overstate the damage.
+    stale = set()
+    for k in qualified:
+        head, _, tail = k.rpartition(":")        # entity
+        label_part, sep, _qual = head.rpartition(_QUAL)
+        if not sep:
+            continue
+        old = f"{label_part}:{tail}"
+        if old in have:
+            stale.add(old)
+            if len(stale) >= limit:
+                break
+    return sorted(stale)
+
+
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
@@ -152,6 +201,26 @@ def update(unit, since) -> Result:
     # (~21900 rows) falls below the 0.92 floor (23177) and is refused. After the first run
     # the file is dup-free and stays >= its distinct count. This is an explicit per-call
     # min_ratio (sanctioned by merge_and_write), NOT a weakening of the shared guard.
+    # RE-GRAIN GUARD. The key fix for R516 qualifies labels that used to collide, so a fixed
+    # parser emits `...:EV_EBITDA__All_firms:Advertising` where the store holds
+    # `...:EV_EBITDA:Advertising`. Those two never collide, which is precisely the danger: a
+    # merge ADDS the new keys beside the old ones, the file only GROWS, and never-shrink and
+    # min_ratio both wave it through (R22/R333 — ons_uk reached 20,198,302 rows for 10,099,151
+    # observations exactly this way). The repair is a CLEAN RE-PULL, never a merge.
+    #
+    # The check needs no sidecar and self-clears: for every qualified key this pull produced,
+    # ask whether its UNQUALIFIED form is still in the store. If it is, the store predates the
+    # fix and merging would double that series. After `python jobs/ingest_damodaran.py` has
+    # rewritten the file (a plain pq.write_table, i.e. an overwrite), no unqualified form
+    # remains and the guard passes silently for ever after.
+    stale = _stale_grain_keys(path, all_keys, before=before)
+    if stale:
+        tally.structural_unit(
+            f"store is on the pre-R516 key grain: {len(stale):,} key(s) would be DOUBLED by a "
+            f"merge (e.g. {stale[0]}). A re-grain needs a clean re-pull, not a merge — run "
+            f"`python jobs/ingest_damodaran.py` once, then this fetcher resumes normally.")
+        return finalize(tally, before, None, source=SOURCE, merged_rows=0)
+
     n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP, min_ratio=0.92)
     new_rows = max(0, n - before)
     if new_rows:
