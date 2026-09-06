@@ -16,8 +16,14 @@ through a HANDFUL of cheap bulk GETs:
   overview    - fees_*/dexs_*/options_*/aggregators_* .parquet  (one bulk
                 /overview/<type>?dataType=<dt>&...Breakdown=false call per file;
                 ALL protocols' full daily history in one response)
-  chains      - chains_tvl.parquet  (one /v2/historicalChainTvl aggregate +
-                — left to the heavy ingester for the 450 per-chain series)
+  chains      - chains_tvl.parquet  (one bulk /v2/historicalChainTvl for the __ALL__
+                aggregate, PLUS one /v2/historicalChainTvl/<name> for each of the 14
+                CATALOGUED chains — 973,352 B total, measured 2026-09-06T02:57:06Z.
+                The other ~437 per-chain series stay with the heavy ingester: they are
+                not catalogued, so nobody can download them, and all 451 would be ~31 MB
+                a run. Before this, __ALL__ reached 2026-09-05 while every downloadable
+                chain sat at 2026-06-04 — the file looked fresh and the served data was
+                93 days stale.)
   stablecoins - stablecoins_total.parquet (one bulk /stablecoincharts/all)
 
 The per-ENTITY families are NOT refreshed here and are deliberately left untouched
@@ -34,13 +40,22 @@ on the long tail, never data loss.
 
 Schema (grouped time-series files): series_key(str) | obs_date(date32) | value(float64)
                                     [+ tvl_usd/apy/apy_base/apy_reward on yields].
-Dedup key for every grouped file is (series_key, obs_date) — verified unique on disk.
+Dedup key for every grouped file is (series_key, obs_date). THAT KEY IS NOT UNIQUE ON DISK
+TODAY, and this docstring used to claim it was (R773): swept 2026-09-06T03:02:33Z over all
+112 R2 objects — 107 examined, 38,806,211 rows, 5 skipped and named — 33 files carry 21,759
+duplicate pairs. Every file THIS fetcher writes is clean, because merge_and_write dedups; the
+duplicates live exactly in the files no merge touches, written by jobs/ingest_defillama.py's
+raw pq.write_parquet. Their cause is upstream: /protocol/<slug> appends an intraday "now"
+point repeating the current day, and the ingester stored it beside the settled daily close, so
+each file duplicates one date per key — the day it last ran. Seven of eight served protocol
+CSVs hand a user that date twice with two different values. Repair: tools/repair_defillama_parents.py.
 Catalog snapshots dedup on their natural primary key. A 200 that parses 0 rows from a
 real body -> structural; timeout/5xx/429 -> transient (status='partial', retried).
 """
 from __future__ import annotations
 import datetime as dt
 import os
+from urllib.parse import quote as _urlquote      # 'OP Mainnet' has a space; safe="" encodes it
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -355,22 +370,194 @@ def _overview(sess, typ, dtype):
     return tbl, DEDUP_TS, keys, dates, None
 
 
-def _chains_tvl_aggregate(sess):
-    """Refresh ONLY the __ALL__ aggregate series of chains_tvl.parquet via the single
-    bulk /v2/historicalChainTvl call. The 450 per-chain series stay as-is (one GET each
-    -> heavy ingester). merge keeps every existing chain series untouched and never
-    shrinks, so refreshing just the aggregate is a safe partial advance of this file."""
+# The FOURTEEN chains whose per-chain series are CATALOGUED - the only ones a user can download.
+# This tuple is the FALLBACK; _served_chains() prefers the catalogue at runtime (R778 #6).
+#
+# COST, at the right grain (R778 #8 corrected all of these; my first numbers were each a little
+# flattering). The fourteen per-chain GETs are 973,352 B, measured 2026-09-06T02:57:06Z (7.4 s,
+# 14/14 HTTP 200, every one carrying data through that day). The bulk __ALL__ call is a FURTHER
+# 121,264 B, so the family costs 1,094,616 B a run, plus one /v2/chains listing. Refreshing all 451
+# chain series would be ~31 MB, but that figure is extrapolated from the fourteen LARGEST and is an
+# upper bound, not a measurement. R769 rule 3: count BYTES, not requests.
+#
+# WHAT WAS FROZEN: 449 of the 450 per-chain series sat at 2026-06-04 (one at 2022-07-25) while
+# __ALL__ reached 2026-09-05. The other 436 stay with the ingester - they are not catalogued, so
+# nobody can download them.
+#
+# A RE-PULL REWRITES HISTORY, AND THAT IS BY DESIGN (R778 #4, measured, previously undisclosed):
+# against the current store, 0 stored dates are absent from the API (so this is NOT a re-grain -
+# the risk never-shrink cannot see), 1,322 rows are new, and 8,118 of 26,402 overlapping values
+# (30.7%) DIFFER, going back to 2019 - Avalanche 2021-02-03 moves 124 -> 3,612,846, Base 2024-06-01
+# 1.623 B -> 1.521 B. DeFiLlama restates its own history as adapters are corrected; the fetcher's
+# declared strategy is overwrite_if_changed, so taking the publisher's current numbers is right.
+# Saying so is the part that was missing.
+#
+# THE WORK LIST COMES FROM THE CATALOGUE, NEVER FROM THE PUBLISHER'S LISTING (R61, R769 rule 7).
+# Six of defillama's eight catalogued PROTOCOLS are absent from /protocols while live at their own
+# endpoint, so a listing-driven enumeration reproduces exactly the hole this change exists to close.
+# tests/test_defillama_served_chains.py pins this tuple against catalog.db.
+SERVED_CHAINS = ("Aptos", "Arbitrum", "Avalanche", "BSC", "Base", "Bitcoin", "Ethereum",
+                 "Near", "OP Mainnet", "Polygon", "Solana", "Starknet", "Sui", "Tron")
+
+
+def _served_chains(say=True):
+    """The work list, read from the CATALOGUE at runtime where it exists, falling back to the
+    pinned tuple only when it genuinely is not there.
+
+    R778 #6: a constant checked only by a test that SKIPS wherever catalog.db is absent is not a
+    pin — and tests.yml pulls no catalogue, so it never ran in CI. `updater-daily.yml` DOES pull
+    catalog.db and exports ECONDL_CATALOG (:166, :193-207), which is the run that matters, so the
+    list is taken from the catalogue THERE and the constant is only a fallback. Path resolution is
+    copied from orchestrate.py:1067 rather than re-typed (R66). Prints what RESOLVED, never what
+    was configured (R335)."""
+    cat = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
+    if os.path.exists(cat):
+        try:
+            import sqlite3
+            con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
+            try:
+                rows = con.execute(
+                    "SELECT series_id FROM series WHERE source_id='defillama' AND series_id LIKE ?",
+                    ("defillama:chain_tvl:%",)).fetchall()
+            finally:
+                con.close()
+            names = tuple(sorted(r[0].split("chain_tvl:", 1)[1] for r in rows if r[0]))
+            if names:
+                if say:
+                    print(f"  [defillama] chain work list: {len(names)} from the CATALOGUE {cat}",
+                          flush=True)
+                return names
+        except Exception as ex:                      # a broken read must not stop the fetch
+            if say:
+                print(f"  [defillama] catalogue unreadable ({type(ex).__name__}: {ex}); "
+                      f"falling back to the pinned list", flush=True)
+    if say:
+        print(f"  [defillama] chain work list: {len(SERVED_CHAINS)} from the PINNED constant "
+              f"(no catalogue at {cat})", flush=True)
+    return SERVED_CHAINS
+
+
+def _chains_tvl_aggregate(sess, tally=None):
+    """Refresh the __ALL__ aggregate AND the fourteen SERVED per-chain series of chains_tvl.parquet.
+
+    WHY THEY WERE FROZEN. The bulk /v2/historicalChainTvl call carries only the __ALL__ total, so
+    the 14 catalogued per-chain series were left to jobs/ingest_defillama.py - which nothing
+    schedules. Measured 2026-09-06T02:26Z: __ALL__ reached 2026-09-05 while all 450 per-chain series
+    stopped at 2026-06-04, i.e. the file looked fresh and every downloadable chain was 93 days stale.
+
+    ONE TABLE, DELIBERATELY (R769 finding 3 / R44). _merge_file books structural_unit whenever a
+    parsed table is empty while the file had rows, and finalize() raises that as a whole-source
+    DefinitiveError. It does NOT "publish nothing" - finalize runs after every merge, so the earlier
+    families' writes stand and what is lost is the status, the vintage and last_success (R778 #8
+    corrected me on that). If each chain were merged into its own file, one renamed chain would take
+    the source down that way. Accumulating them into the single table this file already uses means
+    a 404 costs that chain's rows and nothing else.
+
+    BUT THE VETO IS NOT "UNREACHABLE", WHICH IS WHAT I CLAIMED AND MEASURED WRONG. My control made
+    every CHAIN bogus and never the BULK call, and the bulk failure used to return before the loop
+    ran - so a bulk 404 emptied the table and vetoed the source with all fourteen chains healthy.
+    Fixed below; the honest statement now is that no SINGLE entity's failure can empty the table,
+    and a total outage returns None (transient, keep old data) rather than an empty table.
+
+    NO DEDUP HERE, AND THAT IS MEASURED. /protocol/<slug> appends an intraday "now" point repeating
+    the current day, and storing it beside the settled close is what minted 21,759 duplicate pairs
+    across this store (R773). This endpoint does NOT: 0 duplicate dates across all fourteen at
+    2026-09-06T03:42:09Z. So a first-wins rule would be cargo-culted from the other endpoint. A
+    duplicate here would mean the shape CHANGED, which must be loud rather than quietly deduped -
+    so it is a named per-chain refusal, and the chain is skipped rather than guessed at.
+    """
+    keys, dates, vals = [], [], []
+
+    # ---- the bulk __ALL__ call -------------------------------------------------------------
+    # R778 #2: this used to RETURN on an error or a non-list, before the per-chain loop below ever
+    # ran - so a bulk 404 produced an EMPTY table while the file had rows, which _merge_file books
+    # as structural_unit and finalize() raises as a whole-source DefinitiveError. My claim that the
+    # veto was unreachable was measured on the wrong axis: I made every CHAIN bogus and never the
+    # bulk call (a one-sided test over a two-sided space, R322). The bulk failure is now recorded
+    # and the chains still run.
+    #
+    # R778 #1: __ALL__ was also the one entity of fifteen with NO failure class. `structural_unit`
+    # is FILE-grained, so putting fifteen entities in one table turned it into "at least one of
+    # fifteen parsed something" - a bulk call returning `[]`, or a renamed field, gave __ALL__ zero
+    # rows with status ok and the vintage ADVANCED, freezing `defillama:tvl:total` (the headline
+    # series) behind a file that looked fresh. That is precisely the defect this change exists to
+    # fix, inverted onto the most-used series. This publisher has already served a well-formed 200
+    # carrying zero rows twice (see RETIRED_UPSTREAM), so it is not hypothetical.
     d = _get(sess, "https://api.llama.fi/v2/historicalChainTvl")
     if _is_err(d):
-        return None, None, None, None, d["__err__"]
-    if not isinstance(d, list):
-        return _table_from_cols({"series_key": [], "obs_date": [], "value": []}), \
-            DEDUP_TS, [], [], None
-    keys, dates, vals = [], [], []
-    for pt in d:
-        od = _to_date(pt.get("date"))
-        if od is not None and isinstance(pt.get("tvl"), (int, float)):
-            keys.append("__ALL__"); dates.append(od); vals.append(float(pt["tvl"]))
+        if tally is not None:
+            tally.transient_unit(f"chains_tvl.parquet:__ALL__ ({d['__err__']})")
+    elif not isinstance(d, list):
+        if tally is not None:
+            code = d.get("__http__") if _is_http(d) else type(d).__name__
+            tally.transient_unit(f"chains_tvl.parquet:__ALL__ (HTTP/shape {code})")
+    else:
+        for pt in d:
+            od = _to_date(pt.get("date"))
+            if od is not None and isinstance(pt.get("tvl"), (int, float)):
+                keys.append("__ALL__"); dates.append(od); vals.append(float(pt["tvl"]))
+        if not keys and tally is not None:
+            tally.transient_unit("chains_tvl.parquet:__ALL__ (200 but parsed 0 points - the bulk "
+                                 "shape changed; tvl:total would freeze behind a fresh file)")
+
+    # ---- the served per-chain series -------------------------------------------------------
+    # R778 #3 / R299: a 404 is NOT transient. `transient_unit` makes finalize() return partial, and
+    # a partial never sets last_success_utc (R231), so one permanently renamed chain would pin the
+    # whole source at partial for ever - broken AND unmonitorable. The two causes are told apart by
+    # a signal the run already has: the publisher's own chain listing. Absent from the listing AND
+    # 404 = retired upstream, which is a human's job (re-catalogue or drop it) and is booked
+    # non-demoting; present in the listing but failing = a genuine transient. R61 is respected -
+    # listing absence alone never delists anything, it only classifies a failure that already
+    # happened. The real detector for "a served series stopped moving" is the health gate's
+    # RED-DATA, which watches the observation frontier, not the run status.
+    listed = None
+    lc = _get(sess, "https://api.llama.fi/v2/chains")
+    if isinstance(lc, list):
+        listed = {c.get("name") for c in lc if isinstance(c, dict)}
+
+    for name in _served_chains():
+        url = "https://api.llama.fi/v2/historicalChainTvl/" + _urlquote(name, safe="")
+        c = _get(sess, url)
+        label = f"chains_tvl.parquet:{name}"
+        if _is_err(c):
+            if tally is not None:
+                tally.transient_unit(f"{label} ({c['__err__']})")
+            continue                       # retry may help; the other chains still publish
+        if _is_http(c) or not isinstance(c, list):
+            code = c.get("__http__") if _is_http(c) else "shape"
+            retired = (listed is not None and name not in listed)
+            if tally is not None:
+                if retired:
+                    # Named, loud, and NON-demoting: retrying cannot fix a chain the publisher no
+                    # longer has, and pinning the source at partial for ever would hide every other
+                    # failure behind it (R231/R299).
+                    tally.empty_unit(f"{label} (HTTP {code} AND absent from /v2/chains - RETIRED "
+                                     f"upstream; re-catalogue it or drop it from the work list)")
+                    print(f"  [defillama] RETIRED UPSTREAM: {name} is catalogued but the publisher "
+                          f"no longer serves or lists it - a human must re-catalogue or delist it",
+                          flush=True)
+                else:
+                    tally.transient_unit(f"{label} (HTTP {code}; still in /v2/chains, so retry "
+                                         f"may help)")
+            continue
+        ck, cd, cv = [], [], []
+        for pt in c:
+            od = _to_date(pt.get("date"))
+            if od is not None and isinstance(pt.get("tvl"), (int, float)):
+                ck.append(name); cd.append(od); cv.append(float(pt["tvl"]))
+        if len(set(cd)) != len(cd):
+            if tally is not None:
+                tally.transient_unit(f"{label} (publisher returned a repeated obs_date - shape "
+                                     f"changed; refusing to guess which value is the daily close)")
+            continue
+        keys.extend(ck); dates.extend(cd); vals.extend(cv)
+
+    if not keys:
+        # NOTHING parsed - bulk and every chain failed. Returning an empty TABLE here would be
+        # booked structural and raise a whole-source DefinitiveError; returning None is _merge_file's
+        # "transient sub-failure: keep old data" path, which is the honest reading of a total
+        # outage (retry helps) and leaves the other families' merges alone (R778 #2).
+        return None, None, None, None, "chains: bulk and every served chain failed"
     tbl = _table_from_cols({"series_key": keys, "obs_date": dates, "value": vals})
     return tbl, DEDUP_TS, keys, dates, None
 
@@ -472,7 +659,7 @@ def update(unit, since) -> Result:
     # Cursor keys are family-qualified to the CATALOG suffix (see _merge_file docstring):
     # '__ALL__' is served as defillama:tvl:total, a per-chain row as defillama:chain_tvl:<C>.
     path = os.path.join(out_dir, "chains_tvl.parquet")
-    tbl, dk, keys, dates, err = _chains_tvl_aggregate(sess)
+    tbl, dk, keys, dates, err = _chains_tvl_aggregate(sess, tally)
     n, md = _merge_file(path, tbl, dk, tally, cursors, keys, dates,
                         qualify=lambda k: "tvl:total" if k == "__ALL__"
                         else f"chain_tvl:{k}")
