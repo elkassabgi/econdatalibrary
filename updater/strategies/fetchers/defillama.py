@@ -441,11 +441,18 @@ def _live_chain_names(sess, work):
     # (this chain is absent) also tripped the trust check, so 150 green cases were vacuous. The
     # honest split is by proportion: one chain gone is a retirement, most of them gone at once is
     # the listing having changed shape under us.
-    present = len(names & set(work))
-    if work and present < max(1, len(work) // 2):
-        print(f"  [defillama] chain listing holds only {present} of our {len(work)} chains - that "
-              f"is a listing change, not {len(work) - present} simultaneous retirements; NOT "
-              f"trusting it for retirement classification", flush=True)
+    # BOUND THE ABSOLUTE NUMBER MISSING, NOT THE PROPORTION (R784 #4). `present < len(work)//2`
+    # meant that at the production arity of 14, SEVEN chains could vanish at once and all seven
+    # would be booked RETIRED UPSTREAM - the very outcome the rule's own comment calls impossible -
+    # while at len(work)==1 the retired path became unreachable again. Retirement is a rare,
+    # individual event: a handful missing is credible, a crowd is the listing changing under us.
+    missing = sorted(set(work) - names)
+    allowed = max(1, len(work) // 4)
+    if missing and len(missing) > allowed:
+        print(f"  [defillama] chain listing is missing {len(missing)} of our {len(work)} chains "
+              f"({missing[:6]}...) - more than the {allowed} a real retirement wave would be; "
+              f"treating the listing as untrustworthy rather than booking that many retirements",
+              flush=True)
         return None
     return names
 
@@ -472,6 +479,22 @@ def _served_chains(say=True):
             finally:
                 con.close()
             names = tuple(sorted(r[0].split("chain_tvl:", 1)[1] for r in rows if r[0]))
+            # A FLOOR, which R780 #6 asked for and my previous round reported as answered without
+            # implementing (R784 #5). A catalogue holding ONE chain_tvl row silently produced a
+            # one-chain work list: thirteen served chains dropped with no tally, no demotion, and
+            # the run booking `ok`. The catalogue this reads can be stale by construction -
+            # ECONDL_CATALOG points at the R2 coherence copy, measured ten days old and refreshed
+            # only by a classifier-blocked tool - so a collapse in its row count is far likelier to
+            # be a stale or partial copy than thirteen simultaneous delistings.
+            floor = max(1, len(SERVED_CHAINS) // 2)
+            if names and len(names) < floor:
+                if say:
+                    print(f"  [defillama] catalogue {cat} lists only {len(names)} chain_tvl "
+                          f"row(s), below the floor of {floor} for a pinned list of "
+                          f"{len(SERVED_CHAINS)} - treating it as stale/partial and using the "
+                          f"pinned list instead: {sorted(set(SERVED_CHAINS) - set(names))} would "
+                          f"otherwise have been dropped silently", flush=True)
+                return SERVED_CHAINS
             if names:
                 if say:
                     # R780 #6: DIFF against the pin and say so. The catalogue this reads can be
@@ -551,6 +574,14 @@ def _chains_tvl_aggregate(sess, tally=None):
     # series) behind a file that looked fresh. That is precisely the defect this change exists to
     # fix, inverted onto the most-used series. This publisher has already served a well-formed 200
     # carrying zero rows twice (see RETIRED_UPSTREAM), so it is not hypothetical.
+    # THE CLOCK STARTS HERE, BEFORE THE FIRST GET (R784 #3). It used to be constructed after the
+    # bulk call and the chain-listing call, putting 2 x 766.5 s of worst case OUTSIDE the budget it
+    # was sized against; with the last started chain's overshoot that is 3,019.5 s = 50.3 min for
+    # this function alone, past orchestrate's 45-minute AQUEDUCT_UNIT_TIMEOUT_MIN, before the five
+    # other unbudgeted GETs this fetcher makes.
+    dl = Deadline(minutes=CHAINS_BUDGET_MIN)
+    out_dir = config.source_dir(SOURCE)
+
     d = _get(sess, "https://api.llama.fi/v2/historicalChainTvl")
     if _is_err(d):
         if tally is not None:
@@ -587,18 +618,32 @@ def _chains_tvl_aggregate(sess, tally=None):
     # bound (R190, and Deadline's own docstring): fourteen names in a FIXED order re-walk the same
     # prefix for ever. So the budget comes WITH a rotation bookmark, saved after every sub-unit and
     # after a complete pass, so the next run always starts somewhere new.
-    dl = Deadline(minutes=CHAINS_BUDGET_MIN)
-    out_dir = config.source_dir(SOURCE)
-    work = rotate_after(work, load_rotation(out_dir, CHAINS_ROTATION))
+    bookmark = load_rotation(out_dir, CHAINS_ROTATION)
+    work = rotate_after(work, bookmark)
 
     for name in work:
         if dl.spent():
             if tally is not None:
-                tally.deferred_unit(f"chains_tvl.parquet:{name} (budget {CHAINS_BUDGET_MIN} min "
-                                    f"spent; the rotation bookmark starts the next run here)")
+                # Say what is TRUE about the bookmark rather than asserting the happy case: the
+                # old message claimed "the rotation bookmark starts the next run here" while the
+                # bookmark was still empty, which is R190's own title sentence retyped in a commit
+                # citing R190 (R784 #2).
+                tally.deferred_unit(
+                    f"chains_tvl.parquet:{name} (budget {CHAINS_BUDGET_MIN} min spent; resumes "
+                    f"after {load_rotation(out_dir, CHAINS_ROTATION) or '<no bookmark yet>'})")
             continue
         url = "https://api.llama.fi/v2/historicalChainTvl/" + _urlquote(name, safe="")
         c = _get(sess, url)
+        # SAVE THE BOOKMARK ON THE ATTEMPT, NOT ON SUCCESS (R784 #1 - the rotation I added to
+        # answer R780 #8 was itself the regression, third round of this class). It sat at the end
+        # of the success path, so the bookmark recorded the last chain that CONTRIBUTED ROWS. A
+        # head chain that fails slowly then pins the window for ever: measured, five identical
+        # runs each fetched 1 chain, deferred 13, and left the bookmark empty - 13 of 14 SERVED
+        # chains never fetched again, hidden behind a chains_tvl.parquet that __ALL__ keeps fresh.
+        # Every sibling (abs, istat, boe, bcb, hagstofa, ipea, ssb) saves the last ATTEMPTED, and
+        # istat's comment says why: "saving a bookmark the run never got to would skip them for
+        # ever - the silent half of R190."
+        save_rotation(out_dir, name, CHAINS_ROTATION)
         label = f"chains_tvl.parquet:{name}"
         if _is_err(c):
             if tally is not None:
@@ -659,7 +704,6 @@ def _chains_tvl_aggregate(sess, tally=None):
                                      f"changed; refusing to guess which value is the daily close)")
             continue
         keys.extend(ck); dates.extend(cd); vals.extend(cv)
-        save_rotation(out_dir, name, CHAINS_ROTATION)
 
     if not keys:
         # NOTHING parsed - bulk and every chain failed. Returning an empty TABLE here would be

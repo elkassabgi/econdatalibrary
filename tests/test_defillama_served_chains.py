@@ -154,3 +154,93 @@ def test_one_missing_chain_IS_trusted_as_retired(monkeypatch):
     names = defillama._live_chain_names(None, ["Ethereum", "Bitcoin", "Solana"])
     assert names is not None
     assert "Ethereum" not in names and "Bitcoin" in names
+
+
+# ------------------------------------------------------- the budget, the bookmark and the message
+# R784 #8: 0 of the previous 175 control cases made `dl.spent()` true and no test touched Deadline,
+# rotation or deferral - so the rotation that R784 #1 found broken was invisible to every
+# instrument in the change. These drive the real function with `_get` stubbed.
+
+import types                                                            # noqa: E402
+
+from updater.strategies.fetchers._common import Result, Tally, finalize  # noqa: E402
+
+_TS = 1_700_000_000
+_OK = [{"date": _TS, "tvl": 1.0}, {"date": _TS + 86400, "tvl": 2.0}]
+_BULK = "https://api.llama.fi/v2/historicalChainTvl"
+_LISTURL = "https://api.llama.fi/v2/chains"
+
+
+def _drive(monkeypatch, tmp_path, chains, chain_result, listing=None):
+    """Run _chains_tvl_aggregate with every network call stubbed and the store pointed at tmp."""
+    listing = listing if listing is not None else [{"name": n} for n in chains] + \
+        [{"name": f"F{i}"} for i in range(500)]
+
+    def _get(sess, url, timeout=120):
+        if url == _BULK:
+            return _OK
+        if url == _LISTURL:
+            return listing
+        return chain_result(url.rsplit("/", 1)[-1])
+    monkeypatch.setattr(defillama, "_get", _get)
+    monkeypatch.setattr(defillama, "SERVED_CHAINS", tuple(chains))
+    monkeypatch.setenv("ECONDL_CATALOG", str(tmp_path / "absent.db"))
+    monkeypatch.setattr(defillama.config, "source_dir", lambda s: str(tmp_path))
+    t = Tally()
+    defillama._chains_tvl_aggregate(None, t)
+    return t
+
+
+def _bookmark(tmp_path):
+    from updater.strategies.fetchers._common import load_rotation
+    return load_rotation(str(tmp_path), defillama.CHAINS_ROTATION)
+
+
+def test_the_bookmark_records_the_last_ATTEMPTED_chain_not_the_last_to_SUCCEED(monkeypatch, tmp_path,
+                                                                              capsys):
+    """R784 #1, the regression this round introduced. `save_rotation` sat on the SUCCESS path, so a
+    chain that always fails never moved the bookmark and the window pinned for ever - the silent
+    half of R190, recreated by the remedy for R190. Every sibling saves the last ATTEMPTED."""
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "local")
+    chains = ["Alpha", "Beta", "Gamma"]
+    _drive(monkeypatch, tmp_path, chains, lambda n: {"__http__": 404})   # every chain FAILS
+    capsys.readouterr()
+    assert _bookmark(tmp_path) == "Gamma", (
+        "the bookmark must advance on an ATTEMPT; if it only moves on success, a persistently "
+        "failing head chain freezes every chain behind it for ever")
+
+
+def test_a_complete_pass_leaves_the_LAST_chain_so_the_next_run_wraps(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "local")
+    chains = ["Alpha", "Beta", "Gamma"]
+    _drive(monkeypatch, tmp_path, chains, lambda n: _OK)
+    capsys.readouterr()
+    assert _bookmark(tmp_path) == "Gamma"
+
+
+def test_finalize_NAMES_deferrals_when_something_also_failed():
+    """R784 #2, and the test the shared-infra change ships with. `finalize` returns on
+    `if tally.transient:` before the deferred branch, so one failure inside a fourteen-chain sweep
+    reported '1/1 sub-unit(s) transient-failed' and named none of the thirteen the budget never
+    reached - the denominator describing the attempted set while the reader takes it for the
+    sweep, which is the misreading R303 created the deferred class to end."""
+    t = Tally()
+    t.transient_unit("chains_tvl.parquet:Aptos (read timeout)")
+    for n in ["B", "C", "D"]:
+        t.deferred_unit(f"chains_tvl.parquet:{n} (budget spent)")
+    r = finalize(t, 100, None, source="defillama")
+    assert r.status == "partial"
+    assert "1/1 sub-unit(s) transient-failed" in r.error
+    assert "3 further sub-unit(s) deferred by budget and NOT attempted" in r.error, r.error
+    assert "chains_tvl.parquet:B" in r.error, r.error
+
+
+def test_finalize_deferral_only_message_is_unchanged():
+    """The negative control: with nothing failed the original deferred branch must still be what
+    speaks, or the fix has quietly changed the message every budgeted fetcher already emits."""
+    t = Tally()
+    t.added_unit(5)
+    for n in ["B", "C"]:
+        t.deferred_unit(f"x:{n}")
+    r = finalize(t, 100, None, source="defillama")
+    assert "none failed" in r.error and "2 deferred by budget" in r.error, r.error

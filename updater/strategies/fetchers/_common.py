@@ -359,10 +359,21 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
             f"{source}: all {tally.attempted} attempted sub-units returned empty/404 over a large "
             f"window — likely a structural break, not a quiet period; existing data kept")
     if tally.transient:
+        # A DEFERRAL IS INVISIBLE WHEN A FAILURE SHARES THE RUN, and this branch returns before the
+        # deferred one. Measured on defillama (R784 #2): one slow chain failing inside a 14-chain
+        # sweep reported "1/1 sub-unit(s) transient-failed" and named none of the 13 the budget
+        # never reached — a denominator that describes the attempted set while the reader takes it
+        # for the sweep. That is precisely the misreading R303 wrote the deferred class to end, and
+        # the deferred branch below cannot fix it because it is unreachable whenever anything
+        # failed. Deferrals are now named here too; nothing about the STATUS changes.
+        defer = ""
+        if tally.deferred:
+            defer = (f"; {tally.deferred} further sub-unit(s) deferred by budget and NOT attempted"
+                     + _named(tally.deferred_ids))
         return Result(status="partial", obs=total_rows, last_obs_date=last_obs,
                       new_vintage="date-tail", series_cursors=series_cursors, merged_rows=merged_rows,
                       error=f"{tally.transient}/{tally.attempted} sub-unit(s) transient-failed; will retry"
-                            + _named(tally.transient_ids))
+                            + _named(tally.transient_ids) + defer)
     if tally.deferred:
         # NOTHING FAILED — the budget simply stopped the sweep. Still `partial`, because the tick
         # did not cover everything and must not stamp a full-coverage vintage; the change is that
