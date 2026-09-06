@@ -1,26 +1,31 @@
 """The store audit must not read a DESIGNED grain difference as a coverage gap - and must not
-use that as a licence to excuse a real one.
+turn "I don't know the grain" into a licence to excuse one.
 
-WHY. `tools/audit_store_vs_catalog.py` prints `distinct store keys - catalogue rows` per source.
-That subtraction only measures coverage when one catalogue row means one store key. For a source
-served at flow / dot-table / file grain, one row deliberately stands for thousands of keys, so
-the same subtraction measures the GRAIN. Unqualified, the fleet total is dominated by it: abs
-alone reported 376,333,067 "hosted but not catalogued" against 18 catalogue rows, and bls
-154,190,118 against 9 - neither of which is a defect.
+WHY. `tools/audit_store_vs_catalog.py` prints `distinct store keys - catalogue rows` per source
+and totals the positives as "hosted but not catalogued". That subtraction only measures coverage
+when one catalogue row means one store key. For a source served at flow / dot-table / file grain
+that is false by design: one row deliberately stands for thousands of keys, so the subtraction
+measures the GRAIN. `cbs_nl` alone contributed 688,924,158 that way.
 
-The dangerous fix is the one that excuses too much. A source with a BESPOKE resolver is not
-thereby table-grain; all that establishes is that the audit has not established its grain. So
-there are three buckets, not two, and this file pins all three from both sides:
+WHY THE OBVIOUS FIX IS WORSE THAN THE BUG. The first version of this excluded every source with a
+NON-DEFAULT resolver. Adversarial review killed it: `abs`, `bls` and `bis` have bespoke resolvers
+and are SERIES grain - `_resolve_abs` / `_resolve_bls` / `_resolve_bis` all match an exact key,
+and their catalogue ids name one series each (`abs:CPI:1.10001.10.50.Q`, `bls:CUUR0000SA0`,
+`bis:WS_CBPOL:CA`). Excusing them hid **532,044,393** genuinely unreachable series. Worse, this
+exact inference is already a caught error in the codebase: `api/worker/src/catalog.ts:30` names
+abs (18) and bls (9) as "small hand-curated PER-SERIES catalogues" and says in as many words
+"Do NOT infer grain from the catalogue row count" - which is R525.
 
-    series grain            -> the gap IS coverage, counted in the headline total
-    declared flow/table/file-> the gap is design, reported apart, never in the total
-    bespoke resolver        -> grain UNESTABLISHED, reported apart under its own heading,
-                               never counted as clean and never folded into either of the above
+So there are three buckets, and only ONE of them is an exemption:
 
-Two-sided, because a one-sided test passes on a tool that excuses everything (assert the grain
-sources are excluded) and equally on one that excuses nothing (assert the real gap is counted).
-Both directions are asserted here, plus the fail-closed branch: if the grain index cannot be
-built, nothing may be excused on its authority.
+    series grain            -> the gap IS coverage. In the headline total.
+    DECLARED flow/table/file-> design. Reported apart, excluded from the total.
+    bespoke resolver        -> grain UNESTABLISHED. **COUNTED in the total** and also named,
+                               because a default of "unknown" must fail LOUD where a default of
+                               "grain" fails silent.
+
+Two-sided throughout: a one-sided test passes equally on a tool that excuses everything and on
+one that excuses nothing.
 """
 from __future__ import annotations
 
@@ -92,45 +97,49 @@ def _run(tmp_path, spec, grain, fail_index=False):
 
 # alpha: plain series grain, a REAL 30-key coverage gap (40 keys, 10 catalogue rows)
 # bravo: DECLARED flow grain, a 95-key "gap" that is the design (100 keys, 5 rows)
-# charlie: bespoke resolver, 50-key gap whose meaning nobody has established (60 keys, 10 rows)
+# charlie: bespoke resolver, 50-key gap - the abs/bls/bis shape: unknown, therefore COUNTED
 SPEC = {"alpha": (40, 10), "bravo": (100, 5), "charlie": (60, 10)}
 GRAIN = {"bravo": "flow", "charlie": "custom"}
+HEADLINE = "hosted but not catalogued          : 80 series"      # alpha 30 + charlie 50
 
 
 def test_real_series_grain_gap_is_still_counted(tmp_path):
     """DIRECTION 1 - the fix must not hide a genuine coverage gap."""
     stdout, tsv = _run(tmp_path, SPEC, GRAIN)
-    assert "hosted but not catalogued          : 30 series" in stdout, stdout
+    assert HEADLINE in stdout, stdout
     assert "alpha\t40\t10\t30\tpartial" in tsv, tsv
 
 
 def test_declared_grain_gap_is_excluded_and_named(tmp_path):
-    """DIRECTION 2 - a designed difference is reported, never totalled as a defect."""
+    """DIRECTION 2 - a designed difference is reported, never totalled as a defect. This is the
+    ONLY exemption the tool grants."""
     stdout, tsv = _run(tmp_path, SPEC, GRAIN)
     assert "NOT COMPARABLE" in stdout and "1 source(s) served at a NON-SERIES grain" in stdout
     assert "95 store keys" in stdout, stdout
     assert "grain:flow" in tsv
-    # and it is NOT in the coverage total
-    assert "hosted but not catalogued          : 125 series" not in stdout
-    assert "hosted but not catalogued          : 30 series" in stdout
+    assert "hosted but not catalogued          : 175 series" not in stdout   # bravo not counted
+    assert HEADLINE in stdout
 
 
-def test_bespoke_resolver_is_its_own_bucket_not_an_excuse(tmp_path):
-    """DIRECTION 3 - the dangerous one. `custom` must not buy the same pass as a declared grain,
-    and must not read as clean either."""
+def test_bespoke_resolver_gap_is_COUNTED_not_excused(tmp_path):
+    """DIRECTION 3 - the one that mattered, and the one the first version got wrong.
+
+    A bespoke resolver is not a grain claim. abs/bls/bis have one and are series grain; excusing
+    them hid 532,044,393 unreachable series. So an unestablished grain is counted in the headline
+    AND named, never quietly set aside."""
     stdout, tsv = _run(tmp_path, SPEC, GRAIN)
-    assert "GRAIN UNESTABLISHED" in stdout, stdout
-    assert "50 store keys unaccounted" in stdout, stdout
-    assert "grain UNESTABLISHED (custom resolver)" in tsv, tsv
-    # charlie is in NEITHER of the other two buckets
+    assert HEADLINE in stdout, stdout                       # charlie's 50 IS in the total
+    assert "GRAIN UNESTABLISHED" in stdout, stdout          # ...and it is named
+    assert "INCLUDED in the total above" in stdout, stdout  # ...and the heading says so
+    assert "50 store keys" in stdout, stdout
+    assert "grain UNESTABLISHED (custom resolver) — COUNTED as a gap" in tsv, tsv
+    # it must NOT have been granted the declared-grain exemption
     assert "1 source(s) served at a NON-SERIES grain" in stdout   # bravo only
-    assert "hosted but not catalogued          : 30 series" in stdout  # alpha only
 
 
 def test_fail_closed_when_the_grain_index_cannot_be_built(tmp_path):
-    """R503 - an except branch that fails OPEN is decoration. With no index, nothing may be
-    excused on its authority: every gap falls back into the headline total AND the run says
-    loudly that the total is unqualified."""
+    """R503 - an except branch that fails OPEN is decoration. With no index nothing may be
+    excused on its authority, and the run must say its total is unqualified."""
     stdout, _tsv = _run(tmp_path, SPEC, GRAIN, fail_index=True)
     assert "GRAIN INDEX UNAVAILABLE" in stdout, stdout
     assert "the grain index failed to build" in stdout, stdout
@@ -139,14 +148,16 @@ def test_fail_closed_when_the_grain_index_cannot_be_built(tmp_path):
     assert "NOT COMPARABLE" not in stdout
     assert "GRAIN UNESTABLISHED" not in stdout
 
+
 # --------------------------------------------------------------------------------------------
 # --summarise: re-read a finished run's numbers through the current grain index.
 #
 # A full audit takes hours. When the CLASSIFICATION changes but the MEASUREMENT does not,
 # re-running it is waste - and a run interrupted to pick up new code leaves a TSV carrying two
-# generations of note strings. Measured on the 39 sources finished at the time this was written:
-# the old headline summed every positive gap to 1,246,546,145 "hosted but not catalogued", of
-# which 1,244,726,514 (99.85%) was grain. The honest figure was 1,819,631.
+# generations of note strings. Measured on the 39 sources finished at the time of writing: the
+# old headline summed every positive gap to 1,246,546,145, of which 704,613,282 was DECLARED
+# grain. The honest figure is 541,932,863 - which still includes 540,113,232 whose grain nobody
+# has established, exactly so it cannot be forgotten.
 
 
 def _tsv(tmp_path, body):
@@ -181,10 +192,10 @@ BODY = (
 def test_summarise_reclassifies_without_measuring(tmp_path):
     out = _summarise(tmp_path, BODY, GRAIN)
     assert "MEASURED NOTHING, only re-classified" in out, out
-    assert "hosted but not catalogued          : 30 series" in out, out
+    assert HEADLINE in out, out
     assert "catalogued with no LOCAL STORE KEY : 15 series" in out, out
     assert "1 source(s) at a DECLARED non-series grain, 95 store keys" in out, out
-    assert "50 store keys unaccounted" in out, out
+    assert "50 store keys — INCLUDED in the total above" in out, out
 
 
 def test_summarise_never_lets_an_unmeasured_source_read_as_clean(tmp_path):

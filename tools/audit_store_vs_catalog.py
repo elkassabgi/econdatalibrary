@@ -134,7 +134,7 @@ def summarise(path: str) -> int:
                 graingap += gap
                 grainsrc.append((d, n, c, g))
             elif gap > 0 and g:
-                unkgap += gap
+                unkgap, unc = unkgap + gap, unc + gap
                 unkgrain.append((d, n, c, g))
             elif gap > 0:
                 unc += gap
@@ -157,7 +157,7 @@ def summarise(path: str) -> int:
             print(f"   ... and {len(grainsrc) - 15} more")
     if unkgrain:
         print(f"\nGRAIN UNESTABLISHED — {len(unkgrain)} source(s) with a bespoke resolver, "
-              f"{unkgap:,} store keys unaccounted")
+              f"{unkgap:,} store keys — INCLUDED in the total above (unknown fails LOUD)")
         for d, n, c, g in sorted(unkgrain, key=lambda x: -x[1])[:15]:
             print(f"   {d:24s} store {n:>13,}  cat {c:>10,}  resolver:{g}")
         if len(unkgrain) > 15:
@@ -340,8 +340,8 @@ def main() -> int:
                 graingap += gap
                 grainsrc.append((d, n, cat, g))
             elif gap > 0 and g:
-                note = f"grain UNESTABLISHED ({g} resolver) — gap uninterpreted"
-                unkgap += gap
+                note = f"grain UNESTABLISHED ({g} resolver) — COUNTED as a gap"
+                unkgap, unc = unkgap + gap, unc + gap
                 unkgrain.append((d, n, cat, g))
             elif gap > 0:
                 note, unc = "partial", unc + gap
@@ -370,10 +370,13 @@ def main() -> int:
             graingap += gap
             grainsrc.append((d, n, cat, g))
         elif gap > 0 and g:
-            # NEITHER a coverage gap NOR established as design. The one honest verdict is
-            # that nobody has read this resolver — so it is named, never totalled as clean.
-            note = f"grain UNESTABLISHED ({g} resolver) — gap uninterpreted"
-            unkgap += gap
+            # A BESPOKE RESOLVER IS NOT A GRAIN CLAIM, AND UNKNOWN MUST FAIL LOUD. abs, bls
+            # and bis all have one and are SERIES grain (exact-key predicates; their ids are
+            # single series). Excusing them hid 532,044,393 reachable-by-nobody series, which
+            # api/worker/src/catalog.ts:30 already names as a caught error, and R525 records.
+            # So the gap COUNTS toward the headline; the listing below says it is unqualified.
+            note = f"grain UNESTABLISHED ({g} resolver) — COUNTED as a gap"
+            unkgap, unc = unkgap + gap, unc + gap
             unkgrain.append((d, n, cat, g))
         elif gap > 0:
             note, unc = "partial", unc + gap
@@ -432,11 +435,14 @@ def main() -> int:
         # they are the work list. Resolving one means reading its resolver and deciding
         # whether its catalogue row means a key or a file.
         print(f"\nGRAIN UNESTABLISHED — {len(unkgrain)} source(s) with a bespoke resolver, "
-              f"{unkgap:,} store keys unaccounted")
-        print("   A bespoke resolver is NOT evidence of table grain; it means this tool "
-              "has not\n   established the grain, so the gap below is neither a coverage "
-              "defect nor design.\n   Read the resolver in clients/python/econdl/"
-              "_resolve.py for each and decide.")
+              f"{unkgap:,} store keys — INCLUDED in the total above")
+        print("   A bespoke resolver is NOT evidence of table grain, so these are counted "
+              "as gaps\n   until someone shows otherwise: unknown must fail LOUD. abs, bls "
+              "and bis all have\n   a bespoke resolver and are SERIES grain (exact-key "
+              "predicates, ids naming one\n   series each) — excusing them would hide "
+              "532,044,393 unreachable series, the error\n   api/worker/src/catalog.ts:30 "
+              "already names and R525 records. Confirm each with\n   R525's positive test "
+              "(do the catalogue rows carry a scalar frequency and geography?).")
         for d, n, cat, g in sorted(unkgrain, key=lambda x: -x[1])[:15]:
             print(f"   {d:24s} store {n:>13,}  cat {cat:>10,}  resolver:{g}")
         if len(unkgrain) > 15:
