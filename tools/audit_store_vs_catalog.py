@@ -65,6 +65,40 @@ def dir_gb(files) -> float:
     return sum(os.path.getsize(f) for f in files) / 1e9
 
 
+def grain_index() -> dict:
+    """Which sources are NOT served at series grain — taken from the RESOLVER'S OWN sets.
+
+    THE SUBTRACTION THIS TOOL PRINTS IS ONLY A COVERAGE MEASURE WHEN ONE CATALOGUE ROW
+    MEANS ONE STORE KEY. For a source served at flow, table or file grain that is false by
+    design: one row deliberately stands for thousands of keys, so `gap` measures the GRAIN,
+    not missing coverage. Unqualified, abs reads as 376,333,067 hosted-and-invisible series
+    against 18 catalogue rows, and bls as 154,190,118 against 9 — figures that would
+    dominate the fleet total and are not defects at all.
+
+    Read from `clients/python/econdl/_resolve.py` rather than re-listed here, so the audit
+    and the resolver agree BY CONSTRUCTION and not by both being edited — the same reason
+    the key-column candidates are shared with core/broaden_catalog.py::_key_col.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
+    from econdl import _resolve                                   # noqa: PLC0415
+    out: dict[str, str] = {}
+    for s in getattr(_resolve, "_FLOW_GRAIN", ()):
+        out[s] = "flow"
+    for s in getattr(_resolve, "_DOT_TABLE_GRAIN", ()):
+        out[s] = "dot-table"
+    file_grain = getattr(_resolve, "_resolve_file_grain", None)
+    for s, fn in getattr(_resolve, "_RESOLVERS", {}).items():
+        # "custom" IS NOT A CLAIM THAT THE SOURCE IS TABLE-GRAIN. A bespoke resolver may
+        # exist for a layout reason and still be series grain. All it establishes is that
+        # THIS tool has not established the grain — which is a third answer, not a licence
+        # to excuse the gap. Reported separately and never as clean.
+        out.setdefault(s, "file" if fn is file_grain else "custom")
+    return out
+
+
+DECLARED_GRAINS = ("flow", "dot-table", "file")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(ROOT, "logs", "store_audit.tsv"))
@@ -90,7 +124,21 @@ def main() -> int:
     if not a.resume:
         fh.write("source\tin_store\tcatalogued\tgap\tnote\n")
 
+    # FAIL CLOSED (R503): if the grain index cannot be built, the tool must NOT fall back to
+    # treating every source as series grain — that is precisely the false total this exists
+    # to prevent. It reports UNKNOWN and refuses to print the split.
+    try:
+        grain = grain_index()
+        grain_ok = True
+    except Exception as e:                                     # noqa: BLE001
+        grain, grain_ok = {}, False
+        print(f"GRAIN INDEX UNAVAILABLE ({type(e).__name__}: {e}) — every gap below is\n"
+              f"  UNQUALIFIED and the fleet total is NOT trustworthy. Fix the import before\n"
+              f"  believing any figure this run prints.", flush=True)
+
     skipped_big, unc, orph = [], 0, 0
+    graingap, grainsrc = 0, []   # DECLARED flow/dot-table/file grain: apart, never in `unc`
+    unkgap, unkgrain = 0, []     # bespoke resolver: grain UNESTABLISHED, apart from BOTH
     nokey = []               # stores with no recognised key column — reported, never silent
     names = sorted(d for d in os.listdir(STORE) if os.path.isdir(os.path.join(STORE, d)))
     for i, d in enumerate(names, 1):
@@ -199,8 +247,24 @@ def main() -> int:
             # AN ESTIMATE MAY NOT ASSERT ORPHAN. Measured HLL error is +19.3% to -14.0%
             # (series_census docstring), so a negative gap on a giant is as likely to be the
             # estimator as the data — and ORPHAN is the verdict that claims users get a 404.
+            g = grain.get(d)
             if cat == 0 and n > 0:
-                note, unc = "UNCATALOGUED", unc + n
+                # Zero catalogue rows is hosted-and-invisible at ANY grain, so this stays a
+                # verdict — but its MAGNITUDE is grain-dependent, so it is booked apart too.
+                note = "UNCATALOGUED"
+                if g:
+                    graingap, note = graingap + n, f"UNCATALOGUED  grain:{g}"
+                    (grainsrc if g in DECLARED_GRAINS else unkgrain).append((d, n, cat, g))
+                else:
+                    unc = unc + n
+            elif gap > 0 and g in DECLARED_GRAINS:
+                note = f"grain:{g} — NOT a coverage gap"
+                graingap += gap
+                grainsrc.append((d, n, cat, g))
+            elif gap > 0 and g:
+                note = f"grain UNESTABLISHED ({g} resolver) — gap uninterpreted"
+                unkgap += gap
+                unkgrain.append((d, n, cat, g))
             elif gap > 0:
                 note, unc = "partial", unc + gap
             else:
@@ -213,8 +277,26 @@ def main() -> int:
             q.close()
 
         gap = n - cat
+        g = grain.get(d)
         if cat == 0 and n > 0:
-            note, unc = "UNCATALOGUED", unc + n
+            note = "UNCATALOGUED"
+            if g:
+                graingap, note = graingap + n, f"UNCATALOGUED  grain:{g}"
+                (grainsrc if g in DECLARED_GRAINS else unkgrain).append((d, n, cat, g))
+            else:
+                unc = unc + n
+        elif gap > 0 and g in DECLARED_GRAINS:
+            # A DESIGNED DIFFERENCE, NOT A DEFECT. Kept visible with its real number, but
+            # never added to the coverage total, which would otherwise be dominated by it.
+            note = f"grain:{g} — NOT a coverage gap"
+            graingap += gap
+            grainsrc.append((d, n, cat, g))
+        elif gap > 0 and g:
+            # NEITHER a coverage gap NOR established as design. The one honest verdict is
+            # that nobody has read this resolver — so it is named, never totalled as clean.
+            note = f"grain UNESTABLISHED ({g} resolver) — gap uninterpreted"
+            unkgap += gap
+            unkgrain.append((d, n, cat, g))
         elif gap > 0:
             note, unc = "partial", unc + gap
         elif gap < 0:
@@ -250,7 +332,37 @@ def main() -> int:
             print(f"   {s:24s} catalogued {c:>10,}   {where}")
 
     fh.close()
-    print(f"\nhosted but not catalogued          : {unc:,} series")
+    print(f"\nhosted but not catalogued          : {unc:,} series"
+          f"   <- SERIES-GRAIN sources only")
+    if not grain_ok:
+        print("   WARNING: the grain index failed to build, so this total is UNQUALIFIED "
+              "and may be dominated by designed grain differences. Do not report it.")
+    if grainsrc:
+        print(f"\nNOT COMPARABLE — {len(grainsrc)} source(s) served at a NON-SERIES grain, "
+              f"{graingap:,} store keys")
+        print("   One catalogue row here deliberately stands for many store keys (flow, "
+              "dot-table\n   or file grain, per clients/python/econdl/_resolve.py), so "
+              "store-keys minus rows\n   measures the GRAIN and not coverage. To audit "
+              "these, compare catalogue rows\n   against FLOWS / TABLES / FILES — never "
+              "against keys.")
+        for d, n, cat, g in sorted(grainsrc, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  cat {cat:>10,}  grain:{g}")
+        if len(grainsrc) > 15:
+            print(f"   ... and {len(grainsrc) - 15} more (all rows are in the TSV)")
+    if unkgrain:
+        # THE ONE THAT MUST NOT READ AS CLEAN. These are not excused and not counted;
+        # they are the work list. Resolving one means reading its resolver and deciding
+        # whether its catalogue row means a key or a file.
+        print(f"\nGRAIN UNESTABLISHED — {len(unkgrain)} source(s) with a bespoke resolver, "
+              f"{unkgap:,} store keys unaccounted")
+        print("   A bespoke resolver is NOT evidence of table grain; it means this tool "
+              "has not\n   established the grain, so the gap below is neither a coverage "
+              "defect nor design.\n   Read the resolver in clients/python/econdl/"
+              "_resolve.py for each and decide.")
+        for d, n, cat, g in sorted(unkgrain, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  cat {cat:>10,}  resolver:{g}")
+        if len(unkgrain) > 15:
+            print(f"   ... and {len(unkgrain) - 15} more (all rows are in the TSV)")
     # NOT "not hosted", and not a 404 count (R825). Say what was compared, in the line itself:
     # someone reading only the summary must not be able to take this for user impact.
     print(f"catalogued with no LOCAL STORE KEY : {orph:,} series"
