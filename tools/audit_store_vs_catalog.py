@@ -8,7 +8,23 @@ whole surface gets swept rather than the two I tripped over.
 Three outcomes matter:
   UNCATALOGUED  data present, no catalogue row      -> hosted and invisible
   PARTIAL       catalogue covers part of the store
-  ORPHAN        catalogue rows with no store key    -> listed and undownloadable, which is worse
+  ORPHAN        catalogue rows with no LOCAL STORE KEY
+
+ORPHAN DOES NOT MEAN "404", AND THIS FILE USED TO SAY IT DID (corrected 2026-09-06, R825). The
+old line on ORPHAN asserted that such series were listed but could not be downloaded, and called
+that the worse of the three outcomes. That is not what this tool measures:
+every comparison here is the CATALOGUE against the LOCAL PARQUET STORE, and neither of those is
+what a user receives — the worker serves pre-derived CSVs from R2. Measured on fed_board, whose
+638 orphans are the largest set this tool has ever reported: **60 of 60 sampled had a live CSV**,
+with a present control at 20/20 and a fabricated id correctly 404ing. They are series the store
+can no longer regenerate, not dead links — the same shape already recorded for cso's 290.
+
+AND THE NUMBER IS A FLOOR, because `gap` is a NET. A source with as many uncatalogued store keys
+as uncatalogued catalogue rows reports gap 0 and never reaches the ORPHAN branch at all.
+fed_board's true split is 638 catalogue ids with no store key against 406 store keys with no
+catalogue row; this tool can only ever show their difference, 232 — a number matching neither
+side, whose two halves have opposite fixes. Getting the split requires the actual key SETS, which
+is the expensive thing this tool exists to avoid; when you need it, compute it per source.
 
 THE FIRST VERSION OF THIS TOOL WAS THE DEFECT IT LOOKS FOR. It ran `count(distinct series_key)`
 over every store in one DuckDB connection with no memory limit and printed nothing until the
@@ -75,6 +91,7 @@ def main() -> int:
         fh.write("source\tin_store\tcatalogued\tgap\tnote\n")
 
     skipped_big, unc, orph = [], 0, 0
+    nokey = []               # stores with no recognised key column — reported, never silent
     names = sorted(d for d in os.listdir(STORE) if os.path.isdir(os.path.join(STORE, d)))
     for i, d in enumerate(names, 1):
         if d in done:
@@ -105,12 +122,23 @@ def main() -> int:
                   flush=True)
             continue
         try:
-            if "series_key" not in pq.read_schema(files[0]).names:
-                line = f"{d}\t\t{cat}\t\tnot a series store"
-                fh.write(line + "\n"); fh.flush()
-                print(f"[{i}/{len(names)}] {d:24s} not a series store "
-                      f"(catalogued {cat:,})", flush=True)
+            # THE KEY COLUMN IS NOT ALWAYS `series_key`, and assuming it was silently excluded
+            # whole sources from this audit (R825/R821). bls keys on `series_id` and holds
+            # 154,190,127 distinct series; eia likewise, at 3,862,801. Both were booked "not a
+            # series store" and vanished from every total this tool printed - 157,784,417 series
+            # of real gap, larger than most of what it did report. The candidate list is the one
+            # core/broaden_catalog.py::_key_col already uses, so the two agree by construction
+            # rather than by both being edited.
+            cols = set(pq.read_schema(files[0]).names)
+            key = next((c for c in ("series_key", "series_id", "idbank") if c in cols), None)
+            if key is None:
+                nokey.append((d, cat, sorted(cols)[:6]))
+                fh.write(f"{d}\t\t{cat}\t\tno key column\n"); fh.flush()
+                print(f"[{i}/{len(names)}] {d:24s} NO KEY COLUMN — not measured "
+                      f"(catalogued {cat:,}; columns {sorted(cols)[:6]})", flush=True)
                 continue
+            if key != "series_key":
+                print(f"[{i}/{len(names)}] {d:24s} keyed on {key!r}, not series_key", flush=True)
         except Exception as e:                                 # noqa: BLE001
             fh.write(f"{d}\t\t{cat}\t\tunreadable {type(e).__name__}\n"); fh.flush()
             print(f"[{i}/{len(names)}] {d:24s} UNREADABLE {type(e).__name__}", flush=True)
@@ -123,7 +151,7 @@ def main() -> int:
             q.execute(f"SET memory_limit='{a.memory_limit}'")
             q.execute(f"SET temp_directory='{os.path.join(ROOT, 'logs', '_duckspill')}'")
             lst = "[" + ",".join(f"'{f}'".replace("\\", "/") for f in files) + "]"
-            n = q.execute(f"select count(distinct series_key) from "
+            n = q.execute(f'select count(distinct "{key}") from '
                           f"read_parquet({lst}, union_by_name=true)").fetchone()[0]
             # SHARD-QUALIFIED RETRY, only when the bare count says ORPHAN.
             #
@@ -131,7 +159,7 @@ def main() -> int:
             # fhfa:annual_cbsa:01 - which is exactly what derive_csv_bulk's --qualify-with-shard
             # exists for. A bare `count(distinct series_key)` then UNDERCOUNTS them: one key
             # appearing in two shards is two catalogue rows but one distinct value, so the source
-            # reports as ORPHAN ("listed and undownloadable") when nothing is wrong at all.
+            # reports as ORPHAN (catalogued with no store key) when nothing is wrong at all.
             #
             # Measured 2026-08-04: this produced fed_board -29 and fhfa -2,021, i.e. 2,050 of the
             # run's 2,408 reported orphans. All 2,050 were phantom -- re-counted with the shard
@@ -148,7 +176,7 @@ def main() -> int:
                 # as the invalid class `[/\]` and threw. A builtin has no escaping to get wrong.
                 qn = q.execute(
                     f"select count(distinct (parse_filename(filename, true) || ':' || "
-                    f"series_key)) from read_parquet({lst}, union_by_name=true, "
+                    f'"{key}")) from read_parquet({lst}, union_by_name=true, '
                     f"filename=true)").fetchone()[0]
                 if abs(qn - cat) < abs(n - cat):
                     n, qualified = qn, True
@@ -158,7 +186,7 @@ def main() -> int:
             # Without this the five biggest stores have no figure at all, so the fleet total
             # silently excludes the library's two largest sources.
             try:
-                n = q.execute(f"select approx_count_distinct(series_key) from "
+                n = q.execute(f'select approx_count_distinct("{key}") from '
                               f"read_parquet({lst}, union_by_name=true)").fetchone()[0]
                 approx = True
             except Exception as e2:                            # noqa: BLE001
@@ -200,9 +228,48 @@ def main() -> int:
         print(f"[{i}/{len(names)}] {d:24s} store {n:>12,}  cat {cat:>12,}  {gap:>+12,}  "
               f"{note:14s} {gb:,.1f} GB {time.time()-t0:,.0f}s{tag}", flush=True)
 
+    # CATALOGUED SOURCES WITH NO STORE DIRECTORY AT ALL. `names` comes from os.listdir(STORE),
+    # so a source that is catalogued but has no directory under clean_full is never visited and
+    # can never be reported — it is invisible to every verdict this tool prints, including
+    # ORPHAN. Measured 2026-09-06: exactly one, sec_edgar at 17,467 catalogue rows, which is 75x
+    # the orphan total the tool did report.
+    #
+    # It is NOT an orphan, and saying so would be the R289 error: serving reads clean_grouped/,
+    # not clean_full/, so "prefix empty" is a false darkness signal for exactly this source. The
+    # honest output is a NAMED omission that says which tree was searched.
+    grouped_dir = os.path.join(ROOT, "data", "clean_grouped")
+    grouped = set(os.listdir(grouped_dir)) if os.path.isdir(grouped_dir) else set()
+    nostore = sorted((s, c) for s, c in counts.items() if c and s not in set(names))
+    if nostore:
+        print(f"\nNOT MEASURED — {len(nostore)} catalogued source(s) with no directory under "
+              f"data/clean_full:")
+        for s, c in nostore:
+            where = ("present under data/clean_grouped — serving reads THAT tree (R289), so this "
+                     "is not missing data" if s in grouped else
+                     "absent from clean_grouped too — genuinely no local store")
+            print(f"   {s:24s} catalogued {c:>10,}   {where}")
+
     fh.close()
-    print(f"\nhosted but not catalogued : {unc:,} series")
-    print(f"catalogued but not hosted : {orph:,} series")
+    print(f"\nhosted but not catalogued          : {unc:,} series")
+    # NOT "not hosted", and not a 404 count (R825). Say what was compared, in the line itself:
+    # someone reading only the summary must not be able to take this for user impact.
+    print(f"catalogued with no LOCAL STORE KEY : {orph:,} series"
+          f"   <- a FLOOR, and NOT a count of 404s")
+    if orph:
+        print("   These are compared against the LOCAL parquet store, not against what users get")
+        print("   (the worker serves pre-derived CSVs from R2). Measured 2026-09-06 on fed_board:")
+        print("   60 of 60 sampled such ids HAD a live CSV — series the store can no longer")
+        print("   regenerate, not dead links. FLOOR because `gap` is a net: a source with as many")
+        print("   uncatalogued store keys as uncatalogued rows reports 0 here. fed_board's real")
+        print("   split is 638 / 406, which nets to the 232 this line would otherwise show alone.")
+    if nokey:
+        # DISCLOSED, never silent — the same rule --max-gb already follows. A guard keyed on one
+        # column name once removed bls (154,190,127 series) and eia (3,862,801) from every total
+        # this tool printed, without a line saying so.
+        print(f"\nNOT MEASURED — {len(nokey)} store(s) with no recognised key column "
+              f"(tried series_key, series_id, idbank):")
+        for d, cat, cols in sorted(nokey):
+            print(f"   {d:24s} catalogued {cat:>10,}   columns {cols}")
     if skipped_big:
         # DISCLOSED, never silent: a bounded pass that did not say what it skipped reads as
         # full coverage.
