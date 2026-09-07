@@ -146,6 +146,54 @@ def pids_with_parts(keys: set, prefix: str = "series") -> set:
     return out
 
 
+def refused_set(sum_obj, key):
+    """(ids, provenance) from a derive summary's `refused` list. provenance is one of
+    "full" | "partial" | "unreadable".
+
+    A REFUSAL LIST IS EVIDENCE ONLY IF THE RUN THAT WROTE IT COVERED THE STORE. The derives write
+    their summary unconditionally - `--dry-run`, `--only` and `--limit` runs included - and each
+    cataloguer prints `--only <ids>` as the remedy for its own refusal, so following that
+    instruction is precisely what leaves a scoped record behind (R843 addendum).
+
+    Both directions matter, and they fail differently:
+      * an EMPTY list from a scoped run makes "not seen by the derive" an assertion nobody
+        checked - R219's single confident cause;
+      * a NON-EMPTY list from a scoped run is worse: it can mark a table "correctly NOT
+        catalogued" that a full run would have split without trouble.
+
+    "unreadable" is kept distinct from "partial" so the operator is told WHICH it was; collapsing
+    them is the fail-quiet shape of R503. A caller must treat anything but "full" as UNKNOWN -
+    never as empty.
+    """
+    if not isinstance(sum_obj, dict):
+        return set(), "unreadable"
+    lst = sum_obj.get("refused")
+    if not isinstance(lst, list):
+        return set(), "unreadable"
+    # `refused_scope` is the list's own provenance; `scope` describes the CAP and is accepted
+    # only for back-compatibility with summaries written before the list had its own key.
+    scope = sum_obj.get("refused_scope") or ("full" if sum_obj.get("scope") == "full" else None)
+    ids = {r.get(key) for r in lst if isinstance(r, dict) and r.get(key) is not None}
+    return ids, ("full" if scope == "full" else "partial")
+
+
+def summary_coverage(sum_obj, n_store_now):
+    """One line saying what the summary actually covers - the cheapest guard of all.
+
+    `considered: 11` against a store of 2,442 makes the scope error self-evident with no tag to
+    interpret. Printed unconditionally wherever the summary is read.
+    """
+    if not isinstance(sum_obj, dict):
+        return "summary: UNREADABLE"
+    con = sum_obj.get("processed") or sum_obj.get("processed_tables") or sum_obj.get("considered")
+    store = sum_obj.get("store_files") or sum_obj.get("store_shards")
+    bits = ["scope=%s" % (sum_obj.get("scope") or "UNRECORDED"),
+            "refused_scope=%s" % (sum_obj.get("refused_scope") or "UNRECORDED")]
+    if con is not None:
+        bits.append("covered %s of %s at the time" % (f"{con:,}", f"{store:,}" if store else "?"))
+    bits.append("store holds %s now" % f"{n_store_now:,}")
+    return "summary: " + ", ".join(bits)
+
 def classify_absent(absent: dict, keys: set, refused: set, prefix: str = "series") -> tuple:
     """Split the over-cap tables that have NO split-map entry into three sets, by what R2 holds
     AND what the derive recorded (never assert a cause that was not checked - R219):
@@ -575,7 +623,9 @@ def main() -> int:
     # removes the inference that made a 500,000-vs-3,000,000 mismatch look like a frozen
     # pipeline: 367 tables the derive had correctly written whole reported as 'no split-map
     # entry', and I escalated a multi-day re-derive that was never needed.
-    recorded, rec_scope = None, None
+    # `_sum` is initialised HERE, not only inside the try: it is reused far below for the
+    # refusal list, and an unreadable summary would otherwise raise NameError there.
+    recorded, rec_scope, _sum = None, None, None
     try:
         _sum = json.load(open(os.path.join(ROOT, "logs",
                                            "statcan_tables_summary.json"),
@@ -709,11 +759,18 @@ def main() -> int:
            for f in files}
     big = {k: v for k, v in big.items() if v > a.max_rows}
     absent = {k: v for k, v in big.items() if k not in smap}
-    try:
-        ref = {r["table"] for r in json.load(open(
-            os.path.join(ROOT, "logs", "statcan_tables_summary.json"),
-            encoding="utf-8")).get("refused", [])}
-    except (OSError, ValueError, TypeError):
+    # ONE FILE, ONE TRUST DECISION. This used to re-open the summary and derive a policy
+    # different from the one made 124 lines above for the cap: there a scoped run's cap is
+    # refused, here its refusal list was adopted. `_sum` is already parsed; reuse it.
+    ref, ref_prov = refused_set(_sum, "table")
+    print("  " + summary_coverage(_sum, len(files)))
+    if ref_prov != "full":
+        # NOT EMPTY - UNKNOWN. An empty set would send every absent table to `unrefused`,
+        # which is loud and safe; but a scoped list can also carry FALSE refusals, and
+        # `classify_absent` would file those as "nothing written, correctly NOT catalogued"
+        # and drop them silently. Neither direction may be trusted, so the list is not used.
+        print(f"  the derive's refusal list is {ref_prov.upper()}, not a store-wide record, "
+              f"so it is NOT used to excuse any table")
         ref = set()
     keys = None
     if a.r2_keys:

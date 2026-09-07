@@ -187,6 +187,40 @@ def _rows_csv(rows) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+def merged_refused(summary_path: str, key: str, examined, refused, full_run: bool):
+    """(list, scope) for the summary's `refused` field, merging a scoped run into the record.
+
+    A `--only` run knows the truth for the stems it examined and NOTHING about the rest, so
+    replacing the whole list throws away a previous full run's verdicts -- which is what the
+    cataloguers print as their own remediation command, so the guard destroys its own evidence
+    every time an operator follows it (R843 addendum).
+
+    Returns `scope` = "full" when the merged list is still a statement about the whole store:
+    either this run was full, or a previous full-scoped record existed and we updated only the
+    stems this run looked at. Otherwise "partial" -- and a reader must then treat the list as
+    UNKNOWN rather than as empty.
+
+    Deliberately NOT keyed off the summary's `scope` field, because that one describes the CAP's
+    provenance and the two have opposite risk asymmetries: an unknown cap must never be adopted
+    (R833), while a merged refusal list from a previous full run is sound.
+
+    Fails SAFE, never silently: if the old summary cannot be read or carries no scope, the merge
+    is skipped and the scope returned is "partial", so a reader is told it does not know.
+    """
+    mine = [{key: st, "rows": nr} for st, nr in refused]
+    if full_run:
+        return mine, "full"
+    try:
+        old = json.load(open(summary_path, encoding="utf-8"))
+        prev = old.get("refused")
+        prev_scope = old.get("refused_scope") or ("full" if old.get("scope") == "full" else None)
+        if not isinstance(prev, list) or prev_scope != "full":
+            return mine, "partial"
+        kept = [r for r in prev if isinstance(r, dict) and r.get(key) not in set(examined)]
+        return kept + mine, "full"
+    except (OSError, ValueError, TypeError, AttributeError):
+        return mine, "partial"
+
 def run_scope(a) -> str:
     """Was this run evidence about the WHOLE store, or only part of it?
 
@@ -233,6 +267,10 @@ def main() -> int:
     files = sorted(f.replace("\\", "/") for f in
                    glob.glob(os.path.join(STORE, "**", "*.parquet"), recursive=True)
                    if not f.endswith("__series.parquet"))
+    n_store = len(files)          # BEFORE --only filters it. NOTE --limit narrows nothing here: it breaks
+                                 # the LOOP, which is why `processed` exists below
+    n_done = 0                    # what the loop ACTUALLY processed; --limit breaks it
+    _examined_stems = []          # and WHICH ones - the merge drops only these
     if a.only:
         want = {s.strip() for s in a.only.split(",") if s.strip()}
         files = [f for f in files if os.path.splitext(os.path.basename(f))[0] in want]
@@ -370,6 +408,8 @@ def main() -> int:
                       f"   {time.time()-t0:,.0f}s", flush=True)
             con.close()
             n_units += n_parts if dim else 1
+            n_done = i
+            _examined_stems.append(os.path.splitext(os.path.basename(f))[0])
             if a.limit and i >= a.limit:
                 break
             continue
@@ -430,6 +470,12 @@ def main() -> int:
             print(f"  [{i}/{len(files)}] {pid}{' split by ' + dim if dim else ''}: "
                   f"{n_units:,} units so far, {dropped_total:,} dup rows collapsed, "
                   f"{time.time()-t0:,.0f}s", flush=True)
+        # WHAT THIS RUN ACTUALLY LOOKED AT. `--limit` breaks this loop; it does NOT filter
+        # `files`, so `considered` (len(files)) would report the whole store for a run that
+        # stopped after five. Against `store_files` that renders as 100% coverage of a 0.2%
+        # run -- a summary contradicting its own `scope` tag, with the wrong half readable.
+        n_done = i
+        _examined_stems.append(os.path.splitext(os.path.basename(f))[0])
         if a.limit and i >= a.limit:
             break
 
@@ -465,11 +511,24 @@ def main() -> int:
         print(f"split map ({len(out_map):,} table(s)) -> {smap}")
 
     # Every terminal disposition gets a key (R219).
+    # MERGE, DO NOT REPLACE, when this run looked at only part of the store. The
+    # cataloguers print `--only <ids>` as their own fix; without this, following that
+    # instruction erases every other stem's verdict (R843 addendum).
+    # WHAT THE RUN PROCESSED, not what it globbed. `--only` filters `files`, but
+    # `--limit` does NOT - it breaks the loop - so using `files` here would drop
+    # every stem in the store from the previous record while having examined five.
+    _examined = _examined_stems
+    _ref_list, _ref_scope = merged_refused(
+        os.path.join(ROOT, "logs", "statcan_tables_summary.json"), "table", _examined, refused,
+        run_scope(a) == "full")
     summary = os.path.join(ROOT, "logs", "statcan_tables_summary.json")
     json.dump({"considered": len(files), "units": n_units, "put": counts["put"],
                "skipped": counts["skip"], "errors": counts["err"],
-               "refused": [{"table": st, "rows": nr} for st, nr in refused],
-               "refused_rows": sum(nr for _st, nr in refused),
+               "refused": _ref_list,
+               "refused_scope": _ref_scope,
+               # SUMS THE MERGED LIST, not just this run's - `refused` above is merged,
+               # and two keys describing one set must not disagree (R219).
+               "refused_rows": sum(r.get("rows", 0) for r in _ref_list),
                "duplicates_collapsed": dropped_total, "seconds": round(dt),
                # THE PARAMETER THE CATALOGUER MUST MATCH, RECORDED WHERE IT CAN READ IT
                # (R833). Persisted nowhere before: not here, and not in _split_map.json,
@@ -482,6 +541,8 @@ def main() -> int:
                # refuses to adopt one that says so (R833 follow-up): without this, a
                # one-table dry run at another cap stamps the 8,207-table store.
                "scope": run_scope(a),
+               "store_files": n_store,
+               "processed": n_done,
                "dry_run": bool(a.dry_run)}, open(summary, "w"), indent=1)
     print(f"summary -> {summary}")
     return 0

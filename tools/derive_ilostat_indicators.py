@@ -134,6 +134,75 @@ def _rows_csv(rows) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+def merged_refused(summary_path: str, key: str, examined, refused, full_run: bool):
+    """(list, scope) for the summary's `refused` field, merging a scoped run into the record.
+
+    A `--only` run knows the truth for the stems it examined and NOTHING about the rest, so
+    replacing the whole list throws away a previous full run's verdicts -- which is what the
+    cataloguers print as their own remediation command, so the guard destroys its own evidence
+    every time an operator follows it (R843 addendum).
+
+    Returns `scope` = "full" when the merged list is still a statement about the whole store:
+    either this run was full, or a previous full-scoped record existed and we updated only the
+    stems this run looked at. Otherwise "partial" -- and a reader must then treat the list as
+    UNKNOWN rather than as empty.
+
+    Deliberately NOT keyed off the summary's `scope` field, because that one describes the CAP's
+    provenance and the two have opposite risk asymmetries: an unknown cap must never be adopted
+    (R833), while a merged refusal list from a previous full run is sound.
+
+    Fails SAFE, never silently: if the old summary cannot be read or carries no scope, the merge
+    is skipped and the scope returned is "partial", so a reader is told it does not know.
+    """
+    mine = [{key: st, "rows": nr} for st, nr in refused]
+    if full_run:
+        return mine, "full"
+    try:
+        old = json.load(open(summary_path, encoding="utf-8"))
+        prev = old.get("refused")
+        prev_scope = old.get("refused_scope") or ("full" if old.get("scope") == "full" else None)
+        if not isinstance(prev, list) or prev_scope != "full":
+            return mine, "partial"
+        kept = [r for r in prev if isinstance(r, dict) and r.get(key) not in set(examined)]
+        return kept + mine, "full"
+    except (OSError, ValueError, TypeError, AttributeError):
+        return mine, "partial"
+
+def run_scope(a) -> str:
+    """Was this run evidence about the WHOLE store, or only part of it?
+
+    THE SAME FUNCTION AS `derive_statcan_tables.run_scope`, deliberately duplicated.
+
+    NOT because an import would fail -- a review checked and it would not: `from core import
+    r2_util` is at MODULE level in all four derives, and every cataloguer already imports its
+    derive at module level after `sys.path.insert(0, .../tools)`. The first version of this
+    docstring claimed otherwise and was wrong. The real reason is coupling: importing this from
+    `derive_statcan_tables` would make three unrelated sources fail to start if statcan's module
+    did, and a shared `tools/_derive_scope.py` buys one definition at the price of a fifth file
+    in every deployment path. `tests/test_derive_scope_all.py` holds all four to ONE behaviour
+    table, which is the mechanism that makes duplication safe -- prose is not (CLAUDE.md).
+
+    The summary is written unconditionally - by dry runs and by scoped runs too - and three
+    cataloguers read it: for the `refused` list, and for statcan the `max_rows` cap it adopts as
+    fact. A `--only` run over 11 of 2,442 flows must not read as a statement about the store
+    (R843 addendum, and R832/R833 for what a wrong cap costs).
+
+    `--dry-run` is checked FIRST: a dry run is not evidence whatever else was passed. `--limit`
+    defaults to 0 and `--only` to "" - both falsy - so an unused flag reads as `full`, and an
+    EXPLICIT `--limit 0` or `--only ""` also reads as full, which is correct: neither restricts
+    anything. `getattr` throughout, because not every derive has every flag.
+
+    Named rather than inlined in the summary dict so it can be tested without running a derive
+    over a store (R840 - a branch nothing calls is a branch nothing tests).
+    """
+    if getattr(a, "dry_run", False):
+        return "dry_run"
+    if getattr(a, "only", None):
+        return "only"
+    if getattr(a, "limit", None):
+        return "limit"
+    return "full"
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--bucket")
@@ -153,6 +222,10 @@ def main() -> int:
 
     files = sorted(f.replace("\\", "/") for f in glob.glob(os.path.join(STORE, "*.parquet"))
                    if not f.endswith("__series.parquet"))
+    n_store = len(files)          # BEFORE --only filters it. NOTE --limit narrows nothing here: it breaks
+                                 # the LOOP, which is why `processed` exists below
+    n_done = 0                    # what the loop ACTUALLY processed; --limit breaks it
+    _examined_stems = []          # and WHICH ones - the merge drops only these
     if a.only:
         want = {s.strip() for s in a.only.split(",") if s.strip()}
         files = [f for f in files if os.path.splitext(os.path.basename(f))[0] in want]
@@ -298,6 +371,12 @@ def main() -> int:
             print(f"  [{i}/{len(files)}] {stem}{' split by ' + dim if dim else ''}: "
                   f"{n_units:,} units so far, {dropped_total:,} dup rows collapsed, "
                   f"{time.time()-t0:,.0f}s", flush=True)
+        # WHAT THIS RUN ACTUALLY LOOKED AT. `--limit` breaks this loop; it does NOT filter
+        # `files`, so `considered` (len(files)) would report the whole store for a run that
+        # stopped after five. Against `store_files` that renders as 100% coverage of a 0.2%
+        # run -- a summary contradicting its own `scope` tag, with the wrong half readable.
+        n_done = i
+        _examined_stems.append(os.path.splitext(os.path.basename(f))[0])
         if a.limit and i >= a.limit:
             break
 
@@ -338,12 +417,35 @@ def main() -> int:
     # EVERY TERMINAL DISPOSITION GETS A KEY (R219). A summary carrying only `errors` and
     # `skipped` reads as complete while refused units are on the floor; `considered` lets a
     # consumer check that the buckets add up.
+    # MERGE, DO NOT REPLACE, when this run looked at only part of the store. The
+    # cataloguers print `--only <ids>` as their own fix; without this, following that
+    # instruction erases every other stem's verdict (R843 addendum).
+    # WHAT THE RUN PROCESSED, not what it globbed. `--only` filters `files`, but
+    # `--limit` does NOT - it breaks the loop - so using `files` here would drop
+    # every stem in the store from the previous record while having examined five.
+    _examined = _examined_stems
+    _ref_list, _ref_scope = merged_refused(
+        os.path.join(ROOT, "logs", "ilostat_indicators_summary.json"), "indicator", _examined, refused,
+        run_scope(a) == "full")
     summary = os.path.join(ROOT, "logs", "ilostat_indicators_summary.json")
     json.dump({"considered": len(files), "units": n_units, "put": counts["put"],
                "skipped": counts["skip"], "errors": counts["err"],
-               "refused": [{"indicator": st, "rows": nr} for st, nr in refused],
-               "refused_rows": sum(nr for _st, nr in refused),
-               "duplicates_collapsed": dropped_total, "seconds": round(dt)},
+               "refused": _ref_list,
+               "refused_scope": _ref_scope,
+               # SUMS THE MERGED LIST, not just this run's - `refused` above is merged,
+               # and two keys describing one set must not disagree (R219).
+               "refused_rows": sum(r.get("rows", 0) for r in _ref_list),
+               "duplicates_collapsed": dropped_total, "seconds": round(dt),
+               # THE SCOPE OF THE RUN, RECORDED WHERE ITS READER CAN SEE IT (R843
+               # addendum). A cataloguer that reads `refused` from a `--only` summary
+               # reads "nothing was refused" when the truth is "this run looked at part
+               # of the store". `store_files` is the denominator that makes that
+               # visible without any tag at all.
+               "scope": run_scope(a),
+               "dry_run": bool(a.dry_run),
+               "store_files": n_store,
+               "processed": n_done,
+               "max_rows": int(a.max_rows)},
               open(summary, "w"), indent=1)
     print(f"summary -> {summary}")
     return 0
