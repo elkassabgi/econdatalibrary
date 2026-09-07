@@ -104,3 +104,88 @@ def test_include_cataloged_actually_lifts_the_skip(tmp_path):
     assert "covered" in measured and "distinct=" in measured, measured
     # both sources measured, 5 + 3 distinct keys
     assert "total distinct series = 8" in measured, measured
+
+
+# --------------------------------------------------------- the other three members of the class
+
+def test_a_PROTECTED_source_is_skipped_AND_NAMED(tmp_path):
+    """The review of PR #14 (2026-09-07) found the PR had fixed ONE instance of a class with four
+    members: `skipped_cataloged` was recorded, while the PROTECTED skip, the no-parquet skip and
+    the key-column candidate list were each silent. The PROTECTED branch hid `cbs_nl` - 688,929,413
+    keys - and `dbnomics` from every number this tool prints. Protection is a decision about
+    WRITING; it is not evidence that the store is covered."""
+    root, store = _fixture(tmp_path)
+    m = _load()
+    m.ROOT, m.STORE = root, store
+    m.OUTDIR = os.path.join(root, "dist", "broaden")
+    m.PROTECTED = {"bare"}                       # the only otherwise-measured source in the fixture
+    cwd, argv = os.getcwd(), sys.argv
+    os.chdir(root)
+    sys.argv = ["measure_uncataloged"]
+    buf, real = io.StringIO(), sys.stdout
+    sys.stdout = buf
+    try:
+        m.main()
+    finally:
+        sys.stdout = real
+        sys.argv = argv
+        os.chdir(cwd)
+    out = buf.getvalue()
+    assert "PROTECTED source(s)" in out, out
+    assert "bare" in out.split("PROTECTED source(s)")[1], out
+    assert "688,929,413" in out, "the message must carry the size of what the silence hid"
+    # and it is still SKIPPED - naming it must not start scanning a running backfill
+    assert "bare" not in out.split("NOT MEASURED")[0], out
+
+
+def test_a_source_directory_with_no_parquet_is_named_not_dropped(tmp_path):
+    """Third member. An empty directory is equally the shape of a store that moved, a pull that
+    never landed, and a source that genuinely holds nothing - so it is UNCHECKED, never clean."""
+    root, store = _fixture(tmp_path)
+    os.makedirs(os.path.join(store, "empty_one"), exist_ok=True)
+    m = _load()
+    m.ROOT, m.STORE = root, store
+    m.OUTDIR = os.path.join(root, "dist", "broaden")
+    cwd, argv = os.getcwd(), sys.argv
+    os.chdir(root)
+    sys.argv = ["measure_uncataloged"]
+    buf, real = io.StringIO(), sys.stdout
+    sys.stdout = buf
+    try:
+        m.main()
+    finally:
+        sys.stdout = real
+        sys.argv = argv
+        os.chdir(cwd)
+    out = buf.getvalue()
+    assert "no parquet under them" in out, out
+    assert "empty_one" in out, out
+
+
+def test_idbank_is_a_key_column_candidate(tmp_path):
+    """Fourth member. `broaden_catalog._key_col` and `audit_store_vs_catalog` both accept
+    `idbank`; this tool accepted only `series_key` and `series_id`, so a store keyed that way read
+    as "not uniform-long" - the same silent exclusion R825/R821 recorded for bls (154,190,127
+    series) and eia (3,862,801) when the candidate list was shorter still."""
+    root, store = _fixture(tmp_path)
+    d = os.path.join(store, "idb")
+    os.makedirs(d, exist_ok=True)
+    pq.write_table(pa.table({"idbank": ["a", "b", "c"], "obs_date": ["2020-01-01"] * 3,
+                             "value": [1.0] * 3}), os.path.join(d, "part.parquet"))
+    m = _load()
+    m.ROOT, m.STORE = root, store
+    m.OUTDIR = os.path.join(root, "dist", "broaden")
+    cwd, argv = os.getcwd(), sys.argv
+    os.chdir(root)
+    sys.argv = ["measure_uncataloged"]
+    buf, real = io.StringIO(), sys.stdout
+    sys.stdout = buf
+    try:
+        m.main()
+    finally:
+        sys.stdout = real
+        sys.argv = argv
+        os.chdir(cwd)
+    out = buf.getvalue()
+    assert "idb" in out, out
+    assert "not uniform-long" not in out.split("idb")[1][:120], out

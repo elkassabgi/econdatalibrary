@@ -115,16 +115,35 @@ def _grain_from_resolver(_resolve) -> dict:
     out: dict[str, str] = {}
     con = sqlite3.connect(
         f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True, timeout=60.0)
+    tried = unresolved = 0
+    reasons: dict[str, int] = {}
     try:
         srcs = [r[0] for r in con.execute("SELECT DISTINCT source_id FROM series")]
         for s in srcs:
+            # PK RANGE, NOT `WHERE source_id=?` (R715/R721/R723). `ix_series_source_id` was never
+            # built on the live catalog.db, so the equality predicate scans from the start of the
+            # table until it meets the source - free for the first source in key order and
+            # millions of rows for the last. series_id is `<source>:<rest>`, so a half-open range
+            # on the primary key is an index seek.
             row = con.execute(
-                "SELECT series_id FROM series WHERE source_id=? LIMIT 1", (s,)).fetchone()
+                "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ? LIMIT 1",
+                (s + ":", s + ";")).fetchone()
             if not row:
                 continue
+            tried += 1
             try:
                 res = _resolve.resolve(row[0], STORE)
-            except Exception:                                        # noqa: BLE001, PERF203
+            except Exception as e:                                   # noqa: BLE001, PERF203
+                # NOT SILENT ANY MORE (review of PR #12, 2026-09-07). This `continue` governs an
+                # exclusion worth 1,012,069,333 keys, and when the store path is wrong EVERY
+                # source raises here: the function returns {}, the index still reports a normal
+                # count from the declaration lists, and nothing is printed. The reviewer hit
+                # exactly that by running a copy of this tool whose module-level STORE pointed at
+                # a nonexistent directory - 16 of 16 sampled sources raised ResolveError, in
+                # silence, and the conclusion "the exclusion is a silent no-op" was one step away.
+                # A defaulted measurement must not look like a measured one.
+                unresolved += 1
+                reasons[type(e).__name__] = reasons.get(type(e).__name__, 0) + 1
                 continue                                             # unresolvable: leave to lists
             shape = _predicate_shape(str(getattr(res, "predicate", "")),
                                      str(getattr(res, "key_col", "")))
@@ -134,6 +153,15 @@ def _grain_from_resolver(_resolve) -> dict:
                 out[s] = "group"
     finally:
         con.close()
+    if unresolved:
+        why = ", ".join(f"{k} x{v}" for k, v in sorted(reasons.items(), key=lambda kv: -kv[1]))
+        print(f"[grain] resolver could not answer for {unresolved} of {tried} source(s) "
+              f"with catalogue rows ({why}); their grain falls back to the declaration lists. "
+              f"STORE={STORE!r}", file=sys.stderr, flush=True)
+        if tried and unresolved == tried:
+            print("[grain] EVERY source failed to resolve - that is a broken STORE path or a "
+                  "moved store, not a measurement. Treat this run's grain classification as "
+                  "DEFAULTED, not measured.", file=sys.stderr, flush=True)
     return out
 
 
@@ -159,10 +187,29 @@ def grain_index() -> dict:
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)
     from econdl import _resolve                                   # noqa: PLC0415
+
+    def _require(mod, name):
+        """EVERY registry this function reads must exist, and a rename must STOP the run.
+
+        `getattr(mod, name, default)` was used for all five (review of PR #12, 2026-09-07).
+        Measured: renaming any one of them reclassifies 5-39 sources with NO exception, and the
+        headline still prints - the same designed-difference-as-a-gap failure this file exists to
+        fix. The `_TABLE_GRAIN` raise below already made this argument; it was applied to one
+        holder of six. Note it fires on a RENAME, which the import-failure guard does not catch:
+        that one only sees the module refusing to import.
+        """
+        if not hasattr(mod, name):
+            raise RuntimeError(
+                f"{mod.__name__}.{name} is missing - it was renamed or removed. This tool "
+                f"classifies grain from it, so continuing would silently reclassify sources and "
+                f"report designed differences as catalogue gaps. Fix the reference, do not "
+                f"default it.")
+        return getattr(mod, name)
+
     out: dict[str, str] = {}
-    for s in getattr(_resolve, "_FLOW_GRAIN", ()):
+    for s in _require(_resolve, "_FLOW_GRAIN"):
         out[s] = "flow"
-    for s in getattr(_resolve, "_DOT_TABLE_GRAIN", ()):
+    for s in _require(_resolve, "_DOT_TABLE_GRAIN"):
         out[s] = "dot-table"
     # THE SIXTH HOLDER, and it overlaps neither of the two above. Measured 2026-09-06:
     #   _resolve._FLOW_GRAIN 11 | _resolve._DOT_TABLE_GRAIN 18 | orchestrate._TABLE_GRAIN 14
@@ -193,8 +240,11 @@ def grain_index() -> dict:
     # 1,012,069,333 keys.
     out.update(_grain_from_resolver(_resolve))
 
-    file_grain = getattr(_resolve, "_resolve_file_grain", None)
-    for s, fn in getattr(_resolve, "_RESOLVERS", {}).items():
+    # ...and the last two, which CI pins nowhere: `_resolve_file_grain` defaulting to None made
+    # every custom resolver read as "custom" instead of "file", and `_RESOLVERS` defaulting to {}
+    # dropped the whole third answer in silence.
+    file_grain = _require(_resolve, "_resolve_file_grain")
+    for s, fn in _require(_resolve, "_RESOLVERS").items():
         # "custom" IS NOT A CLAIM THAT THE SOURCE IS TABLE-GRAIN. A bespoke resolver may
         # exist for a layout reason and still be series grain. All it establishes is that
         # THIS tool has not established the grain — which is a third answer, not a licence
@@ -330,6 +380,18 @@ def summarise(path: str) -> int:
         print(f"\nNOT MEASURED — {len(unread)} source(s) the run could not count:")
         for d, why in sorted(unread):
             print(f"   {d:24s} {why}")
+    # ONE BUCKET main() HAS AND THIS CANNOT, SAID OUT LOUD (review of PR #12, 2026-09-07).
+    # main() ends with `nostore` - catalogued sources with NO directory under the store at all -
+    # and that is derived from the store listing and the catalogue, neither of which a TSV
+    # carries. So a --summarise re-read is silent about them, and silence here reads as zero.
+    # (The same review also said --max-gb skips never reach this function. They do: main() writes
+    # a row for each at :472 and they appear under NOT MEASURED above, naming the store and the
+    # bound - measured 2026-09-07 with scratchpad/check_maxgb_summarise.py, which prints
+    # "statcan  SKIPPED 175.1 GB > --max-gb". That half of the finding is refuted.)
+    print("\nNOT DERIVABLE FROM A TSV — catalogued sources with no directory under the store at "
+          "all.\n   main() lists them as its own NOT MEASURED bucket; a re-read cannot, because "
+          "the TSV has\n   a row only for directories that exist. Do not read the absence of that "
+          "list as a zero.")
     return 0
 
 
