@@ -44,10 +44,19 @@ def main():
     cataloged = set(cat_rows)
     cat.close()
 
-    out, skipped_cataloged = [], []
+    out, skipped_cataloged, skipped_protected, no_parquet = [], [], [], []
     for d in sorted(os.listdir(STORE)):
         p = os.path.join(STORE, d)
-        if not os.path.isdir(p) or d.startswith("_") or d in PROTECTED:
+        if not os.path.isdir(p):
+            continue
+        if d.startswith("_") or d in PROTECTED:
+            # THE SAME RULE AS THE BRANCH BELOW, WHICH THIS ONE DID NOT FOLLOW (review of PR #14,
+            # 2026-09-07). A bare `continue` here hid cbs_nl - 688,929,413 keys - and dbnomics
+            # from every number this tool prints. `skipped_cataloged` had been given the
+            # "recorded, never silent" treatment and its three siblings had not: the PR fixed one
+            # instance of a class with four members.
+            if not d.startswith("_"):
+                skipped_protected.append((d, cat_rows.get(d, 0)))
             continue
         if d in cataloged and not a.include_cataloged:
             # RECORDED, NEVER SILENT. This branch is a COST choice, not a verdict, and
@@ -57,11 +66,17 @@ def main():
         files = [f for f in glob.glob(os.path.join(p, "**", "*.parquet"), recursive=True)
                  if not os.path.basename(f).endswith("__series.parquet")]
         if not files:
+            no_parquet.append(d)          # third member of the same class: never silent
             continue
         rec = {"source": d, "n_files": len(files)}
         try:
             cols = set(pq.read_schema(files[0]).names)
-            key_col = "series_key" if "series_key" in cols else ("series_id" if "series_id" in cols else None)
+            # THREE CANDIDATES, NOT TWO. `idbank` is the key column that
+            # `broaden_catalog._key_col` and `audit_store_vs_catalog` both already accept, and
+            # omitting it here made a store with that key read as "not uniform-long" - the same
+            # class of silent exclusion R825/R821 recorded for bls (154,190,127 series) and eia
+            # (3,862,801) when the candidate list was `series_key` alone.
+            key_col = next((c for c in ("series_key", "series_id", "idbank") if c in cols), None)
             rec["has_long"] = bool(key_col and "obs_date" in cols and "value" in cols)
             rec["key_col"] = key_col
             if not rec["has_long"]:
@@ -100,6 +115,19 @@ def main():
               f"--include-cataloged to measure them.")
         for d, n in sorted(skipped_cataloged, key=lambda x: x[1]):
             print(f"   {d:24s} catalogue rows {n:>10,}")
+    if skipped_protected:
+        print(f"\nNOT MEASURED - {len(skipped_protected)} PROTECTED source(s), skipped before "
+              f"anything was read.\n  Protection is a decision about writing, not evidence that "
+              f"the store is covered:\n  cbs_nl alone holds 688,929,413 keys. This branch used "
+              f"to `continue` in silence, so\n  those sources were absent from every total "
+              f"without appearing in any skip list.")
+        for d, n in sorted(skipped_protected, key=lambda x: x[1]):
+            print(f"   {d:24s} catalogue rows {n:>10,}")
+    if no_parquet:
+        print(f"\nNOT MEASURED - {len(no_parquet)} source directory(ies) with no parquet under "
+              f"them:\n  {', '.join(no_parquet)}\n  An empty directory is UNCHECKED, never "
+              f"clean - it is equally the shape of a store that\n  moved, a pull that never "
+              f"landed, and a source that genuinely holds nothing.")
 
 
 if __name__ == "__main__":
