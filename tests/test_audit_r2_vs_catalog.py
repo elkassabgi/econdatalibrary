@@ -90,7 +90,12 @@ def test_objects_with_no_catalogue_row_are_named():
     # honoured in both directions.
     _rc, out = _run(m, FakeS3({"noaa": 3_135_873}), {"noaa": 0},
                     ["noaa", "--max", "5000000"])
-    assert "OBJECTS WITH NO CATALOGUE ROW" in out and "published, unlisted" in out, out
+    # THE PROPERTY, NOT THE SENTENCE (R839 rule 5). The wording changed deliberately in
+    # R849: this tool reads the LOCAL catalog.db while users are served from D1, and all
+    # 82 of fed_board's 21 and fhfa's 61 "unlisted" objects were present in D1. The
+    # verdict must name WHICH catalogue it read and must not settle the question alone.
+    assert "OBJECTS WITH NO LOCAL CATALOGUE ROW" in out, out
+    assert "verify against D1" in out, out
     assert "+3,135,873" in out, out
 
 
@@ -102,7 +107,7 @@ def test_catalogue_rows_with_no_object_are_named():
     # CATALOGUE is 404 not_found, but a catalogued id whose OBJECT is absent is
     # 502 data_unavailable - "loud + actionable, never an empty 200". Two different states, and
     # calling the second a 404 is a served-system claim made from a local measurement (R825).
-    assert "CATALOGUE ROWS WITH NO OBJECT" in out, out
+    assert "LOCAL CATALOGUE ROWS WITH NO OBJECT" in out, out
     assert "502 data_unavailable" in out, out
     assert "404" not in out, out
     assert "-15" in out, out
@@ -138,7 +143,7 @@ def test_paging_counts_every_page():
     # where it READS (R525), so read the row itself.
     _rc, out = _run(m, FakeS3({"p": 2_501}), {"p": 2_501}, ["p"])
     assert "1 source(s) where R2 and the catalogue agree; 0 where they do not." in out, out
-    assert "CATALOGUE ROWS WITH NO OBJECT" not in out, out
+    assert "LOCAL CATALOGUE ROWS WITH NO OBJECT" not in out, out
     row = [ln for ln in out.splitlines() if ln.strip().startswith("p ")][0]
     assert row.split() == ["p", "2,501", "2,501", "+0", "agree"], row
 
