@@ -26,6 +26,24 @@ So there are three buckets, and only ONE of them is an exemption:
 
 Two-sided throughout: a one-sided test passes equally on a tool that excuses everything and on
 one that excuses nothing.
+
+A SECOND SIGNAL THAT LIES THE SAME WAY, recorded 2026-09-07 so nobody reaches for it next:
+`frequency` being populated. A catalogue row that carries a frequency LOOKS like one series, and
+`api/worker/src/catalog.ts:30` says nothing about frequency at all - so the temptation is to read
+a populated column as evidence of series grain, which is R525 with a different field.
+
+Measured on the local `catalog.db` (`scratchpad/check_freq_coarse.py`, PK ranges only, 3.9 s):
+of the **62** sources this index declares coarse, **23 carry a frequency on 100 % of their rows**
+- every one of the 14 `imf_*_direct`, plus eurostat (7,654), fed_board (52,322), sec_edgar
+(17,467), worldbank/_esg/_wdi, faostat, treasury and unsdg - and **11 of those 23 have exactly ONE
+distinct frequency value across the whole source**, which is the shape that reads most convincingly
+as per-series and is in fact the strongest evidence of a TABLE (one table, one periodicity, many
+partner series: `imf_pip_direct` holds 8,876 rows over 3,126,127 store keys). The review that
+raised this reported 15 of 48; both halves of that are smaller than what the current index
+measures, so the class is wider than it was first described, not narrower.
+
+The rule stands unchanged and now covers a second field: grain comes from the RESOLVER'S
+PREDICATE or from a declaration, never from a row count and never from a populated column.
 """
 from __future__ import annotations
 
