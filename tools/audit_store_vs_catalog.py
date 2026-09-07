@@ -87,6 +87,56 @@ def dir_gb(files) -> float:
     return sum(os.path.getsize(f) for f in files) / 1e9
 
 
+def _predicate_shape(pred: str, key_col: str) -> str:
+    """WHOLE-FILE / GROUP / SERIES, from the predicate the resolver actually returns.
+
+    The column matters, not the operator: `(flow == "X")` is an equality that selects an entire
+    flow, and reading it as "one series" is how insee_melodi was misclassified.
+    """
+    import re                                                        # noqa: PLC0415
+    if "starts_with" in pred or "is_in" in pred or "match" in pred or "ends_with" in pred:
+        return "GROUP"
+    eqs = re.findall(r"\(?\s*([A-Za-z_][A-Za-z0-9_]*)\s*==", pred)
+    if eqs:
+        return "SERIES" if all(c == key_col for c in eqs) else "GROUP"
+    if "is_valid" in pred:
+        return "WHOLE-FILE"
+    return "GROUP"          # unrecognised: treat as coarse and let the declarations disagree
+
+
+def _grain_from_resolver(_resolve) -> dict:
+    """{source: 'file'|'group'} for every source we can resolve one real catalogue id for.
+
+    A source with ZERO catalogue rows has no id to resolve and simply does not appear - absence
+    of measurement, not evidence of series grain. The declaration lists cover that case.
+    Resolving builds a path and an expression; NO parquet data is read.
+    """
+    import sqlite3                                                   # noqa: PLC0415
+    out: dict[str, str] = {}
+    con = sqlite3.connect(
+        f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True, timeout=60.0)
+    try:
+        srcs = [r[0] for r in con.execute("SELECT DISTINCT source_id FROM series")]
+        for s in srcs:
+            row = con.execute(
+                "SELECT series_id FROM series WHERE source_id=? LIMIT 1", (s,)).fetchone()
+            if not row:
+                continue
+            try:
+                res = _resolve.resolve(row[0], STORE)
+            except Exception:                                        # noqa: BLE001, PERF203
+                continue                                             # unresolvable: leave to lists
+            shape = _predicate_shape(str(getattr(res, "predicate", "")),
+                                     str(getattr(res, "key_col", "")))
+            if shape == "WHOLE-FILE":
+                out[s] = "file"
+            elif shape == "GROUP":
+                out[s] = "group"
+    finally:
+        con.close()
+    return out
+
+
 def grain_index() -> dict:
     """Which sources are NOT served at series grain — taken from the RESOLVER'S OWN sets.
 
@@ -134,6 +184,15 @@ def grain_index() -> dict:
         raise RuntimeError(
             f"updater.orchestrate._TABLE_GRAIN unreadable ({type(e).__name__}: {e}); "
             f"14 declared table-grain sources would be misclassified") from e
+    # ---- ASK THE RESOLVER, not the lists -------------------------------------------------
+    # A catalogue id's grain is decided by the predicate `resolve()` returns, so read that
+    # rather than six declaration lists that drift. Measured 2026-09-06: the lists are a strict
+    # SUBSET of truth - 48 declared, 62 measured, ZERO declared-but-wrong, 15 coarse but
+    # declared nowhere (eurostat, statcan, istat, usda, census, sec_edgar, treasury, faostat,
+    # fed_board, ilostat, eia, worldbank*). Counting those 15 as gaps inflated the headline by
+    # 1,012,069,333 keys.
+    out.update(_grain_from_resolver(_resolve))
+
     file_grain = getattr(_resolve, "_resolve_file_grain", None)
     for s, fn in getattr(_resolve, "_RESOLVERS", {}).items():
         # "custom" IS NOT A CLAIM THAT THE SOURCE IS TABLE-GRAIN. A bespoke resolver may
@@ -144,7 +203,7 @@ def grain_index() -> dict:
     return out
 
 
-DECLARED_GRAINS = ("flow", "dot-table", "file", "table")
+DECLARED_GRAINS = ("flow", "dot-table", "file", "table", "group")
 
 
 def denylisted() -> set:

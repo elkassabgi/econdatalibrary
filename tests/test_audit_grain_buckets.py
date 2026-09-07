@@ -253,14 +253,17 @@ def test_grain_index_reads_every_machine_readable_holder():
 
     tg = getattr(importlib.import_module("updater.orchestrate"), "_TABLE_GRAIN")
     assert tg, "orchestrate._TABLE_GRAIN vanished - the audit would silently misclassify it"
-    missing = sorted(s for s in tg if g.get(s) != "table")
-    assert not missing, f"declared table-grain sources not classified as such: {missing}"
+    # ASSERT THE PROPERTY, NOT THE LABEL. The resolver probe now runs first and may call
+    # the same source "group" rather than "table" — still coarse, still excluded, only a
+    # different word. Pinning the word made this test fail on a change that was correct.
+    missing = sorted(s for s in tg if g.get(s) not in m.DECLARED_GRAINS)
+    assert not missing, f"declared table-grain sources not classified coarse: {missing}"
 
     from econdl import _resolve
     for s in _resolve._FLOW_GRAIN:
-        assert g.get(s) == "flow", s
+        assert g.get(s) in m.DECLARED_GRAINS, s
     for s in _resolve._DOT_TABLE_GRAIN:
-        assert g.get(s) == "dot-table", s
+        assert g.get(s) in m.DECLARED_GRAINS, s
 
 def test_grain_index_works_when_run_AS_A_SCRIPT(tmp_path):
     """The test suite is not the tool. pytest puts the repo root on sys.path; running
@@ -291,9 +294,12 @@ def test_grain_index_works_when_run_AS_A_SCRIPT(tmp_path):
     assert r.returncode == 0, r.stderr[-800:]
     assert "GRAIN INDEX UNAVAILABLE" not in r.stdout, r.stdout
     assert "UNQUALIFIED" not in r.stdout, r.stdout
-    # bfs is declared flow grain -> excluded; abs is unestablished -> counted
+    # bfs is coarse -> excluded; abs is unestablished -> counted.
+    # ASSERT THE PROPERTY, NOT THE LABEL: the resolver probe calls bfs "group" rather than
+    # "flow" (its predicate is key == native OR starts_with(native + ":")), which is the same
+    # verdict in a more precise word. Pinning the word failed a correct change.
     assert "held locally but not catalogued    : 376,333,067 series" in r.stdout, r.stdout
-    assert "grain:flow" in r.stdout, r.stdout
+    assert "NOT COMPARABLE" in r.stdout and "bfs" in r.stdout, r.stdout
 
 def test_zero_catalogue_rows_is_its_own_bucket_and_is_COUNTED(tmp_path):
     """THE BLOCKER an adversarial review found, and the suite could not see.
@@ -385,6 +391,63 @@ def test_summarise_refuses_to_assert_ORPHAN_from_an_estimate(tmp_path):
     assert "catalogued with no LOCAL STORE KEY : 0 series" in out, out
     assert "100,000" not in out, out
 
+
+# --------------------------------------------------------------------------------------------
+# Grain from the RESOLVER, not from six drifting declaration lists.
+#
+# Measured 2026-09-06 over all 322 sources holding catalogue rows: coarse BY THE RESOLVER 62,
+# coarse BY THE DECLARATIONS 48, declared-but-wrong ZERO, coarse-but-declared-nowhere FIFTEEN
+# (eurostat, statcan, istat, usda, census, sec_edgar, treasury, faostat, fed_board, ilostat, eia,
+# worldbank*). Counting those 15 as coverage gaps inflated the headline by 1,012,069,333 keys —
+# 1,595,883,439 reported against a true 583,814,106.
+
+
+def test_predicate_shape_reads_the_column_not_just_the_operator():
+    """THE CORRECTION THAT MATTERED. `insee_melodi` resolves to `(flow == "DD_CNA_AGREGATS")` —
+    an equality, but on the FLOW column, so it selects every row of that flow. Reading `==` as
+    "one series" without checking WHICH column misclassifies it as series grain."""
+    m = _load()
+    f = m._predicate_shape
+    assert f('(series_key == "WID:acaincj992:p0p100:992:j:AL")', "series_key") == "SERIES"
+    assert f('(flow == "DD_CNA_AGREGATS")', "series_key") == "GROUP"      # <- the correction
+    assert f("is_valid(series_key)", "series_key") == "WHOLE-FILE"
+    assert f("(is_valid(value) and is_valid(obs_date))", "series_key") == "WHOLE-FILE"
+    assert f('((series_key == "0000.01.O_A") or starts_with(series_key, {pattern="0000.01."}))',
+             "series_key") == "GROUP"
+    assert f('match_substring_regex(series_key, {pattern="^PIP:"})', "series_key") == "GROUP"
+    assert f('(ends_with(series_key, {pattern=":price:crude_oil_average"}))',
+             "series_key") == "GROUP"
+
+
+def test_an_unrecognised_predicate_is_treated_as_COARSE_not_series():
+    """Fail toward the safer reading. Calling an unknown predicate 'series' would put its whole
+    store into the coverage headline as a defect; calling it coarse merely leaves it out of a
+    number, and the declaration lists still get their say."""
+    m = _load()
+    assert m._predicate_shape("something_new(x, y)", "series_key") == "GROUP"
+
+
+def test_grain_index_unions_the_resolver_with_the_declarations():
+    """A source with ZERO catalogue rows has no id to resolve and cannot be probed — absence of
+    measurement, not evidence of series grain. The lists cover exactly that case, so neither
+    source of truth is used alone."""
+    import importlib
+
+    m = _load()
+    g = m.grain_index()
+    from econdl import _resolve
+
+    # every declared coarse source is still classified coarse after the union
+    declared = set(getattr(_resolve, "_FLOW_GRAIN", ())) | set(
+        getattr(_resolve, "_DOT_TABLE_GRAIN", ()))
+    declared |= set(getattr(importlib.import_module("updater.orchestrate"), "_TABLE_GRAIN", ()))
+    missing = sorted(s for s in declared if g.get(s) not in m.DECLARED_GRAINS)
+    assert not missing, f"declared coarse but not classified coarse: {missing}"
+
+    # and the resolver adds sources the lists never had
+    assert g.get("eurostat") in m.DECLARED_GRAINS, g.get("eurostat")
+    assert g.get("statcan") in m.DECLARED_GRAINS, g.get("statcan")
+    assert "group" in m.DECLARED_GRAINS
 # --------------------------------------------------------------------------------------------
 # THE GAPS A SECOND ADVERSARIAL REVIEW FOUND. It ran mutants I had not thought of and 5 of 8
 # survived - because I had chosen mutants my own tests already covered. Choosing your own mutants
