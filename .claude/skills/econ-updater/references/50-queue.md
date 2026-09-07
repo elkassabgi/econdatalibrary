@@ -1734,4 +1734,19 @@ deferred cbs_nl collision census (census v3 skipped it while the sweep wrote).
 > copies are behind until someone says yes. The ceiling is deliberate (the comment at
 > `ingest_cbs_nl.py:132-138` derives it from the measured distribution of the 329 revised tables:
 > median 22,560 rows, p90 2,044,848, then those five outliers), so this is a cost/time decision,
-> not a bug.
+> not a bug. What the deferral COSTS, from the parquet footers (row-group statistics, never a whole
+> read — R244) and `_repull_deferred.json`:
+>
+>     table         rows      our newest obs   CBS revised   our file written
+>     85468NED   119,206,080    2024-12-31      2026-07-09     2026-06-17
+>     84547NED   106,206,336    2026-04-01      2026-08-31     2026-06-21
+>     85451NED    93,661,920    2024-12-31      2026-08-17     2026-06-16
+>     85721NED    59,864,832    2026-06-01      2026-08-31     2026-07-05
+>     85371NED    25,159,680    2025-12-31      2026-08-24     2026-06-21
+>
+> Every served copy was written in June or early July 2026 and CBS has published a revision since;
+> two of the five carry nothing after 2024-12-31. **The re-pull DURATION is NOT measured and must
+> not be guessed:** the newest guard log has no successful large crawl to time it from (everything
+> current was skipped, and the only non-skipped tables were HTTP 403s), and `$skip` is O(offset) so
+> it is not linear in rows — R703 is the entry about a threshold reasoned to instead of measured
+> and then shipped as fact.
