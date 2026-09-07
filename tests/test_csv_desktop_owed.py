@@ -152,6 +152,113 @@ def test_health_holds_a_desktop_owed_source_at_attention(monkeypatch):
     assert "clear_csv_desktop_owed.py --source zzflow" in row["attention"][0]
 
 
+class _Unit:
+    def __init__(self, sid):
+        self.source_id, self.unit_id, self.key, self.strategy = sid, "_all", f"{sid}/_all", "giant_changed_units"
+        self.out_paths = []
+
+
+@pytest.fixture
+def tmp_catalog(tmp_path, monkeypatch):
+    import sqlite3
+    p = tmp_path / "catalog.db"
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    for sid in ("zzflow:a", "zzflow:b", "zzser:a"):
+        con.execute("INSERT INTO series VALUES (?,?)", (sid, sid.split(":")[0]))
+    con.commit(); con.close()
+    monkeypatch.setenv("ECONDL_CATALOG", str(p))
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "local")
+    monkeypatch.setattr(orchestrate, "_record_for_catalog_sync", lambda ids: None)
+    return p
+
+
+def _fake_derive(deferred=(), large=None):
+    def f(ids, blob, **kw):
+        _fake_derive.calls.append((list(ids), dict(kw)))
+        d = [s for s in ids if s in set(deferred)]
+        return {"put": len(ids) - len(d), "failed": list(d), "deferred": len(d), "deferred_ids": d,
+                "failed_reasons": {}, "skipped_identical": 0, "deferred_large": dict(large or {})}
+    _fake_derive.calls = []
+    return f
+
+
+def test_budget_deferred_flow_grain_ids_become_desktop_debt_not_retry_queue(tmp_path, tmp_catalog, monkeypatch):
+    """Final-diff review condition 2: on r2 the merged parquet lives only on the runner that
+    wrote it, so a retry can never succeed later. A budget-deferred flow-grain id is booked
+    as a desktop debt and NOT returned for the retry queue."""
+    from updater.strategies.base import Result
+    monkeypatch.setattr(orchestrate, "_csv_grain", lambda s: "flow" if s == "zzflow" else "series")
+    monkeypatch.setattr(derive, "derive_and_put", _fake_derive(deferred=["zzflow:b"]))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"a": "2024-01-01", "b": "2024-01-01"})
+    failed, note, deferred, reasons = orchestrate._derive_changed_csvs(_Unit("zzflow"), res, object(), st)
+    assert failed == [] and deferred == []                       # nothing for csv_retry_queue
+    assert note and note.startswith("csv coverage note:") and "not reached inside the derive budget" in note
+    rows = st.csv_desktop_owed("zzflow")
+    assert [r["series_id"] for r in rows] == ["zzflow:b"] and "budget-deferred" in rows[0]["reason"]
+    assert _fake_derive.calls[0][1] == {"flow_grain": True} or _fake_derive.calls[0][1].get("flow_grain") is True
+
+
+def test_budget_deferred_series_grain_ids_still_go_to_the_retry_queue(tmp_path, tmp_catalog, monkeypatch):
+    from updater.strategies.base import Result
+    monkeypatch.setattr(orchestrate, "_csv_grain", lambda s: "series")
+    monkeypatch.setattr(derive, "derive_and_put", _fake_derive(deferred=["zzser:a"]))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"a": "2024-01-01"})
+    failed, note, deferred, reasons = orchestrate._derive_changed_csvs(_Unit("zzser"), res, object(), st)
+    assert deferred == ["zzser:a"] and failed == []              # the old contract, untouched
+    assert st.csv_desktop_owed() == []
+    assert "flow_grain" not in _fake_derive.calls[0][1]
+
+
+def test_unserved_by_decision_ids_are_never_booked(tmp_path, capsys):
+    """Condition 4: eurostat:migr_asyrescra is catalogued and 404 by decision; a debt for it
+    could never be paid, so the registry's csv_desktop_exclude keeps it out, loudly."""
+    st = StateStore(path=str(tmp_path / "state.db"))
+    assert "eurostat:migr_asyrescra" in orchestrate._csv_desktop_excluded("eurostat")
+    orchestrate._book_csv_desktop_owed(st, "eurostat", {"eurostat:migr_asyrescra": 213_650_346,
+                                                         "eurostat:hlth_cd_yro": 136_120_337})
+    assert [r["series_id"] for r in st.csv_desktop_owed("eurostat")] == ["eurostat:hlth_cd_yro"]
+    out = capsys.readouterr().out
+    assert "NOT booked as desktop debt" in out and "migr_asyrescra" in out
+
+
+def test_registry_validates_the_exclusion_list():
+    from updater import registry
+    reg = registry.load()
+    assert not [p for p in registry.validate(reg) if "csv_desktop_exclude" in p]
+    bad = {"sources": [{"source_id": "zz", "strategy": "giant_changed_units", "cadence": "monthly",
+                        "live": True, "csv_desktop_exclude": ["other:x"]}]}
+    assert any("csv_desktop_exclude" in p for p in registry.validate(bad))
+
+
+def test_clear_tool_prints_the_content_caveat(tmp_path, monkeypatch, capsys):
+    """Condition 5: 'served postdates the debt' proves a rewrite, not content — the summary
+    line must say so, not only the docstring."""
+    import clear_csv_desktop_owed as tool
+    import updater.state as state_mod
+    from core import r2_util
+
+    class _St:
+        def __init__(self, *a, **k):
+            pass
+
+        def csv_desktop_owed(self, source_id=None):
+            return [{"series_id": "zz:new", "source_id": "zz", "noted_utc": "2026-09-07T20:00:00+00:00",
+                     "rows": 1, "reason": "test"}]
+
+    class _S3:
+        def head_object(self, Bucket, Key):
+            return {"LastModified": dt.datetime(2026, 9, 7, 21, 0, tzinfo=dt.timezone.utc)}
+
+    monkeypatch.setattr(state_mod, "StateStore", _St)
+    monkeypatch.setattr(r2_util, "client", lambda write=False: _S3())
+    rc = tool.main(["--source", "zz"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "CAVEAT" in out and "read-back" in out and "CLEARABLE zz:new" in out
+
+
 def test_clear_tool_clears_only_rows_whose_served_object_postdates_the_debt():
     import clear_csv_desktop_owed as tool
     noted = "2026-09-07T20:00:00+00:00"

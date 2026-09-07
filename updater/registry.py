@@ -69,6 +69,14 @@ def validate(reg: dict, expected_count: int | None = None) -> list[str]:
             # remedy on a flow-grain source writes 0 objects and leaves the debt standing).
             problems.append(f"{sid}: csv_grain must be one of {sorted(CSV_GRAINS)}, "
                             f"got {e.get('csv_grain')!r}")
+        if "csv_desktop_exclude" in e:
+            # Catalogue ids unserved BY DECISION: never booked as a desktop debt (no derive will
+            # ever pay it). Each must be a full catalogue id of THIS source.
+            ex = e.get("csv_desktop_exclude")
+            if not isinstance(ex, list) or not all(isinstance(x, str) and x.startswith(f"{sid}:")
+                                                   for x in ex):
+                problems.append(f"{sid}: csv_desktop_exclude must be a list of '{sid}:<id>' "
+                                f"strings, got {ex!r}")
     if expected_count is not None and len(sources) != expected_count:
         problems.append(f"expected {expected_count} sources, found {len(sources)}")
     return problems

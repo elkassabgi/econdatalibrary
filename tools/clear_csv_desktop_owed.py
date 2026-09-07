@@ -105,7 +105,9 @@ def main(argv=None) -> int:
         good, detail = served_after(s3, r["series_id"], r["noted_utc"])
         (ok if good else bad).append((r["series_id"], detail))
         print(f"  {'CLEARABLE' if good else 'STANDS   '} {r['series_id']}: {detail}")
-    print(f"clearable {len(ok)}, standing {len(bad)}")
+    print(f"clearable {len(ok)}, standing {len(bad)}  — CAVEAT: 'served postdates the debt' proves a "
+          f"REWRITE after the debt was noted, not CONTENT; a desktop derive from a mirror behind R2 "
+          f"(R383/R530) would clear here too. Do the byte read-back against R2's parquet first.")
     if not a.apply:
         print("(report only — pass --apply to pull, clear the clearable rows, and push)")
         return 0 if not bad else 1

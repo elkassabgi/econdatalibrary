@@ -290,6 +290,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     total_rows = 0
     max_last = None
     changed_flows: dict = {}   # {flow_id: max changed obs_date | None}, merge-measured
+    merged_n = over_cap_n = 0  # flows that reached the merge; of those, over the report cap
 
     for n_done, fid in enumerate(selected, 1):
         # Every 25 flows, and always on the last one. Bounded on purpose: one line per flow
@@ -403,11 +404,15 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                 if table.num_rows <= merge.CHANGED_KEYS_CAP:
                     n, last, _rep = merge.merge_and_write(out_path, table, mode="merge",
                                                           min_ratio=min_ratio,
-                                                          report_changed_keys=True)
+                                                          report_changed_keys=True,
+                                                          changed_keys_cap=merge.CHANGED_KEYS_CAP)
                     _flow_changed = bool(_rep)
                     _when = (max((str(v) for v in _rep.values() if v), default=None)
                              or (str(last) if last else None))
+                    merged_n += 1
                 else:
+                    over_cap_n += 1
+                    merged_n += 1
                     # OVER-report above the cap: the cost is one identical re-derive of
                     # this flow; a silent under-report is the disease this channel cures.
                     print(f"[{source}] {fid}: {table.num_rows:,} new rows exceed the "
@@ -445,6 +450,14 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     # runs don't perpetually re-select everything: only flows we DIDN'T select keep their
     # prior state; brand-new-but-unselected (cap overflow) stay absent -> reselected.
     save_state(source_dir, state)
+
+    if report_changed_flows:
+        # THE LINE THE ROLLOUT EVIDENCE IS READ FROM (final-diff review, condition 3): the
+        # orchestrator prints "mapped N" only on its fallback tier, so without this a clean tick
+        # leaves no number to compare the derived count against.
+        print(f"[{source}] changed flows (merge-measured): {len(changed_flows):,} of "
+              f"{merged_n:,} merged ({over_cap_n:,} over the report cap, reported as changed)",
+              flush=True)
 
     if capped:
         # We deliberately fetched only a slice of a very large changed set. That is a

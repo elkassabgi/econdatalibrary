@@ -75,6 +75,43 @@ def test_ratchet_every_flow_grain_source_resolves_whole_file(tmp_path):
         assert os.path.normcase(str(res.parquet_path)) == os.path.normcase(str(p))
 
 
+def test_ratchet_flow_grain_stores_hold_no_null_values():
+    """Final-diff review condition 6: the streaming path writes a null `value` as '' and the
+    in-memory path as 'nan', so a flow-grain store with nulls would serve two different bytes
+    for the same data depending on the path. Measured 2026-09-07: eurostat holds 0 nulls in
+    7,654 files. This ratchet reads only parquet FOOTERS (null_count statistics) of every declared
+    flow-grain store; on a checkout without the store it SKIPS and says so (R779)."""
+    import pytest
+    from econdl import _resolve
+    reg = registry.load()
+    flow_sources = sorted(e["source_id"] for e in reg["sources"] if e.get("csv_grain") == "flow")
+    checked = 0
+    root = _resolve.default_data_root()          # honours ECONDL_DATA; else <checkout>/data/clean_full
+    for src in flow_sources:
+        d = os.path.join(root, src)
+        files = sorted(f for f in (os.listdir(d) if os.path.isdir(d) else []) if f.endswith(".parquet"))
+        if not files:
+            pytest.skip(f"store for {src} absent at {d} — run with ECONDL_DATA pointing at the real "
+                        f"clean_full root (the desktop) to execute the null ratchet")
+        nulls, nostats = 0, 0
+        for f in files:
+            md = pq.read_metadata(os.path.join(d, f))
+            names = [md.schema.column(i).name for i in range(md.num_columns)]
+            if "value" not in names:
+                continue
+            j = names.index("value")
+            for g in range(md.num_row_groups):
+                stt = md.row_group(g).column(j).statistics
+                if stt is None:
+                    nostats += 1
+                elif stt.null_count:
+                    nulls += stt.null_count
+            checked += 1
+        assert nulls == 0, f"{src}: {nulls} null value(s) in a flow-grain store — the two derive paths diverge on them"
+        assert nostats == 0, f"{src}: {nostats} row group(s) without statistics — the ratchet cannot see them"
+    assert checked > 0
+
+
 def test_health_remedy_names_the_flow_tool_only_for_flow_grain(monkeypatch):
     from updater import health
     fake = {"sources": [

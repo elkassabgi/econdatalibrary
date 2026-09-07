@@ -1620,6 +1620,10 @@ sources:
   # csv_grain: one catalogue id (`eurostat:<dataset>`) serves the WHOLE <DATASET>.parquet
   # (`_resolve_eurostat`); the series-grain bulk derive writes 0 objects here (R882).
   csv_grain: flow
+  # Unserved BY DECISION (NUMBERS.md, 2026-09-07: 213,650,346 rows / 16.5 GB plain; Ahmed's
+  # split-or-publish call is open) - never a desktop debt, or the debt is unpayable.
+  csv_desktop_exclude:
+  - eurostat:migr_asyrescra
   review: true
   adapter:
     vintage_signal: Eurostat TOC catalogue (catalogue/toc/txt) per-dataset lastUpdate/lastModified column; persist code->lastUpdate

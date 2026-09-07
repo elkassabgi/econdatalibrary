@@ -91,6 +91,24 @@ def test_new_rows_name_only_that_flow(tmp_path, monkeypatch):
     assert res.changed_keys == {"aact_ali01": "2024-03-01"}
 
 
+def test_every_opted_in_tick_prints_the_merge_measured_count(tmp_path, monkeypatch, capsys):
+    """Final-diff review condition 3: the rollout evidence compares the derived count against
+    the changed-flow count, so a CLEAN tick must print it too (not only the structural path)."""
+    _seed(tmp_path, monkeypatch)
+    capsys.readouterr()
+    res = _run(tmp_path, monkeypatch, _bump(CAT),
+               {"aact_ali01": _tbl(BASE_A + [("k1", "2024-03-01", 3.0)]),
+                "tec00115": _tbl(BASE_B)})
+    out = capsys.readouterr().out
+    assert res.changed_keys == {"aact_ali01": "2024-03-01"}
+    assert "[zzgiant] changed flows (merge-measured): 1 of 2 merged (0 over the report cap" in out
+    # and the opt-out prints nothing of the kind
+    capsys.readouterr()
+    _run(tmp_path, monkeypatch, _bump(_bump(CAT)),
+         {"aact_ali01": _tbl(BASE_A), "tec00115": _tbl(BASE_B)}, report=False)
+    assert "changed flows (merge-measured)" not in capsys.readouterr().out
+
+
 def test_same_period_value_revision_is_a_change(tmp_path, monkeypatch):
     """R549: identical row count, identical max date, one value revised — a footer/shape
     screen cannot see it; the merge can, and the store must serve the revised value."""
