@@ -236,7 +236,8 @@ def select_flows(catalog: dict, state: dict, *, max_flows=DEFAULT_MAX_FLOWS_PER_
 
 
 def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, timeout,
-              max_flows=DEFAULT_MAX_FLOWS_PER_TICK, min_ratio=0.97):
+              max_flows=DEFAULT_MAX_FLOWS_PER_TICK, min_ratio=0.97,
+              report_changed_flows: bool = False):
     """Generic S4 driver. Sources supply two callables:
 
       fetch_catalog() -> {flow_id: {"vintage", "filename", **meta}}   (raises Transient on net fail)
@@ -247,7 +248,21 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
 
     The driver: diffs the catalogue, selects changed+redo flows (cap-bounded),
     incrementally fetches each, merges per-flow under never-shrink/dedup, updates the
-    per-flow sidecar state, and returns one honest SOURCE-level Result."""
+    per-flow sidecar state, and returns one honest SOURCE-level Result.
+
+    report_changed_flows=True (opt-in; the default is byte-identical to before) fills
+    `Result.changed_keys` with {flow_id: max changed obs_date or None} for exactly the
+    flows whose SERVED content this run changed, as MEASURED BY THE MERGE
+    (merge_and_write(report_changed_keys=True): a same-period value revision counts, an
+    idempotent boundary re-fetch does not). An EMPTY dict is a real statement — "every
+    selected flow merged idempotently" — and the orchestrator honours it as coherence met
+    (orchestrate §5.7). Without it a giant that merged rows reports no changed set at all,
+    so the orchestrator books `full_rederive_owed` on EVERY merging tick and the only way
+    out is a manual desktop campaign (ledger R882: eurostat, 2026-09-07). Keys are the
+    fetcher's flow ids AS ITS CATALOGUE SPELLS THEM — for a grouped source the flow IS the
+    catalogue id suffix (`eurostat:aact_ali01`), which `_catalog_ids_for`'s exact tier
+    resolves by primary key. Never `series_cursors` (base.py: three contradictory
+    contracts), never derived from LastModified or from `selected`."""
     source_dir = (unit.out_paths or [None])[0]
     if source_dir is None:
         raise DefinitiveError(f"{source}: unit has no out_paths (source dir unknown)")
@@ -274,6 +289,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     sess = requests.Session()
     total_rows = 0
     max_last = None
+    changed_flows: dict = {}   # {flow_id: max changed obs_date | None}, merge-measured
 
     for n_done, fid in enumerate(selected, 1):
         # Every 25 flows, and always on the last one. Bounded on purpose: one line per flow
@@ -371,7 +387,35 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
 
         # status == "ok": merge the tail into the per-flow parquet (never-shrink/dedup).
         try:
-            n, last = merge.merge_and_write(out_path, table, mode="merge", min_ratio=min_ratio)
+            if report_changed_flows:
+                # MERGE-MEASURED CHANGE, ONE BIT PER FLOW. The report names the keys whose
+                # served value this write changed (merge.py `_same_vals`: bitwise, so a
+                # same-period revision counts and an idempotent re-fetch reports {}). The
+                # flow is the derive unit for a grouped source, so any non-empty report
+                # marks the flow.
+                try:
+                    n, last, _rep = merge.merge_and_write(out_path, table, mode="merge",
+                                                          min_ratio=min_ratio,
+                                                          report_changed_keys=True)
+                    _flow_changed = bool(_rep)
+                    _dates = [str(v) for v in _rep.values() if v]
+                    _when = max(_dates) if _dates else (str(last) if last else None)
+                except ValueError as e:
+                    # The report REFUSES BEFORE ANY I/O above changed_keys_cap (2,000,000
+                    # new rows) or when a dedup key is absent (merge.py, the two guards at
+                    # the top of merge_and_write). Merge without it and OVER-report: the
+                    # cost is one identical re-derive of this flow; a silent under-report
+                    # is the disease this channel exists to cure.
+                    print(f"[{source}] {fid}: changed-flow report unavailable "
+                          f"({str(e)[:90]}) — merged without it; flow treated as CHANGED",
+                          flush=True)
+                    n, last = merge.merge_and_write(out_path, table, mode="merge",
+                                                    min_ratio=min_ratio)
+                    _flow_changed, _when = True, (str(last) if last else None)
+                if _flow_changed:
+                    changed_flows[fid] = _when
+            else:
+                n, last = merge.merge_and_write(out_path, table, mode="merge", min_ratio=min_ratio)
         except DefinitiveError as e:
             # A would-shrink / column-drop / 0-row merge: keep old data, surface partial,
             # do NOT advance vintage so it is reattempted (could be a truncated upstream).
@@ -402,8 +446,13 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         # We deliberately fetched only a slice of a very large changed set. That is a
         # legitimate-partial: report it so the source is NOT stamped fully fresh and the
         # remainder runs next tick. (Never launder a known-incomplete sweep into ok.)
+        # The fetched slice's changes are real and derivable now; the remainder is
+        # reselected next tick and reports itself then. A dict here (even empty) is honest
+        # for the flows this run merged — it says nothing about the flows it never reached,
+        # and the `partial` status is what keeps the source from being stamped fresh.
         return Result(status="partial", obs=total_rows, last_obs_date=max_last,
                       new_vintage=_catalog_token(catalog),
+                      changed_keys=(changed_flows if report_changed_flows else None),
                       error=f"selected>cap: fetched {len(selected)} of a larger changed set; "
                             f"remainder re-runs next tick (+{tally.added} rows)")
 
@@ -416,6 +465,8 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     # carry a catalogue-level vintage token so detect_change can cheaply short-circuit
     # next tick when the whole catalogue is unmoved.
     res.new_vintage = _catalog_token(catalog)
+    if report_changed_flows:
+        res.changed_keys = changed_flows      # {} when every merge was idempotent — honoured
     return res
 
 
