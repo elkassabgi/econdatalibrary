@@ -98,7 +98,13 @@ def test_catalogue_rows_with_no_object_are_named():
     """The direction that reaches a user as a 404."""
     m = _load()
     _rc, out = _run(m, FakeS3({"x": 10}), {"x": 25}, ["x"])
-    assert "CATALOGUE ROWS WITH NO OBJECT" in out and "404" in out, out
+    # NOT 404. api/worker/src/series.ts pins the honest-status tree: an id absent from the
+    # CATALOGUE is 404 not_found, but a catalogued id whose OBJECT is absent is
+    # 502 data_unavailable - "loud + actionable, never an empty 200". Two different states, and
+    # calling the second a 404 is a served-system claim made from a local measurement (R825).
+    assert "CATALOGUE ROWS WITH NO OBJECT" in out, out
+    assert "502 data_unavailable" in out, out
+    assert "404" not in out, out
     assert "-15" in out, out
 
 
