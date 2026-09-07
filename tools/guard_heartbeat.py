@@ -257,9 +257,18 @@ def _emptiness_verdict() -> dict:
     can act. Failure to RUN the audit is reported as unknown, never as clean."""
     import subprocess
     tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audit_crawl_emptiness.py")
+    # THE INNER TIMEOUT MUST SIT INSIDE THE OUTER ONE (2026-09-07, post-reboot sweep). This was
+    # 900 s, while RELAUNCH_GUARD_LOOP.ps1 kills the whole publish at <= 120 s - and this audit
+    # is evaluated INSIDE the `body` literal in publish(), BEFORE c.put_object(). So on a cold
+    # machine the outer cap fired first and NO beat reached R2 at all: 8 "heartbeat publish
+    # EXCEEDED 90s - killed" lines on 2026-09-07 alone, every post-reboot tick among them, while
+    # the cloud's daily `--check` reads exactly that object and reds a stale beat. 60 s leaves
+    # the publish room to finish; a slow audit now lands as {"ran": False, "error":
+    # "TimeoutExpired..."} through the except below - reported as UNKNOWN, never as clean, which
+    # is the contract this docstring already states. The beat itself is what must never be lost.
     try:
         r = subprocess.run([sys.executable, tool, "--json"], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=900)
+                           encoding="utf-8", errors="replace", timeout=60)
         reports = json.loads(r.stdout)
         return {"ran": True,
                 "fetch_without_write": sum(len(x["empty"]) for x in reports),
