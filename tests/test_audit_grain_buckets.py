@@ -242,6 +242,30 @@ def test_summarise_never_lets_an_unmeasured_source_read_as_clean(tmp_path):
     assert "echo" in out and "no key column" in out, out
 
 
+def test_summarise_says_which_bucket_a_TSV_cannot_carry(tmp_path):
+    """R875 #5 - this note shipped with no failing test on its revert, so it was UNCOVERED.
+
+    `main()` ends with a `nostore` bucket - catalogued sources with no directory under the store
+    at all - derived from the store listing and the catalogue, neither of which a TSV holds. A
+    re-read is therefore structurally silent about them, and silence in a coverage report reads
+    as zero. The only honest fix is to say so, and the only way to keep it is to test the
+    printed line rather than grep the source for the word."""
+    out = _summarise(tmp_path, BODY, GRAIN)
+    assert "NOT DERIVABLE FROM A TSV" in out, out
+    assert "no directory under the store" in out, out
+    assert "Do not read the absence of that list as a zero" in out, out
+
+
+def test_a_max_gb_skip_survives_the_re_read(tmp_path):
+    """The half of that finding that was REFUTED, pinned so nobody re-opens it. main()'s
+    over-bound branch writes a five-field row with an empty in_store, so the skip lands in the
+    NOT MEASURED bucket naming the store and its size against the flag."""
+    body = BODY + "statcan\t\t466341\t\tSKIPPED 175.1 GB > --max-gb\n"
+    out = _summarise(tmp_path, body, GRAIN)
+    assert "statcan" in out.split("NOT MEASURED")[1], out
+    assert "--max-gb" in out, out
+
+
 def test_summarise_fails_closed_without_a_grain_index(tmp_path):
     m = _load()
 
