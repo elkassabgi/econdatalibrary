@@ -31,6 +31,16 @@ def load(path: str | None = None) -> dict:
         return yaml.safe_load(f)
 
 
+CSV_GRAINS = {"series", "flow"}
+"""`csv_grain` (optional registry field; default `series`). `flow` declares that one catalogue
+id serves a WHOLE store file (the resolver reads the file, not a keyed slice), as eurostat's
+`eurostat:<dataset>` ids do. Two things key on it: the health gate's remedy text for a
+`full_rederive_owed` row (the series-grain bulk tool writes 0 objects for such a source, R882)
+and the cloud derive's in-memory row ceiling (a whole-file CSV can be 8M+ rows). Pinned to the
+resolver by `tests/test_csv_grain_field.py`, so the registry cannot claim a grain the resolver
+does not have (the R875 drift class: three grain registries already exist)."""
+
+
 def validate(reg: dict, expected_count: int | None = None) -> list[str]:
     """Return a list of problems (empty = valid)."""
     problems = []
@@ -52,6 +62,21 @@ def validate(reg: dict, expected_count: int | None = None) -> list[str]:
             # the live tier gates run-failure semantics — a typo like live: "yes"
             # must not silently widen or narrow the perimeter
             problems.append(f"{sid}: live flag must be boolean, got {e.get('live')!r}")
+        if "csv_grain" in e and e.get("csv_grain") not in CSV_GRAINS:
+            # csv_grain selects which derive tool the health gate names for an owed
+            # re-derive and which ids the cloud derive may materialise in memory. An
+            # unknown value must not silently default to series (R882: the series-grain
+            # remedy on a flow-grain source writes 0 objects and leaves the debt standing).
+            problems.append(f"{sid}: csv_grain must be one of {sorted(CSV_GRAINS)}, "
+                            f"got {e.get('csv_grain')!r}")
+        if "csv_desktop_exclude" in e:
+            # Catalogue ids unserved BY DECISION: never booked as a desktop debt (no derive will
+            # ever pay it). Each must be a full catalogue id of THIS source.
+            ex = e.get("csv_desktop_exclude")
+            if not isinstance(ex, list) or not all(isinstance(x, str) and x.startswith(f"{sid}:")
+                                                   for x in ex):
+                problems.append(f"{sid}: csv_desktop_exclude must be a list of '{sid}:<id>' "
+                                f"strings, got {ex!r}")
     if expected_count is not None and len(sources) != expected_count:
         problems.append(f"expected {expected_count} sources, found {len(sources)}")
     return problems
