@@ -35,7 +35,7 @@ A destructive operation gets a parallel adversarial review **before the write** 
 4. **Counts come from `source_counts`** (`SELECT SUM(n) FROM source_counts`) — instant, uncounted, cached. A live `COUNT(*)` on `series` is the $82/day shape (R430, R489).
 5. **Desktop-first.** Explore, count, audit against local `catalog.db` for free; touch D1 only to serve, to write, and to verify user-facing state afterwards. Local and D1 CAN disagree — a claim about what users see still needs the remote check.
 6. **Respect the hooks:** `d1_cost_guard.py` refuses full-table scans past 15/hour, 40/day. A refusal is the system working.
-7. **Any direct D1 write must refresh `source_counts` in the same operation** — it has exactly one writer, and a missing cache row silently restores the live `COUNT(*)` (R489).
+7. **Any direct D1 write must refresh `source_counts` in the same operation** — a missing cache row silently restores the live `COUNT(*)` (R489), and a STALE one is worse: it returns a 200 with a plausible number, which is why `sec_edgar` advertised 17,437 against 17,467 rows for two days before a guard caught it (R846). The recount is an index seek — measured `rows_read 17,468` for `n = 17,467` — so run it unconditionally, not only when the write added rows: gating on "did I add anything" means a run that failed halfway can never self-heal. Use `--command`, never `--file`: the file path is the IMPORT endpoint that blocked every origin read for 112 minutes in R709. **This bullet used to say `source_counts` "has exactly one writer"; it does not, and believing so is what let the drift sit** (corrected 2026-09-07).
 
 ## 4. Deploy protocol (before and after any `npx wrangler deploy` or site publish)
 

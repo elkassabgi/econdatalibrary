@@ -59,6 +59,13 @@ def _run(m, s3, cat, argv):
     fake_r2 = types.ModuleType("core.r2_util")
     fake_r2.client = lambda: s3
     fake_core.r2_util = fake_r2
+    # SAVE WHAT IS THERE, so the `finally` can RESTORE it rather than pop it. Popping deletes the
+    # real `core` and `core.r2_util` from sys.modules, so the next `from core import r2_util`
+    # anywhere in the session builds a FRESH module object - and a fixture that monkeypatched
+    # `client` on the OLD object no longer reaches the code under test. That broke nine tests in
+    # tests/test_updater_phase1.py, which pass alone and fail after this file
+    # (measured: 32 passed alone, 8 failed together).
+    _saved = {k: sys.modules.get(k) for k in ("core", "core.r2_util")}
     sys.modules["core"], sys.modules["core.r2_util"] = fake_core, fake_r2
     old = sys.argv
     sys.argv = ["audit_r2_vs_catalog"] + argv
@@ -69,8 +76,12 @@ def _run(m, s3, cat, argv):
     finally:
         sys.stdout = real
         sys.argv = old
-        sys.modules.pop("core", None)
-        sys.modules.pop("core.r2_util", None)
+        # RESTORE, never pop: absent stays absent, present goes back as the SAME object.
+        for _k, _v in _saved.items():
+            if _v is None:
+                sys.modules.pop(_k, None)
+            else:
+                sys.modules[_k] = _v
     return rc, buf.getvalue()
 
 
@@ -90,7 +101,12 @@ def test_objects_with_no_catalogue_row_are_named():
     # honoured in both directions.
     _rc, out = _run(m, FakeS3({"noaa": 3_135_873}), {"noaa": 0},
                     ["noaa", "--max", "5000000"])
-    assert "OBJECTS WITH NO CATALOGUE ROW" in out and "published, unlisted" in out, out
+    # THE PROPERTY, NOT THE SENTENCE (R839 rule 5). The wording changed deliberately in
+    # R849: this tool reads the LOCAL catalog.db while users are served from D1, and all
+    # 82 of fed_board's 21 and fhfa's 61 "unlisted" objects were present in D1. The
+    # verdict must name WHICH catalogue it read and must not settle the question alone.
+    assert "OBJECTS WITH NO LOCAL CATALOGUE ROW" in out, out
+    assert "verify against D1" in out, out
     assert "+3,135,873" in out, out
 
 
@@ -102,7 +118,7 @@ def test_catalogue_rows_with_no_object_are_named():
     # CATALOGUE is 404 not_found, but a catalogued id whose OBJECT is absent is
     # 502 data_unavailable - "loud + actionable, never an empty 200". Two different states, and
     # calling the second a 404 is a served-system claim made from a local measurement (R825).
-    assert "CATALOGUE ROWS WITH NO OBJECT" in out, out
+    assert "LOCAL CATALOGUE ROWS WITH NO OBJECT" in out, out
     assert "502 data_unavailable" in out, out
     assert "404" not in out, out
     assert "-15" in out, out
@@ -138,7 +154,7 @@ def test_paging_counts_every_page():
     # where it READS (R525), so read the row itself.
     _rc, out = _run(m, FakeS3({"p": 2_501}), {"p": 2_501}, ["p"])
     assert "1 source(s) where R2 and the catalogue agree; 0 where they do not." in out, out
-    assert "CATALOGUE ROWS WITH NO OBJECT" not in out, out
+    assert "LOCAL CATALOGUE ROWS WITH NO OBJECT" not in out, out
     row = [ln for ln in out.splitlines() if ln.strip().startswith("p ")][0]
     assert row.split() == ["p", "2,501", "2,501", "+0", "agree"], row
 

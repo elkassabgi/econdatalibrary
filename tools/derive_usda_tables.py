@@ -93,6 +93,41 @@ def _rows_csv(rows) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+def run_scope(a) -> str:
+    """Was this run evidence about the WHOLE store, or only part of it?
+
+    THE SAME FUNCTION AS `derive_statcan_tables.run_scope`, deliberately duplicated.
+
+    NOT because an import would fail -- a review checked and it would not: `from core import
+    r2_util` is at MODULE level in all four derives, and every cataloguer already imports its
+    derive at module level after `sys.path.insert(0, .../tools)`. The first version of this
+    docstring claimed otherwise and was wrong. The real reason is coupling: importing this from
+    `derive_statcan_tables` would make three unrelated sources fail to start if statcan's module
+    did, and a shared `tools/_derive_scope.py` buys one definition at the price of a fifth file
+    in every deployment path. `tests/test_derive_scope_all.py` holds all four to ONE behaviour
+    table, which is the mechanism that makes duplication safe -- prose is not (CLAUDE.md).
+
+    The summary is written unconditionally - by dry runs and by scoped runs too - and three
+    cataloguers read it: for the `refused` list, and for statcan the `max_rows` cap it adopts as
+    fact. A `--only` run over 11 of 2,442 flows must not read as a statement about the store
+    (R843 addendum, and R832/R833 for what a wrong cap costs).
+
+    `--dry-run` is checked FIRST: a dry run is not evidence whatever else was passed. `--limit`
+    defaults to 0 and `--only` to "" - both falsy - so an unused flag reads as `full`, and an
+    EXPLICIT `--limit 0` or `--only ""` also reads as full, which is correct: neither restricts
+    anything. `getattr` throughout, because not every derive has every flag.
+
+    Named rather than inlined in the summary dict so it can be tested without running a derive
+    over a store (R840 - a branch nothing calls is a branch nothing tests).
+    """
+    if getattr(a, "dry_run", False):
+        return "dry_run"
+    if getattr(a, "only", None):
+        return "only"
+    if getattr(a, "limit", None):
+        return "limit"
+    return "full"
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--bucket")
@@ -110,6 +145,7 @@ def main() -> int:
                    for f in glob.glob(os.path.join(STORE, "**", "*.parquet"), recursive=True))
     if not files:
         raise SystemExit(f"no parquet under {STORE} — refusing to report an empty derive")
+    n_store = len(files)          # parquet SHARDS, not tables -- see the summary comment
     print(f"{len(files)} parquet file(s)", flush=True)
 
     spill = os.path.join(ROOT, "logs", "_duckspill")
@@ -261,7 +297,23 @@ def main() -> int:
                "put": counts["put"], "skipped": counts["skip"], "errors": counts["err"],
                "duplicates_collapsed": dropped, "duplicate_pct": round(pct, 4),
                "tables_with_no_usable_row": n_empty,
-               "seconds": round(dt)}, open(summary, "w"), indent=1)
+               "seconds": round(dt),
+               # THE SCOPE OF THE RUN, RECORDED WHERE ITS READER CAN SEE IT (R843
+               # addendum). A cataloguer that reads `refused` from a `--only` summary
+               # reads "nothing was refused" when the truth is "this run looked at part
+               # of the store". `store_files` is the denominator that makes that
+               # visible without any tag at all.
+               "scope": run_scope(a),
+               "dry_run": bool(a.dry_run),
+               # SHARDS, NOT TABLES, and the distinction is three orders of magnitude:
+               # `files` here is 63 parquet PARTS, while `tables` counts distinct
+               # (SOURCE_DESC, AGG_LEVEL_DESC, SHORT_DESC) groups -- ~72,046 of them.
+               # Calling this `store_files` invited a `tables / store_files` ratio that
+               # reads 114,358% on a full run and 48% on a 0.04% one. No table-grain
+               # denominator exists without a full pass, so none is offered.
+               "store_shards": n_store,
+               "processed_tables": n_tables,
+               }, open(summary, "w"), indent=1)
     print(f"summary -> {summary}")
     return 1 if counts["err"] else 0
 

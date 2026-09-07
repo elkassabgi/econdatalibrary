@@ -313,6 +313,41 @@ def update_catalog(spans, apply_d1):
                   f"{[{k: m.get(k) for k in ('changes', 'rows_written', 'rows_read', 'duration')} for m in metas if m]}",
                   flush=True)
             n_d1 += len(stmts[j:j + 400])
+        # THE CACHED TOTAL MUST MOVE WITH THE ROWS. `source_counts.n` is what the worker
+        # serves as this source's browse total and what /v1/stats sums; only
+        # core/sync_catalog_d1.py refreshed it, and only for sources its own push touched. So
+        # every company inserted above left the advertised total behind - measured 2026-09-07 as
+        # 17,437 advertised against 17,467 rows, exactly the 26 + 4 of the two catch-up receipts
+        # from 2026-09-05.
+        #
+        # UNCONDITIONAL, not `if n_new_d1`: gating on new ids cannot repair drift a previous
+        # failed run left, so the tool would never self-heal. The recount is an index seek -
+        # measured rows_read 17,468 for n=17,467 - so gating buys nothing. And this tool only
+        # ever APPENDS to `series`, so a recount after a partial failure still publishes a number
+        # that is true of D1 at that instant; that is what separates it from a whole-source push,
+        # where refreshing mid-push would publish a partial count.
+        #
+        # `--command`, never `--file`: the file path is the IMPORT endpoint, which blocked reads
+        # for 112 minutes in R709. One statement has no business taking it.
+        sc_sql = ("INSERT OR REPLACE INTO source_counts(source_id, n) "
+                  "SELECT 'sec_edgar', COUNT(*) FROM series WHERE source_id = 'sec_edgar';")
+        try:
+            sc_res = _d1_json(["--command", sc_sql])
+            back = _d1_json(["--command", "SELECT n FROM source_counts "
+                                          "WHERE source_id = 'sec_edgar';"])
+            now = (back[0].get("results") or [{}])[0].get("n") if back else None
+            receipt["source_counts_meta"] = [e.get("meta") for e in sc_res]
+            receipt["source_counts_after"] = now
+            print(f"  source_counts refreshed: sec_edgar n = {now:,}"
+                  if isinstance(now, int) else
+                  f"  source_counts refreshed but the read-back returned {now!r}", flush=True)
+        except Exception as e:                                # noqa: BLE001
+            # LOUD, and it reddens the run. A silently stale total returns a 200 with a
+            # plausible number, which is why nothing ever caught this one (R503).
+            print(f"  source_counts refresh FAILED: {str(e)[-300:]}", flush=True)
+            receipt["source_counts_error"] = f"{type(e).__name__}: {str(e)[:300]}"
+            d1_failed = True
+
         receipt["failed"] = d1_failed
         json.dump(receipt, open(rpath, "w", encoding="utf-8"), indent=1, default=str)
         print(f"  D1 receipt: {rpath}", flush=True)
