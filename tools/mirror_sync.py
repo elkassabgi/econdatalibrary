@@ -139,6 +139,13 @@ def _lost_identities(q, local_path: str, new_path: str):
     cols = [r[0] for r in desc]
     types = {r[0]: str(r[1]).upper() for r in desc}
     types_r = {r[0]: str(r[1]).upper() for r in desc_r}
+    # A FOURTH LIST OF KEY-COLUMN NAMES, and its divergence is deliberate (noted 2026-09-07).
+    # `core/broaden_catalog.py::KEY_COL_CANDIDATES` is the shared one - ("series_key",
+    # "series_id", "idbank") - and three tools now import it. This one asks a DIFFERENT question:
+    # not "which column identifies a series in our store" but "which column can key a row-by-row
+    # comparison against a mirrored file", so it accepts a publisher's bare `key` and does not
+    # need `idbank`. A file with none of these falls to the whole-row path, which is correct and
+    # not a silent exclusion. Do not merge the two lists without re-reading both questions.
     kc = next((c for c in cols if c.lower() in ("series_key", "series_id", "key")), None)
     dc = next((c for c in cols if c.lower() in ("obs_date", "date", "time_period")), None)
     # ONLY THE COLUMNS THE IDENTITY USES MUST EXIST ON BOTH SIDES. Requiring every column was
