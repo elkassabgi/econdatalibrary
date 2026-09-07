@@ -19,9 +19,7 @@ missing/renamed. They error LOUDLY (never silently skipped). Backfill or re-cata
 | source | resolvable | gap |
 |---|---|---|
 | `hf_equities` | 0 / 1391 | R2-only; not mirrored to the local store. Resolver targets `<root>/hf_equities/<TICKER>.parquet`; sync the R2 `clean/<TICKER>.parquet` (bucket `hfdatalibrary-data`) or point `$ECONDL_DATA` at a mirror. |
-| `dbnomics` | 3 / 21 | only providers AMECO, FED materialized; missing IMF, WB, Eurostat, OECD, BIS, ECB dirs (18 ids). The ISTAT first-pass backfill is unrelated to these. |
 | `eurostat` | 7196 / 7637 | 441 catalog flows have no on-disk file in this snapshot (e.g. avia_*, bop_c6_*). |
-| `owid` | 40 / 64 | 3 catalog slugs absent on disk (`co2-emissions-per-capita`, `cumulative-co2-emissions`, `national-gdp-constant-usd-wb`) — likely renamed upstream; not remapped to lookalikes. |
 | `boe` | 17 / 21 | 4 IUD series never fetched (IUDSOIA, IUDSIZC, IUDMIZC, IUDLIZC — SONIA + real zero-coupon yields). |
 | `defillama` | 17 / 24 | 6 `protocol_tvl` slugs are versioned on disk (e.g. `aave-v3` not `aave`): aave, compound-finance, eigenlayer, makerdao, pancakeswap, uniswap; plus `tvl:total` (v2/historicalChainTvl) not materialized. |
 

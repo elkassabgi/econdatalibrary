@@ -45,7 +45,7 @@ Unblocks, in execution order:
 - **whr un-gate** — purge the 178 OWID-era CSVs on R2, then remove whr from the denylist,
   deploy, verify 451→200. The clean Figure-2.1 data (1,749 series) is already catalogued,
   derived, and D1-synced, waiting behind the gate.
-- **owid residue** — 40 orphaned CSVs on R2 (unreachable, cosmetic).
+- **GATED residue** — 40 orphaned CSVs on R2 (unreachable, cosmetic).
 
 Alternative if you prefer not to add the rule: run the commands yourself from
 `E:\research\econfindatalibrary` — I'll print the exact list on request.

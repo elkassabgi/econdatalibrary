@@ -32,7 +32,7 @@
 
 **Why this strategy** (registry `strategy_reason`):
 
-> IMF SDMX 2.1 but the server supports no c[DIM] component filtering or Range resume and queries pull 'all' with no usable per-dataflow last-modified; practical refresh is re-pulling whole CHANGED dataflows, with the re-enumerated catalog as the change feed for new flows. Not S4 — IMF is not one of the four designated giants (statcan/oecd/eurostat/sdmx_nso).
+> IMF SDMX 2.1 but the server supports no c[DIM] component filtering or Range resume and queries pull 'all' with no usable per-dataflow last-modified; practical refresh is re-pulling whole CHANGED dataflows, with the re-enumerated catalog as the change feed for new flows. Not S4 — IMF is not one of the four designated giants (statcan/oecd/eurostat/GATED).
 
 **Adapter contract** (registry `adapter`):
 

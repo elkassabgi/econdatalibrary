@@ -194,7 +194,7 @@ python tools/refresh_r2_catalog.py 2026-08-04               # real upload
 2. Per-source superset guard against the current R2 copy. Proof: `SHRINK : none — clean superset` (or the abort).
 3. **`.bak` backup BEFORE any write** — server-side copy of the live object to `_aqueduct/catalog.db.zst.bak-<stamp>` (no download, no memory; lines 118-121).
 4. Streamed zstd compress → upload (everything chunked through disk; the old in-memory path would need ~17 GB RSS at today's 8.5 GB catalogue; lines 11-16, 123-132).
-5. Re-download and `quick_check` **the object that is now live** (another process can write catalog.db mid-stream), plus count round-trip and spot-checks including purged sources staying gone (`cow`, `sipri`, `polity` must read 0; lines 134-158). Proof: `uploaded object quick_check: ok` … `DONE`.
+5. Re-download and `quick_check` **the object that is now live** (another process can write catalog.db mid-stream), plus count round-trip and spot-checks including purged sources staying gone (`GATED`, `GATED`, `GATED` must read 0; lines 134-158). Proof: `uploaded object quick_check: ok` … `DONE`.
 
 **Rollback:** copy the printed `.bak` key back over `_aqueduct/catalog.db.zst` (the script's own final line: `Rollback: copy <bak> back over <KEY>`; line 159).
 
