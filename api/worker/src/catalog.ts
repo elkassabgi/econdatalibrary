@@ -30,8 +30,29 @@ import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
 // Do NOT infer grain from the catalogue row count. An earlier version of this comment cited
 // statcan (20), oecd (28), abs (18) and bls (9) as table-grain examples; all four are small
 // hand-curated PER-SERIES catalogues (bls:CUUR0000SA0 is one series) carrying a scalar
-// frequency and geography on every row, which a table row cannot. The converse fails too:
-// wid has 2,465,197 rows with neither attribute and each still names one series.
+// FREQUENCY on every row, which a table row does not. The converse fails too: wid has
+// 2,465,197 rows with no frequency and each still names one series.
+//
+// CORRECTED 2026-09-06: this test used to say "frequency AND geography", and the
+// geography half is FALSE - refuted by usda, which this very comment cites as table grain
+// three lines up. Measured over data/catalog.db:
+//
+//     usda   69,704 rows   frequency   0.0%   geography 100.0%   (site page: TABLE grain)
+//     abs        18 rows   frequency 100.0%   geography 100.0%   (per-series)
+//     bls         9        frequency 100.0%   geography 100.0%   (per-series)
+//     bis        49        frequency 100.0%   geography 100.0%   (per-series)
+//     bfs       582        frequency   0.0%   geography   0.0%   (_FLOW_GRAIN)
+//     cbs_nl  5,255        frequency   0.0%   geography   0.0%   (file grain)
+//     istat  14,267        frequency   0.0%   geography   0.0%   (FLOW grain)
+//
+// A TABLE ROW CAN CARRY A GEOGRAPHY. Only the frequency column separated cleanly across
+// every source measured, so a guard keyed on "frequency and geography" would have passed
+// usda as per-series - the same class of error this paragraph exists to prevent, one layer
+// down. Key any such guard on FREQUENCY ALONE, and treat it as a positive test only:
+// frequency present on every row is evidence of per-series; its absence is not proof of
+// coarse grain, only an absence of evidence.
+//
+// Also stale above: _DOT_TABLE_GRAIN is 18, not 13 (read from _resolve.py, 2026-09-06).
 //
 // Deleting the "source-level for the rest" half would have removed exactly the warning line 7
 // says this field exists to give: a caller who searches for an ISTAT indicator, gets nothing,

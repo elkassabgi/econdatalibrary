@@ -6,9 +6,30 @@ by accident while chasing something else. A reported example is one instance of 
 whole surface gets swept rather than the two I tripped over.
 
 Three outcomes matter:
-  UNCATALOGUED  data present, no catalogue row      -> hosted and invisible
-  PARTIAL       catalogue covers part of the store
+  UNCATALOGUED  data present LOCALLY, no catalogue row
+  PARTIAL       catalogue covers part of the local store
   ORPHAN        catalogue rows with no LOCAL STORE KEY
+
+"UNCATALOGUED" DOES NOT MEAN "HOSTED AND INVISIBLE", and this file used to say it did
+(corrected 2026-09-06). Every comparison here is CATALOGUE vs LOCAL PARQUET STORE, and
+neither is R2. Listing R2 under series/<source>%3A for every source with a large positive
+gap in the run then in flight:
+
+    source     R2 objects     catalogue rows     local store keys
+    abs                18                 18          376,333,085
+    bls                 9                  9          154,190,127
+    bis                49                 49            1,521,257
+    ember              60                 60              255,898
+    ecb                35                 35            3,733,574
+    census          2,993              2,993              440,414
+    gus                 0                  0              151,236
+
+R2 and the catalogue agree EXACTLY in all seven. So the gap is data that was never derived
+to R2 at all - HELD, not hosted. It is still a real coverage gap, because a user cannot get
+it; but the fix is "derive and publish", not "add a catalogue row", and the two are not the
+same job. This is the R825 correction in the opposite direction: there the file wrongly said
+ORPHAN meant a 404, here it wrongly said a gap meant hosted. Both came from describing the
+SERVED system with a LOCAL measurement.
 
 ORPHAN DOES NOT MEAN "404", AND THIS FILE USED TO SAY IT DID (corrected 2026-09-06, R825). The
 old line on ORPHAN asserted that such series were listed but could not be downloaded, and called
@@ -49,6 +70,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import io
 import os
 import sqlite3
 import sys
@@ -65,6 +87,193 @@ def dir_gb(files) -> float:
     return sum(os.path.getsize(f) for f in files) / 1e9
 
 
+def grain_index() -> dict:
+    """Which sources are NOT served at series grain — taken from the RESOLVER'S OWN sets.
+
+    THE SUBTRACTION THIS TOOL PRINTS IS ONLY A COVERAGE MEASURE WHEN ONE CATALOGUE ROW
+    MEANS ONE STORE KEY. For a source served at flow, table or file grain that is false by
+    design: one row deliberately stands for thousands of keys, so `gap` measures the GRAIN,
+    not missing coverage. Unqualified, abs reads as 376,333,067 hosted-and-invisible series
+    against 18 catalogue rows, and bls as 154,190,118 against 9 — figures that would
+    dominate the fleet total and are not defects at all.
+
+    Read from `clients/python/econdl/_resolve.py` rather than re-listed here, so the audit
+    and the resolver agree BY CONSTRUCTION and not by both being edited — the same reason
+    the key-column candidates are shared with core/broaden_catalog.py::_key_col.
+    """
+    # BOTH paths. Run as a script, sys.path[0] is tools/, so neither the client package nor
+    # the repo root is importable - and the orchestrate import below then fails, which
+    # (correctly) refuses the whole run. Caught by the guard itself, on the first live run:
+    # the tests passed because pytest puts the repo root on sys.path and the script does not.
+    sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from econdl import _resolve                                   # noqa: PLC0415
+    out: dict[str, str] = {}
+    for s in getattr(_resolve, "_FLOW_GRAIN", ()):
+        out[s] = "flow"
+    for s in getattr(_resolve, "_DOT_TABLE_GRAIN", ()):
+        out[s] = "dot-table"
+    # THE SIXTH HOLDER, and it overlaps neither of the two above. Measured 2026-09-06:
+    #   _resolve._FLOW_GRAIN 11 | _resolve._DOT_TABLE_GRAIN 18 | orchestrate._TABLE_GRAIN 14
+    #   in orchestrate but in NEITHER _resolve set: all 14 (every imf_*_direct)
+    #   in _resolve's sets but not in orchestrate  : all 29
+    # tests/test_table_grain_mapping.py pins it, and says why: those stores are at SERIES
+    # grain while their catalogue is at TABLE grain, so an unmapped count equal to the key
+    # count is "GRAIN mismatch, not a missing catalogue" - this tool's exact question,
+    # already answered elsewhere on a set it did not consult.
+    try:
+        import importlib                                            # noqa: PLC0415
+        for s in getattr(importlib.import_module("updater.orchestrate"),
+                         "_TABLE_GRAIN", ()):
+            out[s] = "table"
+    except Exception as e:                                          # noqa: BLE001
+        # NOT SILENT. Raising is right: without it 14 declared table-grain sources would be
+        # downgraded to "unestablished" and inflate the headline with a designed difference,
+        # which is the mirror of the bug this file exists to fix.
+        raise RuntimeError(
+            f"updater.orchestrate._TABLE_GRAIN unreadable ({type(e).__name__}: {e}); "
+            f"14 declared table-grain sources would be misclassified") from e
+    file_grain = getattr(_resolve, "_resolve_file_grain", None)
+    for s, fn in getattr(_resolve, "_RESOLVERS", {}).items():
+        # "custom" IS NOT A CLAIM THAT THE SOURCE IS TABLE-GRAIN. A bespoke resolver may
+        # exist for a layout reason and still be series grain. All it establishes is that
+        # THIS tool has not established the grain — which is a third answer, not a licence
+        # to excuse the gap. Reported separately and never as clean.
+        out.setdefault(s, "file" if fn is file_grain else "custom")
+    return out
+
+
+DECLARED_GRAINS = ("flow", "dot-table", "file", "table")
+
+
+def denylisted() -> set:
+    """Sources deliberately GATED: they answer 451 and are hidden from the catalogue.
+
+    A gated source holds data, has zero catalogue rows and zero R2 objects BY DECISION - the
+    2026-07-22/23 licence purge. Reporting one as UNCATALOGUED without saying so invites the
+    reader to conclude data was forgotten, which is the error this function exists to stop:
+    on 2026-09-06 I wrote that `gus` was "a dead store directory nothing owns", from a
+    registry lookup, when it has a working fetcher (jobs/ingest_gus_bdl.py) and sits in this
+    very set - twenty minutes after a reviewer told me the same about `cow` and `cboe`
+    (R838). A rule broken by hand twice belongs in the instrument.
+    """
+    import re                                                    # noqa: PLC0415
+    p = os.path.join(ROOT, "api", "worker", "src", "denylist.ts")
+    m = re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new Set(?:<[^>]*>)?\(\[(.*?)\]\)",
+                  io.open(p, encoding="utf-8").read(), re.S)
+    if not m:
+        raise RuntimeError(f"could not parse NON_REDISTRIBUTABLE in {p}")
+    ids = set(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
+    if len(ids) < 10:
+        # FAIL CLOSED: a near-empty denylist would report every gated source as forgotten.
+        raise RuntimeError(f"parsed only {len(ids)} denylist ids, implausibly few")
+    return ids
+
+
+def summarise(path: str) -> int:
+    """Re-classify a finished run's rows. Reads the TSV, never the store."""
+    try:
+        grain, grain_ok = grain_index(), True
+    except Exception as e:                                     # noqa: BLE001
+        grain, grain_ok = {}, False
+        print(f"GRAIN INDEX UNAVAILABLE ({type(e).__name__}: {e}) — nothing below is "
+              f"qualified.")
+    try:
+        deny = denylisted()
+    except Exception as e:                                     # noqa: BLE001
+        deny = set()
+        print(f"DENYLIST UNAVAILABLE ({type(e).__name__}: {e}) — gated sources will be "
+              f"reported as forgotten ones. Do not act on the bucket below.")
+    unc = graingap = unkgap = zerogap = gategap = 0
+    grainsrc, unkgrain, zerocat, gatedsrc, orph, unread = [], [], [], [], 0, []
+    rows = 0
+    with io.open(path, encoding="utf-8") as fh:
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if len(f) < 5 or f[0] == "source":
+                continue
+            d, in_store, cat = f[0], f[1], f[2]
+            rows += 1
+            if not in_store:
+                # no parquet / no key column / unreadable — NOT MEASURED, never clean
+                unread.append((d, f[4]))
+                continue
+            n, c = int(in_store), int(cat or 0)
+            gap, g = n - c, grain.get(d)
+            if d in deny and gap > 0:
+                gategap += gap
+                gatedsrc.append((d, n, c))
+            elif c == 0 and n > 0:
+                zerogap, unc = zerogap + n, unc + n
+                zerocat.append((d, n, g))
+            elif gap > 0 and g in DECLARED_GRAINS:
+                graingap += gap
+                grainsrc.append((d, n, c, g))
+            elif gap > 0 and g:
+                unkgap, unc = unkgap + gap, unc + gap
+                unkgrain.append((d, n, c, g))
+            elif gap > 0:
+                unc += gap
+            elif gap < 0 and "[approx" not in f[4]:
+                # AN ESTIMATE MAY NOT ASSERT ORPHAN. main() refuses this deliberately
+                # (measured HLL error +19.3%/-14.0%), and summarise must agree with it or a
+                # giant that OOM'd into the HLL path invents an orphan count out of noise.
+                orph -= gap
+    print(f"re-read {rows:,} row(s) from {path} — MEASURED NOTHING, only re-classified")
+    print(f"\nheld locally but not catalogued    : {unc:,} series"
+          f"   <- SERIES-GRAIN sources only; NOT a claim about R2")
+    if not grain_ok:
+        print("   WARNING: grain index missing — this total is UNQUALIFIED. Do not report "
+              "it.")
+    print(f"catalogued with no LOCAL STORE KEY : {orph:,} series"
+          f"   <- a FLOOR, and NOT a count of 404s")
+    if gatedsrc:
+        print(f"\nGATED WITH A GAP - {len(gatedsrc)} denylisted source(s), "
+              f"{gategap:,} keys, EXCLUDED from the total above")
+        print("   They answer 451 and are hidden from the catalogue, so a difference "
+              "between\n   their store and their catalogue is not a coverage gap at "
+              "any row count.")
+        for d, n, c in sorted(gatedsrc, key=lambda x: -x[1])[:10]:
+            print(f"   {d:24s} store {n:>13,}  cat {c:>10,}   denylisted")
+    if zerocat:
+        # THE LOUDEST BUCKET, because grain cannot excuse it: a source with no catalogue
+        # row at all reaches nobody, whatever grain it would be served at.
+        # NOT split by gate any more: the gate is checked BEFORE this branch, so nothing
+        # here is denylisted by construction. A dead "GATED BY DECISION - 0" heading reads
+        # as a measurement and is worse than none.
+        print(f"\nNO CATALOGUE ROWS AT ALL - {len(zerocat)} source(s), {zerogap:,} "
+              f"store keys - INCLUDED in the total above")
+        print("   Not a grain question. An id absent from the catalogue 404s "
+              "(api/worker/src/series.ts),\n   so every key here is held and "
+              "reachable by nobody, and none of it is gated - gated sources are "
+              "reported above,\n   excluded. The grain shown says how many "
+              "catalogue ROWS a fix needs, not how many series are unreachable.")
+        for d, n, g in sorted(zerocat, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  grain:{g or 'series (default)'}")
+        if len(zerocat) > 15:
+            print(f"   ... and {len(zerocat) - 15} more")
+    if grainsrc:
+        print(f"\nNOT COMPARABLE — {len(grainsrc)} source(s) at a DECLARED non-series "
+              f"grain, {graingap:,} store keys")
+        for d, n, c, g in sorted(grainsrc, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  cat {c:>10,}  grain:{g}")
+        if len(grainsrc) > 15:
+            print(f"   ... and {len(grainsrc) - 15} more")
+    if unkgrain:
+        print(f"\nGRAIN UNESTABLISHED — {len(unkgrain)} source(s) with a bespoke resolver, "
+              f"{unkgap:,} store keys — INCLUDED in the total above (unknown fails LOUD)")
+        for d, n, c, g in sorted(unkgrain, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  cat {c:>10,}  resolver:{g}")
+        if len(unkgrain) > 15:
+            print(f"   ... and {len(unkgrain) - 15} more")
+    if unread:
+        print(f"\nNOT MEASURED — {len(unread)} source(s) the run could not count:")
+        for d, why in sorted(unread):
+            print(f"   {d:24s} {why}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(ROOT, "logs", "store_audit.tsv"))
@@ -72,7 +281,15 @@ def main() -> int:
                     help="skip stores larger than this (0 = no bound)")
     ap.add_argument("--memory-limit", default="6GB")
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--summarise", metavar="TSV",
+                    help="re-read a FINISHED tsv through the current grain index and print "
+                         "the summary only. Measures nothing; the numbers are the ones that "
+                         "run already produced. Use it when the classification changed but "
+                         "the measurement did not, instead of spending hours re-scanning.")
     a = ap.parse_args()
+
+    if a.summarise:
+        return summarise(a.summarise)
 
     con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
     con.execute("PRAGMA busy_timeout = 180000")
@@ -90,7 +307,30 @@ def main() -> int:
     if not a.resume:
         fh.write("source\tin_store\tcatalogued\tgap\tnote\n")
 
+    # FAIL CLOSED (R503): if the grain index cannot be built, the tool must NOT fall back to
+    # treating every source as series grain — that is precisely the false total this exists
+    # to prevent. It reports UNKNOWN and refuses to print the split.
+    try:
+        deny = denylisted()
+    except Exception as e:                                     # noqa: BLE001
+        deny = set()
+        print(f"DENYLIST UNAVAILABLE ({type(e).__name__}: {e}) — gated sources will be "
+              f"reported as forgotten ones. Do not act on the NO CATALOGUE ROWS bucket.",
+              flush=True)
+    try:
+        grain = grain_index()
+        grain_ok = True
+    except Exception as e:                                     # noqa: BLE001
+        grain, grain_ok = {}, False
+        print(f"GRAIN INDEX UNAVAILABLE ({type(e).__name__}: {e}) — every gap below is\n"
+              f"  UNQUALIFIED and the fleet total is NOT trustworthy. Fix the import before\n"
+              f"  believing any figure this run prints.", flush=True)
+
     skipped_big, unc, orph = [], 0, 0
+    graingap, grainsrc = 0, []   # DECLARED flow/dot-table/file grain: apart, never in `unc`
+    unkgap, unkgrain = 0, []     # bespoke resolver: grain UNESTABLISHED, apart from BOTH
+    zerogap, zerocat = 0, []     # ZERO catalogue rows: unreachable at ANY grain, in `unc`
+    gategap, gatedsrc = 0, []    # DENYLISTED at any cat: 451, never a coverage gap
     nokey = []               # stores with no recognised key column — reported, never silent
     names = sorted(d for d in os.listdir(STORE) if os.path.isdir(os.path.join(STORE, d)))
     for i, d in enumerate(names, 1):
@@ -118,6 +358,9 @@ def main() -> int:
         gb = dir_gb(files)
         if a.max_gb and gb > a.max_gb:
             skipped_big.append((d, gb))
+            # WRITTEN TO THE TSV, not just printed: without a row, --summarise cannot see
+            # that the run was bounded, and a bounded pass reads as full coverage.
+            fh.write(f"{d}\t\t{cat}\t\tSKIPPED {gb:,.1f} GB > --max-gb\n"); fh.flush()
             print(f"[{i}/{len(names)}] {d:24s} SKIPPED — {gb:,.1f} GB > --max-gb {a.max_gb}",
                   flush=True)
             continue
@@ -127,8 +370,10 @@ def main() -> int:
             # 154,190,127 distinct series; eia likewise, at 3,862,801. Both were booked "not a
             # series store" and vanished from every total this tool printed - 157,784,417 series
             # of real gap, larger than most of what it did report. The candidate list is the one
-            # core/broaden_catalog.py::_key_col already uses, so the two agree by construction
-            # rather than by both being edited.
+            # core/broaden_catalog.py::_key_col also uses. NOTE, corrected after review: this
+            # is a HAND-COPIED literal, so the two agree only by both being edited - exactly
+            # the arrangement this file criticises for the grain sets. Sharing it for real
+            # means importing one of them; until that is done, treat this as a duplicate.
             cols = set(pq.read_schema(files[0]).names)
             key = next((c for c in ("series_key", "series_id", "idbank") if c in cols), None)
             if key is None:
@@ -199,8 +444,24 @@ def main() -> int:
             # AN ESTIMATE MAY NOT ASSERT ORPHAN. Measured HLL error is +19.3% to -14.0%
             # (series_census docstring), so a negative gap on a giant is as likely to be the
             # estimator as the data — and ORPHAN is the verdict that claims users get a 404.
-            if cat == 0 and n > 0:
-                note, unc = "UNCATALOGUED", unc + n
+            g = grain.get(d)
+            if d in deny and gap > 0:
+                note = "GATED - 451, not a coverage gap"
+                gategap += gap
+                gatedsrc.append((d, n, cat))
+            elif cat == 0 and n > 0:
+                # Same rule as the exact path: zero rows is unreachable at any grain.
+                note = f"UNCATALOGUED — 0 catalogue rows{f'  grain:{g}' if g else ''}"
+                zerogap, unc = zerogap + n, unc + n
+                zerocat.append((d, n, g))
+            elif gap > 0 and g in DECLARED_GRAINS:
+                note = f"grain:{g} — NOT a coverage gap"
+                graingap += gap
+                grainsrc.append((d, n, cat, g))
+            elif gap > 0 and g:
+                note = f"grain UNESTABLISHED ({g} resolver) — COUNTED as a gap"
+                unkgap, unc = unkgap + gap, unc + gap
+                unkgrain.append((d, n, cat, g))
             elif gap > 0:
                 note, unc = "partial", unc + gap
             else:
@@ -213,8 +474,40 @@ def main() -> int:
             q.close()
 
         gap = n - cat
-        if cat == 0 and n > 0:
-            note, unc = "UNCATALOGUED", unc + n
+        g = grain.get(d)
+        if d in deny and gap > 0:
+            # GATED FIRST, at any cat. A source that answers 451 is not a coverage gap, and
+            # the zero-catalogue split alone missed the case measured on the real data: a
+            # denylisted source WITH catalogue rows (26) whose 233-key gap printed as
+            # unexplained. The gate outranks the grain.
+            note = "GATED - 451, not a coverage gap"
+            gategap += gap
+            gatedsrc.append((d, n, cat))
+        elif cat == 0 and n > 0:
+            # ZERO CATALOGUE ROWS IS NOT A GRAIN QUESTION. Whatever the grain, a source with
+            # no catalogue row at all reaches nobody - `series.ts` 404s an id absent from the
+            # catalogue - so every one of these keys is held and unreachable, and belongs in
+            # the headline. Booking them as "design" is how ilo (file grain, 29,447,518 keys,
+            # 0 rows) read as intentional, and how imf and owid vanished from the total.
+            # Listed in its OWN bucket so the two gap buckets keep partitioning cleanly.
+            note = f"UNCATALOGUED — 0 catalogue rows{f'  grain:{g}' if g else ''}"
+            zerogap, unc = zerogap + n, unc + n
+            zerocat.append((d, n, g))
+        elif gap > 0 and g in DECLARED_GRAINS:
+            # A DESIGNED DIFFERENCE, NOT A DEFECT. Kept visible with its real number, but
+            # never added to the coverage total, which would otherwise be dominated by it.
+            note = f"grain:{g} — NOT a coverage gap"
+            graingap += gap
+            grainsrc.append((d, n, cat, g))
+        elif gap > 0 and g:
+            # A BESPOKE RESOLVER IS NOT A GRAIN CLAIM, AND UNKNOWN MUST FAIL LOUD. abs, bls
+            # and bis all have one and are SERIES grain (exact-key predicates; their ids are
+            # single series). Excusing them hid 532,044,393 reachable-by-nobody series, which
+            # api/worker/src/catalog.ts:30 already names as a caught error, and R525 records.
+            # So the gap COUNTS toward the headline; the listing below says it is unqualified.
+            note = f"grain UNESTABLISHED ({g} resolver) — COUNTED as a gap"
+            unkgap, unc = unkgap + gap, unc + gap
+            unkgrain.append((d, n, cat, g))
         elif gap > 0:
             note, unc = "partial", unc + gap
         elif gap < 0:
@@ -250,7 +543,65 @@ def main() -> int:
             print(f"   {s:24s} catalogued {c:>10,}   {where}")
 
     fh.close()
-    print(f"\nhosted but not catalogued          : {unc:,} series")
+    print(f"\nheld locally but not catalogued    : {unc:,} series"
+          f"   <- SERIES-GRAIN sources only; NOT a claim about R2")
+    if not grain_ok:
+        print("   WARNING: the grain index failed to build, so this total is UNQUALIFIED "
+              "and may be dominated by designed grain differences. Do not report it.")
+    if gatedsrc:
+        print(f"\nGATED WITH A GAP - {len(gatedsrc)} denylisted source(s), "
+              f"{gategap:,} keys, EXCLUDED from the total above")
+        print("   They answer 451 and are hidden from the catalogue, so a difference "
+              "between\n   their store and their catalogue is not a coverage gap at "
+              "any row count.")
+        for d, n, c in sorted(gatedsrc, key=lambda x: -x[1])[:10]:
+            print(f"   {d:24s} store {n:>13,}  cat {c:>10,}   denylisted")
+    if zerocat:
+        # THE LOUDEST BUCKET, because grain cannot excuse it: a source with no catalogue
+        # row at all reaches nobody, whatever grain it would be served at.
+        # NOT split by gate any more: the gate is checked BEFORE this branch, so nothing
+        # here is denylisted by construction. A dead "GATED BY DECISION - 0" heading reads
+        # as a measurement and is worse than none.
+        print(f"\nNO CATALOGUE ROWS AT ALL - {len(zerocat)} source(s), {zerogap:,} "
+              f"store keys - INCLUDED in the total above")
+        print("   Not a grain question. An id absent from the catalogue 404s "
+              "(api/worker/src/series.ts),\n   so every key here is held and "
+              "reachable by nobody, and none of it is gated - gated sources are "
+              "reported above,\n   excluded. The grain shown says how many "
+              "catalogue ROWS a fix needs, not how many series are unreachable.")
+        for d, n, g in sorted(zerocat, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  grain:{g or 'series (default)'}")
+        if len(zerocat) > 15:
+            print(f"   ... and {len(zerocat) - 15} more")
+    if grainsrc:
+        print(f"\nNOT COMPARABLE — {len(grainsrc)} source(s) served at a NON-SERIES grain, "
+              f"{graingap:,} store keys")
+        print("   One catalogue row here deliberately stands for many store keys (flow, "
+              "dot-table\n   or file grain, per clients/python/econdl/_resolve.py), so "
+              "store-keys minus rows\n   measures the GRAIN and not coverage. To audit "
+              "these, compare catalogue rows\n   against FLOWS / TABLES / FILES — never "
+              "against keys.")
+        for d, n, cat, g in sorted(grainsrc, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  cat {cat:>10,}  grain:{g}")
+        if len(grainsrc) > 15:
+            print(f"   ... and {len(grainsrc) - 15} more (all rows are in the TSV)")
+    if unkgrain:
+        # THE ONE THAT MUST NOT READ AS CLEAN. These are not excused and not counted;
+        # they are the work list. Resolving one means reading its resolver and deciding
+        # whether its catalogue row means a key or a file.
+        print(f"\nGRAIN UNESTABLISHED — {len(unkgrain)} source(s) with a bespoke resolver, "
+              f"{unkgap:,} store keys — INCLUDED in the total above")
+        print("   A bespoke resolver is NOT evidence of table grain, so these are counted "
+              "as gaps\n   until someone shows otherwise: unknown must fail LOUD. abs, bls "
+              "and bis all have\n   a bespoke resolver and are SERIES grain (exact-key "
+              "predicates, ids naming one\n   series each) — excusing them would hide "
+              "532,044,393 unreachable series, the error\n   api/worker/src/catalog.ts:30 "
+              "already names and R525 records. Confirm each with\n   R525's positive test "
+              "(do the catalogue rows carry a scalar frequency and geography?).")
+        for d, n, cat, g in sorted(unkgrain, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  cat {cat:>10,}  resolver:{g}")
+        if len(unkgrain) > 15:
+            print(f"   ... and {len(unkgrain) - 15} more (all rows are in the TSV)")
     # NOT "not hosted", and not a 404 count (R825). Say what was compared, in the line itself:
     # someone reading only the summary must not be able to take this for user impact.
     print(f"catalogued with no LOCAL STORE KEY : {orph:,} series"
