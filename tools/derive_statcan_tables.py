@@ -187,6 +187,31 @@ def _rows_csv(rows) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+def run_scope(a) -> str:
+    """Was this run evidence about the WHOLE store, or only part of it?
+
+    The summary is written unconditionally - by dry runs and by scoped runs too - and it carries
+    the `max_rows` the cataloguer adopts as fact. So a one-table dry run at another cap would
+    stamp the whole 8,207-table store's provenance, reconstituting R832's refusal with a
+    confident provenance line attached, which is worse than the shared-constant guess it replaced.
+
+    `--dry-run` is checked FIRST: a dry run is not evidence whatever else was passed.
+    `--limit` defaults to 0 and `--only` to "" - both falsy - so an unused flag reads as `full`,
+    and an EXPLICIT `--limit 0` or `--only ""` also reads as full, which is correct: neither
+    restricts anything.
+
+    Named rather than inlined in the summary dict so it can be tested without running a derive
+    over a store (R840 - a branch nothing calls is a branch nothing tests).
+    """
+    if getattr(a, "dry_run", False):
+        return "dry_run"
+    if getattr(a, "only", None):
+        return "only"
+    if getattr(a, "limit", None):
+        return "limit"
+    return "full"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--bucket")
@@ -456,9 +481,7 @@ def main() -> int:
                # run is not evidence about the whole store's cap, and the cataloguer
                # refuses to adopt one that says so (R833 follow-up): without this, a
                # one-table dry run at another cap stamps the 8,207-table store.
-               "scope": ("dry_run" if a.dry_run else
-                         "only" if getattr(a, "only", None) else
-                         "limit" if getattr(a, "limit", None) else "full"),
+               "scope": run_scope(a),
                "dry_run": bool(a.dry_run)}, open(summary, "w"), indent=1)
     print(f"summary -> {summary}")
     return 0
