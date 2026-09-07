@@ -131,6 +131,64 @@ Order matters: catalogue → derive → R2-catalog refresh → D1 → util.ts �
 
 ---
 
+## Checklist B2 — FLOW-grain sources (`csv_grain: flow`): the owed re-derive and the desktop debt
+
+Added 2026-09-07 (ledger R882/R884/R885). A flow-grain source is one where ONE catalogue id serves a WHOLE
+store file — eurostat (`eurostat:aact_ali01` → `AACT_ALI01.parquet`, `_resolve_eurostat`, metadata
+`"grouped": true`). The registry declares it (`csv_grain: flow`, validated by `registry.validate`; a
+typo is refused) and a ratchet test (`tests/test_csv_grain_field.py`) proves every declared source
+resolves WHOLE-FILE through the real resolver. **Checklist B's bulk tool does not apply here:**
+`tools/derive_csv_bulk.py` streams per `series_key`; with `--only-catalogued` it writes 0 objects and
+exits 0, without it it would mint ~772.7M wrong-grain objects (~$3,477). The health gate's remedy
+line knows the grain since `3fb38d78d`; before that it printed the bulk command for every owed row.
+
+1. **How the debt arises, and how it stops arising.** `_giant.run_giant(report_changed_flows=True)`
+   (eurostat opts in) reports the merge-measured changed FLOWS as `Result.changed_keys`, so the
+   orchestrator derives exactly those ids in the run itself (`{}` = coherence met). Without it every
+   merging tick booked `full_rederive_owed` for the whole source. The report survives `finalize()`'s
+   structural raise (a `partial` WITH the changed set) because ~10% of eurostat flows per tick answer
+   200 + a SOAP envelope and are labelled structural.
+2. **Paying an existing `full re-derive OWED` row (manual, desktop):**
+   ```
+   # changed set = store parquets with R2 LastModified >= the run start (8 LIST calls), NOT footer_diff's BEHIND list
+   #   (a footer cannot see a same-period value revision, R549)
+   # 1. mirror exactly those flows from R2 (md5 == single-part ETag per file; keep the superseded copies)
+   # 2. derive them at flow grain — exit 0 is NOT a verdict, main() returns None:
+   python -m core.derive_csv --bucket econ-data --source <sid> --only <file of catalogue ids, one per line>
+   #    require:  --only: selected N of M catalog series (N ids requested)   [no "REQUESTED IDS ARE NOT IN THE CATALOGUE"]
+   #              to derive: N  (already present: 0)
+   #              done: put N series CSVs, skipped 0 existing, 0 unresolvable
+   # 3. read EVERY served CSV back and byte-compare it to a CSV derived from R2's OWN parquet in a separate
+   #    ECONDL_DATA root — never the mirror (R385); rows/max-date are a summary, never the verdict
+   # 4. only then, in a window where BOTH updater workflows are idle and the next cron is >= 60 min away:
+   python tools/derive_csv_bulk.py --source <sid> --clear-owed-only     # pull -> clear -> push (CAS); lock-refused
+   ```
+   Proof of the clear is the printed `full_rederive_owed cleared for <sid> and pushed`; it removes the OWED
+   line, not the unit's `partial`. All 360 of eurostat's 2026-09-07 flows went through exactly this
+   (NUMBERS.md rows "eurostat step 2 DONE" and the read-back row).
+3. **The desktop debt (`csv_desktop_owed`).** On the runner a flow-grain id runs through
+   `derive.derive_and_put(flow_grain=True)`: ≤ 2 workers, the sorted streaming derive (DuckDB, 3 GB
+   limit), and a usable-download ceiling of 50,000,000 store rows (`AQUEDUCT_FLOW_DERIVE_MAX_ROWS`).
+   Above it the id is a THIRD outcome, `deferred_large` — never `failed`, never `csv_retry_queue` (under
+   r2 a retried id derives only when its file is on that runner, so it would re-fail every run). The
+   orchestrator books it in state (`csv_desktop_owed(series_id, source_id, noted_utc, rows, reason)`),
+   health holds the source at ATTENTION (`N CSV(s) OWED to the desktop derive ...`), and the debt is paid
+   by step 2's derive of those ids followed by
+   ```
+   python tools/clear_csv_desktop_owed.py --source <sid> [--ids FILE]          # report: which rows are clearable
+   python tools/clear_csv_desktop_owed.py --source <sid> [--ids FILE] --apply  # pull -> clear -> push
+   ```
+   which clears only rows whose served object's LastModified postdates the debt (a necessary served-side
+   condition, not the byte read-back — do the read-back first). eurostat's known members are
+   `hlth_cd_yro` (136,120,337 rows) and `migr_asyrescra` (213,650,346; catalogued, no served object by
+   decision — Ahmed's split/publish call).
+4. **What NOT to do (all measured this week):** run the bulk tool's `--dry-run` on a giant to plan
+   (preflight skipped, R530; it grew 25→44 GB in 40 s); trust `wrangler d1 insights` for rows WRITTEN
+   (169 vs 2.0M real, R713/R883-adjacent); report a coverage or cost figure from a copy whose currency
+   you did not prove (R883/R885).
+
+---
+
 ## Checklist C — daily-run triage
 
 The workflow is `updater-daily.yml`, cron 06:00 UTC, concurrency group `aqueduct-updater` (cancel-in-progress: false) (.github/workflows/updater-daily.yml:20-44). Step order: Pull state from R2 → Pull catalog.db → **Run updater** (250-min step timeout inside a 300-min job) → Push state to R2 (CAS + dated backup, `always()` gated on the pull) → Sync freshness to D1 → Sync new catalog series to D1 (`continue-on-error`) → Health gate → Workstation watchdog heartbeat → Daily digest → Heartbeat commit (cron-death guard).

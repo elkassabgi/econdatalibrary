@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS csv_retry_queue(
   attempts INTEGER DEFAULT 0, last_error TEXT);
 CREATE TABLE IF NOT EXISTS full_rederive_owed(
   source_id TEXT PRIMARY KEY, vintage TEXT, noted_utc TEXT, note TEXT);
+CREATE TABLE IF NOT EXISTS csv_desktop_owed(
+  series_id TEXT PRIMARY KEY, source_id TEXT, noted_utc TEXT, rows INTEGER, reason TEXT);
 """
 
 _SRC_COLS = ["source_id", "strategy", "cadence", "status", "last_success_utc",
@@ -278,6 +280,40 @@ class StateStore:
     def full_rederives_owed(self):
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM full_rederive_owed ORDER BY source_id")]
+
+    # ---- CSVs owed to the DESKTOP derive (design review of 2026-09-07, change 5) ----
+    # A flow-grain id whose whole-file CSV is too large for the cloud runner is not a
+    # failure and must not sit in csv_retry_queue re-failing every run (under the r2
+    # backend a retried id derives only when its file is on that runner, attempts grow
+    # without bound, up to 20,000 are retried per run). It is a DEBT with a per-id home:
+    # written here by the orchestrator, surfaced by health as ATTENTION, cleared only by
+    # tools/clear_csv_desktop_owed.py after the desktop derive and a served-side check.
+    # Same pull -> change -> push lifecycle as every other row in this store (R529).
+    def note_csv_desktop_owed(self, source_id, items):
+        """items: iterable of (series_id, rows, reason). Upserts; one row per id."""
+        rows = [(str(s), source_id, now_utc(), int(n) if n is not None else None, reason)
+                for s, n, reason in items]
+        if not rows:
+            return
+        self.db.executemany(
+            "INSERT INTO csv_desktop_owed(series_id,source_id,noted_utc,rows,reason) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(series_id) DO UPDATE SET "
+            "source_id=excluded.source_id, noted_utc=excluded.noted_utc, "
+            "rows=excluded.rows, reason=excluded.reason", rows)
+        self.db.commit()
+
+    def csv_desktop_owed(self, source_id=None):
+        if source_id:
+            q = self.db.execute("SELECT * FROM csv_desktop_owed WHERE source_id=? "
+                                "ORDER BY series_id", (source_id,))
+        else:
+            q = self.db.execute("SELECT * FROM csv_desktop_owed ORDER BY source_id, series_id")
+        return [dict(r) for r in q]
+
+    def clear_csv_desktop_owed(self, series_ids):
+        self.db.executemany("DELETE FROM csv_desktop_owed WHERE series_id=?",
+                            [(str(s),) for s in series_ids])
+        self.db.commit()
 
     def recent_runs(self, limit=50):
         return [dict(r) for r in self.db.execute(

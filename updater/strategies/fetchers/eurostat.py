@@ -410,10 +410,15 @@ def _require_rekeyed() -> None:
 def update(unit, since) -> Result:
     """Entry point used by the giant_changed_units strategy / the fetcher contract."""
     _require_rekeyed()   # gate: never run incrementally over un-re-keyed (unstable-key) data
+    # report_changed_flows: eurostat is catalogued per FLOW (`eurostat:<code>`, `grouped`),
+    # and its flow ids are the lower-case dataset codes the catalogue spells — so the
+    # merge-measured changed-flow set maps 1:1 onto derive ids by primary key. Without it
+    # every merging tick booked `full_rederive_owed` for the whole source (R882).
     return _giant.run_giant(
         unit, source="eurostat",
         fetch_catalog=fetch_catalog, fetch_flow=fetch_flow,
-        csv_accept=CSV_ACCEPT, rate=RATE, timeout=TIMEOUT)
+        csv_accept=CSV_ACCEPT, rate=RATE, timeout=TIMEOUT,
+        report_changed_flows=True)
 
 
 # S4 strategy also calls current_vintage() (cheap catalogue probe) for detect_change.

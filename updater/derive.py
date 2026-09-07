@@ -71,7 +71,24 @@ def _put_with_retry(blob, key: str, body: bytes) -> bool:
     return False  # unreachable; keeps the contract explicit
 
 
-def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None) -> dict:
+FLOW_DERIVE_MAX_ROWS = 50_000_000
+"""Row ceiling for a FLOW-grain id on the cloud runner (env AQUEDUCT_FLOW_DERIVE_MAX_ROWS).
+A usable-download bound, not a memory bound: the flow path streams through DuckDB with a 3 GB
+memory limit, so what this caps is the object a user is handed (NAMQ_10_GDP at 8.3M rows is a
+584 MB CSV; hlth_cd_yro's 136,120,337 rows would be ~9 GB). Above it the id is NOT derived here:
+it comes back as `deferred_large` and the orchestrator books it in state (csv_desktop_owed).
+Per-flag, never fleet-wide: `_series_csv_bytes`' ceiling counts the STORE FILE's rows, and 20
+live cloud sources keep a series-grain id inside a >5M-row file (design review 2026-09-07)."""
+FLOW_INMEM_MAX_ROWS = 5_000_000
+"""Ceiling for a flow-grain id that is NOT eligible for sorted streaming (dedup/stamp/native)
+and would therefore take the in-memory path: 335 B/row measured, so 5M rows is ~1.7 GB."""
+FLOW_DERIVE_WORKERS = 2
+"""Thread cap for flow-grain derives (env AQUEDUCT_FLOW_DERIVE_WORKERS). The default 8 x a
+3 GB DuckDB limit does not fit a 16 GB runner beside the orchestrator's own 2.5 GB."""
+
+
+def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None, *,
+                   flow_grain: bool = False, flow_max_rows: int | None = None) -> dict:
     """Derive the contract CSV for each series id and PUT it via `blob`.
 
     blob: any updater/blob.py backend — only put_atomic(key, data: bytes) is used.
@@ -81,6 +98,12 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None)
     problems NEVER raise — a partial CSV publish must not undo a good parquet
     publish; the orchestrator marks the run 'partial' off the failed list.
     Duplicate ids are deduped (re-PUTs would be byte-identical no-ops anyway).
+
+    flow_grain=True (registry `csv_grain: flow`: one catalogue id serves a whole store file)
+    switches every id to the flow path: at most FLOW_DERIVE_WORKERS threads, the sorted
+    streaming derive, and a row ceiling above which the id is returned in a THIRD outcome,
+    `deferred_large` ({series_id: rows}) — not `failed`, not the retry queue, because a retry
+    can never succeed on the runner and would re-fail every run (up to 20,000 a run).
     """
     # CONCURRENCY. Each series is an independent derive plus one PUT, and the PUT is
     # almost entirely round-trip latency to R2 — so serial execution ran at about ONE
@@ -107,6 +130,9 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None)
     _skipped_at_entry = _blob_mod.SKIPPED_IDENTICAL[0]
 
     workers = int(os.environ.get("AQUEDUCT_DERIVE_WORKERS", "8") or 8)
+    if flow_grain:
+        workers = min(workers, int(os.environ.get("AQUEDUCT_FLOW_DERIVE_WORKERS", "")
+                                   or FLOW_DERIVE_WORKERS))
     ids = list(dict.fromkeys(series_ids))        # dedupe, order preserved
     if workers <= 1 or len(ids) < 2:
         workers = 1
@@ -162,24 +188,82 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None)
     # 43354/77501" on exactly that conflation and was demoted to `partial` every run for
     # work the budget never reached. Ledger R372.
     deferred_ids: list[str] = []
+    # THIRD OUTCOME (flow grain only): too large for the cloud path. {series_id: store rows}.
+    large: dict[str, int] = {}
+    flow_cap = int(flow_max_rows if flow_max_rows is not None
+                   else (os.environ.get("AQUEDUCT_FLOW_DERIVE_MAX_ROWS", "")
+                         or FLOW_DERIVE_MAX_ROWS))
     lock = threading.Lock()
 
+    def _store_rows(sid) -> int:
+        """Rows of the store file(s) behind this id — a parquet FOOTER read, no data."""
+        from econdl import _resolve                                    # noqa: PLC0415
+        import pyarrow.parquet as _pq                                  # noqa: PLC0415
+        from core.derive_csv import resolved_paths                     # noqa: PLC0415
+        return sum(_pq.read_metadata(p).num_rows
+                   for p in resolved_paths(_resolve.resolve(sid)))
+
+    def _one_flow(sid):
+        # FLOW PATH: ceiling first (a footer read), then the SORTED STREAMING derive —
+        # DuckDB does the read/sort/write with a 3 GB memory limit and spills to disk, and
+        # its output is byte-identical to the in-memory path (core/derive_csv.py verified
+        # it on three cbs_nl files). The temp object is already gzipped with mtime=0;
+        # R2Blob.put_atomic keeps an already-gzipped body as-is (series_csv_put_args).
+        import tempfile                                                # noqa: PLC0415
+        from core.derive_csv import _series_csv_to_file_sorted as _stream  # noqa: PLC0415
+        try:
+            n = _store_rows(sid)
+        except Exception as e:                                         # noqa: BLE001
+            return sid, "fail", f"{type(e).__name__}: {str(e)[:90]}", None
+        if n > flow_cap:
+            return sid, "large", f"{n:,} store rows > flow ceiling {flow_cap:,}", n
+        fd, tmp = tempfile.mkstemp(suffix=".csv.gz", prefix="derive_flow_")
+        os.close(fd)
+        try:
+            try:
+                _stream(sid, tmp)
+                with open(tmp, "rb") as fh:
+                    body = fh.read()
+            except ValueError:
+                # Not eligible for sorted streaming (dedup/stamp/native resolution): the
+                # in-memory path, but only inside the ceiling it was measured against.
+                if n > FLOW_INMEM_MAX_ROWS:
+                    return (sid, "large", f"{n:,} store rows > in-memory ceiling "
+                                          f"{FLOW_INMEM_MAX_ROWS:,} and not stream-eligible", n)
+                body = _series_csv_bytes(sid)
+        except Exception as e:                                         # noqa: BLE001
+            return sid, "fail", f"{type(e).__name__}: {str(e)[:90]}", n
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        return ((sid, "ok", None, n) if _put_with_retry(_blob(), r2_key(sid), body)
+                else (sid, "fail", "PUT exhausted", n))
+
     def _one(sid):
+        if flow_grain:
+            return _one_flow(sid)
         try:
             body = _series_csv_bytes(sid)
         except Exception as e:  # store-coverage gap or resolver error — loud, queued
-            return sid, False, f"{type(e).__name__}: {str(e)[:90]}"
-        return ((sid, True, None) if _put_with_retry(_blob(), r2_key(sid), body)
-                else (sid, False, "PUT exhausted"))
+            return sid, "fail", f"{type(e).__name__}: {str(e)[:90]}", None
+        return ((sid, "ok", None, None) if _put_with_retry(_blob(), r2_key(sid), body)
+                else (sid, "fail", "PUT exhausted", None))
 
-    def _record(sid, ok, why):
+    def _record(sid, status, why, rows=None):
         nonlocal put
         with lock:
-            if ok:
+            if status == "ok":
                 put += 1
                 if put % 500 == 0:
                     print(f"  derived+put {put:,} CSVs (failed {len(failed):,})...",
                           flush=True)
+            elif status == "large":
+                # NOT a failure and NOT queued for retry: the caller books it as a debt owed
+                # to the desktop derive (csv_desktop_owed), where health surfaces it.
+                large[sid] = int(rows or 0)
+                print(f"  CSV derive DEFERRED TO DESKTOP {sid}: {why}", flush=True)
             else:
                 failed.append(sid)
                 failed_reasons[sid] = str(why)
@@ -256,9 +340,13 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None)
         print(f"  of {put:,} CSVs handled, {skipped:,} were ALREADY CURRENT and were not "
               f"re-uploaded ({100.0 * skipped / put:.1f}%)", flush=True)
 
+    if large:
+        print(f"  {len(large):,} flow-grain id(s) DEFERRED TO THE DESKTOP derive (over the "
+              f"{flow_cap:,}-row ceiling) — booked as csv_desktop_owed by the caller, not "
+              f"queued for retry", flush=True)
     return {"put": put, "failed": failed, "deferred": deferred,
             "deferred_ids": deferred_ids, "failed_reasons": failed_reasons,
-            "skipped_identical": skipped}
+            "skipped_identical": skipped, "deferred_large": large}
 
 
 def _check(series_id: str | None) -> int:
