@@ -82,6 +82,13 @@ import pyarrow.parquet as pq
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE = os.path.join(ROOT, "data", "clean_full")
 
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+# ONE DEFINITION, IMPORTED (2026-09-07). The comment at the use site already said this literal
+# agreed with core/broaden_catalog.py "only by both being edited"; a third copy in
+# core/measure_uncataloged.py was then found short by `idbank`. Now there is one.
+from core.broaden_catalog import KEY_COL_CANDIDATES              # noqa: E402
+
 
 def dir_gb(files) -> float:
     return sum(os.path.getsize(f) for f in files) / 1e9
@@ -490,13 +497,12 @@ def main() -> int:
             # whole sources from this audit (R825/R821). bls keys on `series_id` and holds
             # 154,190,127 distinct series; eia likewise, at 3,862,801. Both were booked "not a
             # series store" and vanished from every total this tool printed - 157,784,417 series
-            # of real gap, larger than most of what it did report. The candidate list is the one
-            # core/broaden_catalog.py::_key_col also uses. NOTE, corrected after review: this
-            # is a HAND-COPIED literal, so the two agree only by both being edited - exactly
-            # the arrangement this file criticises for the grain sets. Sharing it for real
-            # means importing one of them; until that is done, treat this as a duplicate.
+            # of real gap, larger than most of what it did report. The candidate list is now
+            # IMPORTED from core/broaden_catalog.py rather than hand-copied - this comment used
+            # to end "treat this as a duplicate", and a third copy in core/measure_uncataloged.py
+            # was duly found short by `idbank`.
             cols = set(pq.read_schema(files[0]).names)
-            key = next((c for c in ("series_key", "series_id", "idbank") if c in cols), None)
+            key = next((c for c in KEY_COL_CANDIDATES if c in cols), None)
             if key is None:
                 nokey.append((d, cat, sorted(cols)[:6]))
                 fh.write(f"{d}\t\t{cat}\t\tno key column\n"); fh.flush()

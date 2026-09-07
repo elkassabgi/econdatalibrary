@@ -26,23 +26,44 @@ SRC = open(TOOL, encoding="utf-8").read()
 
 
 def test_the_audit_tries_series_id_not_only_series_key():
-    assert '"series_key", "series_id", "idbank"' in SRC, (
-        "the audit must try the same key columns broaden_catalog does; keying only on "
-        "series_key silently excluded bls (154,190,127 series) and eia (3,862,801)"
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core.broaden_catalog import KEY_COL_CANDIDATES
+    assert KEY_COL_CANDIDATES == ("series_key", "series_id", "idbank"), KEY_COL_CANDIDATES
+    assert "KEY_COL_CANDIDATES" in SRC, (
+        "the audit must use the shared candidate list; keying only on series_key silently "
+        "excluded bls (154,190,127 series) and eia (3,862,801)"
     )
 
 
-def test_the_candidate_list_matches_broaden_catalog():
-    """Two definitions that must not drift — assert they are literally the same tuple."""
-    bc = open(os.path.join(ROOT, "core", "broaden_catalog.py"), encoding="utf-8").read()
-    m = re.search(r'for c in \(([^)]*)\)', bc)
-    assert m, "could not find broaden_catalog._key_col's candidate tuple"
-    theirs = [x.strip().strip('"\'') for x in m.group(1).split(",") if x.strip()]
-    mine = re.search(r'for c in \("series_key", "series_id", "idbank"\)', SRC)
-    assert mine, "the audit's candidate list is not in the expected form"
-    assert theirs == ["series_key", "series_id", "idbank"], (
-        f"broaden_catalog now tries {theirs}; the audit must be updated to match"
-    )
+def test_there_is_exactly_ONE_definition_of_the_candidate_list():
+    """This used to compare THREE hand-copied literals by scraping source text - and a review
+    found the third copy, in `core/measure_uncataloged.py`, short by `idbank`. The comparison is
+    the weaker guard: it can only catch drift that has already happened, in the files it happens
+    to know about. One definition, imported, cannot drift at all - so what is pinned now is that
+    no file re-types the tuple."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core.broaden_catalog import KEY_COL_CANDIDATES
+
+    users = {
+        "core/broaden_catalog.py": True,          # the definition itself
+        "tools/audit_store_vs_catalog.py": False,
+        "core/measure_uncataloged.py": False,
+    }
+    literal = re.compile(r'\(\s*"series_key"\s*,\s*"series_id"')
+    for rel, is_owner in users.items():
+        text = open(os.path.join(ROOT, *rel.split("/")), encoding="utf-8").read()
+        hits = literal.findall(text)
+        assert len(hits) == (1 if is_owner else 0), (
+            f"{rel} re-types the key-column tuple ({len(hits)} time(s)); import "
+            f"KEY_COL_CANDIDATES from core.broaden_catalog instead"
+        )
+        if not is_owner:
+            assert "KEY_COL_CANDIDATES" in text, f"{rel} does not use the shared list"
+    # ...and the shared list still holds every column a served store actually keys on
+    for c in ("series_key", "series_id", "idbank"):
+        assert c in KEY_COL_CANDIDATES, c
 
 
 def test_a_store_with_no_key_column_is_reported_not_silent():

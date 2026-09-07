@@ -93,9 +93,19 @@ _SKIP = ("__series.parquet",)
 _FREQ_COLS = ("freq", "frequency", "FREQ")
 
 
+# THE ONE DEFINITION OF "WHICH COLUMN HOLDS THE SERIES KEY" (2026-09-07). It used to be a
+# hand-copied literal in three files - here, `tools/audit_store_vs_catalog.py:499` and
+# `core/measure_uncataloged.py` - and the auditor's own comment already said so: "this is a
+# HAND-COPIED literal, so the two agree only by both being edited - exactly the arrangement this
+# file criticises for the grain sets". A review found the third copy short by `idbank`, which is
+# the same silent exclusion R825/R821 recorded for bls (154,190,127 series) and eia (3,862,801)
+# when the list was `series_key` alone. Import it; do not re-type it.
+# 'idbank' is INSEE BDM's native series identifier (insee_bdm parquets).
+KEY_COL_CANDIDATES = ("series_key", "series_id", "idbank")
+
+
 def _key_col(cols):
-    # 'idbank' is INSEE BDM's native series identifier (insee_bdm parquets).
-    for c in ("series_key", "series_id", "idbank"):
+    for c in KEY_COL_CANDIDATES:
         if c in cols:
             return c
     return None
