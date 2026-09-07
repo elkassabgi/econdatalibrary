@@ -104,27 +104,86 @@ def test_same_period_value_revision_is_a_change(tmp_path, monkeypatch):
     assert {r["series_key"]: r["value"] for r in t}["j2"] == 6.5
 
 
-def test_cap_refusal_falls_back_to_a_plain_merge_and_over_reports(tmp_path, monkeypatch):
-    """merge_and_write refuses the report BEFORE ANY I/O above changed_keys_cap; the driver
-    must still merge (plain call) and mark the flow changed rather than drop it."""
+def test_above_the_cap_the_driver_merges_plainly_and_over_reports(tmp_path, monkeypatch):
+    """merge_and_write refuses the report BEFORE ANY I/O above CHANGED_KEYS_CAP, so the driver
+    pre-checks the row count and never asks (a ValueError escaping the merge block would book
+    the whole source transient_fail). The flow is merged plainly and marked changed."""
     _seed(tmp_path, monkeypatch)
     real = merge.merge_and_write
     seen = []
 
     def wrapped(*a, **k):
         seen.append(dict(k))
-        if k.get("report_changed_keys"):
-            k["changed_keys_cap"] = 1          # every real tail exceeds it -> the refusal path
         return real(*a, **k)
 
     monkeypatch.setattr(merge, "merge_and_write", wrapped)
+    monkeypatch.setattr(merge, "CHANGED_KEYS_CAP", 1)   # every real tail exceeds it
     res = _run(tmp_path, monkeypatch, _bump(CAT),
                {"aact_ali01": _tbl(BASE_A), "tec00115": None})
     # idempotent in truth, but the report was unavailable -> over-reported, never dropped
     assert res.changed_keys == {"aact_ali01": "2024-02-01"}
-    assert [k.get("report_changed_keys") for k in seen] == [True, None]
+    assert seen and all("report_changed_keys" not in k for k in seen)   # never asked
     t = pq.read_table(os.path.join(tmp_path, "AACT_ALI01.parquet"))
-    assert t.num_rows == 2                    # the plain merge still ran and kept the file whole
+    assert t.num_rows == 2                    # the plain merge ran and kept the file whole
+
+
+def test_report_cap_is_a_module_constant_and_the_keyword_default(tmp_path):
+    import inspect
+    sig = inspect.signature(merge.merge_and_write)
+    assert sig.parameters["changed_keys_cap"].default == merge.CHANGED_KEYS_CAP == 2_000_000
+
+
+def test_structural_raise_still_returns_the_merged_flows_as_partial(tmp_path, monkeypatch):
+    """finalize() raises DefinitiveError on ANY structural sub-unit; the orchestrator maps that
+    to `partial` with no derive. With the opt-in, the flows that DID merge must still reach
+    the derive: same recorded status (partial, same error text), plus changed_keys."""
+    _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(_giant.time, "sleep", lambda *_a, **_k: None)
+
+    def fetch_flow(fid, meta, since, session):
+        if fid == "tec00115":
+            return None, "structural"          # the SOAP-envelope-instead-of-CSV shape
+        return _tbl(BASE_A + [("k1", "2024-03-01", 3.0)]), "ok"
+
+    res = _giant.run_giant(_Unit(str(tmp_path)), source="zzgiant",
+                           fetch_catalog=lambda: _bump(CAT), fetch_flow=fetch_flow,
+                           csv_accept="text/csv", rate=0, timeout=1,
+                           report_changed_flows=True)
+    assert res.status == "partial"
+    assert "structural" in (res.error or "") and "tec00115" in (res.error or "")
+    assert res.changed_keys == {"aact_ali01": "2024-03-01"}
+    st = json.load(open(os.path.join(tmp_path, "_giant_state.json"), encoding="utf-8"))
+    assert st["tec00115"]["status"] == "definitive_fail"     # reselected next tick, as before
+
+
+def test_structural_raise_without_merged_flows_still_raises(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(_giant.time, "sleep", lambda *_a, **_k: None)
+
+    def fetch_flow(fid, meta, since, session):
+        return (None, "structural") if fid == "tec00115" else (None, "no_change")
+
+    with pytest.raises(_giant.DefinitiveError):
+        _giant.run_giant(_Unit(str(tmp_path)), source="zzgiant",
+                         fetch_catalog=lambda: _bump(CAT), fetch_flow=fetch_flow,
+                         csv_accept="text/csv", rate=0, timeout=1,
+                         report_changed_flows=True)
+
+
+def test_structural_raise_is_byte_identical_without_the_opt_in(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(_giant.time, "sleep", lambda *_a, **_k: None)
+
+    def fetch_flow(fid, meta, since, session):
+        if fid == "tec00115":
+            return None, "structural"
+        return _tbl(BASE_A + [("k1", "2024-03-01", 3.0)]), "ok"
+
+    with pytest.raises(_giant.DefinitiveError):
+        _giant.run_giant(_Unit(str(tmp_path)), source="zzgiant",
+                         fetch_catalog=lambda: _bump(CAT), fetch_flow=fetch_flow,
+                         csv_accept="text/csv", rate=0, timeout=1,
+                         report_changed_flows=False)
 
 
 def test_capped_partial_carries_the_fetched_slices_changes(tmp_path, monkeypatch):

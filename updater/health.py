@@ -269,6 +269,11 @@ def assess(store=None) -> dict:
     # Sources whose SERVED CSV corpus is known-stale relative to the store (§5.7 debt
     # rows) — see the owed branch inside the loop.
     owed = {r["source_id"]: r for r in store.full_rederives_owed()}
+    # Flow-grain ids the cloud derive could not take (too large for the runner): a per-id
+    # debt the desktop derive pays; until then those served CSVs sit at the previous vintage.
+    dowed: dict = {}
+    for r in store.csv_desktop_owed():
+        dowed.setdefault(r["source_id"], []).append(r)
     reg = {e["source_id"]: e for e in registry.load().get("sources", [])}
     rows = []
     for sid, e in sorted(reg.items()):
@@ -515,6 +520,18 @@ def assess(store=None) -> dict:
                 f"full re-derive OWED since {str(owe.get('noted_utc') or '?')[:10]} "
                 f"(store vintage {owe.get('vintage') or '?'}): served CSVs predate the "
                 f"store — {_remedy}"] + list(attention)
+            if health in ("OK", "ROTATING"):
+                health = "ATTENTION"
+        _dl = dowed.get(sid)
+        if _dl:
+            # PREPENDED for the same reason as the owed note: it changes the verdict.
+            _ex = ", ".join(str(r["series_id"]) for r in _dl[:3])
+            attention = [
+                f"{len(_dl)} CSV(s) OWED to the desktop derive (too large for the cloud "
+                f"path; e.g. {_ex}): derive them with `python -m core.derive_csv --bucket "
+                f"econ-data --source {sid} --only <ids>`, read each back against R2's "
+                f"parquet, then `tools/clear_csv_desktop_owed.py --source {sid} --apply`"
+            ] + list(attention)
             if health in ("OK", "ROTATING"):
                 health = "ATTENTION"
 

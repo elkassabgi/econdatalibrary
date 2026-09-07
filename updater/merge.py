@@ -381,9 +381,18 @@ def _report_impossible_dates(table, out_path) -> int:
         return 0                                             # never fail a good publish
 
 
+CHANGED_KEYS_CAP = 2_000_000
+"""Above this many NEW rows `report_changed_keys=True` refuses BEFORE any I/O (the per-key
+materialisation is bounded by new_table's size and a giant merge must not discover the limit
+mid-publish). A module constant, not only a keyword default, so a caller can PRE-CHECK
+`new_table.num_rows` and choose the plain call instead of asking and catching a ValueError —
+`_giant.run_giant` does exactly that, because a ValueError escaping its merge block would
+book the whole source transient_fail (design review of 2026-09-07, change 2)."""
+
+
 def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
                     min_ratio=0.97, allow_empty=False, blob=None,
-                    report_changed_keys=False, changed_keys_cap=2_000_000):
+                    report_changed_keys=False, changed_keys_cap=CHANGED_KEYS_CAP):
     """Publish new_table to out_path under the never-shrink invariant.
 
     Returns (rows_written, last_obs_date).

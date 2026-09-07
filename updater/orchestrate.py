@@ -468,7 +468,40 @@ def _classify_zero_mapped(source_id: str, scope: str, n_ids: "int | None",
     return note, True
 
 
-def _derive_changed_csvs(unit, res, blob):
+def _csv_grain(source_id: str) -> str:
+    """The registry's `csv_grain` for a source ('series' unless declared 'flow'). Cached:
+    the registry is one YAML load and this is asked once per unit."""
+    cache = _csv_grain.__dict__.setdefault("_cache", {})
+    if not cache:
+        try:
+            for e in registry.load().get("sources", []):
+                cache[e.get("source_id")] = e.get("csv_grain") or "series"
+        except Exception:                                   # noqa: BLE001
+            return "series"
+        cache.setdefault("__loaded__", "1")
+    return cache.get(source_id, "series")
+
+
+def _book_csv_desktop_owed(store, source_id: str, large: dict) -> None:
+    """Persist flow-grain ids the cloud derive could not take (too large) as a DEBT with a
+    per-id home — csv_desktop_owed — so health surfaces them and the desktop derive can pay
+    them. Never csv_retry_queue: under the r2 backend a retried id derives only when its file
+    is on that runner, and these never fit the runner at all. Loud when it cannot book."""
+    if not large:
+        return
+    reason = "too large for the cloud derive; desktop: core.derive_csv --only, read back, clear"
+    if store is None:
+        print(f"[orchestrator] {source_id}: {len(large):,} flow(s) too large for the cloud "
+              f"derive and NO state store to book them in — NOT BOOKED: "
+              f"{sorted(large)[:5]}", flush=True)
+        return
+    store.note_csv_desktop_owed(source_id, [(sid, n, reason) for sid, n in sorted(large.items())])
+    print(f"[orchestrator] {source_id}: {len(large):,} flow(s) too large for the cloud derive "
+          f"booked in csv_desktop_owed (e.g. {sorted(large)[:3]}); served CSVs for these stay "
+          f"at the previous vintage until the desktop derive pays the debt", flush=True)
+
+
+def _derive_changed_csvs(unit, res, blob, store=None):
     """Contract step 5 — CSV/parquet coherence (§5.7): re-derive the CSV of every
     series whose parquet changed this run.
 
@@ -688,8 +721,9 @@ def _derive_changed_csvs(unit, res, blob):
                 print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
             return [], note, [], {}
         from . import derive  # lazy: lands with the derive work-package; missing => partial
+        _flow = _csv_grain(unit.source_id) == "flow"
         out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob(),
-                                    **_capped_derive_budget()) or {}
+                                    flow_grain=_flow, **_capped_derive_budget()) or {}
         # SPLIT budget-deferral from breakage. derive.py puts unreached ids in BOTH
         # `failed` (so the caller queues them for retry) and `deferred_ids`; its own log
         # already subtracts them ("failed {len(failed) - deferred}"), the orchestrator did
@@ -698,13 +732,17 @@ def _derive_changed_csvs(unit, res, blob):
         _deferred_set = set(deferred_ids)
         failed = [str(s) for s in (out.get("failed") or [])
                   if str(s) not in _deferred_set]
+        # THIRD OUTCOME (flow grain): too large for the cloud path. Booked as a per-id debt,
+        # never counted as failed, never queued for retry, never recorded as derived.
+        large = {str(k): int(v) for k, v in (out.get("deferred_large") or {}).items()}
+        _book_csv_desktop_owed(store, unit.source_id, large)
         # A derived CSV is HOSTED but not yet DISCOVERABLE: nothing in the daily
         # pipeline pushed catalog rows to D1 (sync_state_d1 syncs freshness only,
         # by design), so a new series reached R2 and never appeared in /v1/catalog.
         # That silently stranded 31,259 series -- boe alone showed 21 of 30,674 in
         # the serving catalog while its fetcher had been live for weeks. Record what
         # we derived; the post-run catalog sync step upserts exactly these rows.
-        _record_for_catalog_sync([s for s in ids if s not in set(failed)])
+        _record_for_catalog_sync([s for s in ids if s not in set(failed) and s not in large])
         # Name the failures, bounded. "failed 7/24" alone costs a bisect to act on,
         # which is why such notes sit unfixed for weeks (same reason Tally now carries
         # structural_ids). The count stays authoritative; the elision is explicit.
@@ -719,6 +757,11 @@ def _derive_changed_csvs(unit, res, blob):
             # permanently `partial`, which is how gates stop being read (R244/R359).
             note = (f"csv coverage note: derive budget spent — {len(deferred_ids)} of "
                     f"{len(ids)} id(s) deferred to csv_retry_queue, none failed")
+        elif large:
+            # Too large for the runner, nothing broken: a disclosed, non-demoting note; the
+            # durable record is the csv_desktop_owed row health holds at ATTENTION.
+            note = (f"csv coverage note: {len(large)} of {len(ids)} flow(s) too large for "
+                    f"the cloud derive — owed to the desktop (csv_desktop_owed), none failed")
         if not note and unmapped:
             # STATE ONLY WHAT WAS CHECKED. This used to append "(over derive-all cap)"
             # unconditionally — a hardcoded cause, never tested. riksbank emitted
@@ -1858,7 +1901,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 _csv_fence = max(1.0, min(60.0, (_remaining_run_min() or 60.0) + 2.0))
                 try:
                     with _unit_deadline(unit.key + " (csv phase)", _csv_fence):
-                        csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob)
+                        csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob, store)
                 except UnitTimeout:
                     csv_failed, csv_deferred, csv_reasons = [], [], {}
                     csv_err = ("csv coverage note: csv phase exceeded its "
@@ -1912,12 +1955,18 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     from . import derive as _derive_mod
                     _out = _derive_mod.derive_and_put(
                         _retry_ids, blob if blob is not None else _resolve_blob(),
+                        flow_grain=(_csv_grain(unit.source_id) == "flow"),
                         **_capped_derive_budget()) or {}
                     _refailed = set(str(s) for s in (_out.get("failed") or []))
+                    # A queued id that turns out too large for the runner leaves the retry
+                    # queue (it can never succeed there) and moves to csv_desktop_owed.
+                    _large_q = {str(k): int(v) for k, v in
+                                (_out.get("deferred_large") or {}).items()}
+                    _book_csv_desktop_owed(store, unit.source_id, _large_q)
                     _cleared = [s for s in _retry_ids if s not in _refailed]
                     if _cleared:
                         store.clear_csv_retries(_cleared)
-                        _record_for_catalog_sync(_cleared)
+                        _record_for_catalog_sync([s for s in _cleared if s not in _large_q])
                     print(f"[orchestrator] {unit.source_id}: csv retry queue "
                           f"{len(_retry_rows):,} -> attempted {len(_retry_ids):,}, "
                           f"cleared {len(_cleared):,}, still queued {len(_refailed):,}",

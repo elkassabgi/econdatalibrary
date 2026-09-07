@@ -393,22 +393,26 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                 # same-period revision counts and an idempotent re-fetch reports {}). The
                 # flow is the derive unit for a grouped source, so any non-empty report
                 # marks the flow.
-                try:
+                # PRE-CHECK, NOT A FALLBACK (design review change 2). The report refuses
+                # BEFORE any I/O above merge.CHANGED_KEYS_CAP new rows; asking and catching
+                # would have to tell that ValueError from any other, and a ValueError that
+                # escapes this block skips save_state and books the whole source
+                # transient_fail — the 2026-08-24 class handled above. One call per flow, no
+                # exception path. The dedup-key refusal is unreachable here: every giant
+                # fetch_flow builds (series_key, obs_date, value) itself.
+                if table.num_rows <= merge.CHANGED_KEYS_CAP:
                     n, last, _rep = merge.merge_and_write(out_path, table, mode="merge",
                                                           min_ratio=min_ratio,
                                                           report_changed_keys=True)
                     _flow_changed = bool(_rep)
-                    _dates = [str(v) for v in _rep.values() if v]
-                    _when = max(_dates) if _dates else (str(last) if last else None)
-                except ValueError as e:
-                    # The report REFUSES BEFORE ANY I/O above changed_keys_cap (2,000,000
-                    # new rows) or when a dedup key is absent (merge.py, the two guards at
-                    # the top of merge_and_write). Merge without it and OVER-report: the
-                    # cost is one identical re-derive of this flow; a silent under-report
-                    # is the disease this channel exists to cure.
-                    print(f"[{source}] {fid}: changed-flow report unavailable "
-                          f"({str(e)[:90]}) — merged without it; flow treated as CHANGED",
-                          flush=True)
+                    _when = (max((str(v) for v in _rep.values() if v), default=None)
+                             or (str(last) if last else None))
+                else:
+                    # OVER-report above the cap: the cost is one identical re-derive of
+                    # this flow; a silent under-report is the disease this channel cures.
+                    print(f"[{source}] {fid}: {table.num_rows:,} new rows exceed the "
+                          f"changed-flow report cap ({merge.CHANGED_KEYS_CAP:,}) — merged "
+                          f"without the report; flow treated as CHANGED", flush=True)
                     n, last = merge.merge_and_write(out_path, table, mode="merge",
                                                     min_ratio=min_ratio)
                     _flow_changed, _when = True, (str(last) if last else None)
@@ -460,8 +464,27 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     # partial if any transient; else ok/no_change. empty_window_floor guards a giant
     # where a handful of selected flows all happen to be quiet (legit), but a wholesale
     # all-empty over many flows is a structural break.
-    res = finalize(tally, total_rows, max_last, source=source,
-                   empty_window_floor=max(10, len(selected) // 2))
+    try:
+        res = finalize(tally, total_rows, max_last, source=source,
+                       empty_window_floor=max(10, len(selected) // 2))
+    except DefinitiveError as e:
+        if not (report_changed_flows and changed_flows):
+            raise
+        # THE CHANGED SET MUST SURVIVE finalize()'s STRUCTURAL RAISE (design review change 1).
+        # finalize raises on ANY structural sub-unit and the orchestrator maps that to
+        # `partial` with no derive — so the flows this run DID merge would stay unserved until
+        # a manual campaign. For eurostat that path is the COMMON one, not the edge: its
+        # "structural" is mostly a transient publisher response (HTTP 200 + a 381-byte SOAP
+        # envelope, then 23.9 MB of CSV seconds later; ~10% of flows per tick, so an n-flow
+        # tick is clean with probability 0.9^n). Same recorded outcome as the raise — partial,
+        # vintage un-bumped, no last_success, the same error text — plus the derive of what
+        # merged. Re-raised unchanged when nothing merged, or without the opt-in.
+        print(f"[{source}] finalize raised structural with {len(changed_flows):,} merged "
+              f"flow(s) to derive — returning partial WITH the changed set: {str(e)[:120]}",
+              flush=True)
+        return Result(status="partial", obs=total_rows, last_obs_date=max_last,
+                      new_vintage=_catalog_token(catalog), error=str(e),
+                      changed_keys=changed_flows)
     # carry a catalogue-level vintage token so detect_change can cheaply short-circuit
     # next tick when the whole catalogue is unmoved.
     res.new_vintage = _catalog_token(catalog)
