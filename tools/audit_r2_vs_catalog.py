@@ -110,6 +110,7 @@ def main() -> int:
 
     print(f"{'source':<24}{'R2 objects':>14}{'catalogue rows':>16}{'difference':>13}  verdict")
     agree = disagree = 0
+    trunc_srcs, unchecked = [], []      # NOT MEASURED, and never silent in the total
     for src in names:
         pre = f"{a.prefix}/{urllib.parse.quote(src + ':', safe='')}"
         try:
@@ -118,10 +119,12 @@ def main() -> int:
             # NEVER a silent skip. An unlistable prefix is UNCHECKED, not clean (R390).
             print(f"  {src:<22}{'UNCHECKED':>14}{counts.get(src, 0):>16,}"
                   f"{'':>13}  LIST FAILED {type(e).__name__}")
+            unchecked.append((src, f"{type(e).__name__}"))
             continue
         cat = counts.get(src, 0)
         if truncated:
             print(f"  {src:<22}{n:>13,}+{cat:>16,}{'':>13}  STOPPED at --max — not a total")
+            trunc_srcs.append((src, n, cat))
             continue
         d = n - cat
         if d == 0:
@@ -134,7 +137,21 @@ def main() -> int:
         print(f"  {src:<22}{n:>14,}{cat:>16,}{d:>+13,}  {verdict}")
 
     print()
-    print(f"  {agree} source(s) where R2 and the catalogue agree; {disagree} where they do not.")
+    print(f"  {agree} source(s) where R2 and the catalogue agree; {disagree} where they do "
+          f"not.")
+    if trunc_srcs or unchecked:
+        # NEVER SILENT. agree + disagree is NOT the number of sources asked about, and a
+        # summary that omits the difference reads as full coverage - the exact failure
+        # --max exists to prevent, one level up.
+        print(f"  NOT MEASURED: {len(trunc_srcs)} stopped at --max, {len(unchecked)} could "
+              f"not be listed. {agree + disagree} of "
+              f"{agree + disagree + len(trunc_srcs) + len(unchecked)} sources were actually "
+              f"compared.")
+        for s, n, c in trunc_srcs:
+            print(f"     {s:<22}stopped at {n:,}+ objects (catalogue {c:,}) — re-run with "
+                  f"a larger --max")
+        for s, why in unchecked:
+            print(f"     {s:<22}listing failed: {why}")
     print("  This says nothing about the LOCAL STORE — a source can agree here and still hold")
     print("  hundreds of millions of unpublished keys locally. That is "
           "tools/audit_store_vs_catalog.py.")
