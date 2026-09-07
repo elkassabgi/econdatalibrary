@@ -59,6 +59,13 @@ def _run(m, s3, cat, argv):
     fake_r2 = types.ModuleType("core.r2_util")
     fake_r2.client = lambda: s3
     fake_core.r2_util = fake_r2
+    # SAVE WHAT IS THERE, so the `finally` can RESTORE it rather than pop it. Popping deletes the
+    # real `core` and `core.r2_util` from sys.modules, so the next `from core import r2_util`
+    # anywhere in the session builds a FRESH module object - and a fixture that monkeypatched
+    # `client` on the OLD object no longer reaches the code under test. That broke nine tests in
+    # tests/test_updater_phase1.py, which pass alone and fail after this file
+    # (measured: 32 passed alone, 8 failed together).
+    _saved = {k: sys.modules.get(k) for k in ("core", "core.r2_util")}
     sys.modules["core"], sys.modules["core.r2_util"] = fake_core, fake_r2
     old = sys.argv
     sys.argv = ["audit_r2_vs_catalog"] + argv
@@ -69,8 +76,12 @@ def _run(m, s3, cat, argv):
     finally:
         sys.stdout = real
         sys.argv = old
-        sys.modules.pop("core", None)
-        sys.modules.pop("core.r2_util", None)
+        # RESTORE, never pop: absent stays absent, present goes back as the SAME object.
+        for _k, _v in _saved.items():
+            if _v is None:
+                sys.modules.pop(_k, None)
+            else:
+                sys.modules[_k] = _v
     return rc, buf.getvalue()
 
 
