@@ -27,7 +27,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from updater import config, blob
 
 CAT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "catalog.db")
-KEY_COLS = ("series_key", "idbank")   # detection order — the parquet's series-identity column
+# DETECTION ORDER — the parquet's series-identity column.
+#
+# `series_id` IS DELIBERATELY ABSENT, and this note exists because it looked like an oversight
+# (2026-09-07). The shared list in `core/broaden_catalog.py::KEY_COL_CANDIDATES` is
+# ("series_key", "series_id", "idbank") and three tools were aligned onto it; this one is NOT,
+# on purpose. Measured over the store: exactly three sources key on `series_id`, and they are
+# `bls` (154,190,127 distinct keys over 9 catalogue rows) and `eia` (3,862,801) - two of the
+# five CURATED-SEED sources whose publication is an open decision for Ahmed (memory §0c:
+# 2,270 catalogue rows at file grain vs 532 million at series grain). This tool INSERTs
+# catalogue rows and copies the source's licence onto every key it finds, so adding
+# `series_id` here would let one invocation catalogue those giants at series grain - the exact
+# outcome §0c exists to decide. Add it only WITH that decision, never as a tidy-up.
+KEY_COLS = ("series_key", "idbank")
 
 # FILES INSIDE A SOURCE DIRECTORY THAT MUST NOT INHERIT THAT SOURCE'S LICENCE.
 #
