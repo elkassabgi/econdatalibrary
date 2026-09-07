@@ -492,11 +492,29 @@ def assess(store=None) -> dict:
             # note that CHANGES THE VERDICT must survive the truncation — appended, a
             # ≥10-unit rotator would flip ATTENTION with its reason cut off (the
             # reviewer's finding; abs carried 805 attention units in R379's episode).
+            # THE REMEDY DEPENDS ON THE CATALOGUE GRAIN (R882). For a flow-grain source
+            # (registry `csv_grain: flow`: one catalogue id serves a whole store file) the
+            # series-grain bulk tool writes 0 objects with --only-catalogued and ~772.7M
+            # wrong-grain objects without it, so naming it here is worse than naming
+            # nothing. The flow-grain path is: mirror the changed flows from R2, derive them
+            # with core.derive_csv --only, read every served CSV back against R2's parquet,
+            # THEN clear with --clear-owed-only. The prefix is pinned by tests and must not
+            # change. The cloud has no catalog.db, so the grain comes from the registry.
+            if e.get("csv_grain") == "flow":
+                _remedy = (f"this source is FLOW-grain (one catalogue id = one store file): "
+                           f"sync the changed flows' parquets from R2, run "
+                           f"`python -m core.derive_csv --bucket econ-data --source {sid} "
+                           f"--only <file of changed flow ids>`, read the served CSVs back "
+                           f"against R2's parquets, then `tools/derive_csv_bulk.py --source "
+                           f"{sid} --clear-owed-only`; the bulk tool alone writes nothing at "
+                           f"this grain")
+            else:
+                _remedy = (f"run tools/derive_csv_bulk.py --source {sid}; its zero-error "
+                           f"campaign stamp clears this row")
             attention = [
                 f"full re-derive OWED since {str(owe.get('noted_utc') or '?')[:10]} "
                 f"(store vintage {owe.get('vintage') or '?'}): served CSVs predate the "
-                f"store — run tools/derive_csv_bulk.py --source {sid}; its zero-error "
-                f"campaign stamp clears this row"] + list(attention)
+                f"store — {_remedy}"] + list(attention)
             if health in ("OK", "ROTATING"):
                 health = "ATTENTION"
 

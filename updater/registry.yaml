@@ -1617,6 +1617,9 @@ sources:
   cadence: monthly
   refresh_cost: giant
   out_dir: eurostat
+  # csv_grain: one catalogue id (`eurostat:<dataset>`) serves the WHOLE <DATASET>.parquet
+  # (`_resolve_eurostat`); the series-grain bulk derive writes 0 objects here (R882).
+  csv_grain: flow
   review: true
   adapter:
     vintage_signal: Eurostat TOC catalogue (catalogue/toc/txt) per-dataset lastUpdate/lastModified column; persist code->lastUpdate
