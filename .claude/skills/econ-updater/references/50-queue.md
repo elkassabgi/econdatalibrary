@@ -1651,12 +1651,42 @@ No deleter existed: 487 duplicate $DV orphans deleted 08-08 (catalog-guarded, re
 _dv_delete.log) + 54 orphans 08-17 under "Ahmed directive 'delete'" (receipt JSON);
 identity closure 7,754 − 487 − 54 + 1 = 7,214; both adversarial verifiers NOT-REFUTED.
 Neither wave was ledgered — that recording gap is R532's rule.
-**THE BOARD'S LARGEST SERVING GAP, newly minted:** the 440 catalogued-but-fileless flows
+~~**THE BOARD'S LARGEST SERVING GAP, newly minted:** the 440 catalogued-but-fileless flows
 were NEVER INGESTED and carry **60.3% of catalogued eurostat observations** (every
 ≥100M-obs flow; raw .tsv.gz + June-vintage clean_grouped exist locally for all 440).
 Backfill scoping is REQUIRED before any run: size the storage/class-A cost (the
 new-giant-storage-quote-first standing order applies — numbers go to Ahmed BEFORE the
-pull/ingest), choose desktop-first local ingest vs fetcher re-pull, and review the plan.
+pull/ingest), choose desktop-first local ingest vs fetcher re-pull, and review the plan.~~
+
+> **CLOSED 2026-09-07 — THE GAP IS EMPTY. Re-measured before scoping the backfill, and there is
+> nothing to back-fill.** Store side through `updater.blob` with `AQUEDUCT_BACKEND=r2` (resolved
+> backend printed, R335), catalogue side by PRIMARY-KEY RANGE (`>= 'eurostat:' AND < 'eurostat;'`,
+> never `WHERE source_id=?` — R715/R721/R723):
+>
+>     store parquets (r2)      7,654        catalogue rows (PK range)  7,654
+>     CATALOGUED, NO PARQUET       0        PARQUET, NO CATALOGUE          0
+>
+> Second instrument (R342 — a different one, not the same query again): a direct boto3 listing of
+> `clean_full/eurostat/` counts the same **7,654** objects, **11.32 GB**, LastModified spanning
+> 2026-08-08 .. 2026-09-01 (7,436 in August, 218 in September); largest `HLTH_CD_YRO` 235.63 MB,
+> `PROJ_19RP3` 176.56 MB, `MIGR_ASYRESCRA` 175.31 MB, and 344 objects under 2 KB (genuinely small
+> flows — `ENPS_MAR_EQ300` is 1,286 B and R695 already records it as real). So the files exist AND
+> carry data; this is not a directory of stubs.
+>
+> **Where the 440 came from:** the re-key marker recorded `files_seen=7214` on 2026-08-30 07:23Z and
+> the listing that day counted 7,214. 7,654 − 7,214 = 440. The store has since gained those 440
+> objects. The entry above was true when written and is a snapshot, not a standing fact — which is
+> what the header of this file says about every number in it.
+>
+> **FIRST INSTRUMENT WAS WRONG, and it took ten seconds to catch:** store codes are UPPERCASE
+> (`AACT_ALI01`), catalogue codes lowercase (`aact_ali01`), so the naive set difference returned
+> 7,654 in BOTH directions. A difference equal to the whole population is an instrument error, not
+> a finding (R123, R112). Case-fold before comparing identifiers across these two stores.
+>
+> **NOT measured, so not claimed:** whether each flow is COMPLETE against the publisher. This says
+> the catalogue and the store agree on WHICH flows exist, nothing about how many observations each
+> holds. Instruments: `scratchpad/eurostat_gap.py`, `eurostat_gap2.log`, `eurostat_lastmod.log`,
+> `eurostat_sizes.log`.
 
 ### cbs_nl refresh sweep COMPLETE 2026-08-31 (9,081,645,170 obs) — nothing to catalogue
 
@@ -1667,3 +1697,41 @@ before believing either), 4 tables hit HTTP 403 (82538NED among them). The TODO'
 "catalogue new tables, regen, deploy" trigger is VACUOUS this pass — no new data landed.
 FOLLOW-UPS queued, not started (one-source rule): probe the 7+4 individually; run the
 deferred cbs_nl collision census (census v3 skipped it while the sweep wrote).
+
+> **THE 7 ARE CLASSIFIED, 2026-09-07 — ZERO QUIET FAILURES.** Read from the crawler's own guard
+> logs (`logs/guard_cbs_nl_0907_0434.log` and the three before it) plus
+> `data/clean_full/cbs_nl/_repull_zero.json`. Six of the seven now HOLD ROWS and are skipped as
+> current — `skip <id> (N rows)` is `ingest_cbs_nl.py:1150`, the `verdict is None` branch, where
+> `n` is the held row count:
+>
+>     86227NED     80 rows      86230NED  1,740 rows      83673NED  2,750 rows
+>     86228NED    133 rows      86231NED  1,344 rows
+>     86229NED     27 rows
+>
+> So "started at skip=0 and flushed 0 obs" was a snapshot of that sweep, not a standing state.
+> The remaining one is genuinely upstream-empty and the crawler says so with its discriminator:
+>
+>     !! 85174NED: crawled 2 rows and wrote ZERO observations (period_col='Perioden',
+>        every period code was undatable, discards={'unparsed:len2:00': 1, 'unparsed:len2:01': 1})
+>        - no datable period in the whole table
+>
+> The whole table is TWO rows and both period codes are the bare two-character strings `00` and
+> `01`. Non-zero discards is exactly the condition `ingest_cbs_nl.py:1587-1592` uses to separate
+> "no datable period in the whole table" from "NOT ONE row was dropped by a counted rule - this is
+> a DEFECT", so this is the benign branch, by the code's own test rather than by my reading of it.
+>
+> `70739ned`, the other `_repull_zero.json` entry, is not a crawl failure either: `SKIP 70739ned:
+> no period column in 9 columns (CBS declares no TimeDimension for it - it is a cross-tabulation,
+> not a time series, so it has no observations to contribute)`. Its zero record is from a pass
+> before that rule existed. Both entries have `served_rows: 0`, so nothing is served for either and
+> the coverage audit's summary line - "re-pull produced ZERO observations, served copy kept" - is
+> imprecise for these two: there is no served copy to keep.
+>
+> **STILL A DECISION, and it is the only live one for cbs_nl:** `_repull_deferred.json` holds five
+> tables over the automatic ceiling (`REPULL_MAX_ROWS = 25,000,000`), totalling **404,098,848
+> rows** — 84547NED 106,206,336 · 85468NED 119,206,080 · 85451NED 93,661,920 · 85721NED 59,864,832
+> · 85371NED 25,159,680, oldest noted 2026-08-24. CBS has revised all five upstream; our served
+> copies are behind until someone says yes. The ceiling is deliberate (the comment at
+> `ingest_cbs_nl.py:132-138` derives it from the measured distribution of the 329 revised tables:
+> median 22,560 rows, p90 2,044,848, then those five outliers), so this is a cost/time decision,
+> not a bug.
