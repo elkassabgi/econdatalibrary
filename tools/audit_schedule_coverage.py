@@ -100,6 +100,11 @@ SCRIPT_REFRESH_EVIDENCE = {
 UNSERVED_REASONS = {
     "gleif": "CLEARED (CC0) but blocked on SHAPE, not licence - it is an ENTITY REGISTRY (LEI, LegalName, jurisdiction, status), carrying no series_key/obs_date/value, so it cannot be catalogued in the series model at any grain. Serving it needs an entity-lookup surface, which is a product decision rather than a compliance one. See DATABASE_LICENSES_VERBATIM.md.",
     "sec_edgar_xbrl": "RESERVED FOR AHMED - one id, two products. The registry entry named sec_edgar is the UNSERVED 13F/insider giant; the SERVED XBRL product is catalogued under sec_edgar but registry-named sec_edgar_xbrl, kept fresh by .github/workflows/sec-edgar-daily.yml. Repairing the crossing changes PUBLIC ids, so it is Ahmed's call (R275/R276, and the econ-updater landmines table).",
+    # Adjudicated 2026-09-07. Unserved BY DESIGN and it must stay that way until Ahmed says
+    # otherwise: the licence verdict is DISPUTED, and un-gating a DISPUTED licence is on the
+    # reserved list. Measured the same day: 0 catalogue rows (PK range), and the id is on the
+    # worker denylist at api/worker/src/denylist.ts:43.
+    "worldbank_pink": "GATED, licence DISPUTED - keep it unserved. DATABASE_LICENSES_VERBATIM.md records it as 'restricted / needs-review (NOT blanket CC BY 4.0)', CORRECTED DOWN from redistributable_attribution by adversarial review: the Pink Sheet is not wholly the World Bank's own work and carries third-party proprietary prices - LME settlement prices (aluminum, copper, lead, nickel, tin, zinc), Cotlook 'A index' for cotton, SICOM for rubber, ICCO/ICO for cocoa and coffee - which the terms' own carve-out says 'may not be redistributed or reused without the consent of the original data provider', LME in particular. It is on the worker denylist and holds 0 catalogue rows, so the store refreshing on disk while reaching nobody is the DESIGNED state, not a gap. Un-gating a DISPUTED licence is RESERVED for Ahmed; per-series rights clearance would come first either way.",
 }
 
 def _script_refresh_proven(sid: str) -> str | None:
