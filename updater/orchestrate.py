@@ -722,8 +722,13 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             return [], note, [], {}
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         _flow = _csv_grain(unit.source_id) == "flow"
+        # The keyword is passed ONLY for a flow-grain source. Every series-grain call keeps the
+        # exact signature it had, so the stubs in eleven existing test files (lambdas without
+        # **kwargs) and any other caller-side double keep working; CI caught the alternative in
+        # three minutes (run 34166306918: 7 orchestrator tests failing on the new keyword).
         out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob(),
-                                    flow_grain=_flow, **_capped_derive_budget()) or {}
+                                    **({"flow_grain": True} if _flow else {}),
+                                    **_capped_derive_budget()) or {}
         # SPLIT budget-deferral from breakage. derive.py puts unreached ids in BOTH
         # `failed` (so the caller queues them for retry) and `deferred_ids`; its own log
         # already subtracts them ("failed {len(failed) - deferred}"), the orchestrator did
@@ -1955,7 +1960,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     from . import derive as _derive_mod
                     _out = _derive_mod.derive_and_put(
                         _retry_ids, blob if blob is not None else _resolve_blob(),
-                        flow_grain=(_csv_grain(unit.source_id) == "flow"),
+                        **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
                         **_capped_derive_budget()) or {}
                     _refailed = set(str(s) for s in (_out.get("failed") or []))
                     # A queued id that turns out too large for the runner leaves the retry
