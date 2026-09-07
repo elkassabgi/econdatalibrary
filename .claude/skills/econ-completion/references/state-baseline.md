@@ -22,7 +22,7 @@ All figures dated 2026-08-30, instruments named. **Re-measure before acting** (R
 2. D1 `series` — what the catalogue API lists
 3. D1 `series_fts` — what search matches (`fts5(series_id UNINDEXED, title, geography)`)
 4. local `catalog.db` — what the site generator and local tools read
-5. `source_counts` (D1) — the per-source `total`, written ONLY by `core/sync_catalog_d1.py`
+5. `source_counts` (D1) — the per-source `total`. **NOT single-writer, whatever the older wording here said (corrected 2026-09-07).** `core/sync_catalog_d1.py` refreshes it for the sources ITS OWN push touched; every other tool that writes `series` directly must refresh it too, and one that did not left `sec_edgar` advertising 17,437 against 17,467 rows for two days. `tools/refresh_sec_edgar.py` now does (unconditionally, via `--command`); `tools/delist_source_rows.py`, `tools/retire_source.py` and `tools/delist_timeless_tables.py` already did. **STILL UNHANDLED, so check before trusting a total after they run:** `tools/migrate_noaa_shard.py`, `core/export_d1_sources.py`, and the `core/export_d1.py` / `core/load_d1_chunked.py` re-dump path. Written by `core/sync_catalog_d1.py`
 
 Deleting from four leaves a 404 or an advertising-catalogue (R481, R489). Drift among them has billed money (R489: missing cache row → live `COUNT(*)` per page view).
 

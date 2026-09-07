@@ -32,6 +32,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import os
+import pytest
 import sqlite3
 import sys
 
@@ -41,6 +42,17 @@ import pyarrow.parquet as pq
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _TOOL = os.path.join(os.path.dirname(_HERE), "tools", "audit_store_vs_catalog.py")
 
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_CATALOG = os.path.join(_REPO, "data", "catalog.db")
+# NEEDS THE REAL CATALOGUE, which is 11.9 GB and not in the repository (R857). `grain_index()`
+# opens it, so on a runner these raise `sqlite3.OperationalError: unable to open database file`.
+# They are desktop tests and must SAY SO rather than reddening CI - main was red for five and a
+# half hours because I merged them without looking, and a permanently red gate is a gate nobody
+# reads (R244). The reason carries the path so a future absence is diagnosable, not mysterious.
+needs_catalog = pytest.mark.skipif(
+    not os.path.exists(_CATALOG),
+    reason=f"needs the real catalogue at {_CATALOG} (11.9 GB, not in the repo) - desktop only")
 
 def _load():
     spec = importlib.util.spec_from_file_location("_audit_under_test", _TOOL)
@@ -230,6 +242,7 @@ def test_summarise_fails_closed_without_a_grain_index(tmp_path):
     assert "held locally but not catalogued    : 675 series" in out, out
 
 
+@needs_catalog
 def test_grain_index_reads_every_machine_readable_holder():
     """Grain is declared in SIX places here, and they do not overlap. Measured 2026-09-06:
 
@@ -265,6 +278,7 @@ def test_grain_index_reads_every_machine_readable_holder():
     for s in _resolve._DOT_TABLE_GRAIN:
         assert g.get(s) in m.DECLARED_GRAINS, s
 
+@needs_catalog
 def test_grain_index_works_when_run_AS_A_SCRIPT(tmp_path):
     """The test suite is not the tool. pytest puts the repo root on sys.path; running
     `python tools/audit_store_vs_catalog.py` does not - sys.path[0] is tools/. So every test
@@ -427,6 +441,7 @@ def test_an_unrecognised_predicate_is_treated_as_COARSE_not_series():
     assert m._predicate_shape("something_new(x, y)", "series_key") == "GROUP"
 
 
+@needs_catalog
 def test_grain_index_unions_the_resolver_with_the_declarations():
     """A source with ZERO catalogue rows has no id to resolve and cannot be probed — absence of
     measurement, not evidence of series grain. The lists cover exactly that case, so neither

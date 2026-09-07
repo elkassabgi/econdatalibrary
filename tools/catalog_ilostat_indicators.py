@@ -56,6 +56,135 @@ def toc_rows() -> dict:
     return out
 
 
+def refused_set(sum_obj, key):
+    """(ids, provenance) from a derive summary's `refused` list. provenance is one of
+    "full" | "partial" | "unreadable".
+
+    A REFUSAL LIST IS EVIDENCE ONLY IF THE RUN THAT WROTE IT COVERED THE STORE. The derives write
+    their summary unconditionally - `--dry-run`, `--only` and `--limit` runs included - and each
+    cataloguer prints `--only <ids>` as the remedy for its own refusal, so following that
+    instruction is precisely what leaves a scoped record behind (R843 addendum).
+
+    Both directions matter, and they fail differently:
+      * an EMPTY list from a scoped run makes "not seen by the derive" an assertion nobody
+        checked - R219's single confident cause;
+      * a NON-EMPTY list from a scoped run is worse: it can mark a table "correctly NOT
+        catalogued" that a full run would have split without trouble.
+
+    "unreadable" is kept distinct from "partial" so the operator is told WHICH it was; collapsing
+    them is the fail-quiet shape of R503. A caller must treat anything but "full" as UNKNOWN -
+    never as empty.
+    """
+    if not isinstance(sum_obj, dict):
+        return set(), "unreadable"
+    lst = sum_obj.get("refused")
+    if not isinstance(lst, list):
+        return set(), "unreadable"
+    # `refused_scope` is the list's own provenance; `scope` describes the CAP and is accepted
+    # only for back-compatibility with summaries written before the list had its own key.
+    scope = sum_obj.get("refused_scope") or ("full" if sum_obj.get("scope") == "full" else None)
+    ids = {r.get(key) for r in lst if isinstance(r, dict) and r.get(key) is not None}
+    return ids, ("full" if scope == "full" else "partial")
+
+
+def summary_coverage(sum_obj, n_store_now):
+    """One line saying what the summary actually covers - the cheapest guard of all.
+
+    `considered: 11` against a store of 2,442 makes the scope error self-evident with no tag to
+    interpret. Printed unconditionally wherever the summary is read.
+    """
+    if not isinstance(sum_obj, dict):
+        return "summary: UNREADABLE"
+    # NOT `a or b or c`: a legitimate `processed: 0` is falsy and would fall through
+    # to `considered`, reporting a run that processed NOTHING as having covered
+    # everything - the fail-open this whole line exists to prevent.
+    con = None
+    for _k in ("processed", "processed_tables", "considered"):
+        if sum_obj.get(_k) is not None:
+            con = sum_obj[_k]
+            break
+    store = sum_obj.get("store_files") or sum_obj.get("store_shards")
+    bits = ["scope=%s" % (sum_obj.get("scope") or "UNRECORDED"),
+            "refused_scope=%s" % (sum_obj.get("refused_scope") or "UNRECORDED")]
+    if con is not None:
+        bits.append("covered %s of %s at the time" % (f"{con:,}", f"{store:,}" if store else "?"))
+    bits.append("store holds %s now" % f"{n_store_now:,}")
+    return "summary: " + ", ".join(bits)
+
+def published_whole(stems):
+    """Which of these stems ALREADY have a whole-grain catalogue row?
+
+    Read by PRIMARY-KEY RANGE over the source's ids, so both grains are seen at once. R845 tested
+    a single whole-id equality for a flow that only ever had part ids and read the zero as
+    absence; a range cannot make that mistake in either direction.
+    """
+    import sqlite3                                                    # noqa: PLC0415
+    _db = os.path.join(ROOT, "data", "catalog.db").replace(chr(92), "/")
+    lo, hi = SOURCE + ":", SOURCE + ";"
+    try:
+        con = sqlite3.connect(f"file:{_db}?mode=ro", uri=True)
+    except sqlite3.Error:
+        # FAIL LOUD, NOT SILENT: if the catalogue cannot be read we do not know whether the
+        # remedy is safe, and "no warning" would read as "safe" (R503).
+        print("  WARNING: could not open the catalogue to check whether these are already "
+              "published whole - treat the re-run below as UNVERIFIED")
+        return set()
+    try:
+        have = {r[0] for r in con.execute(
+            "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?", (lo, hi))}
+    finally:
+        con.close()
+    whole = {i for i in have if "#" not in i}
+    return {st for st in stems if unit_id(st) in whole}
+
+def dual_grain_stems(rows, smap):
+    """Stems this run would leave published at BOTH grains, as {stem: (why, existing_id)}.
+
+    Two directions, and both are live hazards because the resolver reaches the whole parquet
+    without consulting the split map whenever the id carries no `#`:
+
+      * a stem now in the split map (so this run emits PART ids) that ALREADY has a whole-grain
+        row in the catalogue - the whole id keeps serving every row the parts serve;
+      * a stem NOT in the map (so this run emits ONE whole id) that already has PART rows - the
+        parts keep serving alongside a whole id that covers them.
+
+    Read from the LOCAL catalogue by PRIMARY-KEY RANGE, not by equality on a guessed shape: R845
+    tested `series_id = '<whole id>'` for a flow that only ever had part ids and read the zero as
+    absence. A range sees both shapes at once and cannot miss one.
+    """
+    import sqlite3                                                    # noqa: PLC0415
+    lo, hi = SOURCE + ":", SOURCE + ";"
+    # The same file main() writes, opened read-only. CATALOG is not a constant in this
+    # module - the path is built inline at the write site - so build it the same way here
+    # rather than inventing a name that would NameError at the end of a long run.
+    _db = os.path.join(ROOT, "data", "catalog.db").replace(chr(92), "/")
+    con = sqlite3.connect(f"file:{_db}?mode=ro", uri=True)
+    try:
+        have = {r[0] for r in con.execute(
+            "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?", (lo, hi))}
+    finally:
+        con.close()
+
+    # STRIP THE SOURCE PREFIX. A catalogue id is "ilostat:STEM" or "ilostat:STEM#PART", while
+    # the split map is keyed by the BARE stem. Comparing the two shapes directly makes every
+    # `stem in smap` False and inverts the whole guard - my own test caught it, which is the
+    # only reason it is not in the tool. Same family as R845 and R853: two key shapes, compared.
+    def _bare(i):
+        i = i.split("#", 1)[0]
+        return i[len(SOURCE) + 1:] if i.startswith(SOURCE + ":") else i
+
+    whole_have = {_bare(i) for i in have if "#" not in i}
+    part_stems = {_bare(i) for i in have if "#" in i}
+
+    out = {}
+    for stem in {_bare(r[0]) for r in rows}:
+        want_parts = stem in smap
+        if want_parts and stem in whole_have:
+            out[stem] = ("this run emits PART ids while a WHOLE row already exists", stem)
+        elif not want_parts and stem in part_stems:
+            out[stem] = ("this run emits a WHOLE id while PART rows already exist", stem + "#...")
+    return out
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
@@ -90,19 +219,48 @@ def main() -> int:
     absent = {k: v for k, v in big.items() if k not in smap}
     if absent:
         try:
-            ref = {r["indicator"] for r in json.load(open(
+            _sum = json.load(open(
                 os.path.join(ROOT, "logs", "ilostat_indicators_summary.json"),
-                encoding="utf-8")).get("refused", [])}
+                encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            ref = set()
+            _sum = None
+        ref, ref_prov = refused_set(_sum, "indicator")
         print(f"REFUSING: {len(big):,} indicator(s) exceed {MAX_ROWS_DEFAULT:,} rows but "
               f"{len(absent):,} have no split-map entry. Missing:")
+        print("   " + summary_coverage(_sum, len(files)))
+        if ref_prov != "full":
+            print(f"   the derive's refusal list is {ref_prov.upper()}, so NO cause below is "
+                  f"asserted from it")
         for k, v in sorted(absent.items(), key=lambda kv: -kv[1]):
-            why = ("REFUSED by the derive — no splitter found" if k in ref
-                   else "not seen by the derive — new or grown since that run")
+            if ref_prov != "full":
+                why = ("cause NOT ESTABLISHED — new, grown, refused by a run whose record "
+                       "is not store-wide, or still running")
+            else:
+                why = ("REFUSED by the derive — no splitter found" if k in ref
+                       else "not seen by the derive — new or grown since that run")
             print(f"   {k:48s} {v:>12,} rows   {why}")
-        print(f"\nRe-run:  python tools/derive_ilostat_indicators.py --bucket <b> "
-              f"--only {','.join(sorted(absent))}")
+        # THE REMEDY IS ONLY SAFE FOR A STEM THAT IS NOT ALREADY PUBLISHED WHOLE (R853).
+        # Deriving parts for a stem whose whole object and whole row still exist does not
+        # supersede them: `_resolve_ilostat_indicator` consults the split map ONLY for ids
+        # carrying "#", so the whole id keeps serving every row the new parts serve. Neither
+        # this tool nor the derive can delete the old grain, so the duplicate is permanent -
+        # and invisible, because both the row and the object exist and resolve.
+        _pub = published_whole(sorted(absent))
+        _safe = [k for k in sorted(absent) if k not in _pub]
+        if _pub:
+            print(f"\n{len(_pub):,} of these are ALREADY PUBLISHED AT WHOLE GRAIN. Deriving "
+                  f"parts for them would leave the whole id serving the same rows - a "
+                  f"duplicate nothing here can remove:")
+            for _k in sorted(_pub):
+                print(f"   {_k:48s} whole catalogue row exists")
+            print("   Remove the whole-grain row and its R2 object FIRST, or leave them "
+                  "alone; do NOT re-derive these.")
+        if _safe:
+            print(f"\nRe-run (safe for the {len(_safe):,} not published whole):  "
+                  f"python tools/derive_ilostat_indicators.py --bucket <b> "
+                  f"--only {','.join(_safe)}")
+        else:
+            print("\nNo safe re-run to offer: every absent stem is already published whole.")
         return 1
 
     toc = toc_rows()
@@ -168,6 +326,22 @@ def main() -> int:
             q.close()
         if i % 200 == 0 or i == len(files):
             print(f"  [{i}/{len(files)}] {len(rows):,} unit(s)", flush=True)
+
+    # A STEM IS EITHER WHOLE OR SPLIT, NEVER BOTH (R853). The resolver reaches the whole
+    # parquet without consulting the split map whenever the id carries no "#", so a whole id
+    # left standing beside its own parts is not stale debris - it is a second live
+    # publication of the same rows, invisible to every auditor here because both the row and
+    # the object exist and resolve. Neither this tool nor the derive has any DELETE, so a
+    # break would be permanent. Measured across both ilostat prefixes on 2026-09-07: 0 stems
+    # hold both grains. Refuse rather than be the first.
+    _dual = dual_grain_stems(rows, smap)
+    if _dual:
+        print(f"REFUSING: {len(_dual):,} stem(s) would be published at BOTH grains at once. "
+              f"The superseded grain must be removed first - this tool has no DELETE, so "
+              f"nothing here can undo it:")
+        for _st, (_why, _eid) in sorted(_dual.items()):
+            print(f"   {_st:48s} {_why} ({_eid})")
+        return 1
 
     print(f"\nrows to write: {len(rows):,}   indicators with no published title: {unnamed:,}")
     for r in rows[:4]:

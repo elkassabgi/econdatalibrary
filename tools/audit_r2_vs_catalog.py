@@ -11,7 +11,13 @@ Three quantities, three different answers:
 
     local store keys   what we HOLD          data/clean_full/<source>/*.parquet
     R2 objects         what we HOST          series/<source>%3A...
-    catalogue rows     what we LIST          data/catalog.db (and D1, which serves it)
+    catalogue rows     what we LIST          data/catalog.db - THE LOCAL COPY.
+                                             D1 is what SERVES users and the two
+                                             disagree (measured 2026-09-07: D1 held
+                                             +21 fed_board and +61 fhfa rows the
+                                             local file did not), so a difference
+                                             below is a question for D1, not a
+                                             finding about what users can reach.
 
 A gap between the first and the third is "held, not published" - the fix is a derive.
 A gap between the second and the third is "published but unlisted", or "listed but the bytes
@@ -87,6 +93,25 @@ def catalogue_counts() -> dict:
         con.close()
 
 
+def store_only_sources(counts: dict) -> list:
+    """Sources with a STORE directory but zero LOCAL catalogue rows.
+
+    `--all` enumerates `catalogue_counts()`, which reads the local `catalog.db`. A source with no
+    local row therefore never enters the run - so this audit cannot see it in EITHER direction,
+    and prints nothing to say so. Measured 2026-09-07: `worldbank_pink` has 26 rows in D1 and 0
+    locally, and was silently outside every `--all` run.
+
+    Named rather than counted, and reported under NOT MEASURED, because the honest statement is
+    "this run did not look", not "there is nothing there".
+    """
+    d = os.path.join(ROOT, "data", "clean_full")
+    try:
+        dirs = {n for n in os.listdir(d) if os.path.isdir(os.path.join(d, n))}
+    except OSError:
+        return []
+    return sorted(n for n in dirs if not counts.get(n))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("sources", nargs="*")
@@ -130,15 +155,32 @@ def main() -> int:
         if d == 0:
             verdict, agree = "agree", agree + 1
         elif d > 0:
-            verdict, disagree = "OBJECTS WITH NO CATALOGUE ROW — published, unlisted", disagree + 1
+            # "no LOCAL catalogue row". Measured 2026-09-07: fed_board's 21 and fhfa's 61 were
+            # reported here as published-but-unlisted, and ALL 82 turned out to be present in
+            # D1 - the local copy was simply behind. A difference here is a QUESTION for D1,
+            # not an answer about users.
+            verdict, disagree = ("OBJECTS WITH NO LOCAL CATALOGUE ROW — verify against D1 "
+                                 "before calling them unlisted"), disagree + 1
         else:
-            verdict, disagree = ("CATALOGUE ROWS WITH NO OBJECT — listed, bytes not "
-                                 "published: 502 data_unavailable"), disagree + 1
+            verdict, disagree = ("LOCAL CATALOGUE ROWS WITH NO OBJECT — if D1 lists them too, "
+                                 "a user gets 502 data_unavailable"), disagree + 1
         print(f"  {src:<22}{n:>14,}{cat:>16,}{d:>+13,}  {verdict}")
 
     print()
     print(f"  {agree} source(s) where R2 and the catalogue agree; {disagree} where they do "
           f"not.")
+    store_only = store_only_sources(counts) if a.all else []
+    if store_only:
+        # NEVER SILENT, and this one is invisible by construction: `--all` iterates the LOCAL
+        # catalogue, so a source with no local row is not in the run at all. worldbank_pink has
+        # 26 rows in D1 and 0 locally (measured 2026-09-07).
+        print(f"  NOT MEASURED, and NOT in the totals above: {len(store_only)} source(s) hold a "
+              f"store directory but ZERO local catalogue rows, so `--all` never enumerated them. "
+              f"A source can be live in D1 with no local row - name it explicitly to audit it:")
+        for sname in store_only[:40]:
+            print(f"     {sname}")
+        if len(store_only) > 40:
+            print(f"     ... and {len(store_only) - 40} more")
     if trunc_srcs or unchecked:
         # NEVER SILENT. agree + disagree is NOT the number of sources asked about, and a
         # summary that omits the difference reads as full coverage - the exact failure
@@ -152,6 +194,20 @@ def main() -> int:
                   f"a larger --max")
         for s, why in unchecked:
             print(f"     {s:<22}listing failed: {why}")
+    if disagree:
+        # THE DISCLOSURE THAT WAS MISSING, and it cost two wrong entries in NUMBERS.md.
+        # `catalogue_counts()` reads data/catalog.db. Users are served from D1. The two
+        # disagree whenever a source is written straight to D1 (sec_edgar's refresher) or
+        # synced from a machine this one has not caught up with - and when they disagree the
+        # difference lands here looking exactly like a publishing gap.
+        print()
+        print("  THE `catalogue rows` COLUMN IS THE LOCAL data/catalog.db, NOT D1. A non-zero")
+        print("  difference is a QUESTION, not a finding: check the ids against D1 by primary")
+        print("  key (an index seek, ~2 rows read per id, free) before calling anything")
+        print("  unlisted. On 2026-09-07 all 82 of fed_board's 21 and fhfa's 61 'unlisted'")
+        print("  objects were present in D1; the local copy was behind. Two istat objects were")
+        print("  genuinely absent from D1, and two eurostat ids were genuinely 502.")
+    print()
     print("  This says nothing about the LOCAL STORE — a source can agree here and still hold")
     print("  hundreds of millions of unpublished keys locally. That is "
           "tools/audit_store_vs_catalog.py.")

@@ -19,11 +19,22 @@ from __future__ import annotations
 import importlib.util
 import io
 import os
+import pytest
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _TOOL = os.path.join(os.path.dirname(_HERE), "tools", "audit_served_vs_updating.py")
 
+
+_REPO = os.path.dirname(_HERE) if "_HERE" in dir() else os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))
+_STATE = os.path.join(_REPO, "data", "_aqueduct", "state.db")
+# NEEDS THE REAL STATE DATABASE (R857). `tools/audit_served_vs_updating.py:84` opens
+# data/_aqueduct/state.db read-only; a runner has no such file, the subprocess exits non-zero,
+# and this test asserts returncode == 0. Desktop only, and it says which file it wanted.
+needs_state = pytest.mark.skipif(
+    not os.path.exists(_STATE),
+    reason=f"needs the real state database at {_STATE} - desktop only")
 
 def _load():
     spec = importlib.util.spec_from_file_location("_svu_under_test", _TOOL)
@@ -75,6 +86,7 @@ def test_an_unparseable_denylist_is_REFUSED(tmp_path):
         raise AssertionError("an unparseable denylist was accepted")
 
 
+@needs_state
 def test_it_runs_and_subtracts_the_gate_from_served():
     """End to end against the real repo: SERVED must be strictly smaller than SUPPORTED_SOURCES,
     and the printed arithmetic must hold. If the gate were dropped the two would be equal."""
