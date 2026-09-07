@@ -144,13 +144,12 @@ def test_a_limited_run_does_not_claim_whole_store_coverage():
     for fn in ("derive_statcan_tables.py", "derive_istat_flows.py",
                "derive_ilostat_indicators.py"):
         src = _src(fn)
-        assert "n_done = 0" in src, f"{fn}: no processed-counter initialisation"
-        assert "n_done = i" in src, f"{fn}: processed counter never advanced"
-        assert '"processed": n_done' in src, f"{fn}: summary does not record what it processed"
-        # and it must be advanced BEFORE the break, or a limited run records one too few
-        i_adv = src.index("n_done = i")
-        i_brk = src.index("if a.limit and i >= a.limit:")
-        assert i_adv < i_brk, f"{fn}: counter advanced after the --limit break"
+        # THE PROPERTY, not the expression: `processed` must be the SIZE OF WHAT WAS
+        # EXAMINED. It used to be the loop INDEX (`n_done = i`), which sits after two
+        # `continue`s, so a run whose last stems were refused undercounted itself.
+        assert '"processed": len(_examined_stems)' in src, (
+            f"{fn}: `processed` must be the length of the examined list, not the loop index")
+        assert "_examined_stems = []" in src, f"{fn}: no examined accumulator"
     assert '"processed_tables": n_tables' in _src("derive_usda_tables.py"), (
         "usda counts tables, not files, so its processed key must say so")
 

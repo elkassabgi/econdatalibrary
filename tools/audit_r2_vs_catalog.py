@@ -93,6 +93,25 @@ def catalogue_counts() -> dict:
         con.close()
 
 
+def store_only_sources(counts: dict) -> list:
+    """Sources with a STORE directory but zero LOCAL catalogue rows.
+
+    `--all` enumerates `catalogue_counts()`, which reads the local `catalog.db`. A source with no
+    local row therefore never enters the run - so this audit cannot see it in EITHER direction,
+    and prints nothing to say so. Measured 2026-09-07: `worldbank_pink` has 26 rows in D1 and 0
+    locally, and was silently outside every `--all` run.
+
+    Named rather than counted, and reported under NOT MEASURED, because the honest statement is
+    "this run did not look", not "there is nothing there".
+    """
+    d = os.path.join(ROOT, "data", "clean_full")
+    try:
+        dirs = {n for n in os.listdir(d) if os.path.isdir(os.path.join(d, n))}
+    except OSError:
+        return []
+    return sorted(n for n in dirs if not counts.get(n))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("sources", nargs="*")
@@ -150,6 +169,18 @@ def main() -> int:
     print()
     print(f"  {agree} source(s) where R2 and the catalogue agree; {disagree} where they do "
           f"not.")
+    store_only = store_only_sources(counts) if a.all else []
+    if store_only:
+        # NEVER SILENT, and this one is invisible by construction: `--all` iterates the LOCAL
+        # catalogue, so a source with no local row is not in the run at all. worldbank_pink has
+        # 26 rows in D1 and 0 locally (measured 2026-09-07).
+        print(f"  NOT MEASURED, and NOT in the totals above: {len(store_only)} source(s) hold a "
+              f"store directory but ZERO local catalogue rows, so `--all` never enumerated them. "
+              f"A source can be live in D1 with no local row - name it explicitly to audit it:")
+        for sname in store_only[:40]:
+            print(f"     {sname}")
+        if len(store_only) > 40:
+            print(f"     ... and {len(store_only) - 40} more")
     if trunc_srcs or unchecked:
         # NEVER SILENT. agree + disagree is NOT the number of sources asked about, and a
         # summary that omits the difference reads as full coverage - the exact failure

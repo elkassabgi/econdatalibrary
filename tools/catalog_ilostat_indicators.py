@@ -95,7 +95,14 @@ def summary_coverage(sum_obj, n_store_now):
     """
     if not isinstance(sum_obj, dict):
         return "summary: UNREADABLE"
-    con = sum_obj.get("processed") or sum_obj.get("processed_tables") or sum_obj.get("considered")
+    # NOT `a or b or c`: a legitimate `processed: 0` is falsy and would fall through
+    # to `considered`, reporting a run that processed NOTHING as having covered
+    # everything - the fail-open this whole line exists to prevent.
+    con = None
+    for _k in ("processed", "processed_tables", "considered"):
+        if sum_obj.get(_k) is not None:
+            con = sum_obj[_k]
+            break
     store = sum_obj.get("store_files") or sum_obj.get("store_shards")
     bits = ["scope=%s" % (sum_obj.get("scope") or "UNRECORDED"),
             "refused_scope=%s" % (sum_obj.get("refused_scope") or "UNRECORDED")]

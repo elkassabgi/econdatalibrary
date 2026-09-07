@@ -225,6 +225,7 @@ def main() -> int:
     n_store = len(files)          # BEFORE --only filters it. NOTE --limit narrows nothing here: it breaks
                                  # the LOOP, which is why `processed` exists below
     n_done = 0                    # what the loop ACTUALLY processed; --limit breaks it
+    scan_failed = []              # a terminal disposition that had no key (R219)
     _examined_stems = []          # and WHICH ones - the merge drops only these
     if a.only:
         want = {s.strip() for s in a.only.split(",") if s.strip()}
@@ -271,7 +272,14 @@ def main() -> int:
                 return
             key, body = item
             try:
-                s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv")
+                # GZIP AT REST (Ahmed, 2026-08-18), through the SHARED helper rather
+                # than a fourth private copy: it also carries the magic-byte check
+                # that R560 was written about - 188 objects shipped double-gzipped
+                # and served as text/csv because one uploader lacked it. This tool
+                # was still writing plain CSV while statcan gzipped and 284 of 502
+                # objects in this very prefix already carried ContentEncoding: gzip.
+                _body, _kw, _digest = r2_util.series_csv_put_args(body)
+                s3.put_object(Bucket=a.bucket, Key=key, Body=_body, **_kw)
                 with lock:
                     counts["put"] += 1
                     if counts["put"] % 500 == 0:
@@ -298,6 +306,12 @@ def main() -> int:
     split_map: dict = {}
     for i, f in enumerate(files, 1):
         stem = os.path.splitext(os.path.basename(f))[0]
+        # RECORDED HERE, AT THE TOP, because "examined" means "this run looked at it and
+        # formed a verdict" - which includes REFUSED and SCAN FAILED. Recording it at the
+        # BOTTOM put it after two `continue`s, so a refused stem was in `refused` and not
+        # in `examined`; the merge then KEPT the previous entry for that stem and added
+        # the new one, duplicating it and double-counting `refused_rows`.
+        _examined_stems.append(stem)
         con = duckdb.connect()
         con.execute(f"SET memory_limit='{a.memory_limit}'")
         con.execute(f"SET temp_directory='{spill}'")
@@ -326,6 +340,9 @@ def main() -> int:
                 WHERE value IS NOT NULL AND obs_date IS NOT NULL
                 ORDER BY {order}""")
         except Exception as e:                                  # noqa: BLE001
+            # EVERY TERMINAL DISPOSITION GETS A KEY (R219). This branch printed and moved
+            # on, so the summary read `refused: [], errors: 0` while a file was dropped.
+            scan_failed.append(stem)
             print(f"  [{i}/{len(files)}] {stem}: SCAN FAILED {type(e).__name__} "
                   f"{str(e)[:70]}", flush=True)
             con.close()
@@ -376,7 +393,6 @@ def main() -> int:
         # stopped after five. Against `store_files` that renders as 100% coverage of a 0.2%
         # run -- a summary contradicting its own `scope` tag, with the wrong half readable.
         n_done = i
-        _examined_stems.append(os.path.splitext(os.path.basename(f))[0])
         if a.limit and i >= a.limit:
             break
 
@@ -405,8 +421,18 @@ def main() -> int:
         if a.only:
             try:
                 out_map = json.load(open(smap, encoding="utf-8"))
-            except (OSError, ValueError):
-                out_map = {}
+            except (OSError, ValueError) as _e:
+                # FAIL CLOSED ON A SCOPED RUN (R503). Starting from {} here writes a
+                # map holding ONLY this run's stems, and every other split flow then
+                # has no entry - the resolver raises "never split" for every part id
+                # already catalogued. A transient read error must stop the run, not
+                # silently narrow the map to what one --only run happened to touch.
+                raise SystemExit(
+                    f"REFUSING: --only was given but the existing split map at {smap} "
+                    f"could not be read ({type(_e).__name__}: {_e}). Merging is "
+                    f"impossible, and writing a fresh map would orphan every other "
+                    f"split flow. Restore the map (a .20260907.bak sits beside it) "
+                    f"and re-run.") from _e
             for st in {os.path.splitext(os.path.basename(x))[0] for x in files}:
                 out_map.pop(st, None)
             out_map.update(split_map)
@@ -444,7 +470,10 @@ def main() -> int:
                "scope": run_scope(a),
                "dry_run": bool(a.dry_run),
                "store_files": n_store,
-               "processed": n_done,
+               # THE LENGTH OF WHAT WAS EXAMINED, not the loop index:
+               # trailing refusals never reached the index assignment.
+               "processed": len(_examined_stems),
+               "scan_failed": scan_failed,
                "max_rows": int(a.max_rows)},
               open(summary, "w"), indent=1)
     print(f"summary -> {summary}")

@@ -165,12 +165,54 @@ def test_the_examined_set_is_what_was_processed_not_what_was_globbed():
             f"{fn}: still deriving the examined set from the globbed file list")
 
 
-def test_every_loop_exit_records_its_stem():
-    """statcan has TWO loop sites (a dry-run branch that `continue`s, and the main path). A stem
-    recorded at only one of them means a dry run merges against a set it did not examine."""
-    src = io.open(os.path.join(_TOOLS, "derive_statcan_tables.py"), encoding="utf-8").read()
-    assert src.count("n_done = i") == src.count("_examined_stems.append("), (
-        "every place that advances the processed counter must also record which stem")
+def test_the_stem_is_recorded_BEFORE_any_early_exit():
+    """THE BUG THIS REPLACED, found by an adversarial review hours after I shipped it.
+
+    `_examined_stems.append(...)` sat at the BOTTOM of the loop, after two `continue`s - one for
+    a REFUSED stem, one for a SCAN FAILED stem. So a stem this run refused landed in `refused`
+    and NOT in `examined`. `merged_refused` then kept the PREVIOUS entry for that same stem
+    (because it was not in `examined`) and appended the new one: a duplicate row in the merged
+    list, and `refused_rows` double-counting it - the very "two keys describing one set must not
+    disagree" failure the summary comment claims to prevent.
+
+    The property: inside the loop body, the append must come before the FIRST `continue` or
+    `break`, so "examined" means "this run looked at it and formed a verdict", refusals included.
+
+    (The first version of this test searched the whole FILE for `continue` and matched code far
+    above the loop - a position test needs the right slice, not the right keyword.)
+    """
+    for fn in MERGERS:
+        src = io.open(os.path.join(_TOOLS, fn), encoding="utf-8").read()
+        # the loop body runs from the append up to the split-map write that follows the loop
+        i_app = src.index("_examined_stems.append(")
+        i_end = src.index("if not a.dry_run:", i_app)
+        body = src[i_app:i_end]
+        for kw in ("\n            continue", "\n        continue",
+                   "\n            break", "\n        break"):
+            j = body.find(kw)
+            assert j != 0, f"{fn}: an early exit precedes the examined-append"
+        # and it must be inside the loop at all, i.e. before the split-map write
+        assert i_app < i_end, f"{fn}: the append is outside the loop"
+        # the decisive one: the REFUSED branch must come after the append
+        for marker in ("refused.append(", "scan_failed.append("):
+            k = src.find(marker)
+            if k != -1:
+                assert i_app < k, (
+                    f"{fn}: `{marker}` at {k} runs before the examined-append at {i_app}, so a "
+                    f"stem this run refused would not be counted as examined")
+
+
+def test_a_refused_stem_is_also_an_examined_stem(tmp_path):
+    """The integration the old unit test could not see. If a stem is refused by THIS run, the
+    merge must not also inherit the PREVIOUS run's entry for it."""
+    for fn, key in MERGERS.items():
+        p = _write(tmp_path, {"refused": [{key: "a", "rows": 1}], "refused_scope": "full"})
+        # the loop now appends before refusing, so `examined` contains the refused stem
+        got, scope = _load(fn).merged_refused(p, key, ["a"], [("a", 9)], False)
+        assert got == [{key: "a", "rows": 9}], (
+            f"{fn}: merged list has {len(got)} entries for one stem - the previous entry was "
+            f"kept alongside the new one")
+        assert sum(r["rows"] for r in got) == 9, f"{fn}: refused_rows would double-count"
 
 
 def test_the_merge_reads_the_summary_before_it_is_overwritten():
