@@ -133,9 +133,45 @@ def test_a_PROTECTED_source_is_skipped_AND_NAMED(tmp_path):
     out = buf.getvalue()
     assert "PROTECTED source(s)" in out, out
     assert "bare" in out.split("PROTECTED source(s)")[1], out
-    assert "688,929,413" in out, "the message must carry the size of what the silence hid"
+    # THE MESSAGE MUST DESCRIBE THIS RUN, NOT A REMEMBERED ONE (R875 #6). The first version of
+    # this test demanded the literal "688,929,413" while setting PROTECTED = {"bare"} - so it
+    # required the tool to print a fact about cbs_nl on a run where cbs_nl was not protected, and
+    # the message obliged. The size line is now conditional on cbs_nl actually being in the list.
+    assert "688,929,413" not in out, (
+        "a run that did not skip cbs_nl must not quote cbs_nl's key count"
+    )
     # and it is still SKIPPED - naming it must not start scanning a running backfill
     assert "bare" not in out.split("NOT MEASURED")[0], out
+
+
+def test_the_cbs_nl_figure_appears_only_when_cbs_nl_is_the_thing_skipped(tmp_path, monkeypatch):
+    """The other side of the same rule: when cbs_nl IS protected and present, the number that
+    says why the silence mattered must still be printed."""
+    root, store = _fixture(tmp_path)
+    os.makedirs(os.path.join(store, "cbs_nl"), exist_ok=True)
+    pq.write_table(pa.table({"series_key": ["k"], "obs_date": ["2020-01-01"], "value": [1.0]}),
+                   os.path.join(store, "cbs_nl", "part.parquet"))
+    m = _load()
+    m.ROOT, m.STORE = root, store
+    m.OUTDIR = os.path.join(root, "dist", "broaden")
+    m.PROTECTED = {"cbs_nl", "not_on_disk_at_all"}
+    cwd, argv = os.getcwd(), sys.argv
+    os.chdir(root)
+    sys.argv = ["measure_uncataloged"]
+    buf, real = io.StringIO(), sys.stdout
+    sys.stdout = buf
+    try:
+        m.main()
+    finally:
+        sys.stdout = real
+        sys.argv = argv
+        os.chdir(cwd)
+    out = buf.getvalue()
+    assert "688,929,413" in out, out
+    # ...and a PROTECTED entry with no directory is reported as never reached, not as skipped -
+    # `dbnomics` is exactly that, and the first message named it as one of the hidden pair
+    assert "no directory under the store" in out, out
+    assert "not_on_disk_at_all" in out, out
 
 
 def test_a_source_directory_with_no_parquet_is_named_not_dropped(tmp_path):

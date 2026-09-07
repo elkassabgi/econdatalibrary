@@ -124,13 +124,24 @@ def main():
         for d, n in sorted(skipped_cataloged, key=lambda x: x[1]):
             print(f"   {d:24s} catalogue rows {n:>10,}")
     if skipped_protected:
+        # NAME WHAT IS ACTUALLY HIDDEN, NOT WHAT THE PROTECTED SET CONTAINS (R875 #6). The first
+        # version of this message asserted that cbs_nl and `dbnomics` were the hidden pair and
+        # printed cbs_nl's key count unconditionally - but `dbnomics` has NO directory under the
+        # store, so it never reaches this loop and can never appear here, while `gus_dbw`, which
+        # does, went unnamed. A message that hard-codes its own example stops describing the run.
+        names = {d for d, _ in skipped_protected}
         print(f"\nNOT MEASURED - {len(skipped_protected)} PROTECTED source(s), skipped before "
-              f"anything was read.\n  Protection is a decision about writing, not evidence that "
-              f"the store is covered:\n  cbs_nl alone holds 688,929,413 keys. This branch used "
-              f"to `continue` in silence, so\n  those sources were absent from every total "
-              f"without appearing in any skip list.")
+              f"anything was read.\n  Protection is a decision about WRITING, not evidence that "
+              f"the store is covered. This branch\n  used to `continue` in silence, so these were "
+              f"absent from every total below without\n  appearing in any skip list."
+              + ("\n  cbs_nl alone held 688,929,413 store keys when last measured (2026-09-06)."
+                 if "cbs_nl" in names else ""))
         for d, n in sorted(skipped_protected, key=lambda x: x[1]):
             print(f"   {d:24s} catalogue rows {n:>10,}")
+        absent = sorted(PROTECTED - names)
+        if absent:
+            print(f"   ({len(absent)} more in PROTECTED with no directory under the store, so "
+                  f"never reached at all: {', '.join(absent)})")
     if no_parquet:
         print(f"\nNOT MEASURED - {len(no_parquet)} source directory(ies) with no parquet under "
               f"them:\n  {', '.join(no_parquet)}\n  An empty directory is UNCHECKED, never "

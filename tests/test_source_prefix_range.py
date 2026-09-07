@@ -6,6 +6,21 @@ file, because `series` carries exactly ONE index (the series_id primary key). Re
 with a PK range is 5,228x faster on cso (0.00 s vs 7.13 s warm, 389 s cold) and 15x across
 the whole catalogue (1.39 s vs 21.35 s).
 
+AMENDED 2026-09-07 (R875 #2), and the amendment is about the WORLD, not about this file.
+`series` now carries TWO indexes: the primary key AND `ix_series_source_id(source_id)`.
+Measured on the live database -- `PRAGMA index_list('series')` lists it, `EXPLAIN QUERY PLAN`
+on `WHERE source_id=?` says `SEARCH series USING INDEX ix_series_source_id (source_id=?)`,
+and 50 runs against `yale_epi` (the LAST source in key order) take 0.0027 s against 0.0026 s
+for the range form. `core/catalog.py:39` declares it `CREATE INDEX IF NOT EXISTS`, so some
+run of the schema DDL built it after the 5,228x measurement above was taken. That measurement
+was true when it was made; it is not true now, and the difference between those two sentences
+is a re-measurement nobody did for two days while four documents repeated it.
+
+The EQUIVALENCE this file tests is unaffected -- it is a statement about key bytes, not about
+plans -- and the range read is still preferred, because the primary key is a COVERING index
+for `series_id` and avoids the table lookup. What changes is the JUSTIFICATION: never again
+write "this predicate scans" without running `EXPLAIN QUERY PLAN` on the live file.
+
 That substitution is only safe if the range is EQUIVALENT, and the dangerous direction is
 silent: a range that misses rows makes a source look smaller than it is, and one that
 over-reaches re-derives another source's series. Neither raises anything.

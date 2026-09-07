@@ -122,22 +122,43 @@ def _grain_from_resolver(_resolve) -> dict:
     out: dict[str, str] = {}
     con = sqlite3.connect(
         f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True, timeout=60.0)
-    tried = unresolved = 0
+    tried = unresolved = norow = 0
     reasons: dict[str, int] = {}
     try:
         srcs = [r[0] for r in con.execute("SELECT DISTINCT source_id FROM series")]
         for s in srcs:
-            # PK RANGE, NOT `WHERE source_id=?` (R715/R721/R723). `ix_series_source_id` was never
-            # built on the live catalog.db, so the equality predicate scans from the start of the
-            # table until it meets the source - free for the first source in key order and
-            # millions of rows for the last. series_id is `<source>:<rest>`, so a half-open range
-            # on the primary key is an index seek.
+            # A HALF-OPEN PK RANGE. `series_id` is `<source>:<rest>`, so this is a seek on the
+            # COVERING primary-key index and it never reads the table.
+            #
+            # WHAT THIS COMMENT USED TO SAY WAS FALSE, and the false part had a wider blast radius
+            # than the code (R875 #2): it claimed `ix_series_source_id` "was never built on the
+            # live catalog.db", so `WHERE source_id=?` scanned. MEASURED 2026-09-07 on the live
+            # 11.9 GB file (`scratchpad/verify_index_claim.py`): `PRAGMA index_list('series')`
+            # lists **ix_series_source_id(source_id)**; `EXPLAIN QUERY PLAN` on the old query says
+            # `SEARCH series USING INDEX ix_series_source_id (source_id=?)`; and on `yale_epi`,
+            # the LAST source in key order - where a table scan would hurt most - 50 runs of the
+            # old query take 0.0027 s against 0.0026 s for this one. Both are seeks. R721's own
+            # rule is EXPLAIN QUERY PLAN FIRST and I cited it by id instead of running it.
+            # The range read stays because a covering index avoids the table lookup, not because
+            # the alternative is a scan - and see R875 #2 for the three documents that still carry
+            # the stale premise as an OPEN decision.
+            tried += 1
             row = con.execute(
                 "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ? LIMIT 1",
                 (s + ":", s + ";")).fetchone()
             if not row:
+                # AND THIS BRANCH IS THE HOLE THE RANGE READ OPENED (R875 #1). Under the old
+                # equality predicate it was unreachable by construction - every id returned by
+                # `SELECT DISTINCT source_id` has a row. Under the range it is reachable, and as
+                # first written it incremented nothing and printed nothing: forcing every probe to
+                # miss gave 0 entries, 0 bytes of stderr, and a grain_index() indistinguishable
+                # from a healthy one - while 58 labels changed and 1,012,069,100 store keys moved
+                # into the headline total. A new silent skip, inside the function I was fixing for
+                # silence.
+                norow += 1
+                reasons["no PK-range row"] = reasons.get("no PK-range row", 0) + 1
+                unresolved += 1
                 continue
-            tried += 1
             try:
                 res = _resolve.resolve(row[0], STORE)
             except Exception as e:                                   # noqa: BLE001, PERF203
@@ -162,12 +183,16 @@ def _grain_from_resolver(_resolve) -> dict:
         con.close()
     if unresolved:
         why = ", ".join(f"{k} x{v}" for k, v in sorted(reasons.items(), key=lambda kv: -kv[1]))
-        print(f"[grain] resolver could not answer for {unresolved} of {tried} source(s) "
-              f"with catalogue rows ({why}); their grain falls back to the declaration lists. "
+        print(f"[grain] grain unmeasured for {unresolved} of {tried} source(s) with catalogue "
+              f"rows ({why}); their grain falls back to the declaration lists. "
               f"STORE={STORE!r}", file=sys.stderr, flush=True)
+        if norow:
+            print(f"[grain] {norow} of those found NO row in their own primary-key range, which "
+                  f"cannot happen while series_id is '<source>:<rest>' - suspect the key shape or "
+                  f"a catalogue mid-write, not the store.", file=sys.stderr, flush=True)
         if tried and unresolved == tried:
-            print("[grain] EVERY source failed to resolve - that is a broken STORE path or a "
-                  "moved store, not a measurement. Treat this run's grain classification as "
+            print("[grain] EVERY source failed - that is a broken STORE path, a moved store or a "
+                  "changed key shape, not a measurement. Treat this run's grain classification as "
                   "DEFAULTED, not measured.", file=sys.stderr, flush=True)
     return out
 
@@ -196,7 +221,13 @@ def grain_index() -> dict:
     from econdl import _resolve                                   # noqa: PLC0415
 
     def _require(mod, name):
-        """EVERY registry this function reads must exist, and a rename must STOP the run.
+        """EVERY registry this function reads must exist AND BE NON-EMPTY, and either a rename or
+        an emptying must STOP the run.
+
+        `hasattr` alone guarded only the rename (review of the first fix, R875 #4). Emptying each
+        registry passed silently and reclassified sources: `_FLOW_GRAIN` 11, `_DOT_TABLE_GRAIN`
+        18, `_RESOLVERS` **51**, and `_resolve_file_grain = None` - which is the exact case the
+        text below describes and the check let through.
 
         `getattr(mod, name, default)` was used for all five (review of PR #12, 2026-09-07).
         Measured: renaming any one of them reclassifies 5-39 sources with NO exception, and the
@@ -211,7 +242,14 @@ def grain_index() -> dict:
                 f"classifies grain from it, so continuing would silently reclassify sources and "
                 f"report designed differences as catalogue gaps. Fix the reference, do not "
                 f"default it.")
-        return getattr(mod, name)
+        val = getattr(mod, name)
+        if not val:
+            raise RuntimeError(
+                f"{mod.__name__}.{name} is present but EMPTY ({val!r}). An empty registry "
+                f"reclassifies every source it governs while raising nothing, which is the same "
+                f"silent outcome as a rename. If it is legitimately empty, say so at this call "
+                f"site; do not default it.")
+        return val
 
     out: dict[str, str] = {}
     for s in _require(_resolve, "_FLOW_GRAIN"):
@@ -228,13 +266,19 @@ def grain_index() -> dict:
     # already answered elsewhere on a set it did not consult.
     try:
         import importlib                                            # noqa: PLC0415
-        for s in getattr(importlib.import_module("updater.orchestrate"),
-                         "_TABLE_GRAIN", ()):
+        # ...AND THIS ONE IS THE SIXTH HOLDER THE "ALL FIVE NOW RAISE" COMMIT MISSED (R875 #3).
+        # It kept its `getattr(..., ())` default while its four siblings were converted, so
+        # deleting `_TABLE_GRAIN` raised nothing - the except below sees an IMPORT failure, never
+        # a rename. Blast radius happened to be 0 of 14 today only because the resolver already
+        # labels every imf_*_direct "group"; that is luck, not a guard.
+        for s in _require(importlib.import_module("updater.orchestrate"), "_TABLE_GRAIN"):
             out[s] = "table"
     except Exception as e:                                          # noqa: BLE001
         # NOT SILENT. Raising is right: without it 14 declared table-grain sources would be
         # downgraded to "unestablished" and inflate the headline with a designed difference,
         # which is the mirror of the bug this file exists to fix.
+        if isinstance(e, RuntimeError) and "_TABLE_GRAIN" in str(e):
+            raise                                                   # _require already said it
         raise RuntimeError(
             f"updater.orchestrate._TABLE_GRAIN unreadable ({type(e).__name__}: {e}); "
             f"14 declared table-grain sources would be misclassified") from e
@@ -391,9 +435,11 @@ def summarise(path: str) -> int:
     # main() ends with `nostore` - catalogued sources with NO directory under the store at all -
     # and that is derived from the store listing and the catalogue, neither of which a TSV
     # carries. So a --summarise re-read is silent about them, and silence here reads as zero.
-    # (The same review also said --max-gb skips never reach this function. They do: main() writes
-    # a row for each at :472 and they appear under NOT MEASURED above, naming the store and the
-    # bound - measured 2026-09-07 with scratchpad/check_maxgb_summarise.py, which prints
+    # (The same review also said --max-gb skips never reach this function. They do: main()'s
+    # `if a.max_gb and gb > a.max_gb` branch writes a row for each - cited here by NAME because
+    # the line number was wrong in three places when it was cited as ":472" (R875 #7) and will
+    # drift again - and they appear under NOT MEASURED above, naming the store and its SIZE
+    # against the flag. Measured 2026-09-07 with scratchpad/check_maxgb_summarise.py, which prints
     # "statcan  SKIPPED 175.1 GB > --max-gb". That half of the finding is refuted.)
     print("\nNOT DERIVABLE FROM A TSV — catalogued sources with no directory under the store at "
           "all.\n   main() lists them as its own NOT MEASURED bucket; a re-read cannot, because "

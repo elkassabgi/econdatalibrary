@@ -99,8 +99,33 @@ def test_a_store_path_that_resolves_nothing_says_so(monkeypatch, capsys, tmp_pat
     monkeypatch.setattr(_resolve, "resolve", _boom)
     m.grain_index()
     err = capsys.readouterr().err
-    assert "resolver could not answer for" in err, err
-    assert "EVERY source failed to resolve" in err, err
+    assert "grain unmeasured for" in err, err
+    assert "EVERY source failed" in err, err
+    assert "DEFAULTED, not measured" in err, err
+
+
+def test_a_source_whose_PK_RANGE_finds_nothing_is_counted_not_skipped(monkeypatch, capsys,
+                                                                      tmp_path):
+    """R875 #1 - the hole the PK-range change opened INSIDE the function being de-silenced.
+
+    `SELECT DISTINCT source_id` guarantees a row for the OLD equality predicate, so `if not row:
+    continue` was unreachable. Under the range it is reachable, and as first written it
+    incremented nothing and printed nothing: forcing every probe to miss gave 0 entries and 0
+    bytes of stderr, while 58 labels changed and 1,012,069,100 store keys moved into the headline
+    total."""
+    m = _load(tmp_path)
+    # ids that do NOT sit inside their own source's key range
+    con = sqlite3.connect(os.path.join(str(tmp_path), "data", "catalog.db"))
+    con.execute("DELETE FROM series")
+    con.executemany("INSERT INTO series VALUES (?, ?)",
+                    [("zzz|alpha|1", "alpha"), ("zzz|beta|1", "beta")])
+    con.commit()
+    con.close()
+    out = m._grain_from_resolver(_resolve_mod())
+    err = capsys.readouterr().err
+    assert out == {}, out
+    assert "grain unmeasured for 2 of 2" in err, err
+    assert "NO row in their own primary-key range" in err, err
     assert "DEFAULTED, not measured" in err, err
 
 
