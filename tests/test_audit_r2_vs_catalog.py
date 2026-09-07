@@ -147,3 +147,37 @@ def test_refuses_with_no_sources_named():
     m = _load()
     rc, out = _run(m, FakeS3({}), {}, [])
     assert rc == 2 and "name at least one source" in out, out
+
+def test_a_truncated_source_is_disclosed_in_the_SUMMARY_not_just_its_row():
+    """The fleet run printed "315 agree; 4 do not" over 322 sources. 315 + 4 = 319 — two prefixes
+    that stopped at --max and one that would not list were each named on their own line and then
+    vanished from the arithmetic.
+
+    That is the failure --max exists to prevent, one level up: a bounded pass reading as full
+    coverage. `agree + disagree` is NOT the number of sources asked about, and the summary must
+    say so."""
+    m = _load()
+    _rc, out = _run(m, FakeS3({"big": 50_000, "ok": 5}), {"big": 1, "ok": 5},
+                    ["big", "ok", "--max", "3000"])
+    assert "NOT MEASURED: 1 stopped at --max" in out, out
+    assert "1 of 2 sources were actually compared" in out, out
+    assert "re-run with a larger --max" in out, out
+
+
+def test_an_unlistable_source_is_disclosed_in_the_SUMMARY_too():
+    """Same rule for the other way a source goes unmeasured."""
+    m = _load()
+    _rc, out = _run(m, FakeS3({"bad": 5, "ok": 5}, fail=["bad"]), {"bad": 5, "ok": 5},
+                    ["bad", "ok"])
+    assert "NOT MEASURED:" in out and "1 could not be listed" in out, out
+    assert "1 of 2 sources were actually compared" in out, out
+    assert "listing failed: RuntimeError" in out, out
+
+
+def test_a_clean_run_prints_no_NOT_MEASURED_line():
+    """The disclosure must not fire when nothing was missed, or it becomes noise people learn to
+    skip — which is how a real one gets missed."""
+    m = _load()
+    _rc, out = _run(m, FakeS3({"a": 5, "b": 7}), {"a": 5, "b": 7}, ["a", "b"])
+    assert "NOT MEASURED" not in out, out
+    assert "2 source(s) where R2 and the catalogue agree; 0 where they do not." in out, out
