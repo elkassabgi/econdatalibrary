@@ -16,7 +16,7 @@ either direction (R525): bls has 9 rows and is series grain; wid has 2,465,197 r
 neither a frequency nor a geography attribute and each still names one series.
 """
 from __future__ import annotations
-import argparse, glob, json, os, sqlite3, time
+import argparse, glob, json, os, sqlite3, sys, time
 import pyarrow.dataset as ds
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
@@ -24,6 +24,13 @@ import pyarrow.parquet as pq
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 STORE = os.path.join(ROOT, "data", "clean_full")
 OUTDIR = os.path.join(ROOT, "dist", "broaden")
+
+# ABSOLUTE, NOT RELATIVE: this module is run as a script AND loaded by its test through
+# `spec_from_file_location` with no parent package, so `from .broaden_catalog import ...` raises
+# "attempted relative import with no known parent package" in both.
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from core.broaden_catalog import KEY_COL_CANDIDATES               # noqa: E402
 PROTECTED = {"cbs_nl", "gus_dbw", "dbnomics"}  # running backfills — never touch
 
 
@@ -71,12 +78,13 @@ def main():
         rec = {"source": d, "n_files": len(files)}
         try:
             cols = set(pq.read_schema(files[0]).names)
-            # THREE CANDIDATES, NOT TWO. `idbank` is the key column that
-            # `broaden_catalog._key_col` and `audit_store_vs_catalog` both already accept, and
-            # omitting it here made a store with that key read as "not uniform-long" - the same
-            # class of silent exclusion R825/R821 recorded for bls (154,190,127 series) and eia
-            # (3,862,801) when the candidate list was `series_key` alone.
-            key_col = next((c for c in ("series_key", "series_id", "idbank") if c in cols), None)
+            # IMPORTED, NOT RE-TYPED. This list held two candidates where its two siblings held
+            # three, so a store keyed on `idbank` read as "not uniform-long" - the same silent
+            # exclusion R825/R821 recorded for bls (154,190,127 series) and eia (3,862,801) when
+            # the list was `series_key` alone. Three hand-copies is how that happens, and the
+            # auditor's own comment had already predicted it, so there is now ONE definition in
+            # `core/broaden_catalog.py`.
+            key_col = next((c for c in KEY_COL_CANDIDATES if c in cols), None)
             rec["has_long"] = bool(key_col and "obs_date" in cols and "value" in cols)
             rec["key_col"] = key_col
             if not rec["has_long"]:
