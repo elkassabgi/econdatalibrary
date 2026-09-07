@@ -14,9 +14,20 @@ Three quantities, three different answers:
     catalogue rows     what we LIST          data/catalog.db (and D1, which serves it)
 
 A gap between the first and the third is "held, not published" - the fix is a derive.
-A gap between the second and the third is "published but unlisted", or "listed but 404" - the fix
-is a catalogue write, or a delist. Those are different jobs with different costs, and the words
-are not interchangeable.
+A gap between the second and the third is "published but unlisted", or "listed but the bytes
+are missing" - the fix is a catalogue write, or a derive, or a delist. Those are different
+jobs with different costs, and the words are not interchangeable.
+
+AND THE STATUS CODE MATTERS. A catalogue row with no object does NOT 404. The worker pins an
+honest-status tree in api/worker/src/series.ts and implements it:
+
+    1. id not in catalog   -> 404 not_found
+    4. R2 object ABSENT    -> 502 data_unavailable ("the object isn't published yet; loud +
+                              actionable, never an empty 200")
+
+404 means we never listed it; 502 means we listed it and have not published the bytes. This
+file called the second one a 404 until 2026-09-07 - the R825 class of error, a served-system
+claim made from a local measurement, with the wrong code attached.
 
 MEASURED 2026-09-06, the run that prompted this tool:
 
@@ -118,7 +129,8 @@ def main() -> int:
         elif d > 0:
             verdict, disagree = "OBJECTS WITH NO CATALOGUE ROW — published, unlisted", disagree + 1
         else:
-            verdict, disagree = "CATALOGUE ROWS WITH NO OBJECT — listed ids that 404", disagree + 1
+            verdict, disagree = ("CATALOGUE ROWS WITH NO OBJECT — listed, bytes not "
+                                 "published: 502 data_unavailable"), disagree + 1
         print(f"  {src:<22}{n:>14,}{cat:>16,}{d:>+13,}  {verdict}")
 
     print()
