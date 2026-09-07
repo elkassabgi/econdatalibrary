@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sqlite3
 import sys
 
 import pytest
@@ -38,17 +39,35 @@ def _resolve_mod():
     return mod
 
 
-def _load():
+def _load(tmp_path=None):
+    """Load the tool, and by default point ROOT at a TINY temp catalogue.
+
+    THE REAL `data/catalog.db` IS 11.91 GB AND IS NOT IN A CI CHECKOUT. The first version of this
+    file let `_grain_from_resolver` open the real one: 7 passed here and 5 failed in CI with
+    `sqlite3.OperationalError: unable to open database file` - a test that passes only on the
+    machine that wrote it, which is the same blindness `test_skill_check` already documents. The
+    fixture holds two sources so the resolver loop actually runs.
+    """
     spec = importlib.util.spec_from_file_location("_audit_under_test", _TOOL)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
+    if tmp_path is not None:
+        root = str(tmp_path)
+        os.makedirs(os.path.join(root, "data"), exist_ok=True)
+        con = sqlite3.connect(os.path.join(root, "data", "catalog.db"))
+        con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+        con.executemany("INSERT INTO series VALUES (?, ?)",
+                        [("alpha:1", "alpha"), ("beta:1", "beta")])
+        con.commit()
+        con.close()
+        m.ROOT = root
     return m
 
 
 @pytest.mark.parametrize("attr", ["_FLOW_GRAIN", "_DOT_TABLE_GRAIN", "_RESOLVERS",
                                   "_resolve_file_grain"])
-def test_a_renamed_registry_stops_the_run(monkeypatch, attr):
-    m = _load()
+def test_a_renamed_registry_stops_the_run(monkeypatch, tmp_path, attr):
+    m = _load(tmp_path)
     _resolve = _resolve_mod()              # the same module object grain_index() imports
     monkeypatch.delattr(_resolve, attr)
     with pytest.raises(RuntimeError) as ex:
@@ -57,20 +76,21 @@ def test_a_renamed_registry_stops_the_run(monkeypatch, attr):
     assert "do not default it" in str(ex.value).lower()
 
 
-def test_every_registry_is_present_today(monkeypatch):
+def test_every_registry_is_present_today(tmp_path):
     """The mirror: the guard above is only meaningful while the names it demands actually exist,
     and this is the line that fails when someone renames one on purpose."""
     _resolve = _resolve_mod()
     for attr in ("_FLOW_GRAIN", "_DOT_TABLE_GRAIN", "_RESOLVERS", "_resolve_file_grain"):
         assert hasattr(_resolve, attr), attr
-    assert isinstance(m_grain := _load().grain_index(), dict) and m_grain
+    idx = _load(tmp_path).grain_index()
+    assert isinstance(idx, dict) and idx
 
 
 def test_a_store_path_that_resolves_nothing_says_so(monkeypatch, capsys, tmp_path):
     """The whole-index case, which is the one that misleads: point STORE at a directory that does
     not exist and every resolve raises. The classification is then DEFAULTED, and the run must say
     that in as many words rather than printing an ordinary-looking index."""
-    m = _load()
+    m = _load(tmp_path)
     monkeypatch.setattr(m, "STORE", str(tmp_path / "no_such_store"))
     _resolve = _resolve_mod()
 
@@ -84,8 +104,17 @@ def test_a_store_path_that_resolves_nothing_says_so(monkeypatch, capsys, tmp_pat
     assert "DEFAULTED, not measured" in err, err
 
 
-def test_a_healthy_index_prints_no_warning(capsys):
-    """...and it must be quiet when nothing is wrong, or the warning becomes wallpaper."""
-    m = _load()
+def test_a_healthy_index_prints_no_warning(monkeypatch, capsys, tmp_path):
+    """...and it must be quiet when nothing is wrong, or the warning becomes wallpaper. Every
+    source in the fixture resolves, so nothing may be printed to stderr at all."""
+    m = _load(tmp_path)
+    _resolve = _resolve_mod()
+
+    class _Res:
+        predicate = ""
+        key_col = ""
+    monkeypatch.setattr(_resolve, "resolve", lambda *_a, **_k: _Res())
     m.grain_index()
-    assert "EVERY source failed to resolve" not in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "resolver could not answer" not in err, err
+    assert "EVERY source failed to resolve" not in err, err
