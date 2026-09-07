@@ -201,7 +201,7 @@ def test_summarise_reclassifies_without_measuring(tmp_path):
     assert "catalogued with no LOCAL STORE KEY : 15 series" in out, out
     assert "1 source(s) at a DECLARED non-series grain, 95 store keys" in out, out
     assert "50 store keys — INCLUDED in the total above" in out, out
-    assert "NO CATALOGUE ROWS AT ALL — 1 source(s), 500 store keys" in out, out
+    assert "NO CATALOGUE ROWS AT ALL - 1 source(s), 500 store keys" in out, out
 
 
 def test_summarise_never_lets_an_unmeasured_source_read_as_clean(tmp_path):
@@ -314,7 +314,7 @@ def test_zero_catalogue_rows_is_its_own_bucket_and_is_COUNTED(tmp_path):
     """
     stdout, tsv = _run(tmp_path, SPEC, GRAIN)
     assert HEADLINE in stdout, stdout                       # zulu's 500 IS in the total
-    assert "NO CATALOGUE ROWS AT ALL — 1 source(s), 500 store keys" in stdout, stdout
+    assert "NO CATALOGUE ROWS AT ALL - 1 source(s), 500 store keys" in stdout, stdout
     assert "INCLUDED in the total above" in stdout, stdout
     assert "UNCATALOGUED — 0 catalogue rows" in tsv, tsv
     # and it is in NEITHER gap bucket: those two now partition cleanly
@@ -327,8 +327,14 @@ def test_a_gated_source_is_not_reported_as_forgotten(tmp_path):
 
     A denylisted source holds data, has no catalogue row and no R2 object BY DECISION (the
     2026-07-22/23 licence purge). Reporting it beside genuinely forgotten data is how I came to
-    write that `gus` was "a dead store directory nothing owns" when it has a working fetcher and
-    sits on the denylist.
+    write that a gated store was "a dead directory nothing owns" when it has a working fetcher
+    and sits on the denylist.
+
+    SIMPLIFIED after a second review: the gate is now checked BEFORE grain, at ANY catalogue row
+    count, so gated sources never reach the zero-catalogue bucket at all. One gated bucket, and
+    everything left in the zero-catalogue bucket is unexplained by construction - which is why
+    that bucket no longer prints a "GATED BY DECISION - 0" heading a reader could mistake for a
+    measurement.
     """
     m = _load()
     m.denylisted = lambda: {"zulu"} | {f"pad{i}" for i in range(12)}
@@ -340,9 +346,11 @@ def test_a_gated_source_is_not_reported_as_forgotten(tmp_path):
     finally:
         sys.stdout = real
     out = buf.getvalue()
-    assert "GATED BY DECISION — 1 of them are on the worker's denylist (500 keys)" in out, out
-    assert "do not read these as forgotten data" in out, out
-    assert "UNEXPLAINED — 0 source(s)" in out, out
+    assert "GATED WITH A GAP - 1 denylisted source(s), 500 keys" in out, out
+    assert "EXCLUDED from the total above" in out, out
+    assert "not a coverage gap at any row count" in out, out
+    # and it is NOT in the zero-catalogue bucket, which is gate-free by construction
+    assert "NO CATALOGUE ROWS AT ALL" not in out, out
 
 
 def test_the_denylist_read_fails_CLOSED(tmp_path):
@@ -440,3 +448,136 @@ def test_grain_index_unions_the_resolver_with_the_declarations():
     assert g.get("eurostat") in m.DECLARED_GRAINS, g.get("eurostat")
     assert g.get("statcan") in m.DECLARED_GRAINS, g.get("statcan")
     assert "group" in m.DECLARED_GRAINS
+# --------------------------------------------------------------------------------------------
+# THE GAPS A SECOND ADVERSARIAL REVIEW FOUND. It ran mutants I had not thought of and 5 of 8
+# survived - because I had chosen mutants my own tests already covered. Choosing your own mutants
+# is subject to the same blind spot as choosing your own assertions.
+
+SPEC2 = {
+    "alpha": (40, 10),      # series grain, real gap
+    "yankee": (700, 0),     # DECLARED flow grain with ZERO catalogue rows - the file-grain case
+    "xray": (300, 20),      # DENYLISTED with catalogue rows - the mis-assignment case
+    "whisky": (90, 0),      # zero catalogue rows, NOT gated - the unexplained side
+}
+GRAIN2 = {"yankee": "flow"}
+DENY2 = {"xray"} | {f"pad{i}" for i in range(12)}
+
+
+def _run2(tmp_path, fail_deny=False):
+    root = str(tmp_path)
+    store = _build(root, SPEC2)
+    m = _load()
+    m.ROOT, m.STORE = root, store
+    m.grain_index = lambda: dict(GRAIN2)
+    if fail_deny:
+        def _boom():
+            raise RuntimeError("simulated")
+        m.denylisted = _boom
+    else:
+        m.denylisted = lambda: set(DENY2)
+    out = os.path.join(root, "logs", "audit.tsv")
+    argv = sys.argv
+    sys.argv = ["audit", "--out", out, "--memory-limit", "512MB"]
+    buf, real = io.StringIO(), sys.stdout
+    sys.stdout = buf
+    try:
+        assert m.main() == 0
+    finally:
+        sys.stdout = real
+        sys.argv = argv
+    return buf.getvalue(), io.open(out, encoding="utf-8").read()
+
+
+def test_zero_catalogue_at_a_DECLARED_grain_is_still_counted(tmp_path):
+    """THE MUTANT THAT SURVIVED. No fixture had a cat==0 source at a DECLARED grain, so reverting
+    the fix for flow/file/table/dot-table passed all 13 tests. On the real data that mutant moves
+    29,447,518 keys - a file-grain store with no catalogue at all - back out of the headline,
+    which is the very case the fix's own comment names."""
+    stdout, _tsv = _run2(tmp_path)
+    assert "NO CATALOGUE ROWS AT ALL" in stdout, stdout
+    # alpha 30 + yankee 700 + whisky 90 = 820 ; xray is gated and excluded
+    assert "held locally but not catalogued    : 820 series" in stdout, stdout
+    assert "grain:flow" in stdout, stdout
+
+
+def test_the_gated_split_cannot_be_inverted(tmp_path):
+    """Inverting GATED and UNEXPLAINED passed, because the old assertions were "the gated line is
+    present" and "UNEXPLAINED - 0 source(s)" - both of which an inversion also satisfies. Assert
+    NON-ZERO on BOTH sides so a swap cannot pass."""
+    stdout, _tsv = _run2(tmp_path)
+    # BOTH sides non-zero, so a swap cannot pass: 2 unexplained (700 + 90) against
+    # 1 gated (280). The old assertions were satisfied by an inversion.
+    assert "NO CATALOGUE ROWS AT ALL - 2 source(s), 790 store keys" in stdout, stdout
+    assert "GATED WITH A GAP - 1 denylisted source(s), 280 keys" in stdout, stdout
+    gated_block = stdout.split("GATED WITH A GAP")[1].split("NO CATALOGUE ROWS")[0]
+    assert "xray" in gated_block, gated_block
+    assert "whisky" not in gated_block and "yankee" not in gated_block, gated_block
+
+
+def test_a_gated_source_WITH_catalogue_rows_is_not_a_coverage_gap(tmp_path):
+    """The real mis-assignment the review measured: a denylisted source holding 26 catalogue rows
+    missed the zero-catalogue split entirely, so its 233-key gap printed as an unexplained
+    coverage gap. The gate outranks the grain at ANY row count."""
+    stdout, tsv = _run2(tmp_path)
+    assert "GATED WITH A GAP - 1 denylisted source(s), 280 keys" in stdout, stdout
+    assert "EXCLUDED from the total above" in stdout, stdout
+    assert "GATED - 451, not a coverage gap" in tsv, tsv
+    assert "held locally but not catalogued    : 820 series" in stdout, stdout
+
+
+def test_the_REAL_denylist_parses_against_the_REAL_file():
+    """FOUR mutants survived because NO test ever called the unpatched `denylisted()` - both that
+    touch it monkeypatch it, and the fixture runs set ROOT to a tmp dir where denylist.ts does not
+    exist, so the entire suite ran with DENYLIST UNAVAILABLE. Same class as this file's own
+    script-invocation test: green tests over a function nothing exercises."""
+    import re
+
+    m = _load()
+    ids = m.denylisted()          # unpatched, real ROOT, real api/worker/src/denylist.ts
+    assert len(ids) >= 10, len(ids)
+    assert all(isinstance(i, str) and i.islower() for i in ids), sorted(ids)[:5]
+    raw = io.open(os.path.join(os.path.dirname(_HERE), "api", "worker", "src", "denylist.ts"),
+                  encoding="utf-8").read()
+    assert re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new Set", raw), "declaration shape changed"
+
+def test_a_suspiciously_short_denylist_is_REFUSED(tmp_path):
+    """The <10-ids guard survived a mutant because the REAL file has 49 ids, so the guard never
+    fires and deleting it is invisible. A guard only counts as tested when something trips it.
+
+    Why it exists: a regex that half-matches (a renamed export, a reformatted file, a set written
+    with single quotes) yields a SHORT list rather than an empty one, and a short denylist reports
+    gated sources as forgotten data - the exact failure the whole gated bucket exists to prevent.
+    Failing closed on an implausibly small parse is cheaper than that.
+    """
+    root = tmp_path / "repo"
+    d = root / "api" / "worker" / "src"
+    d.mkdir(parents=True)
+    io.open(str(d / "denylist.ts"), "w", encoding="utf-8").write(
+        'export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([\n'
+        '  "one",\n  "two",\n  "three",\n]);\n')
+
+    m = _load()
+    m.ROOT = str(root)
+    try:
+        ids = m.denylisted()
+    except RuntimeError as e:
+        assert "implausibly few" in str(e), str(e)
+        assert "3" in str(e), str(e)
+    else:
+        raise AssertionError(f"a 3-id denylist was accepted: {ids}")
+
+
+def test_a_full_length_denylist_is_ACCEPTED(tmp_path):
+    """The other side: the guard must not refuse a legitimate list, or it is just an outage."""
+    root = tmp_path / "repo"
+    d = root / "api" / "worker" / "src"
+    d.mkdir(parents=True)
+    ids = "".join(f'  "src{i}",\n' for i in range(30))
+    io.open(str(d / "denylist.ts"), "w", encoding="utf-8").write(
+        "export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([\n" + ids + "]);\n")
+
+    m = _load()
+    m.ROOT = str(root)
+    got = m.denylisted()
+    assert len(got) == 30, len(got)
+    assert "src0" in got and "src29" in got

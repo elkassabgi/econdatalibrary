@@ -244,8 +244,8 @@ def summarise(path: str) -> int:
         deny = set()
         print(f"DENYLIST UNAVAILABLE ({type(e).__name__}: {e}) — gated sources will be "
               f"reported as forgotten ones. Do not act on the bucket below.")
-    unc = graingap = unkgap = zerogap = 0
-    grainsrc, unkgrain, zerocat, orph, unread = [], [], [], 0, []
+    unc = graingap = unkgap = zerogap = gategap = 0
+    grainsrc, unkgrain, zerocat, gatedsrc, orph, unread = [], [], [], [], 0, []
     rows = 0
     with io.open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -260,7 +260,10 @@ def summarise(path: str) -> int:
                 continue
             n, c = int(in_store), int(cat or 0)
             gap, g = n - c, grain.get(d)
-            if c == 0 and n > 0:
+            if d in deny and gap > 0:
+                gategap += gap
+                gatedsrc.append((d, n, c))
+            elif c == 0 and n > 0:
                 zerogap, unc = zerogap + n, unc + n
                 zerocat.append((d, n, g))
             elif gap > 0 and g in DECLARED_GRAINS:
@@ -284,34 +287,31 @@ def summarise(path: str) -> int:
               "it.")
     print(f"catalogued with no LOCAL STORE KEY : {orph:,} series"
           f"   <- a FLOOR, and NOT a count of 404s")
+    if gatedsrc:
+        print(f"\nGATED WITH A GAP - {len(gatedsrc)} denylisted source(s), "
+              f"{gategap:,} keys, EXCLUDED from the total above")
+        print("   They answer 451 and are hidden from the catalogue, so a difference "
+              "between\n   their store and their catalogue is not a coverage gap at "
+              "any row count.")
+        for d, n, c in sorted(gatedsrc, key=lambda x: -x[1])[:10]:
+            print(f"   {d:24s} store {n:>13,}  cat {c:>10,}   denylisted")
     if zerocat:
         # THE LOUDEST BUCKET, because grain cannot excuse it: a source with no catalogue
         # row at all reaches nobody, whatever grain it would be served at.
-        gated = [(d, n, g) for d, n, g in zerocat if d in deny]
-        loose = [(d, n, g) for d, n, g in zerocat if d not in deny]
-        print(f"\nNO CATALOGUE ROWS AT ALL — {len(zerocat)} source(s), {zerogap:,} "
-              f"store keys — INCLUDED in the total above")
+        # NOT split by gate any more: the gate is checked BEFORE this branch, so nothing
+        # here is denylisted by construction. A dead "GATED BY DECISION - 0" heading reads
+        # as a measurement and is worse than none.
+        print(f"\nNO CATALOGUE ROWS AT ALL - {len(zerocat)} source(s), {zerogap:,} "
+              f"store keys - INCLUDED in the total above")
         print("   Not a grain question. An id absent from the catalogue 404s "
-              "(api/worker/src/series.ts),\n   so every key here is held and reachable by "
-              "nobody. The grain shown says how many\n   catalogue ROWS the fix needs, not "
-              "how many series are unreachable.")
-        if gated:
-            print(f"\n   GATED BY DECISION — {len(gated)} of them are on the worker's "
-                  f"denylist ({sum(n for _d, n, _g in gated):,} keys).\n"
-                  f"   They answer 451 and are hidden from the catalogue on purpose "
-                  f"(the 2026-07-22/23\n   licence purge). Uncatalogued BY DESIGN — do not "
-                  f"read these as forgotten data:")
-            for d, n, _g in sorted(gated, key=lambda x: -x[1])[:10]:
-                print(f"      {d:24s} store {n:>13,}   denylisted")
-            if len(gated) > 10:
-                print(f"      ... and {len(gated) - 10} more")
-        print(f"\n   UNEXPLAINED — {len(loose)} source(s), "
-              f"{sum(n for _d, n, _g in loose):,} keys, held with no catalogue row and no "
-              f"denylist entry:")
-        for d, n, g in sorted(loose, key=lambda x: -x[1])[:15]:
-            print(f"      {d:24s} store {n:>13,}  grain:{g or 'series (default)'}")
-        if len(loose) > 15:
-            print(f"      ... and {len(loose) - 15} more")
+              "(api/worker/src/series.ts),\n   so every key here is held and "
+              "reachable by nobody, and none of it is gated - gated sources are "
+              "reported above,\n   excluded. The grain shown says how many "
+              "catalogue ROWS a fix needs, not how many series are unreachable.")
+        for d, n, g in sorted(zerocat, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  grain:{g or 'series (default)'}")
+        if len(zerocat) > 15:
+            print(f"   ... and {len(zerocat) - 15} more")
     if grainsrc:
         print(f"\nNOT COMPARABLE — {len(grainsrc)} source(s) at a DECLARED non-series "
               f"grain, {graingap:,} store keys")
@@ -389,6 +389,7 @@ def main() -> int:
     graingap, grainsrc = 0, []   # DECLARED flow/dot-table/file grain: apart, never in `unc`
     unkgap, unkgrain = 0, []     # bespoke resolver: grain UNESTABLISHED, apart from BOTH
     zerogap, zerocat = 0, []     # ZERO catalogue rows: unreachable at ANY grain, in `unc`
+    gategap, gatedsrc = 0, []    # DENYLISTED at any cat: 451, never a coverage gap
     nokey = []               # stores with no recognised key column — reported, never silent
     names = sorted(d for d in os.listdir(STORE) if os.path.isdir(os.path.join(STORE, d)))
     for i, d in enumerate(names, 1):
@@ -503,7 +504,11 @@ def main() -> int:
             # (series_census docstring), so a negative gap on a giant is as likely to be the
             # estimator as the data — and ORPHAN is the verdict that claims users get a 404.
             g = grain.get(d)
-            if cat == 0 and n > 0:
+            if d in deny and gap > 0:
+                note = "GATED - 451, not a coverage gap"
+                gategap += gap
+                gatedsrc.append((d, n, cat))
+            elif cat == 0 and n > 0:
                 # Same rule as the exact path: zero rows is unreachable at any grain.
                 note = f"UNCATALOGUED — 0 catalogue rows{f'  grain:{g}' if g else ''}"
                 zerogap, unc = zerogap + n, unc + n
@@ -529,7 +534,15 @@ def main() -> int:
 
         gap = n - cat
         g = grain.get(d)
-        if cat == 0 and n > 0:
+        if d in deny and gap > 0:
+            # GATED FIRST, at any cat. A source that answers 451 is not a coverage gap, and
+            # the zero-catalogue split alone missed the case measured on the real data: a
+            # denylisted source WITH catalogue rows (26) whose 233-key gap printed as
+            # unexplained. The gate outranks the grain.
+            note = "GATED - 451, not a coverage gap"
+            gategap += gap
+            gatedsrc.append((d, n, cat))
+        elif cat == 0 and n > 0:
             # ZERO CATALOGUE ROWS IS NOT A GRAIN QUESTION. Whatever the grain, a source with
             # no catalogue row at all reaches nobody - `series.ts` 404s an id absent from the
             # catalogue - so every one of these keys is held and unreachable, and belongs in
@@ -594,34 +607,31 @@ def main() -> int:
     if not grain_ok:
         print("   WARNING: the grain index failed to build, so this total is UNQUALIFIED "
               "and may be dominated by designed grain differences. Do not report it.")
+    if gatedsrc:
+        print(f"\nGATED WITH A GAP - {len(gatedsrc)} denylisted source(s), "
+              f"{gategap:,} keys, EXCLUDED from the total above")
+        print("   They answer 451 and are hidden from the catalogue, so a difference "
+              "between\n   their store and their catalogue is not a coverage gap at "
+              "any row count.")
+        for d, n, c in sorted(gatedsrc, key=lambda x: -x[1])[:10]:
+            print(f"   {d:24s} store {n:>13,}  cat {c:>10,}   denylisted")
     if zerocat:
         # THE LOUDEST BUCKET, because grain cannot excuse it: a source with no catalogue
         # row at all reaches nobody, whatever grain it would be served at.
-        gated = [(d, n, g) for d, n, g in zerocat if d in deny]
-        loose = [(d, n, g) for d, n, g in zerocat if d not in deny]
-        print(f"\nNO CATALOGUE ROWS AT ALL — {len(zerocat)} source(s), {zerogap:,} "
-              f"store keys — INCLUDED in the total above")
+        # NOT split by gate any more: the gate is checked BEFORE this branch, so nothing
+        # here is denylisted by construction. A dead "GATED BY DECISION - 0" heading reads
+        # as a measurement and is worse than none.
+        print(f"\nNO CATALOGUE ROWS AT ALL - {len(zerocat)} source(s), {zerogap:,} "
+              f"store keys - INCLUDED in the total above")
         print("   Not a grain question. An id absent from the catalogue 404s "
-              "(api/worker/src/series.ts),\n   so every key here is held and reachable by "
-              "nobody. The grain shown says how many\n   catalogue ROWS the fix needs, not "
-              "how many series are unreachable.")
-        if gated:
-            print(f"\n   GATED BY DECISION — {len(gated)} of them are on the worker's "
-                  f"denylist ({sum(n for _d, n, _g in gated):,} keys).\n"
-                  f"   They answer 451 and are hidden from the catalogue on purpose "
-                  f"(the 2026-07-22/23\n   licence purge). Uncatalogued BY DESIGN — do not "
-                  f"read these as forgotten data:")
-            for d, n, _g in sorted(gated, key=lambda x: -x[1])[:10]:
-                print(f"      {d:24s} store {n:>13,}   denylisted")
-            if len(gated) > 10:
-                print(f"      ... and {len(gated) - 10} more")
-        print(f"\n   UNEXPLAINED — {len(loose)} source(s), "
-              f"{sum(n for _d, n, _g in loose):,} keys, held with no catalogue row and no "
-              f"denylist entry:")
-        for d, n, g in sorted(loose, key=lambda x: -x[1])[:15]:
-            print(f"      {d:24s} store {n:>13,}  grain:{g or 'series (default)'}")
-        if len(loose) > 15:
-            print(f"      ... and {len(loose) - 15} more")
+              "(api/worker/src/series.ts),\n   so every key here is held and "
+              "reachable by nobody, and none of it is gated - gated sources are "
+              "reported above,\n   excluded. The grain shown says how many "
+              "catalogue ROWS a fix needs, not how many series are unreachable.")
+        for d, n, g in sorted(zerocat, key=lambda x: -x[1])[:15]:
+            print(f"   {d:24s} store {n:>13,}  grain:{g or 'series (default)'}")
+        if len(zerocat) > 15:
+            print(f"   ... and {len(zerocat) - 15} more")
     if grainsrc:
         print(f"\nNOT COMPARABLE — {len(grainsrc)} source(s) served at a NON-SERIES grain, "
               f"{graingap:,} store keys")
