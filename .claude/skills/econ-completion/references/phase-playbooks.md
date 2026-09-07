@@ -12,7 +12,7 @@ The full task lists live in `ECONLIB_COMPLETION_PLAN.md` Part 3. Load this file 
 ## Phase 0 — Install, baseline, fix the instruments
 
 Entry checks: skill installed in BOTH repos and loads; plan reachable; `WORKLOG.md` created (append-only).
-Key tasks: fix `ledger_check.py --digest`; fix stale doc counts; capture baselines (audit, untouched files, retry-queue provenance incl. the `abs`/`ilostat` GROUP BY, the ONE `SELECT_SOURCES` rows_read measurement); brief Ahmed on worldbank_pink and sdmx_nso.
+Key tasks: fix `ledger_check.py --digest`; fix stale doc counts; capture baselines (audit, untouched files, retry-queue provenance incl. the `abs`/`ilostat` GROUP BY, the ONE `SELECT_SOURCES` rows_read measurement); brief Ahmed on several GATED sources.
 
 > **CORRECTED 2026-08-30 — the original wording of the digest fix was refuted by this project's own
 > adversarial review the same day (ledger R521). Do NOT implement "date-based cutoff + backfill 147".**

@@ -48,9 +48,8 @@ A `series_key` that drops a dimension the publisher varies, so distinct series c
 | `unctad_tradefoodproccatcatrca` | 17,617 | `Flow` | 286,038 publisher two-flow cells = 286,038 duplicated pairs, zero residue |
 | `damodaran` | 24,687 (721 collided) | worksheet name | publisher workbook: India Adj. Default Spread = 0.0209, **we serve 0.3** (its corporate tax rate); rating ladder breaks monotonicity at 9/19 steps |
 | `bea` | 913,230 | (minor: 49,856 pairs = 0.074%) | per-file, cross-file is by design |
-| `defillama`, `istat`, `ine_spain` | served | smaller | see §10.3 of source doc |
-| `who_gho` | **0 (gated, 451)** | `Dim1..Dim3` | 42.7% of ids conflict — real defect, zero user exposure today |
-| `ibge`, `cow` | 0 (gated) | various | — |
+| `defillama`, `istat`, `GATED` | served | smaller | see §10.3 of source doc |
+| `GATED`, `GATED` | 0 (gated) | various | — |
 
 **The five giants unswept** by the fleet duplicate sweep: `statcan`, `eurostat`, `cbs_nl`, `oecd`, `ilostat`. The census is **not final** until they are measured. 13 stores are unmeasurable by the generic sweep (key on `series_id` or custom columns) and were partially measured separately (`bls` 282,931 conflicting pairs but only 9 catalogued ids; `ofr` clean).
 
@@ -59,7 +58,7 @@ A `series_key` that drops a dimension the publisher varies, so distinct series c
 **Why not fixed yet:** every remedy is a **re-key that changes PUBLIC series ids** → **RESERVED for Ahmed** (precedent R275/R276). Your job is to prepare per-source decision briefs (design, cost, migration plan, rollback, id-stability guarantees) and execute only after his written go.
 
 ### W2 — Updates reach the store but never the user
-- **73,125 changed series keys across 20 sources map to no catalogue id.** Leaders: `eia` 50,000 (exactly `CURSOR_CAP` — a cap, not a count; true number larger; its latest run banked **+235,050,106 rows** and delivered none), `owid` 12,192, `sipri_polity` 6,513.
+- **73,125 changed series keys across 20 sources map to no catalogue id.** Leaders: `eia` 50,000 (exactly `CURSOR_CAP` — a cap, not a count; true number larger; its latest run banked **+235,050,106 rows** and delivered none), `GATED` 12,192, `GATED` 6,513.
 - **231,782 series in `csv_retry_queue`**, oldest 12 days. **Every row is at attempts=1 — nothing has ever reached a second attempt.** 183,735 of them are hard `UnitTimeout` crashes (not the designed budget-deferral path); `abs` at exactly 100,000 and `ilostat` at exactly 50,000 are suspicious round numbers (cap artefacts?) — **establish** with `SELECT enqueued_utc, COUNT(*) … GROUP BY 1`.
 - **~56 live+served sources have never returned `ok`** (perpetual `partial`), so their CSVs were never re-derived on schedule (`worldbank_esg` served 2023 values while the store held 2024 — fixed only by forcing derive on partials).
 - **11 fetchers (`norgesbank` + 10 more) compute their "changed" set from disk before any network call**, violating the orchestrator's contract — their `series_cursors` mean "everything", so derives run 32x over-cost or never converge.
@@ -70,7 +69,7 @@ A `series_key` that drops a dimension the publisher varies, so distinct series c
 - **`oecd`: 60 of 131 flows have no `TIME_PERIOD` column** — cross-sectional data outside the series model (same shape as `gleif`). Serve or formally exclude → **RESERVED product decision**.
 - Gate has **no tolerance for a bounded known-broken minority** (`bfs` 649/650, `hagstofa` 1538/1568, `stat_slovenia` 95/97 permanently red) → gate policy → **RESERVED**.
 - `norgesbank` **un-gating provenance**: its R2 objects were deleted in the 2026-07-23 purge as "gated, 0 catalog series", then catalogued 2026-08-06. Confirm authorisation **before** anything publishes 35,135 new objects → **RESERVED**.
-- `worldbank_pink`: 26 residual catalogue rows while gated (the one "gated-but-present" source the 07-23 purge policy otherwise eliminated). Check whether they exist in D1; bring to Ahmed with a recommendation (purge vs keep) → **RESERVED**.
+- `GATED`: 26 residual catalogue rows while gated (the one "gated-but-present" source the 07-23 purge policy otherwise eliminated). Check whether they exist in D1; bring to Ahmed with a recommendation (purge vs keep) → **RESERVED**.
 
 ### W4 — Catalogue & search integrity
 - **`series_fts` holds 2.00x the series count** (26,981,683 rows): 1,052,814 orphans + 12,442,585 surplus duplicates (`wid` 7,395,591; `boc` **8.00x** → a search page is 84% repeats). Repair is known: PK-range statements only, **never** per-id statements on the UNINDEXED `series_id` column (23,843,482 rows/statement; an `IN` of 200 costs the same) — and the survival test must prove the *kept* rows carry the real **titles** (R488: proving on `series_id` is proving on the one column FTS ignores).
@@ -86,7 +85,7 @@ A `series_key` that drops a dimension the publisher varies, so distinct series c
 ### W6 — Public-facing honesty items (each ends in a decision brief)
 - `/v1/stats` serves the **July census (79.8B obs / 7.73B series)**; the measured store is **33.9B / 3.90B**. The census tool's >20% gate refuses to publish without `--force-publish`. Publishing the honest number is **Ahmed's Phase-4 decision** — prepare the one-page brief (both numbers, why they differ, what the site would show).
 - Homepage claims "Python and R clients available" — **no econ R client exists** (`clients/r` is hf's). Either build one (then verify live) or change the site copy + `.zenodo.json` + `STRATEGY.md`. Copy change is trivial; claiming is not.
-- `sdmx_nso`: gated in the Worker but its local licence row says `reservable=1` (cc-by-3.0). One of the two records is stale; settle from `DATABASE_LICENSES_VERBATIM.md` (the single source of truth — do NOT re-derive) and D1, then reconcile.
+- `GATED`: gated in the Worker but its local licence row says `reservable=1` (cc-by-3.0). One of the two records is stale; settle from `DATABASE_LICENSES_VERBATIM.md` (the single source of truth — do NOT re-derive) and D1, then reconcile.
 
 ### W7 — Still-running jobs (do not disturb; verify by artefact only)
 - `statcan` derive: ~8,200/8,207 tables; last census tables ~2–3 h each; parquet re-upload queued behind it.
@@ -145,8 +144,8 @@ Execute strictly in order. A phase is **not complete** until its exit gate passe
    - `csv_retry_queue` breakdown incl. the `abs`/`ilostat` round-number provenance query (state.db, local)
    - the ONE D1 measurement: `SELECT_SOURCES` verbatim with `meta.rows_read` (closes the §10.2 flag; if rows_read is in the millions, schedule the materialisation/cache fix in Phase 2)
    - `ledger_check.py --numbers` and `test_reliability_system.py`
-5. Decide the `worldbank_pink` 26-rows question → **brief to Ahmed** (RESERVED). Check D1 presence first (one cheap query, count-only).
-6. Reconcile `sdmx_nso` licence drift → fix the stale record or brief Ahmed (RESERVED if it means changing a gate).
+5. Decide the `GATED` 26-rows question → **brief to Ahmed** (RESERVED). Check D1 presence first (one cheap query, count-only).
+6. Reconcile `GATED` licence drift → fix the stale record or brief Ahmed (RESERVED if it means changing a gate).
 
 **Outputs.** Updated `WORKLOG.md` with dated baselines; fixed `ledger_check.py`; the two decision briefs.
 **Exit gate.** `ledger_check.py --digest` passes with **zero invisible headings** and a demonstrated FAIL-on-gap test; every baseline row has an instrument + date; briefs filed and their resolution recorded.
@@ -202,7 +201,7 @@ Execute strictly in order. A phase is **not complete** until its exit gate passe
 **Tasks.**
 1. **Finish the measurement.** Sweep the five giants (`statcan`, `eurostat`, `cbs_nl`, `oecd`, `ilostat`) with the corrected per-file instrument (validate against hand-computed answers before use — the v1–v4 history). Include the 13 custom-schema stores with their own instruments. Publish the final table (store / conflicting pairs / % / files / served?) in `WORKLOG.md` and NUMBERS.md. This census is the evidence base for every brief.
 2. **One brief per affected source**, in a standard form: the dropped dimension (publisher evidence — `$metadata`, dimension list, workbook sheet), the proposed new id grammar (stable across snapshots — never embed vintage in the key), the migration (store re-key → re-derive → catalogue/D1/FTS/source_counts → denylist unaffected), the compatibility plan (what happens to old ids: alias, 410, or deprecation window — must be loud, never a silent 404), the cost (rows/objects/Class-A PUTs, wall time), the rollback (fixtures + backup), and the verification (publisher-value spot-checks like the Damodaran/UNCTAD confirmations). **RESERVED: no execution before Ahmed's written go.**
-3. **Order the executions** by (served ids affected × severity × reversibility): `damodaran` (721 wrong values, publisher-confirmed, smallest blast radius) → UNCTAD ×2 (Flow) → `idb` → `eia` (biggest; needs the Phase-3 cursor fix first) → the minors (`bea`, `defillama`, `istat`, `ine_spain`) → gated stores (`who_gho`, `ibge`, `cow`) which change nothing user-facing but stop the defect at its source.
+3. **Order the executions** by (served ids affected × severity × reversibility): `damodaran` (721 wrong values, publisher-confirmed, smallest blast radius) → UNCTAD ×2 (Flow) → `idb` → `eia` (biggest; needs the Phase-3 cursor fix first) → the minors (`bea`, `defillama`, `istat`, `GATED`) → gated stores (`GATED`, `GATED`, `GATED`) which change nothing user-facing but stop the defect at its source.
 4. **Fix the systemic cause**: route ingest jobs through `merge_and_write` (or a shared "ingest publish" wrapper with the same invariants) for all future writes — 146 writers to migrate or retire; each migration proven by a discriminating test (a fixture with duplicate `(key,date)` pairs must come out deduped; a shrink must be refused). Never re-run an ingest against a live store without the guard's protection.
 5. After each re-key: re-derive, sync all five places, regenerate the site + runbooks (`python tools/gen_runbook.py --with-store`), verify live (200s + correct values incl. a publisher-confirmed spot-check), log it, ledger it.
 

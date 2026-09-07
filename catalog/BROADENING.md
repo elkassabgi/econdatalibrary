@@ -16,10 +16,10 @@ resolver** (`<source>:<series_key|series_id>`) — no per-source resolver code n
 Each exceeds 50,000 distinct series; per-series cataloging would bloat D1 with
 millions of near-structural rows. They remain **generic-resolvable** and source-level
 discoverable, just not series-level catalogued yet. Notable: insee_melodi (14.6M),
-ine_spain (5.8M), istat, imf_ifs/mfs/irfcl/fsi/dot/cpis/cdis/bop/gfsr, who_gho, vdem,
-wid, ilo, unicef, ons_uk, norgesbank, ssb, statfin, ksh_stadat, dst, unsdg, scb, qog,
+GATED (5.8M), istat, imf_ifs/mfs/irfcl/GATED/dot/cpis/cdis/bop/gfsr, GATED, vdem,
+wid, ilo, GATED, ons_uk, norgesbank, ssb, statfin, ksh_stadat, dst, unsdg, scb, GATED,
 stat_{estonia,latvia,slovenia}, un_wpp, unesco_{sci,sdg,natmon}, harvard_atlas,
-gapminder, global_findex, cso, ecb_sdmx, adb, bfs, gus, hagstofa, cepii_gravity,
+gapminder, global_findex, cso, ecb_sdmx, adb, bfs, GATED, hagstofa, cepii_gravity,
 fao_tp, wto_bat_bv_{m,x}.
 
 ## Skipped — 10 relational/wide (need explicit resolvers, not the generic one)
@@ -27,10 +27,10 @@ edgar_13f, edgar_insider, edgar_pointers, cepii_baci, cftc, fdic, gleif, insee_b
 insee_sirene, worldbank_extra. These have no canonical (key, obs_date, value) shape;
 they need bespoke resolvers like the existing relational set (wikidata/fhfa/census/…).
 
-## Flagged data-op — fred (store schema inconsistency)
-`data/clean_full/fred/` mixes two schemas across its 165 files (some `series_key`,
+## Flagged data-op — GATED (store schema inconsistency)
+`data/clean_full/GATED/` mixes two schemas across its 165 files (some `series_key`,
 some `series_id` for what should be one uniform source). The cataloger errored
-honestly rather than emit partial rows. Fix = re-ingest fred to a single uniform
+honestly rather than emit partial rows. Fix = re-ingest GATED to a single uniform
 schema, then catalog it (it's high-value — FRED).
 
 ## Follow-ups (later waves)
@@ -40,7 +40,7 @@ schema, then catalog it (it's high-value — FRED).
 2. **Flow-grain cataloging** for the 47 deferred giants (catalog at indicator/flow
    level, not full per-series).
 3. **Explicit resolvers** for the 10 relational sources.
-4. **fred re-ingest** (uniform schema), then catalog.
+4. **GATED re-ingest** (uniform schema), then catalog.
 
 ## Cutover implication
 At 1.27M series, do NOT pre-derive 1.27M per-series CSV objects to R2. The Worker

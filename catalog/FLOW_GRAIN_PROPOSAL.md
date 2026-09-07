@@ -5,7 +5,7 @@ build. No live changes made. Companion to [BROADENING.md](BROADENING.md) follow-
 
 ## 1. The problem
 The 47 giants each exceed 50,000 distinct series; together they hold the bulk of the
-~20M+ series in `data/clean_full` (e.g. vdem 77.4M rows, imf_ifs 13.5M, who_gho 8.2M,
+~20M+ series in `data/clean_full` (e.g. vdem 77.4M rows, imf_ifs 13.5M, GATED 8.2M,
 insee_melodi 14.6M series). Per-series cataloging would push D1 from ~0.65 GB to many
 GB of near-structural rows — most of which are one country/age/sex cell of the *same*
 indicator. They are already **generic-resolvable** (`<source>:<series_key>`) and
@@ -18,7 +18,7 @@ statistics table. One catalog row per flow, NOT per series. Each flow row carrie
 
 | field | value |
 |---|---|
-| `series_id` | `<source>:<flow_id>` — a *browse* id (e.g. `istat:DCIS_POPRES1`, `who_gho:HCF_REL_ELECTRICITY`) |
+| `series_id` | `<source>:<flow_id>` — a *browse* id (e.g. `istat:DCIS_POPRES1`, `GATED:HCF_REL_ELECTRICITY`) |
 | `grain` | **NEW column** = `"flow"` (existing rows are implicitly `"series"`) |
 | `title` | the flow's OFFICIAL name (SDMX DSD / codelist label; see §4) — never fabricated |
 | `n_series` | distinct `series_key` within the flow (measured at build) |
@@ -40,7 +40,7 @@ Verified by inspecting the data layout + parquet schemas:
   wto_bat_*). `flow_id = file stem`; one row per data parquet. No row scan needed for
   the flow list (only for n_series/date-range).
 - **C — single-file, flow encoded in `series_key`** (imf_ifs `IMF_IFS:A.1C_355.<IND>`,
-  who_gho `<IND>:<COUNTRY>`, vdem `VDEM:<var>:<unit>`). `flow_id` = the indicator
+  GATED `<IND>:<COUNTRY>`, vdem `VDEM:<var>:<unit>`). `flow_id` = the indicator
   segment of the key. The segment position differs per source, so each needs a
   one-line **flow extractor** rule (derivable from `_provider.json`'s SDMX DSD, which
   names the dimensions). This is the only source-specific code.
@@ -81,7 +81,7 @@ be **multilingual from day one** (ties directly into the live `?lang=` work; see
 ## 7. D1 size impact (estimate — exact counts measured at build)
 Flow rows replace millions of series rows with **order 10k–60k rows total** across the
 47 giants (anchors: istat 755, ecb_sdmx 101, insee_melodi 71 measured today; imf_ifs
-~2.5k indicators, who_gho ~2.3k, vdem ~0.5k — *estimates to confirm at build*). This is
+~2.5k indicators, GATED ~2.3k, vdem ~0.5k — *estimates to confirm at build*). This is
 a rounding error on the current 0.65 GB D1 and keeps search fast.
 
 ## 8. Build plan (resume-safe, no creds, doesn't touch backfills)

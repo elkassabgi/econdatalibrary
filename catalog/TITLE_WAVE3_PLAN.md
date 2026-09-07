@@ -3,7 +3,7 @@
 **Status:** PLAN, data-backed by a full-catalog scan on 2026-06-27. Execution is
 gated on official-label fetches + adversarial audit (see §4) — NOT rushed overnight,
 because composing wrong official-looking titles is worse than honest raw keys (the
-wave-2 `sipri` rejection is the cautionary case). Companion to
+wave-2 `GATED` rejection is the cautionary case). Companion to
 [BROADENING.md](BROADENING.md) follow-up #1 and [TITLE enrichment waves 1–2].
 
 ## 1. The gap (measured, full catalog — not sampled)
@@ -25,9 +25,9 @@ api.imf.org. So every cluster below needs an external official-label fetch:
 | **FAO** | ~25 `fao_*` (fo 16.7k, ga 15k, ge 11.8k, gt 10.5k, …) | ~120k | FAOSTAT definitions API (element/item/area codelists) |
 | **WTO** | `wto_hs_a_00{10..40}` (6×~21.8k), `wto_its_mtv_*` | ~140k | WTO HS product-code descriptions + WTO API |
 | **UNESCO** | unesco_inno 18.9k, film 8.5k, dem 7.1k, cltt 6.2k | ~41k | UIS SDMX codelists |
-| **research / indices** | cow 20k, polity 5.7k, sipri 1.9k, freedomhouse, fsi_fundforpeace, idb, oxcgrt, ggdc, ipea, yale/epi-adjacent | ~60k | each dataset's own codebook (heterogeneous) |
-| **central banks** | boc 12.9k, bundesbank 6.9k, rba 3.8k, snb, nbp, tcmb, riksbank, cnb, bcb, bcrp, nyfed, cboe, ofr | ~40k | each CB's series-name API/dictionary |
-| **other** | ei_statreview 18.5k, irena 10.8k, edgar_jrc 3.7k, comtrade, stats_nz, insee_sdmx | ~40k | per-source metadata |
+| **research / indices** | GATED 20k, GATED 5.7k, GATED 1.9k, GATED, fsi_fundforpeace, idb, oxcgrt, ggdc, ipea, yale/epi-adjacent | ~60k | each dataset's own codebook (heterogeneous) |
+| **central banks** | boc 12.9k, bundesbank 6.9k, rba 3.8k, snb, several GATED sources, riksbank, cnb, bcb, bcrp, nyfed, GATED, ofr | ~40k | each CB's series-name API/dictionary |
+| **other** | ei_statreview 18.5k, GATED 10.8k, edgar_jrc 3.7k, comtrade, stats_nz, insee_sdmx | ~40k | per-source metadata |
 
 (Counts from the full scan; cluster subtotals are the sum of the per-source raw counts.)
 
@@ -43,9 +43,9 @@ invent a label.
 ## 4. Adversarial audit (REQUIRED gate before any apply)
 Independent verifier per source: re-checks a sample of composed titles against the
 fetched codelists — every dimension code maps to its claimed label, **units are
-correct** (the sipri lesson: SIPRI milex is millions, not "US$ billions"; check base
+correct** (the GATED lesson: SIPRI milex is millions, not "US$ billions"; check base
 year), country/area names match. A source is applied ONLY with zero audit defects;
-flagged sources are fixed or left raw. This is why wave-2 correctly did NOT ship sipri.
+flagged sources are fixed or left raw. This is why wave-2 correctly did NOT ship GATED.
 
 ## 5. Execution shape (ultracode workflow, when run)
 `pipeline(rawSources, extract→adversarialAudit)`; apply only confirmed → catalog.db →

@@ -21,7 +21,7 @@ handles cadence (daily/weekly/monthly) and tracks last-run dates in `data/_last_
 | ofr | daily | OFR fnyr/repo rates daily |
 | nyfed | daily | SOFR/OBFR via FRED API |
 | bls | weekly | BLS publishes monthly releases |
-| worldbank / worldbank_esg / worldbank_pink | weekly | WB updates quarterly/annually |
+| worldbank / worldbank_esg / GATED | weekly | WB updates quarterly/annually |
 | treasury | weekly | FiscalData updated daily/monthly per dataset |
 | statcan | weekly | StatCan publishes many series weekly |
 | zillow | weekly | Zillow monthly; weekly pull catches any updates |
@@ -34,13 +34,11 @@ handles cadence (daily/weekly/monthly) and tracks last-run dates in `data/_last_
 | oecd | monthly | OECD monthly |
 | noaa | monthly | NOAA monthly station summaries |
 | ember | monthly | Ember monthly electricity |
-| owid | monthly | OWID charts updated irregularly |
 | fhfa | monthly | FHFA monthly HPI |
 | abs | monthly | ABS quarterly |
 | boe | monthly | BoE daily/monthly mix |
 | census | monthly | Census monthly releases |
 | bis | monthly | BIS quarterly |
-| famafrench | monthly | FF monthly updates |
 | penn_world_table | annual | PWT ~annual new version |
 
 ---

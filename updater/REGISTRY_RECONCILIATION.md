@@ -37,7 +37,7 @@ Four sources were profiled once **per legacy ingest script**, producing two prof
 - `bis` — `jobs/ingest_bis_cbs_lbs.py` + `jobs/ingest_bis_full.py` (two scripts, one source).
 - `bls` — `jobs/ingest_bls.py` + `jobs/ingest_bls_full.py` (two scripts, one source).
 - `insee_sirene` — `jobs/ingest_insee_sirene.py` + `jobs/ingest_insee_sirene_bulk.py` (two scripts, one source).
-- `irena` — `jobs/ingest_irena.py` + `jobs/ingest_irena_country.py` (two scripts, one source).
+- `GATED` — `jobs/ingest_irena.py` + `jobs/ingest_irena_country.py` (two scripts, one source).
 
 So: 129 unique + 4 doubled rows = 133 rows; 129 unique + `sec_edgar_xbrl` (post-split, never profiled) = 130 registry sources. Every prior number now traces: "133" = script-profile rows, "129" = unique profiled sources, "130" = registry sources.
 

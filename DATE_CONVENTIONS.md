@@ -21,7 +21,7 @@
 >   files it cannot read; this document was generated before that fix.
 > - Several per-source labels are simply wrong: `un_wpp` is annual mid-year (every
 >   observation on 07-01) but labelled quarterly-START; `bis` is quarterly, not monthly;
->   `ilostat` is annual-dominant; `abs` is annual-END; `fred`, `cbs_nl` and `eurostat`
+>   `ilostat` is annual-dominant; `abs` is annual-END; `GATED`, `cbs_nl` and `eurostat`
 >   are not "daily" in any meaningful sense.
 >
 > **The DIRECTION of the finding survives** — period-END genuinely dominates by
@@ -110,7 +110,6 @@ beside a quarterly one stamped 01-01 inside one source is legitimate.
 | `stat_estonia` | 17,446,510 | 12-31:16489441, 01-01:193119, 04-01:185572, 07-01:182667 |
 | `stat_slovenia` | 14,250,339 | 12-31:10062244, 10-01:1012456, 07-01:698670, 01-01:675420 |
 | `statfin` | 11,323,867 | 12-31:8966712, 01-01:402268, 07-01:368290, 04-01:327543 |
-| `worldbank_pink` | 73,361 | 12-31:10442, 02-01:5294, 03-01:5293, 04-01:5293 |
 
 ## Per-source
 
@@ -127,13 +126,11 @@ beside a quarterly one stamped 01-01 inside one source is legitimate.
 | `boc` | daily/exact dates | 2,732,162 |
 | `boe` | daily/exact dates | 3,844,743 |
 | `bundesbank` | daily/exact dates | 3,873,801 |
-| `cboe` | daily/exact dates | 270,055 |
 | `cbs_nl` | daily/exact dates | 4,304,423,589 |
 | `census` | MIXED (no single convention) | 44,242,170 |
 | `cepii_gravity` | annual END (12-31) | 69,666,545 |
 | `cnb` | daily/exact dates | 264,605 |
 | `comtrade` | annual END (12-31) | 24,086 |
-| `cow` | annual END (12-31) | 385,966 |
 | `cso` | daily/exact dates | 49,057,386 |
 | `damodaran` | MIXED (no single convention) | 23,343 |
 | `defillama` | daily/exact dates | 38,436,439 |
@@ -147,7 +144,6 @@ beside a quarterly one stamped 01-01 inside one source is legitimate.
 | `epu` | monthly START (day 1) | 14,172 |
 | `etr` | annual END (12-31) | 1,035 |
 | `eurostat` | daily/exact dates | 2,430,929,754 |
-| `famafrench` | daily/exact dates | 238,797 |
 | `fao_ae` | annual START (01-01) | 3,094 |
 | `fao_af` | annual START (01-01) | 3,154 |
 | `fao_ec` | annual START (01-01) | 807 |
@@ -179,8 +175,6 @@ beside a quarterly one stamped 01-01 inside one source is legitimate.
 | `fed_board` | daily/exact dates | 13,669,798 |
 | `fhfa` | monthly END (month-end) | 3,227,560 |
 | `frankfurter` | daily/exact dates | 264,774 |
-| `fred` | daily/exact dates | 48,188,443 |
-| `freedomhouse` | annual END (12-31) | 16,989 |
 | `fsi_fundforpeace` | annual END (12-31) | 41,253 |
 | `gapminder` | annual END (12-31) | 3,763,088 |
 | `gcb` | annual END (12-31) | 386,777 |
@@ -189,11 +183,9 @@ beside a quarterly one stamped 01-01 inside one source is legitimate.
 | `gpi` | annual END (12-31) | 92,550 |
 | `gppd` | annual END (12-31) | 88,968 |
 | `gti` | annual END (12-31) | 14,670 |
-| `gus` | annual END (12-31) | 995,909 |
 | `gus_dbw` | annual END (12-31) | 469,491,576 |
 | `hagstofa` | MIXED (no single convention) | 7,207,289 |
 | `harvard_atlas` | annual END (12-31) | 3,480,458 |
-| `ibge` | annual END (12-31) | 31,893,504 |
 | `idb` | annual END (12-31) | 15,066,444 |
 | `ilo` | MIXED (no single convention) | 208,345,152 |
 | `ilostat` | monthly START (day 1) | 388,161,420 |
@@ -244,38 +236,30 @@ beside a quarterly one stamped 01-01 inside one source is legitimate.
 | `imf_whdreo_direct` | annual END (12-31) | 12,855 |
 | `imf_world` | annual START (01-01) | 51,510 |
 | `imf_world_direct` | annual END (12-31) | 89,369 |
-| `ine_spain` | monthly END (month-end) | 128,598,033 |
 | `insee_bdm` | MIXED (no single convention) | 10,823,103 |
 | `insee_melodi` | daily/exact dates | 34,683,679 |
 | `insee_sdmx` | MIXED (no single convention) | 10,818,461 |
 | `ipea` | daily/exact dates | 621,981 |
-| `irena` | annual END (12-31) | 196,314 |
 | `istat` | MIXED (no single convention) | 371,190,751 |
 | `kof_globalization` | annual END (12-31) | 280,421 |
 | `ksh` | annual END (12-31) | 512,995 |
 | `ksh_stadat` | MIXED (no single convention) | 1,249,215 |
 | `maddison` | annual END (12-31) | 36,905 |
 | `nasa_giss` | MIXED (no single convention) | 9,946 |
-| `nbp` | daily/exact dates | 298,895 |
 | `noaa` | MIXED (no single convention) | 549,412,914 |
 | `norgesbank` | daily/exact dates | 8,363,603 |
 | `nyfed` | daily/exact dates | 16,656 |
 | `oecd` | annual END (12-31) | 6,979,047,823 |
 | `ofr` | daily/exact dates | 426,300 |
 | `ons_uk` | annual END (12-31) | 25,401,777 |
-| `owid` | daily/exact dates | 72,484,733 |
 | `oxcgrt` | daily/exact dates | 7,837,551 |
 | `penn_world_table` | annual END (12-31) | 418,397 |
 | `pip` | annual END (12-31) | 453,474 |
-| `polity` | annual END (12-31) | 376,867 |
 | `ppi` | annual END (12-31) | 75,306 |
 | `pwt` | annual END (12-31) | 389,098 |
-| `qog` | annual END (12-31) | 6,921,874 |
 | `rba` | daily/exact dates | 1,107,561 |
 | `riksbank` | daily/exact dates | 608,004 |
 | `scb` | MIXED (no single convention) | 19,671,743 |
-| `shiller` | monthly START (day 1) | 16,593 |
-| `sipri` | annual END (12-31) | 82,268 |
 | `snb` | daily/exact dates | 303,358 |
 | `ssb` | MIXED (no single convention) | 28,283,649 |
 | `stat_estonia` | MIXED (no single convention) | 17,446,510 |
@@ -285,7 +269,6 @@ beside a quarterly one stamped 01-01 inside one source is legitimate.
 | `statfin` | MIXED (no single convention) | 11,323,867 |
 | `stats_nz` | quarterly START | 118,822 |
 | `swiid` | annual END (12-31) | 37,536 |
-| `tcmb` | daily/exact dates | 511,229 |
 | `transparency_ti` | annual END (12-31) | 2,312 |
 | `treasury` | daily/exact dates | 18,424,684 |
 | `ucdp` | annual END (12-31) | 21,610 |
@@ -335,14 +318,11 @@ beside a quarterly one stamped 01-01 inside one source is legitimate.
 | `unesco_film` | annual START (01-01) | 70,467 |
 | `unesco_inno` | annual START (01-01) | 43,802 |
 | `unesco_natmon` | annual START (01-01) | 1,876,322 |
-| `unesco_sci` | annual START (01-01) | 759,045 |
 | `unesco_sdg` | annual START (01-01) | 734,662 |
 | `unhcr` | annual END (12-31) | 213,937 |
-| `unicef` | daily/exact dates | 23,111,730 |
 | `unsdg` | annual END (12-31) | 2,918,435 |
 | `vdem` | annual END (12-31) | 79,590,111 |
 | `wgi` | annual END (12-31) | 194,418 |
-| `who_gho` | annual END (12-31) | 8,188,819 |
 | `who_hwf` | annual START (01-01) | 54,320 |
 | `who_rs` | annual START (01-01) | 2,211 |
 | `who_sdg` | annual START (01-01) | 172,598 |
@@ -350,7 +330,6 @@ beside a quarterly one stamped 01-01 inside one source is legitimate.
 | `wid` | annual END (12-31) | 124,367,162 |
 | `worldbank_esg` | annual END (12-31) | 473,896 |
 | `worldbank_extra` | annual END (12-31) | 21,880,696 |
-| `worldbank_pink` | MIXED (no single convention) | 73,361 |
 | `worldbank_wdi` | annual END (12-31) | 8,894,931 |
 | `yale_epi` | annual END (12-31) | 84,654 |
 | `zillow` | daily/exact dates | 106,490,755 |

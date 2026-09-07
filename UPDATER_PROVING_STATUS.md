@@ -33,7 +33,7 @@ bottleneck; **proving** is, and CI is serialized to one run at a time by the
 
 ## Healthy in local smoke (`--force`, rc=0)
 
-`transparency_ti`, `nasa_giss`, `swiid`, `gti`, `etr`, `sipri_polity`, `fsi_fundforpeace`,
+`transparency_ti`, `nasa_giss`, `swiid`, `gti`, `etr`, `GATED`, `fsi_fundforpeace`,
 `gpi`, `damodaran`, `gppd`, `barro_lee`, `wgi`, `kof_globalization`, `undp_hdr`, `ppi`, `epu`,
 `yale_epi`, `wikidata`, `edgar_jrc`, `imf_commodity`, `pwt`, `gcb`, `ei_statreview`,
 `penn_world_table`, `oxcgrt` (4.81 GB), `imf_weo`, `ggdc`, `harvard_atlas`, `gapminder`,

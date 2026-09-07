@@ -140,7 +140,7 @@ GitHub Actions (cron 06:00 UTC)
   imf_weo, insee_bdm, insee_melodi, nasa_giss, oecd, ofr, pip, scb, sec_edgar, ssb,
   stat_estonia, stat_latvia, stat_slovenia, statcan, statfin, treasury, wikidata,
   worldbank_wdi, yale_epi (+ the IEP/PxWeb set).
-- **No fetcher yet (~40):** bea, bis, boe, census, eia, ilostat, imf, owid, un_wpp, etc. —
+- **No fetcher yet (~40):** bea, bis, boe, census, eia, ilostat, imf, GATED, un_wpp, etc. —
   these have a legacy `jobs/ingest_*.py` bulk loader but no incremental `fetchers/<id>.py`.
 - **Raw-local-read fetchers (CI-unsafe until fixed — my item #2):** abs, adb, bls, ecb,
   eurostat, insee_bdm, insee_melodi, istat, scb, stat_estonia, treasury (grep
