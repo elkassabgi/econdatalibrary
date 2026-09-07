@@ -56,6 +56,61 @@ def toc_rows() -> dict:
     return out
 
 
+def refused_set(sum_obj, key):
+    """(ids, provenance) from a derive summary's `refused` list. provenance is one of
+    "full" | "partial" | "unreadable".
+
+    A REFUSAL LIST IS EVIDENCE ONLY IF THE RUN THAT WROTE IT COVERED THE STORE. The derives write
+    their summary unconditionally - `--dry-run`, `--only` and `--limit` runs included - and each
+    cataloguer prints `--only <ids>` as the remedy for its own refusal, so following that
+    instruction is precisely what leaves a scoped record behind (R843 addendum).
+
+    Both directions matter, and they fail differently:
+      * an EMPTY list from a scoped run makes "not seen by the derive" an assertion nobody
+        checked - R219's single confident cause;
+      * a NON-EMPTY list from a scoped run is worse: it can mark a table "correctly NOT
+        catalogued" that a full run would have split without trouble.
+
+    "unreadable" is kept distinct from "partial" so the operator is told WHICH it was; collapsing
+    them is the fail-quiet shape of R503. A caller must treat anything but "full" as UNKNOWN -
+    never as empty.
+    """
+    if not isinstance(sum_obj, dict):
+        return set(), "unreadable"
+    lst = sum_obj.get("refused")
+    if not isinstance(lst, list):
+        return set(), "unreadable"
+    # `refused_scope` is the list's own provenance; `scope` describes the CAP and is accepted
+    # only for back-compatibility with summaries written before the list had its own key.
+    scope = sum_obj.get("refused_scope") or ("full" if sum_obj.get("scope") == "full" else None)
+    ids = {r.get(key) for r in lst if isinstance(r, dict) and r.get(key) is not None}
+    return ids, ("full" if scope == "full" else "partial")
+
+
+def summary_coverage(sum_obj, n_store_now):
+    """One line saying what the summary actually covers - the cheapest guard of all.
+
+    `considered: 11` against a store of 2,442 makes the scope error self-evident with no tag to
+    interpret. Printed unconditionally wherever the summary is read.
+    """
+    if not isinstance(sum_obj, dict):
+        return "summary: UNREADABLE"
+    # NOT `a or b or c`: a legitimate `processed: 0` is falsy and would fall through
+    # to `considered`, reporting a run that processed NOTHING as having covered
+    # everything - the fail-open this whole line exists to prevent.
+    con = None
+    for _k in ("processed", "processed_tables", "considered"):
+        if sum_obj.get(_k) is not None:
+            con = sum_obj[_k]
+            break
+    store = sum_obj.get("store_files") or sum_obj.get("store_shards")
+    bits = ["scope=%s" % (sum_obj.get("scope") or "UNRECORDED"),
+            "refused_scope=%s" % (sum_obj.get("refused_scope") or "UNRECORDED")]
+    if con is not None:
+        bits.append("covered %s of %s at the time" % (f"{con:,}", f"{store:,}" if store else "?"))
+    bits.append("store holds %s now" % f"{n_store_now:,}")
+    return "summary: " + ", ".join(bits)
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
@@ -90,16 +145,25 @@ def main() -> int:
     absent = {k: v for k, v in big.items() if k not in smap}
     if absent:
         try:
-            ref = {r["indicator"] for r in json.load(open(
+            _sum = json.load(open(
                 os.path.join(ROOT, "logs", "ilostat_indicators_summary.json"),
-                encoding="utf-8")).get("refused", [])}
+                encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            ref = set()
+            _sum = None
+        ref, ref_prov = refused_set(_sum, "indicator")
         print(f"REFUSING: {len(big):,} indicator(s) exceed {MAX_ROWS_DEFAULT:,} rows but "
               f"{len(absent):,} have no split-map entry. Missing:")
+        print("   " + summary_coverage(_sum, len(files)))
+        if ref_prov != "full":
+            print(f"   the derive's refusal list is {ref_prov.upper()}, so NO cause below is "
+                  f"asserted from it")
         for k, v in sorted(absent.items(), key=lambda kv: -kv[1]):
-            why = ("REFUSED by the derive — no splitter found" if k in ref
-                   else "not seen by the derive — new or grown since that run")
+            if ref_prov != "full":
+                why = ("cause NOT ESTABLISHED — new, grown, refused by a run whose record "
+                       "is not store-wide, or still running")
+            else:
+                why = ("REFUSED by the derive — no splitter found" if k in ref
+                       else "not seen by the derive — new or grown since that run")
             print(f"   {k:48s} {v:>12,} rows   {why}")
         print(f"\nRe-run:  python tools/derive_ilostat_indicators.py --bucket <b> "
               f"--only {','.join(sorted(absent))}")
