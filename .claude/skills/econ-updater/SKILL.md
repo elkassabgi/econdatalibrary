@@ -15,7 +15,7 @@ voluntary. This skill makes it the procedure, and three mechanical layers back i
 
 1. **PreToolUse hook** (D:\research\hfdatalibrary\.claude\settings.json) — DENIES any command
    reaching db.nomics.world. It has already fired in production, on the session that wrote it.
-2. **CI tests** (this repo, run on every push): `test_dbnomics_ban.py` (the domain in runtime
+2. **CI tests** (this repo, run on every push): `test_relay_ban.py` (the domain in runtime
    code fails the build), `test_registry_count_guard.py` (registry entries vs
    EXPECTED_SOURCE_COUNT), `test_failure_labels_ratchet.py` (unlabelled in-loop failures may
    only decrease). These survive every session, every model, every memory loss.

@@ -1,7 +1,7 @@
 """Shared WHO fetcher — the Global Health Observatory OData API, WHO's OWN publisher.
 
-REPLACES THE DBNOMICS RELAY. who_rs / who_hwf / who_sdg used to read DBnomics' WHO mirror.
-DBnomics is banned (CLAUDE.md §0, ledger R251): every source comes from its publisher. The
+REPLACES THE BANNED RELAY. who_rs / who_hwf / who_sdg used to read the relay's WHO mirror.
+The relay aggregator is banned (CLAUDE.md §0, ledger R251): every source comes from its publisher. The
 ban is also right on the merits here — a mirror's vintage signal is the mirror's own hash, so
 a frozen dataset reports `no_change` for ever while the health gate sees a source succeeding
 every day. WHO GHO removes the middleman entirely: no key, no quota, one request per
@@ -79,13 +79,13 @@ def _get(url: str):
             if e.code in (400, 404):
                 return None                       # indicator genuinely absent
             if a == TRIES - 1:
-                raise TransientError(f"who_gho GET {url[-50:]}: {last}")
+                raise TransientError(f"WHO GHO GET {url[-50:]}: {last}")
         except Exception as e:                    # noqa: BLE001 — timeouts, conn resets, bad JSON
             last = f"{type(e).__name__}: {e}"
             if a == TRIES - 1:
-                raise TransientError(f"who_gho GET {url[-50:]}: {last}")
+                raise TransientError(f"WHO GHO GET {url[-50:]}: {last}")
         time.sleep(min(2 ** a, 20))
-    raise TransientError(f"who_gho GET {url[-50:]}: {last}")
+    raise TransientError(f"WHO GHO GET {url[-50:]}: {last}")
 
 
 def _published_indicators(source_id: str, prefix: str) -> list[str]:

@@ -1,8 +1,8 @@
-"""DBnomics is BANNED. This test makes the ban mechanical instead of remembered.
+"""The relay aggregator is BANNED. This test makes the ban mechanical instead of remembered.
 
 HISTORY. The ban is in CLAUDE.md §0 and ledger R251. It was enforced by memory, and memory
 failed repeatedly across sessions: relay clients survived in connectors/ after a "repo-wide"
-sweep said they were gone (R311/#49), and sessions kept re-proposing DBnomics as a data path.
+sweep said they were gone (R311/#49), and sessions kept re-proposing the relay as a data path.
 Tasks #48/#49/#68 finally removed every live fetch path on 2026-08-0x. This test is the layer
 that does not depend on anyone remembering: any push that reintroduces the domain fails CI.
 
@@ -30,8 +30,8 @@ ALLOWED_LINE = re.compile(r"(banned|ban\b|never|forbidden|R251|do not|don't)", r
 
 # A DEFUSED module is exempt wholesale: the codebase's established treatment for retired
 # relay-era code is a raise at the top, BEFORE any imports, naming the ban — so everything
-# below it is unreachable. connectors/dbnomics/connector.py and fetchers/_dbnomics.py set the
-# pattern; the six jobs/ scripts and two tools/ probes got the same treatment on 2026-08-04.
+# below it is unreachable. The (since deleted) relay connector and relay fetcher base set the
+# pattern; the surviving relay-era jobs/ and tools/ scripts got the same treatment on 2026-08-04.
 _DEFUSED = re.compile(
     r"raise (SystemExit|ImportError)\((?:[^)]|\n)*?(R251|BANNED|banned)", re.MULTILINE)
 

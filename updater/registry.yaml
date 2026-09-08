@@ -9727,7 +9727,7 @@ sources:
   strategy_reason: >-
     WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the DBnomics
     mirror 2026-08-02 (banned, CLAUDE.md 0 / ledger R251). WHO serves series the mirror never
-    carried — 10,339 of them, catalogued by tools/catalog_who_gho.py. SDGAIRBOD returns
+    carried — 10,339 of them, catalogued by tools/catalog_who_api.py. SDGAIRBOD returns
     @odata.count 0 at WHO; its existing rows are KEPT (merge never shrinks) and the gap is
     reported every run rather than silently dropped.
   cadence: monthly

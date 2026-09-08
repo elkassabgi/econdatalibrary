@@ -17,7 +17,7 @@ RUNNER = os.path.join(ROOT, "jobs", "run_connector.py")
 
 # 22 connectors, lightest/fastest first, heavier API crawlers (oecd, imf) last.
 #
-# "dbnomics" REMOVED 2026-08-03. It was in this list, and the loop below shells out to
+# The banned relay aggregator was REMOVED from this list 2026-08-03. The loop below shells out to
 # run_connector.py for EVERY entry — so running ingest_all would have pulled from
 # api.db.nomics.world, which is banned outright (CLAUDE.md §0, ledger R251: no fetching, no
 # probing, no relays or mirrors; every source comes from its own publisher).
@@ -28,7 +28,7 @@ RUNNER = os.path.join(ROOT, "jobs", "run_connector.py")
 # forgotten. Nothing in the list said so; it read as one connector name among twenty-three.
 SOURCES = [
     "frankfurter", "defillama", "treasury", "fed_board", "fhfa",
-    "ember", "owid", "penn_world_table", "worldbank_pink", "boe", "bis",
+    "ember", "penn_world_table", "boe", "bis",
     "statcan", "abs", "wikidata", "worldbank_esg", "census",
     "faostat", "ilostat", "ecb", "oecd", "imf",
 ]

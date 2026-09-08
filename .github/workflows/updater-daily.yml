@@ -56,7 +56,7 @@ concurrency:
   cancel-in-progress: false
 
 # Least privilege (public repo): the workflow-wide token is READ-only, so the long
-# `pip install` + fetch steps — which run alongside the R2/Cloudflare/FRED secrets —
+# `pip install` + fetch steps — which run alongside the R2/Cloudflare/API-key secrets —
 # cannot write to the repo. The heartbeat commit needs write, so it elevates on its
 # own step below via a scoped token rather than granting write to everything.
 permissions:
@@ -374,9 +374,9 @@ jobs:
 
       # RELAY-STALENESS STEP REMOVED 2026-08-03 — it live-probed api.db.nomics.world DAILY.
       #
-      # It ran `tools/audit_dbnomics_staleness.py`, whose API constant is
+      # It ran a relay-staleness audit tool (since deleted), whose API constant was
       # https://api.db.nomics.world/v22/series/{prov}/{ds} and which urlopen()s it per dataset.
-      # DBnomics is BANNED (CLAUDE.md 0 / ledger R251): "no fetching, no probing
+      # The relay aggregator is BANNED (CLAUDE.md 0 / ledger R251): "no fetching, no probing
       # api.db.nomics.world, no relays or mirrors." A monitoring probe is still a probe, and
       # this was the last automatic thing in CI that touched the host.
       #

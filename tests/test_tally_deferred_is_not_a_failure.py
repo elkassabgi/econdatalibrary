@@ -133,7 +133,7 @@ def test_no_deadline_block_files_a_deferral_as_transient():
             if not spent.search(line):
                 continue
             # The block a deadline check guards ENDS AT ITS break/continue. Scanning a fixed
-            # window instead was wrong and this test caught it: _who_gho breaks with NO tally
+            # window instead was wrong and this test caught it: _who_base breaks with NO tally
             # call, and a genuine `except TransientError -> transient_unit(code)` sits ten lines
             # further down, so a 12-line window blamed the deadline for an unrelated handler.
             # Terminating at the jump is what "this block" actually means.

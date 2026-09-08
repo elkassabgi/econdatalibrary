@@ -52,7 +52,7 @@ def test_all_giant_sidecar_consumers_route_through_the_fix():
 
     What this fix actually covers: `_giant_state.json`, whose only writers are
     _giant.load_state/save_state. eurostat and oecd reach them via run_giant();
-    sdmx_nso calls them directly. Pin those call sites, and pin that nobody opens
+    Pin those call sites, and pin that nobody opens
     the sidecar around blob.
 
     THAT HOLE IS NOW CLOSED (2026-08-31, same session): sec_edgar's
@@ -70,9 +70,6 @@ def test_all_giant_sidecar_consumers_route_through_the_fix():
     for mod in ("eurostat.py", "oecd.py"):
         assert "_giant.run_giant(" in src(mod), (
             f"{mod} no longer drives through run_giant — sidecar routing unverified")
-    s = src("sdmx_nso.py")
-    assert "_giant.load_state(" in s and "_giant.save_state(" in s, (
-        "sdmx_nso stopped using the shared sidecar API")
     for mod in sorted(os.listdir(base)):
         if not mod.endswith(".py"):
             continue

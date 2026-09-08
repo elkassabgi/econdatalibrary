@@ -101,7 +101,6 @@ _rollout_backups/
 _updater_proof/
 mcp/mcp-publisher.exe
 mcp/mcp-publisher.tar.gz
-dbnomics_license_manifest.json
 
 # keep-working Stop-hook sentinel + counter (machine-local)
 .claude/KEEP_WORKING

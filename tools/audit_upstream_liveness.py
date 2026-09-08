@@ -36,7 +36,7 @@ from.
 Usage:  python tools/audit_upstream_liveness.py [--json out.json]
 """
 
-# DEFUSED 2026-08-04: the guard below is the enforcement, the CI test tests/test_dbnomics_ban.py
+# DEFUSED 2026-08-04: the guard below is the enforcement, the CI test tests/test_relay_ban.py
 # is the proof, and the PreToolUse hook is the session-level backstop. Three layers on purpose.
 raise SystemExit(
     "RETIRED: this tool PROBES DBnomics, which is BANNED (CLAUDE.md \u00a70, ledger R251) - "

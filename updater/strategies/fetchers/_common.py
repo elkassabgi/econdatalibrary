@@ -216,7 +216,7 @@ class Tally:
         # and discarded it while transient_unit, structural_unit and no_time_unit recorded
         # theirs. Nine modules were already passing one into the void - bea, census, defillama,
         # hagstofa, stat_estonia, unsdg, wid, _imf_direct (imported by 105 fetchers) and
-        # _who_gho.
+        # _who_base.
         #
         # NOT rendered into Result.error. A first attempt did, and an adversarial review showed
         # why it must not: on the success path orchestrate.py writes that string to

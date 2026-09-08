@@ -8,8 +8,8 @@ Providers:
   snb      — Swiss National Bank       https://data.snb.ch/api/
   riksbank — Riksbank Sweden           https://api.riksbank.se/swea/v1/
 
-Run: python jobs/ingest_central_banks.py <provider>
-     python jobs/ingest_central_banks.py all    # run all
+Run: python jobs/ingest_boc_snb_riksbank.py <provider>
+     python jobs/ingest_boc_snb_riksbank.py all    # run all
 """
 from __future__ import annotations
 import datetime as dt, os, sys, time

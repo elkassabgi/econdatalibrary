@@ -1,7 +1,7 @@
 """Catalogue WHO GHO series that the store publishes but the catalogue does not know.
 
-WHY THIS EXISTS. Migrating who_rs/who_hwf/who_sdg off the banned DBnomics mirror onto WHO's
-own API (updater/strategies/fetchers/_who_gho.py) did not just restore freshness — WHO serves
+WHY THIS EXISTS. Migrating who_rs/who_hwf/who_sdg off the banned relay mirror onto WHO's
+own API (updater/strategies/fetchers/_who_base.py) did not just restore freshness — WHO serves
 series the mirror never carried. Measured 2026-08-02: who_sdg returns 29,088 keys against
 28,160 catalogued, i.e. 10,339 series that are FETCHED and STORED but invisible, because a
 series nobody catalogued is a series nobody can find or download.
@@ -20,7 +20,7 @@ reuses the source's own license_id and metadata template so new rows are indisti
 shape from the ones already there.
 
 Usage:
-    python tools/catalog_who_gho.py who_sdg [--dry-run] [--limit N]
+    python tools/catalog_who_api.py who_sdg [--dry-run] [--limit N]
 """
 from __future__ import annotations
 import argparse

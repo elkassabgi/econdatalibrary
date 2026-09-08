@@ -11,9 +11,9 @@ the delta scripts are called separately on their own schedule.
 
 Cadences:
   daily:   EIA, ECB/Frankfurter, Fed H.4.1, OFR, NY Fed, GLEIF (delta), DeFiLlama
-  weekly:  BLS, CFTC, World Bank, Treasury, StatCan, FRED releases
+  weekly:  BLS, CFTC, World Bank, Treasury, StatCan
   monthly: BEA, USDA, ILOSTAT, FAOSTAT, IMF, OECD, NOAA, Ember
-  annual:  Penn World Table, Fama-French, CEPII BACI, EDGAR full rebuild
+  annual:  Penn World Table, CEPII BACI, EDGAR full rebuild
 
 Run:  python jobs/daily_update.py [--dry] [--source eia]
 """
@@ -56,10 +56,8 @@ SCHEDULE = {
     "cftc":        "weekly",   # via ingest_cftc.py
     "worldbank":   "weekly",
     "worldbank_esg":"weekly",
-    "worldbank_pink":"weekly",
     "treasury":    "weekly",
     "statcan":     "weekly",
-    "fred":        "weekly",   # via ingest_fred_releases.py
     "ofr":         "weekly",
     "nyfed":       "weekly",
     # --- MONTHLY ---
@@ -71,17 +69,14 @@ SCHEDULE = {
     "oecd":        "monthly",
     "noaa":        "monthly",
     "ember":       "monthly",
-    "owid":        "monthly",
     "fhfa":        "monthly",
     "abs":         "monthly",
     "boe":         "monthly",
     "census":      "monthly",
     "bis":         "monthly",
-    "dbnomics":    "monthly",
     "wikidata":    "monthly",
     # --- QUARTERLY / INFREQUENT ---
     "penn_world_table": "annual",
-    "famafrench":       "monthly",  # factors updated monthly
     "gleif":            "weekly",   # delta file published daily; pull weekly
     # Bulk sources with their own ingest scripts (not run_connector.py)
     # These run via separate workflow jobs on their own cadence:
@@ -94,11 +89,9 @@ BULK_SCRIPTS = {
     "sec_edgar_daily":  ("weekly",  "jobs/ingest_sec_edgar.py --incremental"),
     "gleif_delta":      ("weekly",  "jobs/ingest_gleif.py --delta"),
     "eurostat_delta":   ("monthly", "jobs/ingest_eurostat.py --delta"),
-    "fred_releases":    ("weekly",  "jobs/ingest_fred_releases.py"),
     "cftc":             ("weekly",  "jobs/ingest_cftc.py"),
     "ofr":              ("daily",   "jobs/ingest_ofr.py"),
     "nyfed":            ("daily",   "jobs/ingest_nyfed.py"),
-    "famafrench":       ("monthly", "jobs/ingest_famafrench.py"),
 }
 
 
