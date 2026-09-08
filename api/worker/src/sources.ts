@@ -39,10 +39,9 @@ export async function handleSources(env: Env): Promise<Response> {
   rows.sort((a, b) => (a.source_id < b.source_id ? -1 : a.source_id > b.source_id ? 1 : 0));
 
   // A SOURCE WE REFUSE TO SERVE MUST NOT BE ADVERTISED HERE. This handler applied no
-  // denylist at all, so `worldbank_pink` was listed with a full licence block —
-  // "World Bank Pink Sheet (commodities)", audit-restricted — while every path to its data
-  // answers 451: /v1/catalog?source=worldbank_pink and /v1/series/worldbank_pink:aluminum.csv
-  // both measured 451 live on 2026-08-30. That is a browsable entry a user cannot obtain,
+  // denylist at all, so a gated commodity-price source was listed with a full licence block
+  // (audit-restricted) while every path to its data answered 451 — /v1/catalog?source=<id>
+  // and /v1/series/<id>:<indicator>.csv both measured 451 live on 2026-08-30. That is a browsable entry a user cannot obtain,
   // which is exactly the "metadata-only" listing Ahmed's standing rule forbids: host it fully
   // or do not list it.
   //
@@ -52,8 +51,8 @@ export async function handleSources(env: Env): Promise<Response> {
   // change that was never made.
   //
   // Note the count moves 322 -> 321, which is now exactly SUPPORTED_SOURCES minus
-  // NON_REDISTRIBUTABLE. `dbnomics` was already absent for an unrelated reason (no `source`
-  // row), so it was never the discrepancy.
+  // NON_REDISTRIBUTABLE. (A second gated id was already absent for an unrelated reason — no
+  // `source` row — so it was never the discrepancy.)
   const servable = rows.filter((r) => !NON_REDISTRIBUTABLE.has(r.source_id));
 
   // CANONICAL v1.1 NESTED shape (CONTRACT.md "Canonical response shapes"):

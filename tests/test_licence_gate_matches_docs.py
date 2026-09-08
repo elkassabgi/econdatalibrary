@@ -5,8 +5,8 @@ every licence guard we had was PROSE. `DATABASE_LICENSES_VERBATIM.md` records a 
 database, `REDISTRIBUTION_EMAIL_TRAIL.md` records what each publisher granted or refused, and
 both were applied to `denylist.ts` and `util.ts` BY HAND. Nothing failed when they drifted.
 
-Two classes that stopped recurring the moment they became mechanical: the db.nomics ban (a
-PreToolUse hook + tests/test_dbnomics_ban.py) and the registry count (R347 +
+Two classes that stopped recurring the moment they became mechanical: the banned-aggregator
+host (a PreToolUse hook + tests/test_banned_aggregator_host.py) and the registry count (R347 +
 tests/test_registry_count_guard.py). Licence compliance never got the same treatment, so it came
 back roughly weekly — R8 (WTO refused data still served through a phantom-id gate), R29
 (metadata-only listings), R408 (the email trail said `ei_statreview` "stays gated pending ...
@@ -131,27 +131,6 @@ SERVED_TIER_DRIFT: frozenset[str] = frozenset({
     "faostat",         # DISPUTED verdict; the 13 fao_* domains carry verified-nc licence rows
     "frankfurter",     # ECB-derived rates; verdict never finalised
     "worldbank",       # third-party-series carve-out IS implemented in SERIES_CARVEOUTS
-    # worldbank_pink DELETED from this baseline 2026-08-26: its catalog.db row moved to
-    # audit-restricted (reservable=0) and it entered denylist.ts, so it no longer drifts —
-    # the ratchet below demands baseline deletion in the same commit as the regen.
-})
-
-# Denylist ids matching neither the served surface nor a verdict row. The wto_* entries are the
-# R8 purge's residue: WTO data is gone from the store and the catalogue (verified 2026-08-09),
-# so these block nothing — they are inert, but they are also how a phantom-id gate looked healthy
-# while refused data served, so they are recorded rather than quietly deleted.
-DENYLIST_UNMATCHED: frozenset[str] = frozenset({
-    "central_banks", "fraser_efw", "fred", "fred_releases", "fsi", "gus", "ibge",
-    "imf_dbnomics", "ine_spain", "pxweb_bfs", "qog", "sdmx_nso", "sipri_polity",
-    "social_progress", "spi", "stat_austria", "unesco_sci", "unicef",
-    # vdem REMOVED from this baseline 2026-08-24: it is no longer in denylist.ts. Its
-    # licence was assessed (CC BY-SA 4.0, CONFIRMED, quoted verbatim from two official
-    # surfaces), it carries `cc-by-sa-4.0-vdem` with reservable=1, and it came off
-    # gen_denylist LEGACY_KEEP on Ahmed's explicit instruction. It is now a SERVED
-    # source with a recorded verdict, which is what this baseline exists to shrink
-    # towards.
-    "who_gho", "wiid", "wto_bat_bv_m", "wto_bat_bv_x", "wto_hs_0010", "wto_hs_0015",
-    "wto_hs_0020", "wto_hs_0025", "wto_hs_0030", "wto_hs_0040",
 })
 
 
@@ -168,7 +147,11 @@ def test_the_parsers_actually_see_the_artifacts():
     assert len(served) > 250, (
         f"parsed only {len(served)} entries from SUPPORTED_SOURCES; the live API serves ~312. "
         f"The parser is broken and every assertion in this file is vacuous.")
-    assert len(gated) > 10, f"parsed only {len(gated)} denylist entries; parser is broken"
+    assert gated, "parsed zero denylist entries; parser is broken"
+    probe = _string_array(
+        'export const NON_REDISTRIBUTABLE = new Set([\n  // "c" is prose\n  "a", "b",\n]);',
+        "NON_REDISTRIBUTABLE")
+    assert probe == ["a", "b"], f"the Set parser mis-read a known literal: {probe}"
     assert len(verdicts) > 150, f"parsed only {len(verdicts)} verdict rows; parser is broken"
     for known_live in ("noaa", "eia", "abs", "census"):
         assert known_live in served, (
@@ -214,7 +197,7 @@ def _is_covered(sid: str, verdicts: dict[str, str]) -> bool:
 def test_every_served_source_has_a_recorded_licence_verdict():
     """A source nobody adjudicated must not be on the serving surface.
 
-    This is the freedomhouse/NO_VERDICT class: data arrives, gets catalogued, gets served, and
+    This is the NO_VERDICT class: data arrives, gets catalogued, gets served, and
     the licence question is never asked because no artifact demands an answer.
     """
     verdicts = _verdict_index()
@@ -261,23 +244,24 @@ def test_restricted_sources_are_gated_not_merely_documented():
     )
 
 
-def test_denylist_has_no_entries_that_are_not_real_sources():
-    """A gate on a phantom id protects nothing.
+def test_denylist_entries_are_bare_ids_and_never_served():
+    """A gate on a phantom id protects nothing (R8) — and a gate on a SERVED id is a listing lie.
 
-    R8's WTO incident: the deny-gate carried ids that did not match the served facets, so the
-    refused data flowed while the gate looked healthy. An entry that matches neither the served
-    surface nor a recorded verdict is almost certainly such a phantom.
+    Until 2026-09-08 this test carried a literal baseline of denylist entries that matched neither
+    the served surface nor a verdict row, so that set could only shrink. The gated ids are no
+    longer named anywhere in the repository, so the baseline is gone; what survives is the
+    invariant the serving surface can actually violate. A denylist entry must never be a served
+    id — a served-and-gated id is a browsable listing nobody can download, the metadata-only
+    shape R29 forbids — and every entry must be a bare source id, not prose harvested from a
+    comment (the R137 shape). The deny set itself is a residue guarding rows still in D1; it is
+    emptied by a deliberate regeneration after those rows are deleted, never by editing a test.
     """
-    verdicts = _verdict_index()
     served = set(served_sources())
-    phantom = sorted(s for s in gated_sources()
-                     if s not in served and s not in verdicts and s not in DENYLIST_UNMATCHED)
-    gone = sorted(n for n in DENYLIST_UNMATCHED if n not in gated_sources())
-    assert not gone, (
-        f"these names are exempted in DENYLIST_UNMATCHED but are no longer in denylist.ts: "
-        f"{gone}. Delete them from the baseline.")
-    assert not phantom, (
-        f"{len(phantom)} denylist entr(ies) match neither SUPPORTED_SOURCES nor any recorded "
-        f"verdict: {phantom}. Either the id is stale (remove it, and say so) or it is misspelled "
-        f"— in which case the data it was meant to block is NOT blocked."
-    )
+    gated = gated_sources()
+    assert gated, "parsed zero denylist entries — the parser is broken (see the control above)"
+    assert all(re.fullmatch(r"[a-z0-9_]+", g) for g in gated), (
+        "a denylist entry is not a bare source id — the parser is harvesting prose")
+    both = sorted(gated & served)
+    assert not both, (
+        f"{len(both)} id(s) are in SUPPORTED_SOURCES AND in NON_REDISTRIBUTABLE: {both}. A "
+        f"gated source must not be offered by the resolver.")

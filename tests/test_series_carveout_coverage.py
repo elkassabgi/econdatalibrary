@@ -62,8 +62,8 @@ def _count_holding(con, source, indicator):
 
     The obvious form -- `series_id LIKE '%:<ind>:%'` -- is WRONG and this test's first version
     used it, which is R129's unanchored match inside a test about unanchored matching. It
-    matches a segment anywhere in the id, so worldbank_pink's generic commodity names
-    (`gold`, `copper`, `zinc`, `nickel`) collided with unrelated sources and reported
+    matches a segment anywhere in the id, so the carved commodity source's generic indicator
+    names (`gold`, `copper`, `zinc`, `nickel`) collided with unrelated sources and reported
     `ksh_stadat holds 0 series of copper`. The contradiction -- "holds" a count of zero -- is
     what exposed it: the finder and the counter disagreed, so one of them was broken.
 
@@ -127,10 +127,10 @@ def test_every_source_holding_a_carved_indicator_gates_it():
 def test_carveout_like_prefixes_cover_both_id_shapes():
     """The `<src>:<ind>:` prefix cannot match a two-part id; the exact form must exist.
 
-    `worldbank_wdi:FP.CPI.TOTL.ZG` and `worldbank_pink:aluminum` have no third segment, so
-    their SQL exclusion matched 0 rows for as long as it existed. The JS gate still covered
-    them, so this was defence-in-depth rather than an open door — but worldbank_pink's seven
-    metals are REFUSED-in-writing and its own note anticipates the source being un-gated.
+    `worldbank_wdi:FP.CPI.TOTL.ZG` and the carved commodity source's two-part ids have no third
+    segment, so their SQL exclusion matched 0 rows for as long as it existed. The JS gate still
+    covered them, so this was defence-in-depth rather than an open door — but that source's seven
+    metals are REFUSED-in-writing.
     """
     src = open(DENYLIST, encoding="utf-8").read()
     assert "SERIES_CARVEOUT_EXACT" in src, (
@@ -145,11 +145,11 @@ def test_carveout_like_prefixes_cover_both_id_shapes():
 def test_sources_endpoint_hides_denylisted_sources():
     """A source we refuse to serve must not be advertised in /v1/sources.
 
-    `worldbank_pink` was listed there with a full licence block while every path to its data
-    answered 451 — a browsable entry nobody can obtain, which is the "metadata-only" listing
+    A gated commodity source was listed there with a full licence block while every path to its
+    data answered 451 — a browsable entry nobody can obtain, which is the "metadata-only" listing
     Ahmed's standing rule forbids (host it fully, or do not list it). Measured live
-    2026-08-30: /v1/sources total 322, of which one is denylisted; both
-    /v1/catalog?source=worldbank_pink and /v1/series/worldbank_pink:aluminum.csv returned 451.
+    2026-08-30: /v1/sources total 322, of which one was denylisted; both its catalog listing and
+    its series download returned 451.
 
     Comments in catalog.ts and bundle.ts already ASSERTED this filtering happened, so the code
     contradicted its own documentation (R125). This pins the code, not the prose.
