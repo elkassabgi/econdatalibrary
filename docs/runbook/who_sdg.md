@@ -47,7 +47,7 @@
 
 **Why this strategy** (registry `strategy_reason`):
 
-> WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the DBnomics mirror 2026-08-02 (banned, CLAUDE.md 0 / ledger R251). WHO serves series the mirror never carried — 10,339 of them, catalogued by tools/catalog_who_gho.py. SDGAIRBOD returns @odata.count 0 at WHO; its existing rows are KEPT (merge never shrinks) and the gap is reported every run rather than silently dropped.
+> WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the relay mirror 2026-08-02 (banned, CLAUDE.md 0 / ledger R251). WHO serves series the mirror never carried — 10,339 of them, catalogued by tools/catalog_who_gho.py. SDGAIRBOD returns @odata.count 0 at WHO; its existing rows are KEPT (merge never shrinks) and the gap is reported every run rather than silently dropped.
 
 **Fetcher module**: [`updater/strategies/fetchers/who_sdg.py`](../../updater/strategies/fetchers/who_sdg.py)
 
@@ -56,7 +56,7 @@
 ```
 WHO SDG health indicators — from WHO's OWN Global Health Observatory API (ghoapi.azureedge.net).
 
-Migrated off the DBnomics mirror 2026-08-02: DBnomics is banned (CLAUDE.md §0, ledger R251)
+Migrated off the relay mirror 2026-08-02: the relay aggregator is banned (CLAUDE.md §0, ledger R251)
 and every source now comes from its publisher. Behaviour lives in _who_gho.py, including the
 key grammar and the proof that it reconstructs our published ids exactly.
 ```
@@ -81,7 +81,7 @@ python -m updater.run --source who_sdg --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source who_sdg --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('who_sdg');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"

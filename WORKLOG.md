@@ -541,10 +541,10 @@ non-demoting note. Review-hardened: the SDMX marker requirement (a plain-text 20
 must fall structural, never park silently for years), the ingester's split path fixed too, and
 the tests now drive the REAL `run_giant` (the first branch test ran zero lines of it). 11/11.
 
-## QoG refused; recorded, deleted, and a loaded gun defused (2026-08-31, `5aa5a1d97` + `9217c25f0`)
+## A gated source's publisher refused; recorded, deleted, and a loaded gun defused (2026-08-31, `5aa5a1d97` + `9217c25f0`)
 
 Written refusal from the publisher recorded VERBATIM in the canonical licence file; trail row
-DENIED; reply draft for Ahmed at `docs/briefs/QOG_REPLY_DRAFT.md`. Nothing user-facing changed
+DENIED; reply draft for Ahmed was kept under `docs/briefs/` (since removed under the owner's order). Nothing user-facing changed
 (already denylisted, 0 catalogue rows). The dormant holdings (23 MB store, fetcher, ingester)
 deleted after their adversarial review — measured clean in every place a series lives first,
 including the reviewer's two additions (uppercase R2 prefixes; D1 `source_counts`, the R489

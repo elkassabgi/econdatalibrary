@@ -66,7 +66,7 @@ Each strategy implements `is_due(unit,state,now)` / `detect_change(unit) -> new_
 differ). A registry validator **fails CI** if `count != 133` or any unit lacks a strategy.
 
 - **S1 `overwrite_if_changed`** (~70) — whole-table refresh gated by an upstream vintage signal
-  (ETag/Last-Modified, GitHub commit SHA, OWID CSV, faostat `datasets_E.json` FileRows/FileSize, bls
+  (ETag/Last-Modified, GitHub commit SHA, third-party CSV, faostat `datasets_E.json` FileRows/FileSize, bls
   sizes, bis HEAD). Re-pull + atomic overwrite **only when upstream moved**. Covers all overwrite-on-rerun
   + tiny static/annual full tables.
   > **Fix — lying vintage** (critic gap, design [2]): vintage signals can fail to bump on silent
@@ -97,7 +97,7 @@ differ). A registry validator **fails CI** if `count != 133` or any unit lacks a
 - **S6 `manual_vintage`** (~10–12) — publish-rarely / hardcoded-URL / credential-or-WAF-blocked sources
   (stats_nz, ksh WAF, GATED 403, insee_sirene offset-ceiling, barro_lee, several GATED sources, edgar_jrc,
   GATED, yale_epi, harvard_atlas, wid, fsi_fundforpeace, nasa_giss). **Never silently succeeds** —
-  `detect_change` polls a cheap signal (release page / GitHub tag / OWID mirror / calendar roll) and,
+  `detect_change` polls a cheap signal (release page / GitHub tag / third-party mirror / calendar roll) and,
   when it sees a likely new vintage it can't auto-fetch, opens a **"needs attention" alert**. Cadence
   still tracks "last verified" age.
 

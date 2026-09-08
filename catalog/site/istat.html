@@ -373,7 +373,7 @@ The normal ISTAT sweep (jobs/ingest_sdmx_nso.py, providers &quot;istat&quot; +
 &quot;istat_esploradati&quot;) writes one Parquet per dataflow into
 data/clean_full/istat/.  A subset of flows never land because a single SDMX
 data response is too large for the endpoint: the host returns HTTP 500 / times
-out, the body exceeds what we can parse, or (via DBnomics historically) the
+out, the body exceeds what we can parse, or (via the relay aggregator historically) the
 flow blows past the 100K-series cap.
 
 This job sweeps the ISTAT catalog, finds every flow that has NO parquet yet

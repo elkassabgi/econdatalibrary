@@ -39,7 +39,7 @@
 - `vintage_signal`: Date-tail always-fetch: each run sets startPeriod=last_obs_year and endPeriod=current_year against data.imf.org SDMX GetData (BI), merging any newer periods; no separate manifest needed because the date filter itself bounds the pull.
 - `since_param`: startPeriod (with endPeriod set to current year; currently hard-coded 2000/2025 at lines 145 & 158 and must be parameterized)
 - `out_paths_note`: Single file: data/clean_full/imf_fsi/imf_fsi.parquet.
-- `rate_note`: No key. Primary IMF SDMX data.imf.org/api/SDMX/BI; fallbacks data.imf.org/api/v1 and DBnomics IMF/FSI. RATE=0.5; 429 -> 60s sleep. Primary SDMX bulk endpoint is historically flaky (multi-fallback chain).
+- `rate_note`: No key. Primary IMF SDMX data.imf.org/api/SDMX/BI; fallbacks data.imf.org/api/v1 and the relay aggregator IMF/FSI. RATE=0.5; 429 -> 60s sleep. Primary SDMX bulk endpoint is historically flaky (multi-fallback chain).
 
 **supersession**: superseded-by-imf_fsic_direct-imf_fsibsis_direct-imf_fsicdm_direct
 
@@ -63,7 +63,7 @@ python -m updater.run --source imf_fsi --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source imf_fsi --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('imf_fsi');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"

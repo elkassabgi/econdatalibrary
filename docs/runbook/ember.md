@@ -106,7 +106,7 @@ python -m updater.run --source ember --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source ember --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('ember');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"
@@ -143,7 +143,7 @@ If the error names sub-units as `deferred (budget N min)` or `budget spent`, **n
 - WORLDBANK_ESG SILENT RECODE: GET /v2/source/75/indicator?per_page=1000 -> HTTP 200, meta total=80; CC.EST/GE.EST/PV.EST/RL.EST/RQ.EST/VA.EST absent, GOV_WGI_CC.EST etc. present. GET /v2/country/all/indicator/CC.EST?source=75... -> HTTP 200 body `[{"message":[{"id":"120","key":"Invalid value","value":"The provided parameter value is not valid"}]}]`. worldbank_esg.py:95 `if not isinstance(j, list) or len(j) < 2: return []` turns that into tally.empty_unit() -- 'a quiet window is normal for annual data'. worldbank_esg.py:115 enumerates the STORE (blob.list_parquets), never the catalog, so new ids are invisible too
 - KSH_STADAT CI LOG (gh run 30667078530, 2026-07-31T23:41:49Z and 23:43:19Z): "ERR: HTTPSConnectionPool(host='www.ksh.hu', port=443): Max retries exceeded with url: /stadat_files/ene/en/ene0009.csv (Caused by ConnectTimeoutError(... connect timeout=60))" and the same for ido0015.csv. LIVE CONTROL TODAY: ene0009.csv HTTP 200 in 3.0s (1,947 bytes), ido0015.csv HTTP 200 in 0.9s (12,740 bytes), toc.json HTTP 200 (1,198,282 bytes)
 - SEC_EDGAR: ran the fetcher's own _published_keys/_keys_on_disk against the live SEC pages -> edgar_13f published=53 on_disk=53 MISSING=0; edgar_insider published=82 on_disk=81 MISSING=['2026q2']. Prior state row 2026-08-02T08:11:53Z: "UNEXPECTED:ArrowInvalid('Casting from timestamp[us] to timestamp[ns] would result in out of bounds timestamp: -61950355200000000')". Commit 3d7f4e3e (2026-08-03T07:03:28-05:00 = 12:03Z, on origin/main) 'ROOT CAUSE FOUND - dev runs pandas 2.3.3, CI runs pandas 3.0.5' + guard ea1cf229 (11:55Z) both POSTDATE the 11:00:46Z attempt
-- FRED_RELEASES IS DE-REGISTERED, NOT BROKEN: `grep -n GATED updater/registry.yaml` returns ZERO hits across its 141 `- source_id:` entries. updater/config.py:39-40 states verbatim: 'Also -2 same day: several GATED sources were still being crawled while GATED, so a run would have re-uploaded to R2 exactly what the purge deleted.' (2026-07-23). Its fetcher updater/strategies/fetchers/GATED.py is orphaned code; last state write 2026-06-24, i.e. it has not been ATTEMPTED in 40 days (R246)
+- <redacted> IS DE-REGISTERED, NOT BROKEN: `grep -n GATED updater/registry.yaml` returns ZERO hits across its 141 `- source_id:` entries. updater/config.py:39-40 states verbatim: 'Also -2 same day: several GATED sources were still being crawled while GATED, so a run would have re-uploaded to R2 exactly what the purge deleted.' (2026-07-23). Its fetcher updater/strategies/fetchers/GATED.py is orphaned code; last state write 2026-06-24, i.e. it has not been ATTEMPTED in 40 days (R246)
 
 </details>
 

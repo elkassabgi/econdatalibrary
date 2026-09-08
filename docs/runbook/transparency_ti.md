@@ -45,14 +45,14 @@
 
 **Why this strategy** (registry `strategy_reason`):
 
-> Tiny annual full table; OWID grapher CSV returns ALL years each call so per-obs delta is meaningless — detect a new edition (newer max year) and overwrite (matrix-recommended).
+> Tiny annual full table; third-party grapher CSV returns ALL years each call so per-obs delta is meaningless — detect a new edition (newer max year) and overwrite (matrix-recommended).
 
 **Adapter contract** (registry `adapter`):
 
-- `vintage_signal`: Fetch OWID CSV ourworldindata.org/grapher/ti-corruption-perception-index.csv (ETag/Last-Modified or max-year compare vs stored parquet); rewrite only if a newer year appears. Generate the TI CDN xlsx fallback URL (CPI20XX) from current year instead of the hardcoded TI_URLS list.
+- `vintage_signal`: Fetch third-party CSV ourworldindata.org/grapher/ti-corruption-perception-index.csv (ETag/Last-Modified or max-year compare vs stored parquet); rewrite only if a newer year appears. Generate the TI CDN xlsx fallback URL (CPI20XX) from current year instead of the hardcoded TI_URLS list.
 - `since_param`: n/a
 - `out_paths_note`: single file data/clean_full/transparency_ti/transparency_ti.parquet (~4KB, ~180 countries x ~13 years); ISO3 falls back to sanitized entity name for aggregates.
-- `rate_note`: no API key, CC BY; OWID CSV reliably public; TI CDN xlsx frequently 403 (fallback only, needs openpyxl).
+- `rate_note`: no API key, CC BY; third-party CSV reliably public; TI CDN xlsx frequently 403 (fallback only, needs openpyxl).
 
 **Fetcher module**: [`updater/strategies/fetchers/transparency_ti.py`](../../updater/strategies/fetchers/transparency_ti.py)
 
@@ -65,14 +65,14 @@ License: CC BY 4.0 both ways. The earlier note here said "CC BY-ND 4.0 (TI)", wh
 TI's SITE-CONTENT licence with its DATASET licence — DATABASE_LICENSES_VERBATIM.md records the
 distinction verbatim and CONFIRMED: "the CPI and datasets are licensed under CC BY 4.0", while
 "Except where otherwise noted, this work is licensed under CC BY-ND 4.0" covers the rest of the
-site. So there is NO licensing reason to prefer OWID's copy; the choice is purely about which
+site. So there is NO licensing reason to prefer the third-party mirror's copy; the choice is purely about which
 host answers. ~180 countries, annual, 2012-present.
 Single grouped parquet clean_full/transparency_ti/transparency_ti.parquet, schema
 (series_key, obs_date, value) with series_key = "TI_CPI:cpi_score:{iso3}" and
 obs_date = Dec-31 of the survey year.
 
-Vintage: OWID's grapher CSV returns ALL years on every call, so a per-obs delta is
-meaningless — a new edition = a newer max year. The OWID host serves the CSV
+Vintage: the third-party mirror's grapher CSV returns ALL years on every call, so a per-obs delta is
+meaningless — a new edition = a newer max year. The third-party host serves the CSV
 dynamically (Last-Modified == request time, no ETag/Content-Length), so HEAD-based
 http_vintage is useless here. Instead we cheaply GET the small (~67KB) CSV and use
 its MAX YEAR as the vintage token (registry vintage_signal: "max-year compare vs
@@ -101,7 +101,7 @@ python -m updater.run --source transparency_ti --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source transparency_ti --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('transparency_ti');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"

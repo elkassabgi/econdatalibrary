@@ -55,7 +55,7 @@
 
 - `vintage_signal`: Parse https://www.worldhappiness.report/data-sharing/ for the newest WHR<NN>_Data_Figure_2.1*.xls[x] link (R78: watch the LISTING, filenames change yearly) and token = edition + ETag + Content-Length of that file.
 - `since_param`: n/a
-- `out_paths_note`: data/clean_full/whr/whr_fig21.parquet — keys FIG21:<measure>:<iso3>, 11 measures (ladder, whiskers, 6 factors, dystopia_residual, rank), annual Dec-31 stamps. Legacy whr.parquet (OWID-era) deliberately untouched and unserved.
+- `out_paths_note`: data/clean_full/whr/whr_fig21.parquet — keys FIG21:<measure>:<iso3>, 11 measures (ladder, whiskers, 6 factors, dystopia_residual, rank), annual Dec-31 stamps. Legacy whr.parquet (mirror-era) deliberately untouched and unserved.
 - `rate_note`: Two requests per run (listing + one xlsx, ~130 KB). No key.
 
 **Fetcher module**: [`updater/strategies/fetchers/whr.py`](../../updater/strategies/fetchers/whr.py)
@@ -66,7 +66,7 @@
 S1 fetcher — World Happiness Report Figure 2.1, DIRECT from worldhappiness.report.
 
 PROVENANCE IS THE WHOLE POINT OF THIS REWRITE (R215 / tools/catalog_whr.py's blocker).
-The previous module fell through to OWID's grapher CSV while citing WHR/Gallup — data
+The previous module fell through to the third-party mirror's grapher CSV while citing WHR/Gallup — data
 obtained from a third party under a different licence, which held publication. This
 version fetches ONLY the publisher's own Figure 2.1 workbook and has NO fallback: if
 the primary is unreachable the run fails honestly (transient), it never silently
@@ -84,11 +84,11 @@ files.worldhappiness.report/WHR<NN>_Data_Figure_2.1*.xls[x] links and take the n
 edition (R78: watch the LISTING — editions get new filenames yearly, and WHR25 shipped
 as "...2.1v3.xlsx", so a pinned URL or a guessed filename pattern goes stale). Verified
 headless 2026-08-06: the listing 200s with our UA, and the WHR26 file serves a REAL
-ETag + Last-Modified (unlike OWID's cache-fill Last-Modified, M-20260730-91) — vintage
+ETag + Last-Modified (unlike the third-party mirror's cache-fill Last-Modified, M-20260730-91) — vintage
 = edition + ETag/Content-Length, never a timestamp.
 
 KEYS: FIG21:<measure>:<geo> where geo is ISO3 (pycountry) or a deterministic slug for
-unresolvable names. DELIBERATELY DISJOINT from the legacy OWID-era store keys
+unresolvable names. DELIBERATELY DISJOINT from the legacy mirror-era store keys
 ("WHR:Self-reported life satisfaction:AFG" — 2,270 rows still in whr.parquet) so the
 two provenances can never mix under one served id; the legacy rows stay uncatalogued
 and unserved until the pending purge removes them. New data lands in its own
@@ -119,7 +119,7 @@ python -m updater.run --source whr --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source whr --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('whr');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"

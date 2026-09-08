@@ -68,7 +68,7 @@ S1 bulk fetcher — UNCTADstat US.Cpi_A (successor batch, #70).
 
 21,340 obs / 560 series (consumer price indices, annual). Source id is
 unctad_cpi_annual, NOT the mechanical slug: source_id_for("US.Cpi_A") produced
-"unctad_cpia", which is a LEGACY DBnomics-era source with 637 live series — the
+"unctad_cpia", which is a LEGACY relay-era source with 637 live series — the
 collision overwrote its store before the OVERRIDES map + guard existed (R399).
 All machinery shared via _unctad.py.
 ```
@@ -93,7 +93,7 @@ python -m updater.run --source unctad_cpi_annual --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source unctad_cpi_annual --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('unctad_cpi_annual');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"

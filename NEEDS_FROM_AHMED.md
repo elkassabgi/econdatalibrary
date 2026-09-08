@@ -42,7 +42,7 @@ Unblocks, in execution order:
 - **Class A IMF retirement** — ~25 legacy sources / ~1.02M D1 rows (plan committed in
   50-queue.md; tool dry-run-verified with exact counts). D1 hit 9.42 GB today — this
   deletion likely defers the paid split entirely.
-- **whr un-gate** — purge the 178 OWID-era CSVs on R2, then remove whr from the denylist,
+- **whr un-gate** — purge the 178 mirror-era CSVs on R2, then remove whr from the denylist,
   deploy, verify 451→200. The clean Figure-2.1 data (1,749 series) is already catalogued,
   derived, and D1-synced, waiting behind the gate.
 - **GATED residue** — 40 orphaned CSVs on R2 (unreachable, cosmetic).

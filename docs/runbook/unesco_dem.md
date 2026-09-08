@@ -53,7 +53,7 @@
 
 **Adapter contract** (registry `adapter`):
 
-- `vintage_signal`: GET https://api.uis.unesco.org/api/public/versions — UIS's own release `version` plus each theme's `lastUpdate`. Deliberately the PUBLISHER's field. This source sat 4 years stale (DBnomics last indexed UNESCO 2022-04-04) precisely because the previous signal certified the RELAY's hash, which stays constant while the publisher moves on (ledger R73).
+- `vintage_signal`: GET https://api.uis.unesco.org/api/public/versions — UIS's own release `version` plus each theme's `lastUpdate`. Deliberately the PUBLISHER's field. This source sat 4 years stale (relay last indexed UNESCO 2022-04-04) precisely because the previous signal certified the RELAY's hash, which stays constant while the publisher moves on (ledger R73).
 - `since_param`: none — one GET per indicator returns that indicator's full history for every country.
 - `out_paths_note`: Single parquet data/clean_full/unesco_dem/unesco_dem.parquet. series_key 'UNESCO_DEM:{indicatorId}.{geoUnit}.A', which is UIS's own vocabulary with no translation applied. obs_date is period-START (Jan 1) — this source's existing convention across all 278,720 stored observations, left unchanged.
 - `rate_note`: 35 requests total (one per published indicator), no key, polite UA, 300s timeout. A failed indicator is recorded and skipped; more than half failing raises TransientError rather than merging a partial library.
@@ -69,7 +69,7 @@
 ```
 UNESCO UIS demographic & socio-economic series — DIRECT from api.uis.unesco.org.
 
-WHY. unesco_dem's 7,080 series arrive via DBnomics, whose UNESCO index was last
+WHY. unesco_dem's 7,080 series arrive via the relay aggregator, whose UNESCO index was last
 refreshed 2022-04-04 — over four years ago. UIS itself runs a public API whose
 catalogue reports every theme "lastUpdate 02/09/2026, February 2026 Data Release".
 Four years stale on our side, current at the publisher, and nothing in our pipeline
@@ -79,7 +79,7 @@ ONLY THIS UNESCO SOURCE IS REPAIRABLE THIS WAY, and that was measured rather tha
 assumed. Of our five unesco_* sources, the indicator codes we publish are present in
 UIS's live catalogue at: dem 35/35 (100%), clte 21/408 (5.1%), film 1/76 (1.3%),
 cltt 0/34, inno 0/638. The current API exposes 30 CULTURE and 12 SCIENCE indicators
-against the hundreds the DBnomics-era snapshot carried, so the other four cannot be
+against the hundreds the relay-era snapshot carried, so the other four cannot be
 rebuilt from it. That is a statement about this endpoint, NOT a claim that those
 series are gone — UIS bulk downloads and the SDG database are unchecked (R75).
 
@@ -111,7 +111,7 @@ python -m updater.run --source unesco_dem --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source unesco_dem --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('unesco_dem');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"

@@ -45,7 +45,7 @@
 
 **Why this strategy** (registry `strategy_reason`):
 
-> Served and downloadable (16,703 series) with NO registry entry until 2026-07-28, so it was never attempted. All 25 fao_* sources are in that state (136,754 series); the registry's separate `faostat` entry is a DIFFERENT source, which is how the family went unnoticed. Fetched direct from FAOSTAT's bulk distribution — the DBnomics-era ids ARE FAOSTAT's own codes, so the key template reproduces 96.0% of published ids with no translation table. Upstream carries 84,549 series.
+> Served and downloadable (16,703 series) with NO registry entry until 2026-07-28, so it was never attempted. All 25 fao_* sources are in that state (136,754 series); the registry's separate `faostat` entry is a DIFFERENT source, which is how the family went unnoticed. Fetched direct from FAOSTAT's bulk distribution — the relay-era ids ARE FAOSTAT's own codes, so the key template reproduces 96.0% of published ids with no translation table. Upstream carries 84,549 series.
 
 **Adapter contract** (registry `adapter`):
 
@@ -88,7 +88,7 @@ python -m updater.run --source fao_fo --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source fao_fo --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('fao_fo');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"

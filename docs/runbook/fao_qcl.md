@@ -45,11 +45,11 @@
 
 **Why this strategy** (registry `strategy_reason`):
 
-> Served and downloadable (20,238 series) with NO registry entry until 2026-07-28, so it was never attempted. All 25 fao_* sources are in that state (136,754 series); the registry's separate `faostat` entry is a DIFFERENT source, which is how the whole family went unnoticed. Fetched direct from FAOSTAT's bulk distribution: the DBnomics-era ids turn out to BE FAOSTAT's own codes (5111.1.1016 = element 5111 Stocks, area 1 Armenia, item 1016 Goats), so 98.2% of published ids reproduce exactly with no translation table. Upstream carries 78,944 series to 2024 against our 20,238 to 2022.
+> Served and downloadable (20,238 series) with NO registry entry until 2026-07-28, so it was never attempted. All 25 fao_* sources are in that state (136,754 series); the registry's separate `faostat` entry is a DIFFERENT source, which is how the whole family went unnoticed. Fetched direct from FAOSTAT's bulk distribution: the relay-era ids turn out to BE FAOSTAT's own codes (5111.1.1016 = element 5111 Stocks, area 1 Armenia, item 1016 Goats), so 98.2% of published ids reproduce exactly with no translation table. Upstream carries 78,944 series to 2024 against our 20,238 to 2022.
 
 **Adapter contract** (registry `adapter`):
 
-- `vintage_signal`: DateUpdate + FileSize for dataset QCL in https://bulks-faostat.fao.org/production/datasets_E.json - FAO's OWN release field. Deliberately not a relay hash: these sources sat four years stale because the previous signal certified DBnomics' index rather than FAO's release (ledger R73).
+- `vintage_signal`: DateUpdate + FileSize for dataset QCL in https://bulks-faostat.fao.org/production/datasets_E.json - FAO's OWN release field. Deliberately not a relay hash: these sources sat four years stale because the previous signal certified the relay aggregator's index rather than FAO's release (ledger R73).
 
 **Fetcher module**: [`updater/strategies/fetchers/fao_qcl.py`](../../updater/strategies/fetchers/fao_qcl.py)
 
@@ -91,7 +91,7 @@ python -m updater.run --source fao_qcl --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source fao_qcl --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('fao_qcl');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"

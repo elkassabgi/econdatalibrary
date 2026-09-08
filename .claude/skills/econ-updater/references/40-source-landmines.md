@@ -29,12 +29,12 @@
 | comtrade | ingest dropped mot/customs/partner2 dims — conflicting values under one (key,date); responses cap at exactly 100,000 rows silently; pass aggregate dims as query params; `_get()` must return None, never `[]` | R177, R201 |
 | census | tails can mint new series (merge only stored keys, report skipped); 11 of 24 intltrade flows under-keyed (need extra dims in dedup); bds tail returns 0 for the stored columns; the header claim "non-EITS files don't gain periods" was false — probe one excluded file per source | R278, R280, R283, R284 |
 | treasury / ofr / worldbank_esg | non-default dedup keys (per-file identity tuple; `(series_id, obs_date)`; `(country, obs_date)`) — auditors must read DEDUP from the code or produce 166 false positives and skip 71 files | R281 |
-| bea | NOT a DBnomics source despite the provider-name collision (`bea:A191RC:Q` vs `BEA/GDPbyIndustry-1:...`); fetcher writes only bea.parquet — the 91 under-keyed files are the ingester's served tree; 913,230-series store serves 240 (gated on D1 capacity, a DECISION not a bug) | R171, R282, R268-digest |
+| bea | NOT a relay source despite the provider-name collision (`bea:A191RC:Q` vs `BEA/GDPbyIndustry-1:...`); fetcher writes only bea.parquet — the 91 under-keyed files are the ingester's served tree; 913,230-series store serves 240 (gated on D1 capacity, a DECISION not a bug) | R171, R282, R268-digest |
 | abs | 376,332,763 distinct series — any run-global per-series fold is a ~94 GB OOM; alphabetically FIRST, so it destroyed the runner before anything else ran; future dates (2046/2061) are real projections | R187–R190, R204 |
 | bis | LBS has 608,570 series / a >2GiB series_key column — `group_by` kills the process; Apache ETag mtime-half flaps across replicas — gate Content-Length + 30-day backstop; ingest helpers are backfill-shaped (skip-if-present), not wrappable | R197, R195, R165, K-note |
 | snb | `/dimensions/en` item ids are a DIFFERENT id space from the CSV codes (25% "reproduction" was an artefact); date conventions are mixed IN the store: annual period-END, monthly/quarterly period-START — derive conventions from the store per frequency by set equality | R179 |
 | fed_board | `Output.aspx` has NO stable validator (per-request Last-Modified, no ETag/CL/Range) — content-hash the zip; `lxml` module-level import must be in requirements; probe URL must match `download_zip`'s actual params (no `label=include`) | R164, R178, R162 |
-| whr | OWID grapher CSV Last-Modified is CDN cache-fill time — hash the body; two-probe stability audits pass it | R184 |
+| whr | third-party grapher CSV Last-Modified is CDN cache-fill time — hash the body; two-probe stability audits pass it | R184 |
 | defillama | parent protocols (aave, uniswap…) are absent from `/protocols` listing but live at `/protocol/<slug>` — never delist from the listing; its moving ETag is genuine content change, not a defect | R61, R165 |
 | ksh / ksh_stadat | key grains differ (compare at TABLE grain — 96.4% redundant, not 13%); 16 retired tables are NOT re-crawlable (the exception to "deletion is recoverable"); ksh_stadat's parser rejects one-column snapshot tables (`Denomination;2024`) as SKIPs nothing counts | R141, R149, I-note, R156 |
 | ipea | `$filter=VALDATA` is accepted and silently IGNORED (full series returned); ingest skips any series already on disk | R160 |
@@ -83,7 +83,7 @@
 | cbs_nl / gus_dbw | registered with `run_location: local` (not "missing from registry"); count as STRANDED, not scheduled — no adapter in the local run path | R262, R276 |
 | ons_uk | crashed pass (0xC0000005) lost a whole run's state; cursor prune = delete-100% until one run completes and writes current cursors — sequence, don't guard harder | R208 "stamp", R263 |
 | unhcr / bcb | merge AFTER the sweep loop — kill = total discard (worst class); hagstofa/stat_latvia/stat_slovenia/insee_bdm merge inside the loop (truncate only) — verified by control flow, not grep or AST counts | R249 |
-| whr / transparency_ti / gpi | data actually retrieved from OWID fallbacks while cited to the primary publisher — provenance/licence exposure; check the ingest log's URLs | R215 "whr" |
+| whr / transparency_ti / gpi | data actually retrieved from the third-party mirror fallbacks while cited to the primary publisher — provenance/licence exposure; check the ingest log's URLs | R215 "whr" |
 | bis / bls / eia / faostat / vdem / statcan | workstation-scheduled via `run_location: local` despite `live:false` — reporting them "unscheduled" is the R262 error | R262, R234 "bypass" |
 
 ### From R277-R347

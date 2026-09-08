@@ -62,7 +62,7 @@ IMF Financial Access Survey — DIRECT from api.imf.org (flow FAS, agency IMF.ST
 
 Thin wrapper: the registry resolves fetchers/<source_id>.py, so each IMF dataset
 needs its own module. All behaviour lives in _imf_direct.py — see that file for why
-these are NEW source ids rather than replacements for the DBnomics-era imf_fas.
+these are NEW source ids rather than replacements for the relay-era imf_fas.
 ```
 
 </details>
@@ -85,7 +85,7 @@ python -m updater.run --source imf_fas_direct --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source imf_fas_direct --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('imf_fas_direct');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"

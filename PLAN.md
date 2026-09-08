@@ -29,11 +29,11 @@ Full machine-readable registry in **`configs/sources.yaml`**. In short:
   Board, EIA, USDA, NOAA, FHFA · World Bank (WDI + ESG + Pink Sheet), OECD, Eurostat,
   IMF, ILOSTAT, FAOSTAT, Penn World Table, Statistics Canada, ABS, Bank of England,
   INSEE, Our World in Data, Ember, BIS\* · Wikidata · ECB/Frankfurter, Zillow,
-  DeFiLlama · DBnomics\* (accelerator) · **your HF intraday equities**.
+  DeFiLlama · the relay aggregator\* (accelerator) · **your HF intraday equities**.
 - **Drop:** CoinGecko, Alternative.me.
-- **Carve-out:** Eurostat (non-EU/some trade), OWID (upstream third-party), FRED
+- **Carve-out:** Eurostat (non-EU/some trade), a third-party republisher (upstream), the St. Louis Fed API
   (discovery-only; exclude "Copyright" series; re-pull PD series from origin).
-- \* BIS = **non-commercial only**; DBnomics = **per-series license passthrough**.
+- \* BIS = **non-commercial only**; the relay aggregator = **per-series license passthrough**.
 
 **The one rule, enforced in code:** `core/licenses.py` refuses to publish anything
 whose license class isn't `reservable: true`. That single gate keeps "one location" legal.
@@ -111,8 +111,8 @@ load connector → assert_reservable(source license) → for each series:
 - **SDMX adapter** covers most macro at once (World Bank, OECD, Eurostat, IMF, ECB,
   BIS, ILO, ABS) — one client + per-provider quirks.
 - **Per-source adapters** for the rest (EDGAR, EIA, Treasury, BLS, BEA, Census, FHFA,
-  Zillow CSV, OWID GitHub CSV, Ember, DeFiLlama, Frankfurter, Wikidata subset).
-- **DBnomics** as a breadth accelerator; dedupe vs direct connectors; store per-series license.
+  Zillow CSV, third-party GitHub CSV, Ember, DeFiLlama, Frankfurter, Wikidata subset).
+- **the relay aggregator** as a breadth accelerator; dedupe vs direct connectors; store per-series license.
 - **Incremental ingest is first-class** — initial backfill, then small daily deltas
   (smart ≈ 0.7 GB/day total; naive re-pull would be ~100× more).
 
@@ -174,8 +174,8 @@ channel). Signature features:
 1. **License registry** (`sources.yaml` → D1) — machine-readable per source/series.
 2. **Code gate** (`core/licenses.py`) — server cache refuses non-green classes.
 3. **Attribution rendering** — every chart/response auto-emits the required credit.
-4. **FRED "Copyright" filter** — exclude any series whose notes contain "Copyright".
-5. **Carve-outs honored** — Eurostat non-EU, OWID upstream, per `sources.yaml`.
+4. **St. Louis Fed API "Copyright" filter** — exclude any series whose notes contain "Copyright".
+5. **Carve-outs honored** — Eurostat non-EU, third-party upstream, per `sources.yaml`.
 6. **Public "Data Sources & Licensing" page** — trust + SEO (your methodology habit).
 7. **Lawyer review before monetizing** — esp. EU database right + BIS non-commercial.
 
@@ -202,7 +202,7 @@ frequency equities specifically).
   computed ratios; feature HF intraday. *The seat no free aggregator holds.*
 - **Phase 3 — Breadth:** rates/FX (Treasury/ECB/NY-Fed/BIS/Frankfurter), commodities/
   energy (EIA/Pink Sheet/USDA), crypto (DeFiLlama), housing (FHFA/Zillow/Census),
-  climate (NOAA/OWID/Ember), bulk bundles, embeddable charts.
+  climate (NOAA/Ember), bulk bundles, embeddable charts.
 - **Phase 4 — Depth & monetization:** point-in-time vintages, official-RSS news,
   freemium API + grants/sponsorship (core stays free/CC-BY; no ads).
 

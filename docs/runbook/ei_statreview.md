@@ -49,7 +49,7 @@
 
 **Adapter contract** (registry `adapter`):
 
-- `vintage_signal`: HEAD Last-Modified/Content-Length on the primary EI all-data XLSX URL (energyinst.org __data/assets/excel_doc/<id> path). Caveat: the asset id is version-specific and rotates per edition, so a dead primary silently falls through the hard-coded fallback list to the OWID mirror (different schema/units).
+- `vintage_signal`: HEAD Last-Modified/Content-Length on the primary EI all-data XLSX URL (energyinst.org __data/assets/excel_doc/<id> path). Caveat: the asset id is version-specific and rotates per edition, so a dead primary silently falls through the hard-coded fallback list to the third-party mirror (different schema/units).
 - `since_param`: n/a (whole-history annual panel, no since param)
 - `out_paths_note`: Single file: data/clean_full/ei_statreview/ei_statreview.parquet (series_key EISR:{variable}:{country}, annual Dec-31). No raw cache, no per-variable files. Side logs _ei_statreview_log.txt/_err.txt.
 - `rate_note`: No API key. 180s timeout; one attempt per URL then next fallback (no retry/backoff within a URL).
@@ -70,9 +70,9 @@ table and MERGE (dedup series_key+obs_date, new wins on revision, never-shrink).
 STALENESS NOTE (verified 2026-06-23): the two hard-coded energyinst.org primary
 URLs (__data/assets/excel_doc/0020/1540154/... and the panel CSV) return HTTP 403
 to programmatic clients (even a browser UA) — the asset id rotates per edition and
-the host blocks bots. The published data was actually built from the OWID GitHub
+the host blocks bots. The published data was actually built from the third-party GitHub
 mirror (130 columns, iso_code/country/year), which is alive (HEAD 200 + ETag) and
-versioned via the GitHub commits API. So the HONEST vintage signal tracks the OWID
+versioned via the GitHub commits API. So the HONEST vintage signal tracks the third-party
 mirror commit SHA (the URL that genuinely produces our rows), not the dead EI HEAD.
 update() still TRIES the EI URLs first (per the ingester) and only falls through to
 the mirror, matching existing behaviour; if every URL fails it surfaces the failure
@@ -99,7 +99,7 @@ python -m updater.run --source ei_statreview --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source ei_statreview --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('ei_statreview');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"

@@ -192,7 +192,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "Federal Reserve Bank of New York (data served via FRED, Federal Reserve Bank of St. Louis)",
+  "name": "Federal Reserve Bank of New York (data served via the St. Louis Fed API)",
   "description": "Overnight Bank Funding Rate (Percent); Secured Overnight Financing Rate (Percent). Federal Reserve Bank of New York. 8 series, 2016–2026. Free download.",
   "url": "https://econdatalibrary.com/nyfed",
   "identifier": "nyfed",
@@ -229,7 +229,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
     "Tri-Party General Collateral Rate Volume (Billions of U.S. Dollars)"
   ],
   "temporalCoverage": "2016-03-01/2026-06-04",
-  "citation": "Federal Reserve Bank of New York (data served via FRED, Federal Reserve Bank of St. Louis). Retrieved from https://www.newyorkfed.org/markets/reference-rates. Compiled and redistributed by the Elkassabgi Data Library.",
+  "citation": "Federal Reserve Bank of New York (data served via the St. Louis Fed API). Retrieved from https://www.newyorkfed.org/markets/reference-rates. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-nyfed",
     "https://zenodo.org/communities/econdatalibrary"
@@ -283,7 +283,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
     "Money & Banking"
   ],
   "temporalCoverage": "2016-03-01/2026-06-04",
-  "citation": "Federal Reserve Bank of New York (data served via FRED, Federal Reserve Bank of St. Louis). Retrieved from https://www.newyorkfed.org/markets/reference-rates. Compiled and redistributed by the Elkassabgi Data Library.",
+  "citation": "Federal Reserve Bank of New York (data served via the St. Louis Fed API). Retrieved from https://www.newyorkfed.org/markets/reference-rates. Compiled and redistributed by the Elkassabgi Data Library.",
   "distribution": [
     {
       "@type": "cr:FileObject",
@@ -345,11 +345,11 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 </script>
 
 <section class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / Federal Reserve Bank of New York (data served via FRED, Federal Reserve Bank of St. Louis)</div>
+<div class="crumb"><a href="index.html">Catalog</a> / Federal Reserve Bank of New York (data served via the St. Louis Fed API)</div>
 <div class="pid">nyfed</div>
-<h1>Federal Reserve Bank of New York (data served via FRED, Federal Reserve Bank of St. Louis)</h1>
+<h1>Federal Reserve Bank of New York (data served via the St. Louis Fed API)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">U.S. Government Work (public domain)</span><span class="badge cat">Money &amp; Banking</span></div>
-<p class="lead">NY Federal Reserve reference rates ingest via FRED public API. Pulls SOFR, BGCR, TGCR, OBFR, SOFR averages — NY Fed-published rates that are NOT in the Fed Board H.15 release. These are US public domain (NY Fed is federal). Data is accessed via FRED&#x27;s public JSON API (same data NY Fed publishes…</p>
+<p class="lead">NY Federal Reserve reference rates ingest via the St. Louis Fed public API. Pulls SOFR, BGCR, TGCR, OBFR, SOFR averages — NY Fed-published rates that are NOT in the Fed Board H.15 release. These are US public domain (NY Fed is federal). Data is accessed via the St. Louis Fed&#x27;s public JSON API (same data NY Fed publishes…</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -358,14 +358,14 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <h2>Licensing &amp; provenance</h2>
 <dl class="kv"><dt>License</dt><dd>U.S. Government Work (public domain)</dd>
 <dt>License URL</dt><dd><a href="https://www.usa.gov/government-works">https://www.usa.gov/government-works</a></dd>
-<dt>Required attribution</dt><dd>Source: Federal Reserve Bank of New York (retrieved via FRED, Federal Reserve Bank of St. Louis)</dd>
+<dt>Required attribution</dt><dd>Source: Federal Reserve Bank of New York (retrieved via the St. Louis Fed API)</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Yes</dd>
 <dt>Modification</dt><dd>Permitted</dd>
 <dt>Provider homepage</dt><dd><a href="https://www.newyorkfed.org/markets/reference-rates">https://www.newyorkfed.org/markets/reference-rates</a></dd>
-<dt>Provider terms</dt><dd><a href="https://fred.stlouisfed.org/legal/">https://fred.stlouisfed.org/legal/</a></dd></dl>
+<dt>Provider terms</dt><dd><a href="https://www.newyorkfed.org/privacy/termsofuse">https://www.newyorkfed.org/privacy/termsofuse</a></dd></dl>
 <h2>How to cite</h2>
-<div class="citation-block"><p>Federal Reserve Bank of New York (data served via FRED, Federal Reserve Bank of St. Louis). Retrieved from https://www.newyorkfed.org/markets/reference-rates. Compiled and redistributed by the Elkassabgi Data Library.</p></div>
+<div class="citation-block"><p>Federal Reserve Bank of New York (data served via the St. Louis Fed API). Retrieved from https://www.newyorkfed.org/markets/reference-rates. Compiled and redistributed by the Elkassabgi Data Library.</p></div>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
 <h2>Access &amp; mirrors</h2>
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=nyfed">Select &amp; download nyfed series as CSV &rarr;</a></dd>
@@ -376,20 +376,20 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>Update strategy</dt><dd>extend by date</dd>
 <dt>Storage layout</dt><dd>overwrite-multi-file, ONE parquet per logical series: data/clean_full/nyfed/&lt;name&gt;.parquet for name in {sofr,bgcr(skipped),tgcr,obfr,sofr30d,sofr90d,sofr180d,sofridx,tgcrvol} (~8 files, tens of KB each). Schema per file: series_key (str, &#x27;nyfed:{name}&#x27;), obs_date (date32), value (float64). Each file is written once with pq.write_table (full overwrite when the file is absent).</dd></dl>
 <h2>Full description</h2>
-<p class="lead">NY Federal Reserve reference rates ingest via FRED public API.
+<p class="lead">NY Federal Reserve reference rates ingest via the St. Louis Fed public API.
 
 Pulls SOFR, BGCR, TGCR, OBFR, SOFR averages — NY Fed-published rates that are
 NOT in the Fed Board H.15 release. These are US public domain (NY Fed is federal).
 
-Data is accessed via FRED&#x27;s public JSON API (same data NY Fed publishes there).
-No API key required for these individual series at FRED&#x27;s public rate.
+Data is accessed via the St. Louis Fed&#x27;s public JSON API (same data NY Fed publishes there).
+No API key required for these individual series at the St. Louis Fed&#x27;s public rate.
 
 Run: python jobs/ingest_nyfed.py</p>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;Federal Reserve Bank of New York (data served via FRED, Federal Reserve Bank of St. Louis)&quot;,
+  &quot;name&quot;: &quot;Federal Reserve Bank of New York (data served via the St. Louis Fed API)&quot;,
   &quot;description&quot;: &quot;Overnight Bank Funding Rate (Percent); Secured Overnight Financing Rate (Percent). Federal Reserve Bank of New York. 8 series, 2016–2026. Free download.&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/nyfed&quot;,
   &quot;identifier&quot;: &quot;nyfed&quot;,
@@ -426,7 +426,7 @@ Run: python jobs/ingest_nyfed.py</p>
     &quot;Tri-Party General Collateral Rate Volume (Billions of U.S. Dollars)&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;2016-03-01/2026-06-04&quot;,
-  &quot;citation&quot;: &quot;Federal Reserve Bank of New York (data served via FRED, Federal Reserve Bank of St. Louis). Retrieved from https://www.newyorkfed.org/markets/reference-rates. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;citation&quot;: &quot;Federal Reserve Bank of New York (data served via the St. Louis Fed API). Retrieved from https://www.newyorkfed.org/markets/reference-rates. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-nyfed&quot;,
     &quot;https://zenodo.org/communities/econdatalibrary&quot;
@@ -478,7 +478,7 @@ Run: python jobs/ingest_nyfed.py</p>
     &quot;Money &amp; Banking&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;2016-03-01/2026-06-04&quot;,
-  &quot;citation&quot;: &quot;Federal Reserve Bank of New York (data served via FRED, Federal Reserve Bank of St. Louis). Retrieved from https://www.newyorkfed.org/markets/reference-rates. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;citation&quot;: &quot;Federal Reserve Bank of New York (data served via the St. Louis Fed API). Retrieved from https://www.newyorkfed.org/markets/reference-rates. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;cr:FileObject&quot;,

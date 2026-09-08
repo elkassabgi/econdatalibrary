@@ -1,6 +1,6 @@
-# DBnomics ISTAT — completeness repair (2026-06-18)
+# Relay-ISTAT — completeness repair (2026-06-18)
 
-## The bug (same class as the GUS one)
+## The bug (same class as the DBW one)
 `jobs/_dbnomics_pull.py` could silently drop whole datasets:
 - `pull_provider` caught **any** dataset error (incl. a 6×-timed-out fetch),
   logged it, and `continue`d — then wrote `_DONE` regardless. So a timed-out
@@ -10,7 +10,7 @@
   out on the old 120 s read timeout.
 
 This data is **not redundant**: the direct ISTAT pull (`data/clean_full/istat`,
-1.1 GB / 755 files) does **not** contain the `164_164` family, so the DBnomics
+1.1 GB / 755 files) does **not** contain the `164_164` family, so the relay
 slice adds unique datasets.
 
 ## The fix (code)

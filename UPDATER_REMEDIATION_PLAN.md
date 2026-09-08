@@ -64,13 +64,13 @@ Expected `no_change` for most annual/static on any given day — that is SUCCESS
 
 ### Phase 2 — The genuinely stale (verify against provider, then fix)
 - **`imf_commodity`** — monthly, stuck at 2025-06. **ROOT CAUSE VERIFIED 2026-07-23 (live probe):**
-  NOT our bug. It mirrors IMF PCPS *via DBnomics* (`api.db.nomics.world/v22/series/IMF/PCPS`), and
-  DBnomics's IMF/PCPS mirror is itself frozen — dataset metadata reads `updated: 2025-07-15,
-  indexed_at: 2025-07-16T02:22Z`, i.e. ~a year stale. Our data equals what DBnomics still serves;
+  NOT our bug. It mirrors IMF PCPS *via the relay aggregator* (`api.db.nomics.world/v22/series/IMF/PCPS`), and
+  the relay aggregator's IMF/PCPS mirror is itself frozen — dataset metadata reads `updated: 2025-07-15,
+  indexed_at: 2025-07-16T02:22Z`, i.e. ~a year stale. Our data equals what the relay aggregator still serves;
   the upstream link died (IMF migrated PCPS to its new data portal in 2025, deprecating the old
   mirror). FIX = repoint the fetcher to IMF's current PCPS feed (data.imf.org / new IMF SDMX API) —
   a fetcher rewrite against a new endpoint, not a delta tweak. Until then it is honestly frozen at
-  the last vintage DBnomics published.
+  the last vintage the relay aggregator published.
   UPDATE 2026-07-24: the repoint TARGET is confirmed LIVE — `api.imf.org/external/sdmx/3.0/data/dataflow/IMF.RES/PCPS/~/<key>` returns the PCPS dataflow (v9.0.0). BUT the new v9.0.0 has a DIFFERENT dimension structure than the old {FREQ}.{REF_AREA}.{COMMODITY}.{UNIT}; my guessed keys + `c[TIME_PERIOD]=ge:` time filter returned ZERO observations (a query-format issue, NOT proof of data absence). So current data past 2025-06 is NOT yet confirmed. The fetcher rewrite must first pull the DSD/codelists (dims INDICATOR/COMMODITY_CF/DATA_TRANSFORMATION/UNIT…), derive valid keys + the SDMX-3.0 time-filter syntax, THEN map to our series_key. Not a delta tweak; a real rewrite.
 - **`ppi`** — annual @2022. **Verify** IEP hasn't published 2023+; if not, it is CURRENT →
   reclassify A and silence the RED-DATA false alarm (raise its SLA or mark edition-final).
@@ -183,7 +183,7 @@ stat_estonia, ssb (bfs holds until its transients clear + a clean run). bls stay
 
 ## 2026-07-24 session — live tier 5 → 7, batch-dispatch + first bulk template
 
-**Promoted to live (CI-proven `ok`, data through today):** `nyfed` (NY Fed SOFR/OBFR/TGCR via FRED
+**Promoted to live (CI-proven `ok`, data through today):** `nyfed` (NY Fed SOFR/OBFR/TGCR via the St. Louis Fed API
 date-tail), `riksbank` (SWEA ~117 series, /Series freshness pre-filter + per-series date-tail).
 Run 30101500855 batch-proved both. **Live tier now 7:** bcb, cnb, frankfurter, nyfed, riksbank, scb, treasury.
 

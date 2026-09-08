@@ -48,34 +48,34 @@
 
 **Why this strategy** (registry `strategy_reason`):
 
-> Fetched via FRED, which exposes a server-side observation_start date filter; derive it from each series' stored max(obs_date) and pull only the tail.
+> Fetched via the St. Louis Fed API, which exposes a server-side observation_start date filter; derive it from each series' stored max(obs_date) and pull only the tail.
 
 **Adapter contract** (registry `adapter`):
 
-- `vintage_signal`: Date-tail always-fetch via FRED observation_start; per series compute max(obs_date) from {name}.parquet and request from there (data tiny — full overwrite also fine).
-- `since_param`: observation_start=<max(obs_date) (or +1 day)> on the FRED series/observations call (currently hardcoded 2000-01-01).
-- `out_paths_note`: Multi-file, one parquet per logical series: data/clean_full/nyfed/<name>.parquet for sofr,tgcr,obfr,sofr30d/90d/180d,sofridx,tgcrvol (~8 files). NOTE: duplicate 'tgcr' dict key drops the non-RATE TGCR variant (latent coverage bug); bgcr intentionally absent (unavailable via FRED).
-- `rate_note`: REQUIRES FRED_API_KEY (.env via core.config.load_env; SystemExit if missing). FRED public rate limits; self-throttles 1s between series.
+- `vintage_signal`: Date-tail always-fetch via the St. Louis Fed API observation_start; per series compute max(obs_date) from {name}.parquet and request from there (data tiny — full overwrite also fine).
+- `since_param`: observation_start=<max(obs_date) (or +1 day)> on the St. Louis Fed series/observations call (currently hardcoded 2000-01-01).
+- `out_paths_note`: Multi-file, one parquet per logical series: data/clean_full/nyfed/<name>.parquet for sofr,tgcr,obfr,sofr30d/90d/180d,sofridx,tgcrvol (~8 files). NOTE: duplicate 'tgcr' dict key drops the non-RATE TGCR variant (latent coverage bug); bgcr intentionally absent (unavailable via the St. Louis Fed API).
+- `rate_note`: REQUIRES FRED_API_KEY (.env via core.config.load_env; SystemExit if missing). St. Louis Fed public rate limits; self-throttles 1s between series.
 
 **Fetcher module**: [`updater/strategies/fetchers/nyfed.py`](../../updater/strategies/fetchers/nyfed.py)
 
 <details><summary>Its own module docstring — the authoritative description, including every defect previously found and why the code looks the way it does</summary>
 
 ```
-S2 fetcher — NY Fed reference rates via FRED's public API. US public domain.
+S2 fetcher — NY Fed reference rates via the St. Louis Fed's public API. US public domain.
 
-The NY Fed publishes SOFR / OBFR / TGCR and the SOFR averages+index to FRED; we mirror the
+The NY Fed publishes SOFR / OBFR / TGCR and the SOFR averages+index to the St. Louis Fed API; we mirror the
 same daily series the ingester (jobs/ingest_nyfed.py) seeded. Layout: one parquet per rate,
 clean_full/nyfed/<name>.parquet, schema (series_key, obs_date, value), series_key = "nyfed:<name>".
 
 Date-tail: each on-disk series is refreshed from a revision-lookback window behind its stored max
-obs_date (FRED observation_start=), so same-day revisions and a lagging publish are captured;
+obs_date (St. Louis Fed observation_start=), so same-day revisions and a lagging publish are captured;
 merge.merge_and_write dedups the overlap and never shrinks. Only series ALREADY on disk are
 refreshed (new rates are a re-ingest concern). Store reads/writes go through blob (CI-safe, R36).
 
 HONEST-STATUS: timeout/5xx/429 -> TransientError -> transient_unit (retried next tick, data kept).
 A 200 whose body is not the documented JSON on a non-empty response -> transient (never a silent
-no_change). A 4xx on one series (e.g. a retired FRED id) -> that series is empty for this run.
+no_change). A 4xx on one series (e.g. a retired St. Louis Fed id) -> that series is empty for this run.
 ```
 
 </details>
@@ -98,7 +98,7 @@ python -m updater.run --source nyfed --dry
 AQUEDUCT_BACKEND=r2 python -u -m updater.run --source nyfed --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
-#    (DBnomics is BANNED — every source must be reached at its own publisher.)
+#    (The relay aggregator is BANNED — every source must be reached at its own publisher.)
 
 # 5. Is the store intact? obs_count in state is NOT the answer.
 AQUEDUCT_BACKEND=r2 python -c "import sys,os;sys.path.insert(0,'.');from updater import config,blob;d=config.source_dir('nyfed');fs=[f for f in blob.list_parquets(d) if not os.path.basename(f).startswith('_')];print(len(fs),'files',sum(blob.row_count(os.path.join(d,os.path.basename(f))) for f in fs),'rows')"
