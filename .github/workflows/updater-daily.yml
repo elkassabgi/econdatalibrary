@@ -372,12 +372,12 @@ jobs:
         continue-on-error: true
         run: python core/sync_catalog_d1.py
 
-      # RELAY-STALENESS STEP REMOVED 2026-08-03 — it live-probed api.db.nomics.world DAILY.
+      # RELAY-STALENESS STEP REMOVED 2026-08-03 — it live-probed a relay aggregator DAILY.
       #
       # It ran a relay-staleness audit tool (since deleted), whose API constant was
-      # https://api.db.nomics.world/v22/series/{prov}/{ds} and which urlopen()s it per dataset.
+      # the relay's series endpoint and which urlopen()s it per dataset.
       # The relay aggregator is BANNED (CLAUDE.md 0 / ledger R251): "no fetching, no probing
-      # api.db.nomics.world, no relays or mirrors." A monitoring probe is still a probe, and
+      # the relay, no relays or mirrors." A monitoring probe is still a probe, and
       # this was the last automatic thing in CI that touched the host.
       #
       # The QUESTION it answered stays valid and is NOT lost: "is a relayed source frozen

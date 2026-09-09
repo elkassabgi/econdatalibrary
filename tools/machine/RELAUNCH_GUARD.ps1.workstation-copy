@@ -24,8 +24,7 @@ if (-not $env:GUS_DBW_CLIENT_ID) {
 $jobs = @(
   @{ n = 'cbs_nl';         match = 'ingest_cbs_nl.py';   args = @('jobs/ingest_cbs_nl.py') },
   @{ n = 'gus_dbw';        match = 'ingest_gus_dbw.py';  args = @('jobs/ingest_gus_dbw.py') },
-  # dbnomics_istat REMOVED 2026-08-03. This entry relaunched
-  #     jobs/_dbnomics_pull.py ISTAT
+  # A relay-backed ISTAT entry was REMOVED 2026-08-03. It relaunched a relay puller
   # every five minutes, for ever. the relay aggregator is BANNED (CLAUDE.md 0 / ledger R251) - "no
   # fetching, no probing the relay's API host, no relays or mirrors" - so a watchdog that
   # RESURRECTS the banned puller is the most durable possible form of the violation: it
@@ -59,7 +58,7 @@ $jobs = @(
 $pwsh = 'powershell.exe'
 $runner = Join-Path (Join-Path $root 'tools') 'run_guarded_job.ps1'
 # ALL THREE LONG JOBS RETIRED 2026-09-02. Retired IN PLACE, not deleted, following the
-# dbnomics_istat precedent at lines 27-39 above: the argv is the recipe for the next run of
+# relay-puller precedent in the entry list above: the argv is the recipe for the next run of
 # each campaign, and WORKLOG.md (2026-08-31, Phase 3 task 4) already queues a noaa re-derive
 # for the 550,347,528 merged observations whose CSVs were never rebuilt. Deleting the lines
 # would delete the only written record of `--skip-newer-than` vs `--skip-existing`, the
