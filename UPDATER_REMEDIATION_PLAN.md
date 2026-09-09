@@ -64,7 +64,7 @@ Expected `no_change` for most annual/static on any given day — that is SUCCESS
 
 ### Phase 2 — The genuinely stale (verify against provider, then fix)
 - **`imf_commodity`** — monthly, stuck at 2025-06. **ROOT CAUSE VERIFIED 2026-07-23 (live probe):**
-  NOT our bug. It mirrors IMF PCPS *via the relay aggregator* (`api.db.nomics.world/v22/series/IMF/PCPS`), and
+  NOT our bug. It mirrors IMF PCPS *via the relay aggregator*, and
   the relay aggregator's IMF/PCPS mirror is itself frozen — dataset metadata reads `updated: 2025-07-15,
   indexed_at: 2025-07-16T02:22Z`, i.e. ~a year stale. Our data equals what the relay aggregator still serves;
   the upstream link died (IMF migrated PCPS to its new data portal in 2025, deprecating the old

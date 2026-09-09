@@ -28,7 +28,7 @@ Full machine-readable registry in **`configs/sources.yaml`**. In short:
 - **Host (cache + re-serve):** SEC EDGAR, BLS, BEA, Census, Treasury, Federal Reserve
   Board, EIA, USDA, NOAA, FHFA · World Bank (WDI + ESG + Pink Sheet), OECD, Eurostat,
   IMF, ILOSTAT, FAOSTAT, Penn World Table, Statistics Canada, ABS, Bank of England,
-  INSEE, Our World in Data, Ember, BIS\* · Wikidata · ECB/Frankfurter, Zillow,
+  INSEE, <redacted>, Ember, BIS\* · Wikidata · ECB/Frankfurter, Zillow,
   DeFiLlama · the relay aggregator\* (accelerator) · **your HF intraday equities**.
 - **Drop:** CoinGecko, Alternative.me.
 - **Carve-out:** Eurostat (non-EU/some trade), a third-party republisher (upstream), the St. Louis Fed API

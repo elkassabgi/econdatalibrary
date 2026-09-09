@@ -169,7 +169,7 @@ COVERAGE: read lines 1-3420 of D:/research/hfdatalibrary/.claude/MISTAKES.md (as
 Note: many numbers in this range are shared by TWO different entries (documented in R247); where ambiguous I add a disambiguating tag, e.g. (R219 "refused").
 
 ### Registry & scheduling
-- **Never contact api.db.nomics.world — fetch, probe, OR audit; the relay ban is a standing order written as §0 of econfindatalibrary/CLAUDE.md** (R251). Bites whenever coverage work makes the one-API-over-everything relay look like leverage: 98/101 datasets are frozen (UNCTAD 4.3 years) and report `no_change` forever, manufacturing freshness.
+- **Never contact the relay's API — fetch, probe, OR audit; the relay ban is a standing order written as §0 of econfindatalibrary/CLAUDE.md** (R251). Bites whenever coverage work makes the one-API-over-everything relay look like leverage: 98/101 datasets are frozen (UNCTAD 4.3 years) and report `no_change` forever, manufacturing freshness.
 - **Sweep a host ban by PROPERTY over every executable surface — `*.py`, `*.ps1`, `*.yml`, `*.cmd`, `*.sh` — not just `updater/strategies/fetchers/`** (R259). Bites because watchdogs and monitors contact hosts too: `RELAUNCH_GUARD.ps1` was relaunching the banned puller every 5 minutes and `updater-daily.yml` ran a relay-probing audit daily.
 - **"Scheduled" is a statement about config; "attempted" is a statement about reality — count the orchestrator's `>>> source/unit` lines** (R246). Bites every coverage report: the 240-min run budget attempts ~20 of ~106 live cloud sources per run and prints its own `NOT ATTEMPTED` list, which nobody read.
 - **Then ask "how many EVER succeeded?" and read the run notes of the ones that did not** (R270). Bites because 52 scheduled sources had never recorded one success; the notes (not the counts) exposed three broken `_max_by_key` callers.
@@ -239,7 +239,7 @@ Note: many numbers in this range are shared by TWO different entries (documented
 - **Report the measurement and the interpretation separately, at the grain you measured** (R227 "stale rows", R252, R249). Bites when "indicator available" is reported as "series available" (who_rs 70.6%, not 100%), call SITES as executions, or "D1 ahead" as "stale" — precision reads as correctness and it is not.
 - **An abuse detector is an accusation machine: assert the parser handled the shapes it met (count empty/NULL/unchanged extractions == 0) before ranking anyone** (R209 "IPv6"). Bites at reputational cost: `instr(ip,'.')` collapsed every IPv6 address into one bucket and nearly named three innocent users (Cloudflare WARP dual-stack) as key-sellers.
 - **Re-read a task's own text before closing it and account for every clause; a task mixing a bug with a decision will tempt you to close it on the bug** (R268). Bites on bea: frontier fix done, 912,990 dark series untouched, task marked completed.
-- **Before building a component, grep the tree for it — verify NOVELTY before correctness; prior sessions leave reasons (docstrings) as well as artefacts** (R229). Bites when the existing `_dbnomics.py` docstring names your exact plan as the trap, with measurements you haven't made.
+- **Before building a component, grep the tree for it — verify NOVELTY before correctness; prior sessions leave reasons (docstrings) as well as artefacts** (R229). Bites when the existing `_<redacted>.py` docstring names your exact plan as the trap, with measurements you haven't made.
 - **When a blocked item and a recurring failure coexist, test whether they are ONE fact: for any "X not found", name the store that was SEARCHED and check it directly** (R271). Bites for days when the chore ("upload catalogue") and the symptom ("no catalog mapping") share no vocabulary.
 - **For any shipped default (TTL, threshold, hidden element), name who PAYS and estimate that population against the one served — including at least one group no dashboard counts** (R219 "who pays"). Bites on correct code: 97% of visitors paid 3 redirects for a resume feature 603 accounts could use; 13/14 of a nightly alert was permanent noise.
 - **The ledger applies at the point of ACTION, not at session start — rules with a syntactic trigger (`&`, `git add` glob, `split(':')`, a literal control char) are checked as the command is composed** (R255, R226 "recurrence"). Bites because reading the digest at cycle start did not stop me typing `nohup … &` inside `run_in_background` the same hour.
@@ -248,7 +248,7 @@ Note: many numbers in this range are shared by TWO different entries (documented
 
 | source_id | warning | (Rn) |
 |---|---|---|
-| (all `*_dbnomics` relays) | BANNED upstream — never fetch or probe api.db.nomics.world; 98/101 datasets frozen >180d; watchdog + daily audit tool were still contacting it | R251, R259 |
+| (all `*_<redacted>` relays) | BANNED upstream — never fetch or probe the relay's API; 98/101 datasets frozen >180d; watchdog + daily audit tool were still contacting it | R251, R259 |
 | noaa | key `<station>:<element>` spans gsom+gsoy — 1,046,291 keys mix monthly+annual, invisible to (key,date) collision checks; was "SERVED" with only 10 D1 rows of 3,135,873; R2 coherence copy held 10 rows vs 3.1M local | R209, R224, R245 |
 | ksh | RETIRED 2026-07-02 (ksh_stadat is the owner) and WITHDRAWN after I re-served it — do not resurrect; fetcher imports a deleted ingest; R2 objects remain but unreachable | R226 |
 | zillow | RESTRICTED permission_required, recorded withdrawal — its 52 catalogue rows were the only live licence breach; keep gated | R213, R227 |
@@ -339,7 +339,7 @@ NB: this range of the ledger contains **duplicate ids R308–R311** (two distinc
 
 ### Licences
 
-- **Verify a source ban by searching the HOST STRING repo-wide, not just `updater/`+`jobs/`** — `connectors/GATED` was a complete working client reachable via `jobs/ingest_all.py`; it now raises ImportError naming the ban (keep the explanation, don't delete); 1,236 catalogued series still expose `dbnomics_path` mirror URLs via clients' `upstream_url()` — fix via the catalog refresh, not mass edit (R311 repo-wide). Bites whenever "verified repo-wide" is written.
+- **Verify a source ban by searching the HOST STRING repo-wide, not just `updater/`+`jobs/`** — `connectors/GATED` was a complete working client reachable via `jobs/ingest_all.py`; it now raises ImportError naming the ban (keep the explanation, don't delete); 1,236 catalogued series still expose `<redacted>_path` mirror URLs via clients' `upstream_url()` — fix via the catalog refresh, not mass edit (R311 repo-wide). Bites whenever "verified repo-wide" is written.
 
 ### Process & reporting
 

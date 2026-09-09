@@ -58,7 +58,7 @@ Written to `docs/briefs/PHASE0_BRIEFS.md`. Both re-measured today; nothing chang
 * **`GATED` — RESERVED, awaiting Ahmed.** 26 series rows in local `catalog.db` **and** 26
   in live D1, plus a `source_counts` row advertising `n=26`, all behind a 451 gate.
   Instrument: one PK-range D1 query, `rows_read: 28` (index seek — C8's PK-range principle
-  confirmed in practice). Canonical verdict is **DISPUTED / NEEDS HUMAN REVIEW**: the Pink Sheet
+  confirmed in practice). Canonical verdict is **DISPUTED / NEEDS HUMAN REVIEW**: the gated dataset
   carries LME settlement prices, Cotlook, SICOM and ICCO/ICO data, and "LME in particular
   prohibits redistribution of its price data without a license". Recommendation: purge the rows
   and the cache row as defence in depth (a mistaken un-gating would expose LME-derived prices

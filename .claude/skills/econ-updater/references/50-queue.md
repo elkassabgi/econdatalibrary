@@ -9,7 +9,7 @@
 
 ### §0 — The relay aggregator is BANNED (CLAUDE.md:3-28)
 
-> **Do not fetch from the relay aggregator. Do not probe api.db.nomics.world. Do not build, keep or "temporarily" rely on a relay-backed fetcher, relay, mirror or vintage signal. Do not run the relay staleness audit as if it described a supported path.** Every source must come from ITS OWN PUBLISHER.
+> **Do not fetch from the relay aggregator. Do not probe its API. Do not build, keep or "temporarily" rely on a relay-backed fetcher, relay, mirror or vintage signal. Do not run the relay staleness audit as if it described a supported path.** Every source must come from ITS OWN PUBLISHER.
 
 Why (CLAUDE.md:15-20): 98 of the 101 datasets ever taken from the relay aggregator have not been re-indexed in over 180 days (UNCTAD: 1,581 days), and its vintage signal is the relay aggregator's own hash, so a frozen dataset reports `no_change` forever while the health gate sees daily success.
 
@@ -70,7 +70,7 @@ Summary (lines 13-21): CLEARED-attribution 144, RESTRICTED-keep-gated 18, NEEDS 
 | idb | CC BY-NC-ND, and ~86% of IDB datasets carry NO licence at all | 48, 1580-1609 |
 | worldbank | CC BY with third-party exceptions — embedded UN/IMF/WHO/ILO/IEA/UNESCO series may NOT be redistributed | 56, 2769-2788 |
 
-**RESTRICTED/permission_required (CONFIRMED, stay gated)** (lines 37-58): WTO (8 dbs), several GATED sources, Energy Institute, Kenneth French, GATED (unclear), GATED, polity5, GATED (unclear), several GATED sources, zillow.
+**RESTRICTED/permission_required (CONFIRMED, stay gated)** (lines 37-58): WTO (8 dbs), several GATED sources, Energy Institute, Kenneth French, GATED (unclear), GATED, <redacted>, GATED (unclear), several GATED sources, zillow.
 
 > **THREE SOURCES WERE REMOVED FROM THAT LIST 2026-09-06 AND THE LIST WAS WRONG ABOUT THEM.**
 > `damodaran`, `defillama` and `frankfurter` are all SERVED today, and this summary still said
@@ -327,7 +327,7 @@ publisher for unctad unesco"):**
   Catalogued 1,749 (whr-granted licence: reservable, NC, attribution), derived, D1-synced.
   RESIDUE (R364): 178 mirror-era CSVs on R2 under series/whr%3AWHR%3A (the derive walked both
   shards) — unreachable behind the 451 denylist; legacy shard quarantined at
-  data/_quarantine/whr_owid_era.parquet. WHEN THE DELETION PERMISSION OPENS: purge the 178 +
+  data/_quarantine/whr_<redacted>_era.parquet. WHEN THE DELETION PERMISSION OPENS: purge the 178 +
   GATED's 40, THEN remove whr from denylist.ts, deploy, verify 451→200 + verify_source_served
   exit 0. Serving before the purge would expose ungranted mirror-provenance ids.
 - unctad (38 legacy ids): "match the publisher" CONFIRMED — build new-id successors from the

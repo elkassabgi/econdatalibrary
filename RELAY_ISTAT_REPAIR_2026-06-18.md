@@ -1,7 +1,7 @@
 # Relay-ISTAT — completeness repair (2026-06-18)
 
 ## The bug (same class as the DBW one)
-`jobs/_dbnomics_pull.py` could silently drop whole datasets:
+`jobs/_<redacted>_pull.py` could silently drop whole datasets:
 - `pull_provider` caught **any** dataset error (incl. a 6×-timed-out fetch),
   logged it, and `continue`d — then wrote `_DONE` regardless. So a timed-out
   dataset was dropped and the provider was marked complete.
@@ -26,18 +26,18 @@ slice adds unique datasets.
   are skipped and only the rest are pulled.
 - `TransientError` ⇒ record in `_failed_datasets.json`, do NOT write `_DONE`.
   `requests.HTTPError` (100k cap) ⇒ keep the max-obtainable slice, mark done.
-- Writes `logs/dbnomics_istat.DONE` only when **every** dataset is whole, so the
+- Writes `logs/<redacted>_istat.DONE` only when **every** dataset is whole, so the
   watchdog stops relaunching only when genuinely finished.
 
 ## The repair (data)
 The old run's 51 `part-NNN.parquet` shared shards held partial data for the
 timed-out datasets and used the old naming, so they were **deleted** and ISTAT is
 **re-pulling clean** with the per-dataset design (PID was 28228, log
-`logs/dbnomics_istat_fixed_0618_1320.log`). Dataset-list cache was not present,
+`logs/<redacted>_istat_fixed_0618_1320.log`). Dataset-list cache was not present,
 so it enumerates the ISTAT catalog first, then pulls.
 
 ## Verify when done
-`data/clean_full/GATED/ISTAT/_DONE` exists and `logs/dbnomics_istat.DONE`
+`data/clean_full/GATED/ISTAT/_DONE` exists and `logs/<redacted>_istat.DONE`
 appears; `_failed_datasets.json` absent. Then recount before the grand total.
 
 See also [GUS_REPAIR_2026-06-18.md](GUS_REPAIR_2026-06-18.md) (same bug class).

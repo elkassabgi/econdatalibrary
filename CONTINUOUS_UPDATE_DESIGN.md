@@ -122,7 +122,7 @@ each job: strategy.run(unit, since) -> Result(status, obs, new_vintage, last_obs
           -> StateStore.put_unit_state(...) AFTER atomic data write -> run_log append.
 ```
 **Resume:** `unit_state` is truth; a crash leaves a unit `running` with an expired lease, re-claimed
-next run. `ok` units are skipped. This generalizes the proven `_dbnomics_pull.py`
+next run. `ok` units are skipped. This generalizes the proven `_<redacted>_pull.py`
 finalize-only-when-complete + resumable + skip-completed pattern to all 133.
 
 **In-flight protection:** cbs_nl, gus_dbw, GATED-ISTAT are seeded `status=running, owner=firstpass`;
@@ -142,7 +142,7 @@ Extension modes: date-tail append (S2/S3), whole-unit overwrite-if-changed (S1/S
 
 ---
 
-## (5) Failure model (generalized `_dbnomics_pull.py` contract)
+## (5) Failure model (generalized `_<redacted>_pull.py` contract)
 
 - **TransientError** (timeout/5xx/429/network): discard partial rows, unit → `transient_fail`, **don't
   touch existing parquet**, retry next run with backoff.

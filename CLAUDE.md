@@ -2,7 +2,7 @@
 
 ## 0. THE RELAY AGGREGATOR IS BANNED. Ahmed's standing instruction. No exceptions.
 
-**Do not fetch from the relay aggregator. Do not probe api.db.nomics.world. Do not build, keep or
+**Do not fetch from the relay aggregator. Do not probe its API. Do not build, keep or
 "temporarily" rely on a relay-backed fetcher, relay, mirror or vintage signal. Do not
 run the relay staleness audit as if it described a supported path.** Every source must
 come from ITS OWN PUBLISHER.

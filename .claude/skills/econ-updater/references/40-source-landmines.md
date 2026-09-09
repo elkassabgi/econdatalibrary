@@ -56,7 +56,7 @@
 
 | source_id | warning | (Rn) |
 |---|---|---|
-| (all `*_dbnomics` relays) | BANNED upstream — never fetch or probe api.db.nomics.world; 98/101 datasets frozen >180d; watchdog + daily audit tool were still contacting it | R251, R259 |
+| (all `*_<redacted>` relays) | BANNED upstream — never fetch or probe the relay's API; 98/101 datasets frozen >180d; watchdog + daily audit tool were still contacting it | R251, R259 |
 | noaa | key `<station>:<element>` spans gsom+gsoy — 1,046,291 keys mix monthly+annual, invisible to (key,date) collision checks; was "SERVED" with only 10 D1 rows of 3,135,873; R2 coherence copy held 10 rows vs 3.1M local | R209, R224, R245 |
 | ksh | RETIRED 2026-07-02 (ksh_stadat is the owner) and WITHDRAWN after I re-served it — do not resurrect; fetcher imports a deleted ingest; R2 objects remain but unreachable | R226 |
 | zillow | RESTRICTED permission_required, recorded withdrawal — its 52 catalogue rows were the only live licence breach; keep gated | R213, R227 |
