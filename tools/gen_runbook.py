@@ -567,6 +567,28 @@ def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
     return "\n".join(L) + "\n"
 
 
+def gated_ids() -> set:
+    """Every source id the committed worker gate blocks, read from denylist.ts.
+
+    The runbook set is registry UNION state UNION catalogue, and `state.db` keeps a row
+    for every source that has EVER run -- including ones withdrawn from serving. Without
+    this the generator writes a page (and an index row) for a source we are not allowed to
+    publish, which is how hand-edited pages kept coming back. Read, never typed: one list,
+    in the file the worker itself gates on, so the two can never drift.
+    """
+    p = os.path.join(ROOT, "api", "worker", "src", "denylist.ts")
+    try:
+        src = open(p, encoding="utf-8").read()
+    except OSError:
+        return set()
+    m = re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new\s+Set[^(]*\(\s*\[(.*?)\]\s*\)",
+                  src, re.S)
+    if not m:
+        return set()
+    inner = re.sub(r"//[^\n]*", "", m.group(1))
+    return set(re.findall(r'"([^"]+)"', inner))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source")
@@ -579,7 +601,8 @@ def main():
     cat = load_catalog_counts()
     served = load_served()
 
-    ids = sorted(set(reg) | set(st) | set(cat))
+    # A state row is not permission to publish a page: subtract the worker's gate.
+    ids = sorted((set(reg) | set(st) | set(cat)) - gated_ids())
     if a.source:
         print(render(a.source, reg, st, runs, cat, served, a.with_store, findings))
         return 0
