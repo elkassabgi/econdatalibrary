@@ -616,6 +616,18 @@ def main():
             f.write(render(sid, reg, st, runs, cat, served, a.with_store, findings))
         written += 1
 
+    # A page this run did not write is a page for a source that is no longer in the set
+    # (gated, de-registered, renamed). Leaving it makes a stale page look current, and it
+    # is how withdrawn sources kept a public runbook. Every file here except the findings
+    # input carries this generator's banner, so nothing hand-written can be caught.
+    keep = {f"{sid}.md" for sid in ids if sid} | {"README.md", "_findings.json"}
+    pruned = 0
+    for fn in sorted(os.listdir(OUT_DIR)):
+        if fn in keep or not fn.endswith(".md"):
+            continue
+        os.remove(os.path.join(OUT_DIR, fn))
+        pruned += 1
+
     # ---- index
     idx = [
         "# Source runbook — one file per database",
@@ -651,7 +663,7 @@ def main():
     with open(os.path.join(OUT_DIR, "README.md"), "w", encoding="utf-8", newline="") as f:
         f.write("\n".join(idx))
 
-    print(f"wrote {written} source files + README.md to {os.path.relpath(OUT_DIR, ROOT)}")
+    print(f"wrote {written} source files + README.md to {os.path.relpath(OUT_DIR, ROOT)}; pruned {pruned} stale page(s)")
     return 0
 
 
