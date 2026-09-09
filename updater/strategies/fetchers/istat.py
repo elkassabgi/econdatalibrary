@@ -54,17 +54,17 @@ from ..base import Result
 from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
                       save_rotation)
 
-# Reuse the ingester's UA + parsers verbatim (jobs/ is on sys.path for the orchestrator
+# Reuse the shared SDMX parsers verbatim (jobs/ is on sys.path for the orchestrator
 # and the live-test; fall back to a by-path load otherwise).
 try:
-    from jobs.ingest_sdmx_nso import (  # type: ignore
+    from jobs._sdmx_common import (  # type: ignore
         UA, parse_sdmx_csv, parse_sdmx_xml,
     )
 except ImportError:  # pragma: no cover - path fallback
     import importlib.util as _ilu
 
-    _src = os.path.join(config.ROOT, "jobs", "ingest_sdmx_nso.py")
-    _spec = _ilu.spec_from_file_location("ingest_sdmx_nso", _src)
+    _src = os.path.join(config.ROOT, "jobs", "_sdmx_common.py")
+    _spec = _ilu.spec_from_file_location("_sdmx_common", _src)
     _mod = _ilu.module_from_spec(_spec)
     _spec.loader.exec_module(_mod)  # type: ignore
     UA = _mod.UA

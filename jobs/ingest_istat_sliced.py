@@ -5,7 +5,7 @@ The normal ISTAT sweep (jobs/ingest_sdmx_nso.py, providers "istat" +
 "istat_esploradati") writes one Parquet per dataflow into
 data/clean_full/istat/.  A subset of flows never land because a single SDMX
 data response is too large for the endpoint: the host returns HTTP 500 / times
-out, the body exceeds what we can parse, or (via DBnomics historically) the
+out, the body exceeds what we can parse, or (via the relay aggregator historically) the
 flow blows past the 100K-series cap.
 
 This job sweeps the ISTAT catalog, finds every flow that has NO parquet yet
@@ -49,7 +49,7 @@ sys.path.insert(0, ROOT)
 # ── Reuse the house helpers from the main SDMX ingester verbatim where we can.
 #    parse_sdmx_period / parse_sdmx_csv / parse_sdmx_xml are byte-for-byte the
 #    same parsing logic the normal pull used, so output is identical.
-from jobs.ingest_sdmx_nso import (  # noqa: E402
+from jobs._sdmx_common import (  # noqa: E402
     UA, NS,
     parse_sdmx_period, parse_sdmx_csv, parse_sdmx_xml,
 )
