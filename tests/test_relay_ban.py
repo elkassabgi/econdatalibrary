@@ -67,7 +67,7 @@ def _scan(root: str):
     return hits
 
 
-def test_no_dbnomics_in_runtime_code():
+def test_no_relay_domain_in_runtime_code():
     hits = _scan(ROOT)
     assert not hits, (
         "db.nomics.world found in runtime code — the ban (CLAUDE.md §0, R251) is mechanical "

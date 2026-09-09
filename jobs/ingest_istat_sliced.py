@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Complete ISTAT dataflows the normal pull left INCOMPLETE.
 
-The normal ISTAT sweep (jobs/ingest_sdmx_nso.py, providers "istat" +
+The normal ISTAT sweep (the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py), providers "istat" +
 "istat_esploradati") writes one Parquet per dataflow into
 data/clean_full/istat/.  A subset of flows never land because a single SDMX
 data response is too large for the endpoint: the host returns HTTP 500 / times
@@ -27,7 +27,7 @@ so the run is fully resumable (a watcher relaunches this after ISTAT, whose
 esploradati host is chronically flaky, recovers).
 
 Output: data/clean_full/istat/{flow_id}.parquet  -- SAME dir + filename
-convention as ingest_sdmx_nso.py, so skip-existing dedupes across both jobs.
+convention as the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py), so skip-existing dedupes across both jobs.
 Schema: {series_key: string, obs_date: date32, value: float64}, zstd.
 
 Run:

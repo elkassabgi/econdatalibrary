@@ -8,7 +8,7 @@ executable reference while the giants/migration land.*
 
 Design rules (from ARCHITECTURE §9 + STRATEGY honest-status):
 - **Zero-install:** every series is a stable `.csv` + `.metadata.json` URL — curl / R /
-  Stata / browser, no SDK (copy OWID `.csv?csvType=full` + `.metadata.json`).
+  Stata / browser, no SDK (copy a gated source `.csv?csvType=full` + `.metadata.json`).
 - **Honest, never silent:** a series whose source is not yet migrated returns **501 +
   a machine reason**, never an empty 200. A freshness probe that can't be determined
   says so. We never launder "unknown" into "fresh".

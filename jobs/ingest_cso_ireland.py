@@ -207,7 +207,7 @@ def is_time_dim(dim_id: str, values: list[str]) -> bool:
         #
         # The bound is 1800..2100, not current_year+2 as pxweb uses: detection must not reject
         # a genuine projection axis, and legitimate long horizons exist in this fleet (un_wpp
-        # reaches 2101, gapminder and owid 2100). 1800..2100 excludes every sentinel observed
+        # reaches 2101, gapminder and a gated source 2100). 1800..2100 excludes every sentinel observed
         # while leaving real data alone.
         sample = values[:5]
         yr_count = 0

@@ -143,7 +143,7 @@ def fetch(
                ``category`` columns (``IN`` semantics for a list).
     db        : catalog override (defaults to the bundled ``catalog.db``).
     data_root : at-rest store override (defaults to ``$ECONDL_DATA``).
-    wide      : return the FRED-style WIDE shape instead (obs_date index, one
+    wide      : return a gated source-style WIDE shape instead (obs_date index, one
                 column per series) via :func:`to_wide` — mixed frequencies are
                 loudly warned, never silently aligned or filled.
 
@@ -276,7 +276,7 @@ def _freq_bucket(dates: pd.Series) -> str:
 
 
 def to_wide(tidy: pd.DataFrame) -> pd.DataFrame:
-    """Pivot the canonical tidy frame to the FRED-style WIDE shape: obs_date
+    """Pivot the canonical tidy frame to a gated source-style WIDE shape: obs_date
     index, one column per series_id. Dates are outer-joined; a period a series
     does not cover is simply NaN (never interpolated, never forward-filled —
     that would be fabricating observations).

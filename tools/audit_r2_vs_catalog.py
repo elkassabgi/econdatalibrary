@@ -44,7 +44,7 @@ MEASURED 2026-09-06, the run that prompted this tool:
     ember              60                 60              255,898
     ecb                35                 35            3,733,574
     census          2,993              2,993              440,414
-    gus                 0                  0              151,236
+    A gated source                 0                  0              151,236
 
 R2 and the catalogue agreed EXACTLY in all seven, which is what settled the question.
 
@@ -98,7 +98,7 @@ def store_only_sources(counts: dict) -> list:
 
     `--all` enumerates `catalogue_counts()`, which reads the local `catalog.db`. A source with no
     local row therefore never enters the run - so this audit cannot see it in EITHER direction,
-    and prints nothing to say so. Measured 2026-09-07: `worldbank_pink` has 26 rows in D1 and 0
+    and prints nothing to say so. Measured 2026-09-07: `a gated source` has 26 rows in D1 and 0
     locally, and was silently outside every `--all` run.
 
     Named rather than counted, and reported under NOT MEASURED, because the honest statement is
@@ -172,7 +172,7 @@ def main() -> int:
     store_only = store_only_sources(counts) if a.all else []
     if store_only:
         # NEVER SILENT, and this one is invisible by construction: `--all` iterates the LOCAL
-        # catalogue, so a source with no local row is not in the run at all. worldbank_pink has
+        # catalogue, so a source with no local row is not in the run at all. A gated source has
         # 26 rows in D1 and 0 locally (measured 2026-09-07).
         print(f"  NOT MEASURED, and NOT in the totals above: {len(store_only)} source(s) hold a "
               f"store directory but ZERO local catalogue rows, so `--all` never enumerated them. "

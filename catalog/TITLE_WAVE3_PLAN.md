@@ -43,7 +43,7 @@ invent a label.
 ## 4. Adversarial audit (REQUIRED gate before any apply)
 Independent verifier per source: re-checks a sample of composed titles against the
 fetched codelists — every dimension code maps to its claimed label, **units are
-correct** (the GATED lesson: SIPRI milex is millions, not "US$ billions"; check base
+correct** (the GATED lesson: A gated source milex is millions, not "US$ billions"; check base
 year), country/area names match. A source is applied ONLY with zero audit defects;
 flagged sources are fixed or left raw. This is why wave-2 correctly did NOT ship GATED.
 

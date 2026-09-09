@@ -1,6 +1,6 @@
 """S4 — giant_changed_units.
 
-For the named GIANTS (eurostat, oecd; sdmx_nso, statcan share the shape): a source
+For the named GIANTS (eurostat, oecd; a gated source, statcan share the shape): a source
 whose data is THOUSANDS of per-flow parquet files in one directory (~1,400+ files,
 ~6B obs each). A blind re-crawl is many hours, so the refresh is a catalogue
 CHANGE-FEED diff that re-pulls ONLY changed flows.

@@ -11,7 +11,7 @@ being served is touched.
 Still archives the PRIMARY parquet first -- cheap insurance, and it means a re-publish after a late
 grant does not even need a re-crawl. Derived CSVs are not archived (regenerable from the parquet).
 
-Safety: every prefix is TERMINATED (`fred/`, `fred%3A`) so a sibling id sharing a name prefix can
+Safety: every prefix is TERMINATED (`a gated source/`, `a gated source%3A`) so a sibling id sharing a name prefix can
 never be swept in; re-asserted on every batch immediately before the delete call.
 """
 import sys, os, hashlib, shutil, urllib.parse, collections
@@ -23,7 +23,7 @@ BUCKET = "econ-data"
 LOCAL_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 
 # The 15 holding R2 residue: gated, 0 catalog series, no permission (refused, silent, or unassessed).
-# DEFUSED 2026-08-31 (adversarial review of the qog deletion): the old list still named
+# DEFUSED 2026-08-31 (adversarial review of a gated source deletion): the old list still named
 # vdem (un-gated 2026-08-24, CONFIRMED CC BY-SA, SERVED) and wid (SERVED, 2.47M series) under
 # a header claiming "gated, 0 catalog series, no permission" -- anyone re-running it would
 # have deleted served data from R2. A dormant tool whose target list has rotted is a loaded
@@ -33,12 +33,9 @@ raise SystemExit(
     "purge_unpermitted_r2.py is DEFUSED: its 2026-07-era TARGETS rotted to include SERVED "
     "sources (vdem, wid). Re-derive the list from the current denylist + catalogue + "
     "permission trail before any run, and take it through adversarial review.")
-_OLD_TARGETS_FOR_THE_RECORD = ["fred", "gus", "ibge", "ine_spain", "norgesbank", "polity",
-           "qog", "unesco_natmon", "unesco_sci", "unesco_sdg", "unicef", "unsdg",
-           "vdem", "who_gho", "wid"]
-# Ids that share a name prefix with a target but are NOT targets.
-GUARD = ["sipri_polity", "fred_releases", "unesco_clte", "unesco_cltt", "unesco_dem",
-         "unesco_film", "unesco_inno", "imf_unsdg_imf_inputs"]
+# The old TARGETS and GUARD lists lived here. They are unreachable (the raise above)
+# and they NAMED the sources; a re-derived list belongs in the review that re-arms
+# this tool, not in a dead constant.
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "all"   # archive | purge | all
 

@@ -14,7 +14,7 @@ WHAT THEY CLAIMED, AND WHAT WAS TRUE
     independently-derived "resolvable (util.ts) 323". R0.4: never regex a language whose comments
     can contain the delimiter.
 
-  * The same tool labelled `worldbank_pink` as DRIFT because its bare `except` turned an HTTP
+  * The same tool labelled `a gated source` as DRIFT because its bare `except` turned an HTTP
     **451 non_redistributable** into a `-1` sentinel. That source is REFUSED IN WRITING (R526);
     the gate firing is the system working. Reporting it as drift both invites someone to "fix" a
     licence refusal and discredits the eight real drifts beside it.

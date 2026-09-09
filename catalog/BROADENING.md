@@ -31,7 +31,7 @@ they need bespoke resolvers like the existing relational set (wikidata/fhfa/cens
 `data/clean_full/GATED/` mixes two schemas across its 165 files (some `series_key`,
 some `series_id` for what should be one uniform source). The cataloger errored
 honestly rather than emit partial rows. Fix = re-ingest GATED to a single uniform
-schema, then catalog it (it's high-value — FRED).
+schema, then catalog it (it's high-value — a gated source).
 
 ## Follow-ups (later waves)
 1. **Title enrichment** — extract real human titles from sidecar `<flow>__series.parquet`

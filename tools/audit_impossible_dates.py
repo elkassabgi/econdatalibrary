@@ -74,7 +74,7 @@ IMPOSSIBLE_AFTER = dt.date(2200, 1, 1)
 #
 # 1500, CALIBRATED AGAINST THE DATA rather than guessed. My first attempt used 1850 and flagged
 # 25 sources, nearly all of them genuine: treasury's US debt outstanding from 1790, vdem from
-# 1789, wid from 1800, ssb from 1769, noaa weather from 1840, owid from 1840. That is exactly the
+# 1789, wid from 1800, ssb from 1769, noaa weather from 1840, a gated source from 1840. That is exactly the
 # failure this file's upper-bound note warns about — a bound that flags real data gets switched
 # off and protects nothing. At 1500 the remaining low-side hits are two: scb BE/HE at year 0114
 # and stat_slovenia 05W at year 0001, both unarguable, plus allowlisted deep history below.
@@ -89,7 +89,6 @@ DEEP_HISTORY_OK = {
     "penn_world_table": "same",
     "gcb":        "Global Carbon Budget runs from 1750",
     "ei_statreview": "Energy Institute Statistical Review has pre-1900 series",
-    "owid":       "book production / literacy series (Buringh & van Zanden) genuinely start ~1475",
     "treasury":   "US historical debt outstanding begins 1790 — real",
     "vdem":       "V-Dem codes regimes from 1789 — real",
     "ssb":        "Norwegian long series reach 1769 — real",
@@ -382,7 +381,7 @@ def main() -> int:
     # returned 0 on exactly the run shape that produced R704's false clean.
     #
     # MEASURED 2026-09-03 with the candidate resolution above: 3 of 282 registry sources have no
-    # local parquet store under ANY candidate (gii, pxweb, sipri_polity). Note the figure moved
+    # local parquet store under ANY candidate (gii, pxweb). Note the figure moved
     # BECAUSE of this file's own fix -- it was 5 when only clean_full/<source_id> was tried, and
     # sec_edgar + sec_edgar_xbrl came into range once out_dir and the clean_grouped tier were
     # followed. Quote the post-fix number, not the one that motivated the change.

@@ -55,7 +55,7 @@ def test_real_projections_are_not_flagged():
     # anything.
     n = merge._report_impossible_dates(
         _tbl([dt.date(2101, 7, 1),     # un_wpp
-              dt.date(2100, 12, 31),   # gapminder / owid
+              dt.date(2100, 12, 31),   # gapminder / a gated source
               dt.date(2071, 12, 31),   # abs
               dt.date(2075, 12, 31),   # bfs
               dt.date(2031, 12, 31)]), "x")

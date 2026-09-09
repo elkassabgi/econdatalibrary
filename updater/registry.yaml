@@ -2935,7 +2935,7 @@ sources:
     since_param: startPeriod=<year of max(obs_date) per flow> via build_data_url (decade/year windowing); endPeriod walks
       to present.
     out_paths_note: 'Multi-file: per-flow parquet in data/clean_full/istat/ (~755 files). SHARED dir+filename convention with
-      ingest_sdmx_nso.py -- the two jobs dedupe via skip-existing; a careless *.parquet delete affects both. Switch write_flow
+      the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py) -- the two jobs dedupe via skip-existing; a careless *.parquet delete affects both. Switch write_flow
       from overwrite to merge-with-existing on (series_key,obs_date). Checkpoints _sliced_done.json/_sliced_unrecoverable.json
       are atomic.'
     rate_note: 'No API key -- ISTAT SDMX is keyless and open; a missing key is NEVER the reason a run fails. Two hosts:
@@ -2951,7 +2951,7 @@ sources:
       backfill resumes unchanged.'
     key_env: none
     confidence: medium
-    open_question: This is a completion/recovery pass over the main ISTAT sweep (ingest_sdmx_nso.py) sharing one output dir.
+    open_question: This is a completion/recovery pass over the main ISTAT sweep (the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py)) sharing one output dir.
       Confirm the delta/merge is implemented in the primary (since-retired) sweep job and this sliced script stays a recovery tool, so
       the two don't fight over overwrite-vs-merge semantics. Also note --only mode intentionally OVERWRITES a flow (data-loss
       risk if a flaky host returns a smaller subset than the prior file).
@@ -2963,7 +2963,7 @@ sources:
       `python.exe jobs\ingest_istat_sliced.py --only <FLOW_ID>` (optionally `--max-size-mb 500`). TRUE full fresh rebuild
       of every incomplete flow: clear per-flow parquets AND the checkpoints — delete data\clean_full\istat\*.parquet plus
       `Remove-Item data\clean_full\istat\_sliced_done.json, data\clean_full\istat\_sliced_unrecoverable.json -Force`, then
-      `python.exe jobs\ingest_istat_sliced.py`. NOTE this also wipes files written by ingest_sdmx_nso.py (shared dir) — normally
+      `python.exe jobs\ingest_istat_sliced.py`. NOTE this also wipes files written by the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py) (shared dir) — normally
       rerun that first, then this completion pass. (Currently no _sliced_done.json exists on disk, so a full run would attempt
       every catalog flow lacking a parquet.)'
     incremental_path:
@@ -2979,7 +2979,7 @@ sources:
       670-673), expecting a watcher to relaunch.'
     storage_layout:
     - 'per-flow parquet files in data/clean_full/istat/ (755 files present, many MB-scale, e.g. 101_1015.parquet ~2.9MB; schema
-      series_key:string, obs_date:date32, value:float64, zstd, sorted by (key,date)). SAME dir+filename convention as ingest_sdmx_nso.py
+      series_key:string, obs_date:date32, value:float64, zstd, sorted by (key,date)). SAME dir+filename convention as the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py)
       so the two jobs dedupe via skip-existing across both. Plus JSON checkpoints _sliced_done.json / _sliced_unrecoverable.json
       (atomic tmp+os.replace, lines 603-607). Full mode: incomplete = no parquet (is_incomplete, lines 610-614); present flows
       skipped+marked done (lines 697-700). --only mode INTENTIONALLY ignores skip-existing and the done checkpoint and OVERWRITES
@@ -7673,7 +7673,7 @@ sources:
   # successors are the MFS_* family (all IMF.STA), this entry covering MFS_DC
   # (Depository Corporations). current_vintage() CALLED live 2026-08-05: MFS_DC -> MFS_DC:8.0.0.
   # live:false + heavy matrix, sized at the proof run, grain by the #45 arithmetic —
-  # the DIP/PIP precedent end to end. One id per flow, the FSI-trio precedent.
+  # the DIP/PIP precedent end to end. One id per flow, a gated source-trio precedent.
   live: false
   scripts:
   - jobs/ingest_imf_direct.py
@@ -7699,7 +7699,7 @@ sources:
   # successors are the MFS_* family (all IMF.STA), this entry covering MFS_IR
   # (Interest Rates; fifth sibling, found by the IFS-families probe). current_vintage() CALLED live 2026-08-05: MFS_IR -> MFS_IR:9.0.0.
   # live:false + heavy matrix, sized at the proof run, grain by the #45 arithmetic —
-  # the DIP/PIP precedent end to end. One id per flow, the FSI-trio precedent.
+  # the DIP/PIP precedent end to end. One id per flow, a gated source-trio precedent.
   live: false
   scripts:
   - jobs/ingest_imf_direct.py
@@ -7725,7 +7725,7 @@ sources:
   # successors are the MFS_* family (all IMF.STA), this entry covering MFS_MA
   # (Monetary Aggregates). current_vintage() CALLED live 2026-08-05: MFS_MA -> MFS_MA:10.0.1.
   # live:false + heavy matrix, sized at the proof run, grain by the #45 arithmetic —
-  # the DIP/PIP precedent end to end. One id per flow, the FSI-trio precedent.
+  # the DIP/PIP precedent end to end. One id per flow, a gated source-trio precedent.
   live: false
   scripts:
   - jobs/ingest_imf_direct.py
@@ -7751,7 +7751,7 @@ sources:
   # successors are the MFS_* family (all IMF.STA), this entry covering MFS_OFC
   # (Other Financial Corporations). current_vintage() CALLED live 2026-08-05: MFS_OFC -> MFS_OFC:7.0.0.
   # live:false + heavy matrix, sized at the proof run, grain by the #45 arithmetic —
-  # the DIP/PIP precedent end to end. One id per flow, the FSI-trio precedent.
+  # the DIP/PIP precedent end to end. One id per flow, a gated source-trio precedent.
   live: false
   scripts:
   - jobs/ingest_imf_direct.py
@@ -7777,7 +7777,7 @@ sources:
   # successors are the MFS_* family (all IMF.STA), this entry covering MFS_FMP
   # (Financial Markets and Positions). current_vintage() CALLED live 2026-08-05: MFS_FMP -> MFS_FMP:3.0.0.
   # live:false + heavy matrix, sized at the proof run, grain by the #45 arithmetic —
-  # the DIP/PIP precedent end to end. One id per flow, the FSI-trio precedent.
+  # the DIP/PIP precedent end to end. One id per flow, a gated source-trio precedent.
   live: false
   scripts:
   - jobs/ingest_imf_direct.py

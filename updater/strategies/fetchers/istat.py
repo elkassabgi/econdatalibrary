@@ -1,6 +1,6 @@
 """S3 (sdmx_delta) fetcher — ISTAT Italy. Keyless open data (CC BY 3.0 IT).
 
-Layout (set by jobs/ingest_sdmx_nso.py + jobs/ingest_istat_sliced.py, SHARED dir):
+Layout (set by the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py) + jobs/ingest_istat_sliced.py, SHARED dir):
 ONE parquet per dataflow under clean_full/istat/<flow_id>.parquet, schema
   series_key : string  -- "DIM=val:DIM2=val2:..." over the flow's dimensions
                           (built by parse_sdmx_csv / parse_sdmx_xml; FREQ=A|M|Q...)
@@ -17,7 +17,7 @@ Each parquet (dataflow) is a SUB-UNIT. Per sub-unit this fetcher:
     re-sweeping the boundary year is cheap AND catches same-year late obs / in-place
     revisions to the latest period — merge dedups the overlap on (series_key,obs_date).
     ISTAT exposes no `updatedAfter`, so a year date-tail is the honest incremental.
-  - REUSES jobs/ingest_sdmx_nso.py verbatim for endpoints/agency/Accept and for the
+  - REUSES the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py) verbatim for endpoints/agency/Accept and for the
     CSV/XML parse, so the keys produced line up byte-for-byte with the published files.
   - tries BOTH hosts (sdmx.istat.it fast classical host, esploradati.istat.it the
     granular DF_* host); a flow is served by whichever host carries it. A host that

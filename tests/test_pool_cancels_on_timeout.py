@@ -4,13 +4,13 @@ THE OUTAGE THIS PINS (2026-08-07 daily updater, run 31155835244). The orchestrat
 hard limit is a SIGALRM that raises `UnitTimeout` in the main thread. It armed correctly at 45
 minutes — the log says so. It still could not stop anything:
 
-    10:02  owid starts and submits all 150 slugs to a 6-worker pool
+    10:02  a gated source starts and submits all 150 slugs to a 6-worker pool
     10:47  SIGALRM fires, UnitTimeout raised inside the as_completed loop
     10:47  `with ThreadPoolExecutor(...) as ex` begins shutdown(wait=True) on the way out,
            which waits for EVERY future already submitted
     12:32  GitHub kills the step at its 250-minute cap
 
-owid printed nothing for 150 minutes and no timeout message ever appeared, because the exception
+A gated source printed nothing for 150 minutes and no timeout message ever appeared, because the exception
 could not escape the context manager. The whole daily run died with it — and the four runs before
 it that day failed too. A cap you cannot escape is not a cap.
 
@@ -28,7 +28,7 @@ from concurrent.futures import as_completed
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-FETCHERS = ("boe", "ksh_stadat", "ons_uk", "owid")
+FETCHERS = ("boe", "ksh_stadat", "ons_uk")
 
 
 def test_an_exception_cancels_the_backlog_instead_of_draining_it():
@@ -86,7 +86,7 @@ def test_the_helper_still_joins_running_work():
 
 
 def test_detect_change_runs_inside_the_unit_deadline():
-    """The second outage (run 31224822131, WITH the pool fix on board). owid entered at 23:23
+    """The second outage (run 31224822131, WITH the pool fix on board). A gated source entered at 23:23
     and produced nothing until GitHub killed the step at 02:55 — 212 minutes inside
     `strat.detect_change`, which sat 85 lines BEFORE the `_unit_deadline` block, so no cap
     covered it. requests' timeout=180 is per-socket-op: a slow-drip response resets it on every
@@ -100,6 +100,6 @@ def test_detect_change_runs_inside_the_unit_deadline():
     head = src[:i_detect]
     assert "_unit_deadline(" in head.rsplit("try:", 1)[-1] or            "_unit_deadline(" in head[-600:], (
         "strat.detect_change is no longer wrapped in _unit_deadline — a hung vintage probe "
-        "eats the entire run again (212 minutes of owid, twice)")
+        "eats the entire run again (212 minutes of a gated source, twice)")
     assert "except UnitTimeout" in src[i_detect:i_detect + 900], (
         "UnitTimeout from the probe is not booked as transient_fail at the detect call site")

@@ -32,6 +32,22 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import r2_util
 import zstandard
 
+def _gate_ids() -> set:
+    """Every source id the committed worker gate blocks. Read, never typed."""
+    import re as _re
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "api", "worker", "src", "denylist.ts")
+    try:
+        src = open(p, encoding="utf-8").read()
+    except OSError:
+        return set()
+    m = _re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new\s+Set[^(]*\(\s*\[(.*?)\]\s*\)", src, _re.S)
+    if not m:
+        return set()
+    body = _re.sub(r"//[^\n]*", "", m.group(1))
+    return set(_re.findall(r'"([^"]+)"', body))
+
+
 BUCKET = "econ-data"
 KEY = "_aqueduct/catalog.db.zst"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -185,9 +201,14 @@ def main() -> int:
     ok = True
     for s in ("noaa", "cepii_gravity", "adb", "fhfa", "usda", "fed_board", "istat"):
         print(f"    {s:16}{back.get(s, 0):>12,}")
-    for s in ("cow", "sipri", "polity"):
-        n = back.get(s, 0)
-        print(f"    purged {s:9}{n:>12}  ({'OK gone' if n == 0 else '*** still present'})")
+    # Gated sources must not reappear in the coherence copy. The gate is READ from the
+    # worker (api/worker/src/denylist.ts), never typed here, so this check cannot rot the
+    # way a hardcoded target list did (R128/R469). Only the COUNT is printed.
+    _gated = _gate_ids()
+    _present = sorted(s for s in _gated if back.get(s, 0))
+    print(f"    gated sources present: {len(_present)} (expected 0; read denylist.ts to identify them)")
+    if _present:
+        ok = False
     if tot != sum(new.values()):
         print(f"  *** MISMATCH: uploaded {sum(new.values()):,} but read back {tot:,}", file=sys.stderr)
         ok = False
