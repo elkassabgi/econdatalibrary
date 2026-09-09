@@ -462,7 +462,7 @@ def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
     A(f"AQUEDUCT_BACKEND=r2 python -u -m updater.run --source {sid} --force")
     A("")
     A("# 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.")
-    A("#    (DBnomics is BANNED — every source must be reached at its own publisher.)")
+    A("#    (relay/aggregator mirrors are BANNED — every source must be reached at its own publisher.)")
     A("")
     A("# 5. Is the store intact? obs_count in state is NOT the answer.")
     A(f"AQUEDUCT_BACKEND=r2 python -c \"import sys,os;sys.path.insert(0,'.');"

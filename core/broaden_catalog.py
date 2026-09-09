@@ -25,11 +25,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 STORE = os.path.join(ROOT, "data", "clean_full")
 CATALOG = os.path.join(ROOT, "data", "catalog.db")
 OUTDIR = os.path.join(ROOT, "dist", "broaden")
-PROTECTED = {"cbs_nl", "gus_dbw", "dbnomics"}
+PROTECTED = {"cbs_nl", "gus_dbw"}
 
 # NEVER catalog a source we are not allowed to host. Sources purged from the catalog on
-# 2026-07-22/23 (WTO, cow, polity, sipri, cboe, famafrench, nbp, tcmb, irena, freedomhouse,
-# shiller, whr, dbnomics ...) still have their parquet in data/clean_full as an archive, so a
+# 2026-07-22/23 (WTO, whr and the rest of the gated set) still had their parquet in
+# data/clean_full as an archive, so a
 # later `broaden_catalog` run would happily re-catalog them and SILENTLY UNDO the purge.
 # Derived from the redistribution gate's own safety floor rather than a second hand-maintained
 # list, so the two can never drift.
@@ -88,7 +88,7 @@ def _allowed_to_catalog(d, cataloged, served, allow_new):
 
 
 SERIES_CAP = 50_000      # per-source; above this the per-series grain is wrong -> defer
-FILE_CAP = 2_000         # ibge (8221 tiny files) etc. -> defer (flow-grain, later wave)
+FILE_CAP = 2_000         # a source of 8221 tiny files etc. -> defer (flow-grain, later wave)
 _SKIP = ("__series.parquet",)
 _FREQ_COLS = ("freq", "frequency", "FREQ")
 

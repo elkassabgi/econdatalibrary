@@ -10,7 +10,7 @@ against our 12,862 published ids — **12,862 reproduced exactly, 0 of ours miss
 and 3,044 Valet series we do not yet carry (new coverage, deliberately not added here: that is
 a cataloguing decision, not an update).
 
-WHY NOT DBnomics. Its BOC provider was last indexed 2025-02-15, and — the sharper reason — a
+WHY NOT the relay aggregator. Its BOC provider was last indexed 2025-02-15, and — the sharper reason — a
 matching provider NAME is not provenance (R171). These ids are Valet's, so Valet is the source.
 
 DATE-TAIL, BATCHED. Valet accepts many series in one call and returns a WIDE row per date:

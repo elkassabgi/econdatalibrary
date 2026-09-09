@@ -1,13 +1,13 @@
 """Shared fetcher for the fao_* sources, DIRECT from FAOSTAT's bulk distribution.
 
-WHY. All 25 fao_* sources (136,754 series) arrive via DBnomics, whose index for the
+WHY. All 25 fao_* sources (136,754 series) arrive via the relay aggregator, whose index for the
 FAO provider was last refreshed 2022-04-05 — over four years ago. FAOSTAT publishes
 a bulk API listing 69 datasets each carrying its own DateUpdate, many refreshed
 within the last month. The data is current at the publisher and four years stale in
 our copy, and nothing on our side could tell, because the change signal we watched
 belonged to the relay (ledger R73).
 
-WHAT MAKES THIS A REPAIR RATHER THAN A RE-KEY. The DBnomics-era keys turn out to BE
+WHAT MAKES THIS A REPAIR RATHER THAN A RE-KEY. The relay-era keys turn out to BE
 FAOSTAT's own codes: `FAO_QCL:5111.1.1016` is element 5111 (Stocks), area 1
 (Armenia), item 1016 (Goats) — which is exactly what its title says. So the ids
 reconstruct from the bulk CSV's own code columns with no translation table at all.
@@ -18,7 +18,7 @@ carries 78,944 series against our 20,238 and runs two years further.
 
 THE COLUMN ORDER IS DISCOVERED, NOT ASSUMED. Different FAOSTAT datasets expose
 different code columns (QCL has Element/Area/Item; AE has Indicator/Cost Category/
-Institution/Area), and which order our ids used is a fact about the DBnomics vintage,
+Institution/Area), and which order our ids used is a fact about the the relay aggregator vintage,
 not something to guess. tools/prove_faostat_repair.py tries the orderings, scores
 each by how many PUBLISHED ids it reproduces, and emits the winner — so a wrong
 guess cannot quietly mint a parallel id space.
@@ -78,7 +78,7 @@ def vintage(source_id: str):
 
     Deliberately the PUBLISHER's field and not a relay's hash: the entire reason
     these sources sat four years stale is that the previous signal certified
-    DBnomics' index rather than FAO's release.
+    the relay's index rather than FAO's release.
     """
     try:
         cfg = load(source_id)

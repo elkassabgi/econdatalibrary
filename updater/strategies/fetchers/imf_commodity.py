@@ -1,16 +1,16 @@
 """S1 fetcher — IMF Primary Commodity Prices (PCPS), DIRECT from api.imf.org.
 
-WHY THIS WAS REWRITTEN (2026-07-28). This fetcher used to relay DBnomics. It ran
+WHY THIS WAS REWRITTEN (2026-07-28). This fetcher used to relay the relay aggregator. It ran
 green every day for a year — `status=no_change`, `err="no new rows"` — while serving
 commodity prices frozen at 2025-06. Nothing was broken: the change signal was
-DBnomics' own dataset hash, and DBnomics stopped indexing IMF/PCPS on 2025-07-16, so
+the relay's own dataset hash, and the relay aggregator stopped indexing IMF/PCPS on 2025-07-16, so
 "nothing changed" was true of the relay and false of the publisher. IMF has been
 publishing straight through to 2026-M06 the entire time. A borrowed freshness signal
 certifies the intermediary, not the source (ledger R73).
 
 IDS ARE PRESERVED. This is a repair, not a re-key: every one of the 1,236 live
 series_ids keeps its exact identity. That takes a translation, because IMF's current
-API uses a different vocabulary for the same concepts than the DBnomics-era ids do.
+API uses a different vocabulary for the same concepts than the relay-era ids do.
 The map below was proven by VALUE AGREEMENT on shared (indicator, frequency, period)
 points, not by reading the code names — INDEX_PCH and INDEX_PCHY are both "percent
 change" and pairing them the wrong way round would have silently swapped two real

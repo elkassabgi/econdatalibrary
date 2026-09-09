@@ -2,7 +2,7 @@
 
 Thin wrapper: the registry resolves fetchers/<source_id>.py, so each IMF dataset needs its own
 module. All behaviour lives in _imf_direct.py — including why these are NEW source ids rather
-than replacements for the DBnomics-era ones.
+than replacements for the relay-era ones.
 
 WHY THIS ONE EXISTS. `imf_bop` holds 99,636 relay-era series and has no fetcher at all, so it has
 never auto-updated: it is the single largest frozen block in the library after the imf_* family's

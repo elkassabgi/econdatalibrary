@@ -14,7 +14,7 @@ SCRIPT. `__package__` is then empty, the relative import raises ImportError, the
 `except Exception` swallows it, `managed` becomes None, and the filter never runs. The fix has
 therefore never been in effect on a single scheduled digest.
 
-Evidence it was live: `fred_releases` was removed from registry.yaml in July, cannot be
+Evidence it was live: a source removed from registry.yaml in July, which cannot be
 scheduled, was last attempted 71 days ago — and appeared in the attention list, while the
 "unmanaged leftover state row(s)" line the code prints for orphans did not appear at all.
 
@@ -59,9 +59,9 @@ def test_orphans_are_separated_when_run_as_a_script() -> None:
 
 @pytest.mark.skipif(not os.path.exists(STATE), reason="needs the local state store")
 def test_a_known_deregistered_source_is_not_listed_as_needing_attention() -> None:
-    """fred_releases is the worked example: removed from the registry, so unschedulable.
+    """A de-registered source is the worked example: removed from the registry, so unschedulable.
 
-    Anchored on the ORPHAN LINE rather than on fred_releases staying broken — if it is ever
+    Anchored on the ORPHAN LINE rather than on that source staying broken — if it is ever
     re-registered this must not turn into a false failure, so the assertion is that whatever
     orphans exist are named in the orphan line and not in the attention rows.
     """

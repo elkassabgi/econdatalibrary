@@ -246,9 +246,7 @@ LICENSE_LABEL = {
     "damodaran-granted": "Written permission (A. Damodaran, 2026) — attribution required, non-commercial",
     "bundesbank-granted": "Bundesbank terms, confirmed in writing (2026) — free of charge, unaltered, exact source credit required",
     "idb-granted": "Written permission (IDB Open Data, 2026) — CC BY 4.0 institutional data; attribution + dataset link-back required",
-    "spi-embed-2026": "Social Progress Imperative (written permission: official embed only)",
     "custom-terms": "Custom provider terms",
-    "dbnomics-passthrough": "Pass-through (see original provider terms)",
 }
 
 FREQ_LABEL = {
@@ -878,20 +876,14 @@ SOURCE_SUBTITLES = {
     "worldbank_wdi": "World Development Indicators — economy, people, environment and infrastructure for all countries",
     "comtrade": "Merchandise trade — total imports and exports by reporter country, plus bilateral totals for major partner pairs (HS, all commodities)",
     "damodaran": "Valuation datasets — equity risk premiums, betas, margins, costs of capital by industry",
-    "social_progress": "Social Progress Index — official interactive embed (dataset not redistributed, by written permission)",
     "bea": "U.S. national accounts (NIPA) — GDP components, trade in goods and services, quarterly and annual",
     "bis": "Central bank policy rates — end-of-period rates across central banks (BIS)",
     "boc": "Canadian key series — consumer prices, core CPI, and the USD/CAD exchange rate (Valet API)",
     "bcrp": "Peruvian macro-financial series — exchange rates, interest rates and prices (BCRPData)",
-    "cboe": "Cboe volatility indices — VIX-family gauges for currencies, gold and equity ETFs",
-    "cow": "Interstate alliance counts by country, from the Correlates of War alliance data",
     "ipea": "Brazilian macroeconomic series — exports, imports and GDP (Ipeadata)",
     "ksh": "Hungarian official statistics — external trade, enterprises, national accounts (STADAT)",
-    "nbp": "Narodowy Bank Polski — złoty reference exchange rates for world currencies",
-    "tcmb": "Turkish lira exchange rates — buying/selling rates for world currencies (EVDS)",
     "ofr": "U.S. secured-funding and repo reference rates — broad general collateral rate and percentiles",
     "oxcgrt": "COVID-19 government responses — school and workplace closures, containment and health policies",
-    "polity": "Polity5 — regime authority scores on the autocracy–democracy scale",
     "rba": "Australian zero-coupon yield curves — discount factors, forward rates and yields (RBA)",
     "sec_edgar": "Company financial fundamentals extracted from SEC EDGAR filings",
     "snb": "Swiss National Bank data portal — banking, custody holdings and monetary statistics",
@@ -1382,15 +1374,11 @@ _SOURCE_TOPICS = {
     "adb": ["Development Indicators"],
     "worldbank_wdi": ["Development Indicators"],
     "gapminder": ["Development Indicators"],
-    "worldbank_pink": ["Commodities"],
     "fao_": ["Agriculture & Food"],
     "faostat": ["Agriculture & Food"],
     # markets, money & finance
-    "cboe": ["Equities & Markets"],
     "cftc": ["Equities & Markets"],
     "hf_equities": ["Equities & Markets"],
-    "famafrench": ["Equities & Markets"],
-    "shiller": ["Equities & Markets", "Housing & Real Estate"],
     "damodaran": ["Company Fundamentals", "Equities & Markets"],
     "sec_edgar": ["Company Fundamentals", "Equities & Markets"],
     "edgar_13f": ["Company Fundamentals", "Equities & Markets"],
@@ -1408,27 +1396,21 @@ _SOURCE_TOPICS = {
     "fhfa": ["Housing & Real Estate"],
     # institutions & society
     "vdem": ["Governance & Institutions"],
-    # freedomhouse REMOVED 2026-07-30 — Freedom House declined re-hosting (their director of
+    # A source was REMOVED 2026-07-30 — Freedom House declined re-hosting (their director of
     # research: "our preference is for the library to direct users to request the data
     # directly from us"). Owner decision the same day: no hosting AND no mention of the data
     # anywhere on the econ site. Any classification entry here is a route back onto a page,
     # so the id is removed rather than left mapped-but-unused.
-    "polity": ["Governance & Institutions"],
     "wgi": ["Governance & Institutions"],
     "transparency_ti": ["Governance & Institutions"],
-    "fsi": ["Governance & Institutions"],
     "fsi_fundforpeace": ["Governance & Institutions"],
     "ucdp": ["Conflict & Security"],
-    "cow": ["Conflict & Security"],
-    "sipri": ["Conflict & Security"],
-    "sipri_polity": ["Conflict & Security", "Governance & Institutions"],
     "gpi": ["Conflict & Security", "Society & Well-Being"],
     "gti": ["Conflict & Security"],
     "wid": ["Inequality & Poverty"],
     "swiid": ["Inequality & Poverty"],
     "pip": ["Inequality & Poverty", "Development Indicators"],
     "whr": ["Society & Well-Being"],
-    "social_progress": ["Society & Well-Being"],
     "ppi": ["Society & Well-Being"],
     "etr": ["Society & Well-Being"],
     "oxcgrt": ["Health", "Society & Well-Being"],
@@ -1450,11 +1432,9 @@ _SOURCE_TOPICS = {
     "kof_globalization": ["International Trade", "Society & Well-Being"],
     # energy & environment
     "eia": ["Energy"],
-    "irena": ["Energy"],
     "ember": ["Energy"],
     "ei_statreview": ["Energy"],
     "gppd": ["Energy"],
-    "owid": ["Energy", "Environment & Climate"],
     "gcb": ["Environment & Climate"],
     "nasa_giss": ["Environment & Climate"],
     "noaa": ["Environment & Climate"],
@@ -2222,31 +2202,6 @@ def render_head(title, meta_desc, canonical, css, jsonld="", og_type="website"):
 #  mangling; functionally identical to what the provider sent).
 # ---------------------------------------------------------------------------- #
 SOURCE_EMBEDS = {
-    # Social Progress Imperative — written permission from REDACTED
-    # (written permission on file from Social Progress Imperative, 2026-07-14):
-    # embed of the PUBLIC Tableau of the 2026 Global Social Progress Index,
-    # student/academic use only, no charge. The DATASET itself is explicitly NOT
-    # licensed for free redistribution -> this source stays metadata-only.
-    # (Only change vs the provider's code: UI language es-ES -> en-US.)
-    "social_progress": {
-        "heading": "Explore the 2026 Global Social Progress Index",
-        "note": ("Embedded with written permission from the Social Progress "
-                 "Imperative (2026) for student and academic use, free of charge. "
-                 "The underlying dataset is not redistributed here — data licensing "
-                 "and premium access are available from "
-                 '<a href="https://www.socialprogress.org/">socialprogress.org</a>.'),
-        "html": """
-<div class='tableauPlaceholder' id='viz1784056164874' style='position: relative'><noscript><a href='https://www.socialprogress.org/'><img alt='2026 Global Social Progress Index' src='https://public.tableau.com/static/images/20/2026GlobalSocialProgressIndexPublicAccess/2026SPI/1_rss.png' style='border: none' /></a></noscript><object class='tableauViz' style='display:none;'><param name='host_url' value='https%3A%2F%2Fpublic.tableau.com%2F' /> <param name='embed_code_version' value='3' /> <param name='site_root' value='' /><param name='name' value='2026GlobalSocialProgressIndexPublicAccess&#47;2026SPI' /><param name='tabs' value='yes' /><param name='toolbar' value='yes' /><param name='static_image' value='https://public.tableau.com/static/images/20/2026GlobalSocialProgressIndexPublicAccess/2026SPI/1.png' /> <param name='animate_transition' value='yes' /><param name='display_static_image' value='yes' /><param name='display_spinner' value='yes' /><param name='display_overlay' value='yes' /><param name='display_count' value='yes' /><param name='language' value='en-US' /></object></div>
-<script type='text/javascript'>
-var divElement = document.getElementById('viz1784056164874');
-var vizElement = divElement.getElementsByTagName('object')[0];
-if ( divElement.offsetWidth > 800 ) { vizElement.style.width='1000px';vizElement.style.height='1250px';} else if ( divElement.offsetWidth > 500 ) { vizElement.style.width='1000px';vizElement.style.height='1250px';} else { vizElement.style.width='100%';vizElement.style.height='7250px';}
-var scriptElement = document.createElement('script');
-scriptElement.src = 'https://public.tableau.com/javascripts/api/viz_v1.js';
-vizElement.parentNode.insertBefore(scriptElement, vizElement);
-</script>
-""",
-    },
 }
 
 
@@ -2522,34 +2477,34 @@ REGIONS = ["Global & International", "Europe", "Americas", "Asia-Pacific"]
 _PILLAR_BY_ID = {
     # research datasets (named on the tile or scholar-built)
     "maddison": "research", "pwt": "research", "penn_world_table": "research",
-    "shiller": "research", "famafrench": "research", "barro_lee": "research",
+    "barro_lee": "research",
     "damodaran": "research", "ggdc": "research", "epu": "research",
     "kof_globalization": "research", "oxcgrt": "research", "gapminder": "research",
-    "hf_equities": "research", "qog": "research", "harvard_atlas": "research",
+    "hf_equities": "research", "harvard_atlas": "research",
     # institutions & society
-    "vdem": "society", "polity": "society",   # freedomhouse removed 2026-07-30, see above
-    "cow": "society", "ucdp": "society", "sipri": "society",
-    "sipri_polity": "society", "wid": "society", "swiid": "society",
+    "vdem": "society", # A source was REMOVED 2026-07-30, see above
+    "ucdp": "society", 
+    "wid": "society", "swiid": "society",
     "whr": "society", "wgi": "society", "transparency_ti": "society",
-    "fsi": "society", "fsi_fundforpeace": "society", "gpi": "society",
+    "fsi_fundforpeace": "society", "gpi": "society",
     "gti": "society", "ppi": "society", "etr": "society",
-    "social_progress": "society", "global_findex": "society", "pip": "society",
+    "global_findex": "society", "pip": "society",
     "un_wpp": "society", "gleif": "society", "ilo": "society", "ilostat": "society",
-    "who_gho": "society", "who_hwf": "society", "who_rs": "society",
+    "who_hwf": "society", "who_rs": "society",
     "who_sdg": "society", "oxcgrt": "society", "unesco_clte": "society",
     "unesco_cltt": "society", "unesco_dem": "society", "unesco_film": "society",
     "unesco_inno": "society", "unhcr": "society", "undp_hdr": "society",
     "worldbank_esg": "society",
     # energy & environment
-    "eia": "energy", "irena": "energy", "ember": "energy", "gcb": "energy",
+    "eia": "energy", "ember": "energy", "gcb": "energy",
     "nasa_giss": "energy", "noaa": "energy", "ei_statreview": "energy",
-    "owid": "energy", "gppd": "energy", "edgar_jrc": "energy", "yale_epi": "energy",
+    "gppd": "energy", "edgar_jrc": "energy", "yale_epi": "energy",
     # trade & development
     "comtrade": "trade", "cepii_baci": "trade", "cepii_gravity": "trade",
-    "idb": "trade", "adb": "trade", "worldbank_pink": "trade",
+    "idb": "trade", "adb": "trade", 
     "worldbank_wdi": "trade", "faostat": "trade",
     # prices, money, markets & central banks
-    "cboe": "money", "defillama": "money", "frankfurter": "money",
+    "defillama": "money", "frankfurter": "money",
     "cftc": "money", "fdic": "money", "ofr": "money", "treasury": "money",
     "sec_edgar": "money", "edgar_13f": "money", "edgar_insider": "money",
     "edgar_pointers": "money", "fhfa": "money",
@@ -2559,7 +2514,7 @@ _PILLAR_BY_ID = {
 # Monetary Fund" dataset under the Money pillar; the Macro tile names the IMF.
 _MONEY_KEYS = ("central bank", "bank of", "banco", "bundesbank", "reserve bank",
                "federal reserve", "riksbank", "norges", "national bank", "evds")
-_MONEY_IDS = {"ecb", "ecb_sdmx", "bis", "rba", "nbp", "snb", "boe", "tcmb",
+_MONEY_IDS = {"ecb", "ecb_sdmx", "bis", "rba", "snb", "boe", 
               "cnb", "bcb", "bcrp", "boc", "nyfed", "fed_board", "bundesbank",
               "norgesbank", "riksbank"}
 
@@ -2580,16 +2535,16 @@ def classify_pillar(rec):
 
 _REGION_EUROPE = {"eurostat", "ecb", "ecb_sdmx", "frankfurter", "bundesbank",
                   "boe", "ons_uk", "insee", "insee_bdm", "insee_melodi",
-                  "insee_sdmx", "insee_sirene", "istat", "ine_spain", "cbs_nl",
+                  "insee_sdmx", "insee_sirene", "istat", "cbs_nl",
                   "dst", "ssb", "scb", "statfin", "hagstofa", "stat_estonia",
-                  "stat_latvia", "stat_slovenia", "gus", "gus_dbw", "ksh",
-                  "ksh_stadat", "cso", "cnb", "nbp", "riksbank", "norgesbank",
-                  "snb", "bfs", "tcmb"}
-_REGION_AMERICAS = {"bea", "bls", "census", "fred", "fred_releases", "fed_board",
+                  "stat_latvia", "stat_slovenia", "gus_dbw", "ksh",
+                  "ksh_stadat", "cso", "cnb", "riksbank", "norgesbank",
+                  "snb", "bfs"}
+_REGION_AMERICAS = {"bea", "bls", "census", "fed_board",
                     "nyfed", "treasury", "cftc", "fdic", "sec_edgar", "edgar_13f",
                     "edgar_insider", "edgar_pointers", "eia", "fhfa", "ofr",
-                    "statcan", "boc", "bcb", "bcrp", "ibge", "ipea", "idb",
-                    "hf_equities", "cboe", "shiller", "famafrench",
+                    "statcan", "boc", "bcb", "bcrp", "ipea", "idb",
+                    "hf_equities", 
                     "damodaran", "noaa", "nasa_giss"}
 _REGION_ASIAPAC = {"abs", "rba", "stats_nz", "adb"}
 
@@ -2945,9 +2900,9 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
       <a class="acard tile-link" href="catalog.html?pillar=macro"><div class="card-icon">&#128200;</div><h3>Macro &amp; National Accounts</h3><p>GDP, employment, production — national statistical offices (ABS, INSEE, ISTAT, StatCan, Eurostat) and the IMF/World Bank.</p><span class="tile-go">Browse sources &rarr;</span></a>
       <a class="acard tile-link" href="catalog.html?pillar=money"><div class="card-icon">&#128176;</div><h3>Prices, Money &amp; Central Banks</h3><p>Inflation, interest rates, FX — ECB, Fed Board, BIS, Bundesbank, and dozens of national central banks.</p><span class="tile-go">Browse sources &rarr;</span></a>
       <a class="acard tile-link" href="catalog.html?pillar=trade"><div class="card-icon">&#128674;</div><h3>Trade &amp; Development</h3><p>Bilateral trade (CEPII BACI), tariffs, development indicators (World Bank WDI, UN SDG, UNDP HDR).</p><span class="tile-go">Browse sources &rarr;</span></a>
-      <a class="acard tile-link" href="catalog.html?pillar=energy"><div class="card-icon">&#9889;</div><h3>Energy &amp; Environment</h3><p>EIA, IRENA, Ember, Global Carbon Budget, NASA GISS — production, prices, emissions, climate.</p><span class="tile-go">Browse sources &rarr;</span></a>
-      <a class="acard tile-link" href="catalog.html?pillar=society"><div class="card-icon">&#127963;</div><h3>Institutions &amp; Society</h3><p>Governance (WGI, V-Dem), conflict (UCDP, COW), inequality (WID, SWIID), well-being (WHR).</p><span class="tile-go">Browse sources &rarr;</span></a>
-      <a class="acard tile-link" href="catalog.html?pillar=research"><div class="card-icon">&#128218;</div><h3>Research Datasets</h3><p>Maddison Project (year 1 CE onward), Penn World Table, Shiller, Fama-French, Barro-Lee, and more.</p><span class="tile-go">Browse sources &rarr;</span></a>
+      <a class="acard tile-link" href="catalog.html?pillar=energy"><div class="card-icon">&#9889;</div><h3>Energy &amp; Environment</h3><p>EIA, Ember, Global Carbon Budget, NASA GISS — production, prices, emissions, climate.</p><span class="tile-go">Browse sources &rarr;</span></a>
+      <a class="acard tile-link" href="catalog.html?pillar=society"><div class="card-icon">&#127963;</div><h3>Institutions &amp; Society</h3><p>Governance (WGI, V-Dem), conflict (UCDP), inequality (WID, SWIID), well-being (WHR).</p><span class="tile-go">Browse sources &rarr;</span></a>
+      <a class="acard tile-link" href="catalog.html?pillar=research"><div class="card-icon">&#128218;</div><h3>Research Datasets</h3><p>Maddison Project (year 1 CE onward), Penn World Table, Fama-French, Barro-Lee, and more.</p><span class="tile-go">Browse sources &rarr;</span></a>
     </div>
     <p style="text-align:center;margin-top:2.5rem"><a href="catalog.html" class="btn btn-primary" style="font-size:1.05rem;padding:.85rem 2.2rem">Browse the full catalog &rarr;</a></p>
   </div>
@@ -2999,8 +2954,6 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
           <tr>
             <th>Feature</th>
             <th class="comparison-highlight">Econ Data Library</th>
-            <th>FRED</th>
-            <th>DBnomics</th>
             <th>Bloomberg</th>
           </tr>
         </thead>
@@ -3008,64 +2961,46 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
           <tr>
             <td><strong>Price</strong></td>
             <td class="comparison-highlight"><strong>Free</strong></td>
-            <td>Free</td>
-            <td>Free</td>
             <td>$25,000+/yr</td>
           </tr>
           <tr>
             <td><strong>Individual series</strong></td>
             <td class="comparison-highlight"><strong id="cmp-series">billions</strong></td>
-            <td>~800k</td>
-            <td>1B+</td>
             <td>Terminal-gated</td>
           </tr>
           <tr>
             <td><strong>License on every series</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Yes</span></td>
-            <td>Partial</td>
-            <td>Partial</td>
             <td>Proprietary</td>
           </tr>
           <tr>
             <td><strong>Producer-first citations</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Every series</span></td>
             <td><span class="comparison-x">No</span></td>
-            <td><span class="comparison-x">No</span></td>
-            <td><span class="comparison-x">No</span></td>
           </tr>
           <tr>
             <td><strong>Reproducible bundles</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Snapshot-pinned</span></td>
             <td><span class="comparison-x">No</span></td>
-            <td><span class="comparison-x">No</span></td>
-            <td><span class="comparison-x">No</span></td>
           </tr>
           <tr>
             <td><strong>AI/MCP access</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Built-in</span></td>
-            <td><span class="comparison-x">No</span></td>
-            <td><span class="comparison-x">No</span></td>
             <td>Paid add-on</td>
           </tr>
           <tr>
             <td><strong>Machine-readable metadata</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Dataset + Croissant</span></td>
-            <td>Partial</td>
-            <td>Partial</td>
             <td><span class="comparison-x">No</span></td>
           </tr>
           <tr>
             <td><strong>Multilingual search</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">6 languages</span></td>
-            <td>English</td>
-            <td>English</td>
             <td>Multiple</td>
           </tr>
           <tr>
             <td><strong>Update transparency</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Public status board</span></td>
-            <td>Partial</td>
-            <td>Partial</td>
             <td><span class="comparison-x">Opaque</span></td>
           </tr>
         </tbody>

@@ -173,7 +173,7 @@ Every registered source with license/attribution + a freshness summary
 deliberately NOT pinned here — it changes whenever a source is added, or removed because
 we cannot host it (20 were removed 2026-07-22/23). Read it from the endpoint.
 
-### `GET /v1/last-updates`   ([w8], copy DBnomics `/last-updates`)
+### `GET /v1/last-updates`   ([w8], copy the relay aggregator `/last-updates`)
 Per dataset, projected from `unit_state` + `source_state` + registry cadence:
 ```jsonc
 { "generated": "2026-06-25T...Z",

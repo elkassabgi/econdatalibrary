@@ -13,7 +13,7 @@ back-revision that rewrites history without extending it. The version string mov
 whenever they republish, which is exactly the event we care about.
 
 WHY THESE ARE NEW SOURCE IDS: see jobs/ingest_imf_direct.py. IMF retired IFS and
-re-keyed these datasets, and our DBnomics-era crosswalk is uneven (FDI 95.3%,
+re-keyed these datasets, and our relay-era crosswalk is uneven (FDI 95.3%,
 APDREO 100%, WHDREO 56%, FAS/WORLD/COFER ~0%). Overwriting the existing imf_<flow>
 sources would break thousands of live series ids to buy freshness. These add
 first-hand auto-updating data alongside them instead.

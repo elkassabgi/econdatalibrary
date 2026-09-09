@@ -19,7 +19,7 @@ RUNNER = os.path.join(ROOT, "jobs", "run_connector.py")
 #
 # The banned relay aggregator was REMOVED from this list 2026-08-03. The loop below shells out to
 # run_connector.py for EVERY entry — so running ingest_all would have pulled from
-# api.db.nomics.world, which is banned outright (CLAUDE.md §0, ledger R251: no fetching, no
+# the relay's API host, which is banned outright (CLAUDE.md §0, ledger R251: no fetching, no
 # probing, no relays or mirrors; every source comes from its own publisher).
 #
 # That this script is not scheduled is what made it dangerous rather than harmless. A dormant

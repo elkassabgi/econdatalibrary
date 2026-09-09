@@ -16,7 +16,7 @@ Run: python jobs/ingest_imf_fsi.py
 # DEFUSED 2026-08-04: the guard below is the enforcement, the CI test tests/test_relay_ban.py
 # is the proof, and the PreToolUse hook is the session-level backstop. Three layers on purpose.
 raise SystemExit(
-    "RETIRED: this script fetched from DBnomics, which is BANNED (CLAUDE.md \u00a70, ledger R251) - "
+    "RETIRED: this script fetched from the relay aggregator, which is BANNED (CLAUDE.md \u00a70, ledger R251) - "
     "no fetching, no probing, no relays or mirrors. The data it ingested is maintained by "
     "publisher-direct paths now (see updater/strategies/fetchers/ and jobs/ingest_imf_direct.py). "
     "Kept for history; running it is refused.")
@@ -183,15 +183,15 @@ def main():
             log(f"  data.imf.org API err: {e}")
 
     if not all_vals:
-        # Fallback 2: try DBnomics (mirrors IMF FSI)
-        log("  Trying DBnomics IMF/FSI...")
+        # Fallback 2: try the relay aggregator (mirrors IMF FSI)
+        log("  Trying the relay aggregator IMF/FSI...")
         import json
-        dbnomics_base = "https://api.db.nomics.world/v22"
+        relay_base = "<the relay's API>"
         offset = 0
         limit  = 1000
         while True:
             try:
-                url_db = f"{dbnomics_base}/series/IMF/FSI?observations=1&limit={limit}&offset={offset}"
+                url_db = f"{relay_base}/series/IMF/FSI?observations=1&limit={limit}&offset={offset}"
                 r = get_json(url_db, timeout=180)
                 if not r:
                     break
@@ -226,7 +226,7 @@ def main():
                     break
                 import time as _t; _t.sleep(1)
             except Exception as e:
-                log(f"  DBnomics err: {e}")
+                log(f"  the relay aggregator err: {e}")
                 break
 
     if not all_vals:

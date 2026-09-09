@@ -718,7 +718,7 @@ sources:
   # equal the stored ones.
   #
   # WHY LOCAL AND NOT live: true — the Census API REQUIRES a key for these endpoints, and there
-  # is no CENSUS_API_KEY repo secret (gh secret list: CLOUDFLARE_*, COMTRADE, FRED, R2_*,
+  # is no CENSUS_API_KEY repo secret (gh secret list: CLOUDFLARE_*, COMTRADE, the St. Louis Fed key, R2_*,
   # RESEND). Ahmed's key is in .env ON THE WORKSTATION, which is where run_location: local runs
   # and where the fetcher can read it. Setting live: true would schedule it into CI, where it
   # would fail every day for want of a credential that already exists elsewhere.
@@ -1418,7 +1418,7 @@ sources:
   adapter:
     vintage_signal: 'HEAD Last-Modified/Content-Length on the primary EI all-data XLSX URL (energyinst.org __data/assets/excel_doc/<id>
       path). Caveat: the asset id is version-specific and rotates per edition, so a dead primary silently falls through the
-      hard-coded fallback list to the OWID mirror (different schema/units).'
+      hard-coded fallback list to the third-party GitHub mirror (different schema/units).'
     since_param: n/a (whole-history annual panel, no since param)
     out_paths_note: 'Single file: data/clean_full/ei_statreview/ei_statreview.parquet (series_key EISR:{variable}:{country},
       annual Dec-31). No raw cache, no per-variable files. Side logs _ei_statreview_log.txt/_err.txt.'
@@ -1426,7 +1426,7 @@ sources:
     key_env: none
     confidence: medium
     open_question: The EI asset URL changes yearly (embedded asset id) and must be refreshed by a human; need a way to discover
-      the new edition's URL and to ALERT on silent fallback to the OWID mirror (which shifts variable naming/coverage without
+      the new edition's URL and to ALERT on silent fallback to the third-party mirror (which shifts variable naming/coverage without
       failing).
   matrix:
     refresh_mechanism:
@@ -1442,7 +1442,7 @@ sources:
     keys_or_blockers:
     - No API key. User-Agent set; 180s timeout, only the per-URL try (no multi-retry backoff inside fetch — one attempt per
       URL, then moves to next fallback). Risk that energyinst.org asset URLs (the __data/assets/excel_doc/<id> paths) rotate
-      per edition and silently 404, falling through to the OWID github mirror (different schema/units) — coverage could shift
+      per edition and silently 404, falling through to the third-party github mirror (different schema/units) — coverage could shift
       source without alerting.
     storage_layout:
     - 'Single Parquet: data/clean_full/ei_statreview/ei_statreview.parquet, columns series_key (EISR:{variable}:{country}),
@@ -2168,7 +2168,7 @@ sources:
       parquet (dedup on series_key+obs_date). True since=last_obs is not applicable to a single annual file.'
     keys_or_blockers:
     - 'No API key. BLOCKER (active): all 5 candidate URLs return HTTP 404 (verified in _gii_log.txt 2026-06-09 run) -- WIPO
-      moved/renamed the files and the GitHub/OWID mirrors are gone or renamed. Source must be re-pointed before any data can
+      moved/renamed the files and the GitHub mirrors are gone or renamed. Source must be re-pointed before any data can
       be ingested. 120s timeout, time.sleep(1) between candidates. openpyxl needed for the XLSX branch.'
     storage_layout:
     - intended single file data/clean_full/gii/gii.parquet (zstd), schema series_key='GII:{indicator}:{iso3}', obs_date(date32,
@@ -2633,14 +2633,14 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow PCPS
-      (agency IMF.RES). NOT DBnomics: their index for IMF/PCPS froze on
+      (agency IMF.RES). NOT the banned relay: its index for IMF/PCPS froze on
       2025-07-16 while IMF kept publishing, so the relay's hash reported
       'no change' for 12 months and the source served 2025-06 data while
       running green every day (ledger R73).
     since_param: n/a
     out_paths_note: 'Single file: data/clean_full/imf_commodity/imf_commodity.parquet (companion _log/_err are run logs, not
       data).'
-    rate_note: No key (DBnomics v22). 1.0s sleep/page, PAGE_SIZE=1000 series/page, 3-retry backoff; DBnomics fair-use applies.
+    rate_note: No key (relay v22, historical). 1.0s sleep/page, PAGE_SIZE=1000 series/page, 3-retry backoff; the relay fair-use applied.
       Write atomically (temp+rename) to avoid the corrupt-then-skipped-by-guard hazard.
     key_env: none
     confidence: high
@@ -2654,12 +2654,12 @@ sources:
     incremental_path:
     - 'Not feasible against the current full-dataset endpoint without restructure, but cheap to add a guarded full overwrite:
       drop the os.path.exists early-return so each run re-pulls and overwrites the single parquet (dataset is small, ~1,236
-      series). True since=last_obs is also possible: DBnomics series payloads include period_start_day arrays; you could read
+      series). True since=last_obs is also possible: the relay series payloads included period_start_day arrays; you could read
       existing max(obs_date) and request observations server-side, but the v22 series endpoint has no since filter so you
       would still transfer all obs per series — better to just unconditionally overwrite given the small size.'
     keys_or_blockers:
-    - 'HISTORICAL, now BANNED (R251). Formerly no API key (DBnomics api.db.nomics.world/v22, IMF/PCPS). Politeness sleep 1.0s/page, PAGE_SIZE=1000 series/page, 3-retry
-      backoff. DBnomics fair-use rate limits apply but no auth.'
+    - 'HISTORICAL, now BANNED (R251). Formerly no API key (relay v22, IMF/PCPS). Politeness sleep 1.0s/page, PAGE_SIZE=1000 series/page, 3-retry
+      backoff. The relay fair-use rate limits applied but no auth.'
     storage_layout:
     - 'single parquet: data/clean_full/imf_commodity/imf_commodity.parquet. Schema series_key(str), obs_date(date32), value(float64).
       series_key = IMF_COMMODITY:<series_code>. (Companion _log/_err text files in same dir are run logs, not data.)'
@@ -2952,7 +2952,7 @@ sources:
     key_env: none
     confidence: medium
     open_question: This is a completion/recovery pass over the main ISTAT sweep (ingest_sdmx_nso.py) sharing one output dir.
-      Confirm the delta/merge is implemented in the primary sdmx_nso job and this sliced script stays a recovery tool, so
+      Confirm the delta/merge is implemented in the primary (since-retired) sweep job and this sliced script stays a recovery tool, so
       the two don't fight over overwrite-vs-merge semantics. Also note --only mode intentionally OVERWRITES a flow (data-loss
       risk if a flaky host returns a smaller subset than the prior file).
   matrix:
@@ -3313,20 +3313,20 @@ sources:
   scripts:
   - jobs/ingest_nyfed.py
   strategy: extend_by_date
-  strategy_reason: Fetched via FRED, which exposes a server-side observation_start date filter; derive it from each series'
+  strategy_reason: Fetched via the St. Louis Fed API, which exposes a server-side observation_start date filter; derive it from each series'
     stored max(obs_date) and pull only the tail.
   cadence: daily
   refresh_cost: fast
   out_dir: nyfed
   review: true
   adapter:
-    vintage_signal: Date-tail always-fetch via FRED observation_start; per series compute max(obs_date) from {name}.parquet
+    vintage_signal: Date-tail always-fetch via the API observation_start; per series compute max(obs_date) from {name}.parquet
       and request from there (data tiny — full overwrite also fine).
-    since_param: observation_start=<max(obs_date) (or +1 day)> on the FRED series/observations call (currently hardcoded 2000-01-01).
+    since_param: observation_start=<max(obs_date) (or +1 day)> on the series/observations call (currently hardcoded 2000-01-01).
     out_paths_note: 'Multi-file, one parquet per logical series: data/clean_full/nyfed/<name>.parquet for sofr,tgcr,obfr,sofr30d/90d/180d,sofridx,tgcrvol
       (~8 files). NOTE: duplicate ''tgcr'' dict key drops the non-RATE TGCR variant (latent coverage bug); bgcr intentionally
-      absent (unavailable via FRED).'
-    rate_note: REQUIRES FRED_API_KEY (.env via core.config.load_env; SystemExit if missing). FRED public rate limits; self-throttles
+      absent (unavailable via the API).'
+    rate_note: REQUIRES FRED_API_KEY (.env via core.config.load_env; SystemExit if missing). The API public rate limits; self-throttles
       1s between series.
     key_env: FRED_API_KEY
     confidence: high
@@ -3343,14 +3343,14 @@ sources:
       \ No flags. Note SERIES dict has duplicate 'tgcr' keys (TGCR then TGCRRATE) — the second wins, so only TGCRRATE is fetched;\
       \ 'bgcr' is intentionally absent."
     incremental_path:
-    - 'Trivially supported by FRED. Change fetch_series to: if {name}.parquet exists, read its max(obs_date), set params[''observation_start'']
+    - 'Trivially supported by the API. Change fetch_series to: if {name}.parquet exists, read its max(obs_date), set params[''observation_start'']
       = that date (or +1 day), fetch only the tail, then concat existing+new and de-dup/overwrite on obs_date instead of the
-      current early-return skip (lines 53-56). FRED''s observation_start param is the exact since hook. Data is tiny so even
+      current early-return skip (lines 53-56). The API observation_start param is the exact since hook. Data is tiny so even
       a plain unconditional full re-pull-and-overwrite (just delete the existence guard) is a clean fix for daily currency.'
     keys_or_blockers:
     - REQUIRES FRED_API_KEY env var (core.config.load_env() reads .env; raises SystemExit('FRED_API_KEY not set in .env')
-      if missing — lines 57-61). FRED public rate limits apply; script self-throttles time.sleep(1) between series. BGCR genuinely
-      unavailable via FRED/NY Fed (documented in comments).
+      if missing — lines 57-61). The API public rate limits apply; script self-throttles time.sleep(1) between series. BGCR genuinely
+      unavailable via the API or NY Fed (documented in comments).
     storage_layout:
     - 'overwrite-multi-file, ONE parquet per logical series: data/clean_full/nyfed/<name>.parquet for name in {sofr,bgcr(skipped),tgcr,obfr,sofr30d,sofr90d,sofr180d,sofridx,tgcrvol}
       (~8 files, tens of KB each). Schema per file: series_key (str, ''nyfed:{name}''), obs_date (date32), value (float64).
@@ -4532,20 +4532,20 @@ sources:
   scripts:
   - jobs/ingest_transparency.py
   strategy: overwrite_if_changed
-  strategy_reason: Tiny annual full table; OWID grapher CSV returns ALL years each call so per-obs delta is meaningless —
+  strategy_reason: Tiny annual full table; the mirror grapher CSV returns ALL years each call so per-obs delta is meaningless —
     detect a new edition (newer max year) and overwrite (matrix-recommended).
   cadence: annual
   refresh_cost: fast
   out_dir: transparency_ti
   review: true
   adapter:
-    vintage_signal: Fetch OWID CSV ourworldindata.org/grapher/ti-corruption-perception-index.csv (ETag/Last-Modified or max-year
+    vintage_signal: Fetch the mirror CSV ourworldindata.org/grapher/ti-corruption-perception-index.csv (ETag/Last-Modified or max-year
       compare vs stored parquet); rewrite only if a newer year appears. Generate the TI CDN xlsx fallback URL (CPI20XX) from
       current year instead of the hardcoded TI_URLS list.
     since_param: n/a
     out_paths_note: single file data/clean_full/transparency_ti/transparency_ti.parquet (~4KB, ~180 countries x ~13 years);
       ISO3 falls back to sanitized entity name for aggregates.
-    rate_note: no API key, CC BY; OWID CSV reliably public; TI CDN xlsx frequently 403 (fallback only, needs openpyxl).
+    rate_note: no API key, CC BY; the mirror CSV reliably public; TI CDN xlsx frequently 403 (fallback only, needs openpyxl).
     key_env: none
     confidence: high
     open_question: none
@@ -4554,16 +4554,16 @@ sources:
     - overwrite-single-file
     force_refresh_procedure:
     - '`Remove-Item D:\research\econfindatalibrary\data\clean_full\transparency_ti\transparency_ti.parquet -Force` then `python.exe
-      D:\research\econfindatalibrary\jobs\ingest_transparency.py`. The OWID CSV auto-includes whatever years OWID has, so
-      deletion usually picks up a new edition; the xlsx fallback needs a new CPI20XX URL added to TI_URLS only if OWID is
+      D:\research\econfindatalibrary\jobs\ingest_transparency.py`. The mirror CSV auto-includes whatever years the mirror has, so
+      deletion usually picks up a new edition; the xlsx fallback needs a new CPI20XX URL added to TI_URLS only if the mirror is
       unavailable. No CLI flags.'
     incremental_path:
-    - 'Per-observation delta is not meaningful (one tiny annual full table; OWID returns all years each call). Correct ''incremental''
-      = detect a new edition and overwrite: read the max year in the existing parquet, fetch the OWID CSV, rewrite only if
+    - 'Per-observation delta is not meaningful (one tiny annual full table; the mirror returns all years each call). Correct ''incremental''
+      = detect a new edition and overwrite: read the max year in the existing parquet, fetch the mirror CSV, rewrite only if
       a newer year is present (else skip). Small change. Also generate the TI xlsx fallback URL from the current year instead
       of a hardcoded list.'
     keys_or_blockers:
-    - No API key. OWID CSV reliably public (CC BY). TI CDN xlsx frequently returns 403 (noted in code) — usable only as fallback.
+    - No API key. The mirror CSV reliably public (CC BY). TI CDN xlsx frequently returns 403 (noted in code) — usable only as fallback.
       Requires openpyxl for the xlsx path.
     storage_layout:
     - single parquet (~4KB), columns series_key(TI_CPI:cpi_score:{iso3}), obs_date(Dec-31 of year), value(float64 CPI score).
@@ -4781,7 +4781,7 @@ sources:
   review: true
   adapter:
     vintage_signal: GET https://api.uis.unesco.org/api/public/versions — UIS's own release `version` plus each theme's
-      `lastUpdate`. Deliberately the PUBLISHER's field. This source sat 4 years stale (DBnomics last indexed UNESCO
+      `lastUpdate`. Deliberately the PUBLISHER's field. This source sat 4 years stale (the relay last indexed UNESCO
       2022-04-04) precisely because the previous signal certified the RELAY's hash, which stays constant while the
       publisher moves on (ledger R73).
     since_param: none — one GET per indicator returns that indicator's full history for every country.
@@ -4836,7 +4836,7 @@ sources:
     latest_obs: '2020-01-01'
     checked: '2026-07-29'
     method: >-
-      Stored data ends 2020-01-01 because the source has never been refreshed since the DBnomics-era snapshot. This
+      Stored data ends 2020-01-01 because the source has never been refreshed since the relay-era snapshot. This
       declaration records the CURRENT stored tail so the source does not read as a fresh failure before its first real
       run; it must be re-checked the moment the fetcher runs, and will be replaced by upstream's true latest then.
   keys_or_blockers:
@@ -4969,7 +4969,7 @@ sources:
   # FIRST UNCTAD successor (2026-08-08, #70): the publisher's own documented data API,
   # contract read from the app's generated code sample and PROVEN live (HTTP 200, real
   # observations, session notes unctad_auth_findings.md). Upstream re-coded all 38 legacy
-  # DBnomics-era unctad_* dataset ids (0 of 38 match); successors land one at a time and
+  # relay-era unctad_* dataset ids (0 of 38 match); successors land one at a time and
   # the legacy slugs retire via Class A afterwards. SERVED same day: 1,220 series /
   # 81,760 obs, verify exit 0, worker 2bf72f8a.
   live: true
@@ -7359,13 +7359,13 @@ sources:
 # ---------------------------------------------------------------------------
 # IMF DIRECT (api.imf.org SDMX 2.1) — first-hand, replacing nothing.
   #
-# 37.4% of this library (635,750 series) reaches us via DBnomics, an aggregator,
+# 37.4% of this library (635,750 series) reached us via the (now banned) relay aggregator,
 # which makes our freshness a function of theirs. These seven pull the same IMF
 # datasets straight from the publisher. Verified 2026-07-28 to return at least as
 # much as the relay does (FAS ~2x our series, WORLD +43%, FDI exact, AFRREO ~100%).
   #
 # They are NEW ids, not replacements. IMF retired IFS and re-keyed these datasets,
-# so the crosswalk from our DBnomics-era ids is uneven (FDI 95.3% via codelist
+# so the crosswalk from our relay-era ids is uneven (FDI 95.3% via codelist
 # names, APDREO 100% by code, WHDREO 56%, FAS/WORLD/COFER ~0% — COFER moved
 # currency out of the indicator string into its own dimension). Overwriting
 # imf_<flow> would re-key thousands of live series to buy freshness; this adds the
@@ -8893,7 +8893,7 @@ sources:
     so it was never attempted. All 25 fao_* sources are in that state (136,754
     series); the registry's separate `faostat` entry is a DIFFERENT source, which is
     how the whole family went unnoticed. Fetched direct from FAOSTAT's bulk
-    distribution: the DBnomics-era ids turn out to BE FAOSTAT's own codes
+    distribution: the relay-era ids turn out to BE FAOSTAT's own codes
     (5111.1.1016 = element 5111 Stocks, area 1 Armenia, item 1016 Goats), so 98.2%
     of published ids reproduce exactly with no translation table. Upstream carries
     78,944 series to 2024 against our 20,238 to 2022.
@@ -8906,7 +8906,7 @@ sources:
       DateUpdate + FileSize for dataset QCL in
       https://bulks-faostat.fao.org/production/datasets_E.json - FAO's OWN release
       field. Deliberately not a relay hash: these sources sat four years stale
-      because the previous signal certified DBnomics' index rather than FAO's
+      because the previous signal certified the relay index rather than FAO's
       release (ledger R73).
     name: 'Production: Crops and livestock products'
     code_map: >-
@@ -8925,7 +8925,7 @@ sources:
     so it was never attempted. All 25 fao_* sources are in that state (136,754
     series); the registry's separate `faostat` entry is a DIFFERENT source, which is
     how the family went unnoticed. Fetched direct from FAOSTAT's bulk distribution —
-    the DBnomics-era ids ARE FAOSTAT's own codes, so the key template reproduces
+    the relay-era ids ARE FAOSTAT's own codes, so the key template reproduces
     96.0% of published ids with no translation table. Upstream carries 84,549 series.
   cadence: annual
   refresh_cost: large
@@ -8952,7 +8952,7 @@ sources:
     so it was never attempted. All 25 fao_* sources are in that state (136,754
     series); the registry's separate `faostat` entry is a DIFFERENT source, which is
     how the family went unnoticed. Fetched direct from FAOSTAT's bulk distribution —
-    the DBnomics-era ids ARE FAOSTAT's own codes, so the key template reproduces
+    the relay-era ids ARE FAOSTAT's own codes, so the key template reproduces
     100.0% of published ids with no translation table. Upstream carries 40,016 series.
   cadence: annual
   refresh_cost: large
@@ -8979,7 +8979,7 @@ sources:
     so it was never attempted. All 25 fao_* sources are in that state (136,754
     series); the registry's separate `faostat` entry is a DIFFERENT source, which is
     how the family went unnoticed. Fetched direct from FAOSTAT's bulk distribution —
-    the DBnomics-era ids ARE FAOSTAT's own codes, so the key template reproduces
+    the relay-era ids ARE FAOSTAT's own codes, so the key template reproduces
     99.8% of published ids with no translation table. Upstream carries 1,385 series.
   cadence: annual
   refresh_cost: large
@@ -9006,7 +9006,7 @@ sources:
     so it was never attempted. All 25 fao_* sources are in that state (136,754
     series); the registry's separate `faostat` entry is a DIFFERENT source, which is
     how the family went unnoticed. Fetched direct from FAOSTAT's bulk distribution —
-    the DBnomics-era ids ARE FAOSTAT's own codes, so the key template reproduces
+    the relay-era ids ARE FAOSTAT's own codes, so the key template reproduces
     100.0% of published ids with no translation table. Upstream carries 576 series.
   cadence: annual
   refresh_cost: large
@@ -9574,8 +9574,8 @@ sources:
   # unpermitted-crawl purge; what re-adds it is the Gallup/WHR WRITTEN grant (2026-07-09,
   # DATABASE_LICENSES_VERBATIM.md "CLEARED by WRITTEN PERMISSION (scoped/conditional)")
   # which covers EXACTLY the Figure 2.1 workbook — and a rewritten fetcher whose data now
-  # comes from the PUBLISHER (files.worldhappiness.report), never OWID (the R215 provenance
-  # hold). New keys FIG21:<measure>:<geo> in whr_fig21.parquet; the 2,270 legacy OWID-era
+  # comes from the PUBLISHER (files.worldhappiness.report), never the third-party mirror (the R215 provenance
+  # hold). New keys FIG21:<measure>:<geo> in whr_fig21.parquet; the 2,270 legacy mirror-era
   # rows in whr.parquet stay uncatalogued/unserved pending purge.
   live: true
   # run_location MEASURED, not guessed: worldhappiness.report's bot protection 403s
@@ -9608,7 +9608,7 @@ sources:
     since_param: n/a
     out_paths_note: 'data/clean_full/whr/whr_fig21.parquet — keys FIG21:<measure>:<iso3>,
       11 measures (ladder, whiskers, 6 factors, dystopia_residual, rank), annual Dec-31
-      stamps. Legacy whr.parquet (OWID-era) deliberately untouched and unserved.'
+      stamps. Legacy whr.parquet (mirror-era) deliberately untouched and unserved.'
     rate_note: Two requests per run (listing + one xlsx, ~130 KB). No key.
     key_env: none
     confidence: high
@@ -9671,7 +9671,7 @@ sources:
   - updater/strategies/fetchers/who_hwf.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the DBnomics
+    WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the the relay aggregator
     mirror 2026-08-02 (banned, CLAUDE.md 0 / ledger R251). Coverage measured against WHO on the
     full indicator set at migration: 4,421 of 4,421 published series available.
   cadence: monthly
@@ -9682,7 +9682,7 @@ sources:
   refresh_cost: fast
   out_dir: who_hwf
   review: true
-  fetcher_verified: 2026-07-30 - DBnomics WHO/HWF indexed_at 2026-07-24 (six days old, so this mirror is genuinely live,
+  fetcher_verified: 2026-07-30 - relay WHO/HWF indexed_at 2026-07-24 (six days old, so this mirror was genuinely live,
     unlike UNCTAD 2023-06-30 / FAO 2024-05-09 / UNESCO 2022-04-04). FULL id comparison, not a sample - 4,421 upstream codes
     vs 4,421 published ids, 4,421 reproduced exactly, 0 missing either way. A pull reproduced the store exactly (54,320 rows,
     4,421 series); 25,315 upstream slots are the literal string NA and are dropped deliberately.
@@ -9692,7 +9692,7 @@ sources:
   - updater/strategies/fetchers/who_rs.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the DBnomics
+    WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the the relay aggregator
     mirror 2026-08-02 (banned, CLAUDE.md 0 / ledger R251). Indicators come from the CATALOGUE and
     the whole set is re-pulled each tick; GHO exposes no dataset-level updated-at, so the vintage
     is the date-tail sentinel rather than a fabricated token.
@@ -9716,7 +9716,7 @@ sources:
   refresh_cost: fast
   out_dir: who_rs
   review: true
-  fetcher_verified: 2026-07-30 - DBnomics WHO/RS indexed_at 2026-07-24. A pull returned 7,388 series and reproduced our
+  fetcher_verified: 2026-07-30 - relay WHO/RS indexed_at 2026-07-24. A pull returned 7,388 series and reproduced our
     store exactly (2,211 rows / 2,207 series). The 5,181 upstream series we do NOT hold are genuinely EMPTY - every one of
     their 5,198 observation slots is the literal string NA - so they are not data we are missing.
 - source_id: who_sdg
@@ -9725,7 +9725,7 @@ sources:
   - updater/strategies/fetchers/who_sdg.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the DBnomics
+    WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the the relay aggregator
     mirror 2026-08-02 (banned, CLAUDE.md 0 / ledger R251). WHO serves series the mirror never
     carried — 10,339 of them, catalogued by tools/catalog_who_api.py. SDGAIRBOD returns
     @odata.count 0 at WHO; its existing rows are KEPT (merge never shrinks) and the gap is
@@ -9738,7 +9738,7 @@ sources:
   refresh_cost: medium
   out_dir: who_sdg
   review: true
-  fetcher_verified: 2026-07-30 - DBnomics WHO/SDG indexed_at 2026-07-24; 29,245 series upstream against 28,160 published,
+  fetcher_verified: 2026-07-30 - relay WHO/SDG indexed_at 2026-07-24; 29,245 series upstream against 28,160 published,
     so this one should GAIN coverage on its first run. Vintage token proven stable across two calls.
 - source_id: boc
   live: true

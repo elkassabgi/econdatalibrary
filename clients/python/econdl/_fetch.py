@@ -1,6 +1,6 @@
 """fetch() -- cross-section query by dimension mask ([w12], ARCHITECTURE §9).
 
-DBnomics SDMX-mask style: instead of naming every ``series_id`` by hand, give a
+the relay aggregator SDMX-mask style: instead of naming every ``series_id`` by hand, give a
 provider plus a few dimensions and let the CATALOG resolve the matching
 ``series_id`` set, then return the SAME tidy frame ``bundle()`` returns.
 
@@ -65,7 +65,7 @@ def resolve_mask(
     """Resolve a dimension mask to the matching catalog ``series_id`` set.
 
     Pure catalog query (no store I/O). ``provider`` is the ``source_id``; the
-    optional ``dataset`` is matched against the id/title (the DBnomics DATASET
+    optional ``dataset`` is matched against the id/title (the the relay aggregator DATASET
     level lives in the SERIES tail of our ids today, ARCHITECTURE §2); ``freq``/
     ``geo``/``unit``/``category`` are matched against the catalog's
     ``frequency``/``geography``/``unit``/``category`` columns and each accepts a
@@ -126,7 +126,7 @@ def fetch(
 ) -> pd.DataFrame:
     """Cross-section query: resolve a dimension mask -> the tidy frame for it.
 
-    A DBnomics SDMX-mask-style convenience ([w12]): name a ``provider`` and a few
+    A the relay aggregator SDMX-mask-style convenience ([w12]): name a ``provider`` and a few
     dimensions instead of every ``series_id`` by hand. The catalog resolves the
     matching ``series_id`` set, then the SAME ``_resolve``/``read_native``/
     ``native_to_tidy`` path ``bundle()`` uses projects each id, so the returned

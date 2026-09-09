@@ -92,7 +92,7 @@ def firstpass_ages(store_root: str, names, now: float):
     alarm that trains a reader to skip the section.
 
     A directory that does not exist is OMITTED, not alarmed: it means no first pass is in flight
-    (dbnomics has none — the domain is banned, R251).
+    (the banned relay has none, R251).
     """
     out = []
     for name in sorted(names):
@@ -158,7 +158,7 @@ def main() -> None:
     # (updater-daily.yml), i.e. as a SCRIPT - so `__package__` is empty and `from . import
     # registry` raises ImportError, is swallowed by the except below, and `managed` becomes None.
     # The orphan filter has therefore never run on a scheduled digest, which is why
-    # `fred_releases` - de-registered in July, unschedulable, last attempted 71 days ago - was
+    # a source de-registered in July, unschedulable, last attempted 71 days ago, was
     # still being listed as needing attention every morning.
     #
     # The None fallback stays: a genuinely unreadable registry must report everything rather
@@ -209,7 +209,7 @@ def main() -> None:
     # NOT IN THE LIVE TIER -> CANNOT IMPROVE. updater-daily.yml sets AQUEDUCT_LIVE_ONLY=1 and
     # orchestrate.py:1536 honours it, so a non-live source is never executed by the daily run and
     # its status is frozen. Measured 2026-09-03: 7 of 36 attention rows were such sources (bls,
-    # census, imf_imts_direct, istat, oecd, owid, sipri_polity) — 19% of a list whose whole
+    # census, imf_imts_direct, istat, oecd and two gated sources) — 19% of a list whose whole
     # purpose is to say what needs doing. Same shape as the unmanaged leftovers above, one layer
     # in: those had no registry entry, these have one and are simply not live.
     #
@@ -321,7 +321,7 @@ def main() -> None:
             lines.append("")
     for r in ok:
         # A "data through" frontier far in the future is a legitimate projection
-        # horizon (e.g. fred_releases carries CBO potential-GDP / WEO forecasts that
+        # horizon (e.g. a release-calendar source carrying CBO potential-GDP / WEO forecasts that
         # extend ~10y out), NOT a data bug. Flag it so a projection is never mistaken
         # for a stale/garbled date in the digest.
         _proj = ""

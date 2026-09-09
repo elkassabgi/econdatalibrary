@@ -9,7 +9,37 @@ DB-derived so the two can never disagree again:
 
     NON_REDISTRIBUTABLE = { every source_id with license.reservable = 0 }
                           ∪ LEGACY_KEEP            (never silently un-gate)
+                          − RELEASED               (deliberate, human-authorised un-gates)
                           − GRANTED_EXCEPTIONS     (written permission on file)
+
+THE FLOOR IS READ, NOT TYPED. LEGACY_KEEP is every id the COMMITTED denylist.ts already
+gates — real and phantom alike — parsed from that file at import time. Until 2026-09-08 it
+was a hand-typed list of ids with a paragraph of history behind each pin. The ids are no
+longer named anywhere in this repository (owner's order), and the mechanism never needed
+them: the property the floor exists for is that a regeneration can never gate LESS than the
+file it replaces unless a human removes an id on purpose. That property is exactly
+"new set ⊇ old set − RELEASED − GRANTED_EXCEPTIONS", which needs the old file, not a list.
+
+Why a floor at all — the two lessons behind it, kept because they ARE the mechanism:
+
+  * A source purged from the catalogue has no `source` row, so the reservable=0 scan cannot
+    see it. Verified on the first regeneration after the 2026-07-23 purge: the purged ids DID
+    leak out of the gate. The floor pins them so a later re-ingest can never land un-gated.
+  * A licence row can be SHARED (R117). Setting reservable=0 on `cc-by-4.0` to gate one
+    disputed source would gate the 36 others on that row. The floor is the per-SOURCE gate
+    for a source whose verdict is disputed while its licence row is not.
+
+Un-gating is a decision, never a side effect. Add the id to RELEASED in the same commit as
+the evidence (the written grant, or the CLEARED verdict in DATABASE_LICENSES_VERBATIM.md),
+and only AFTER the served data has been rebuilt from the publisher and verified complete —
+the barro_lee / norgesbank / unsdg / vdem pattern — so the R167 flag-first trap (451 -> 404)
+is measured absent. A source that merely has a written grant belongs in GRANTED_EXCEPTIONS.
+
+The SERIES_CARVEOUTS block and everything after the Set literal are carried over from the
+committed file VERBATIM. A template regression once silently WIPED carve-outs that had been
+added to denylist.ts by hand (commit be939627f dropped what 5fc56cea1 added), so the template
+no longer owns that block. main() still refuses to write if any carve-out the committed file
+protects — or the minimum set below — is missing from the output.
 
 Run:  python -m core.gen_denylist        (from the econ repo root)
 Then redeploy the worker.  Re-run whenever license flags change.
@@ -17,6 +47,7 @@ Then redeploy the worker.  Re-run whenever license flags change.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -33,8 +64,8 @@ GRANTED_EXCEPTIONS = {
     # wid — WID.world, 2026-07-06 GRANTED (educational), Alice (info@wid.world) 2026-07-27:
     # "Yes, you can use the data for educational purpose", plus the site's own
     # rel="license" declaring CC BY-NC-SA 4.0. Audit: CONFIRMED, "CLEARED - re-host OK
-    # (non-commercial, attribution, SHARE-ALIKE)". It sat in LEGACY_KEEP below because
-    # the licence was undeclared when that pin was written; it is declared now, and a
+    # (non-commercial, attribution, SHARE-ALIKE)". It sat on the floor because the
+    # licence was undeclared when that pin was written; it is declared now, and a
     # written grant is exactly what GRANTED_EXCEPTIONS is for.
     # Moved 2026-07-29 on Ahmed's decision, only after the derive COMPLETED and was
     # verified: catalog 2,465,197 == R2 CSVs 2,465,197, missing 0. Un-gating earlier
@@ -42,158 +73,76 @@ GRANTED_EXCEPTIONS = {
     "wid",
 }
 
-# PERMANENT series-level carve-outs that must survive EVERY regeneration of the
-# FOOTER template below. Guard added 2026-07-20: the 2026-07-16 regen (DeFiLlama
-# un-gate, commit be939627f) silently WIPED the worldbank_pink carve-outs that
-# commit 5fc56cea1 had added by hand to denylist.ts, because this template only
-# carried the worldbank entry. main() asserts each of these appears in the
-# generated SERIES_CARVEOUTS block and refuses to write the file otherwise.
-REQUIRED_CARVEOUTS = {
+# Ids a human has deliberately released from the floor (module docstring). Empty between
+# decisions: an entry lives here for exactly one regeneration, because once the id is out of
+# the committed file the floor no longer carries it and the entry is dead weight.
+RELEASED: set[str] = set()
+
+# The minimum carve-outs the template must always know, independent of the committed file.
+# They protect SERVED sources: the World Bank's IMF-sourced CPI and ILO-sourced unemployment
+# indicators, on BOTH ids that republish them (live leak confirmed 2026-07-22:
+# worldbank_wdi:SL.UEM.TOTL.ZS served 401 while worldbank's copy was gated).
+MINIMUM_CARVEOUTS = {
     "worldbank": ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
-    # Same third-party indicators were served via worldbank_wdi because the
-    # carve-out was keyed on `worldbank` alone (live leak confirmed 2026-07-22:
-    # worldbank_wdi:SL.UEM.TOTL.ZS served 401 while worldbank's copy was gated).
     "worldbank_wdi": ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
-    "worldbank_pink": ["aluminum", "copper", "nickel", "zinc",
-                       "gold", "platinum", "silver"],   # LME/LBMA written refusals 2026-07-15
 }
 
-# Ids that were explicitly gated by hand and must never be dropped even if they
-# are not (or no longer) reservable=0 in the DB (e.g. phantom/renamed ids). This
-# is a safety floor: unioning it guarantees the regenerated set never UN-gates
-# anything the previous curated denylist blocked.
-LEGACY_KEEP = {
-    "qog", "cboe", "dbnomics",
-    # owid — GATED 2026-07-29. Its verbatim verdict is DISPUTED / NEEDS HUMAN REVIEW:
-    # "Only the minority of data that OWID produces itself ... is CC BY and redistributable
-    # with attribution. The majority ('Most of the data') is third-party (WHO, UN, World Bank,
-    # and many others) and remains subject to each upstream provider's own license, which must
-    # be assessed per-source before re-hosting." It was nonetheless serving 64 series UNGATED
-    # under a blanket cc-by-4.0 row with commercial_ok=1.
-    #
-    # Gated HERE rather than by touching the licence row: `cc-by-4.0` is shared with 36 other
-    # sources, so setting reservable=0 on it would gate all of them — the R117 shape, where a
-    # per-licence edit silently repriced a whole family. LEGACY_KEEP is the per-SOURCE gate.
-    #
-    # Un-gate only per-provider, never wholesale: the CC BY part is the minority. And note the
-    # store holds 1,048,968 series over 72,514,320 rows against 64 catalogued — that catalog
-    # gap is the other thing keeping this contained (ledger R150), so do NOT "repair" it by
-    # bulk cataloguing.
-    "owid",
-    # imf_dbnomics was gated only because its licence row happens to be reservable=0.
-    # It was NOT on the floor, so deleting/reclassifying its source row would silently
-    # drop it from the gate on the next regeneration (the assertions below would not
-    # catch it). It is a live monthly ingest (updater/registry.yaml) feeding
-    # imf_ifs/imf_dot/imf_bop, and a DBnomics passthrough, so it must stay pinned.
-    "imf_dbnomics",
-    "wto_hs_a_0010", "wto_hs_a_0015", "wto_hs_a_0020", "wto_hs_a_0025",
-    "wto_hs_a_0030", "wto_hs_a_0040", "wto_its_mtv_am", "wto_its_mtv_ax",
-    # whr REMOVED from the floor 2026-08-07 (Ahmed's "trim whr" order, executed in full):
-    # the Gallup/WHR WRITTEN grant (2026-07-09) covers exactly the Figure 2.1 workbook,
-    # the store+catalogue were REBUILT from the publisher's own file (whr_fig21.parquet,
-    # 1,749 FIG21:* series — the R215 OWID-provenance data never serves), and the last
-    # 178 OWID-era CSVs were purged from R2 minutes before this removal (residual 0).
-    # licence row whr-granted: reservable=1, commercial_ok=0, attribution=1.
-    "social_progress", "spi", "cow",
-    # ei_statreview REMOVED from the floor 2026-07-22: the Energy Institute GRANTED
-    # written permission (permission records (held privately)). Its binding exclusion --
-    # "no S&P Global Platts / Commodity Insights price series" -- is satisfied by
-    # construction: the 18,464 series we hold span 127 measures that are ALL energy
-    # volumes/shares/per-capita/changes plus gdp, population and emissions; a full-
-    # population scan found ZERO price-unit or benchmark markers ($/, /bbl, MMBtu,
-    # spot, Brent, WTI, Dubai, Henry Hub, TTF, JKM) in any title. The only titles
-    # containing "price" are `gdp` ("international-$ in 2011 prices" = a constant-
-    # price deflator, not a commodity price). Licence row now encodes the other
-    # conditions: reservable=1, commercial_ok=0 (NC only), attribution_required=1.
-    # Standing obligation: annual June refresh when EI publishes the new edition.
-    "famafrench", "fraser_efw", "polity", "sipri", "sipri_polity", "tcmb",
-    "nbp", "wid", "sdmx_nso",
-    # Purged from the catalog 2026-07-23 (cannot host -> must not live in the DB). Their rows
-    # are gone, so they no longer appear via the reservable=0 scan and would have SILENTLY
-    # dropped out of the gate -- verified: they DID leak on the first regeneration after the
-    # purge. Pinned so a future re-ingest can never land un-gated.
-    #   irena        audit unclear_not_found / NEEDS HUMAN REVIEW
-    #   freedomhouse "third-party re-hosting for open public download is not authorized"
-    #   shiller      unclear_not_found; gate+email pending
-    "irena", "freedomhouse", "shiller",
-    # Purged 2026-07-23 (second wave). Ahmed's ruling: the permission emails went out
-    # ~2026-07-08, and two weeks of silence is a NO -- refusal and non-response are treated
-    # identically, so these are DELETED rather than gated. All 14,469 of their R2 objects are
-    # gone and their empty source rows are removed, which means the reservable=0 scan can no
-    # longer see them: without this pin they would silently fall out of the gate, exactly as
-    # irena/freedomhouse/shiller did above. Pinned so a re-ingest can never land un-gated.
-    #   fred, fred_releases  copyrighted-series carve-outs never applied (S&P/Case-Shiller, VIX,
-    #                        ICE/BofA, Michigan sentiment) -- cannot host wholesale
-    #   polity               audit: permission_required -> "RESTRICTED (keep gated)"
-    #   qog, vdem, wid, unicef, ibge, gus, ine_spain, norgesbank, unsdg, who_gho,
-    #   unesco_natmon, unesco_sci, unesco_sdg
-    #                        no reply to the permission request / never assessed.
-    # NOTE the UIS siblings unesco_clte/cltt/dem/film/inno are CLEARED (re-host OK,
-    # attribution) and are deliberately NOT here -- their 64,615 objects stay live.
-    # unesco_natmon and unesco_sdg REMOVED from the floor 2026-07-29, on Ahmed's
-    # explicit decision, for exactly the reason barro_lee was removed below: this floor
-    # exists so an UNCONFIRMED source cannot silently un-gate, and they are no longer
-    # unconfirmed. They were pinned as "no reply to the permission request / never
-    # assessed" — but a permission request is only needed where the LICENCE itself does
-    # not grant redistribution, and UIS's does. The terms at
-    # https://databrowser.uis.unesco.org/terms-and-conditions are publisher-wide ("The
-    # work of the UIS is licensed under the Creative Commons Attribution-ShareAlike 4.0
-    # International"), which is precisely why the note above records their five UIS
-    # siblings as CLEARED and deliberately NOT pinned. Same publisher, same Data
-    # Browser terms, same grant — the split was an artefact of which databases the
-    # audit happened to enumerate, not a difference in terms.
-    # Re-verified against the live page 2026-07-29 and re-ingested direct from UIS:
-    # 98,664 + 100,997 series, MISSING 0 / ORPHANED 0, values checked against parquet.
-    #
-    # unesco_sci STAYS PINNED. Only 12 of its 1,230 indicator codes exist in the
-    # current UIS API, so it cannot be kept current from that endpoint; hosting it
-    # would publish a 2019 snapshot that can never update.
-    #
-    # norgesbank REMOVED from the floor 2026-08-06, the barro_lee/unesco_natmon pattern:
-    # it was pinned as "no reply to the permission request / never assessed", but the
-    # licence audit has since CLEARED it — the data API registers NLOD 2.0
-    # (DATABASE_LICENSES_VERBATIM.md:3105, "can freely be used"; catalog licence row
-    # nlod-2.0 reservable=1), a permission request is only needed where the licence
-    # itself does not grant redistribution, and Ahmed explicitly authorized serving it
-    # 2026-08-06. A deliberate, human-authorised un-gate, executed only after the store
-    # was REBUILT from the publisher (3,768,215 rows, run 31129475260) — the purged
-    # data never resurfaces; freshly-fetched data serves.
-    # unsdg REMOVED from the floor 2026-08-26, the barro_lee/norgesbank/vdem pattern:
-    # pinned as "no reply to the permission request / never assessed", but the licence
-    # audit has since CLEARED it (UNdata terms, catalog row un-data-terms reservable=1)
-    # and Ahmed authorized the un-gate (TODO Phase-1 #3, approved 2026-08-26). Executed
-    # only after the data plane was verified COMPLETE: 396 catalogue rows = 396 R2 CSVs
-    # (adversarial review probed first/mid/last ids live beside present+absent controls),
-    # D1 synced, store rebuilt from the publisher post-purge — the R167 flag-first trap
-    # (451 -> 404) is measured absent. A deliberate, human-authorised un-gate, NOT a
-    # silent regeneration drop.
-    "fred", "fred_releases", "gus", "ibge", "ine_spain",
-    "unesco_sci", "unicef", "who_gho",
-    # vdem REMOVED from the floor 2026-08-24, on Ahmed's explicit instruction, and for the
-    # barro_lee reason: it was on this floor because NOBODY HAD ASSESSED ITS LICENCE, not
-    # because anyone decided against serving it. DATABASE_LICENSES_VERBATIM.md now records the
-    # assessment — CC BY-SA 4.0, quoted verbatim from two independently fetched official
-    # surfaces (the V-Dem dataset page and the site-wide FAQ), classified
-    # redistributable_attribution / CONFIRMED / "CLEARED - re-host OK (attribution)". It carries
-    # its own licence row `cc-by-sa-4.0-vdem` (reservable=1, commercial_ok=1, which the quote
-    # supports in as many words) so the shared `cc-by-sa-4.0` row stays reservable=0 for
-    # anything still unassessed. The floor's purpose — don't un-gate an unconfirmed source — no
-    # longer applies. This is a deliberate, human-authorised un-gate, NOT a silent regeneration
-    # drop.
-    #
-    # SCOPE: this clears the V-DEM DATASET only. data/clean_full/vdem/ also holds
-    # vparty.parquet (2,218,990 rows); V-Party is a separate publication whose own page states
-    # no licence and which the FAQ never names, so it is excluded from cataloguing by
-    # tools/catalog_complete.py's SOURCE_FILE_EXCLUSIONS and stays unserved pending its own
-    # evidence.
-    # barro_lee REMOVED from the floor 2026-07-22. It was originally gated as
-    # "unclear -- gate until confirmed"; DATABASE_LICENSES_VERBATIM.md has since
-    # CONFIRMED it `redistributable_attribution` / "CLEARED - re-host OK (attribution)",
-    # so the floor's purpose (don't un-gate an unconfirmed source) no longer applies.
-    # This is a deliberate, human-authorised un-gate (Ahmed, 2026-07-22) -- NOT a silent
-    # regeneration drop. It now carries its own licence row `custom-terms-barro_lee`
-    # (reservable=1) so the shared `custom-terms` row stays reservable=0 for SIPRI/Cboe/etc.
-}
+_SET_RX = re.compile(
+    r"NON_REDISTRIBUTABLE[^=]*=\s*new\s+Set\s*(?:<[^>]*>)?\s*\(\s*\[(.*?)\]\s*\)", re.S)
+
+
+def _strip_ts_comments(src: str) -> str:
+    src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    return re.sub(r"//[^\n]*", "", src)
+
+
+def _read_out() -> str:
+    if not os.path.exists(OUT):
+        return ""
+    with open(OUT, encoding="utf-8") as f:
+        return f.read()
+
+
+def committed_gate(src: str | None = None) -> set[str]:
+    """Every id the committed denylist.ts gates — real and phantom alike."""
+    src = _read_out() if src is None else src
+    m = _SET_RX.search(src)
+    if not m:
+        return set()
+    return set(re.findall(r'"([^"]+)"', _strip_ts_comments(m.group(1))))
+
+
+def committed_carveouts(src: str | None = None) -> dict[str, list[str]]:
+    """source id -> indicator codes, from the committed SERIES_CARVEOUTS block."""
+    src = _read_out() if src is None else src
+    m = re.search(r"SERIES_CARVEOUTS[^=]*=\s*\{(.*?)\n\};", src, re.S)
+    if not m:
+        return {}
+    body = _strip_ts_comments(m.group(1))
+    out: dict[str, list[str]] = {}
+    for key in re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:", body, re.M):
+        block = re.search(re.escape(key) + r"\s*:\s*\[(.*?)\]", body, re.S)
+        if block:
+            out[key] = re.findall(r'"([^"]+)"', block.group(1))
+    return out
+
+
+def committed_tail(src: str | None = None) -> str:
+    """Everything after the Set literal's closing `])` in the committed file, verbatim
+    (the carve-out block and the helper exports). DEFAULT_TAIL when there is no file."""
+    src = _read_out() if src is None else src
+    m = _SET_RX.search(src)
+    if not m:
+        return DEFAULT_TAIL
+    tail = src[m.end():]
+    return tail if tail.strip() else DEFAULT_TAIL
+
+
+# Ids that were explicitly gated and must never be dropped even if they are not (or no
+# longer) reservable=0 in the DB — phantom/renamed/purged ids included. Unioning this floor
+# guarantees a regeneration never UN-gates anything the committed file blocked. It is read
+# from that file; there is no list to maintain and nothing here to name.
+LEGACY_KEEP: set[str] = committed_gate() - RELEASED
 
 HEADER = '''// ---------------------------------------------------------------------------
 // src/denylist.ts  --  redistribution gate (HTTP 451 + hidden from catalog).
@@ -217,15 +166,17 @@ HEADER = '''// -----------------------------------------------------------------
 //     <= 100,000 records; growing past that leaves the free branch and requires
 //     re-gating. Cite "UN Comtrade" + link back.
 //
-// NonCommercial-but-free sources (WHO, Yale EPI, WIID, FSI, GPI, IRENA, SNB,
-// Freedom House, WTO stats) are governed by license.reservable in the DB; if any
-// appear here it is because their license row is reservable=0 (unverified) --
-// fix the license row and regenerate, don't special-case them here.
+// NonCommercial-but-free sources are governed by license.reservable in the DB;
+// if any appear here it is because their license row is reservable=0
+// (unverified) -- fix the license row and regenerate, don't special-case them.
 // ---------------------------------------------------------------------------
 
 '''
 
-FOOTER = '''
+# Used only when no committed denylist.ts exists (a fresh checkout without the worker).
+# Carries the minimum carve-outs and the helper exports the worker expects.
+DEFAULT_TAIL = ''';
+
 /** The source id is the part of a series_id before the first ':'. */
 export function seriesSource(seriesId: string): string {
   const i = seriesId.indexOf(":");
@@ -249,19 +200,10 @@ export function isNonRedistributable(seriesId: string): boolean {
  */
 export const SERIES_CARVEOUTS: Readonly<Record<string, readonly string[]>> = {
   worldbank: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
-  // worldbank_wdi carries the SAME third-party indicators as worldbank, but the
-  // carve-out was keyed only on `worldbank` — so IMF-sourced CPI and ILO-sourced
-  // unemployment were SERVED through worldbank_wdi, bypassing the control.
-  // Confirmed LIVE 2026-07-22: worldbank_wdi:SL.UEM.TOTL.ZS returned 401 (served)
-  // while the identical indicator was gated under worldbank. Same WB terms apply:
-  // third-party data may not be redistributed regardless of which id carries it.
+  // worldbank_wdi carries the SAME third-party indicators as worldbank; the carve-out
+  // was once keyed only on `worldbank`, so they were SERVED through worldbank_wdi
+  // (confirmed LIVE 2026-07-22). Same WB terms apply whichever id carries the data.
   worldbank_wdi: ["FP.CPI.TOTL.ZG", "SL.UEM.TOTL.ZS"],
-  // worldbank_pink aggregates third-party benchmark prices. LME (base metals)
-  // and LBMA/IBA (precious metals) REFUSED redistribution in writing on
-  // 2026-07-15 (permission records (held privately)) — these series must never
-  // serve, even if the source is un-gated later. Cocoa (ICCO), coffee (ICO)
-  // and cotton (Cotlook) origins are still awaiting permission replies.
-  worldbank_pink: ["aluminum", "copper", "nickel", "zinc", "gold", "platinum", "silver"],
 };
 
 function seriesIndicator(seriesId: string): string {
@@ -281,13 +223,35 @@ export function isGated(seriesId: string): boolean {
   return isNonRedistributable(seriesId) || isSeriesCarvedOut(seriesId);
 }
 
-/** LIKE prefixes (`<source>:<indicator>:`) for SQL exclusion of carved series. */
+/** Escape LIKE metacharacters (`_` matches ANY single character in SQL LIKE). Use with ESCAPE '\\'. */
+export function likeEscape(s: string): string {
+  return s.replace(/[\\\\%_]/g, (c) => "\\\\" + c);
+}
+
+/** LIKE prefixes (`<source>:<indicator>:`) for SQL exclusion of THREE-part carved ids. */
 export const SERIES_CARVEOUT_LIKE: readonly string[] = Object.entries(SERIES_CARVEOUTS)
-  .flatMap(([src, inds]) => inds.map((ind) => `${src}:${ind}:`));
+  .flatMap(([src, inds]) => inds.map((ind) => likeEscape(`${src}:${ind}:`)));
+
+/** Exact ids for TWO-part carved series (`<source>:<indicator>`, no third segment). */
+export const SERIES_CARVEOUT_EXACT: readonly string[] = Object.entries(SERIES_CARVEOUTS)
+  .flatMap(([src, inds]) => inds.map((ind) => `${src}:${ind}`));
 '''
 
 
+def required_carveouts(committed: str) -> dict[str, list[str]]:
+    """Everything the committed file protects, plus the template minimum."""
+    req = {k: sorted(v) for k, v in MINIMUM_CARVEOUTS.items()}
+    for k, v in committed_carveouts(committed).items():
+        req[k] = sorted(set(req.get(k, [])) | set(v))
+    return req
+
+
 def main() -> None:
+    committed = _read_out()
+    floor = committed_gate(committed) - RELEASED
+    carve_required = required_carveouts(committed)
+    tail = committed_tail(committed)
+
     c = sqlite3.connect(DB)
     reservable0 = {
         r[0] for r in c.execute(
@@ -299,55 +263,57 @@ def main() -> None:
     all_sources = {r[0] for r in c.execute("SELECT source_id FROM source")}
     c.close()
 
-    gated = (reservable0 | LEGACY_KEEP) - GRANTED_EXCEPTIONS
+    gated = (reservable0 | floor) - GRANTED_EXCEPTIONS
     real = sorted(s for s in gated if s in all_sources)
     phantom = sorted(s for s in gated if s not in all_sources)  # kept but flagged
 
-    lines = []
-    lines.append(HEADER)
-    lines.append("export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([")
+    lines = [HEADER, "export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set(["]
     for sid in real:
         lines.append(f'  "{sid}",')
     if phantom:
         lines.append("  // legacy/phantom ids (not currently in the catalog; kept as a safety floor):")
         for sid in phantom:
             lines.append(f'  "{sid}",')
-    lines.append("]);")
-    lines.append(FOOTER)
-    text = "\n".join(lines)
+    lines.append("])")
+    text = "\n".join(lines) + tail
 
-    # REGENERATION GUARD (fail closed BEFORE writing): every permanent carve-out
-    # must be present in the generated SERIES_CARVEOUTS block, or we refuse to
-    # write at all — a template edit can never silently drop a written refusal.
+    # REGENERATION GUARDS (fail closed BEFORE writing).
+    # 1. Every carve-out the committed file protects, and the template minimum, must be
+    #    present in the output — a template edit can never silently drop a written refusal.
+    assert "export const SERIES_CARVEOUTS" in text, "REFUSING to write: no SERIES_CARVEOUTS block"
     block = text.split("export const SERIES_CARVEOUTS", 1)[1].split("};", 1)[0]
-    for src, inds in REQUIRED_CARVEOUTS.items():
-        assert f"{src}:" in block, (
+    for src, inds in carve_required.items():
+        assert re.search(r"(?m)^\s*" + re.escape(src) + r"\s*:", block), (
             f"REFUSING to write: carve-out source '{src}' missing from the "
             f"generated SERIES_CARVEOUTS (template regression — see 5fc56cea1)")
         for ind in inds:
             assert f'"{ind}"' in block, (
                 f"REFUSING to write: carve-out {src}:{ind} missing from the "
                 f"generated SERIES_CARVEOUTS")
+    # 2. The floor: nothing the committed file gated may drop out of the gate unless it was
+    #    released on purpose (RELEASED) or carries a written grant (GRANTED_EXCEPTIONS).
+    kept = set(real) | set(phantom)
+    dropped = sorted(floor - kept - GRANTED_EXCEPTIONS)
+    assert not dropped, (
+        f"REFUSING to write: {len(dropped)} previously gated id(s) would fall out of the gate. "
+        f"Un-gating is a decision — add the id to RELEASED with its evidence, never a side effect.")
+    # 3. A release must actually take effect, or it is a stale entry that will confuse the next run.
+    stale = sorted(RELEASED & kept)
+    assert not stale, f"{len(stale)} RELEASED id(s) are still gated by the reservable=0 scan"
+    # 4. The granted ones must NOT be gated.
+    for must_serve in GRANTED_EXCEPTIONS:
+        assert must_serve not in kept, must_serve
 
     with open(OUT, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
 
     print(f"reservable=0 sources:        {len(reservable0)}")
-    print(f"legacy-keep (union):         {len(LEGACY_KEEP)}")
+    print(f"floor (committed file):      {len(floor)}")
+    print(f"released this run:           {len(RELEASED)}")
     print(f"granted exceptions (remove): {sorted(GRANTED_EXCEPTIONS)}")
-    print(f"-> NON_REDISTRIBUTABLE size: {len(real)} real + {len(phantom)} phantom = {len(real)+len(phantom)}")
+    print(f"-> NON_REDISTRIBUTABLE size: {len(real)} real + {len(phantom)} phantom = {len(kept)}")
     print(f"wrote {OUT}")
-    # sanity: the granted ones must NOT be gated; a known leaker MUST be gated
-    for must_serve in GRANTED_EXCEPTIONS:
-        assert must_serve not in real and must_serve not in phantom, must_serve
-    # Known-restricted per the verbatim license audit (2026-07-14) MUST stay gated:
-    # WTO refused in writing; cboe/sipri/polity/famafrench = permission-required.
-    # (transparency_ti was formerly gated-unverified; the audit CONFIRMED its explicit
-    #  redistribution grant "Anyone can extract, download, and make copies... and may
-    #  also share that information with third parties", so it is now correctly served.)
-    for must_gate in ("wto_hs_a_0010", "cboe", "sipri", "polity", "famafrench"):
-        assert must_gate in real or must_gate in phantom, f"{must_gate} must be gated"
-    print("sanity OK: grants excluded; known-restricted (WTO/cboe/sipri/...) gated")
+    print("sanity OK: grants excluded; floor intact; carve-outs carried")
 
 
 if __name__ == "__main__":

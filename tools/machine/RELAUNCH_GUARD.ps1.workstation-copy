@@ -26,8 +26,8 @@ $jobs = @(
   @{ n = 'gus_dbw';        match = 'ingest_gus_dbw.py';  args = @('jobs/ingest_gus_dbw.py') },
   # dbnomics_istat REMOVED 2026-08-03. This entry relaunched
   #     jobs/_dbnomics_pull.py ISTAT
-  # every five minutes, for ever. DBnomics is BANNED (CLAUDE.md 0 / ledger R251) - "no
-  # fetching, no probing api.db.nomics.world, no relays or mirrors" - so a watchdog that
+  # every five minutes, for ever. the relay aggregator is BANNED (CLAUDE.md 0 / ledger R251) - "no
+  # fetching, no probing the relay's API host, no relays or mirrors" - so a watchdog that
   # RESURRECTS the banned puller is the most durable possible form of the violation: it
   # survives being killed, by design. It was dormant only because the guard itself was down.
   #
