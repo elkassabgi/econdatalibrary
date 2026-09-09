@@ -62,7 +62,7 @@ Header rule (line 5): single source of truth; a database is only cleared to re-h
 
 Summary (lines 13-21): CLEARED-attribution 144, RESTRICTED-keep-gated 18, NEEDS HUMAN REVIEW 11, CLEARED-open 9, CLEARED-NC-only 6, CLEARED by written permission 2 (+1 scoped), verdicts CONFIRMED=184 / DISPUTED=7.
 
-**The 7 DISPUTED verdicts** (needs-attention table, lines 37-58; per-provider detail at cited lines):
+**The 7 DISPUTED verdicts** (needs-attention table, lines 36-46; per-provider detail at cited lines):
 | Source | Verdict summary | Lines |
 |---|---|---|
 | bundesbank | non_redistributable use-only grant; metadata-only/link-out unless written permission | 38, 799-823 |
@@ -70,7 +70,7 @@ Summary (lines 13-21): CLEARED-attribution 144, RESTRICTED-keep-gated 18, NEEDS 
 | idb | CC BY-NC-ND, and ~86% of IDB datasets carry NO licence at all | 48, 1580-1609 |
 | worldbank | CC BY with third-party exceptions — embedded UN/IMF/WHO/ILO/IEA/UNESCO series may NOT be redistributed | 56, 2769-2788 |
 
-**RESTRICTED/permission_required (CONFIRMED, stay gated)** (lines 37-58): WTO (8 dbs), several GATED sources, Energy Institute, Kenneth French, GATED (unclear), GATED, <redacted>, GATED (unclear), several GATED sources, zillow.
+**RESTRICTED/permission_required (CONFIRMED, stay gated)** (lines 36-46): WTO (8 dbs), several GATED sources, Energy Institute, Kenneth French, GATED (unclear), GATED, <redacted>, GATED (unclear), several GATED sources, zillow.
 
 > **THREE SOURCES WERE REMOVED FROM THAT LIST 2026-09-06 AND THE LIST WAS WRONG ABOUT THEM.**
 > `damodaran`, `defillama` and `frankfurter` are all SERVED today, and this summary still said
