@@ -26,8 +26,8 @@ silent: a range that misses rows makes a source look smaller than it is, and one
 over-reaches re-derives another source's series. Neither raises anything.
 
 The sharp case is a source id that is a PREFIX of another. The catalogue has 19 such pairs
-today -- `unctad_biotrademerch` against five longer siblings, `fsi` against
-`fsi_fundforpeace`, and more. All 19 are safe, and the reason is narrower than it first
+today -- `unctad_biotrademerch` against five longer siblings, `imf_fm` against
+`imf_fm_direct`, and more. All 19 are safe, and the reason is narrower than it first
 looks: ':' is 0x3A and ';' is 0x3B, adjacent bytes, and every one of those 19 extends with
 '_' (0x5F) or a letter (0x41+), which sort AFTER ';'.
 
@@ -57,8 +57,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Real prefix pairs from data/catalog.db, 2026-08-30. Chosen because they are the case that
 # would actually break, not invented shapes.
+#
+# AMENDED 2026-09-09: one real pair was removed from this list. Its shorter member is a
+# withdrawn database whose id is no longer written anywhere in this repository, and a fixture
+# is not a reason to keep an identifier the owner ordered removed. Nothing is lost: that pair's
+# shape was "a three-letter id extended by '_'", and
+# test_the_range_is_the_prefix_set_for_ANY_source_id below proves that shape unconditionally on
+# synthetic ids (`foo` against `foo_x`), which is a STRONGER statement than one more real pair.
 REAL_PREFIX_PAIRS = [
-    ("fsi", "fsi_fundforpeace"),
     ("unctad_biotrademerch", "unctad_biotrademerchrca"),
     ("unctad_biotrademerch", "unctad_biotrademerchmarketindices"),
     ("unctad_ictuseeconactivity", "unctad_ictuseeconactivityisic4"),

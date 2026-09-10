@@ -1,4 +1,4 @@
-# GUS DBW — completeness repair (2026-06-18)
+# Statistics Poland DBW — completeness repair (2026-06-18)
 
 ## The bug (silent data loss)
 `jobs/ingest_gus_dbw.py` could silently drop data on slow/large variables:
@@ -37,12 +37,12 @@ Audited every timed-out variable → mapped to its area → flagged finalized ar
   continues normally.
 
 ## Run state
-- GUS relaunched on the fixed code at the **registered (X-ClientId) tier**
+- Statistics Poland relaunched on the fixed code at the **registered (X-ClientId) tier**
   (9 s spacing), re-fetching area 3 first. Log: `logs/gus_dbw_fixed_0618_0651.log`.
 - Watchdog: one instance (RELAUNCH_GUARD_LOOP, PID was 15924) — relaunches on the
   fixed code if the process dies; stops when `gus_dbw.DONE` appears.
-- CBS NL and DBnomics ISTAT untouched, still running.
+- CBS NL and the retired relay's ISTAT untouched, still running.
 
-## To verify when GUS finishes
+## To verify when Statistics Poland finishes
 `gus_dbw.DONE` will exist and the log ends with "all areas complete". Then run a
 full Parquet recount before the grand-total update.
