@@ -1398,7 +1398,7 @@ _SOURCE_TOPICS = {
     "fhfa": ["Housing & Real Estate"],
     # institutions & society
     "vdem": ["Governance & Institutions"],
-    # A source was REMOVED 2026-07-30 — Freedom House declined re-hosting (their director of
+    # A source was REMOVED 2026-07-30 — the publisher declined re-hosting (their director of
     # research: "our preference is for the library to direct users to request the data
     # directly from us"). Owner decision the same day: no hosting AND no mention of the data
     # anywhere on the econ site. Any classification entry here is a route back onto a page,
@@ -2515,7 +2515,7 @@ _PILLAR_BY_ID = {
 # NOTE: no "monetary" keyword — it would misfile every "International
 # Monetary Fund" dataset under the Money pillar; the Macro tile names the IMF.
 _MONEY_KEYS = ("central bank", "bank of", "banco", "bundesbank", "reserve bank",
-               "federal reserve", "riksbank", "norges", "national bank", "evds")
+               "federal reserve", "riksbank", "norges", "national bank")
 _MONEY_IDS = {"ecb", "ecb_sdmx", "bis", "rba", "snb", "boe", 
               "cnb", "bcb", "bcrp", "boc", "nyfed", "fed_board", "bundesbank",
               "norgesbank", "riksbank"}

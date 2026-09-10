@@ -81,7 +81,7 @@ differ). A registry validator **fails CI** if `count != 133` or any unit lacks a
 - **S3 `sdmx_delta`** (~25–30) — SDMX specialization of S2: `?updatedAfter=<last_success>` to detect,
   `?startPeriod=<last_obs+1>` to pull, merge per flow. Covers abs, adb, bis_full, bundesbank, ilostat,
   insee_bdm/melodi, and the PxWeb/SIDRA NSOs (dst, scb, ssb, statfin, GATED, stat_*, hagstofa, cso,
-  GATED, ipea, idb, gus_bdl).
+  GATED, ipea, idb).
 - **S4 `giant_changed_units`** (the 4 giants) — catalog change-feed → selective **whole-unit** re-pull
   (no brute re-pull, no per-vector watermark):
   - **statcan:** `getChangedCubeList(last_success)` → re-pull only changed `productId`s in full.

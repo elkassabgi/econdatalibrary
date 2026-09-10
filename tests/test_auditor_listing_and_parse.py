@@ -15,7 +15,7 @@ WHAT THEY CLAIMED, AND WHAT WAS TRUE
     can contain the delimiter.
 
   * The same tool labelled `a gated source` as DRIFT because its bare `except` turned an HTTP
-    **451 non_redistributable** into a `-1` sentinel. That source is REFUSED IN WRITING (R526);
+    **451 non_redistributable** into a `-1` sentinel. That source is a gated one (R526);
     the gate firing is the system working. Reporting it as drift both invites someone to "fix" a
     licence refusal and discredits the eight real drifts beside it.
 

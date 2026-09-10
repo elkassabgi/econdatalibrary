@@ -262,7 +262,7 @@ Retiring frees ~1M D1 rows — likely DEFERS the #45 split entirely (D1 hard cap
 storage past 5 GB bills $0.75/GB-mo ≈ $3.20/mo today; shrinks after cleanup).
 
 **Class A — RETIRE NOW (full/superset successor live and proven):** dot→imts, cpis→pip,
-cdis→dip, mfs→MFS×5, GATED→FSI trio, irfcl→irfcl_direct, bop→bop_direct, cpi→cpi_direct,
+cdis→dip, mfs→MFS×5, GATED→successor trio, irfcl→irfcl_direct, bop→bop_direct, cpi→cpi_direct,
 psbsfad→psbs (EXACT 14,018), pctot→ctot (EXACT 4,320), fiscaldecentralization→fd (EXACT
 8,398), hpdd→hpd (EXACT 191), unsdg_imf_inputs→sdg, namain_idc_n→namain, pgcs→icsd,
 gender_equality→GS×5, fas→fas_direct, bopagg→bopagg_direct, fdi→fdi_direct,
