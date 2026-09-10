@@ -33,19 +33,17 @@ from core import r2_util
 import zstandard
 
 def _gate_ids() -> set:
-    """Every source id the committed worker gate blocks. Read, never typed."""
-    import re as _re
-    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "api", "worker", "src", "denylist.ts")
-    try:
-        src = open(p, encoding="utf-8").read()
-    except OSError:
-        return set()
-    m = _re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new\s+Set[^(]*\(\s*\[(.*?)\]\s*\)", src, _re.S)
-    if not m:
-        return set()
-    body = _re.sub(r"//[^\n]*", "", m.group(1))
-    return set(_re.findall(r'"([^"]+)"', body))
+    """Every source id the committed worker gate blocks. Read, never typed.
+
+    Delegates to core/gen_denylist.committed_gate (2026-09-10), which RAISES on an unreadable gate -
+    empty, whitespace-only, no parseable literal, or zero readable entries - and reads both quote
+    styles. The parser that lived here returned an empty set in all of those cases, and an empty gate
+    set here means the refreshed catalogue copy withholds NOTHING: every gated source's rows ride
+    along. A refresh that cannot read the gate must stop. A checkout without the worker file still
+    yields an empty set, as before.
+    """
+    from core.gen_denylist import committed_gate   # reads the worker's own "denylist.ts"
+    return committed_gate()
 
 
 BUCKET = "econ-data"

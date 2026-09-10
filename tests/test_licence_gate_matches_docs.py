@@ -304,6 +304,43 @@ def test_every_gate_entry_has_a_verdict_row_or_a_recorded_reason():
         "here: a check that discloses the protected set is itself the leak.)")
 
 
+# SHA-256 of the sorted, newline-joined gate entries that are neither served nor carry a verdict
+# row. It restores what the literal DENYLIST_UNMATCHED baseline on main enforced - "an entry that
+# matches neither the served surface nor a recorded verdict is almost certainly a phantom" (R8) -
+# without writing down either the ids or how many there are. Review AR-047's predecessor found that
+# at 2fb66665b a NEW phantom entry passed every test, because the removal note above satisfies the
+# test before this one for any entry at all.
+UNVERIFIED_GATE_DIGEST = "315e5681dbd2977febb0455e98d99b70d569b3223bdefeee4299e1026710e112"
+
+
+def _unverified_gate_digest(gated: set) -> str:
+    import hashlib
+    verdicts = _verdict_index()
+    served = set(served_sources())
+    without = sorted(g for g in gated if g not in served and g not in verdicts)
+    return hashlib.sha256("\n".join(without).encode("utf-8")).hexdigest()
+
+
+def test_no_new_gate_entry_without_a_verdict_row():
+    """The set of gate entries with no verdict row may only change deliberately.
+
+    A NEW entry here is R8's phantom: misspelled or stale, it blocks nothing while the gate looks
+    healthy. Give it a verdict row, or remove it. If an entry leaves the set on purpose (a purge
+    emptied it, or a verdict row was added), recompute the digest IN THE SAME COMMIT with
+        python -c "import sys; sys.path.insert(0, '.'); import tests.test_licence_gate_matches_docs as t; print(t._unverified_gate_digest(t.gated_sources()))"
+    which prints only the digest.
+    """
+    assert _unverified_gate_digest(gated_sources()) == UNVERIFIED_GATE_DIGEST, (
+        "the set of denylist entries that have neither a verdict row nor a served id has changed. "
+        "A new entry there is a phantom gate (R8): add its verdict row or remove it. If the change "
+        "is deliberate, recompute UNVERIFIED_GATE_DIGEST in the same commit (see the docstring).")
+
+
+def test_the_digest_guard_can_fail():
+    """Planted positive: one invented entry must change the digest, so the guard is not vacuous."""
+    assert _unverified_gate_digest(gated_sources() | {"zz_planted_phantom"}) != UNVERIFIED_GATE_DIGEST
+
+
 def test_denylist_entries_are_bare_ids_and_never_served():
     """A gate on a phantom id protects nothing (R8) — and a gate on a SERVED id is a listing lie.
 

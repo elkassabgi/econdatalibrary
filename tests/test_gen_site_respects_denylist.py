@@ -20,18 +20,28 @@ This does not decide the licence question. `unsdg`'s canonical verdict in
 belongs to Ahmed. But whichever side is wrong, the page must describe what the data plane will
 actually do.
 
-The empty-set contract is load-bearing and is tested separately: an unreadable or unparsable
-denylist must subtract NOTHING, because silently stripping the download offer from 322 working
-pages is a far worse failure than the one being fixed.
+THE CONTRACT CHANGED ON 2026-09-10. It used to be "an unreadable or unparsable denylist
+subtracts NOTHING", so that a parse failure could never strip the download offer from 322
+working pages. Subtracting nothing is the same failure pointed the other way - every gated
+source's page offers "Free download" while the API answers 451 - and a prettier singleQuote
+reformat produced it silently. The generator now reads the gate through
+core/gen_denylist.committed_gate, which RAISES on an unreadable gate, so generation stops:
+nothing is stripped and nothing false is published. Behaviour is tested in
+tests/test_gate_readers_fail_closed.py.
 """
 from __future__ import annotations
 
 import os
 import re
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 GEN = os.path.join(ROOT, "catalog", "gen_site.py")
 DENY = os.path.join(ROOT, "api", "worker", "src", "denylist.ts")
+
+from core.gen_denylist import GateParseError, committed_gate    # noqa: E402
 
 
 def _gen_src() -> str:
@@ -40,15 +50,9 @@ def _gen_src() -> str:
 
 
 def _parse_denylist(text: str) -> set:
-    """The same expression gen_site uses, kept in one place so the tests cannot drift from it."""
-    m = re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new\s+Set\s*\(\s*\[(.*?)\]\s*\)", text, re.S)
-    if not m:
-        m = re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*\[(.*?)\]\s*;", text, re.S)
-    if not m:
-        return set()
-    body = re.sub(r"//.*", "", m.group(1))
-    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
-    return set(re.findall(r'"([^"]+)"', body))
+    """The generator's own reader: gen_site.load_denylisted delegates to committed_gate, so the
+    tests call the same function rather than a copy of an expression that can drift from it."""
+    return committed_gate(text)
 
 
 def test_the_denylist_gates_the_field_that_decides_the_download_offer():
@@ -93,10 +97,18 @@ def test_the_real_denylist_parses_and_is_not_empty():
         "a parsed denylist entry is not a bare source id — the parser is harvesting prose")
 
 
-def test_an_unreadable_denylist_subtracts_nothing():
-    """Empty set => unknown => downgrade nothing. Silence beats stripping 322 download offers."""
-    assert _parse_denylist("") == set()
-    assert _parse_denylist("export const SOMETHING_ELSE = new Set([\"a\"]);") == set()
+def test_an_unreadable_denylist_stops_the_generator():
+    """Unreadable => STOP, never "empty => subtract nothing" (the contract until 2026-09-10).
+
+    An empty gate set makes every gated source's page offer a download the API refuses with 451;
+    raising stops generation instead, so nothing is stripped and nothing false is published.
+    """
+    import pytest
+    for text in ("", "  \n\t\n", "export const SOMETHING_ELSE = new Set([\"a\"]);"):
+        with pytest.raises(GateParseError):
+            _parse_denylist(text)
+    # a prettier singleQuote reformat is READ, not emptied
+    assert _parse_denylist("export const NON_REDISTRIBUTABLE = new Set(['zz_a', 'zz_b']);") == {"zz_a", "zz_b"}
 
 
 def test_comments_are_stripped_before_ids_are_harvested():

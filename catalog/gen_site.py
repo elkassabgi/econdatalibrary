@@ -1231,21 +1231,23 @@ def load_denylisted():
     checked only the first, so `unsdg` shipped a page saying "Redistributable." with seven "Free
     download" buttons while `/v1/catalog?source=unsdg` answered 451. Verified live 2026-08-25.
 
-    Same empty-set contract as load_resolvable: unreadable or unparsable => empty => subtract
-    NOTHING. An unreadable gate must never silently strip the download offer from every page.
+    READ THROUGH core/gen_denylist.committed_gate (2026-09-10), which RAISES on an unreadable gate -
+    an empty or whitespace-only file, no parseable literal, or a literal with zero readable entries -
+    and reads both quote styles. This loader used to keep its own parser with the opposite contract,
+    "unreadable => empty => subtract NOTHING", chosen so that a parse failure could never strip the
+    download offer from every page. But subtracting nothing is the same failure pointed the other
+    way: every gated source's page then offers "Free download" while the worker answers 451, and a
+    prettier singleQuote reformat of denylist.ts produced exactly that, silently. Stopping the
+    generator meets both concerns: nothing is stripped and nothing false is published. The one
+    legitimate empty result - a checkout without the worker - is kept: committed_gate returns an
+    empty set when the file is absent.
     """
-    path = os.path.join(os.path.dirname(HERE), "api", "worker", "src", "denylist.ts")
-    if not os.path.exists(path):
-        return set()
-    src = open(path, encoding="utf-8").read()
-    m = re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new\s+Set\s*\(\s*\[(.*?)\]\s*\)", src, re.S)
-    if not m:
-        m = re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*\[(.*?)\]\s*;", src, re.S)
-    if not m:
-        return set()
-    body = re.sub(r"//.*", "", m.group(1))
-    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
-    return set(re.findall(r'"([^"]+)"', body))
+    import sys as _sys
+    root = os.path.dirname(HERE)
+    if root not in _sys.path:
+        _sys.path.insert(0, root)
+    from core.gen_denylist import committed_gate   # reads the worker's own "denylist.ts"
+    return committed_gate()
 
 
 DENYLISTED = load_denylisted()
