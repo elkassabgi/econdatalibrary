@@ -128,7 +128,7 @@ From the capability matrix (daily/weekly × fast, cross-checked against `rerun_s
 | 3 | `cnb` | rerun-safe overwrite-single-file | none |
 | 4 | `riksbank` | checkpoint-resume, incr=partial | needs_force_or_clear — adapter must drive from cursor, not file presence |
 | 5 | `bcrp` | incr=partial | same |
-| 6 | `nyfed` | daily fast | requires `FRED_API_KEY` (SystemExit without it) — GH secret |
+| 6 | `nyfed` | daily fast | requires `<redacted>_API_KEY` (SystemExit without it) — GH secret |
 | 7 | `ofr` | daily fast | skip-if-exists — adapter must bypass |
 | 8 | `GATED` | daily fast | same |
 | 9 | `GATED` | keyless multi-CB | same |
@@ -177,7 +177,7 @@ This is also where registry `units:[]` lists get real (G7): Phase 4 populates un
 | A1 | Create the **public GitHub repo** (suggested: `elkassabgi/econdatalibrary`) and grant push access | Public per the econ-infra design decision. Name choice is his |
 | A2 | Mint `CLOUDFLARE_API_TOKEN` for CI | Scopes exactly per `api/DEPLOY.md:13-14`: Account → **D1 Edit, Workers Scripts Edit, Workers R2 Storage Edit**. The local wrangler OAuth (`AppData/.../.wrangler/config/default.toml`) is machine-local and cannot run headless — there is no workaround. Add as GH secret `CLOUDFLARE_API_TOKEN`, plus `CLOUDFLARE_ACCOUNT_ID=ce51d5c7fe3859098751b89bbebeab7a` |
 | A3 | Add R2 secrets to GH | `R2_WRITE_ENDPOINT`, `R2_WRITE_ACCESS_KEY_ID`, `R2_WRITE_SECRET_ACCESS_KEY` — **same names as `.env`** so `core/r2_util.py` (post-fix) reads them identically local and CI. Values copied from the local `.env` |
-| A4 | Add `FRED_API_KEY` GH secret | Required by `nyfed` (Tier 1); also unblocks `GATED` later |
+| A4 | Add `<redacted>_API_KEY` GH secret | Required by `nyfed` (Tier 1); also unblocks `GATED` later |
 | A5 | Answer the 5 hard-blocker questions in `updater/ADAPTER_NOTES.md` | GATED version-bump filenames, gpi 404s, GATED 404s + duplicate script, **GATED skip-set (blocks Tier-1 #1)**, whr 403/404s |
 | A6 | (Optional) `RESEND_API_KEY` GH secret | Enables hf-style failure email; without it, failures are GH-Actions-red + health.json only |
 | A7 | (Later, Tier 2) `BEA_API_KEY`, `CENSUS_API_KEY`, `INSEE_SIRENE_KEY`, EIA/others as their sources onboard | From `blocked_on_keys` in the matrix |
@@ -189,7 +189,7 @@ This is also where registry `units:[]` lists get real (G7): Phase 4 populates un
 
 - `git init` with the existing `.gitignore` (already excludes `data/` line 2, `.env*` line 14) **extended first** to also exclude: `dist/`, `api/worker/node_modules/`, `_raw_*/`, `*.log`, `*.db`, `data_playground/`, any `_aqueduct/` local copies, and top-level scratch JSON artifacts.
 - **Never `git add .`.** Curated allowlist add: `updater/`, `core/`, `api/` (minus node_modules/dist), `jobs/` (deprecated but historical), `connectors/`, `docs/`, `econdl/` (resolver), top-level `*.md`, `.github/`, `.gitignore`, `requirements*`. Then `git status --porcelain` audit: any file >5 MB or matching secret-ish patterns (`*key*`, `*token*`, `*.env*`, `*_vars_*.log`) is individually justified or excluded.
-- Pre-push scan of the staged tree for the **literal secret VALUES** read out of `.env` (every BLS/BEA/CENSUS/EIA/NOAA/FRED/INSEE/USDA/R2_*/HFDL/GUS value grepped verbatim against every staged blob) — grepping for variable *names* is not enough: a key hardcoded without its name (exactly the hf `local_backfill` incident) sails past a name scan. Plus a regex for 20+-char hex/base64 blobs as the catch-all, each hit individually justified.
+- Pre-push scan of the staged tree for the **literal secret VALUES** read out of `.env` (every value in `.env`, with no exceptions, grepped verbatim against every staged blob) — grepping for variable *names* is not enough: a key hardcoded without its name (exactly the hf `local_backfill` incident) sails past a name scan. Plus a regex for 20+-char hex/base64 blobs as the catch-all, each hit individually justified.
 - Delete `.github/workflows/daily.yml` **in the very first commit** so the stale trap can never fire on push (G3).
 - Push to Ahmed's repo (A1); verify a trivial `workflow_dispatch` hello-world action runs green.
 
@@ -228,7 +228,7 @@ jobs:
       R2_WRITE_SECRET_ACCESS_KEY: ${{ secrets.R2_WRITE_SECRET_ACCESS_KEY }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      <redacted>_API_KEY: ${{ secrets.<redacted>_API_KEY }}
       AQUEDUCT_BACKEND: r2
     steps:
       - checkout; setup-python 3.11; pip install -r requirements-updater.txt

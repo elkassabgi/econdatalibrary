@@ -19,7 +19,7 @@ handles cadence (daily/weekly/monthly) and tracks last-run dates in `data/_last_
 | fed_board | daily | H.4.1 / H.8 / H.15 (mix of daily/weekly) |
 | defillama | daily | TVL updated continuously |
 | ofr | daily | OFR fnyr/repo rates daily |
-| nyfed | daily | SOFR/OBFR via FRED API |
+| nyfed | daily | SOFR/OBFR via the St. Louis Fed API |
 | bls | weekly | BLS publishes monthly releases |
 | worldbank / worldbank_esg / GATED | weekly | WB updates quarterly/annually |
 | treasury | weekly | FiscalData updated daily/monthly per dataset |
@@ -52,7 +52,7 @@ that check what changed since last run:
 |---|---|---|
 | `ingest_sec_edgar.py` | SEC publishes daily filing index (`full-index/YYYY/QTR/company.gz`) — compare against our latest filing dates per CIK | Medium |
 | `ingest_eurostat.py` | TOC has `last_updated` per dataset — only re-pull datasets newer than last run | Easy (TOC already downloaded) |
-| `ingest_fred_releases.py` | FRED API supports `realtime_start` — already cursor-paginated; filter by series `last_updated` | Medium |
+| `ingest_<redacted>.py` | St. Louis Fed API supports `realtime_start` — already cursor-paginated; filter by series `last_updated` | Medium |
 | `ingest_statcan.py` | StatCan WDS has `getChangedCubeList` endpoint — returns cubes changed since a date | Medium |
 | `ingest_gleif.py` | GLEIF publishes daily delta ZIPs at leidata.gleif.org/api/v1/delta-files/lei2/latest/zip | Easy |
 | `ingest_noaa.py` | NOAA publishes monthly station updates — just re-run --build (stations already downloaded) | Medium |
@@ -67,7 +67,7 @@ that check what changed since last run:
 | Source | Why |
 |---|---|
 | `ingest_bis_cbs_lbs.py` | BIS publishes bulk zips ~quarterly; run quarterly |
-| `ingest_famafrench.py` | Monthly updated; script already skips existing files |
+| `ingest_<redacted>.py` | Monthly updated; script already skips existing files |
 | `ingest_worldbank_extra.py` | Various WB extra DBs; monthly at most |
 
 ---

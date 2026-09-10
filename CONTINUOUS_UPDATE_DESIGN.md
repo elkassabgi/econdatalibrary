@@ -66,7 +66,7 @@ Each strategy implements `is_due(unit,state,now)` / `detect_change(unit) -> new_
 differ). A registry validator **fails CI** if `count != 133` or any unit lacks a strategy.
 
 - **S1 `overwrite_if_changed`** (~70) — whole-table refresh gated by an upstream vintage signal
-  (ETag/Last-Modified, GitHub commit SHA, OWID CSV, faostat `datasets_E.json` FileRows/FileSize, bls
+  (ETag/Last-Modified, GitHub commit SHA, third-party CSV, faostat `datasets_E.json` FileRows/FileSize, bls
   sizes, bis HEAD). Re-pull + atomic overwrite **only when upstream moved**. Covers all overwrite-on-rerun
   + tiny static/annual full tables.
   > **Fix — lying vintage** (critic gap, design [2]): vintage signals can fail to bump on silent
@@ -97,7 +97,7 @@ differ). A registry validator **fails CI** if `count != 133` or any unit lacks a
 - **S6 `manual_vintage`** (~10–12) — publish-rarely / hardcoded-URL / credential-or-WAF-blocked sources
   (stats_nz, ksh WAF, GATED 403, insee_sirene offset-ceiling, barro_lee, several GATED sources, edgar_jrc,
   GATED, yale_epi, harvard_atlas, wid, fsi_fundforpeace, nasa_giss). **Never silently succeeds** —
-  `detect_change` polls a cheap signal (release page / GitHub tag / OWID mirror / calendar roll) and,
+  `detect_change` polls a cheap signal (release page / GitHub tag / third-party mirror / calendar roll) and,
   when it sees a likely new vintage it can't auto-fetch, opens a **"needs attention" alert**. Cadence
   still tracks "last verified" age.
 
@@ -122,7 +122,7 @@ each job: strategy.run(unit, since) -> Result(status, obs, new_vintage, last_obs
           -> StateStore.put_unit_state(...) AFTER atomic data write -> run_log append.
 ```
 **Resume:** `unit_state` is truth; a crash leaves a unit `running` with an expired lease, re-claimed
-next run. `ok` units are skipped. This generalizes the proven `_dbnomics_pull.py`
+next run. `ok` units are skipped. This generalizes the proven `_<redacted>_pull.py`
 finalize-only-when-complete + resumable + skip-completed pattern to all 133.
 
 **In-flight protection:** cbs_nl, gus_dbw, GATED-ISTAT are seeded `status=running, owner=firstpass`;
@@ -142,7 +142,7 @@ Extension modes: date-tail append (S2/S3), whole-unit overwrite-if-changed (S1/S
 
 ---
 
-## (5) Failure model (generalized `_dbnomics_pull.py` contract)
+## (5) Failure model (generalized `_<redacted>_pull.py` contract)
 
 - **TransientError** (timeout/5xx/429/network): discard partial rows, unit → `transient_fail`, **don't
   touch existing parquet**, retry next run with backoff.
