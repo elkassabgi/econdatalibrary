@@ -8,9 +8,13 @@ plus the polite user agent and the XML namespace map.
 Import these rather than copying them -- two divergent copies of a period parser is how a
 source silently changes its own series keys.
 """
+from __future__ import annotations
+
 import csv
+import datetime as dt
 import io
 import re
+import time
 import xml.etree.ElementTree as ET
 
 
@@ -24,6 +28,19 @@ NS = {
 
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
       "Accept-Encoding": "gzip, deflate"}
+
+
+# The two helpers below were called by the parsers but left behind by the first extraction, together
+# with the `datetime as dt` and `time` imports. On Python 3.11 that failed at import; on 3.14, which
+# defers evaluating annotations, it imported cleanly and every period silently parsed to None, because
+# parse_sdmx_period's own `except Exception` swallowed the NameError. Restored verbatim from the owner.
+def log(m): print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
+
+
+def _build_series_key(row: dict, skip_cols: set[str]) -> str:
+    """Build series key from all dimension columns (excludes time/obs/dataflow)."""
+    return ":".join(f"{k}={v}" for k, v in row.items()
+                    if k not in skip_cols and v)
 
 
 def parse_sdmx_csv(content: bytes) -> tuple[list, list, list]:
