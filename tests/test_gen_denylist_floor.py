@@ -145,6 +145,86 @@ def test_a_template_that_lost_a_carveout_refuses_to_write(gen, monkeypatch):
     assert out.read_text(encoding="utf-8") == before
 
 
+# ---------------------------------------------------------------------------------------------
+# THE FLOOR USED TO FAIL OPEN. Three shapes of committed file each yielded an EMPTY floor from
+# `committed_gate()`, and because the guard in main() is `dropped = floor - kept`, an empty floor
+# made it vacuously true — so the generator wrote anyway and dropped every phantom pin and every
+# written-refusal carve-out. An unreadable gate is NOT an empty gate.
+SHAPE_EMPTY = ""
+SHAPE_WHITESPACE = "\n \t\n\n"
+SHAPE_SINGLE_QUOTED = COMMITTED.replace('"', "'")
+
+
+@pytest.mark.parametrize("shape,label", [
+    (SHAPE_EMPTY, "empty file"),
+    (SHAPE_WHITESPACE, "whitespace-only file"),
+])
+def test_an_unreadable_committed_gate_stops_generation(gen, shape, label):
+    """The file exists and says nothing. Refuse — do not read that as 'gate nothing'."""
+    G, out, db = gen
+    _mk_db(db, set(), {"aaa_gated"})
+    out.write_text(shape, encoding="utf-8")
+    before = out.read_text(encoding="utf-8")
+    with pytest.raises(G.GateParseError):
+        G.committed_gate()
+    with pytest.raises(G.GateParseError):
+        G.main()
+    assert out.read_text(encoding="utf-8") == before, f"{label}: the file was overwritten anyway"
+
+
+def test_a_single_quoted_reformat_is_read_not_silently_emptied(gen):
+    """A prettier `singleQuote` pass rewrites the entries. The literal still matches, so the
+    old parser returned ZERO ids and the floor vanished with no error at all. Now both quote
+    styles are read, so the floor is intact — and if it ever cannot be read, it raises."""
+    G, out, db = gen
+    out.write_text(SHAPE_SINGLE_QUOTED, encoding="utf-8")
+    assert G.committed_gate() == {"aaa_gated", "zzz_phantom"}
+    _mk_db(db, set(), {"aaa_gated", "bbb_open"})
+    G.main()
+    got = _gated(G, out)
+    assert {"aaa_gated", "zzz_phantom"} <= got, got
+
+
+def test_a_gate_literal_with_no_readable_entries_raises(gen):
+    """Not the same as an empty gate: zero parseable entries inside a present literal is a
+    parse failure, and the old code returned set() for it."""
+    G, out, db = gen
+    out.write_text(
+        "export const NON_REDISTRIBUTABLE: ReadonlySet<string> = new Set([\n  /* nothing */\n]);\n",
+        encoding="utf-8")
+    with pytest.raises(G.GateParseError):
+        G.committed_gate()
+
+
+def test_an_unreadable_committed_gate_stops_runbook_generation(tmp_path, monkeypatch):
+    """The same fail-open sat in tools/gen_runbook.py::gated_ids(): an empty floor there means
+    the generator writes a page and an index row for every source the worker blocks."""
+    import importlib
+    gr = importlib.import_module("tools.gen_runbook")
+    worker = tmp_path / "api" / "worker" / "src"
+    worker.mkdir(parents=True)
+    monkeypatch.setattr(gr, "ROOT", str(tmp_path))
+    dl = worker / "denylist.ts"
+
+    dl.write_text("", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        gr.gated_ids()
+
+    dl.write_text("\n \t\n", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        gr.gated_ids()
+
+    dl.write_text("export const OTHER = 1;\n", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        gr.gated_ids()
+
+    dl.write_text(SHAPE_SINGLE_QUOTED, encoding="utf-8")
+    assert gr.gated_ids() == {"aaa_gated", "zzz_phantom"}
+
+    dl.unlink()
+    assert gr.gated_ids() == set(), "no committed worker at all is the one legitimate empty"
+
+
 def test_default_tail_is_a_usable_template(gen, monkeypatch):
     """With no committed file at all, the generator still emits the worker's helper exports."""
     G, out, db = gen

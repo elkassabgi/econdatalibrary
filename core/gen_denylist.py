@@ -103,13 +103,44 @@ def _read_out() -> str:
         return f.read()
 
 
+class GateParseError(RuntimeError):
+    """The committed gate exists but could not be read. Never a reason to continue."""
+
+
 def committed_gate(src: str | None = None) -> set[str]:
-    """Every id the committed denylist.ts gates — real and phantom alike."""
-    src = _read_out() if src is None else src
+    """Every id the committed denylist.ts gates — real and phantom alike.
+
+    RAISES rather than returning an empty floor. Until 2026-09-09 every failure here
+    returned `set()`, and because the guard in main() is `dropped = floor - kept`, an
+    empty floor made it vacuously true: an empty file, a whitespace-only file, or a
+    prettier `singleQuote` reformat all yielded a silent regeneration that dropped every
+    phantom pin and every written-refusal carve-out. A gate that cannot be read is not
+    an empty gate (R900: a check must count its own inability to check as a failure).
+
+    The only legitimate empty result is a checkout with no committed denylist.ts at all.
+    """
+    if src is None:
+        if not os.path.exists(OUT):
+            return set()  # fresh checkout without the worker; DEFAULT_TAIL applies too
+        src = _read_out()
+    if not src.strip():
+        raise GateParseError(
+            f"{OUT} exists but is empty/whitespace-only. Refusing to regenerate: an "
+            f"unreadable floor is not an empty floor, and continuing would un-gate every "
+            f"id the committed file blocks.")
     m = _SET_RX.search(src)
     if not m:
-        return set()
-    return set(re.findall(r'"([^"]+)"', _strip_ts_comments(m.group(1))))
+        raise GateParseError(
+            f"{OUT} has no parseable `NON_REDISTRIBUTABLE = new Set([...])` literal. "
+            f"Refusing to regenerate: fix the file or the parser, never generate blind.")
+    # Accept BOTH quote styles: a prettier `singleQuote` pass rewrites the entries and
+    # used to make this return zero ids while the literal still matched.
+    ids = set(re.findall(r"""["']([^"']+)["']""", _strip_ts_comments(m.group(1))))
+    if not ids:
+        raise GateParseError(
+            f"{OUT} carries a NON_REDISTRIBUTABLE literal with zero readable entries. "
+            f"Refusing to regenerate: that is a parse failure, not an empty gate.")
+    return ids
 
 
 def committed_carveouts(src: str | None = None) -> dict[str, list[str]]:
@@ -130,10 +161,16 @@ def committed_carveouts(src: str | None = None) -> dict[str, list[str]]:
 def committed_tail(src: str | None = None) -> str:
     """Everything after the Set literal's closing `])` in the committed file, verbatim
     (the carve-out block and the helper exports). DEFAULT_TAIL when there is no file."""
-    src = _read_out() if src is None else src
+    if src is None:
+        if not os.path.exists(OUT):
+            return DEFAULT_TAIL  # fresh checkout: the template is the only honest answer
+        src = _read_out()
     m = _SET_RX.search(src)
     if not m:
-        return DEFAULT_TAIL
+        raise GateParseError(
+            f"{OUT} exists but its Set literal is unparseable, so the carve-out block and "
+            f"the helper exports after it cannot be carried forward. Refusing to fall back "
+            f"to the template, which would silently drop the written-refusal carve-outs.")
     tail = src[m.end():]
     return tail if tail.strip() else DEFAULT_TAIL
 
@@ -247,10 +284,14 @@ def required_carveouts(committed: str) -> dict[str, list[str]]:
 
 
 def main() -> None:
+    # `None` means "read the committed file yourself", which is how the readers tell a
+    # checkout WITHOUT a worker (legitimately no floor) apart from a committed file that
+    # cannot be read (never a reason to continue). Passing the text in erased that
+    # distinction and made a missing file raise.
     committed = _read_out()
-    floor = committed_gate(committed) - RELEASED
+    floor = committed_gate() - RELEASED
     carve_required = required_carveouts(committed)
-    tail = committed_tail(committed)
+    tail = committed_tail()
 
     c = sqlite3.connect(DB)
     reservable0 = {
@@ -287,7 +328,9 @@ def main() -> None:
             f"REFUSING to write: carve-out source '{src}' missing from the "
             f"generated SERIES_CARVEOUTS (template regression — see 5fc56cea1)")
         for ind in inds:
-            assert f'"{ind}"' in block, (
+            # Either quote style: a prettier `singleQuote` pass rewrites the block, and a
+            # double-quote-only check turned that into a refusal to regenerate at all.
+            assert f'"{ind}"' in block or f"'{ind}'" in block, (
                 f"REFUSING to write: carve-out {src}:{ind} missing from the "
                 f"generated SERIES_CARVEOUTS")
     # 2. The floor: nothing the committed file gated may drop out of the gate unless it was

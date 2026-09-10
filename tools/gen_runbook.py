@@ -577,16 +577,30 @@ def gated_ids() -> set:
     in the file the worker itself gates on, so the two can never drift.
     """
     p = os.path.join(ROOT, "api", "worker", "src", "denylist.ts")
-    try:
-        src = open(p, encoding="utf-8").read()
-    except OSError:
-        return set()
+    if not os.path.exists(p):
+        return set()  # a checkout without the worker: nothing committed to read
+    with open(p, encoding="utf-8") as fh:
+        src = fh.read()
+    if not src.strip():
+        raise RuntimeError(
+            f"{p} exists but is empty/whitespace-only. Refusing to generate runbooks: an "
+            f"unreadable gate is not an empty gate, and generating anyway writes a page and "
+            f"an index row for every source the worker blocks.")
     m = re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new\s+Set[^(]*\(\s*\[(.*?)\]\s*\)",
                   src, re.S)
     if not m:
-        return set()
+        raise RuntimeError(
+            f"{p} has no parseable `NON_REDISTRIBUTABLE = new Set([...])` literal. Refusing "
+            f"to generate runbooks: fix the file or this parser, never publish blind.")
     inner = re.sub(r"//[^\n]*", "", m.group(1))
-    return set(re.findall(r'"([^"]+)"', inner))
+    # Both quote styles: a prettier `singleQuote` reformat used to yield zero ids here while
+    # the literal still matched, and the generator then published every gated source.
+    ids = set(re.findall(r"""["']([^"']+)["']""", inner))
+    if not ids:
+        raise RuntimeError(
+            f"{p} carries a NON_REDISTRIBUTABLE literal with zero readable entries. That is a "
+            f"parse failure, not an empty gate — refusing to generate runbooks.")
+    return ids
 
 
 def main():

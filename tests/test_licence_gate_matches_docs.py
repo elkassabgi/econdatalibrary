@@ -6,7 +6,7 @@ database, `REDISTRIBUTION_EMAIL_TRAIL.md` records what each publisher granted or
 both were applied to `denylist.ts` and `util.ts` BY HAND. Nothing failed when they drifted.
 
 Two classes that stopped recurring the moment they became mechanical: the banned-aggregator
-host (a PreToolUse hook + tests/test_banned_aggregator_host.py) and the registry count (R347 +
+host (a PreToolUse hook + tests/test_relay_ban.py) and the registry count (R347 +
 tests/test_registry_count_guard.py). Licence compliance never got the same treatment, so it came
 back roughly weekly — R8 (WTO refused data still served through a phantom-id gate), R29
 (metadata-only listings), R408 (the email trail said `ei_statreview` "stays gated pending ...
@@ -147,7 +147,9 @@ def test_the_parsers_actually_see_the_artifacts():
     assert len(served) > 250, (
         f"parsed only {len(served)} entries from SUPPORTED_SOURCES; the live API serves ~312. "
         f"The parser is broken and every assertion in this file is vacuous.")
-    assert gated, "parsed zero denylist entries; parser is broken"
+    assert len(gated) > 10, (
+        f"parsed only {len(gated)} denylist entries; the parser is broken. A truthy-only check "
+        f"here passed on a single harvested token, which is how a broken parse stayed green.")
     probe = _string_array(
         'export const NON_REDISTRIBUTABLE = new Set([\n  // "c" is prose\n  "a", "b",\n]);',
         "NON_REDISTRIBUTABLE")
@@ -244,13 +246,72 @@ def test_restricted_sources_are_gated_not_merely_documented():
     )
 
 
+# ---------------------------------------------------------------------------------------------
+# PHANTOM-ID RATCHET — restored 2026-09-09.
+#
+# It was deleted on 2026-09-08 because its baseline was a literal list of gated ids, which the
+# owner's removal order forbids writing down. Deleting it was the wrong half of the trade: the
+# ratchet was the only check that fires when a licence VERDICT ROW disappears, and its absence
+# is precisely why a wipe that removed 568 lines of DATABASE_LICENSES_VERBATIM.md — including
+# verdict rows for sources outside the removal's scope — merged green.
+#
+# The restored form carries no identity: it pins the number of KEPT verdict rows, which says
+# nothing about the removed set. It is a ratchet in BOTH directions, so a stale pin cannot hide
+# a later deletion (R501/R503: a guard replaced by one that tests a different property).
+VERDICT_ROWS_MIN = 175
+
+# The heading the licence record uses to explain why the gate entries have no verdict row.
+REMOVAL_NOTE_HEADING = "### Databases removed from this record"
+
+
+def test_verdict_rows_never_disappear_silently():
+    """A verdict row is the authority for a gate and for a served source. Losing one is a
+    licence regression, and it looks exactly like a tidy-up in a diff.
+
+    Measured 2026-09-09 on the rebased branch: 175 rows. If a database is genuinely retired,
+    lower VERDICT_ROWS_MIN in the SAME commit and say why; if rows are added, raise it, so the
+    pin can never drift above the truth and stop biting.
+    """
+    n = len(_verdict_index())
+    assert n >= VERDICT_ROWS_MIN, (
+        f"the per-database index now has {n} verdict rows, was pinned at {VERDICT_ROWS_MIN}. "
+        f"Rows for {VERDICT_ROWS_MIN - n} database(s) have gone. Deleting a verbatim licence "
+        f"section deletes the evidence for every id that section justified — restore them, or "
+        f"lower the pin in this commit with the reason.")
+    assert n == VERDICT_ROWS_MIN, (
+        f"the index has {n} verdict rows against a pin of {VERDICT_ROWS_MIN}: rows were added "
+        f"without raising the pin. Raise it — a pin below the truth cannot detect the next "
+        f"deletion, which is how a stale exemption hides a regression.")
+
+
+def test_every_gate_entry_has_a_verdict_row_or_a_recorded_reason():
+    """A gate whose reason nobody recorded is R8's WTO incident waiting to repeat.
+
+    Every entry in NON_REDISTRIBUTABLE must be justified by something committed: either its own
+    row in the per-database index, or the removal note that records what happened to the rows of
+    the databases the owner ordered removed. The failure message counts, never names: a check
+    that prints the protected list is itself a disclosure surface (R894).
+    """
+    verdicts = _verdict_index()
+    without = [g for g in gated_sources() if g not in verdicts]
+    if not without:
+        return
+    text = _read(LICENCES)
+    assert REMOVAL_NOTE_HEADING in text, (
+        "one or more gate entries have no verdict row in the per-database index, and the licence "
+        "record carries no note recording why. Either restore the rows or record the reason under "
+        f"a '{REMOVAL_NOTE_HEADING}' heading. (Neither the ids nor how many there are is printed "
+        "here: a check that discloses the protected set is itself the leak.)")
+
+
 def test_denylist_entries_are_bare_ids_and_never_served():
     """A gate on a phantom id protects nothing (R8) — and a gate on a SERVED id is a listing lie.
 
     Until 2026-09-08 this test carried a literal baseline of denylist entries that matched neither
     the served surface nor a verdict row, so that set could only shrink. The gated ids are no
-    longer named anywhere in the repository, so the baseline is gone; what survives is the
-    invariant the serving surface can actually violate. A denylist entry must never be a served
+    longer named anywhere in the repository, so the LITERAL baseline is gone — the ratchet it
+    provided is restored, name-free, in the two tests above. What this test keeps is the pair of
+    invariants the serving surface can actually violate. A denylist entry must never be a served
     id — a served-and-gated id is a browsable listing nobody can download, the metadata-only
     shape R29 forbids — and every entry must be a bare source id, not prose harvested from a
     comment (the R137 shape). The deny set itself is a residue guarding rows still in D1; it is
