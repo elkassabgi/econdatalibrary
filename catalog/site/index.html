@@ -504,9 +504,9 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
       <a class="acard tile-link" href="catalog.html?pillar=macro"><div class="card-icon">&#128200;</div><h3>Macro &amp; National Accounts</h3><p>GDP, employment, production — national statistical offices (ABS, INSEE, ISTAT, StatCan, Eurostat) and the IMF/World Bank.</p><span class="tile-go">Browse sources &rarr;</span></a>
       <a class="acard tile-link" href="catalog.html?pillar=money"><div class="card-icon">&#128176;</div><h3>Prices, Money &amp; Central Banks</h3><p>Inflation, interest rates, FX — ECB, Fed Board, BIS, Bundesbank, and dozens of national central banks.</p><span class="tile-go">Browse sources &rarr;</span></a>
       <a class="acard tile-link" href="catalog.html?pillar=trade"><div class="card-icon">&#128674;</div><h3>Trade &amp; Development</h3><p>Bilateral trade (CEPII BACI), tariffs, development indicators (World Bank WDI, UN SDG, UNDP HDR).</p><span class="tile-go">Browse sources &rarr;</span></a>
-      <a class="acard tile-link" href="catalog.html?pillar=energy"><div class="card-icon">&#9889;</div><h3>Energy &amp; Environment</h3><p>EIA, IRENA, Ember, Global Carbon Budget, NASA GISS — production, prices, emissions, climate.</p><span class="tile-go">Browse sources &rarr;</span></a>
-      <a class="acard tile-link" href="catalog.html?pillar=society"><div class="card-icon">&#127963;</div><h3>Institutions &amp; Society</h3><p>Governance (WGI, V-Dem), conflict (UCDP, COW), inequality (WID, SWIID), well-being (WHR).</p><span class="tile-go">Browse sources &rarr;</span></a>
-      <a class="acard tile-link" href="catalog.html?pillar=research"><div class="card-icon">&#128218;</div><h3>Research Datasets</h3><p>Maddison Project (year 1 CE onward), Penn World Table, Shiller, Fama-French, Barro-Lee, and more.</p><span class="tile-go">Browse sources &rarr;</span></a>
+      <a class="acard tile-link" href="catalog.html?pillar=energy"><div class="card-icon">&#9889;</div><h3>Energy &amp; Environment</h3><p>EIA, Ember, Global Carbon Budget, NASA GISS — production, prices, emissions, climate.</p><span class="tile-go">Browse sources &rarr;</span></a>
+      <a class="acard tile-link" href="catalog.html?pillar=society"><div class="card-icon">&#127963;</div><h3>Institutions &amp; Society</h3><p>Governance (WGI, V-Dem), conflict (UCDP), inequality (WID, SWIID), well-being (WHR).</p><span class="tile-go">Browse sources &rarr;</span></a>
+      <a class="acard tile-link" href="catalog.html?pillar=research"><div class="card-icon">&#128218;</div><h3>Research Datasets</h3><p>Maddison Project (year 1 CE onward), Penn World Table, Fama-French, Barro-Lee, and more.</p><span class="tile-go">Browse sources &rarr;</span></a>
     </div>
     <p style="text-align:center;margin-top:2.5rem"><a href="catalog.html" class="btn btn-primary" style="font-size:1.05rem;padding:.85rem 2.2rem">Browse the full catalog &rarr;</a></p>
   </div>
@@ -558,8 +558,6 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
           <tr>
             <th>Feature</th>
             <th class="comparison-highlight">Econ Data Library</th>
-            <th>FRED</th>
-            <th>DBnomics</th>
             <th>Bloomberg</th>
           </tr>
         </thead>
@@ -567,64 +565,46 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
           <tr>
             <td><strong>Price</strong></td>
             <td class="comparison-highlight"><strong>Free</strong></td>
-            <td>Free</td>
-            <td>Free</td>
             <td>$25,000+/yr</td>
           </tr>
           <tr>
             <td><strong>Individual series</strong></td>
             <td class="comparison-highlight"><strong id="cmp-series">billions</strong></td>
-            <td>~800k</td>
-            <td>1B+</td>
             <td>Terminal-gated</td>
           </tr>
           <tr>
             <td><strong>License on every series</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Yes</span></td>
-            <td>Partial</td>
-            <td>Partial</td>
             <td>Proprietary</td>
           </tr>
           <tr>
             <td><strong>Producer-first citations</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Every series</span></td>
             <td><span class="comparison-x">No</span></td>
-            <td><span class="comparison-x">No</span></td>
-            <td><span class="comparison-x">No</span></td>
           </tr>
           <tr>
             <td><strong>Reproducible bundles</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Snapshot-pinned</span></td>
             <td><span class="comparison-x">No</span></td>
-            <td><span class="comparison-x">No</span></td>
-            <td><span class="comparison-x">No</span></td>
           </tr>
           <tr>
             <td><strong>AI/MCP access</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Built-in</span></td>
-            <td><span class="comparison-x">No</span></td>
-            <td><span class="comparison-x">No</span></td>
             <td>Paid add-on</td>
           </tr>
           <tr>
             <td><strong>Machine-readable metadata</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Dataset + Croissant</span></td>
-            <td>Partial</td>
-            <td>Partial</td>
             <td><span class="comparison-x">No</span></td>
           </tr>
           <tr>
             <td><strong>Multilingual search</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">6 languages</span></td>
-            <td>English</td>
-            <td>English</td>
             <td>Multiple</td>
           </tr>
           <tr>
             <td><strong>Update transparency</strong></td>
             <td class="comparison-highlight"><span class="comparison-check">Public status board</span></td>
-            <td>Partial</td>
-            <td>Partial</td>
             <td><span class="comparison-x">Opaque</span></td>
           </tr>
         </tbody>
