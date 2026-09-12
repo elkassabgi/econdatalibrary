@@ -462,7 +462,7 @@ def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
     A(f"AQUEDUCT_BACKEND=r2 python -u -m updater.run --source {sid} --force")
     A("")
     A("# 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.")
-    A("#    (DBnomics is BANNED — every source must be reached at its own publisher.)")
+    A("#    (relay/aggregator mirrors are BANNED — every source must be reached at its own publisher.)")
     A("")
     A("# 5. Is the store intact? obs_count in state is NOT the answer.")
     A(f"AQUEDUCT_BACKEND=r2 python -c \"import sys,os;sys.path.insert(0,'.');"
@@ -567,6 +567,42 @@ def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
     return "\n".join(L) + "\n"
 
 
+def gated_ids() -> set:
+    """Every source id the committed worker gate blocks, read from denylist.ts.
+
+    The runbook set is registry UNION state UNION catalogue, and `state.db` keeps a row
+    for every source that has EVER run -- including ones withdrawn from serving. Without
+    this the generator writes a page (and an index row) for a source we are not allowed to
+    publish, which is how hand-edited pages kept coming back. Read, never typed: one list,
+    in the file the worker itself gates on, so the two can never drift.
+    """
+    p = os.path.join(ROOT, "api", "worker", "src", "denylist.ts")
+    if not os.path.exists(p):
+        return set()  # a checkout without the worker: nothing committed to read
+    with open(p, encoding="utf-8") as fh:
+        src = fh.read()
+    if not src.strip():
+        raise RuntimeError(
+            f"{p} exists but is empty/whitespace-only. Refusing to generate runbooks: an "
+            f"unreadable gate is not an empty gate, and generating anyway writes a page and "
+            f"an index row for every source the worker blocks.")
+    m = re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new\s+Set[^(]*\(\s*\[(.*?)\]\s*\)",
+                  src, re.S)
+    if not m:
+        raise RuntimeError(
+            f"{p} has no parseable `NON_REDISTRIBUTABLE = new Set([...])` literal. Refusing "
+            f"to generate runbooks: fix the file or this parser, never publish blind.")
+    inner = re.sub(r"//[^\n]*", "", m.group(1))
+    # Both quote styles: a prettier `singleQuote` reformat used to yield zero ids here while
+    # the literal still matched, and the generator then published every gated source.
+    ids = set(re.findall(r"""["']([^"']+)["']""", inner))
+    if not ids:
+        raise RuntimeError(
+            f"{p} carries a NON_REDISTRIBUTABLE literal with zero readable entries. That is a "
+            f"parse failure, not an empty gate — refusing to generate runbooks.")
+    return ids
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source")
@@ -579,7 +615,8 @@ def main():
     cat = load_catalog_counts()
     served = load_served()
 
-    ids = sorted(set(reg) | set(st) | set(cat))
+    # A state row is not permission to publish a page: subtract the worker's gate.
+    ids = sorted((set(reg) | set(st) | set(cat)) - gated_ids())
     if a.source:
         print(render(a.source, reg, st, runs, cat, served, a.with_store, findings))
         return 0
@@ -592,6 +629,18 @@ def main():
         with open(os.path.join(OUT_DIR, f"{sid}.md"), "w", encoding="utf-8", newline="") as f:
             f.write(render(sid, reg, st, runs, cat, served, a.with_store, findings))
         written += 1
+
+    # A page this run did not write is a page for a source that is no longer in the set
+    # (gated, de-registered, renamed). Leaving it makes a stale page look current, and it
+    # is how withdrawn sources kept a public runbook. Every file here except the findings
+    # input carries this generator's banner, so nothing hand-written can be caught.
+    keep = {f"{sid}.md" for sid in ids if sid} | {"README.md", "_findings.json"}
+    pruned = 0
+    for fn in sorted(os.listdir(OUT_DIR)):
+        if fn in keep or not fn.endswith(".md"):
+            continue
+        os.remove(os.path.join(OUT_DIR, fn))
+        pruned += 1
 
     # ---- index
     idx = [
@@ -628,7 +677,7 @@ def main():
     with open(os.path.join(OUT_DIR, "README.md"), "w", encoding="utf-8", newline="") as f:
         f.write("\n".join(idx))
 
-    print(f"wrote {written} source files + README.md to {os.path.relpath(OUT_DIR, ROOT)}")
+    print(f"wrote {written} source files + README.md to {os.path.relpath(OUT_DIR, ROOT)}; pruned {pruned} stale page(s)")
     return 0
 
 

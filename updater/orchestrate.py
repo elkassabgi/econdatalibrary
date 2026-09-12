@@ -32,8 +32,8 @@ from .strategies.fetchers._common import sane_since
 from .errors import TransientError, DefinitiveError
 
 # In-flight first-pass backfills — NEVER touched by updates. These are the
-# clean_full/<dir> names the running jobs write to (cbs_nl, gus_dbw, and the
-# DBnomics-ISTAT re-pull which writes clean_full/dbnomics/). We match on BOTH
+# clean_full/<dir> names the running jobs write to (cbs_nl and gus_dbw; the relay-era
+# ISTAT re-pull that once sat here went with the relay). We match on BOTH
 # source_id and the unit's output directory so a registry source that maps onto
 # one of these dirs can never slip through (the source_id alone was brittle).
 # wid was pinned here on 2026-07-29 while its 2.47M-CSV derive ran — a CI re-fetch
@@ -47,7 +47,7 @@ from .errors import TransientError, DefinitiveError
 # would sit live and frozen forever while the health gate reported RED-UNRUN and
 # nothing looked broken. A protection that outlives the operation it protects becomes
 # the outage.
-FIRSTPASS_DIRS = {"cbs_nl", "gus_dbw", "dbnomics"}
+FIRSTPASS_DIRS = {"cbs_nl", "gus_dbw"}
 
 # A unit whose recent runs all finish inside this is "cheap" and rides the fast lane.
 FAST_LANE_SECONDS = 120.0
@@ -1802,7 +1802,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
 
         try:
             # THE DEADLINE COVERS THE PROBE TOO — this call sat OUTSIDE _unit_deadline, 85
-            # lines before it, and that hole ate two entire daily runs. owid's detect_change
+            # lines before it, and that hole ate two entire daily runs. A gated source's detect_change
             # is a per-slug HTTP HEAD over ~3,786 chart URLs; on 2026-08-07 it entered at
             # 10:02 and again at 23:23 and produced NOTHING until GitHub's 250-minute step
             # cap killed the whole run — 150 and then 212 minutes inside a phase no cap

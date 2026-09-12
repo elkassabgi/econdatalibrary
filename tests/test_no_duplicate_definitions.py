@@ -13,7 +13,7 @@ CLAUDE.md cannot prevent that; a test can.
 
 THE RULE IS NOT "NEVER REBIND". Rebinding is ordinary and common in this repo:
 
-    SERIES = [...]                                    # jobs/ingest_fred.py
+    SERIES = [...]                                    # a gated source's ingest script
     SERIES = [s for s in SERIES if ...]               # dedupe in place - the first is READ
     FINANCIAL_FIELDS = list(dict.fromkeys(FINANCIAL_FIELDS))
     _PARSE_EX_RAW = parse_cbs_period_ex               # jobs/ingest_cbs_nl.py

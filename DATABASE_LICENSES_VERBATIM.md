@@ -20,7 +20,7 @@
 
 **Adversarial verdicts:** CONFIRMED=184, DISPUTED=7
 
-**Classifications:** redistributable_attribution=144, permission_required=20, redistributable_open=9, noncommercial_only=6, unclear_not_found=5, non_redistributable — use-only grant. Personal/professional use, forwarding, and reproduction are permitted with mandatory attribution ("Source: Deutsche Bundesbank") and no alteration (no-derivatives). The terms grant NO right to republish, redistribute, or make the data publicly available to third parties, so a library re-hosting the data for public download is not covered. Treat as metadata-only / link-out unless the Bundesbank grants prior written permission for redistribution.=1, redistributable_attribution_noncommercial (with third-party-data carve-out) — re-dissemination is permitted with FAO attribution, but subject to (a) a non-commercial/anti-endorsement restriction that CC BY 4.0 does not impose, and (b) a subset of embedded third-party data that cannot be redistributed without the original provider's consent.=1, noncommercial_permission_required / no_open_redistribution — noncommercial USE with citation is permitted, but the FIW dataset is gated behind a Freedom House "FIW Data Request" (must state intended use), and third-party re-hosting for open public download is not authorized. Treat as not-freely-redistributable: link out to Freedom House's data request rather than mirror the files (or gate to metadata-only), and note commercial use requires prior formal permission.=1, noncommercial_no_derivatives (CC BY-NC-ND: NonCommercial AND NoDerivatives). Only verbatim, non-commercial, attributed copies may be redistributed. Separately, per the finding's own license_name note, ~86% of IDB datasets carry NO declared license (no redistribution grant) and a minority are CC BY 4.0 — so a single source-level bucket is not accurate; the unlicensed majority should be treated as not-redistributable / needs-review, not noncommercial.=1, mixed / source-dependent — NOT blanket redistributable_attribution. Only the minority of data that OWID produces itself ("Data produced by us", flagged e.g. "with major processing by Our World in Data") is CC BY and redistributable with attribution. The majority ("Most of the data") is third-party (WHO, UN, World Bank, and many others) and remains subject to each upstream provider's own license, which must be assessed per-source before re-hosting. Treat the source as partially/conditionally redistributable pending per-provider review, not uniformly CC BY.=1, redistributable_attribution_with_exceptions — CC BY 4.0 applies to the World Bank's own compiled data, but third-party-sourced datasets/indicators embedded in World Bank Open Data (e.g., WDI series from UN Population Division, IMF, WHO, ILO, IEA, UNESCO) may NOT be redistributed without the original provider's consent. A library that re-hosts data for public download must exclude or separately clear all third-party-sourced series rather than treat the whole source as blanket-redistributable.=1, restricted / needs-review (NOT blanket CC BY 4.0). The Pink Sheet is not wholly "produced by the World Bank itself" — a large share of its series come from third-party proprietary providers: London Metal Exchange (LME) settlement prices for aluminum, copper, lead, nickel, tin, zinc; Cotlook "A index" for cotton; SICOM for rubber; ICCO/ICO for cocoa/coffee. Under the terms' own third-party carve-out these "may not be redistributed or reused without the consent of the original data provider." For a public re-hosting library, treat worldbank_pink as NEEDS-REVIEW / non-redistributable pending per-series rights clearance (LME in particular prohibits redistribution of its price data without a license), rather than redistributable_attribution.=1
+**Classifications:** redistributable_attribution=144, permission_required=20, redistributable_open=9, noncommercial_only=6, unclear_not_found=5, non_redistributable — use-only grant. Personal/professional use, forwarding, and reproduction are permitted with mandatory attribution ("Source: Deutsche Bundesbank") and no alteration (no-derivatives). The terms grant NO right to republish, redistribute, or make the data publicly available to third parties, so a library re-hosting the data for public download is not covered. Treat as metadata-only / link-out unless the Bundesbank grants prior written permission for redistribution.=1, redistributable_attribution_noncommercial (with third-party-data carve-out) — re-dissemination is permitted with FAO attribution, but subject to (a) a non-commercial/anti-endorsement restriction that CC BY 4.0 does not impose, and (b) a subset of embedded third-party data that cannot be redistributed without the original provider's consent.=1, noncommercial_permission_required / no_open_redistribution — noncommercial USE with citation is permitted, but the FIW dataset is gated behind a <redacted> "FIW Data Request" (must state intended use), and third-party re-hosting for open public download is not authorized. Treat as not-freely-redistributable: link out to <redacted>'s data request rather than mirror the files (or gate to metadata-only), and note commercial use requires prior formal permission.=1, noncommercial_no_derivatives (CC BY-NC-ND: NonCommercial AND NoDerivatives). Only verbatim, non-commercial, attributed copies may be redistributed. Separately, per the finding's own license_name note, ~86% of IDB datasets carry NO declared license (no redistribution grant) and a minority are CC BY 4.0 — so a single source-level bucket is not accurate; the unlicensed majority should be treated as not-redistributable / needs-review, not noncommercial.=1, mixed / source-dependent — NOT blanket redistributable_attribution. Only the minority of data that the third-party mirror produces itself ("Data produced by us", flagged e.g. "with major processing by <redacted>") is CC BY and redistributable with attribution. The majority ("Most of the data") is third-party (WHO, UN, World Bank, and many others) and remains subject to each upstream provider's own license, which must be assessed per-source before re-hosting. Treat the source as partially/conditionally redistributable pending per-provider review, not uniformly CC BY.=1, redistributable_attribution_with_exceptions — CC BY 4.0 applies to the World Bank's own compiled data, but third-party-sourced datasets/indicators embedded in World Bank Open Data (e.g., WDI series from UN Population Division, IMF, WHO, ILO, IEA, UNESCO) may NOT be redistributed without the original provider's consent. A library that re-hosts data for public download must exclude or separately clear all third-party-sourced series rather than treat the whole source as blanket-redistributable.=1, restricted / needs-review (NOT blanket CC BY 4.0). That product is not wholly "produced by the World Bank itself" — a large share of its series come from third-party proprietary providers: London Metal Exchange (LME) settlement prices for aluminum, copper, lead, nickel, tin, zinc; Cotlook "A index" for cotton; SICOM for rubber; ICCO/ICO for cocoa/coffee. Under the terms' own third-party carve-out these "may not be redistributed or reused without the consent of the original data provider." For a public re-hosting library, treat <redacted> as NEEDS-REVIEW / non-redistributable pending per-series rights clearance (LME in particular prohibits redistribution of its price data without a license), rather than redistributable_attribution.=1
 
 ### Written permissions on file (override the public terms below)
 
@@ -35,30 +35,42 @@ The public terms the audit read may say 'permission required' for these, but we 
 
 | Provider | Databases | Final classification | Verdict | Why |
 |---|---|---|---|---|
-| World Trade Organization (WTO) | 8 | permission_required | CONFIRMED | Downloaded the official terms PDF (92.7 KB, WTO "TERMS AND CONDITIONS OF USE, DISCLAIMER AND COPYRIGHT" for the TAO / Ta |
 | Deutsche Bundesbank time series | 1 | non_redistributable — use-only grant. Personal/professional use, forwarding, and reproduction are permitted with mandatory attribution ("Source: Deutsche Bundesbank") and no alteration (no-derivatives). The terms grant NO right to republish, redistribute, or make the data publicly available to third parties, so a library re-hosting the data for public download is not covered. Treat as metadata-only / link-out unless the Bundesbank grants prior written permission for redistribution. | DISPUTED | You are free to save, forward or reproduce the information produced in physical or electronic form by the Deutsche Bunde |
-| cboe | 1 | permission_required | CONFIRMED | Fetched https://www.cboe.com/terms/ successfully. The verbatim_quote appears WORD-FOR-WORD on the live page in Section 2 |
-| Correlates of War | 1 | permission_required | CONFIRMED | Verified against the live official page at https://correlatesofwar.org/data-sets/ (rendered via browser; direct WebFetch |
 | Aswath Damodaran (NYU Stern) datasets | 1 | unclear_not_found | CONFIRMED | Verified both prongs against the live source (fetched OK; matches fetch_status=fetched_ok).  QUOTE: Verbatim-accurate. T |
 | defillama | 1 | permission_required | CONFIRMED | Quote verified verbatim. The exact string "republish the data in any form without permission" appears as clause 8.7 in S |
 | Energy Institute Statistical Review of W | 1 | permission_required | CONFIRMED | Fetched the URL (WebFetch could not parse the PDF text layer, so I extracted all 76 pages locally with pypdf and searche |
-| Kenneth French Data Library (Dartmouth) | 1 | permission_required | CONFIRMED | Quote verified verbatim against the raw HTML of the official URL (fetched via curl; fetch_status fetched_ok confirmed).  |
 | faostat | 1 | redistributable_attribution_noncommercial (with third-party-data carve-out) — re-dissemination is permitted with FAO attribution, but subject to (a) a non-commercial/anti-endorsement restriction that CC BY 4.0 does not impose, and (b) a subset of embedded third-party data that cannot be redistributed without the original provider's consent. | DISPUTED | "Datasets shall not be used for or in conjunction with the promotion of a commercial enterprise and/or its product(s) or |
 | frankfurter | 1 | unclear_not_found | CONFIRMED | Verbatim quote CONFIRMED at https://frankfurter.dev/ (live, 200, fetched_ok). It is the answer to the FAQ question "Is t |
-| Freedom House | 1 | noncommercial_permission_required / no_open_redistribution — noncommercial USE with citation is permitted, but the FIW dataset is gated behind a Freedom House "FIW Data Request" (must state intended use), and third-party re-hosting for open public download is not authorized. Treat as not-freely-redistributable: link out to Freedom House's data request rather than mirror the files (or gate to metadata-only), and note commercial use requires prior formal permission. | DISPUTED | "Interested in downloading Freedom in the World report data? While our data is free for personal, academic, and nonprofi |
 | Inter-American Development Bank (IDB) | 1 | noncommercial_no_derivatives (CC BY-NC-ND: NonCommercial AND NoDerivatives). Only verbatim, non-commercial, attributed copies may be redistributed. Separately, per the finding's own license_name note, ~86% of IDB datasets carry NO declared license (no redistribution grant) and a minority are CC BY 4.0 — so a single source-level bucket is not accurate; the unlicensed majority should be treated as not-redistributable / needs-review, not noncommercial. | DISPUTED | On the live page's "Metadata & use" table, the License field links to "Creative Commons Attribution–NonCommercial–NoDeri |
-| IRENA (Int'l Renewable Energy Agency) | 1 | unclear_not_found | CONFIRMED | CONFIRMED, with one disclosed caveat. (1) Verbatim quote: Two independent JS-free WebFetches of the official tool (https |
-| Narodowy Bank Polski (NBP) | 1 | permission_required | CONFIRMED | Verbatim quote verified word-for-word on the official URL (https://api.nbp.pl/en.html): the page returns exactly "Copyri |
-| owid | 1 | mixed / source-dependent — NOT blanket redistributable_attribution. Only the minority of data that OWID produces itself ("Data produced by us", flagged e.g. "with major processing by Our World in Data") is CC BY and redistributable with attribution. The majority ("Most of the data") is third-party (WHO, UN, World Bank, and many others) and remains subject to each upstream provider's own license, which must be assessed per-source before re-hosting. Treat the source as partially/conditionally redistributable pending per-provider review, not uniformly CC BY. | DISPUTED | Most of the data on Our World in Data comes from third-party providers (such as the WHO, UN, and World Bank) and is subj |
-| Polity5 (Center for Systemic Peace) | 1 | permission_required | CONFIRMED | STEP 1 (verbatim check): WebFetch of https://www.systemicpeace.org/inscrdata.html succeeded (fetch_status fetched_ok con |
-| Robert Shiller (Yale) online data | 1 | unclear_not_found | CONFIRMED | VERBATIM CHECK — PASS. WebFetch could not reach the cited URL because it forces HTTP->HTTPS and the Yale server (128.36. |
-| SIPRI (Stockholm Int'l Peace Research In | 1 | permission_required | CONFIRMED | Adversarial review of SIPRI terms. (1) VERBATIM: The quote "Any reproduction—in any medium, electronic or printed—of the |
-| Central Bank of Turkey (TCMB) EVDS | 1 | permission_required | CONFIRMED | Quote verified WORD-FOR-WORD at the finding's URL. Two independent WebFetches of https://www.tcmb.gov.tr/wps/wcm/connect |
 | World Bank Open Data | 1 | redistributable_attribution_with_exceptions — CC BY 4.0 applies to the World Bank's own compiled data, but third-party-sourced datasets/indicators embedded in World Bank Open Data (e.g., WDI series from UN Population Division, IMF, WHO, ILO, IEA, UNESCO) may NOT be redistributed without the original provider's consent. A library that re-hosts data for public download must exclude or separately clear all third-party-sourced series rather than treat the whole source as blanket-redistributable. | DISPUTED | "Some datasets and indicators are provided by third parties, and may not be redistributed or reused without the consent  |
-| worldbank_pink | 1 | restricted / needs-review (NOT blanket CC BY 4.0). The Pink Sheet is not wholly "produced by the World Bank itself" — a large share of its series come from third-party proprietary providers: London Metal Exchange (LME) settlement prices for aluminum, copper, lead, nickel, tin, zinc; Cotlook "A index" for cotton; SICOM for rubber; ICCO/ICO for cocoa/coffee. Under the terms' own third-party carve-out these "may not be redistributed or reused without the consent of the original data provider." For a public re-hosting library, treat worldbank_pink as NEEDS-REVIEW / non-redistributable pending per-series rights clearance (LME in particular prohibits redistribution of its price data without a license), rather than redistributable_attribution. | DISPUTED | From the same official terms page (https://data.worldbank.org/summary-terms-of-use): "Some datasets and indicators are p |
 | zillow | 1 | permission_required | CONFIRMED | Direct verification of the live URL was blocked: https://www.zillow.com/corporate/terms-of-use/ returns HTTP 403 to WebF |
 
 ---
+
+### Databases removed from this record on 2026-09-08 (owner's order)
+
+Some databases were removed from this library on the owner's explicit order. Their
+verdict rows and their verbatim provider sections went with them, and their identities
+are deliberately not recorded anywhere in this repository.
+
+What this record still has to carry, because the gate rests on it:
+
+- Every removed database that is gated is gated on a RECORDED verdict -- RESTRICTED
+  (keep gated), NEEDS HUMAN REVIEW, or REFUSED IN WRITING -- or on the absence of any
+  verdict, which under this file's decision rule is itself a bar to serving. None of
+  them is gated on a guess.
+- At least one removed database carried a CLEARED - re-host OK verdict. It was removed
+  by the owner's order, not by its licence.
+- The gate is enforced mechanically, not by this document: `api/worker/src/denylist.ts`
+  and `tests/test_licence_gate_matches_docs.py`. Nothing here can un-gate anything.
+- The verbatim provider terms for those databases are no longer recoverable from this
+  file. If one is ever re-assessed, the audit workflow must re-fetch the provider's own
+  terms from scratch; a verdict must never be inferred from a sibling database.
+
+The per-database index below therefore covers fewer databases than the Summary counts
+above. Those counts were measured before the removal and are deliberately left
+unrecomputed: recomputing them would disclose by subtraction exactly what the order
+requires be withheld.
 
 ## Per-database index
 
@@ -74,14 +86,11 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `boc` | Bank of Canada Valet | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `boe` | boe | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `bundesbank` | Deutsche Bundesbank time series | non_redistributable — use-only grant. Personal/professional use, forwarding, and reproduction are permitted with mandatory attribution ("Source: Deutsche Bundesbank") and no alteration (no-derivatives). The terms grant NO right to republish, redistribute, or make the data publicly available to third parties, so a library re-hosting the data for public download is not covered. Treat as metadata-only / link-out unless the Bundesbank grants prior written permission for redistribution. | DISPUTED | SERVE - written permission 2026-07-15 (Bundesbank inquiry 2026/005812): distribute/reproduce free of charge, UNALTERED, exact credit, send a copy. Was NEEDS HUMAN REVIEW. |
-| `cboe` | cboe | permission_required | CONFIRMED | RESTRICTED (keep gated) |
 | `cbs_nl` | CBS (Statistics Netherlands) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `census` | census | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `cnb` | Czech National Bank (CNB) ARAD | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `comtrade` | UN Comtrade | permission_required | CONFIRMED | CLEARED by WRITTEN PERMISSION |
-| `cow` | Correlates of War | permission_required | CONFIRMED | RESTRICTED (keep gated) |
 | `damodaran` | Aswath Damodaran (NYU Stern) datas | unclear_not_found | CONFIRMED | SERVE — written permission 2026-07-15 (was NEEDS HUMAN REVIEW; see section) |
-| `dbnomics` | DBnomics (per-provider passthrough | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `defillama` | defillama | permission_required | CONFIRMED | SERVE — written permission 2026-07-16, NC + attribution (was RESTRICTED; see section) |
 | `ecb` | ecb | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `edgar_jrc` | EU JRC EDGAR (Emissions Database f | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
@@ -91,7 +100,6 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `ember` | ember | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `epu` | Economic Policy Uncertainty Index  | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `eurostat` | eurostat | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `famafrench` | Kenneth French Data Library (Dartm | permission_required | CONFIRMED | RESTRICTED (keep gated) |
 | `fao_ae` | FAO (UN Food and Agriculture Organ | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `fao_af` | FAO (UN Food and Agriculture Organ | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `fao_ec` | FAO (UN Food and Agriculture Organ | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
@@ -121,12 +129,11 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `fed_board` | fed_board | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `fhfa` | fhfa | redistributable_open | CONFIRMED | CLEARED - re-host OK |
 | `frankfurter` | frankfurter | unclear_not_found | CONFIRMED | NEEDS HUMAN REVIEW — but SERVED today (46 rows); governed upstream by `ecb`, which is CLEARED. See section. |
-| `freedomhouse` | Freedom House | noncommercial_permission_required / no_open_redistribution — noncommercial USE with citation is permitted, but the FIW dataset is gated behind a Freedom House "FIW Data Request" (must state intended use), and third-party re-hosting for open public download is not authorized. Treat as not-freely-redistributable: link out to Freedom House's data request rather than mirror the files (or gate to metadata-only), and note commercial use requires prior formal permission. | DISPUTED | NEEDS HUMAN REVIEW |
 | `fsi_fundforpeace` | Fund for Peace Fragile States Inde | noncommercial_only | CONFIRMED | CLEARED - non-commercial only |
 | `gcb` | Global Carbon Budget / Global Carb | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `ggdc` | Groningen Growth and Development C | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `gppd` | Global Power Plant Database (WRI) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `gus_dbw` | GUS (Statistics Poland) Knowledge Databases | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution + PSI disclosure) |
+| `gus_dbw` | Statistics Poland Knowledge Databases | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution + PSI disclosure) |
 | `hf_equities` | hf_equities | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `idb` | Inter-American Development Bank (I | noncommercial_no_derivatives (CC BY-NC-ND: NonCommercial AND NoDerivatives). Only verbatim, non-commercial, attributed copies may be redistributed. Separately, per the finding's own license_name note, ~86% of IDB datasets carry NO declared license (no redistribution grant) and a minority are CC BY 4.0 — so a single source-level bucket is not accurate; the unlicensed majority should be treated as not-redistributable / needs-review, not noncommercial. | DISPUTED | SERVE - written permission 2026-07-15 (IDB Open Data): full permission to re-host and redistribute, CC-BY 4.0, EXCLUDE third-party-sourced series, citation format, live links. Was NEEDS HUMAN REVIEW. |
 | `ilostat` | ilostat | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
@@ -163,33 +170,25 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `imf_world` | International Monetary Fund (IMF)  | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `insee_bdm` | INSEE (France, Institut national d | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `ipea` | IPEA / Ipeadata (Brazil) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `irena` | IRENA (Int'l Renewable Energy Agen | unclear_not_found | CONFIRMED | NEEDS HUMAN REVIEW |
 | `kof_globalization` | KOF Swiss Economic Institute (ETH  | permission_required | CONFIRMED | CLEARED by WRITTEN PERMISSION |
 | `ksh` | KSH Hungarian Central Statistical  | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `maddison` | Maddison Project Database (Groning | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `nasa_giss` | NASA GISS (Goddard Institute for S | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `nbp` | Narodowy Bank Polski (NBP) | permission_required | CONFIRMED | RESTRICTED (keep gated) |
 | `noaa` | NOAA | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `nyfed` | Federal Reserve Bank of New York | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `oecd` | oecd | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `ofr` | US Office of Financial Research | redistributable_open | CONFIRMED | CLEARED - re-host OK |
-| `owid` | owid | mixed / source-dependent — NOT blanket redistributable_attribution. Only the minority of data that OWID produces itself ("Data produced by us", flagged e.g. "with major processing by Our World in Data") is CC BY and redistributable with attribution. The majority ("Most of the data") is third-party (WHO, UN, World Bank, and many others) and remains subject to each upstream provider's own license, which must be assessed per-source before re-hosting. Treat the source as partially/conditionally redistributable pending per-provider review, not uniformly CC BY. | DISPUTED | NEEDS HUMAN REVIEW |
 | `oxcgrt` | Oxford COVID-19 Government Respons | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `penn_world_table` | penn_world_table | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `pip` | World Bank Poverty & Inequality Pl | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `polity` | Polity5 (Center for Systemic Peace | permission_required | CONFIRMED | RESTRICTED (keep gated) |
 | `pwt` | Penn World Table (Groningen GGDC) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `qog` | Quality of Government Institute, University of Gothenburg | permission_required | CONFIRMED | ⛔ REFUSED IN WRITING (2026-08-31) — never serve; link-only permitted (QoG Data Finder) |
 | `rba` | Reserve Bank of Australia (RBA) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `riksbank` | Sveriges Riksbank | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `sec_edgar` | sec_edgar | redistributable_open | CONFIRMED | CLEARED - re-host OK |
-| `shiller` | Robert Shiller (Yale) online data | unclear_not_found | CONFIRMED | NEEDS HUMAN REVIEW |
-| `sipri` | SIPRI (Stockholm Int'l Peace Resea | permission_required | CONFIRMED | RESTRICTED (keep gated) |
 | `snb` | Swiss National Bank (SNB) data por | noncommercial_only | CONFIRMED | CLEARED - non-commercial only |
 | `statcan` | statcan | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `stats_nz` | Stats NZ | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `swiid` | Standardized World Income Inequali | redistributable_open | CONFIRMED | CLEARED - re-host OK |
-| `tcmb` | Central Bank of Turkey (TCMB) EVDS | permission_required | CONFIRMED | RESTRICTED (keep gated) |
 | `transparency_ti` | Transparency International (CPI) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `treasury` | treasury | redistributable_open | CONFIRMED | CLEARED - re-host OK |
 | `ucdp` | Uppsala Conflict Data Program (UCD | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
@@ -249,16 +248,7 @@ The public terms the audit read may say 'permission required' for these, but we 
 | `worldbank` | World Bank Open Data | redistributable_attribution_with_exceptions — CC BY 4.0 applies to the World Bank's own compiled data, but third-party-sourced datasets/indicators embedded in World Bank Open Data (e.g., WDI series from UN Population Division, IMF, WHO, ILO, IEA, UNESCO) may NOT be redistributed without the original provider's consent. A library that re-hosts data for public download must exclude or separately clear all third-party-sourced series rather than treat the whole source as blanket-redistributable. | DISPUTED | NEEDS HUMAN REVIEW |
 | `vdem` | V-Dem Institute (Varieties of Democracy), University of Gothenburg | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
 | `worldbank_esg` | worldbank_esg | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `worldbank_pink` | worldbank_pink | restricted / needs-review (NOT blanket CC BY 4.0). The Pink Sheet is not wholly "produced by the World Bank itself" — a large share of its series come from third-party proprietary providers: London Metal Exchange (LME) settlement prices for aluminum, copper, lead, nickel, tin, zinc; Cotlook "A index" for cotton; SICOM for rubber; ICCO/ICO for cocoa/coffee. Under the terms' own third-party carve-out these "may not be redistributed or reused without the consent of the original data provider." For a public re-hosting library, treat worldbank_pink as NEEDS-REVIEW / non-redistributable pending per-series rights clearance (LME in particular prohibits redistribution of its price data without a license), rather than redistributable_attribution. | DISPUTED | NEEDS HUMAN REVIEW |
 | `worldbank_wdi` | World Bank World Development Indic | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `wto_hs_a_0010` | World Trade Organization (WTO) | permission_required | CONFIRMED | RESTRICTED (keep gated) |
-| `wto_hs_a_0015` | World Trade Organization (WTO) | permission_required | CONFIRMED | RESTRICTED (keep gated) |
-| `wto_hs_a_0020` | World Trade Organization (WTO) | permission_required | CONFIRMED | RESTRICTED (keep gated) |
-| `wto_hs_a_0025` | World Trade Organization (WTO) | permission_required | CONFIRMED | RESTRICTED (keep gated) |
-| `wto_hs_a_0030` | World Trade Organization (WTO) | permission_required | CONFIRMED | RESTRICTED (keep gated) |
-| `wto_hs_a_0040` | World Trade Organization (WTO) | permission_required | CONFIRMED | RESTRICTED (keep gated) |
-| `wto_its_mtv_am` | World Trade Organization (WTO) | permission_required | CONFIRMED | RESTRICTED (keep gated) |
-| `wto_its_mtv_ax` | World Trade Organization (WTO) | permission_required | CONFIRMED | RESTRICTED (keep gated) |
 | `yale_epi` | Yale Environmental Performance Ind | noncommercial_only | CONFIRMED | CLEARED - non-commercial only |
 | `zillow` | zillow | permission_required | CONFIRMED | RESTRICTED (keep gated) |
 
@@ -586,29 +576,6 @@ Net: the bulk of the BoE statistical Database is redistributable with OGL v3.0 a
 
 ---
 
-### Cboe (Cboe Global Markets)
-
-- **Databases (1):** `cboe`
-- **Official terms URL:** https://www.cboe.com/terms/
-- **License:** Cboe Terms and Conditions for Use of Cboe Websites (proprietary; last updated November 16, 2022)
-- **Classification:** permission_required
-- **Commercial OK:** False · **Attribution required:** True · **ShareAlike:** None · **Fetch:** fetched_ok
-- **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** RESTRICTED (keep gated)
-
-**Verbatim quote:**
-> You may not otherwise copy, reproduce, alter, store either in hard copy or in an electronic retrieval system, license, transmit, display, broadcast, create a derivative work (for example, a financial product, service or index) from, use to verify or correct other data or information, publish, rent, sublicense, distribute, or otherwise use in whole or in part in any other manner the Materials without Cboe's prior written consent except to the extent that such use constitutes 'fair use' under the 'Copyright Act of 1976', as amended from time to time.
-> You may view, print and download one copy of the Materials for your personal non-commercial use in connection with products and services offered by Cboe, provided that you maintain all copyright, trademark and other notices contained on the Materials.
-> To formally request such consent you must submit a Request to Use Cboe Content.
-> The Materials are protected by copyrights, trademarks, service marks, and/or other proprietary rights and laws of the United States and other countries.
-> Subscribers are prohibited from selling, distributing, transferring, or otherwise disseminating Data to any other person or entity.
-
-*Verifier notes:* Fetched https://www.cboe.com/terms/ successfully. The verbatim_quote appears WORD-FOR-WORD on the live page in Section 2 (Copyrights, Trademarks, Service Marks, And Proprietary Rights); WebFetch returned it in 125-char segments that reassemble to an exact match of the researcher's quote, including the parenthetical '(for example, a financial product, service or index)', the 'use to verify or correct other data or information' phrasing, and the closing fair-use carve-out under the Copyright Act of 1976. The 'last updated November 16, 2022' date in license_name is confirmed on-page. Adversarial check for a stricter/missed clause: this quoted clause IS the strictest relevant provision — an explicit redistribution/reproduction/derivative-work ban gated on 'Cboe's prior written consent', with only a fair-use exception. Classification 'permission_required' is defensible and not too permissive: a library re-hosting Cboe data for public download performs copying/reproduction/distribution that the terms forbid absent prior written consent, so permission_required correctly gates the data. The terms also allow limited personal non-commercial viewing/printing and fair use, but that does not loosen the classification for a re-hosting use case. No contradicting clause found; classification stands.
-
-*Researcher reasoning:* Cboe's official website Terms of Use (https://www.cboe.com/terms/, last updated November 16, 2022) expressly prohibit redistribution of "Materials" (defined by Cboe to include the content and data on its sites) absent prior written consent. The core clause forbids copying, reproducing, transmitting, publishing, sublicensing, distributing, or "otherwise use[ing] in whole or in part in any other manner the Materials without Cboe's prior written consent" (fair use excepted). The only permission granted to a general visitor is to "view, print and download one copy ... for your personal non-commercial use," which does not extend to re-hosting or mass redistribution. Consent must be affirmatively obtained by submitting a "Request to Use Cboe Content." Separately, Cboe's Global Data Agreement and Market Data Policies bar subscribers from "selling, distributing, transferring, or otherwise disseminating Data" without specifically contracted redistribution rights (which require signing a Data Agreement, completing order forms, and obtaining approval). Because a free non-commercial academic re-hosting library would be redistributing/re-disseminating Cboe content to third parties, and Cboe permits this only after a written request/approval, the correct conservative classification is permission_required — not prohibited outright (a request path exists) and not any open/redistributable category. The permitted personal-use copy is non-commercial and requires maintaining all copyright/trademark notices, but that permission does not authorize redistribution, so noncommercial_only would understate the restriction. Re-hosting Cboe data without a signed Cboe Data Agreement / written Content-use consent is not compliant.
-
----
-
 ### U.S. Census Bureau (census.gov)
 
 - **Databases (1):** `census`
@@ -647,71 +614,6 @@ fetch_status = fetched_ok: I fetched and read the official governing Terms of Se
 
 ---
 
-### Central Bank of the Republic of Türkiye (TCMB / CBRT) — Electronic Data Delivery System (EVDS)
-
-- **Databases (1):** `tcmb`
-- **Official terms URL:** https://www.tcmb.gov.tr/wps/wcm/connect/EN/TCMB+EN/Bottom+Menu/Other/
-- **License:** Custom CBRT website terms / disclaimer (no standard open licence; copyright reserved to CBRT)
-- **Classification:** permission_required
-- **Commercial OK:** False · **Attribution required:** True · **ShareAlike:** None · **Fetch:** fetched_ok
-- **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** RESTRICTED (keep gated)
-
-**Verbatim quote:**
-> Information published in this site may be quoted by specific reference thereto, but the use of such information for commercial purposes shall be subject to prior written permission of the CBRT.
-> Copyright and any other rights in the contents are owned by CBRT. Information in other web sites, which may be linked through this web site, is published by the owners of those web sites.
-> Access to or the use of this web site constitutes consent to the below statements.
-> CBRT reserves the right to change the design and the content of the information included in this web site, without prior notice.
-
-*Verifier notes:* Quote verified WORD-FOR-WORD at the finding's URL. Two independent WebFetches of https://www.tcmb.gov.tr/wps/wcm/connect/EN/TCMB+EN/Bottom+Menu/Other/ both returned the sentence verbatim, and a WebSearch independently corroborated it, surfacing the canonical disclaimer page (.../Other/Disclaimer, a child of the finding URL) carrying identical text. fetch_status "fetched_ok" is accurate.
-
-Adversarial stricter-clause check: the disclaimer contains NO open licence and reserves all rights ("Copyright and any other rights in the contents are owned by CBRT."). The only affirmative permission is narrow: "Information published in this site may be quoted by specific reference thereto" — i.e., quoting with attribution, NOT bulk reproduction/redistribution. Commercial use additionally "shall be subject to prior written permission of the CBRT." Re-hosting the full EVDS dataset for public download plainly exceeds "quoting by specific reference" and is not granted by these terms.
-
-Classification judgment: the finding's "permission_required" (Custom CBRT website terms / disclaimer, no standard open licence, copyright reserved to CBRT) is defensible and NOT too permissive — it is the conservative call. It correctly signals that a re-hosting library must obtain prior written permission before redistributing. No permissive redistribution right exists in the terms, so there is nothing to over-state.
-
-Minor note (non-disqualifying): the exact finding URL is the "Other/" parent directory; the canonical standalone disclaimer lives at .../Other/Disclaimer. Both serve the identical verbatim sentence, so the quote and fetch_status remain valid.
-
-*Researcher reasoning:* I fetched the CBRT's official Disclaimer/copyright page on the provider's own domain (tcmb.gov.tr). The EVDS mobile-app and web materials state that the usage rules published on the TCMB website apply to EVDS data, so this disclaimer is the governing terms. Copyright in all contents is expressly "owned by CBRT" — there is NO CC0/CC BY/open-government licence and no public-domain dedication.
-
-The only reuse grant is: information "may be quoted by specific reference thereto" (i.e., non-commercial quoting/excerpting WITH attribution). Two reasons this does not authorize the re-hosting use case: (1) "quoted by specific reference" covers citing/excerpting portions with a source reference — it is not an explicit permission to redistribute, re-disseminate, or re-host entire datasets for third-party download; wholesale re-hosting exceeds "quoting." (2) The clause explicitly gates "the use of such information for commercial purposes" behind "prior written permission of the CBRT."
-
-Per the task's conservative rule ("publicly available / open-data branding does not by itself mean may redistribute; look for EXPLICIT redistribution/re-hosting/mass-download language"), there is no explicit redistribution or bulk-download grant here. Re-hosting the full EVDS datasets for download would therefore require prior written permission from the CBRT. Classification: permission_required. Attribution ("specific reference") is required for the limited quoting grant; commercial use is not permitted without written permission. Note: the library being free/non-commercial removes the commercial bar but does NOT supply the missing redistribution grant — re-hosting still exceeds the "quoting by specific reference" permission.
-
----
-
-### Correlates of War Project
-
-- **Databases (1):** `cow`
-- **Official terms URL:** https://correlatesofwar.org/data-sets/
-- **License:** Custom COW Project "Terms and Conditions" (no standard/open licence)
-- **Classification:** permission_required
-- **Commercial OK:** False · **Attribution required:** True · **ShareAlike:** False · **Fetch:** fetched_ok
-- **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** RESTRICTED (keep gated)
-
-**Verbatim quote:**
-> Users agree not to distribute the dataset to any third party without written permission of the COW director and data host.
-> Terms and Conditions — By downloading a COW dataset, you agree to the following terms and conditions:
-> Data are not to be used for any commercial activity; users of COW data agree not to sell or use the data as part of any financial profit-making activity.
-> Users agree to cite each of the datasets they use in the manner described on each specific dataset web page.
-> Users agree to ask permission for any dissemination, posting, or other use of the data that is not covered by the above restrictions.
-> [FAQ, https://correlatesofwar.org/faq/ — 'What are the use restrictions of the COW data?'] We encourage the use of COW data under certain guidelines. 1) The data be properly cited. 2) COW data users cannot charge for access.
-
-*Verifier notes:* Verified against the live official page at https://correlatesofwar.org/data-sets/ (rendered via browser; direct WebFetch failed only on an SSL intermediate-certificate chain error, not a 404/absence — the page is genuinely accessible and is the correct Data Sets page bearing the Terms and Conditions). Google's search snippet independently corroborated the same phrasing.
-
-VERBATIM QUOTE: EXACT MATCH. The page's "Terms and Conditions" list (four items, introduced by "By downloading a COW dataset, you agree to the following terms and conditions:") contains as item 3, word-for-word: "Users agree not to distribute the dataset to any third party without written permission of the COW director and data host." No wording, punctuation, or truncation discrepancy.
-
-CLASSIFICATION: "permission_required" is defensible and NOT too permissive. Clause 3 requires written permission (from BOTH the COW director and the data host) to redistribute, which is permission-gated rather than outright-prohibited — matching "permission_required" precisely. For a library that re-hosts COW data for public download, this correctly flags that redistribution is not allowed without written consent.
-
-ADDITIONAL (STRICTER) CLAUSES THE FINDING OMITTED — all cut in the restrictive direction, so they do not make the classification too permissive:
-(1) Non-commercial ban: "Data are not to be used for any commercial activity; users of COW data agree not to sell or use the data as part of any financial profit-making activity."
-(2) Catch-all permission: "Users agree to ask permission for any dissemination, posting, or other use of the data that is not covered by the above restrictions."
-These reinforce, rather than contradict, "permission_required." Recommended enrichment (non-blocking): the license record could additionally note the non-commercial restriction, since a re-hosting library must satisfy both the redistribution-permission and non-commercial constraints. No contradicting clause exists; verdict is CONFIRMED.
-
-*Researcher reasoning:* The Correlates of War (COW) Project's official Data Sets page carries an explicit, binding "Terms and Conditions" block that a user accepts "By downloading a COW dataset." I read this on the live official page at https://correlatesofwar.org/data-sets/ using the in-browser tool (WebFetch failed with a TLS 'unable to verify the first certificate' error on correlatesofwar.org, so the terms were read directly from the rendered official page, not a third-party summary). The terms directly and unambiguously govern redistribution/re-hosting: "Users agree not to distribute the dataset to any third party without written permission of the COW director and data host," and further, "Users agree to ask permission for any dissemination, posting, or other use of the data that is not covered by the above restrictions." A free download-library that re-hosts COW files for third-party download is exactly the "distribute the dataset to any third party" / "dissemination, posting" activity these clauses cover, and both are conditioned on obtaining prior written permission from the COW director and data host. Redistribution is therefore NOT permitted by default but CAN be authorized on request, so the correct classification is permission_required (not prohibited, which would apply if no permission path existed). Commercial use is separately and explicitly barred ("Data are not to be used for any commercial activity ... agree not to sell or use the data as part of any financial profit-making activity"), and the corroborating FAQ (https://correlatesofwar.org/faq/) states data "cannot charge for access" — so commercial_ok=false. Attribution is required ("Users agree to cite each of the datasets they use in the manner described on each specific dataset web page"), so attribution_required=true. No share-alike obligation appears, so sharealike=false. Note: a third-party GitHub repo (jenna-jordan/correlates-of-war) describes a "BSD 3-Clause License," but that is an unofficial repackaging and is NOT the COW Project's own licence; the governing official terms are the ones quoted above. Even though the data is non-commercial and free, redistribution/re-hosting is gated on written permission, so this is permission_required rather than noncommercial_only.
-
----
-
 ### Czech National Bank (CNB) — ARAD
 
 - **Databases (1):** `cnb`
@@ -740,39 +642,6 @@ COMMERCIAL: The terms place NO non-commercial restriction on the data itself. Th
 CAVEAT worth flagging to the compliance owner: the same clause states "the file and its content may not be altered in any manner." This is a no-alteration/no-derivatives condition. Redistributing the ARAD data unchanged (bulk download/re-host) is squarely permitted; but if the data library reformats, reprocesses, or otherwise alters CNB files, that could conflict with the "may not be altered" language. For a data library that re-hosts the values as-is with a "Source: the CNB" attribution, redistribution is permitted. For transformed/derived outputs, the no-alteration clause introduces risk and may warrant a brief email to the CNB.
 
 Two independent fetches of the same official English-language page returned consistent wording for the governing sentence and the attribution requirement. No prior written permission is required for CNB-produced data (permission is only needed for authored texts and for logotype use).
-
----
-
-### DBnomics (Cepremap)
-
-- **Databases (1):** `dbnomics`
-- **Official terms URL:** https://db.nomics.world/about
-- **License:** Open Database License (ODbL) — for the DBnomics aggregate/compilation layer; per-provider passthrough to each original source's own licence for the underlying data
-- **Classification:** redistributable_attribution
-- **Commercial OK:** True · **Attribution required:** True · **ShareAlike:** True · **Fetch:** fetched_ok
-- **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** CLEARED - re-host OK (attribution)
-
-**Verbatim quote:**
-> The DBnomics aggregated datasets are distributed under the Open Database License (ODbL). ... Data distributed by DBnomics is subject to the same license and terms of use as its original source provider.
-> DBnomics republishes data from various official and public sources.
-> To share: To copy, distribute and use the database. (ODbL summary, https://opendatacommons.org/licenses/odbl/summary/)
-> Attribute: You must attribute any public use of the database, or works produced from the database, in the manner specified in the ODbL. (ODbL summary)
-> Share-Alike: If you publicly use any adapted version of this database, or works produced from an adapted database, you must also offer that adapted database under the ODbL. (ODbL summary)
-
-*Verifier notes:* Primary source (https://db.nomics.world/about, "Legal Terms" section) fetched OK and independently reproduced verbatim. Both quoted sentences appear WORD-FOR-WORD: "The DBnomics aggregated datasets are distributed under the Open Database License (ODbL)." and "Data distributed by DBnomics is subject to the same license and terms of use as its original source provider." The full Legal Terms section has only four bullets; the other two are (a) code repos are AGPLv3+ (about source code, not data) and (b) a liability disclaimer. Adversarial search for a stricter clause found NONE: no non-commercial restriction, no prior-written-permission requirement, no no-derivatives clause, no bulk/mass-download ban. DBnomics even advertises a feature section headed "Redistribute Data As-Is," corroborating genuine redistribution intent.
-
-Classification "redistributable_attribution" is DEFENSIBLE and NOT too permissive as framed: it is explicitly a per-provider-passthrough classification scoped to the DBnomics aggregate/compilation layer (ODbL = redistribution permitted with attribution), while the first-listed bullet makes each original provider's own terms controlling for the underlying data. The researcher did not miss the passthrough clause — it is captured in license_name. So the finding does NOT blanket-greenlight all DBnomics data; it defers underlying-data redistributability to per-provider review.
-
-Two non-refuting caveats recorded for accuracy: (1) ODbL is share-alike/keep-open (copyleft), so "attribution" slightly understates the conditions — but these are conditions on redistribution, not a prohibition, so the bucket does not overclaim. (2) Operationally the library MUST still resolve and enforce each underlying provider's license before re-hosting any specific DBnomics dataset (the per-provider gate); the finding's license_name already flags this. Presentation-order note: the two sentences appear on the page in the reverse order from the finding's quote (passthrough bullet first, ODbL second), joined by the finding's ellipsis; each sentence is nonetheless verbatim-exact, so this is a presentation detail, not a misquote.
-
-*Researcher reasoning:* DBnomics's official About page (https://db.nomics.world/about) states two governing rules verbatim: (1) "The DBnomics aggregated datasets are distributed under the Open Database License (ODbL)." and (2) "Data distributed by DBnomics is subject to the same license and terms of use as its original source provider."
-
-The ODbL is an explicit open license that PERMITS redistribution. Its official summary (https://opendatacommons.org/licenses/odbl/summary/) grants the freedom "To share: To copy, distribute and use the database," subject to three conditions: Attribution, Share-Alike (any adapted/published database must also be offered under ODbL), and Keep Open (no DRM-only distribution). ODbL does NOT restrict commercial use, so commercial redistribution is permitted. Hence at the DBnomics aggregate layer the correct classification is redistributable_attribution (with a share-alike obligation and mandatory attribution).
-
-CRITICAL CAVEAT for the compliance decision (this is why the entry is "per-provider passthrough"): DBnomics itself only applies ODbL to its aggregated compilation/database wrapper. It explicitly disclaims control over the underlying data — that data "is subject to the same license and terms of use as its original source provider." Therefore ODbL/redistributable does NOT automatically authorize re-hosting the actual observations sourced from a given provider (e.g. IMF, BIS, national statistical offices, or NON-redistributable providers). Each underlying provider must be cleared on its own terms; some upstream providers on DBnomics forbid redistribution or require permission, and the ODbL wrapper does not override those. In short: the DBnomics-level licence is redistributable with attribution + share-alike, but re-hosting any specific dataset is only lawful if that dataset's ORIGINAL provider also permits redistribution. Conservative operational guidance: rely on the ODbL classification only for series whose original source is independently confirmed redistributable; treat the rest per their source provider's determination.
-
-fetch_status = fetched_ok: the official DBnomics About page and the official ODbL summary were both fetched and read; the DBnomics quotes were reproduced verbatim (confirmed via two independent fetches returning identical wording).
 
 ---
 
@@ -1362,41 +1231,6 @@ ACTIONABLE for compliance: The operative redistribution authority for this data 
 
 ---
 
-### Freedom House
-
-- **Databases (1):** `freedomhouse`
-- **Official terms URL:** https://freedomhouse.org/about-us/content-permissions
-- **License:** Freedom House Content Permissions (custom terms)
-- **Classification:** noncommercial_only  →  **corrected to `noncommercial_permission_required / no_open_redistribution — noncommercial USE with citation is permitted, but the FIW dataset is gated behind a Freedom House "FIW Data Request" (must state intended use), and third-party re-hosting for open public download is not authorized. Treat as not-freely-redistributable: link out to Freedom House's data request rather than mirror the files (or gate to metadata-only), and note commercial use requires prior formal permission.`** by adversarial review
-- **Commercial OK:** False · **Attribution required:** True · **ShareAlike:** False · **Fetch:** fetched_ok
-- **Adversarial verdict:** **DISPUTED** (quote verbatim: True, classification agrees: False)
-- **Decision tier:** NEEDS HUMAN REVIEW
-
-**Verbatim quote:**
-> Use of Freedom House content for noncommercial purposes is permitted, but the work must be acknowledged with a citation or other clear reference.
-> All use of Freedom House content for commercial purposes must be formally approved by Freedom House prior to publication or any other use.
-> You do not need to request permission to share Freedom House content that has been published online.
-> You do not have to request permission to use Freedom House content if your use falls under the Fair Use doctrine of US copyright law.
-> Always include the author, title of the work, copyright notice, and publication date.
-
-**Adversary's contradicting clause:** "Interested in downloading Freedom in the World report data? While our data is free for personal, academic, and nonprofit use, commercial use continues to require prior formal permission and agreement. Please email [permissions email] with \"FIW Data Request\" in the subject line and a brief explanation of your intended use and our team will assist you." (freedomhouse.org/report/freedom-world). Also, the content-permissions page only permits noncommercial USE plus narrow SHARING — its own examples being "emailing a report to colleagues, sharing content on social media, etc." — and never grants third-party redistribution/re-hosting.
-
-*Verifier notes:* Quote is verbatim-accurate: confirmed word-for-word on two independent fetches of the official_terms_url (freedomhouse.org/about-us/content-permissions), fetch_status fetched_ok is correct. However the classification "noncommercial_only" is too permissive for a library that re-hosts data for public download. The content-permissions page grants noncommercial USE (with citation) and only narrow SHARING of already-published content; it does not grant redistribution/re-hosting of the dataset. Independently checking the primary data source (freedomhouse.org/report/freedom-world) surfaced a stricter, prior-permission clause the researcher missed: FIW data downloads are routed through a "FIW Data Request" email requiring a statement of intended use, and commercial use requires "prior formal permission and agreement." Three problems with open re-hosting under an NC-only label: (1) it bypasses Freedom House's data-request touchpoint; (2) an open public download cannot enforce the noncommercial restriction on downstream users, and commercial use is barred before "any other use"; (3) redistribution is nowhere affirmatively granted. The general /about-us/terms-use page returned HTTP 404 (no broader grant found). Per skepticism default, redistribution is not confidently permitted, so a permissive NC-only classification should not be confirmed. Verdict DISPUTED: quote good, classification too permissive.
-
-*Researcher reasoning:* Official terms located and read on Freedom House's own domain: the "Content Permissions" page (https://freedomhouse.org/about-us/content-permissions). The same governing sentences were reproduced identically across two independent fetches, so the verbatim quotes are reliable.
-
-What the terms say:
-- Noncommercial use is affirmatively permitted, conditioned on attribution: "Use of Freedom House content for noncommercial purposes is permitted, but the work must be acknowledged with a citation or other clear reference."
-- Commercial use requires prior written approval: "All use of Freedom House content for commercial purposes must be formally approved by Freedom House prior to publication or any other use."
-- Sharing already-published content is expressly allowed without permission: "You do not need to request permission to share Freedom House content that has been published online." (The page illustrates this with lightweight examples such as emailing a report to colleagues or sharing on social media.)
-- Attribution content is specified: "Always include the author, title of the work, copyright notice, and publication date."
-
-Classification rationale (conservative): I classify as noncommercial_only rather than permission_required because the text does NOT require permission for noncommercial use — it explicitly grants noncommercial use with attribution and explicitly waives the permission requirement for sharing published content. Permission is required ONLY for commercial use. A free, non-commercial academic library that credits Freedom House therefore falls on the permitted side of the commercial/noncommercial line, so permission_required would misstate the terms.
-
-Important caveat for the compliance decision: Freedom House frames these terms around "use" and "sharing" of content, and does NOT contain explicit language addressing bulk redistribution, re-hosting entire datasets, or offering datasets for mass download. Their "sharing" examples are lightweight (email a report, social media), which is narrower than re-hosting a full dataset for third-party download. There is no CC or open-data licence, no public-domain dedication, and no ShareAlike condition — these are custom permissions terms, and all Freedom House content remains under Freedom House copyright. Because re-hosting a complete dataset for download is a heavier form of redistribution than the "sharing" the page contemplates, the safest course before re-hosting would be to email Freedom House's content-permissions contact to confirm that noncommercial re-hosting/download is acceptable. But on the plain text as written, noncommercial redistribution with proper attribution is permitted and commercial use is not — hence noncommercial_only, commercial_ok=false, attribution_required=true, sharealike=false.
-
----
-
 ### Fund for Peace — Fragile States Index (fsi_fundforpeace)
 
 - **Databases (1):** `fsi_fundforpeace`
@@ -1798,66 +1632,11 @@ ONE TENSION NOTED (does not defeat the classification): the footer reads "Todos 
 
 CLASSIFICATION JUDGMENT: "redistributable_attribution" is defensible and NOT too permissive. The terms explicitly allow free distribution AND copying, conditioned only on source attribution ("citação da fonte Ipeadata") — a textbook attribution-only redistribution grant. The finding correctly labels it a custom Ipeadata term (not a named CC/open-gov licence) and correctly retains the attribution obligation rather than overclaiming public-domain/CC0.
 
-DOWNSTREAM CAVEAT (out of scope for this provider's own terms, worth flagging to the library operator): Ipeadata is an aggregator that republishes series "obtidas nas fontes originais" (IBGE, BCB, international sources, etc.). Ipeadata's terms authorize redistribution of Ipeadata's own content, but they do not, and cannot, waive any independent terms attached to specific upstream original sources. A re-hosting library should still cite "fonte Ipeadata" (as required) and be mindful of upstream source terms for series that originate elsewhere. This does not make the Ipeadata classification wrong; it is a compliance note.
+DOWNSTREAM CAVEAT (out of scope for this provider's own terms, worth flagging to the library operator): Ipeadata is an aggregator that republishes series "obtidas nas fontes originais" (<redacted>, BCB, international sources, etc.). Ipeadata's terms authorize redistribution of Ipeadata's own content, but they do not, and cannot, waive any independent terms attached to specific upstream original sources. A re-hosting library should still cite "fonte Ipeadata" (as required) and be mindful of upstream source terms for series that originate elsewhere. This does not make the Ipeadata classification wrong; it is a compliance note.
 
 Net: quote is verbatim-accurate at the official URL and the classification is defensible and appropriately scoped. CONFIRMED.
 
 *Researcher reasoning:* The database re-hosts Ipeadata's Brazilian statistical time series, so the governing terms are those of the Ipeadata data platform itself (www.ipeadata.gov.br), reached via the site's own "Direitos de uso" navigation link (target page iframe_direitouso.aspx). I rendered that page in a browser (the site is a JS/frames ASP.NET app that returns empty to plain fetch) and read the full text verbatim. Its "Uso do conteúdo" section explicitly states the content "pode ser livremente distribuída e copiada" (may be freely distributed and copied), with the sole condition being "a obrigatoriedade de citação da fonte Ipeadata" (mandatory citation of the source Ipeadata). This is an explicit redistribution/re-hosting grant — not merely permission to access or use — conditioned only on attribution. There is no non-commercial clause and no no-derivatives clause in these data-platform terms; the "Todos os direitos reservados / Copyright © Ipea 2006" line at the foot is a standard copyright notice that does not override the express free-distribution grant above it. I therefore classify redistributable_attribution: redistribution/re-hosting is permitted provided Ipeadata is credited as the source. commercial_ok is set true because the text grants "free" distribution/copying with no commercial restriction, but this is moot for the professor's free, non-commercial academic library, which clearly qualifies under any reading. IMPORTANT CAUTION recorded for the compliance file: a separate, MORE RESTRICTIVE "Licença Padrão do Ipea" (prohibits commercial use and derivative works; permits inclusion in open-access portals only if terms and the Ipea copyright holder are shown) appears on Ipea's INSTITUTIONAL REPOSITORY (repositorio.ipea.gov.br), including a repository record titled "IPEADATA." That licence governs Ipea's publication documents in the repository, not the numeric statistical series distributed by the Ipeadata platform, so it does not control the re-hosting of the time series. The recommended, safest practical posture for the library: redistribute the series with clear, prominent attribution to "Fonte: Ipeadata / Ipea" on every page/download (attribution is mandatory), which satisfies the data-platform terms. Confidence is high on the verbatim text (fetched and read directly from the official Portuguese page, which is authoritative for this Brazilian federal site).
-
----
-
-### IRENA (International Renewable Energy Agency)
-
-- **Databases (1):** `irena`
-- **Official terms URL:** https://pxweb.irena.org/pxweb/en/IRENASTAT
-- **License:** Copyright notice: "All Rights Reserved" (on the IRENASTAT data tool). Full Terms and Conditions page was inaccessible.
-- **Classification:** unclear_not_found
-- **Commercial OK:** None · **Attribution required:** None · **ShareAlike:** None · **Fetch:** partial
-- **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** NEEDS HUMAN REVIEW
-
-**Verbatim quote:**
-> © 2026 IRENA - International Renewable Energy Agency. All Rights Reserved.
-> * The designations employed and the presentation of materials herein do not imply the expression of any opinion whatsoever on the part of the International Renewable Energy Agency concerning the legal status of any country, territory, city or area or of its authorities, or concerning the delimitation of its frontiers or boundaries.
-
-*Verifier notes:* CONFIRMED, with one disclosed caveat. (1) Verbatim quote: Two independent JS-free WebFetches of the official tool (https://pxweb.irena.org/pxweb/en/IRENASTAT) both return the footer as "© IRENA - International Renewable Energy Agency. All Rights Reserved." — matching the finding character-for-character EXCEPT the "2026" year, which my non-JS fetches show as blank. The year is almost certainly a dynamically-rendered current year (today = 2026; PxWeb footers commonly render "© {currentYear}"), so what the researcher saw in a live browser is legitimately "© 2026 IRENA...". The load-bearing legal assertion "All Rights Reserved" is genuinely present and verbatim-accurate; only the non-legal year could not be reproduced by my JS-free tooling. (2) Adversarial stricter-clause search: An initial AI search summary DANGEROUSLY claimed IRENASTAT "allows redistribution / commercial use with attribution." I did not trust it and checked the actual Terms. The authoritative IRENA T&C text refutes that permissive reading and is more restrictive: "No other use shall be made of IRENA's Content without IRENA's advanced written permission," and IRENASTAT is explicitly covered ("the general Terms and Conditions apply to IRENASTAT provided that no specific terms of use apply to it"). Reproduction/dissemination of publications and extracts is subject to the copyright notice and terms of use, and there is a prior-written-permission requirement. Therefore third-party re-hosting for public download is NOT permitted without permission — the data is non-redistributable. (3) Classification: "unclear_not_found" / "All Rights Reserved" is the conservative bucket and is NOT too permissive; my independent evidence strengthens (does not refute) the restrictive reading, so there is no risk of a library wrongly re-hosting. Note (non-blocking, in the stricter direction only): the evidence would support tightening the classification to an explicit "non-redistributable — prior written permission required," which is stricter than the current label and thus does not trigger a dispute. The official terms page (https://www.irena.org/terms-and-conditions) returned HTTP 403 to WebFetch, so the T&C clauses above were confirmed via search extraction of the official page rather than a direct fetch; the on-page "All Rights Reserved" copyright itself was directly and independently fetched twice.
-
-*Researcher reasoning:* The redistribution-governing document is IRENA's Terms and Conditions page (https://www.irena.org/terms-and-conditions). That page — and the entire www.irena.org / irena.org content host — was inaccessible to me across ~10 attempts over several minutes: WebFetch returned HTTP 403 (Azure Web Application Firewall bot-challenge, "we're checking you're not a bot") and the browser returned HTTP 502 Bad Gateway (Microsoft-Azure-Application-Gateway). I did NOT bypass the bot check.
-
-The only official IRENA host I could reach is the IRENASTAT online data query tool at pxweb.irena.org (this is the actual "irena" dataset in scope). I read its footer both in the browser (accessibility tree) and via WebFetch, and it states verbatim, word-for-word: "© 2026 IRENA - International Renewable Energy Agency. All Rights Reserved." plus the standard designations disclaimer (quoted in additional_quotes). This is a bare copyright RESERVATION — it does NOT, by itself, grant any right to redistribute, re-host, or re-disseminate the data. There is no Creative Commons mark, no open-data licence, and no explicit reuse/redistribution grant anywhere on the reachable data tool.
-
-Web search result snippets suggested IRENA's separate Terms and Conditions page contains a more permissive statement (material "may be freely used, shared, copied, reproduced... provided appropriate acknowledgement is given of IRENA as source and copyright holder"). However, those are third-party search-engine paraphrases, NOT text I fetched and read on the official page. Per the hard rules I will not quote or rely on them, and I will not guess a licence from memory.
-
-Bottom line: the specific clause governing REDISTRIBUTION/re-hosting is on an inaccessible official page, and the only official text I could verify ("All Rights Reserved") does not authorize redistribution. Conservatively, redistribution rights are unclear/unconfirmed. A re-check of https://www.irena.org/terms-and-conditions when the host is reachable is needed before any redistribution decision; note also that IRENASTAT mixes IRENA-original statistics with third-party-attributed material that may carry separate restrictions.
-
----
-
-### Kenneth French Data Library (Dartmouth / Tuck School of Business)
-
-- **Databases (1):** `famafrench`
-- **Official terms URL:** https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html
-- **License:** Proprietary copyright, all rights reserved (Eugene F. Fama and Kenneth R. French); no redistribution licence granted
-- **Classification:** permission_required
-- **Commercial OK:** None · **Attribution required:** None · **ShareAlike:** None · **Fetch:** fetched_ok
-- **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** RESTRICTED (keep gated)
-
-**Verbatim quote:**
-> All images and code are property of Ken French. Use in part or whole is illegal -- except by permission of Ken French or Dimensional Fund Advisors
-> Copyright Eugene F. Fama and Kenneth R. French
-> -- All images and code are property of Ken French. Use in part or whole is illegal -- except by permission of Ken French. (home page variant: https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/)
-
-*Verifier notes:* Quote verified verbatim against the raw HTML of the official URL (fetched via curl; fetch_status fetched_ok confirmed). The string appears as a developer comment in the page <head> (raw HTML lines 6-14); joining the wrapped lines it reads exactly: "All images and code are property of Ken French. Use in part or whole is illegal -- except by permission of Ken French or Dimensional Fund Advisors --". The finding's quote matches word-for-word including the double-hyphen dashes and capitalization; it only truncates the trailing " --", which is not an alteration. IMPORTANT METHOD NOTE: this clause lives in an HTML comment, so markdown-converting fetchers strip it — an initial WebFetch surfaced only the visible footer "Copyright Eugene F. Fama and Kenneth R. French" (raw HTML lines 2501-2512). I confirmed the restrictive clause by inspecting raw HTML directly.
-
-Stricter-clause search: the quoted clause ("Use in part or whole is illegal -- except by permission") is itself the strictest possible restriction; no redistribution licence, non-commercial, or bulk-download grant exists anywhere on the page. Nothing on the page is MORE permissive than the finding assumes.
-
-Classification defensibility: permission_required / proprietary all-rights-reserved (Eugene F. Fama and Kenneth R. French) with no redistribution licence is the most conservative reading and is fully supported. Even under a skeptical reading that "images and code" covers only website assets, the bare copyright notice grants no redistribution licence, so the data remains all-rights-reserved by default. For a re-hosting/public-download library the classification is correct and NOT too permissive. Redistribution is not permitted.
-
-*Researcher reasoning:* I fetched and read the official Kenneth R. French Data Library page (mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html), plus the home page and a detail page (det_form_btm.html) to cross-check. Findings are uniform across all three.
-
-The only usage/rights text that exists on these official pages is: (1) a visible copyright notice rendered on every page, verbatim "Copyright [current year] Eugene F. Fama and Kenneth R. French"; and (2) an HTML source-comment permission clause, verbatim "All images and code are property of Ken French. Use in part or whole is illegal -- except by permission of Ken French or Dimensional Fund Advisors" (the home page shows the shorter variant "...except by permission of Ken French."). There is NO dedicated terms-of-use/licence/copyright-policy page, NO Creative Commons or open-data mark, NO statement expressly permitting redistribution, re-hosting, re-dissemination or mass-download, and NO stated attribution/citation condition.
-
-Conservative classification = permission_required. Rationale: The datasets are affirmatively copyright-asserted ("Copyright Eugene F. Fama and Kenneth R. French") and no redistribution licence of any kind is granted. Under default copyright, redistributing copyrighted material requires the rights-holder's permission. The one explicit permission clause ("Use in part or whole is illegal -- except by permission of Ken French or Dimensional Fund Advisors") is, on its face, scoped to the website's "images and code" and appears inside an HTML comment rather than as a public data licence, so it does not itself govern the datasets; but it confirms the owner's posture that reuse requires permission and, combined with the bare copyright assertion and total absence of any redistribution grant, means a third party re-hosting the factor/portfolio data files for download has no granted right. Additional caution: the French research returns are derived from CRSP data (a restrictive, paid commercial source, noted on the page), which further weighs against any implied redistribution right. This is NOT unclear_not_found because official rights text does exist and was read; it simply grants no redistribution permission. Recommendation for the library: do not re-host these datasets without obtaining written permission from Ken French / Dimensional Fund Advisors. commercial_ok, attribution_required and sharealike are set null because the official pages do not address them.
 
 ---
 
@@ -1961,33 +1740,6 @@ No red flags. The finding is accurate and its classification is neither inaccura
 
 ---
 
-### Narodowy Bank Polski (NBP)
-
-- **Databases (1):** `nbp`
-- **Official terms URL:** https://api.nbp.pl/en.html
-- **License:** All rights reserved (proprietary copyright notice; no data-reuse licence published)
-- **Classification:** permission_required
-- **Commercial OK:** None · **Attribution required:** None · **ShareAlike:** None · **Fetch:** fetched_ok
-- **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** RESTRICTED (keep gated)
-
-**Verbatim quote:**
-> Copyright © 2024 Narodowy Bank Polski. All rights reserved.
-> Copyright © 2024 Narodowy Bank Polski . Deklaracja dostępności Wszystkie prawa zastrzeżone. (Polish version, https://api.nbp.pl/)
-> Copyright © 2022 Narodowy Bank Polski. All rights reserved. (archived 2022 version of https://api.nbp.pl/en.html via web.archive.org/web/20220604111944)
-
-*Verifier notes:* Verbatim quote verified word-for-word on the official URL (https://api.nbp.pl/en.html): the page returns exactly "Copyright © 2024 Narodowy Bank Polski. All rights reserved." The Polish root page (https://api.nbp.pl/) carries the identical notice ("Wszystkie prawa zastrzeżone" = All rights reserved), corroborating it. fetch_status "fetched_ok" is accurate; the URL is live and is the correct API terms page, not a 404 or redirect.
-
-Independent adversarial search for a stricter OR looser clause: I searched the web and re-fetched both the English and Polish pages. No separate NBP terms-of-service, "regulamin", or data-reuse/redistribution license is published on the API documentation. There is no explicit redistribution grant and no public-sector-information (re-use) license text on the page — the only intellectual-property statement is the blanket "all rights reserved" copyright notice. No missed clause makes the terms MORE permissive.
-
-Classification judgment: "permission_required" is the conservative, strictest-short-of-prohibited classification. For a library that re-hosts NBP data for public download, an "all rights reserved" notice with no published reuse license genuinely warrants obtaining permission before redistribution. The classification is therefore defensible and NOT too permissive — there is no risk in the direction the review guards against. No contradicting clause exists.
-
-Verdict: CONFIRMED.
-
-*Researcher reasoning:* The database re-hosted under ID "nbp" is NBP's FX-rate/gold-price data, served from api.nbp.pl. I fetched and read the full official NBP Web API documentation page (api.nbp.pl/en.html, 20 KB via curl) and its Polish counterpart (api.nbp.pl/). Both carry ONLY a standard proprietary copyright notice at the foot of the page — English: "Copyright © 2024 Narodowy Bank Polski. All rights reserved."; Polish: "Wszystkie prawa zastrzeżone." There is NO terms-of-use section, NO licence, and NO clause granting redistribution, re-hosting, re-dissemination, or bulk reuse; nor any statement about commercial vs non-commercial use or attribution. An archived 2022 snapshot showed the identical "All rights reserved" wording, confirming this is NBP's stable, longstanding position rather than a transient omission. I attempted to locate a dedicated data-reuse / re-use-of-public-sector-information policy on NBP's own domains: nbp.pl and bip.nbp.pl are both behind Incapsula bot protection and their live legal pages are inaccessible; the Wayback-archived bip.nbp.pl (NBP's official Biuletyn Informacji Publicznej) contains no "ponowne wykorzystywanie informacji sektora publicznego" page, and I found no dane.gov.pl listing applying an explicit open licence to NBP FX data. Under the conservative rubric, "publicly available / free API access" does not imply a right to redistribute, and an explicit "All rights reserved" notice reserves the reproduction and distribution rights to NBP. Absent any published grant permitting re-hosting, a third party wishing to redistribute NBP data would need to seek NBP's permission. I did not classify as "prohibited" because NBP does not publish an explicit sentence forbidding redistribution, and not "unclear_not_found" because I did locate and read NBP's governing copyright statement — it simply reserves all rights without granting redistribution. Hence: permission_required. If the professor wishes to re-host NBP data, he should contact NBP for written re-use permission (or rely on a specific open-licence determination if one is later found on dane.gov.pl or NBP's BIP once accessible).
-
----
-
 ### NASA GISS (Goddard Institute for Space Studies) — GISTEMP Surface Temperature Analysis (v4)
 
 - **Databases (1):** `nasa_giss`
@@ -2070,40 +1822,6 @@ ADVERSARIAL HUNT (read ALL Data sub-sections): (1) Data intro third-party caveat
 CLASSIFICATION: Core grant permits "distribute, share and embed Data for any purpose, even for commercial use" with attribution + acknowledgment propagation — materially CC BY-equivalent (marginally stricter on attribution-propagation, never more permissive). Re-hosting for public download falls within "distribute/share". "redistributable_attribution" is defensible and not over-permissive. Post-1-July-2024 written content = CC BY 4.0 also corroborated (Section 1.1). Residual operational note (not a downgrade): a re-hosting library must still honor per-dataset third-party restrictions flagged in each dataset's metadata/"source" tab, since OECD does not warrant it owns all rights in all Data.
 
 *Researcher reasoning:* The OECD's official Terms & Conditions page (last updated 1 July 2024) has a dedicated Section 3 "Data" whose "Permitted Use" subsection explicitly and unambiguously governs redistribution. It states users "can extract from, download, copy, adapt, print, distribute, share and embed Data for any purpose, even for commercial use," conditioned only on giving appropriate credit using a prescribed OECD citation format. "distribute" and "share" are express redistribution/re-dissemination rights (not merely access/use), so this is genuine redistribution permission, not "open data" branding. This is functionally equivalent to a CC BY licence: redistribution allowed, commercial use allowed, attribution required. Hence classification = redistributable_attribution, commercial_ok = true, attribution_required = true. Share-alike is false: the terms require passing on the same *acknowledgment* (attribution) requirement to sub-licensees, which is an attribution passthrough, not a copyleft "same-licence" obligation. One material caveat for a re-hosting library: the terms govern data "owned solely by the OECD." Section 3 repeatedly warns that individual datasets may contain data owned by third parties or subject to additional restrictions, and it is the user's responsibility to verify ownership (via metadata / source tab) and contact the owner to secure permissions before incorporating such data. The "Availability of Data" subsection lets the OECD rate-limit or cap query volume but does NOT restrict redistribution of data already obtained; there is no prohibition on mass download or re-hosting of OECD-owned data. Therefore OECD-owned data is redistributable with attribution, but blanket re-hosting of every OECD dataset is not covered — third-party-sourced series within OECD databases must be checked individually. (For completeness, Section 1.1 states most OECD *written content* published as of 1 July 2024 is CC BY 4.0; the Data section, not the written-content section, is the governing clause for datasets.)
-
----
-
-### owid
-
-- **Databases (1):** `owid`
-- **Official terms URL:** https://ourworldindata.org/faqs
-- **License:** CC BY (Creative Commons Attribution)
-- **Classification:** redistributable_attribution  →  **corrected to `mixed / source-dependent — NOT blanket redistributable_attribution. Only the minority of data that OWID produces itself ("Data produced by us", flagged e.g. "with major processing by Our World in Data") is CC BY and redistributable with attribution. The majority ("Most of the data") is third-party (WHO, UN, World Bank, and many others) and remains subject to each upstream provider's own license, which must be assessed per-source before re-hosting. Treat the source as partially/conditionally redistributable pending per-provider review, not uniformly CC BY.`** by adversarial review
-- **Commercial OK:** True · **Attribution required:** True · **ShareAlike:** False · **Fetch:** fetched_ok
-- **Adversarial verdict:** **DISPUTED** (quote verbatim: True, classification agrees: False)
-- **Decision tier:** NEEDS HUMAN REVIEW
-
-**Verbatim quote:**
-> Data produced by us falls under our permissive CC BY license; you have permission to use, reproduce, and distribute it, provided that you cite us.
-> Most of the data on Our World in Data comes from third-party providers (such as the WHO, UN, and World Bank) and is subject to the license terms of those providers. You should always check their license before reusing or republishing the data.
-> You do not need permission from us, and we do not sign copyright release forms, provided that you cite us appropriately.
-> you can use, reproduce, and distribute any chart we made (those with our logo and CC BY copyright stamp)...provided that you cite us. You do not need permission from us
-
-**Adversary's contradicting clause:** Most of the data on Our World in Data comes from third-party providers (such as the WHO, UN, and World Bank) and is subject to the license terms of those providers. You should always check their license before reusing or republishing the data.
-
-*Verifier notes:* STEP 1 (quote): CONFIRMED verbatim. WebFetch of https://ourworldindata.org/faqs (fetched_ok, not 404) returns the exact sentence word-for-word: "Data produced by us falls under our permissive CC BY license; you have permission to use, reproduce, and distribute it, provided that you cite us." No red flag on the quote or URL.
-
-STEP 2 (stricter clause the researcher missed): YES. The CC BY sentence is preceded, in the same FAQ answer ("Can I reuse or republish your data?"), by a scoping clause the finding omitted: "Most of the data on Our World in Data comes from third-party providers (such as the WHO, UN, and World Bank) and is subject to the license terms of those providers. You should always check their license before reusing or republishing the data." The CC BY grant is explicitly limited to "Some of the data on our site is produced by us." The citation FAQ adds that reusers "must credit both Our World in Data _and_ the underlying third-party data provider" and "always check the license of third-party data providers before reusing or republishing the data." So OWID itself distinguishes a small CC-BY-own subset from a larger third-party subset governed by upstream (often non-redistributable) terms.
-
-STEP 3 (defensible for a re-hosting library?): NO. A public-download library re-hosting the OWID catalog would be re-hosting predominantly third-party data whose redistribution is governed by the original providers, not by OWID's CC BY. Classifying the whole source as redistributable_attribution is more permissive than the terms support — the classic "use allowed, redistribution restricted / mixed licensing" pitfall. The classification should be downgraded to source-dependent/mixed with per-provider verification required. Verdict DISPUTED: quote accurate, classification too permissive.
-
-*Researcher reasoning:* Fetched OWID's official FAQ & User Guidelines page (ourworldindata.org/faqs), which is their governing licensing/reuse statement. Two distinct regimes apply:
-
-(1) DATA OWID PRODUCES ITSELF: Released under a permissive CC BY (Creative Commons Attribution) license. The page states verbatim: "Data produced by us falls under our permissive CC BY license; you have permission to use, reproduce, and distribute it, provided that you cite us" and "You do not need permission from us, and we do not sign copyright release forms, provided that you cite us appropriately." CC BY explicitly permits redistribution/re-hosting and commercial use, with attribution and no ShareAlike/non-commercial restriction. For OWID-produced data this is therefore redistributable_attribution. (Note: the FAQ text I fetched says "CC BY license" without an explicit version number in the quoted sentence; OWID commonly uses CC BY 4.0 but I did not obtain a verbatim "4.0" string, so I recorded the license name without a version.)
-
-(2) CRITICAL CAVEAT — THIRD-PARTY DATA: OWID is largely an aggregator, and the FAQ explicitly warns that most of its content is NOT OWID's to license: "Most of the data on Our World in Data comes from third-party providers (such as the WHO, UN, and World Bank) and is subject to the license terms of those providers. You should always check their license before reusing or republishing the data." OWID's own CC BY does NOT extend to these underlying datasets. A re-hosting library must therefore verify each specific dataset: if it is OWID-produced (e.g., their own estimates, the OWID CO2/energy dataset, OWID COVID dataset), CC BY redistribution applies; if the series is sourced from WHO/UN/World Bank/etc., the original provider's license governs redistribution and must be checked separately. OWID's Grapher SOFTWARE is separately NOT freely licensed (requires written permission from Global Change Data Lab), but that governs code reuse, not the data itself.
-
-CONSERVATIVE BOTTOM LINE for the "owid" provider: redistribution of OWID's own produced data is permitted with attribution (redistributable_attribution). But the professor must not treat the whole OWID catalogue as blanket-redistributable — third-party-sourced series carry the original provider's terms per OWID's own instruction to "check their license before reusing or republishing."
 
 ---
 
@@ -2190,31 +1908,6 @@ No basis to dispute. Data is genuinely redistributable with attribution.
 
 ---
 
-### Polity5 (Center for Systemic Peace)
-
-- **Databases (1):** `polity`
-- **Official terms URL:** https://www.systemicpeace.org/inscrdata.html
-- **License:** Custom terms (CSP/INSCR copyright notice) — all rights reserved, permission required for redistribution
-- **Classification:** permission_required
-- **Commercial OK:** None · **Attribution required:** True · **ShareAlike:** None · **Fetch:** fetched_ok
-- **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** RESTRICTED (keep gated)
-
-**Verbatim quote:**
-> All resources listed on this page are copyrighted by the Center for Systemic Peace. Use of any of these resources in published work must provide proper citation. Reproduction or redistribution of these resources, or substantial portions thereof, is prohibited without prior, written permission from the Center for Systemic Peace.
-> contact information is provided on the CSP Contact Page
-> The data resources were prepared by researchers associated with the Center for Systemic Peace and are generated and/or compiled using open source information, and are made available as a service to the research community.
-
-*Verifier notes:* STEP 1 (verbatim check): WebFetch of https://www.systemicpeace.org/inscrdata.html succeeded (fetch_status fetched_ok confirmed; HTTP auto-upgraded to HTTPS). The full sentence on the page reads: "All resources listed on this page are copyrighted by the Center for Systemic Peace. Use of any of these resources in published work must provide proper citation. Reproduction or redistribution of these resources, or substantial portions thereof, is prohibited without prior, written permission from the Center for Systemic Peace; contact information is provided on the CSP Contact Page." Every word of the researcher's quote matches word-for-word. The only difference is a truncation at the end: the finding stops after "...Center for Systemic Peace." and substitutes a period for the original's semicolon, dropping the trailing clause "; contact information is provided on the CSP Contact Page." This truncation is at a clean sentence-clause boundary, omits nothing material, and does NOT soften the terms — the dropped clause actually reinforces the permission-required reading (it points to how to request permission). I judged this an acceptable verbatim quote.
-
-STEP 2 (search for stricter clause): The operative restriction the researcher cited IS the strictest clause present: "Reproduction or redistribution ... is prohibited without prior, written permission." There is no separate non-commercial or no-derivatives clause, but none is needed — a blanket permission-required redistribution ban is already the controlling term. No hidden weaker/permissive grant contradicts it.
-
-STEP 3 (classification defensibility): A library that re-hosts Polity5 for public download is, by definition, "reproduction or redistribution," which these terms expressly prohibit absent prior written permission from CSP. The classification "permission_required" is therefore correct and appropriately conservative — it is NOT too permissive (it does not treat the data as freely redistributable or CC-licensed) and correctly reflects "all rights reserved; redistribution needs written permission." No refutation found; finding stands.
-
-*Researcher reasoning:* The Polity5 dataset is hosted by the Center for Systemic Peace (CSP) on its INSCR Data Page. The official page (https://www.systemicpeace.org/inscrdata.html) carries an explicit copyright-and-use notice, quoted verbatim above and independently corroborated by two web searches and a direct WebFetch of the page. The governing sentence states that "Reproduction or redistribution of these resources, or substantial portions thereof, is prohibited without prior, written permission from the Center for Systemic Peace." This is direct, explicit redistribution/re-hosting language — not merely open-access branding. Because redistribution is possible but conditioned on obtaining prior written permission from CSP (contact information provided on the CSP Contact Page), the correct conservative classification is permission_required rather than prohibited (which would apply only if redistribution were forbidden outright with no permission route) or any redistributable/open category. The data being described as "made available as a service to the research community" using "open source information" does NOT grant redistribution rights; the copyright notice expressly reserves them. Attribution is required: "Use of any of these resources in published work must provide proper citation." The terms make no distinction between commercial and non-commercial use — the written-permission requirement applies to all reproduction/redistribution regardless of purpose — so commercial_ok is left null (unaddressed) rather than assumed. No CC or other standard open license is present; the terms are custom, all-rights-reserved copyright. For a free non-commercial academic library that intends to RE-HOST the data for download, this means CSP must be contacted and written permission obtained before redistribution.
-
----
-
 ### Reserve Bank of Australia (RBA)
 
 - **Databases (1):** `rba`
@@ -2261,39 +1954,6 @@ Note: The RBA also runs a separate "Unreserved" archives site (unreserved.rba.go
 
 ---
 
-### Robert Shiller (Yale) online data
-
-- **Databases (1):** `shiller`
-- **Official terms URL:** http://www.econ.yale.edu/~shiller/data.htm
-- **License:** None stated (no terms of use, copyright notice, or licence appears on either official page)
-- **Classification:** unclear_not_found
-- **Commercial OK:** None · **Attribution required:** None · **ShareAlike:** None · **Fetch:** fetched_ok
-- **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** NEEDS HUMAN REVIEW
-
-**Verbatim quote:**
-> Stock market data used in my book, Irrational Exuberance [Princeton University Press 2000, Broadway Books 2001, 2nd ed., 2005] are available for download, U.S. Stock Markets 1871-Present and CAPE Ratio.
-> Historical housing market data used in my book, Irrational Exuberance [Princeton University Press 2000, Broadway Books 2001, 2nd edition, 2005], showing home prices since 1890 are available for download and updated monthly: US Home Prices 1890-Present.
-> An annual series is also available here, long term stock, bond, interest rate and consumption data since 1871 that I in collaboration with several colleagues collected to examine long term historical trends in the US market.
-> [shillerdata.com footer, 'Disclaimer' section:] No representation is made as to the accuracy of the assumptions made within, or completeness of, any modelling, scenario analysis or back-testing.
-> [shillerdata.com footer, 'Disclaimer' section, second paragraph, verified present but truncated in extraction:] None of Professor Shiller, Yale University or any other party involved in making or compiling any of ...
-
-*Verifier notes:* VERBATIM CHECK — PASS. WebFetch could not reach the cited URL because it forces HTTP->HTTPS and the Yale server (128.36.64.169) refuses port 443 (HTTP-only host). I loaded http://www.econ.yale.edu/~shiller/data.htm directly in a browser and extracted the body text. The finding's quote appears word-for-word, character-for-character, including "U.S. Stock Markets 1871-Present and CAPE Ratio." Page title "Online Data - Robert Shiller"; fetch_status "fetched_ok" is plausible (page is reachable over HTTP).
-
-STRICTER-CLAUSE SEARCH — none on the official source. The Yale page is a data-description page (naming source data: S&P four-quarter totals, Cowles/Principia Press, CPI-U, Warren & Pearson) with NO license, NO copyright notice, NO terms of use, and NO redistribution / non-commercial / no-derivatives / attribution / prior-written-permission / bulk-download restriction. It ends in plain nav links with no copyright footer. I independently checked the newer official host shillerdata.com: its only restrictive content is a warranty/liability DISCLAIMER ("not intended to be... investment advice", "the user... assumes the entire risk of any use", "makes any express or implied warranty" negated) — a liability disclaimer, not a redistribution or copyright term. No redistribution grant or ban on either page.
-
-CLASSIFICATION — defensible and NOT too permissive. "unclear_not_found" accurately reports that no terms/license exist on the official source. It does not assert redistribution is permitted; for a re-hosting library it correctly leaves rights undetermined (a gate/hold signal). Under default copyright, absence of a stated license means rights are reserved, not granted, so this label is conservative, not over-permissive. Per the review criteria (CONFIRMED only if quote is verbatim AND classification is not more permissive than terms support), both conditions are met.
-
-CAVEAT (non-defect): The quote is verbatim on the CITED Yale page but the newer shillerdata.com uses different wording ("US Stock market data used in my book, Irrational Exuberance [... 3rd ed. 2015] as updated are available for download below"). If the library re-sources to shillerdata.com, the verbatim_quote and official_terms_url would need updating. Also worth noting for the library's own risk posture: "no stated license" is not affirmative permission to re-host — downstream policy should treat unclear_not_found as a hold, not a green light — but that is a policy matter, not a defect in this finding's classification.
-
-*Researcher reasoning:* I fetched and read both official sources for Robert Shiller's online data: (1) the canonical Yale page at http://www.econ.yale.edu/~shiller/data.htm — read in full via the browser's page-text extractor because WebFetch's forced HTTP-to-HTTPS upgrade fails against the HTTP-only Yale host; and (2) shillerdata.com, the newer official home for the same datasets (operated for Professor Shiller), read via WebFetch plus the browser accessibility tree including its full footer.
-
-Neither official page contains any terms of use, copyright/licence statement, CC licence, or any clause governing redistribution, re-hosting, re-dissemination, mass download, or commercial vs non-commercial use. The Yale page is purely descriptive: it explains the sources and methodology of the series and states only that the datasets "are available for download." shillerdata.com likewise offers direct .xls download links and carries a single legal section titled "Disclaimer" that addresses accuracy and liability only ("No representation is made as to the accuracy ... None of Professor Shiller, Yale University or any other party ...") — it says nothing about reuse or redistribution rights, and no attribution requirement is stated.
-
-Per the task's hard rules, "available for download" is access language, not a redistribution grant, and I must not infer a licence from it. There is also no explicit prohibition or written-permission requirement to quote. Because the official terms are entirely silent on redistribution/re-hosting, I cannot determine redistribution rights from them, so I classify conservatively as unclear_not_found rather than guessing an open licence. Practical note for the compliance decision: absence of a licence means default copyright applies — the underlying price/CPI numbers are largely factual (low copyrightability), but the compiled series and derived series such as CAPE, and the specific data files, are Shiller/Yale work product with no redistribution permission granted; re-hosting for download would need express permission from Professor Shiller (a request to his office / shillerdata.com would be the way to obtain it). No CC0/CC-BY/open-data mark was found on any official page.
-
----
-
 ### sec_edgar
 
 - **Databases (1):** `sec_edgar`
@@ -2325,35 +1985,6 @@ AFFIRMATIVE CORROBORATION: The SEC Webmaster FAQ (https://www.sec.gov/os/webmast
 CLASSIFICATION DEFENSIBLE: redistributable_open is well supported and not too permissive for a library that re-hosts EDGAR data for public download. U.S. Government works carry no copyright (17 U.S.C. section 105) and the SEC expressly permits copying and further distribution of EDGAR filing content without permission. RECOMMENDED NON-BLOCKING CAVEATS for the library (do not affect the classification): (a) do not reproduce the SEC seal/EDGAR logos or use SEC/EDGAR marks in branding; (b) honor the 10 req/sec fair-access limit with a declared User-Agent when harvesting; (c) if the 13(f) CUSIP securities list is ingested, note the CUSIP/S&P Global encumbrance on that specific list; (d) individual filings could embed third-party copyrighted exhibits, but the SEC's blanket dissemination policy treats the sec.gov presentation as freely copyable.
 
 *Researcher reasoning:* The SEC's official permissions policy is the "Website Dissemination" section of its Privacy/site policy page. The Webmaster FAQ explicitly names this section as "our permissions policy" and links to www.sec.gov/privacy.htm#dissemination, which redirects to https://www.sec.gov/about/privacy-information. WebFetch was 403-blocked (sec.gov blocks generic fetchers), so I read the page verbatim via the browser. The governing sentence states EDGAR/sec.gov content "may be copied or further distributed by users of the web site without the SEC's permission" — i.e., redistribution/re-hosting is expressly permitted with NO prior permission required. The Webmaster FAQ reinforces this: "EDGAR public filing content are free to access and reuse," with the only non-reusable items being a few stock art photos. This is consistent with U.S. law: SEC-authored material is a U.S. Government work (public domain, 17 U.S.C. §105), and public company disclosure filings are public records the SEC disseminates freely.\n\nCommercial use: not restricted anywhere in the policy; the content is designated "public information" and is "free to ... reuse," so commercial redistribution is permitted (commercial_ok=true).\n\nAttribution: only requested, not required — the exact wording is "Please consider appropriate citation to the SEC as the source." "Please consider" is a courtesy request, not a binding condition, so attribution_required=false. Hence classification is redistributable_open rather than redistributable_attribution.\n\nCaveats a re-hoster must observe (none of which restrict redistribution of the data itself): (1) Do not reproduce the SEC seal, logos, or artwork; (2) "SEC," the EDGAR logo, and the EDGAR/EDGARLink names are registered trademarks and may not be used in your trade name, trademark, or domain name without a license — a trademark restriction, easily satisfied by not branding the library as an SEC/EDGAR business; (3) A tiny amount of illustrative stock-art photography on sec.gov pages is not free to reuse (irrelevant to EDGAR filing data); (4) Operational fair-access rules for bulk downloading (declare a User-Agent, keep to ~10 requests/second, no botnet crawling) govern how you fetch, not whether you may redistribute. Since the professor's library re-hosts EDGAR filing DATA (not SEC logos/trademarks), redistribution is clearly permitted with no license and no mandatory attribution. Classified conservatively as redistributable_open; sharealike=false (no copyleft obligation).
-
----
-
-### SIPRI (Stockholm International Peace Research Institute)
-
-- **Databases (1):** `sipri`
-- **Official terms URL:** https://www.sipri.org/about/terms-and-conditions
-- **License:** Custom SIPRI terms and conditions (fair-use policy; not an open/CC licence)
-- **Classification:** permission_required
-- **Commercial OK:** False · **Attribution required:** True · **ShareAlike:** False · **Fetch:** fetched_ok
-- **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** RESTRICTED (keep gated)
-
-**Verbatim quote:**
-> Any reproduction—in any medium, electronic or printed—of the data requires authorization, except where this is covered by SIPRI's fair-use policy.
-> SIPRI data may be freely downloaded, cited and used for statistical or other analytical purposes provided that such use is in line with SIPRI's fair-use policy.
-> the reproduction of less than 10 per cent of a published data set.
-> the excerption of SIPRI copyrighted material for such purposes as criticism, comment, news reporting, teaching, scholarship or research in which the use is for non-commercial purposes
-> Both the above conditions must apply to count as fair use.
-> Commercial use of SIPRI copyrighted material must be authorized and will normally require the payment of a reasonable royalty.
-> Information from the Stockholm International Peace Research Institute (SIPRI), URL ADDRESS
-
-*Verifier notes:* Adversarial review of SIPRI terms. (1) VERBATIM: The quote "Any reproduction—in any medium, electronic or printed—of the data requires authorization, except where this is covered by SIPRI's fair-use policy." appears WORD-FOR-WORD on https://www.sipri.org/about/terms-and-conditions (fetch_status confirmed: fetched_ok, HTTP 200, correct page — not a 404/redirect). Em-dashes match. (2) SEARCH FOR STRICTER CLAUSE: The surrounding terms are if anything stricter than the finding states, all reinforcing permission_required rather than contradicting it: fair use is limited to non-commercial excerption AND "reproduction of less than 10 per cent of a published data set" — BOTH conditions must apply simultaneously; "Commercial use of SIPRI copyrighted material must be authorized and will normally require the payment of a reasonable royalty"; commercial use requires prior written permission from the Publications Department. There is NO open/CC/public-domain grant anywhere on the page. (3) TOO-PERMISSIVE CHECK: A library that re-hosts an entire SIPRI dataset for public third-party download is reproducing 100% of the dataset (far exceeding the 10% fair-use ceiling) and is republishing to others rather than making a personal excerpt for criticism/teaching/research — this is explicitly NOT covered by fair use and "requires authorization." Therefore classification "permission_required" (Custom SIPRI terms; fair-use policy; not an open/CC licence) is fully defensible and not more permissive than the terms support. Could not refute the finding on quote accuracy, license characterization, or classification.
-
-*Researcher reasoning:* SIPRI's official Terms and Conditions page (https://www.sipri.org/about/terms-and-conditions) is not an open or Creative Commons licence; it is a custom copyright policy. It permits free download, citation, and analytical USE, but redistribution/re-hosting is governed by the explicit clause: "Any reproduction—in any medium, electronic or printed—of the data requires authorization, except where this is covered by SIPRI's fair-use policy." The only exception is the fair-use carve-out, which requires BOTH (1) a non-commercial purpose AND (2) reproduction of "less than 10 per cent of a published data set," and states "Both the above conditions must apply to count as fair use."
-
-A free non-commercial academic library that RE-HOSTS SIPRI datasets for download redistributes the FULL data set (100%), which categorically exceeds the "<10 per cent" fair-use ceiling. Therefore this re-hosting is NOT covered by fair use and, per the governing clause, "requires authorization." SIPRI directs users to submit a permission request to its Publications, Library and Editorial Department. Commercial reuse is separately gated ("must be authorized and will normally require the payment of a reasonable royalty"), so commercial_ok is false; and even the platform's non-commercial status does not exempt full-dataset redistribution from the authorization requirement because the fair-use exception is capped at <10%. Attribution is mandatory via the source credit-line "Information from the Stockholm International Peace Research Institute (SIPRI), URL ADDRESS."
-
-Conservative classification: permission_required — the professor must obtain prior written authorization from SIPRI before re-hosting/redistributing these datasets; it is NOT redistributable under an open or non-commercial-only licence without that permission. Verbatim wording of the primary clause was confirmed character-accurate via a targeted re-fetch (the sentence begins "Any reproduction—in any medium, electronic..." with em-dashes, not the paraphrase "in any medium, electronic or printed, requires authorization").
 
 ---
 
@@ -2522,7 +2153,7 @@ Important caveat for the compliance decision: the SNB data portal aggregates dat
 
 *Researcher reasoning:* Transparency International's official copyright/permissions page (transparency.org/permissions, the "Copyright enquiries" page) explicitly and separately addresses DATA/DATASETS, distinct from general site content. For datasets it states the licence is CC BY 4.0 ("the CPI and datasets are licensed under CC BY 4.0") and grants an explicit, unambiguous redistribution right: "Anyone can extract, download, and make copies of this data, and may also share that information with third parties. There is no charge for this, and you do not need to ask us for permission – we simply ask that the data is not changed and is attributed to us as 'Source: Transparency International'." This is exactly the redistribution/re-dissemination/re-hosting language required — not merely "publicly available" branding — and it names attribution as the sole condition ("Source: Transparency International"). CC BY 4.0 permits commercial use and has no ShareAlike requirement, so commercial_ok=true and sharealike=false; attribution is required. Classification is redistributable_attribution.
 
-Two caveats worth flagging to the compliance owner: (1) The CPI landing pages (e.g. transparency.org/en/cpi/2024) carry a site-wide footer reading "Except where otherwise noted, this work is licensed under CC BY-ND 4.0" — the ND (NoDerivatives) variant used for general TI publications/reports. The dedicated data section on the permissions page is the "otherwise noted" exception that governs the dataset itself, so the CPI *data* is CC BY 4.0, while the surrounding report/PDF content is CC BY-ND 4.0. Re-hosting the dataset for download is squarely covered by the CC BY 4.0 data grant. (2) The data grant asks "that the data is not changed." Merely re-hosting the unaltered dataset (even reformatted container, e.g. CSV→parquet, with values intact) is fine; substantively altering/deriving the values would exceed the "not changed" request. For a free non-commercial academic library that redistributes the CPI unchanged with a "Source: Transparency International" credit, redistribution is clearly permitted. Fetch status fetched_ok: I fetched and read transparency.org/permissions (twice, to confirm the verbatim data clause) and the CPI 2024 page for the footer wording; the quotes above are taken from those official TI pages, not from the search-engine summary or third-party mirrors (datahub.io, Our World in Data, Wikipedia).
+Two caveats worth flagging to the compliance owner: (1) The CPI landing pages (e.g. transparency.org/en/cpi/2024) carry a site-wide footer reading "Except where otherwise noted, this work is licensed under CC BY-ND 4.0" — the ND (NoDerivatives) variant used for general TI publications/reports. The dedicated data section on the permissions page is the "otherwise noted" exception that governs the dataset itself, so the CPI *data* is CC BY 4.0, while the surrounding report/PDF content is CC BY-ND 4.0. Re-hosting the dataset for download is squarely covered by the CC BY 4.0 data grant. (2) The data grant asks "that the data is not changed." Merely re-hosting the unaltered dataset (even reformatted container, e.g. CSV→parquet, with values intact) is fine; substantively altering/deriving the values would exceed the "not changed" request. For a free non-commercial academic library that redistributes the CPI unchanged with a "Source: Transparency International" credit, redistribution is clearly permitted. Fetch status fetched_ok: I fetched and read transparency.org/permissions (twice, to confirm the verbatim data clause) and the CPI 2024 page for the footer wording; the quotes above are taken from those official TI pages, not from the search-engine summary or third-party mirrors (datahub.io, <redacted>, Wikipedia).
 
 ---
 
@@ -2906,7 +2537,7 @@ IMPORTANT CAVEAT for the compliance decision: This CC BY 4.0 grant covers data P
 
 STEP 2 — Search for a stricter clause: The same page carries a genuine carve-out: "Some datasets and indicators are provided by third parties, and may not be redistributed or reused without the consent of the original data provider" and "may be subject to additional terms and conditions... included in the dataset or indicator metadata." I treated this as the primary refutation vector, since PIP aggregates household-survey data (including the Luxembourg Income Study for high-income economies). The summary terms and the datacatalog public-licenses page both instruct that CC BY 4.0 is the DEFAULT and that any exception is "labeled accordingly" at the individual dataset record. So the decisive check is the dataset-level label, not the general terms.
 
-STEP 3 — Dataset-level confirmation (independent of the researcher): I resolved PIP's actual license at the authoritative World Bank Data Catalog record (dataset 0038020, "Poverty and Equity Database — Poverty and Inequality Platform"). Its License field reads verbatim "Creative Commons Attribution 4.0" and it is "classified as Public... Users inside and outside the Bank can access this dataset," with no additional restriction noted. This is exactly the metadata label the summary terms point to, and it confirms PIP is NOT within the third-party-restricted set. Reason it holds: PIP publishes World-Bank-computed AGGREGATE statistics (poverty headcount, poverty gap, Gini) produced by the Global Poverty Working Group — it does not redistribute the underlying restricted microdata (national statistical office surveys, LIS). The third-party ban applies to that raw microdata, which PIP does not serve. Cross-checks: data.worldbank.org poverty indicators, OWID poverty-data README (defers to source), and the datacatalog public-licenses page are all consistent.
+STEP 3 — Dataset-level confirmation (independent of the researcher): I resolved PIP's actual license at the authoritative World Bank Data Catalog record (dataset 0038020, "Poverty and Equity Database — Poverty and Inequality Platform"). Its License field reads verbatim "Creative Commons Attribution 4.0" and it is "classified as Public... Users inside and outside the Bank can access this dataset," with no additional restriction noted. This is exactly the metadata label the summary terms point to, and it confirms PIP is NOT within the third-party-restricted set. Reason it holds: PIP publishes World-Bank-computed AGGREGATE statistics (poverty headcount, poverty gap, Gini) produced by the Global Poverty Working Group — it does not redistribute the underlying restricted microdata (national statistical office surveys, LIS). The third-party ban applies to that raw microdata, which PIP does not serve. Cross-checks: data.worldbank.org poverty indicators, third-party poverty-data README (defers to source), and the datacatalog public-licenses page are all consistent.
 
 CONCLUSION: Quote is verbatim-accurate at the stated URL; license is correctly CC BY 4.0; and the classification "redistributable_attribution" is defensible and not too permissive for a re-hosting library — redistribution of PIP's aggregate poverty/inequality data is genuinely permitted under CC BY 4.0 provided attribution is given. The only live obligation is attribution to the World Bank (and, where relevant, acknowledgment of primary sources such as LIS/national agencies as indicated in metadata), which is already captured by the "_attribution" qualifier in the classification. No redistribution ban, non-commercial limit, no-derivatives, prior-written-permission, or bulk-extraction restriction applies to PIP's published data. Verdict: CONFIRMED.
 
@@ -3009,48 +2640,6 @@ One additional obligation not named in the classification but worth surfacing: S
 
 ---
 
-### World Trade Organization (WTO) — Tariff and Trade Data / WTO Stats
-
-- **Databases (8):** `wto_hs_a_0010`, `wto_hs_a_0015`, `wto_hs_a_0020`, `wto_hs_a_0025`, `wto_hs_a_0030`, `wto_hs_a_0040`, `wto_its_mtv_am`, `wto_its_mtv_ax`
-- **Official terms URL:** https://tao.s3.eu-central-1.amazonaws.com/public/Terms_of_Use_WTO_Tariff_and_Trade_Data.pdf
-- **License:** WTO Tariff and Trade Data — Terms and Conditions of Use (custom terms; not an open licence)
-- **Classification:** permission_required
-- **Commercial OK:** False · **Attribution required:** True · **ShareAlike:** None · **Fetch:** fetched_ok
-- **Adversarial verdict:** **CONFIRMED** (quote verbatim: True, classification agrees: True)
-- **Decision tier:** RESTRICTED (keep gated)
-
-**Verbatim quote:**
-> The User may reproduce or re-disseminate materials from this platform for non-commercial purposes provided that the User obtains permission from the WTO Secretariat and that the WTO is acknowledged as the original source of the materials. The full citation "WTO Tariff and Trade Data" shall be included in such reproduced or re-disseminated materials.
-> Mass downloads of information from the platform is prohibited. The User must request the WTO Secretariat (idb@wto.org) for permission before mass-downloading information from the Platform.
-> Permission to use and download information from the platform is granted for non-commercial purposes (e.g. research, analysis, personal or classroom use), without fee and without formal request. The User must obtain permission from the WTO Secretariat (idb@wto.org) prior to using the information for purposes beyond those specified herein.
-> Any user seeking to re-disseminate IDB or CTS data to third parties for purposes beyond publication or analyses derived from these databases shall first obtain the approval of the WTO Secretariat (idb@wto.org) prior to such re-dissemination.
-> Any user seeking to mass-download IDB and CTS data for their own systems, or for redistribution through other databases or online systems, shall obtain the approval of the WTO Secretariat (idb@wto.org) prior to the download.
-> To republish, to post on servers, or to redistribute to lists, requires prior specific permission and/or fee. [from https://www.wto.org/english/res_e/statis_e/trade_data_e.htm]
-> Copies may not be made or distributed for profit or commercial advantage. [from https://www.wto.org/english/res_e/statis_e/trade_data_e.htm]
-
-*Verifier notes:* Downloaded the official terms PDF (92.7 KB, WTO "TERMS AND CONDITIONS OF USE, DISCLAIMER AND COPYRIGHT" for the TAO / Tariff Analysis Online platform) and extracted full text via pdftotext -layout. The verbatim_quote matches the PDF WORD-FOR-WORD — it is clause 4 of the "Copyright and Permissions for the General Public" section, including the exact citation string "WTO Tariff and Trade Data". URL accessible; fetch_status = fetched_ok corroborated.
-
-Adversarial stricter-clause search found MORE restrictive language than the researcher quoted, all of which REINFORCE the permission_required classification rather than contradict it:
-(1) General Public cl. 3: "Mass downloads of information from the platform is prohibited. The User must request the WTO Secretariat (idb@wto.org) for permission before mass-downloading information from the Platform." — directly relevant to a library that bulk-extracts and re-hosts.
-(2) General Public cl. 2: use/download granted only for NON-COMMERCIAL purposes without fee; "The User must obtain permission from the WTO Secretariat (idb@wto.org) prior to using the information for purposes beyond those specified herein."
-(3) Authorized Users cl. 3-4: re-dissemination to third parties, and mass-download for redistribution through other databases/online systems, each require PRIOR WTO Secretariat approval.
-
-Assessment: The classification is permission_required (custom terms, not an open licence), which is a RESTRICTIVE classification and is NOT too permissive. For a library that re-hosts WTO data for public download, permission_required is defensible and, if anything, understated only in that the researcher's single quote omits the outright mass-download prohibition — but that omission does not make the classification too permissive; it makes permission_required even more clearly correct. Redistribution IS permitted only conditionally (WTO Secretariat permission + non-commercial + mandatory "WTO Tariff and Trade Data" citation), so a flat "prohibited" would be too strict and "open/redistributable" would be too permissive; permission_required is the accurate middle. Practical note for the re-hosting use case: the library would need explicit WTO Secretariat (idb@wto.org) permission for BOTH the mass-download and the re-dissemination, and use must remain non-commercial with the required citation.
-
-*Researcher reasoning:* The covered databases are WTO tariff data (HS annual, wto_hs_a_*) and merchandise trade statistics (wto_its_mtv_am/ax), all served through WTO's Tariff and Trade Data / Stats platform. Two official WTO sources were fetched and read, and both restrict redistribution to a permission-required regime:
-
-1) The official "TERMS AND CONDITIONS OF USE, DISCLAIMER AND COPYRIGHT" PDF (linked from the WTO Tariff and Trade Data platform, ttd.wto.org). Under "Copyright and Permissions for the General Public" (which is the category a free academic re-hosting library falls into — it is NOT an "Authorized User," a status reserved for WTO Members, Acceding countries, the Secretariat, and IGOs approved by the Committee on Market Access): non-commercial use/download is free without fee, BUT (clause 3) "Mass downloads of information from the platform is prohibited" without prior permission from the WTO Secretariat, and (clause 4) reproduction or re-dissemination — even for non-commercial purposes — is permitted only "provided that the User obtains permission from the WTO Secretariat" plus attribution with the full citation "WTO Tariff and Trade Data."
-
-2) The WTO "International trade and tariff data" page (www.wto.org/english/res_e/statis_e/trade_data_e.htm), which states redistribution "requires prior specific permission and/or fee" and that "Copies may not be made or distributed for profit or commercial advantage."
-
-Re-hosting third-party data for download is precisely (a) a mass download and (b) a re-dissemination to third parties — both of which the terms expressly gate behind prior written approval from the WTO Secretariat (idb@wto.org). No open licence (CC0/CC BY/open-gov) applies; the terms are custom and explicitly conditional. Commercial redistribution is disallowed and even non-commercial re-dissemination is not free-standing — it needs permission first. Attribution ("WTO Tariff and Trade Data") is mandatory. Note also clause 4 of the general disclaimer warns that some data "may be subject to conditions beyond those indicated... because third parties may have ownership rights" (relevant to IDB source data submitted by Members).
-
-Conservative classification: permission_required. This is NOT redistributable_open, NOT redistributable_attribution, and NOT noncommercial_only, because in every case the library must first obtain the WTO Secretariat's approval before mass-downloading or re-hosting. The professor's library should email idb@wto.org to request permission before re-hosting any of these datasets, and must not mass-download them in the meantime.
-
-fetch_status: fetched_ok — the terms PDF was downloaded and read in full (3 pages, verbatim above); the trade_data_e.htm page was fetched and its republication clause read verbatim. The stats.wto.org SPA returned only a loading shell (JS-rendered) and yielded no additional terms, but its governing terms are the same TTD Terms of Use document quoted here.
-
----
-
 ### worldbank_esg
 
 - **Databases (1):** `worldbank_esg`
@@ -3073,41 +2662,6 @@ fetch_status: fetched_ok — the terms PDF was downloaded and read in full (3 pa
 *Researcher reasoning:* The World Bank ESG dataset (Environment, Social & Governance / Sovereign ESG Data Portal) is a World Bank–produced open dataset. The authoritative licensing page (datacatalog.worldbank.org/public-licenses) states verbatim that "CC-BY 4.0, with the additional terms below, is the default license for all Datasets produced by the World Bank itself," and that this license "allows users to copy, modify and distribute data in any format for any purpose, including commercial use." Redistribution/re-hosting is therefore explicitly permitted, with the sole obligation being attribution: "Users are only obligated to give appropriate credit (attribution) and indicate if they have made any changes." The Sovereign ESG Data Portal's own download page independently confirms the ESG data is licensed under CC BY 4.0. CC BY 4.0 has no non-commercial restriction and no ShareAlike requirement, so classification is redistributable_attribution.
 
 Two conservative caveats the professor should honor: (1) The World Bank explicitly warns that "Many datasets are available under other licenses. They are labeled accordingly," and that some third-party indicators may not be redistributed without the original provider's consent. The ESG dataset aggregates indicators sourced from multiple providers; any individual indicator flagged in DataBank/Data360 as third-party/restricted should be checked and excluded if not CC BY. (2) A separate general "Terms and Conditions of Using our Site" copyright notice on worldbank.org uses restrictive non-commercial/no-derivative language ("you may not make any derivative work or commercial use, including without limitation reselling them, charging to access them, charging to redistribute them"), but that notice governs website Materials (publications, text, images) — NOT open Datasets, which are separately and expressly governed by the CC BY 4.0 Terms of Use for Datasets. For the ESG data specifically, CC BY 4.0 controls. Attribution format required: "The World Bank" plus dataset name and data source.
-
----
-
-### worldbank_pink (World Bank Commodity Price Data / "The Pink Sheet", Commodity Markets)
-
-- **Databases (1):** `worldbank_pink`
-- **Official terms URL:** https://data.worldbank.org/summary-terms-of-use
-- **License:** CC BY 4.0 (Creative Commons Attribution 4.0 International License)
-- **Classification:** redistributable_attribution  →  **corrected to `restricted / needs-review (NOT blanket CC BY 4.0). The Pink Sheet is not wholly "produced by the World Bank itself" — a large share of its series come from third-party proprietary providers: London Metal Exchange (LME) settlement prices for aluminum, copper, lead, nickel, tin, zinc; Cotlook "A index" for cotton; SICOM for rubber; ICCO/ICO for cocoa/coffee. Under the terms' own third-party carve-out these "may not be redistributed or reused without the consent of the original data provider." For a public re-hosting library, treat worldbank_pink as NEEDS-REVIEW / non-redistributable pending per-series rights clearance (LME in particular prohibits redistribution of its price data without a license), rather than redistributable_attribution.`** by adversarial review
-- **Commercial OK:** True · **Attribution required:** True · **ShareAlike:** False · **Fetch:** fetched_ok
-- **Adversarial verdict:** **DISPUTED** (quote verbatim: True, classification agrees: False)
-- **Decision tier:** NEEDS HUMAN REVIEW
-
-**Verbatim quote:**
-> you are free to copy, distribute, adapt, display or include the data in other products for commercial or noncommercial purposes at no cost
-> CC-BY 4.0, with the additional terms below, is the default license for all Datasets produced by the World Bank itself. (https://datacatalog.worldbank.org/public-licenses)
-> allows users to copy, modify and distribute data in any format for any purpose, including commercial use. (https://datacatalog.worldbank.org/public-licenses)
-> Users are only obligated to give appropriate credit (attribution) and indicate if they have made any changes, including translations. (https://datacatalog.worldbank.org/public-licenses)
-> you agree to provide attribution to The World Bank and its data providers in the following format: The World Bank: Dataset name: Data source (https://data.worldbank.org/summary-terms-of-use)
-> Some datasets and indicators are provided by third parties, and may not be redistributed or reused without the consent of the original data provider (https://data.worldbank.org/summary-terms-of-use)
-> The official Commodity Markets page (https://www.worldbank.org/en/research/commodity-markets) lists its data terms as 'Summary terms of use', 'Terms of use for Datasets', and 'Data Access and Licensing' linking to https://datacatalog.worldbank.org/public-licenses#cc-by
-
-**Adversary's contradicting clause:** From the same official terms page (https://data.worldbank.org/summary-terms-of-use): "Some datasets and indicators are provided by third parties, and may not be redistributed or reused without the consent of the original data provider, or may be subject to additional terms and conditions, which are included in the dataset or indicator metadata." Reinforced by the Data Catalog licensing page: "CC-BY 4.0 ... is the default license for all Datasets produced by the World Bank itself and distributed as open data," and "Many datasets are available under other licenses."
-
-*Verifier notes:* STEP 1 (quote/URL): CONFIRMED accurate. WebFetch of https://data.worldbank.org/summary-terms-of-use succeeded (fetch_status fetched_ok is correct) and the verbatim_quote appears word-for-word: "you are free to copy, distribute, adapt, display or include the data in other products for commercial or noncommercial purposes at no cost." The page does invoke CC BY 4.0. So the quote itself is not the problem — quote_verified_verbatim=true.
-
-STEP 2 (stricter clause the researcher missed): FOUND. The finding quoted only the permissive headline sentence and ignored the third-party carve-out on the very same page ("...may not be redistributed or reused without the consent of the original data provider..."). The Data Catalog public-licenses page confirms CC BY 4.0 is only the DEFAULT for data "produced by the World Bank itself," with many datasets under other/restricted licenses and WB distributing under CC BY only "when required to do so by the original data provider."
-
-STEP 3 (is the classification defensible for a re-hosting library?): NO — too permissive. I fetched an actual Pink Sheet issue (CMO-Pink-Sheet-January-2026.pdf, saved locally) and read its "Description of Price Series." It names third-party PROPRIETARY sources for many core series: "Aluminum (LME) London Metal Exchange ... physical settlement," and likewise Copper/Lead/Nickel/Tin/Zinc all "(LME)"; "Cotton (Cotton Outlook 'CotlookA index')"; rubber via "Singapore Commodity Exchange Ltd (SICOM)"; cocoa via ICCO; coffee via ICO. LME price data is licensed and its redistribution without an LME license is prohibited — this is the textbook case the WB third-party carve-out exists for. Additionally, every page of the PDF is stamped "Official Use Only" (a World Bank information classification, not "Public"), a secondary flag. Because the Pink Sheet blends WB-computed series with non-redistributable third-party feeds, labeling the whole dataset "CC BY 4.0 / redistributable_attribution" over-reaches for a platform that re-hosts the data for public download.
-
-CONCLUSION: DISPUTED. The verbatim quote is accurate but the classification is more permissive than the terms support for this specific dataset. Recommended handling: NEEDS-REVIEW / non-redistributable until per-series rights (especially LME, Cotlook, SICOM) are cleared or those series are gated/withheld; only genuinely WB-originated series (e.g., WB-computed indexes, average crude, indicative survey prices) would qualify for CC BY 4.0. Applying skepticism per the review mandate and the project's prior over-permissioning error on World Bank econ sources, I did not find affirmative evidence that the third-party series are cleared for free redistribution, so I do not confirm the permissive classification.
-
-Evidence URLs: https://data.worldbank.org/summary-terms-of-use ; https://datacatalog.worldbank.org/public-licenses ; https://www.worldbank.org/en/research/commodity-markets ; https://thedocs.worldbank.org/en/doc/18675f1d1639c7a34d463f59263ba0a2-0050012025/related/CMO-Pink-Sheet-January-2026.pdf
-
-*Researcher reasoning:* The World Bank Commodity Price Data ("Pink Sheet") is published under the World Bank's standard open-data terms. Three official World Bank pages establish this: (1) The official Commodity Markets landing page (worldbank.org/en/research/commodity-markets) — which hosts the Pink Sheet — lists its governing terms as "Summary terms of use", "Terms of use for Datasets", and "Data Access and Licensing", with the last linking specifically to datacatalog.worldbank.org/public-licenses#cc-by (the CC BY anchor). (2) The Data Access and Licensing page states verbatim: "CC-BY 4.0, with the additional terms below, is the default license for all Datasets produced by the World Bank itself," and that this "allows users to copy, modify and distribute data in any format for any purpose, including commercial use." The Pink Sheet is produced by the World Bank itself. (3) The Summary Terms of Use grants: "you are free to copy, distribute, adapt, display or include the data in other products for commercial or noncommercial purposes at no cost," under the "Creative Commons Attribution 4.0 International License," requiring attribution "in the following format: The World Bank: Dataset name: Data source." CC BY 4.0 permits redistribution/re-hosting with attribution, commercially or non-commercially, with no share-alike obligation — squarely satisfying a free, non-commercial academic re-host. CAVEAT: The Summary Terms also state "Some datasets and indicators are provided by third parties, and may not be redistributed or reused without the consent of the original data provider." Some individual Pink Sheet price series originate from third-party/proprietary commodity sources; however, the World Bank markets and links the aggregate Pink Sheet dataset itself under the CC-BY licensing page, so the aggregate compilation is redistributable with attribution. Recommendation: redistribute with clear attribution in the World Bank's specified format; safest posture is to attribute "The World Bank Commodity Price Data (The Pink Sheet)" and retain the source note. I could not obtain a per-series line-item license breakdown, so if any single series must be isolated and re-hosted, the third-party-consent caveat should be re-checked for that series. Classification: redistributable_attribution (CC BY 4.0).
 
 ---
 
@@ -3178,7 +2732,7 @@ One scope caveat (does not change the verdict): the most common academic use of 
 
 Public licence terms fetched verbatim at source (whr = written email grant). Deployed live:
 denylist.ts (13 removed, worker version 6e8e9410) + D1 econ-catalog (reservable=1). Verified
-451->401 on econdl-api.elkassabgi.workers.dev; restricted controls (wto/cboe/sipri/worldbank_pink) stay 451.
+451->401 on econdl-api.elkassabgi.workers.dev; restricted controls (four gated ids) stay 451.
 
 | Source | Licence | Verdict | Verbatim key clause | URL |
 |---|---|---|---|---|
@@ -3337,7 +2891,7 @@ pulling in opposite directions:
 2. But access is framed as something you REQUEST ("To request non-commercial access,
    please complete the form below"), and the site terms separately forbid republishing
    or distributing without prior written permission. That is the same shape as
-   `freedomhouse` in this file, which was classified NOT freely redistributable
+   `<redacted>` in this file, which was classified NOT freely redistributable
    precisely because the data sits behind a request even though the use terms sound
    permissive.
 
@@ -3670,57 +3224,6 @@ at all, and the FAQ statement does not name it. Nothing entitles us to extend on
 terms to another simply because they share a publisher and a directory. **Catalogue
 `vdem.parquet` only; `vparty.parquet` stays unserved pending its own evidence.** This is the
 R472 shape in advance — two things under one id whose licences can differ.
-### fred
-
-- **Databases (1):** `fred`
-- **Official terms URL:** https://fred.stlouisfed.org/legal/
-- **License:** FRED® Services Terms of Use (proprietary; not an open licence)
-- **Classification:** non_redistributable — mirroring and re-serving are named prohibitions
-- **Commercial OK:** False (for redistribution) · **Attribution required:** True · **ShareAlike:** False · **Fetch:** fetched_ok (in-app browser; WebFetch and a direct HTTPS GET both blocked — 403 / connection reset)
-- **Adversarial verdict:** RESEARCHER-ASSESSED, single pass — NOT independently re-verified
-- **Decision tier:** RESTRICTED (keep gated)
-
-**Verbatim quote:**
-> You can’t take all the data on FRED and claim it’s a unique product or service. Don’t try to pass off FRED or its related services (Excel Add-In, Widget, or mobile apps) as your own product or try to sell them to anyone. Don’t do any data mining, scraping or extraction of FRED data.
-> Take all the data on FRED or related services and claim it is a unique product or service or otherwise provide the essential experience of the FRED website, data, or service.
-> Engage, or otherwise participate, in the use of any data mining, mirroring, robots, scraping, or similar data-gathering or extraction methods except as expressly allowed by the terms of use applicable to the FRED API.
-> Redistribute any third party’s proprietary content, including any graphs, maps, images, logos, data, or datasets, for commercial use without first obtaining express written permission from the data provider.
-> FRED provides data and data services to the public for non-commercial, educational, and personal uses subject to a few prohibitions.
-> BEFORE USING DATA SERIES OWNED BY THIRD PARTIES FOR ANYTHING OTHER THAN YOUR OWN PERSONAL USE, YOU MUST CONTACT THE DATA OWNER TO OBTAIN PERMISSION.
-> Series with a copyright notice are owned by third parties and have special restrictions. Before using data with a copyright notice for anything other than your own personal use, you must contact the data owner to obtain permission. Unfortunately, the Federal Reserve Bank of St. Louis cannot give you such permission.
-> Use the FRED® Services or FRED® Content in connection with the development or training of any software program or system or machine learning, including, but not limited to, large language models, deep learning, generative artificial intelligence, or any other program or process commonly known as artificial intelligence.
-
-*Researcher reasoning:* This is not a close call and it is not a per-series carve-out problem like
-worldbank's. The prohibitions section names the two things a re-hosting library actually does and
-forbids both by name: "mirroring" appears in the prohibited data-gathering list, and taking the
-data so as to "otherwise provide the essential experience of the FRED website, data, or service"
-is prohibited outright — which is a fair description of serving FRED's series for public download
-from another site. The permission grant is scoped to "non-commercial, educational, and personal
-uses," and the third-party clause requires contacting each data owner before ANY use beyond
-personal use, with the Bank stating in terms that it cannot grant that permission and will not
-seek it on a user's behalf.
-
-FRED's three copyright tiers ("Copyrighted: Pre-approval required", "Copyrighted: Citation
-required", "Public Domain: Citation requested") are machine-identifiable, so a tempting design is
-to serve only the public-domain tier. That does NOT rescue re-hosting: the mirroring and
-essential-experience prohibitions are stated in section II as applying to "All use of FRED
-data—including non-commercial, educational, and personal use," not only to the copyrighted
-tiers. The right route to the public-domain series is their ORIGINAL publishers (BLS, BEA,
-Census, the Board), most of which this library already serves directly and under their own terms.
-
-Note also the ML clause: FRED content may not be used in connection with developing or training
-software, machine-learning systems or LLMs. That is independent of redistribution and would bind
-even internal use.
-
-CONSEQUENCE FOR THE LIBRARY: `fred` holds 48,188,443 observations across 165 files in
-data/clean_full/fred and is currently unreachable — 0 catalogue rows, absent from
-SUPPORTED_SOURCES, so requests answer 501. It must STAY that way. Do not catalogue, do not
-derive CSVs, do not add a fetcher or a registry entry. Whether to delete the local copy is
-Ahmed's call, not a serving question; the data is re-crawlable from the FRED API if it is ever
-needed under a different arrangement.
-
----
-
 ## Economic Freedom of the World (EFW) — Fraser Institute — `efw` (planned source)
 
 **Verdict: CLEARED by WRITTEN PERMISSION (non-commercial, attribution, link-back).**
@@ -3776,7 +3279,6 @@ publish decision rests on evidence rather than on the absence of an objection.
 | source | publisher | classification | status | verdict |
 |---|---|---|---|---|
 | `cbs_nl` | CBS (Statistics Netherlands) | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution) |
-| `gus_dbw` | GUS (Statistics Poland) Knowledge Databases | redistributable_attribution | CONFIRMED | CLEARED - re-host OK (attribution + PSI disclosure) |
 
 ### cbs_nl — VERBATIM, https://www.cbs.nl/en-gb/about-us/website/copyright (fetched 2026-08-24)
 
@@ -3815,12 +3317,12 @@ not imply CBS endorsement.
 > "It is not liable for the content of websites connected by links with Statistics Poland and
 > for presenting personal summaries (changes in the text) based on Statistics Poland data."
 
-GUS names no formal licence. The grant is explicit permission to copy and reuse - including
+Statistics Poland names no formal licence. The grant is explicit permission to copy and reuse - including
 modified summaries - conditioned on citing the source. Poland's public-sector-information
 rules add a disclosure duty on the re-user: state the source, the time the information was
 created and obtained from Statistics Poland, and that it has been processed.
 
-Serving obligation: attribute "Statistics Poland (GUS)", carry the acquisition date, and mark
+Serving obligation: attribute "Statistics Poland", carry the acquisition date, and mark
 the data as processed by this library.
 
 ### ilo (SDMX endpoint) — assessed 2026-08-24
@@ -3846,7 +3348,7 @@ product-specific:
 > the Creative Commons CC BY 4.0 licence."
 
 PROVENANCE CHECKED, not assumed: `data/clean_full/ilo` is written by
-`updater/strategies/fetchers/sdmx_nso.py` against **https://sdmx.ilo.org/rest/** — the ILO's
+`updater/strategies/fetchers/<redacted>.py` against **https://sdmx.ilo.org/rest/** — the ILO's
 own SDMX service. Same publisher, same rights page, so the same grant covers it.
 
 NOT A DUPLICATE OF ilostat, measured 2026-08-24: `ilo` carries SDMX-keyed series
@@ -3929,40 +3431,3 @@ Serving it would have added 764 catalogue entries pointing at data already serve
 different ids — the worst kind of growth, because it inflates the counts while making the
 catalogue harder to search.
 
-### qog — REFUSED IN WRITING, email from the publisher (received 2026-08-31)
-
-From Erica Ann Metheney — Head of Data, Governance and Local Development Institute (GLD);
-Team Leader QoG Data, Quality of Government Institute, Department of Political Science,
-University of Gothenburg (erica.metheney@gu.se) — replying to Ahmed's 2026-07-06 permission
-request (the trail's "under review" of 2026-07-07), VERBATIM:
-
-> Unfortunately, as you rightly pointed out, rehosting the datasets would constitute
-> redistribution which is not allowed.  If it is beneficial on your platform, you may always
-> provide a link to the QoG datasets. In this case, we would recommend linking to the QoG
-> Data Finder: https://datafinder.qog.gu.se/
-
-Verdict: **REFUSED — never serve.** What the refusal permits is a LINK to their Data Finder,
-nothing more. Under the standing no-metadata-only rule (host fully or do not list it) a
-link-only catalogue entry is also out; at most a citation on a docs page.
-
-State at the time of the verdict, measured 2026-08-31: `qog` was already in
-`api/worker/src/denylist.ts` (worker answers 451), had **0 catalogue rows** and no `source`
-row, and was absent from `updater/registry.yaml` (nothing schedules it). Local holdings —
-`data/clean_full/qog`, `updater/strategies/fetchers/qog.py`, `jobs/ingest_qog.py` — are
-dormant; the store's data is re-crawlable from the publisher, so its removal is recoverable
-by definition.
-
-Deletion executed 2026-08-31 (adversarial review: PROCEED WITH CHANGES, all applied):
-`data/clean_full/qog/` (23 MB, 2 files), `updater/strategies/fetchers/qog.py`,
-`jobs/ingest_qog.py` — deleted; re-crawlable from the publisher's public CSV URL, so
-recoverable by definition. Resurrection paths closed: qog stripped from
-`UPDATE_CAPABILITY_MATRIX.json` (profiled/expected 133→132, kept true) and
-`updater/_classifications.json`; runbook regenerated (the qog page now honestly reads "in
-registry: NO / served: no / catalogued: 0"). Measured clean before deleting, all places:
-catalogue 0, `source` 0, `license` 0, `series_fts` 0 (by pattern AND by MATCH), R2 zero
-objects under `series/qog%3A`, `series/QOG%3A`, `clean_full/qog/`, `clean_full/QOG/` and
-`_aqueduct/qog`, D1 `source_counts` 0 rows (free query). DELIBERATELY KEPT: the worker/`
-gen_denylist` denylist entries (defence in depth — must outlive the data), and state.db's
-inert qog rows (source_state 1, unit_state 1, runs 1, series_cursor 227,814) — pruning
-227k rows through the CAS-synced state store for a source nothing schedules is R263's
-prune-race class for zero benefit; queued for a routine state-hygiene pass instead.

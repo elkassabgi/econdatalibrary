@@ -11,7 +11,7 @@ adversarial enrich->audit workflow). This script:
 
 Usage:
     python core/apply_title_wave.py imf_pctot imf_fdi ...      # explicit list
-The caller passes ONLY audit-confirmed sources. sipri's known-bad file is refused.
+The caller passes ONLY audit-confirmed sources. A gated source's known-bad file is refused.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ OUT_DIR = os.path.join(ROOT, "dist", "d1", "titles")
 
 MAX_BYTES = 10_000_000
 MAX_STMTS = 1500
-_REFUSE = set()  # (was {"sipri"} — its file is now corrected: units=US$ millions, base year (2024) verified against the SIPRI ingest-log sheet name)
+_REFUSE = set()  # (was {"a gated source"} — its file is now corrected: units=US$ millions, base year (2024) verified against a gated source ingest-log sheet name)
 
 
 def _lit(v: str) -> str:

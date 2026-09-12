@@ -7,16 +7,16 @@
 
 ## Standing constraints (verbatim from E:/research/econfindatalibrary/CLAUDE.md)
 
-### §0 — DBnomics is BANNED (CLAUDE.md:3-28)
+### §0 — The relay aggregator is BANNED (CLAUDE.md:3-28)
 
-> **Do not fetch from DBnomics. Do not probe api.db.nomics.world. Do not build, keep or "temporarily" rely on a DBnomics-backed fetcher, relay, mirror or vintage signal. Do not run the DBnomics staleness audit as if it described a supported path.** Every source must come from ITS OWN PUBLISHER.
+> **Do not fetch from the relay aggregator. Do not probe its API. Do not build, keep or "temporarily" rely on a relay-backed fetcher, relay, mirror or vintage signal. Do not run the relay staleness audit as if it described a supported path.** Every source must come from ITS OWN PUBLISHER.
 
-Why (CLAUDE.md:15-20): 98 of the 101 datasets ever taken from DBnomics have not been re-indexed in over 180 days (UNCTAD: 1,581 days), and its vintage signal is DBnomics' own hash, so a frozen dataset reports `no_change` forever while the health gate sees daily success.
+Why (CLAUDE.md:15-20): 98 of the 101 datasets ever taken from the relay aggregator have not been re-indexed in over 180 days (UNCTAD: 1,581 days), and its vintage signal is the relay aggregator's own hash, so a frozen dataset reports `no_change` forever while the health gate sees daily success.
 
 What it means in practice (CLAUDE.md:22-28, quoted):
-> - Existing DBnomics-derived data STAYS until migrated to the publisher — nothing is deleted by this rule. `who_hwf`, `who_rs`, `who_sdg` are the last three live relay fetchers and are to be MIGRATED to WHO directly, not refreshed via DBnomics.
+> - Existing relay-derived data STAYS until migrated to the publisher — nothing is deleted by this rule. `who_hwf`, `who_rs`, `who_sdg` are the last three live relay fetchers and are to be MIGRATED to WHO directly, not refreshed via the relay aggregator.
 > - Never add a new one. If a publisher has no usable API, say so and ask — do not reach for the aggregator.
-> - Do not cite DBnomics coverage as evidence of anything about a source's freshness.
+> - Do not cite relay coverage as evidence of anything about a source's freshness.
 
 ### §1 — Do not end a turn to report (CLAUDE.md:31-50)
 
@@ -62,7 +62,7 @@ Header rule (line 5): single source of truth; a database is only cleared to re-h
 
 Summary (lines 13-21): CLEARED-attribution 144, RESTRICTED-keep-gated 18, NEEDS HUMAN REVIEW 11, CLEARED-open 9, CLEARED-NC-only 6, CLEARED by written permission 2 (+1 scoped), verdicts CONFIRMED=184 / DISPUTED=7.
 
-**The 7 DISPUTED verdicts** (needs-attention table, lines 37-58; per-provider detail at cited lines):
+**The 7 DISPUTED verdicts** (needs-attention table, lines 36-46; per-provider detail at cited lines):
 | Source | Verdict summary | Lines |
 |---|---|---|
 | bundesbank | non_redistributable use-only grant; metadata-only/link-out unless written permission | 38, 799-823 |
@@ -70,7 +70,7 @@ Summary (lines 13-21): CLEARED-attribution 144, RESTRICTED-keep-gated 18, NEEDS 
 | idb | CC BY-NC-ND, and ~86% of IDB datasets carry NO licence at all | 48, 1580-1609 |
 | worldbank | CC BY with third-party exceptions — embedded UN/IMF/WHO/ILO/IEA/UNESCO series may NOT be redistributed | 56, 2769-2788 |
 
-**RESTRICTED/permission_required (CONFIRMED, stay gated)** (lines 37-58): WTO (8 dbs), several GATED sources, Energy Institute, Kenneth French, GATED (unclear), GATED, polity5, GATED (unclear), several GATED sources, zillow.
+**RESTRICTED/permission_required (CONFIRMED, stay gated)** (lines 36-46): WTO (8 dbs), several GATED sources, Energy Institute, Kenneth French, GATED (unclear), GATED, <redacted>, GATED (unclear), several GATED sources, zillow.
 
 > **THREE SOURCES WERE REMOVED FROM THAT LIST 2026-09-06 AND THE LIST WAS WRONG ABOUT THEM.**
 > `damodaran`, `defillama` and `frankfurter` are all SERVED today, and this summary still said
@@ -121,7 +121,7 @@ NOT sub-unit coverage"; for sub-unit coverage run `tools/audit_untouched_files.p
 
 ## Work queue (97 served, licence-cleared-enough, not auto-updating sources / 1,366,990 series)
 
-Key structural fact for ALL imf_* rows (updater/registry.yaml:5527-5543): the relay-era ids are DBnomics-shaped and IMF re-keyed its datasets, so no first-hand refresh preserves the old ids. The supported path is **parallel `imf_<flow>_direct` ids from api.imf.org** (pre-authorised: new ids alongside), never overwriting — "Overwriting imf_<flow> would re-key thousands of live series to buy freshness" (registry.yaml:5538-5540). 19 `imf_*_direct` registry entries already exist (registry.yaml:5544-5998).
+Key structural fact for ALL imf_* rows (updater/registry.yaml:5527-5543): the relay-era ids are relay-shaped and IMF re-keyed its datasets, so no first-hand refresh preserves the old ids. The supported path is **parallel `imf_<flow>_direct` ids from api.imf.org** (pre-authorised: new ids alongside), never overwriting — "Overwriting imf_<flow> would re-key thousands of live series to buy freshness" (registry.yaml:5538-5540). 19 `imf_*_direct` registry entries already exist (registry.yaml:5544-5998).
 
 ### NEW-COVERAGE CANDIDATES (probe-confirmed live 2026-08-05, no legacy counterpart id)
 
@@ -218,8 +218,8 @@ healthy, in-progress), 12 coherence, 19 assorted. Root causes fixed this cycle:
 
 | Source | Series | Why reserved |
 |---|---|---|
-| unctad_* (38 ids: tabbapotta 29,358; rfia 24,720; gdpgbtoevbkoeatasa 21,158; sbtisvsaga 7,920; gasbtoia 6,776; fdiiaofasa 5,107; gasbeaiogasa 5,076; tabmcioeaiopa 4,250; tabmscioeaiopa 4,250; gasbtbia 3,402; sbeaiotsvsaga 3,010; gdptapccac2pa 1,734; soigapotta 1,226; taupa 898; rgdptapcgra 867; bopcaba 842; mpcadioeaia 816; lsciq 760; mttasa 704; cpia 637; mtba 584; srbca 414; sotwmfvbcoboa 373; reericba 352; mttgra 351; lscia 344; reerigdba 333; tabpcioeaia 308; neera 280; cpta 177; mfbcoboa 155; mmcascioeaiopa 86; fmcpa 50; cpa 50; cioiuibbicoeair4a 15; fmcpia21 14; wstbtocabgoea 8; ciocgeaia 8) | 127,413 total | Upstream (UNCTAD Data Hub) re-coded ids; DBnomics relay was 1,581 days stale (CLAUDE.md:18) and is banned; no unctad entry exists in registry.yaml; refreshing under new ids = re-key, RESERVED (CLAUDE.md:69-70) |
-| imf_fsi | 73,288 | IMF publishes NO "FSI" dataflow; measured 2026-08-01 all 73,288 ids are DBnomics-shaped; three `imf_fsi{c,bsis,cdm}_direct` are the supported path — "Retiring or re-keying 73,288 live ids is the owner's call, not a build task" (registry.yaml:2678-2691) |
+| unctad_* (38 ids: tabbapotta 29,358; rfia 24,720; gdpgbtoevbkoeatasa 21,158; sbtisvsaga 7,920; gasbtoia 6,776; fdiiaofasa 5,107; gasbeaiogasa 5,076; tabmcioeaiopa 4,250; tabmscioeaiopa 4,250; gasbtbia 3,402; sbeaiotsvsaga 3,010; gdptapccac2pa 1,734; soigapotta 1,226; taupa 898; rgdptapcgra 867; bopcaba 842; mpcadioeaia 816; lsciq 760; mttasa 704; cpia 637; mtba 584; srbca 414; sotwmfvbcoboa 373; reericba 352; mttgra 351; lscia 344; reerigdba 333; tabpcioeaia 308; neera 280; cpta 177; mfbcoboa 155; mmcascioeaiopa 86; fmcpa 50; cpa 50; cioiuibbicoeair4a 15; fmcpia21 14; wstbtocabgoea 8; ciocgeaia 8) | 127,413 total | Upstream (UNCTAD Data Hub) re-coded ids; relay was 1,581 days stale (CLAUDE.md:18) and is banned; no unctad entry exists in registry.yaml; refreshing under new ids = re-key, RESERVED (CLAUDE.md:69-70) |
+| imf_fsi | 73,288 | IMF publishes NO "FSI" dataflow; measured 2026-08-01 all 73,288 ids are relay-shaped; three `imf_fsi{c,bsis,cdm}_direct` are the supported path — "Retiring or re-keying 73,288 live ids is the owner's call, not a build task" (registry.yaml:2678-2691) |
 | imf_fas | 13,960 | Direct sibling LIVE (registry.yaml:5564); crosswalk ~0% (registry.yaml:5536-5538) — only the retire/re-key decision remains |
 | imf_world | 2,268 | Direct LIVE (registry.yaml:5584); crosswalk ~0%; same retire decision |
 | imf_fdi | 1,728 | Direct LIVE (registry.yaml:5544); crosswalk 95.3%; same retire decision |
@@ -233,7 +233,7 @@ healthy, in-progress), 12 coherence, 19 assorted. Root causes fixed this cycle:
 | unesco_inno | 18,909 | Same |
 | unesco_film | 8,527 | Same |
 | unesco_cltt | 6,226 | Same |
-| fao_* (18 ids: ql 20,179; ga 15,018; ge 11,813; gt 10,506; gb 6,980; rp 5,440; gn 4,761; gl 3,057; gf 2,591; gy 2,491; ic 2,468; gr 617; es 595; ep 519; ew 169; ae 164; af 162; ec 49) | 87,579 total | FAOSTAT restructure question — Ahmed's. Precedent to reuse when he decides: fao_qcl went direct 2026-07-28 and DBnomics-era ids turned out to BE FAOSTAT's own codes, 98.2% reproducing exactly (registry.yaml:6061-6075) |
+| fao_* (18 ids: ql 20,179; ga 15,018; ge 11,813; gt 10,506; gb 6,980; rp 5,440; gn 4,761; gl 3,057; gf 2,591; gy 2,491; ic 2,468; gr 617; es 595; ep 519; ew 169; ae 164; af 162; ec 49) | 87,579 total | FAOSTAT restructure question — Ahmed's. Precedent to reuse when he decides: fao_qcl went direct 2026-07-28 and relay-era ids turned out to BE FAOSTAT's own codes, 98.2% reproducing exactly (registry.yaml:6061-6075) |
 | hf_equities | 1,391 | HF equities family — not in registry, no fetcher, no state ever (docs/runbook/hf_equities.md); belongs to Ahmed's hfdatalibrary pipeline decision |
 | insee_sdmx | — (not in queue; not served) | Needs full re-crawl: store unusable — 10.8M rows under 817 keys, all built from observation attributes (tools/derive_statcan_tables.py:53-55) |
 | unsdg | — (not in queue; denylisted) | Licence CLEARED 2026-07-21 (DATABASE_LICENSES_VERBATIM.md:3106) but sits on the denylist safety floor (api/worker/src/denylist.ts:72); un-gating a denylist entry is Ahmed's |
@@ -262,7 +262,7 @@ Retiring frees ~1M D1 rows — likely DEFERS the #45 split entirely (D1 hard cap
 storage past 5 GB bills $0.75/GB-mo ≈ $3.20/mo today; shrinks after cleanup).
 
 **Class A — RETIRE NOW (full/superset successor live and proven):** dot→imts, cpis→pip,
-cdis→dip, mfs→MFS×5, GATED→FSI trio, irfcl→irfcl_direct, bop→bop_direct, cpi→cpi_direct,
+cdis→dip, mfs→MFS×5, GATED→successor trio, irfcl→irfcl_direct, bop→bop_direct, cpi→cpi_direct,
 psbsfad→psbs (EXACT 14,018), pctot→ctot (EXACT 4,320), fiscaldecentralization→fd (EXACT
 8,398), hpdd→hpd (EXACT 191), unsdg_imf_inputs→sdg, namain_idc_n→namain, pgcs→icsd,
 gender_equality→GS×5, fas→fas_direct, bopagg→bopagg_direct, fdi→fdi_direct,
@@ -322,14 +322,14 @@ publisher for unctad unesco"):**
   (source 501s) so cosmetic; sweep them when the retirement permission opens.
 - whr REBUILT from PRIMARY provenance 2026-08-06 (cycle 35) and READY — un-gate BLOCKED on the
   R2-deletion permission. Fetcher rewritten to files.worldhappiness.report (newest Figure-2.1
-  listing link, real ETag/CL vintage, NO OWID fallback); publisher 403s GitHub runners so whr is
+  listing link, real ETag/CL vintage, NO third-party fallback); publisher 403s GitHub runners so whr is
   run_location: local (proven: local pass merged WHR26 13,397 obs / 1,749 series, state pushed).
   Catalogued 1,749 (whr-granted licence: reservable, NC, attribution), derived, D1-synced.
-  RESIDUE (R364): 178 OWID-era CSVs on R2 under series/whr%3AWHR%3A (the derive walked both
+  RESIDUE (R364): 178 mirror-era CSVs on R2 under series/whr%3AWHR%3A (the derive walked both
   shards) — unreachable behind the 451 denylist; legacy shard quarantined at
-  data/_quarantine/whr_owid_era.parquet. WHEN THE DELETION PERMISSION OPENS: purge the 178 +
+  data/_quarantine/whr_<redacted>_era.parquet. WHEN THE DELETION PERMISSION OPENS: purge the 178 +
   GATED's 40, THEN remove whr from denylist.ts, deploy, verify 451→200 + verify_source_served
-  exit 0. Serving before the purge would expose ungranted OWID-provenance ids.
+  exit 0. Serving before the purge would expose ungranted mirror-provenance ids.
 - unctad (38 legacy ids): "match the publisher" CONFIRMED — build new-id successors from the
   UNCTAD Data Hub at current scope (surveyed cycle 33; blocked on Ahmed's free UNCTADstat API
   key); legacy ids then retire via Class A.

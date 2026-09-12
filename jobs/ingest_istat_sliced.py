@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Complete ISTAT dataflows the normal pull left INCOMPLETE.
 
-The normal ISTAT sweep (jobs/ingest_sdmx_nso.py, providers "istat" +
+The normal ISTAT sweep (the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py), providers "istat" +
 "istat_esploradati") writes one Parquet per dataflow into
 data/clean_full/istat/.  A subset of flows never land because a single SDMX
 data response is too large for the endpoint: the host returns HTTP 500 / times
-out, the body exceeds what we can parse, or (via DBnomics historically) the
+out, the body exceeds what we can parse, or (via the relay aggregator historically) the
 flow blows past the 100K-series cap.
 
 This job sweeps the ISTAT catalog, finds every flow that has NO parquet yet
@@ -27,7 +27,7 @@ so the run is fully resumable (a watcher relaunches this after ISTAT, whose
 esploradati host is chronically flaky, recovers).
 
 Output: data/clean_full/istat/{flow_id}.parquet  -- SAME dir + filename
-convention as ingest_sdmx_nso.py, so skip-existing dedupes across both jobs.
+convention as the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py), so skip-existing dedupes across both jobs.
 Schema: {series_key: string, obs_date: date32, value: float64}, zstd.
 
 Run:
@@ -49,7 +49,7 @@ sys.path.insert(0, ROOT)
 # ── Reuse the house helpers from the main SDMX ingester verbatim where we can.
 #    parse_sdmx_period / parse_sdmx_csv / parse_sdmx_xml are byte-for-byte the
 #    same parsing logic the normal pull used, so output is identical.
-from jobs.ingest_sdmx_nso import (  # noqa: E402
+from jobs._sdmx_common import (  # noqa: E402
     UA, NS,
     parse_sdmx_period, parse_sdmx_csv, parse_sdmx_xml,
 )

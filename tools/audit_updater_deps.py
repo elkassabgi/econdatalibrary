@@ -7,7 +7,7 @@ names the missing package: the source simply never runs, forever, while the job 
 
 It has already happened twice, per requirements-updater.txt's own notes: a missing openpyxl made
 edgar_jrc report "no adapter built" (CI run 28978133410), and a missing xlrd broke damodaran
-(ModuleNotFoundError reported as a transient) AND sipri_polity (which reported "2/3 sub-units
+(ModuleNotFoundError reported as a transient) AND a gated source (which reported "2/3 sub-units
 returned 200 but parsed 0 rows" — the 2 being exactly its two .xls files). One absent dep, two
 sources broken, neither naming the cause. lxml was the third, caught here before its first run.
 

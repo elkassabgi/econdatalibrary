@@ -326,7 +326,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-30');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-09-09');
     if(d.as_of){var _ag=tago(d.as_of);
       document.getElementById('sb-data').textContent='Data updated: '+fdate(d.as_of)+(_ag?' ('+_ag+')':'');}
   }).catch(function(){
@@ -400,7 +400,7 @@ with columns
 where series_key = &quot;&lt;variable&gt;|&lt;ISO3&gt;&quot;.  All 185 economies of a variable live
 inside that ONE file. 42 variables =&gt; 42 files for the whole source -- NOT one-
 file-per-series (which would be ~7,770 tiny files). Annual values are dated
-Dec-31 of the year, matching the eurostat / owid / faostat annual convention.
+Dec-31 of the year, matching the eurostat / faostat annual convention.
 
 A per-source JSON summary (_ingest_summary.json) records coverage. catalog.db is
 NOT touched here; data/clean/ is NOT touched here.

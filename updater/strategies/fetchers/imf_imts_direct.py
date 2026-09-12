@@ -3,7 +3,7 @@
 
 Thin wrapper: the registry resolves fetchers/<source_id>.py, so each IMF dataset needs its own
 module. All behaviour lives in _imf_direct.py — including why these are NEW source ids rather
-than replacements for the DBnomics-era ones.
+than replacements for the relay-era ones.
 
 WHY THIS ONE EXISTS. `imf_dot` holds 101,000 relay-era series (catalogued, SERVED, frozen — no
 fetcher and no registry entry), the largest frozen block after imf_ifs. IMF RENAMED the dataset:

@@ -5,8 +5,8 @@ every licence guard we had was PROSE. `DATABASE_LICENSES_VERBATIM.md` records a 
 database, `REDISTRIBUTION_EMAIL_TRAIL.md` records what each publisher granted or refused, and
 both were applied to `denylist.ts` and `util.ts` BY HAND. Nothing failed when they drifted.
 
-Two classes that stopped recurring the moment they became mechanical: the db.nomics ban (a
-PreToolUse hook + tests/test_dbnomics_ban.py) and the registry count (R347 +
+Two classes that stopped recurring the moment they became mechanical: the banned-aggregator
+host (a PreToolUse hook + tests/test_relay_ban.py) and the registry count (R347 +
 tests/test_registry_count_guard.py). Licence compliance never got the same treatment, so it came
 back roughly weekly — R8 (WTO refused data still served through a phantom-id gate), R29
 (metadata-only listings), R408 (the email trail said `ei_statreview` "stays gated pending ...
@@ -131,27 +131,6 @@ SERVED_TIER_DRIFT: frozenset[str] = frozenset({
     "faostat",         # DISPUTED verdict; the 13 fao_* domains carry verified-nc licence rows
     "frankfurter",     # ECB-derived rates; verdict never finalised
     "worldbank",       # third-party-series carve-out IS implemented in SERIES_CARVEOUTS
-    # worldbank_pink DELETED from this baseline 2026-08-26: its catalog.db row moved to
-    # audit-restricted (reservable=0) and it entered denylist.ts, so it no longer drifts —
-    # the ratchet below demands baseline deletion in the same commit as the regen.
-})
-
-# Denylist ids matching neither the served surface nor a verdict row. The wto_* entries are the
-# R8 purge's residue: WTO data is gone from the store and the catalogue (verified 2026-08-09),
-# so these block nothing — they are inert, but they are also how a phantom-id gate looked healthy
-# while refused data served, so they are recorded rather than quietly deleted.
-DENYLIST_UNMATCHED: frozenset[str] = frozenset({
-    "central_banks", "fraser_efw", "fred", "fred_releases", "fsi", "gus", "ibge",
-    "imf_dbnomics", "ine_spain", "pxweb_bfs", "qog", "sdmx_nso", "sipri_polity",
-    "social_progress", "spi", "stat_austria", "unesco_sci", "unicef",
-    # vdem REMOVED from this baseline 2026-08-24: it is no longer in denylist.ts. Its
-    # licence was assessed (CC BY-SA 4.0, CONFIRMED, quoted verbatim from two official
-    # surfaces), it carries `cc-by-sa-4.0-vdem` with reservable=1, and it came off
-    # gen_denylist LEGACY_KEEP on Ahmed's explicit instruction. It is now a SERVED
-    # source with a recorded verdict, which is what this baseline exists to shrink
-    # towards.
-    "who_gho", "wiid", "wto_bat_bv_m", "wto_bat_bv_x", "wto_hs_0010", "wto_hs_0015",
-    "wto_hs_0020", "wto_hs_0025", "wto_hs_0030", "wto_hs_0040",
 })
 
 
@@ -168,7 +147,13 @@ def test_the_parsers_actually_see_the_artifacts():
     assert len(served) > 250, (
         f"parsed only {len(served)} entries from SUPPORTED_SOURCES; the live API serves ~312. "
         f"The parser is broken and every assertion in this file is vacuous.")
-    assert len(gated) > 10, f"parsed only {len(gated)} denylist entries; parser is broken"
+    assert len(gated) > 10, (
+        f"parsed only {len(gated)} denylist entries; the parser is broken. A truthy-only check "
+        f"here passed on a single harvested token, which is how a broken parse stayed green.")
+    probe = _string_array(
+        'export const NON_REDISTRIBUTABLE = new Set([\n  // "c" is prose\n  "a", "b",\n]);',
+        "NON_REDISTRIBUTABLE")
+    assert probe == ["a", "b"], f"the Set parser mis-read a known literal: {probe}"
     assert len(verdicts) > 150, f"parsed only {len(verdicts)} verdict rows; parser is broken"
     for known_live in ("noaa", "eia", "abs", "census"):
         assert known_live in served, (
@@ -214,7 +199,7 @@ def _is_covered(sid: str, verdicts: dict[str, str]) -> bool:
 def test_every_served_source_has_a_recorded_licence_verdict():
     """A source nobody adjudicated must not be on the serving surface.
 
-    This is the freedomhouse/NO_VERDICT class: data arrives, gets catalogued, gets served, and
+    This is the NO_VERDICT class: data arrives, gets catalogued, gets served, and
     the licence question is never asked because no artifact demands an answer.
     """
     verdicts = _verdict_index()
@@ -261,23 +246,120 @@ def test_restricted_sources_are_gated_not_merely_documented():
     )
 
 
-def test_denylist_has_no_entries_that_are_not_real_sources():
-    """A gate on a phantom id protects nothing.
+# ---------------------------------------------------------------------------------------------
+# PHANTOM-ID RATCHET — restored 2026-09-09.
+#
+# It was deleted on 2026-09-08 because its baseline was a literal list of gated ids, which the
+# owner's removal order forbids writing down. Deleting it was the wrong half of the trade: the
+# ratchet was the only check that fires when a licence VERDICT ROW disappears, and its absence
+# is precisely why a wipe that removed 568 lines of DATABASE_LICENSES_VERBATIM.md — including
+# verdict rows for sources outside the removal's scope — merged green.
+#
+# The restored form carries no identity: it pins the number of KEPT verdict rows, which says
+# nothing about the removed set. It is a ratchet in BOTH directions, so a stale pin cannot hide
+# a later deletion (R501/R503: a guard replaced by one that tests a different property).
+VERDICT_ROWS_MIN = 175
 
-    R8's WTO incident: the deny-gate carried ids that did not match the served facets, so the
-    refused data flowed while the gate looked healthy. An entry that matches neither the served
-    surface nor a recorded verdict is almost certainly such a phantom.
+# The heading the licence record uses to explain why the gate entries have no verdict row.
+REMOVAL_NOTE_HEADING = "### Databases removed from this record"
+
+
+def test_verdict_rows_never_disappear_silently():
+    """A verdict row is the authority for a gate and for a served source. Losing one is a
+    licence regression, and it looks exactly like a tidy-up in a diff.
+
+    Measured 2026-09-09 on the rebased branch: 175 rows. If a database is genuinely retired,
+    lower VERDICT_ROWS_MIN in the SAME commit and say why; if rows are added, raise it, so the
+    pin can never drift above the truth and stop biting.
+    """
+    n = len(_verdict_index())
+    assert n >= VERDICT_ROWS_MIN, (
+        f"the per-database index now has {n} verdict rows, was pinned at {VERDICT_ROWS_MIN}. "
+        f"Rows for {VERDICT_ROWS_MIN - n} database(s) have gone. Deleting a verbatim licence "
+        f"section deletes the evidence for every id that section justified — restore them, or "
+        f"lower the pin in this commit with the reason.")
+    assert n == VERDICT_ROWS_MIN, (
+        f"the index has {n} verdict rows against a pin of {VERDICT_ROWS_MIN}: rows were added "
+        f"without raising the pin. Raise it — a pin below the truth cannot detect the next "
+        f"deletion, which is how a stale exemption hides a regression.")
+
+
+def test_every_gate_entry_has_a_verdict_row_or_a_recorded_reason():
+    """A gate whose reason nobody recorded is R8's WTO incident waiting to repeat.
+
+    Every entry in NON_REDISTRIBUTABLE must be justified by something committed: either its own
+    row in the per-database index, or the removal note that records what happened to the rows of
+    the databases the owner ordered removed. The failure message counts, never names: a check
+    that prints the protected list is itself a disclosure surface (R894).
     """
     verdicts = _verdict_index()
+    without = [g for g in gated_sources() if g not in verdicts]
+    if not without:
+        return
+    text = _read(LICENCES)
+    assert REMOVAL_NOTE_HEADING in text, (
+        "one or more gate entries have no verdict row in the per-database index, and the licence "
+        "record carries no note recording why. Either restore the rows or record the reason under "
+        f"a '{REMOVAL_NOTE_HEADING}' heading. (Neither the ids nor how many there are is printed "
+        "here: a check that discloses the protected set is itself the leak.)")
+
+
+# SHA-256 of the sorted, newline-joined gate entries that are neither served nor carry a verdict
+# row. It restores what the literal DENYLIST_UNMATCHED baseline on main enforced - "an entry that
+# matches neither the served surface nor a recorded verdict is almost certainly a phantom" (R8) -
+# without writing down either the ids or how many there are. Review AR-047's predecessor found that
+# at 2fb66665b a NEW phantom entry passed every test, because the removal note above satisfies the
+# test before this one for any entry at all.
+UNVERIFIED_GATE_DIGEST = "315e5681dbd2977febb0455e98d99b70d569b3223bdefeee4299e1026710e112"
+
+
+def _unverified_gate_digest(gated: set) -> str:
+    import hashlib
+    verdicts = _verdict_index()
     served = set(served_sources())
-    phantom = sorted(s for s in gated_sources()
-                     if s not in served and s not in verdicts and s not in DENYLIST_UNMATCHED)
-    gone = sorted(n for n in DENYLIST_UNMATCHED if n not in gated_sources())
-    assert not gone, (
-        f"these names are exempted in DENYLIST_UNMATCHED but are no longer in denylist.ts: "
-        f"{gone}. Delete them from the baseline.")
-    assert not phantom, (
-        f"{len(phantom)} denylist entr(ies) match neither SUPPORTED_SOURCES nor any recorded "
-        f"verdict: {phantom}. Either the id is stale (remove it, and say so) or it is misspelled "
-        f"— in which case the data it was meant to block is NOT blocked."
-    )
+    without = sorted(g for g in gated if g not in served and g not in verdicts)
+    return hashlib.sha256("\n".join(without).encode("utf-8")).hexdigest()
+
+
+def test_no_new_gate_entry_without_a_verdict_row():
+    """The set of gate entries with no verdict row may only change deliberately.
+
+    A NEW entry here is R8's phantom: misspelled or stale, it blocks nothing while the gate looks
+    healthy. Give it a verdict row, or remove it. If an entry leaves the set on purpose (a purge
+    emptied it, or a verdict row was added), recompute the digest IN THE SAME COMMIT with
+        python -c "import sys; sys.path.insert(0, '.'); import tests.test_licence_gate_matches_docs as t; print(t._unverified_gate_digest(t.gated_sources()))"
+    which prints only the digest.
+    """
+    assert _unverified_gate_digest(gated_sources()) == UNVERIFIED_GATE_DIGEST, (
+        "the set of denylist entries that have neither a verdict row nor a served id has changed. "
+        "A new entry there is a phantom gate (R8): add its verdict row or remove it. If the change "
+        "is deliberate, recompute UNVERIFIED_GATE_DIGEST in the same commit (see the docstring).")
+
+
+def test_the_digest_guard_can_fail():
+    """Planted positive: one invented entry must change the digest, so the guard is not vacuous."""
+    assert _unverified_gate_digest(gated_sources() | {"zz_planted_phantom"}) != UNVERIFIED_GATE_DIGEST
+
+
+def test_denylist_entries_are_bare_ids_and_never_served():
+    """A gate on a phantom id protects nothing (R8) — and a gate on a SERVED id is a listing lie.
+
+    Until 2026-09-08 this test carried a literal baseline of denylist entries that matched neither
+    the served surface nor a verdict row, so that set could only shrink. The gated ids are no
+    longer named anywhere in the repository, so the LITERAL baseline is gone — the ratchet it
+    provided is restored, name-free, in the two tests above. What this test keeps is the pair of
+    invariants the serving surface can actually violate. A denylist entry must never be a served
+    id — a served-and-gated id is a browsable listing nobody can download, the metadata-only
+    shape R29 forbids — and every entry must be a bare source id, not prose harvested from a
+    comment (the R137 shape). The deny set itself is a residue guarding rows still in D1; it is
+    emptied by a deliberate regeneration after those rows are deleted, never by editing a test.
+    """
+    served = set(served_sources())
+    gated = gated_sources()
+    assert gated, "parsed zero denylist entries — the parser is broken (see the control above)"
+    assert all(re.fullmatch(r"[a-z0-9_]+", g) for g in gated), (
+        "a denylist entry is not a bare source id — the parser is harvesting prose")
+    both = sorted(gated & served)
+    assert not both, (
+        f"{len(both)} id(s) are in SUPPORTED_SOURCES AND in NON_REDISTRIBUTABLE: {both}. A "
+        f"gated source must not be offered by the resolver.")

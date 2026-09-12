@@ -29,7 +29,7 @@ Why keep ``filed`` as the vintage
 ---------------------------------
 A single period-end is reported, then *restated*, across several filings. Keeping
 ``filed`` as ``vintage_date`` preserves the as-first-released vs as-revised history
-(the same point-in-time discipline ALFRED applies to FRED). We therefore do NOT
+(the same point-in-time discipline ALFRED applies to a gated source). We therefore do NOT
 collapse multiple vintages of the same ``end`` into one row -- each filing's value is
 its own Observation.
 

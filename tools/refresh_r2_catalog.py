@@ -32,6 +32,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import r2_util
 import zstandard
 
+def _gate_ids() -> set:
+    """Every source id the committed worker gate blocks. Read, never typed.
+
+    Delegates to core/gen_denylist.committed_gate (2026-09-10), which RAISES on an unreadable gate -
+    empty, whitespace-only, no parseable literal, or zero readable entries - and reads both quote
+    styles. The parser that lived here returned an empty set in all of those cases, and an empty gate
+    set here means the refreshed catalogue copy withholds NOTHING: every gated source's rows ride
+    along. A refresh that cannot read the gate must stop. A checkout without the worker file still
+    yields an empty set, as before.
+    """
+    from core.gen_denylist import committed_gate   # reads the worker's own "denylist.ts"
+    return committed_gate()
+
+
 BUCKET = "econ-data"
 KEY = "_aqueduct/catalog.db.zst"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -185,9 +199,14 @@ def main() -> int:
     ok = True
     for s in ("noaa", "cepii_gravity", "adb", "fhfa", "usda", "fed_board", "istat"):
         print(f"    {s:16}{back.get(s, 0):>12,}")
-    for s in ("cow", "sipri", "polity"):
-        n = back.get(s, 0)
-        print(f"    purged {s:9}{n:>12}  ({'OK gone' if n == 0 else '*** still present'})")
+    # Gated sources must not reappear in the coherence copy. The gate is READ from the
+    # worker (api/worker/src/denylist.ts), never typed here, so this check cannot rot the
+    # way a hardcoded target list did (R128/R469). Only the COUNT is printed.
+    _gated = _gate_ids()
+    _present = sorted(s for s in _gated if back.get(s, 0))
+    print(f"    gated sources present: {len(_present)} (expected 0; read denylist.ts to identify them)")
+    if _present:
+        ok = False
     if tot != sum(new.values()):
         print(f"  *** MISMATCH: uploaded {sum(new.values()):,} but read back {tot:,}", file=sys.stderr)
         ok = False

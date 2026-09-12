@@ -351,7 +351,7 @@ def main() -> int:
     # (1.93M series to 2024) sits beside 412 shards (2.86M series to 2025); streaming both
     # emits duplicate dates with contradictory values, which is the corruption R384 nearly
     # published at 2.4M-object scale. NOT generalised: six sources have a same-named file
-    # beside shards (bea, fred, sipri, stats_nz, vdem, wid) and only wid's is proven
+    # beside shards (bea, stats_nz, vdem, wid) and only wid's is proven
     # superseded. The --verify gate would catch a divergence anyway, since the resolver now
     # excludes the monolith — this keeps the two readers defined identically rather than
     # relying on the gate to notice they are not.

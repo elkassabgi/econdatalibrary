@@ -3,7 +3,7 @@
 A write either ADVANCES last_obs_date / obs_count for a unit, or it is a no-op.
 It NEVER replaces good data with fewer or zero rows. This guards two bug classes:
   - "skip series if key already present" -> existing series freeze (67 sources)
-  - "silently write a 0-row group, then mark done" (bea, fred_releases)
+  - "silently write a 0-row group, then mark done" (bea)
 
 mode='merge'     : union new rows with the existing parquet, dedup on dedup_keys
                    (new rows win on revision), sort, publish atomically.

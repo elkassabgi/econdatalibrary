@@ -3,7 +3,7 @@
 Distinguishing transient from definitive failure is the single most important
 correctness rule in the whole system: a timeout / 5xx / dropped connection must
 NEVER be recorded as 'no data' or 'done'. That conflation is the exact bug that
-silently froze sources before (and that the GUS/DBnomics TransientError fix cured).
+silently froze sources before (and that a gated source/the relay aggregator TransientError fix cured).
 """
 
 

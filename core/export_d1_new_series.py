@@ -35,7 +35,7 @@ COLS = ["series_id", "source_id", "title", "frequency", "unit", "geography",
         "category", "license_id", "start_date", "end_date", "last_updated", "metadata"]
 ROWS_PER_STMT = 20
 MAX_BYTES = 8_000_000
-_REFUSE = set()  # (was {"sipri"} — corrected: US$ millions + verified base year 2024)
+_REFUSE = set()  # (was {"a gated source"} — corrected: US$ millions + verified base year 2024)
 
 
 def _lit(v) -> str:

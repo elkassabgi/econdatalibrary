@@ -9,7 +9,7 @@ took apart (ledger R385), with ons_uk serving 31,878 rows against a 37,950-row s
 while the checker printed 25/25 identical.
 
 The same audit measured the scale from scratch (parquet footer row counts over 55,394 local
-files vs 36,972 R2 objects): 1,379 local files BEHIND R2 — ilostat 952, eurostat 124, owid 58,
+files vs 36,972 R2 objects): 1,379 local files BEHIND R2 — ilostat 952, eurostat 124, a gated source 58,
 ember 26, boe 25, statfin 23, ssb 22, dst 21, defillama 18, ksh_stadat 15, fed_board 13,
 cso 12 — plus 79 AHEAD, with six sources diverging both ways at once.
 

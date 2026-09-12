@@ -95,7 +95,7 @@ def load_state(source_dir: str) -> dict:
 def save_state(source_dir: str, state: dict) -> None:
     """Atomic sidecar publish, BLOB-ROUTED (local tmp+replace AND the R2 PUT under
     the r2 backend — write_bytes_atomic's own contract). Cost: run_giant saves ONCE
-    per run and sdmx_nso once per provider, so this is 1-3 small PUTs per run, cents
+    per run and a gated source once per provider, so this is 1-3 small PUTs per run, cents
     per month — durability of the rotation state is what stops the same-prefix-forever
     re-walk (R190/R533). A failed PUT raises after botocore's retries and escapes to
     the orchestrator's handler as transient_fail — loud, and the cost of the lost

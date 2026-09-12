@@ -123,7 +123,7 @@ def test_is_time_dim_rejects_sentinel_codes_that_are_merely_four_digits():
 
 def test_is_time_dim_still_accepts_long_but_real_projection_horizons():
     """The bound is 1800..2100, not current_year+2: this fleet genuinely carries projections
-    (un_wpp to 2101, gapminder and owid to 2100). Detection must not reject real data."""
+    (un_wpp to 2101, gapminder and a gated source to 2100). Detection must not reject real data."""
     m = _mod()
     assert m.is_time_dim("PROJ", ["2050", "2060", "2070", "2080", "2090"])
     assert m.is_time_dim("HIST", ["1841", "1851", "1861", "1871", "1881"])

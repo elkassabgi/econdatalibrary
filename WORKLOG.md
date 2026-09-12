@@ -58,7 +58,7 @@ Written to `docs/briefs/PHASE0_BRIEFS.md`. Both re-measured today; nothing chang
 * **`GATED` — RESERVED, awaiting Ahmed.** 26 series rows in local `catalog.db` **and** 26
   in live D1, plus a `source_counts` row advertising `n=26`, all behind a 451 gate.
   Instrument: one PK-range D1 query, `rows_read: 28` (index seek — C8's PK-range principle
-  confirmed in practice). Canonical verdict is **DISPUTED / NEEDS HUMAN REVIEW**: the Pink Sheet
+  confirmed in practice). Canonical verdict is **DISPUTED / NEEDS HUMAN REVIEW**: the gated dataset
   carries LME settlement prices, Cotlook, SICOM and ICCO/ICO data, and "LME in particular
   prohibits redistribution of its price data without a license". Recommendation: purge the rows
   and the cache row as defence in depth (a mistaken un-gating would expose LME-derived prices
@@ -541,10 +541,10 @@ non-demoting note. Review-hardened: the SDMX marker requirement (a plain-text 20
 must fall structural, never park silently for years), the ingester's split path fixed too, and
 the tests now drive the REAL `run_giant` (the first branch test ran zero lines of it). 11/11.
 
-## QoG refused; recorded, deleted, and a loaded gun defused (2026-08-31, `5aa5a1d97` + `9217c25f0`)
+## A gated source's publisher refused; recorded, deleted, and a loaded gun defused (2026-08-31, `5aa5a1d97` + `9217c25f0`)
 
 Written refusal from the publisher recorded VERBATIM in the canonical licence file; trail row
-DENIED; reply draft for Ahmed at `docs/briefs/QOG_REPLY_DRAFT.md`. Nothing user-facing changed
+DENIED; reply draft for Ahmed was kept under `docs/briefs/` (since removed under the owner's order). Nothing user-facing changed
 (already denylisted, 0 catalogue rows). The dormant holdings (23 MB store, fetcher, ingester)
 deleted after their adversarial review — measured clean in every place a series lives first,
 including the reviewer's two additions (uppercase R2 prefixes; D1 `source_counts`, the R489

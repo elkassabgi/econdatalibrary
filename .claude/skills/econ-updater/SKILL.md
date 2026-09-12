@@ -8,14 +8,14 @@ description: MANDATORY operating system for ALL econdatalibrary updater/serving 
 ## Why this exists
 
 Five weeks of the same failures, each documented and each repeated: working code broken by
-fixes made without reading it first; the DBnomics ban violated from memory; sources reported
+fixes made without reading it first; the relay ban violated from memory; sources reported
 "live" that no user could reach; the whole updater taken down by a one-line count left stale.
 The knowledge existed — a 150-entry ledger, 249 runbook pages — but consulting it was
 voluntary. This skill makes it the procedure, and three mechanical layers back it up:
 
 1. **PreToolUse hook** (D:\research\hfdatalibrary\.claude\settings.json) — DENIES any command
-   reaching db.nomics.world. It has already fired in production, on the session that wrote it.
-2. **CI tests** (this repo, run on every push): `test_dbnomics_ban.py` (the domain in runtime
+   reaching the relay aggregator. It has already fired in production, on the session that wrote it.
+2. **CI tests** (this repo, run on every push): `test_relay_ban.py` (the domain in runtime
    code fails the build), `test_registry_count_guard.py` (registry entries vs
    EXPECTED_SOURCE_COUNT), `test_failure_labels_ratchet.py` (unlabelled in-loop failures may
    only decrease). These survive every session, every model, every memory loss.
@@ -31,7 +31,7 @@ Do not proceed to any edit until `skill-verify` prints **ALL PASS**.
 
 Violating any of these has cost days. Each is cited to the ledger entry where it did.
 
-1. **DBnomics is BANNED.** No fetching, no probing, no relays, no mirrors (R251). The hook and
+1. **The relay aggregator is BANNED.** No fetching, no probing, no relays, no mirrors (R251). The hook and
    CI enforce it; retired scripts raise at import — leave them defused.
 2. **One source at a time, end-to-end.** Never touch a second source before the first meets
    the Definition of Done below. The circular-failure pattern is many half-finished touches.

@@ -2,7 +2,7 @@
 
 ONE shared implementation of "which axis of this JSON-stat2 cube is the date axis?"
 so every PxWeb source (SCB, SSB, StatFin, Hagstofa, BFS, Statistics Estonia /
-Latvia / Slovenia, DST, CSO, IRENA, …) selects it the same, robust way instead of
+Latvia / Slovenia, DST, CSO, …) selects it the same, robust way instead of
 each carrying a copy that can drift.
 
 WHY THIS EXISTS — the 2026-07-21 hagstofa / statfin freeze

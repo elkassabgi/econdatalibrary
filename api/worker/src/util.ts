@@ -10,7 +10,8 @@
 
 import type { Env, LicenseRow, LicenseBlock } from "./types";
 
-// The 323 sources with an at-rest resolver (econdl._resolve.supported_sources()).
+// The 321 sources with an at-rest resolver (econdl._resolve.supported_sources()) — see the
+// 2026-09-08 note below for why the 2026-08-30 count of 323 is two higher.
 // Measured 2026-08-30 by scanning from this declaration to its closing bracket and stripping
 // `//` and `/* */` before extracting literals: 323 distinct ids, ZERO duplicates. "191" was
 // stale by 132. Count this block WITH comments and you overcount badly (350 quoted strings by
@@ -19,8 +20,9 @@ import type { Env, LicenseRow, LicenseBlock } from "./types";
 //   `ksh` is the comment-only one: it appears in a removal note and is NOT a member.
 //   `unctad_cpia` IS a live member, which also happens to be quoted in a comment below —
 //   do not confuse the two, as an earlier version of this comment did.
-// Of these 323, `dbnomics` and `worldbank_pink` are in denylist.ts::NON_REDISTRIBUTABLE, so
-// 321 are actually SERVED.
+// 2026-09-08: two ids that were ALSO in denylist.ts::NON_REDISTRIBUTABLE were removed from this
+// list — a resolver entry for a gated source is an offer the API refuses with 451 — so the 321
+// entries here are all SERVED.
 // A series whose source is NOT in this set returns 501 not_migrated -- loud and
 // actionable, exactly as the dev shim does via ResolveError. KEEP IN SYNC with
 // clients/python/econdl/_resolve.py::_RESOLVERS (regenerate via supported_sources()).
@@ -37,8 +39,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
 
   // REMOVED 2026-08-01 — 17 ids whose licence verdict in DATABASE_LICENSES_VERBATIM.md is
   // RESTRICTED (keep gated) or NEEDS HUMAN REVIEW, so this list must not offer them:
-  //   gated:  cboe, cow, famafrench, nbp, polity, sipri, tcmb, and the eight wto_* flows
-  //   unreviewed: irena, shiller (classification unclear_not_found)
+  //   (fifteen gated ids and two unreviewed ones; the licence record is the authority on which)
   // Nothing was withdrawn from service: all 17 already had ZERO derived CSVs in R2 and ZERO
   // catalogue rows, so a request for one answered 404 either way. What they did do was make
   // this list — the thing that is supposed to say what we serve — disagree with the licence
@@ -72,7 +73,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // precision — a day invented from a month would be fabricated precision, the cepii_gravity
   // rule). verify 300/300 byte-identical through the bespoke pairs resolver before the flip.
   "cepii_baci",
-  "cnb", "comtrade", "damodaran", "dbnomics", "defillama",
+  "cnb", "comtrade", "damodaran", "defillama",
   "ecb", "edgar_jrc", "efw", "ei_statreview", "eia", "ember", "epu",
   "eurostat", "fao_ae", "fao_af", "fao_ec", "fao_ep",
   "fao_es", "fao_et", "fao_ew", "fao_fo", "fao_ga", "fao_gb",
@@ -82,7 +83,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   "frankfurter", "fsi_fundforpeace", "gcb", "ggdc", "gppd",
   // gus_dbw added 2026-08-24: 194 table-grain ids, all derived and verified (MISSING 0,
   // ORPHANED 0). The two largest are area_46 (529,322,150 rows -> 3.11 GB gzipped) and
-  // area_16 (358,524,120 -> 1.34 GB). Licence gus-pl-open, CONFIRMED
+  // area_16 (358,524,120 -> 1.34 GB). Licence: the publisher's own open-data row, CONFIRMED
   // redistributable_attribution (Statistics Poland copyright page + PSI disclosure, quoted
   // verbatim, fetched 2026-08-24).
   "gus_dbw",
@@ -101,7 +102,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // updated daily with ZERO catalog rows: 86,684 series served to nobody.
   // 86,684/86,684 verified in R2 and in D1 before this flip.
   "gapminder",
-  // IMF DIRECT (imf-terms). Same IMF datasets we relay via DBnomics, pulled from
+  // IMF DIRECT (imf-terms). The same IMF datasets the legacy relay-era ids carry, pulled from
   // api.imf.org instead. 21,382 series; derive verified 21,382/21,382 present in R2
   // and in live D1 BEFORE this flip — CSVs first, flag second, because flag-first
   // turns a 501 into a 404 and a 404 says the series does not exist.
@@ -111,7 +112,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // downloadable by id, invisible to search. Now catalogued with titles decoded from IMF's own
   // codelists and their CSVs derived, so listing them here is an offer we can actually meet.
   "imf_gfssoef_direct", "imf_gfsssuc_direct",
-  // FSI direct, added 2026-08-04 — same shape as the GFS pair above, found the same way:
+  // IMF Financial Soundness direct, added 2026-08-04 — same shape as the GFS pair above, found the same way:
   // scheduled every run, data in R2, ZERO catalogue rows, so 78,576 series were refreshed daily
   // and reachable by nobody. Their fetchers had ALSO been stuck at `partial` for ever, with
   // "csv coherence unmet: 43,814 / 32,906 / 1,856" — exactly their series counts — because a
@@ -334,8 +335,8 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // as "distinct data" when it only meant "different key convention" — the same trap ilo/ilostat
   // set. A retirement decision is not visible in either check; it lives in git history and in
   // the absence of an ingest file (R226).
-  // owid REMOVED 2026-08-06 (Ahmed: "remove owids") — 64 residual listed rows deleted from
-  // catalog + D1; licence DISPUTED, the gated store on R2 stays untouched, denylist entry kept.
+  // (2026-08-06: a DISPUTED-licence source was delisted here — 64 residual rows deleted from
+  // catalog + D1; its denylist entry was kept.)
   // norgesbank added 2026-08-06 (cycle 37, Ahmed's authorized serve): 35,135 series /
   // 3,768,215 obs rebuilt in full from data.norges-bank.no (run 31129475260) after the
   // 07-23 purge; NLOD 2.0 CLEARED, floor pin removed the same day (see gen_denylist.py).
@@ -352,7 +353,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // unctad_trademerchtotal added 2026-08-08: FIRST successor source on UNCTAD's own data
   // API (unctadstat-user-api, ClientId/ClientSecret from .env — contract proven live).
   // 1,220 series / 81,760 obs, series_key = Economy.Flow.Mmeasure. The 38 legacy
-  // DBnomics-era slugs above retire via Class A as successors land (#70).
+  // legacy relay-era slugs above retire via Class A as successors land (#70).
   "unctad_trademerchtotal", "unctad_trademerchgr", "unctad_trademerchbalance",
   "unctad_merchvolumequarterly", "unctad_termsoftrade", "unctad_tradepriceindicesq",
   "unctad_concentdiversindices", "unctad_concentstructindices", "unctad_rca",
@@ -395,7 +396,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // Re-ingested direct from UIS, MISSING 0 / ORPHANED 0, values checked against parquet,
   // and un-pinned from the denylist floor on Ahmed's decision (the UIS terms are
   // publisher-wide, so their five cleared siblings above already covered them).
-  // unesco_sci stays OUT: only 12 of its 1,230 indicator codes exist in the current UIS
+  // One UIS sibling stays OUT: only 12 of its 1,230 indicator codes exist in the current UIS
   // API, so it cannot be kept current and would be a frozen 2019 snapshot.
   // unsdg added 2026-08-07: 396 SDG indicator series that were CATALOGUED BUT NOT RESOLVABLE —
   // findable in search and a 501 on download, which is the worst of the three states to be in.
@@ -480,7 +481,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // grant on the WPP download page, which governs this product. D1 held a pre-audit
   // NEEDS-REVIEW default for this source; that divergence was corrected before serving.
   "un_wpp",
-  "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg", "worldbank_pink",
+  "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg",
   "worldbank_wdi", "yale_epi", // 9 national-statistical PxWeb sources — flow-grain per-table publish (2026-07-22).
   "ssb", "stat_slovenia", "stat_latvia", "dst", "scb", "statfin", "hagstofa", "stat_estonia", "bfs",
 ];

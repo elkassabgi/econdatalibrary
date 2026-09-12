@@ -33,7 +33,7 @@ with columns
 where series_key = "<variable>|<ISO3>".  All 185 economies of a variable live
 inside that ONE file. 42 variables => 42 files for the whole source -- NOT one-
 file-per-series (which would be ~7,770 tiny files). Annual values are dated
-Dec-31 of the year, matching the eurostat / owid / faostat annual convention.
+Dec-31 of the year, matching the eurostat / a gated source / faostat annual convention.
 
 A per-source JSON summary (_ingest_summary.json) records coverage. catalog.db is
 NOT touched here; data/clean/ is NOT touched here.

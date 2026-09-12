@@ -459,27 +459,6 @@ def _resolve_ilostat(series_id: str, root: str) -> Resolution:
     return Resolution(series_id, "ilostat", path, "series_key", predicate)
 
 
-# --- owid ------------------------------------------------------------------
-def _resolve_owid(series_id: str, root: str) -> Resolution:
-    # catalog: owid:<slug>:<entity>   native file: <slug>.parquet   key_col: series_key
-    # native series_key: '<slug>|<metric>|<entity>' (each OWID slug file holds ONE metric).
-    # The catalog id drops the metric segment, so we re-join via prefix+suffix: select the
-    # file's rows whose key starts with '<slug>|' AND ends with '|<entity>' (unambiguous
-    # because there is exactly one metric per slug file -> exactly one matching series_key).
-    parts = series_id.split(":", 2)
-    if len(parts) != 3 or parts[0] != "owid":
-        raise ResolveError(f"{series_id}: expected owid:<slug>:<entity>")
-    _, slug, entity = parts
-    path = os.path.join(root, "owid", f"{slug}.parquet")
-    if not os.path.exists(path):
-        raise ResolveError(f"{series_id}: expected OWID file {path!r} not found")
-    predicate = (
-        pc.starts_with(ds.field("series_key"), f"{slug}|")
-        & pc.ends_with(ds.field("series_key"), f"|{entity}")
-    )
-    return Resolution(series_id, "owid", path, "series_key", predicate)
-
-
 # --- fhfa ------------------------------------------------------------------
 # catalog code -> native token
 _FHFA_FLAVOR = {"po": "purchase-only", "at": "all-transactions", "ed": "expanded-data"}
@@ -716,28 +695,6 @@ def _resolve_oecd(series_id: str, root: str) -> Resolution:
     )
 
 
-# --- worldbank_pink --------------------------------------------------------
-def _resolve_worldbank_pink(series_id: str, root: str) -> Resolution:
-    # catalog: worldbank_pink:crude_oil_average -> one commodity, disaggregated in the
-    # native store into 3 series (annual nominal price, annual real price, monthly
-    # nominal price) spread across per-flow files. Native series_key is
-    # '<freq>:<measure>:<commodity>' (freq in a|m; measure is price|price_real for
-    # every catalogued commodity). Open the source DIRECTORY as one pyarrow dataset so
-    # all per-flow parquet files are scanned together, and anchor the match on
-    # ':price:'/':price_real:' so a bare commodity suffix never collides with index
-    # names whose tail overlaps (e.g. non_energy vs energy, other_food vs food).
-    commodity = series_id.split(":", 1)[1]
-    path = os.path.join(root, "worldbank_pink")
-    if not os.path.isdir(path):
-        raise ResolveError(f"{series_id}: expected Pink Sheet dir {path!r} not found")
-    key = ds.field("series_key")
-    predicate = (
-        pc.ends_with(key, f":price:{commodity}")
-        | pc.ends_with(key, f":price_real:{commodity}")
-    )
-    return Resolution(series_id, "worldbank_pink", path, "series_key", predicate)
-
-
 # --- usda: the slug-id resolver was REMOVED 2026-08-01 ------------------------
 # It took a catalog id like `usda:corn_grain_production_measured_in_bu`, looked its verbatim
 # SHORT_DESC out of the catalog title, and filtered the `crops` subdirectory. That worked only
@@ -836,29 +793,6 @@ def _resolve_fed_board(series_id: str, root: str) -> Resolution:
             f"e.g. fed_board:{os.path.splitext(os.path.basename(hits[0]))[0]}:{native_key}.")
     return Resolution(series_id, "fed_board", hits[0], "series_key",
                       pc.equal(ds.field("series_key"), native_key))
-
-
-# --- dbnomics --------------------------------------------------------------
-def _resolve_dbnomics(series_id: str, root: str) -> Resolution:
-    # catalog: dbnomics:<PROVIDER>/<DATASET>/<series_key>
-    #   e.g. dbnomics:AMECO/ZUTN/USA.1.0.0.0.ZUTN  ,  dbnomics:FED/H15/RIFLGFCY10_N.B
-    # On disk: one directory per provider, data/clean_full/dbnomics/<PROVIDER>/,
-    # a multi-part parquet dataset with columns
-    #   provider, dataset, series_key, obs_date, value, license_id.
-    # series_key is unique only WITHIN its dataset, so select on (dataset, series_key).
-    # DATASET may contain ':' (e.g. 'WEO:latest') but never '/', and series_key never
-    # contains '/', so one maxsplit=2 on '/' recovers (provider, dataset, series_key).
-    rest = series_id.split(":", 1)[1]            # PROVIDER/DATASET/series_key
-    parts = rest.split("/", 2)
-    if len(parts) != 3:
-        raise ResolveError(f"{series_id}: expected dbnomics:<provider>/<dataset>/<series_key>")
-    provider, dataset_code, series_key = parts
-    path = os.path.join(root, "dbnomics", provider)
-    if not os.path.isdir(path):
-        raise ResolveError(f"{series_id}: expected dbnomics provider dir {path!r} not found")
-    predicate = pc.equal(ds.field("dataset"), dataset_code) & \
-        pc.equal(ds.field("series_key"), series_key)
-    return Resolution(series_id, "dbnomics", path, "series_key", predicate)
 
 
 # --- boe -------------------------------------------------------------------
@@ -1533,7 +1467,6 @@ _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "bea": _resolve_bea,
     "imf": _resolve_imf,
     "ilostat": _resolve_ilostat_any,
-    "owid": _resolve_owid,
     "fhfa": _resolve_fhfa,
     "ember": _resolve_ember,
     "bis": _resolve_bis,
@@ -1541,12 +1474,10 @@ _RESOLVERS: dict[str, Callable[[str, str], Resolution]] = {
     "frankfurter": _resolve_frankfurter,
     "ecb": _resolve_ecb,
     "oecd": _resolve_oecd,
-    "worldbank_pink": _resolve_worldbank_pink,
     "istat": _resolve_istat,
     "usda": _resolve_usda,
     "census": _resolve_census_any,
     "fed_board": _resolve_fed_board,
-    "dbnomics": _resolve_dbnomics,
     "boe": _resolve_boe,
     "statcan": _resolve_statcan_any,
     "abs": _resolve_abs,
@@ -1700,7 +1631,7 @@ def _resolve_generic_long(series_id: str, root: str) -> Resolution:
     # only what this reader reads.
     #
     # DELIBERATELY NOT A GENERIC "<src>/<src>.parquet beside shards" RULE. Measured across the
-    # fleet first: six sources match that shape (bea, fred, sipri, stats_nz, vdem, wid), and
+    # fleet first: six sources match that shape (bea, stats_nz, vdem, wid and two purged ids), and
     # only for wid is the same-named file PROVEN superseded. A generic rule would silently drop
     # data for the other five on an unmeasured assumption.
     if src == "wid":

@@ -3,8 +3,8 @@
 WHY THIS MATTERS. `updater-daily.yml` sets AQUEDUCT_LIVE_ONLY=1 and `orchestrate.py` honours it
 by executing live-tier sources only, so a non-live source's status is FROZEN — it cannot improve
 however many mornings it is reported. Measured 2026-09-03 against the real state file, 7 of the
-digest's 36 attention rows were such sources (bls, census, imf_imts_direct, istat, oecd, owid,
-sipri_polity): 19% of a list whose entire purpose is to say what needs doing.
+digest's 36 attention rows were such sources (bls, census, imf_imts_direct, istat, oecd,
+A gated source): 19% of a list whose entire purpose is to say what needs doing.
 
 THE TRAP THIS PINS. `registry.load()["sources"]` returns the RAW yaml entries, and 15 of the 282
 have no `live` key at all. `registry.to_units()` reads it as `bool(entry.get("live", False))`, so
@@ -69,7 +69,7 @@ def test_the_absent_key_case_is_real_and_not_live():
 def test_a_source_is_not_live_merely_by_having_a_state_row():
     """The whole point: presence in the state file says nothing about membership of the tier."""
     live = digest_live_ids()
-    for sid in ("oecd", "owid", "imf_imts_direct"):
+    for sid in ("oecd", "imf_imts_direct"):
         if any(e["source_id"] == sid for e in SOURCES):
             assert sid not in live, (
                 f"{sid} is live:false in registry.yaml but was classified as live")

@@ -1,7 +1,7 @@
 """U.S. Bureau of Labor Statistics connector (CPI, employment, wages; public domain).
 
 BLS API v2: POST up to 50 series IDs / request, <=20 years / request, 500 req/day with
-a registration key. We pull here instead of via FRED (FRED's own feed isn't re-serveable).
+a registration key. We pull here instead of via a gated source (a gated source's own feed isn't re-serveable).
 Starter set of high-confidence series; the API reports per-series status so unknown IDs
 surface as zero-coverage rather than crashing. Full history can be added by chunking years.
 """

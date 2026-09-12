@@ -33,7 +33,7 @@ const DENY_LIST_SQL = [...NON_REDISTRIBUTABLE].map((s) => `'${s}'`).join(",");
 // IMF-sourced CPI + ILO-sourced unemployment). Prefix match on `<src>:<ind>:`.
 // Two terms per carve-out, because ids come in two shapes and the prefix only covers one.
 // `<src>:<ind>:` matches three-part ids; the equality covers two-part ids like
-// `worldbank_wdi:FP.CPI.TOTL.ZG` and `worldbank_pink:aluminum`, for which the prefix had
+// `worldbank_wdi:FP.CPI.TOTL.ZG` and the two-part ids of a gated commodity source, for which the prefix had
 // always matched zero rows. ESCAPE '\' because `_` is a LIKE wildcard and two of the three
 // carve-out source ids contain one.
 const _exclFor = (col: string) =>
@@ -130,7 +130,8 @@ WHERE series_fts MATCH ? ${EXCL_ALIASED}`;
  * 52.8 ms. Per source, ~318 of 321 sources therefore pay exactly nothing.
  *
  * BOTH id shapes are emitted. The historical `<src>:<ind>:` prefix cannot match a two-part
- * id, so the SQL exclusion for `worldbank_wdi:FP.CPI.TOTL.ZG` and `worldbank_pink:aluminum`
+ * id, so the SQL exclusion for `worldbank_wdi:FP.CPI.TOTL.ZG` and the two-part ids of the
+ * gated commodity source
  * had always matched 0 rows; the equality term closes that. ESCAPE is required because `_`
  * is a LIKE wildcard and two of the three carve-out source ids contain one.
  *

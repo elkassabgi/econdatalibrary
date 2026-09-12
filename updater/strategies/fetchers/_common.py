@@ -216,7 +216,7 @@ class Tally:
         # and discarded it while transient_unit, structural_unit and no_time_unit recorded
         # theirs. Nine modules were already passing one into the void - bea, census, defillama,
         # hagstofa, stat_estonia, unsdg, wid, _imf_direct (imported by 105 fetchers) and
-        # _who_gho.
+        # _who_base.
         #
         # NOT rendered into Result.error. A first attempt did, and an adversarial review showed
         # why it must not: on the success path orchestrate.py writes that string to
@@ -416,7 +416,7 @@ def _max_by_key(tbl, key_col="series_key", date_col="obs_date") -> "dict[str, st
     signature and shouted here because EVERY ONE of the five callers got it wrong, and the
     failures were not alike:
 
-      boc, tcmb   called .isoformat() a SECOND time -> `'str' object has no attribute
+      boc, a gated source   called .isoformat() a SECOND time -> `'str' object has no attribute
                   'isoformat'`, taking both sources to transient_fail. Fixed a1c42881.
       riksbank    filtered on `isinstance(v, dt.date)`, which no string satisfies, so it returned
                   an EMPTY cursor map every run — no crash, no log line, just permanent `partial`
@@ -602,7 +602,7 @@ def merge_cursor_map(dst: dict, src, cap: int = CURSOR_CAP) -> bool:
 
     merge_cursors bounds a set read back from a PARQUET. Fetchers that already hold the
     keys in memory — because they parsed the rows this run — had no bounded path, so each
-    grew its own unbounded dict: vdem 1,465,759 series and owid 1,048,968 (measured
+    grew its own unbounded dict: vdem 1,465,759 series and a gated source 1,048,968 (measured
     2026-07-30), against a 50,000 cap. Neither is an OOM on its own, but every cursor
     becomes a state.db row and a _catalog_ids_for query, both linear in the count.
 
@@ -775,14 +775,14 @@ def cancellable_pool(max_workers: int):
     that waits for every future already submitted. The orchestrator's per-unit hard timeout is a
     SIGALRM that raises `UnitTimeout` in the main thread, so on a slow source the sequence is:
 
-        10:02  owid starts, submits all 150 slugs to a 6-worker pool
+        10:02  a gated source starts, submits all 150 slugs to a 6-worker pool
         10:47  SIGALRM fires, UnitTimeout raised inside the as_completed loop
         10:47  the `with` block starts shutdown(wait=True) and drains the remaining ~100 slugs
         12:32  GitHub kills the step at its 250-minute cap
 
-    owid printed nothing for 150 minutes and the timeout message never appeared, because the
+    A gated source printed nothing for 150 minutes and the timeout message never appeared, because the
     exception could not escape the context manager. The 45-minute cap was armed and correct; it
-    simply could not take effect. Four fetchers share the pattern (boe, ksh_stadat, ons_uk, owid).
+    simply could not take effect. Four fetchers share the pattern (boe, ksh_stadat, ons_uk).
 
     `cancel_futures=True` drops the QUEUED futures and `wait=True` still joins the at most
     `max_workers` already running, so shutdown is bounded by one task, not by the backlog. On the
