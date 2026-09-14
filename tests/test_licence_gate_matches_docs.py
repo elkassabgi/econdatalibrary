@@ -8,7 +8,7 @@ both were applied to `denylist.ts` and `util.ts` BY HAND. Nothing failed when th
 Two classes that stopped recurring the moment they became mechanical: the banned-aggregator
 host (a PreToolUse hook + tests/test_relay_ban.py) and the registry count (R347 +
 tests/test_registry_count_guard.py). Licence compliance never got the same treatment, so it came
-back roughly weekly — R8 (WTO refused data still served through a phantom-id gate), R29
+back roughly weekly — R8 (refused data still served through a phantom-id gate), R29
 (metadata-only listings), R408 (the email trail said `ei_statreview` "stays gated pending ...
 remove from denylist.ts" while it was absent from denylist.ts and downloadable all along).
 
@@ -285,7 +285,7 @@ def test_verdict_rows_never_disappear_silently():
 
 
 def test_every_gate_entry_has_a_verdict_row_or_a_recorded_reason():
-    """A gate whose reason nobody recorded is R8's WTO incident waiting to repeat.
+    """A gate whose reason nobody recorded is R8's phantom-id incident waiting to repeat.
 
     Every entry in NON_REDISTRIBUTABLE must be justified by something committed: either its own
     row in the per-database index, or the removal note that records what happened to the rows of

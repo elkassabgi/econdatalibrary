@@ -1,8 +1,8 @@
 """S6 — manual_vintage.
 
 For sources that publish DISCRETE VERSIONED RELEASES with no incremental API: a new
-file simply appears per vintage (PWT-, Maddison-, Barro-Lee-style editions; the
-registry's a gated source / gii / a gated source / a gated source). There is no `since=` delta to
+file simply appears per vintage (PWT-, Maddison-, Barro-Lee-style editions; gii in
+the registry). There is no `since=` delta to
 build — between editions the data is frozen, and on a new edition the WHOLE release is
 republished (often with back-revisions across the entire panel).
 

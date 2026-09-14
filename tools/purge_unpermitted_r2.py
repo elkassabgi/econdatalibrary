@@ -11,7 +11,7 @@ being served is touched.
 Still archives the PRIMARY parquet first -- cheap insurance, and it means a re-publish after a late
 grant does not even need a re-crawl. Derived CSVs are not archived (regenerable from the parquet).
 
-Safety: every prefix is TERMINATED (`a gated source/`, `a gated source%3A`) so a sibling id sharing a name prefix can
+Safety: every prefix is TERMINATED (`<source_id>/`, `<source_id>%3A`) so a sibling id sharing a name prefix can
 never be swept in; re-asserted on every batch immediately before the delete call.
 """
 import sys, os, hashlib, shutil, urllib.parse, collections
@@ -22,7 +22,7 @@ from core import r2_util  # noqa
 BUCKET = "econ-data"
 LOCAL_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 
-# The 15 holding R2 residue: gated, 0 catalog series, no permission (refused, silent, or unassessed).
+# The ones holding R2 residue: gated, 0 catalog series, no permission (refused, silent, or unassessed).
 # DEFUSED 2026-08-31 (adversarial review of a gated source deletion): the old list still named
 # vdem (un-gated 2026-08-24, CONFIRMED CC BY-SA, SERVED) and wid (SERVED, 2.47M series) under
 # a header claiming "gated, 0 catalog series, no permission" -- anyone re-running it would

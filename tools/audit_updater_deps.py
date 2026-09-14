@@ -7,9 +7,9 @@ names the missing package: the source simply never runs, forever, while the job 
 
 It has already happened twice, per requirements-updater.txt's own notes: a missing openpyxl made
 edgar_jrc report "no adapter built" (CI run 28978133410), and a missing xlrd broke damodaran
-(ModuleNotFoundError reported as a transient) AND a gated source (which reported "2/3 sub-units
-returned 200 but parsed 0 rows" — the 2 being exactly its two .xls files). One absent dep, two
-sources broken, neither naming the cause. lxml was the third, caught here before its first run.
+(ModuleNotFoundError reported as a transient) and another source's .xls reads ("2/3 sub-units
+returned 200 but parsed 0 rows" — the 2 being exactly its two .xls files). One absent dep,
+sources broken, none naming the cause. lxml was the third, caught here before its first run.
 
 Local imports prove nothing: everything is installed on this machine. What matters is whether
 the package is DECLARED, so the runner gets it. So this walks the import graph statically —

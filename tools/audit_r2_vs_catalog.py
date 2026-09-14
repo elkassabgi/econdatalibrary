@@ -44,9 +44,8 @@ MEASURED 2026-09-06, the run that prompted this tool:
     ember              60                 60              255,898
     ecb                35                 35            3,733,574
     census          2,993              2,993              440,414
-    A gated source                 0                  0              151,236
 
-R2 and the catalogue agreed EXACTLY in all seven, which is what settled the question.
+R2 and the catalogue agreed EXACTLY in every row, which is what settled the question.
 
 COST. `list_objects_v2` at 1,000 keys per page, so roughly one Class A call per 1,000 objects -
 about $4.50 per million calls. Listing statcan's 466,341 keys is ~470 calls, well under a cent.
@@ -98,7 +97,7 @@ def store_only_sources(counts: dict) -> list:
 
     `--all` enumerates `catalogue_counts()`, which reads the local `catalog.db`. A source with no
     local row therefore never enters the run - so this audit cannot see it in EITHER direction,
-    and prints nothing to say so. Measured 2026-09-07: `a gated source` has 26 rows in D1 and 0
+    and prints nothing to say so. Measured 2026-09-07: a gated source had 26 rows in D1 and 0
     locally, and was silently outside every `--all` run.
 
     Named rather than counted, and reported under NOT MEASURED, because the honest statement is

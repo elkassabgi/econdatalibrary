@@ -25,8 +25,8 @@ Why a floor at all — the two lessons behind it, kept because they ARE the mech
   * A source purged from the catalogue has no `source` row, so the reservable=0 scan cannot
     see it. Verified on the first regeneration after the 2026-07-23 purge: the purged ids DID
     leak out of the gate. The floor pins them so a later re-ingest can never land un-gated.
-  * A licence row can be SHARED (R117). Setting reservable=0 on `cc-by-4.0` to gate one
-    disputed source would gate the 36 others on that row. The floor is the per-SOURCE gate
+  * A licence row can be SHARED (R117). Setting reservable=0 on `cc-by-4.0` to gate a
+    disputed source would gate every hosted source on that row. The floor is the per-SOURCE gate
     for a source whose verdict is disputed while its licence row is not.
 
 Un-gating is a decision, never a side effect. Add the id to RELEASED in the same commit as

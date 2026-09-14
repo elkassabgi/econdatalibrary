@@ -9,7 +9,6 @@ the two operations must never share a code path.
 Targets this was built for:
   * hf_equities — 1,391 metadata-only listings econ cannot serve (R29: no metadata-only, ever);
     0 series CSVs and 0 store objects exist, so row deletion IS the whole cleanup.
-  * A gated source       — 64 residual listed rows; licence DISPUTED, store stays gated on R2 untouched.
 
 After running: remove the id from util.ts SUPPORTED_SOURCES, deploy, verify live absence
 (with a known-present control, R338), and refresh_r2_catalog --allow-shrink <src>.
@@ -20,7 +19,7 @@ Usage:
   python tools/delist_source_rows.py whr --purge-csv-prefix "WHR:" --apply
       # EXCLUSIVE R2-only mode: deletes series/<urlenc(source:PREFIX)>* CSV objects and
       # touches NOTHING else (no catalog, no D1, no store). Built for provenance residue:
-      # whr's 178 a gated source-era CSVs (R364) and a gated source's 40 orphans, both Ahmed-authorized.
+      # whr's 178 older-provenance CSVs (R364), Ahmed-authorized.
 """
 from __future__ import annotations
 

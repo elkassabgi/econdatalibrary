@@ -22,9 +22,8 @@ gap in the run then in flight:
     ember              60                 60              255,898
     ecb                35                 35            3,733,574
     census          2,993              2,993              440,414
-    A gated source                 0                  0              151,236
 
-R2 and the catalogue agree EXACTLY in all seven. So the gap is data that was never derived
+R2 and the catalogue agree EXACTLY in every row. So the gap is data that was never derived
 to R2 at all - HELD, not hosted. It is still a real coverage gap, because a user cannot get
 it; but the fix is "derive and publish", not "add a catalogue row", and the two are not the
 same job. This is the R825 correction in the opposite direction: there the file wrongly said
@@ -313,9 +312,9 @@ def denylisted() -> set:
     A gated source holds data, has zero catalogue rows and zero R2 objects BY DECISION - the
     2026-07-22/23 licence purge. Reporting one as UNCATALOGUED without saying so invites the
     reader to conclude data was forgotten, which is the error this function exists to stop:
-    on 2026-09-06 I wrote that `a gated source` was "a dead store directory nothing owns", from a
+    on 2026-09-06 I wrote that a gated source was "a dead store directory nothing owns", from a
     registry lookup, when it has a working fetcher (a gated source's ingest script) and sits in this
-    very set - twenty minutes after a reviewer told me the same about `a gated source` and `a gated source`
+    very set - twenty minutes after a reviewer told me the same about other gated sources
     (R838). A rule broken by hand twice belongs in the instrument.
     """
     import re                                                    # noqa: PLC0415
@@ -661,7 +660,7 @@ def main() -> int:
             # no catalogue row at all reaches nobody - `series.ts` 404s an id absent from the
             # catalogue - so every one of these keys is held and unreachable, and belongs in
             # the headline. Booking them as "design" is how ilo (file grain, 29,447,518 keys,
-            # 0 rows) read as intentional, and how imf and a gated source vanished from the total.
+            # 0 rows) read as intentional, and how imf, among others, vanished from the total.
             # Listed in its OWN bucket so the two gap buckets keep partitioning cleanly.
             note = f"UNCATALOGUED — 0 catalogue rows{f'  grain:{g}' if g else ''}"
             zerogap, unc = zerogap + n, unc + n

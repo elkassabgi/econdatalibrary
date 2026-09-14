@@ -28,7 +28,7 @@ OUTDIR = os.path.join(ROOT, "dist", "broaden")
 PROTECTED = {"cbs_nl", "gus_dbw"}
 
 # NEVER catalog a source we are not allowed to host. Sources purged from the catalog on
-# 2026-07-22/23 (WTO, whr and the rest of the gated set) still had their parquet in
+# 2026-07-22/23 (the gated set, whr among them at the time) still had their parquet in
 # data/clean_full as an archive, so a
 # later `broaden_catalog` run would happily re-catalog them and SILENTLY UNDO the purge.
 # Derived from the redistribution gate's own safety floor rather than a second hand-maintained

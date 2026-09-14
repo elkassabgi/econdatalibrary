@@ -74,7 +74,7 @@ IMPOSSIBLE_AFTER = dt.date(2200, 1, 1)
 #
 # 1500, CALIBRATED AGAINST THE DATA rather than guessed. My first attempt used 1850 and flagged
 # 25 sources, nearly all of them genuine: treasury's US debt outstanding from 1790, vdem from
-# 1789, wid from 1800, ssb from 1769, noaa weather from 1840, a gated source from 1840. That is exactly the
+# 1789, wid from 1800, ssb from 1769, noaa weather from 1840. That is exactly the
 # failure this file's upper-bound note warns about — a bound that flags real data gets switched
 # off and protects nothing. At 1500 the remaining low-side hits are two: scb BE/HE at year 0114
 # and stat_slovenia 05W at year 0001, both unarguable, plus allowlisted deep history below.

@@ -129,8 +129,8 @@ def _run(tmp_path, spec, grain, fail_index=False):
 # bravo: DECLARED flow grain, a 95-key "gap" that is the design (100 keys, 5 rows)
 # charlie: bespoke resolver, 50-key gap - the abs/bls/bis shape: unknown, therefore COUNTED
 # zulu: a bespoke resolver with ZERO catalogue rows. The suite had no such case, which is
-# exactly why the cat == 0 branch kept the pre-review behaviour and dropped 5,353,886 real
-# store keys (imf 4,304,918 + a gated source 1,048,968) out of the headline on the last complete run.
+# exactly why the cat == 0 branch kept the pre-review behaviour and dropped real
+# store keys (imf 4,304,918 among them) out of the headline on the last complete run.
 SPEC = {"alpha": (40, 10), "bravo": (100, 5), "charlie": (60, 10), "zulu": (500, 0)}
 GRAIN = {"bravo": "flow", "charlie": "custom", "zulu": "custom"}
 # alpha 30 + charlie 50 + zulu 500
@@ -364,7 +364,7 @@ def test_zero_catalogue_rows_is_its_own_bucket_and_is_COUNTED(tmp_path):
     absent from the catalogue. The pre-review code added such a source's keys to the DECLARED
     grain tally ("NOT a coverage gap") and to NEITHER the headline nor the unestablished tally, so
     on the last complete run it printed "0 store keys" under a heading reading "INCLUDED in the
-    total above" while listing two sources, and dropped imf (4,304,918) and a gated source (1,048,968) out
+    total above" while listing sources, and dropped imf (4,304,918) and more out
     of the headline entirely. It also booked ilo - file grain, 29,447,518 keys, no catalogue at
     all - as design.
     """

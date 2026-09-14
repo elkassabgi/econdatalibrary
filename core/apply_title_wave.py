@@ -28,7 +28,7 @@ OUT_DIR = os.path.join(ROOT, "dist", "d1", "titles")
 
 MAX_BYTES = 10_000_000
 MAX_STMTS = 1500
-_REFUSE = set()  # (was {"a gated source"} — its file is now corrected: units=US$ millions, base year (2024) verified against a gated source ingest-log sheet name)
+_REFUSE = set()  # (was non-empty — its file is now corrected: units=US$ millions, base year (2024) verified against its ingest-log sheet name)
 
 
 def _lit(v: str) -> str:
