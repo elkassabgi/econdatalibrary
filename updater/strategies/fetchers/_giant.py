@@ -237,7 +237,8 @@ def select_flows(catalog: dict, state: dict, *, max_flows=DEFAULT_MAX_FLOWS_PER_
 
 def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, timeout,
               max_flows=DEFAULT_MAX_FLOWS_PER_TICK, min_ratio=0.97,
-              report_changed_flows: bool = False):
+              report_changed_flows: bool = False, bounded_merge: bool = False,
+              checkpoint_every: int | None = None):
     """Generic S4 driver. Sources supply two callables:
 
       fetch_catalog() -> {flow_id: {"vintage", "filename", **meta}}   (raises Transient on net fail)
@@ -262,7 +263,20 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     fetcher's flow ids AS ITS CATALOGUE SPELLS THEM — for a grouped source the flow IS the
     catalogue id suffix (`eurostat:aact_ali01`), which `_catalog_ids_for`'s exact tier
     resolves by primary key. Never `series_cursors` (base.py: three contradictory
-    contracts), never derived from LastModified or from `selected`."""
+    contracts), never derived from LastModified or from `selected`.
+
+    bounded_merge=True (opt-in; default False keeps every other caller byte-identical) merges
+    each flow through merge.merge_and_write_bounded, whose peak memory does not grow with the
+    stored file. Without it one merge materialises the whole published parquet: eurostat's
+    demo_r_mweek3 (83,287,439 stored rows) peaked at 21,057 MB RSS for a 1,656,986-row tail and
+    destroyed the 16 GB runner on updater-daily 34780466566 and 34841580535.
+
+    checkpoint_every=N (opt-in) also saves the per-flow sidecar after every N flows. save_state
+    otherwise runs once, after the loop, so anything that ENDS the process inside the loop - a
+    runner OOM kill, the orchestrator's SIGALRM UnitTimeout, a job timeout - discards every
+    flow's recorded progress and the next tick re-selects the identical flows in the identical
+    order, meeting the identical failure. A failed checkpoint PUT is reported and the sweep goes
+    on; the final save still raises loudly."""
     source_dir = (unit.out_paths or [None])[0]
     if source_dir is None:
         raise DefinitiveError(f"{source}: unit has no out_paths (source dir unknown)")
@@ -292,7 +306,23 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     changed_flows: dict = {}   # {flow_id: max changed obs_date | None}, merge-measured
     merged_n = over_cap_n = 0  # flows that reached the merge; of those, over the report cap
 
+    def _merge(out_path, table, **kw):
+        # bounded_merge=False is the pre-existing call, unchanged.
+        if bounded_merge:
+            return merge.merge_and_write_bounded(out_path, table, **kw)
+        return merge.merge_and_write(out_path, table, mode="merge", **kw)
+
     for n_done, fid in enumerate(selected, 1):
+        # CHECKPOINT (opt-in): n_done - 1 flows are complete at this point. Without it the only
+        # save_state is the one after the loop, which a killed or SIGALRM-interrupted sweep never
+        # reaches (see the checkpoint_every note in the docstring).
+        if checkpoint_every and n_done > 1 and (n_done - 1) % checkpoint_every == 0:
+            try:
+                save_state(source_dir, state)
+            except Exception as e:                      # noqa: BLE001
+                print(f"[{source}] checkpoint after {n_done - 1:,} flow(s) NOT saved "
+                      f"({type(e).__name__}: {str(e)[:120]}); the sweep continues and the "
+                      f"end-of-run save still runs", flush=True)
         # Every 25 flows, and always on the last one. Bounded on purpose: one line per flow
         # would bury a 1,400-flow sweep's real events in noise.
         if n_done % 25 == 0 or n_done == len(selected):
@@ -402,10 +432,9 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                 # exception path. The dedup-key refusal is unreachable here: every giant
                 # fetch_flow builds (series_key, obs_date, value) itself.
                 if table.num_rows <= merge.CHANGED_KEYS_CAP:
-                    n, last, _rep = merge.merge_and_write(out_path, table, mode="merge",
-                                                          min_ratio=min_ratio,
-                                                          report_changed_keys=True,
-                                                          changed_keys_cap=merge.CHANGED_KEYS_CAP)
+                    n, last, _rep = _merge(out_path, table, min_ratio=min_ratio,
+                                           report_changed_keys=True,
+                                           changed_keys_cap=merge.CHANGED_KEYS_CAP)
                     _flow_changed = bool(_rep)
                     _when = (max((str(v) for v in _rep.values() if v), default=None)
                              or (str(last) if last else None))
@@ -418,13 +447,12 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                     print(f"[{source}] {fid}: {table.num_rows:,} new rows exceed the "
                           f"changed-flow report cap ({merge.CHANGED_KEYS_CAP:,}) — merged "
                           f"without the report; flow treated as CHANGED", flush=True)
-                    n, last = merge.merge_and_write(out_path, table, mode="merge",
-                                                    min_ratio=min_ratio)
+                    n, last = _merge(out_path, table, min_ratio=min_ratio)
                     _flow_changed, _when = True, (str(last) if last else None)
                 if _flow_changed:
                     changed_flows[fid] = _when
             else:
-                n, last = merge.merge_and_write(out_path, table, mode="merge", min_ratio=min_ratio)
+                n, last = _merge(out_path, table, min_ratio=min_ratio)
         except DefinitiveError as e:
             # A would-shrink / column-drop / 0-row merge: keep old data, surface partial,
             # do NOT advance vintage so it is reattempted (could be a truncated upstream).

@@ -191,6 +191,16 @@ def _parse_csv(content: bytes):
             gzip.GzipFile(fileobj=io.BytesIO(content)),
             encoding="utf-8-sig", errors="replace", newline=""))
     else:
+        # THE SAME CEILING FOR A PLAIN BODY (2026-09-14). The guard above only ever looked at
+        # gzip bodies, but Eurostat also answers large extractions as PLAIN CSV: demo_r_mweek3
+        # with startPeriod=2026 came back as 128,392,331 bytes of uncompressed CSV. A plain body
+        # of any size was therefore decoded to one str and parsed into Python lists with no
+        # ceiling at all. Counting newlines in bytes already held allocates nothing.
+        rows = max(0, content.count(NEWLINE_BYTE) - 1)
+        if rows > MAX_FLOW_ROWS:
+            raise TooBigForRunner(
+                f"plain CSV body holds ~{rows:,} rows, over the {MAX_FLOW_ROWS:,} ceiling for a "
+                f"16 GB runner; deferred rather than parsed (R473)")
         reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig", errors="replace")))
     if not reader.fieldnames:
         return None, None, None
@@ -418,7 +428,13 @@ def update(unit, since) -> Result:
         unit, source="eurostat",
         fetch_catalog=fetch_catalog, fetch_flow=fetch_flow,
         csv_accept=CSV_ACCEPT, rate=RATE, timeout=TIMEOUT,
-        report_changed_flows=True)
+        report_changed_flows=True,
+        # bounded_merge: a flow's merge must not materialise the flow's whole stored parquet.
+        # demo_r_mweek3 (83,287,439 stored rows) needed 21,057 MB to merge a 1,656,986-row tail
+        # in memory and killed updater-daily 34780466566 / 34841580535 at flow ~41 of 400.
+        # checkpoint_every: persist per-flow progress during the sweep, so a run that is killed
+        # anyway does not re-select the same flows in the same order next tick.
+        bounded_merge=True, checkpoint_every=10)
 
 
 # S4 strategy also calls current_vintage() (cheap catalogue probe) for detect_change.
