@@ -36,8 +36,8 @@ Run from a shell where `econfindatalibrary/.env` has the R2 write creds + wrangl
    - stat_latvia: `UPDATE source SET license_id='cc-by-4.0' WHERE source_id='stat_latvia';`
      — its current `NEEDS-REVIEW` license is **shared by other restricted sources** (several GATED sources,
      wid, whr, several GATED sources); do **NOT** flip NEEDS-REVIEW.
-   - **stat_estonia — AHMED DECISION.** Its `cc-by-sa-4.0` is shared with **8 `unesco_*`**
-     sources (5 of which are NOT in the denylist). If those unesco_* are redistributable, flip
+   - **stat_estonia — AHMED DECISION.** Its `cc-by-sa-4.0` is shared with `unesco_*`
+     sources (check each against the gate before flipping). If those unesco_* are redistributable, flip
      `cc-by-sa-4.0` globally; if not, give stat_estonia its own row (e.g. `cc-by-sa-4.0-ee`,
      reservable=1) and repoint. Verified audit says stat_estonia itself IS redistributable.
 5. **source attribution** — confirm the 9 `source` rows carry attribution/homepage/terms so the

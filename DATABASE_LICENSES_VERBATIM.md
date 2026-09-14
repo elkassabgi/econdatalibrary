@@ -59,8 +59,8 @@ What this record still has to carry, because the gate rests on it:
   (keep gated), NEEDS HUMAN REVIEW, or REFUSED IN WRITING -- or on the absence of any
   verdict, which under this file's decision rule is itself a bar to serving. None of
   them is gated on a guess.
-- At least one removed database carried a CLEARED - re-host OK verdict. It was removed
-  by the owner's order, not by its licence.
+- At least one removed database carried a CLEARED - re-host OK verdict; removal there
+  followed the owner's order, not the licence.
 - The gate is enforced mechanically, not by this document: `api/worker/src/denylist.ts`
   and `tests/test_licence_gate_matches_docs.py`. Nothing here can un-gate anything.
 - The verbatim provider terms for those databases are no longer recoverable from this
