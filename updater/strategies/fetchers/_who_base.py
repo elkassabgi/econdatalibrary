@@ -136,7 +136,7 @@ def current_vintage(unit, source_id: str):
     return "date-tail"
 
 
-def run(source_id: str, prefix: str, budget_env: str = "WHO_GHO_BUDGET_MIN") -> Result:
+def run(source_id: str, prefix: str, budget_env: str = "WHO_BASE_BUDGET_MIN") -> Result:
     out_dir = config.source_dir(source_id)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"{source_id}.parquet")

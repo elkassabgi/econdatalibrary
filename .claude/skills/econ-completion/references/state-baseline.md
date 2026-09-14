@@ -14,7 +14,7 @@ All figures dated 2026-08-30, instruments named. **Re-measure before acting** (R
 | Local catalogue | 349 source rows (322 with series + 27 empty); 71 licence rows; 11.91 GB | `catalog.db` |
 | Local store | 345 GB; 98,785 files; 430 dirs | os.walk |
 | State store | 11.30 GB; 28.77M `series_cursor` rows (50x the code's assumed size) | `data/_aqueduct/state.db` |
-| Denylist | 49 gated ids (21 live + 28 legacy floor); carve-outs on worldbank/wdi/pink | `denylist.ts` (generated) |
+| Denylist | gated ids (a live set plus a legacy floor); carve-outs on worldbank/wdi/pink | `denylist.ts` (generated) |
 
 ## The five places a series lives (no foreign keys between them)
 

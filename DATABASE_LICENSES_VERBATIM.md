@@ -2732,7 +2732,7 @@ One scope caveat (does not change the verdict): the most common academic use of 
 
 Public licence terms fetched verbatim at source (whr = written email grant). Deployed live:
 denylist.ts (13 removed, worker version 6e8e9410) + D1 econ-catalog (reservable=1). Verified
-451->401 on econdl-api.elkassabgi.workers.dev; restricted controls (four gated ids) stay 451.
+451->401 on econdl-api.elkassabgi.workers.dev; restricted controls (gated ids) stay 451.
 
 | Source | Licence | Verdict | Verbatim key clause | URL |
 |---|---|---|---|---|

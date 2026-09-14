@@ -37,10 +37,10 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // rows and the 52 objects were withdrawn (manifest in logs/zillow_gate_manifest.json); the
   // 412 local parquet files are KEPT, so this is reversible the moment permission exists.
 
-  // REMOVED 2026-08-01 — 17 ids whose licence verdict in DATABASE_LICENSES_VERBATIM.md is
+  // REMOVED 2026-08-01 — the ids whose licence verdict in DATABASE_LICENSES_VERBATIM.md is
   // RESTRICTED (keep gated) or NEEDS HUMAN REVIEW, so this list must not offer them:
-  //   (fifteen gated ids and two unreviewed ones; the licence record is the authority on which)
-  // Nothing was withdrawn from service: all 17 already had ZERO derived CSVs in R2 and ZERO
+  //   (gated ids and unreviewed ones; the licence record is the authority on which)
+  // Nothing was withdrawn from service: all of them already had ZERO derived CSVs in R2 and ZERO
   // catalogue rows, so a request for one answered 404 either way. What they did do was make
   // this list — the thing that is supposed to say what we serve — disagree with the licence
   // audit, and hide that disagreement behind an error code that looks like "no such series".
