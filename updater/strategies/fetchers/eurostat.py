@@ -201,7 +201,14 @@ def _parse_csv(content: bytes):
             raise TooBigForRunner(
                 f"plain CSV body holds ~{rows:,} rows, over the {MAX_FLOW_ROWS:,} ceiling for a "
                 f"16 GB runner; deferred rather than parsed (R473)")
-        reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig", errors="replace")))
+        # DECODE AS A STREAM, like the gzip branch. This was io.StringIO(content.decode(...)):
+        # a second, decoded copy of the whole body held for the entire parse. Measured by the
+        # 2026-09-14 review on synthetic eurostat-shaped bodies, that copy is most of the plain
+        # parse's cost - 602 B/row against 347 B/row for the same rows gzip-streamed - enough
+        # for a body under the row ceiling to exhaust a 16 GB runner. Same decoding (utf-8-sig,
+        # errors="replace"); newline="" hands csv the raw line endings, as the gzip branch does.
+        reader = csv.DictReader(io.TextIOWrapper(io.BytesIO(content), encoding="utf-8-sig",
+                                                 errors="replace", newline=""))
     if not reader.fieldnames:
         return None, None, None
     fields = reader.fieldnames

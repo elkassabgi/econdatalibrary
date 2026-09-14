@@ -310,6 +310,53 @@ def test_a_sweep_killed_mid_loop_keeps_its_checkpointed_progress(tmp_path, monke
     assert set(flows[:20]) <= done and "zz22" not in done
 
 
+class UnitTimeout(Exception):
+    """Same NAME and base as updater/orchestrate.py's SIGALRM exception, which _giant matches
+    by class name."""
+
+
+def _eurostat_sweep(tmp_path, monkeypatch, fetch_flow, n=25):
+    monkeypatch.setattr(_giant.time, "sleep", lambda *_a, **_k: None)
+    flows = [f"zz{i:02d}" for i in range(n)]
+    cat = {f: {"vintage": "v1", "filename": f.upper() + ".parquet"} for f in flows}
+    monkeypatch.setattr(eurostat, "fetch_catalog", lambda: cat)
+    monkeypatch.setattr(eurostat, "_require_rekeyed", lambda: None)
+    monkeypatch.setattr(eurostat, "fetch_flow", fetch_flow)
+    return flows
+
+
+def test_a_unit_timeout_ends_the_sweep_after_saving_what_is_done(tmp_path, monkeypatch):
+    def fetch_flow(fid, meta, since, session):
+        if fid == "zz13":
+            raise UnitTimeout("unit exceeded 45 min (SIGALRM)")
+        return _tbl([("k", 19000, 1.0)]), "ok"
+
+    flows = _eurostat_sweep(tmp_path, monkeypatch, fetch_flow)
+    with pytest.raises(UnitTimeout):
+        eurostat.update(_Unit(str(tmp_path)), None)
+    state = json.loads((tmp_path / "_giant_state.json").read_text(encoding="utf-8"))
+    done = {f for f, s in state.items() if s.get("status") == "ok"}
+    assert done == set(flows[:13]), sorted(done)       # every finished flow, none after
+
+
+def test_an_unexpected_merge_error_fails_one_flow_not_the_sweep(tmp_path, monkeypatch):
+    flows = _eurostat_sweep(tmp_path, monkeypatch,
+                            lambda fid, meta, since, s: (_tbl([("k", 19000, 1.0)]), "ok"), n=6)
+    real = merge.merge_and_write_bounded
+
+    def flaky(out_path, table, **kw):
+        if out_path.endswith("ZZ03.parquet"):
+            raise RuntimeError("botocore: connection reset during download_file")
+        return real(out_path, table, **kw)
+
+    monkeypatch.setattr(merge, "merge_and_write_bounded", flaky)
+    res = eurostat.update(_Unit(str(tmp_path)), None)
+    assert res.status == "partial" and "zz03" in (res.error or ""), (res.status, res.error)
+    state = json.loads((tmp_path / "_giant_state.json").read_text(encoding="utf-8"))
+    assert state["zz03"]["status"] == "transient_fail"
+    assert all(state[f]["status"] == "ok" for f in flows if f != "zz03")
+
+
 # ---- 7. plain-body ceiling ------------------------------------------------------------------
 
 def test_a_plain_csv_body_over_the_row_ceiling_is_deferred_not_parsed(monkeypatch):
@@ -322,6 +369,66 @@ def test_a_plain_csv_body_over_the_row_ceiling_is_deferred_not_parsed(monkeypatc
     monkeypatch.setattr(eurostat, "MAX_FLOW_ROWS", 5)
     keys, _dates, _vals = eurostat._parse_csv(body)
     assert len(keys) == 5                       # at the ceiling it still parses
+
+
+N_PLAIN = 2_000_000
+# Measured 2026-09-14 on this fixture (Windows, Python 3.11.9): 542 B/row with the StringIO copy,
+# 283 B/row streamed. The bound sits between them.
+PARSE_BYTES_PER_ROW_BOUND = 410
+
+_PARSE_CHILD = textwrap.dedent(r'''
+    import json, sys, threading, time
+    root, body_path = sys.argv[1], sys.argv[2]
+    sys.path.insert(0, root)
+    from updater.strategies.fetchers import eurostat
+    try:
+        import resource
+        scale = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
+        def peak_b():
+            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / scale * 1048576.0
+    except ImportError:
+        import psutil
+        _p, _box = psutil.Process(), [0]
+        def _loop():
+            while True:
+                _box[0] = max(_box[0], _p.memory_info().rss)
+                time.sleep(0.02)
+        threading.Thread(target=_loop, daemon=True).start()
+        def peak_b():
+            return float(_box[0])
+    body = open(body_path, "rb").read()
+    time.sleep(0.2)
+    before = peak_b()
+    keys, dates, vals = eurostat._parse_csv(body)
+    time.sleep(0.2)
+    print(json.dumps({"rows": len(keys), "growth_b": peak_b() - before}))
+''')
+
+
+def test_a_plain_body_parses_without_a_second_decoded_copy(tmp_path):
+    """The plain branch used io.StringIO(content.decode(...)): a decoded copy of the whole body
+    for the whole parse. Measured on demo_r_mweek3's real 128,392,331-byte body: 600 B/row
+    before, 290 B/row streamed, identical rows (same SHA-256 over every key/date/value)."""
+    hdr = "DATAFLOW,LAST UPDATE,freq,unit,sex,age,geo,TIME_PERIOD,OBS_VALUE,OBS_FLAG,CONF_STATUS\n"
+    body = tmp_path / "plain.csv"
+    with open(body, "w", encoding="utf-8", newline="") as fh:
+        fh.write(hdr)
+        for i in range(N_PLAIN):
+            fh.write(f"ESTAT:ZZ(1.0),27/08/26 23:00:00,W,NR,{'FMT'[i % 3]},Y{(i // 52) % 90},"
+                     f"G{i // 4680:05d},2026-W{(i % 52) + 1:02d},{i % 997},,\n")
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = subprocess.run([sys.executable, "-c", _PARSE_CHILD, ROOT, str(body)], env=env,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=900)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    per_row = out["growth_b"] / out["rows"]
+    print(f"plain parse: {out['rows']:,} rows, {per_row:,.0f} B/row "
+          f"(bound {PARSE_BYTES_PER_ROW_BOUND})")
+    assert out["rows"] == N_PLAIN
+    assert per_row < PARSE_BYTES_PER_ROW_BOUND, (
+        f"plain-body parse cost {per_row:,.0f} B/row (bound {PARSE_BYTES_PER_ROW_BOUND}): a "
+        f"decoded copy of the body is being held again")
 
 
 # ---- 1. memory through the production wiring ------------------------------------------------

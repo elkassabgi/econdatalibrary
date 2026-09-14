@@ -210,6 +210,13 @@ def _max_obs_date(out_path: str) -> str | None:
         return None
 
 
+def _is_unit_timeout(exc) -> bool:
+    """The orchestrator's SIGALRM UnitTimeout (updater/orchestrate.py), matched by class name
+    rather than imported: it subclasses plain Exception, so without this every `except
+    Exception` in the flow loop books the hard per-unit limit as one more transient flow."""
+    return any(c.__name__ == "UnitTimeout" for c in type(exc).__mro__)
+
+
 def select_flows(catalog: dict, state: dict, *, max_flows=DEFAULT_MAX_FLOWS_PER_TICK):
     """catalog: {flow_id: {"vintage": <token>, "filename": <str>, **meta}}.
     state:   {flow_id: {"vintage": <token>, "status": <str>, "last_obs_date": <str>}}.
@@ -312,17 +319,22 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             return merge.merge_and_write_bounded(out_path, table, **kw)
         return merge.merge_and_write(out_path, table, mode="merge", **kw)
 
+    def _checkpoint(done: int, why: str) -> None:
+        try:
+            save_state(source_dir, state)
+        except Exception as e:                          # noqa: BLE001
+            if _is_unit_timeout(e):
+                raise
+            print(f"[{source}] checkpoint ({why}) after {done:,} flow(s) NOT saved "
+                  f"({type(e).__name__}: {str(e)[:120]}); the sweep continues and the "
+                  f"end-of-run save still runs", flush=True)
+
     for n_done, fid in enumerate(selected, 1):
         # CHECKPOINT (opt-in): n_done - 1 flows are complete at this point. Without it the only
         # save_state is the one after the loop, which a killed or SIGALRM-interrupted sweep never
         # reaches (see the checkpoint_every note in the docstring).
         if checkpoint_every and n_done > 1 and (n_done - 1) % checkpoint_every == 0:
-            try:
-                save_state(source_dir, state)
-            except Exception as e:                      # noqa: BLE001
-                print(f"[{source}] checkpoint after {n_done - 1:,} flow(s) NOT saved "
-                      f"({type(e).__name__}: {str(e)[:120]}); the sweep continues and the "
-                      f"end-of-run save still runs", flush=True)
+            _checkpoint(n_done - 1, "periodic")
         # Every 25 flows, and always on the last one. Bounded on purpose: one line per flow
         # would bury a 1,400-flow sweep's real events in noise.
         if n_done % 25 == 0 or n_done == len(selected):
@@ -365,6 +377,12 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             # whole source on a transient count the way it can on a structural one. This
             # recovers no rows by itself - it converts a run-killing crash into one named,
             # retryable flow.
+            if checkpoint_every and _is_unit_timeout(e):
+                # The orchestrator's hard per-unit limit is NOT one more transient flow: booking
+                # it here let the sweep run on past the cap (2026-09-14 review). Save what is
+                # done, then let it end the unit as the orchestrator intends.
+                _checkpoint(n_done - 1, "unit timeout")
+                raise
             tally.transient_unit(f"{fid}: UNEXPECTED {type(e).__name__}: {str(e)[-60:]}")
             flow_st.update(status="transient_fail")
             state[fid] = flow_st
@@ -460,6 +478,21 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             # the schema", so carry the merge's own message.
             tally.transient_unit(f"{fid}: merge guard — {str(e)[-60:]}")
             flow_st.update(status="partial", error=str(e)[:200])
+            state[fid] = flow_st
+            time.sleep(rate)
+            continue
+        except Exception as e:                      # noqa: BLE001
+            if checkpoint_every and _is_unit_timeout(e):
+                _checkpoint(n_done - 1, "unit timeout")
+                raise
+            if not bounded_merge:
+                raise                               # other callers: unchanged
+            # The bounded merge has more ways to fail than the in-memory one: an R2 download,
+            # a DuckDB spill that runs out of disk, the Windows replace race. None of them
+            # publishes anything, so one flow is retried next tick instead of the sweep ending
+            # here and the same flow ending the next sweep too (2026-09-14 review).
+            tally.transient_unit(f"{fid}: merge UNEXPECTED {type(e).__name__}: {str(e)[-60:]}")
+            flow_st.update(status="transient_fail")
             state[fid] = flow_st
             time.sleep(rate)
             continue
