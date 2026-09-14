@@ -252,7 +252,7 @@ def test_restricted_sources_are_gated_not_merely_documented():
 # It was deleted on 2026-09-08 because its baseline was a literal list of gated ids, which the
 # owner's removal order forbids writing down. Deleting it was the wrong half of the trade: the
 # ratchet was the only check that fires when a licence VERDICT ROW disappears, and its absence
-# is precisely why a wipe that removed 568 lines of DATABASE_LICENSES_VERBATIM.md — including
+# is precisely why a wipe that removed part of DATABASE_LICENSES_VERBATIM.md — including
 # verdict rows for sources outside the removal's scope — merged green.
 #
 # The restored form carries no identity: it pins the number of KEPT verdict rows, which says

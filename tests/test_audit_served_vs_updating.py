@@ -7,7 +7,7 @@ truth, not from a fresh definition (R262).
 Two things this pins that a hand answer got wrong once each:
 
   * SERVED must subtract the GATE. `SUPPORTED_SOURCES` alone only means the worker can resolve an
-    id; a gated source is in it and answers 451. Forgetting the subtraction overstates what is
+    id; any gated id in it answers 451. Forgetting the subtraction overstates what is
     served, and the first hand answer did exactly that - it reported `denylisted: 0` because a
     regex silently matched nothing, and no warning fired.
   * "no source_state row" IS NOT "not updating". That table belongs to the CLOUD updater; the big
