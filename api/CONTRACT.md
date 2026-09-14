@@ -171,7 +171,7 @@ The dev shim (`_LANGS`) and Worker (`SUPPORTED_LANGS`) keep this set in sync.
 Every registered source with license/attribution + a freshness summary
 (`status`, `last_updated`, `cadence`) joined from `source_state`. The row count is
 deliberately NOT pinned here — it changes whenever a source is added, or removed because
-we cannot host it (20 were removed 2026-07-22/23). Read it from the endpoint.
+we cannot host it (as in the removals of 2026-07-22/23). Read it from the endpoint.
 
 ### `GET /v1/last-updates`   ([w8], copy the relay aggregator `/last-updates`)
 Per dataset, projected from `unit_state` + `source_state` + registry cadence:

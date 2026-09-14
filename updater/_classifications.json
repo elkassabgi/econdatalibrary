@@ -652,7 +652,7 @@
   "imf": {
     "source_id": "imf",
     "strategy": "bulk_snapshot_if_changed",
-    "strategy_reason": "IMF SDMX 2.1 but the server supports no c[DIM] component filtering or Range resume and queries pull 'all' with no usable per-dataflow last-modified; practical refresh is re-pulling whole CHANGED dataflows, with the re-enumerated catalog as the change feed for new flows. Not S4 — IMF is not one of the four designated giants (statcan/oecd/eurostat and one since-retired multi-provider SDMX sweep).",
+    "strategy_reason": "IMF SDMX 2.1 but the server supports no c[DIM] component filtering or Range resume and queries pull 'all' with no usable per-dataflow last-modified; practical refresh is re-pulling whole CHANGED dataflows, with the re-enumerated catalog as the change feed for new flows. Not S4 — IMF is not a designated giant (statcan/oecd/eurostat are; retired multi-provider SDMX sweep work does not count).",
     "cadence": "monthly",
     "vintage_signal": "Poll api.imf.org SDMX /dataflow each run (already done) -> _catalog.json: new base dataflows auto-detected; for change in existing flows, compare dataflow/DSD version+annotations (and the 91 *_VINTAGE re-release flows) vs _manifest.json, and rebuild only flows whose version advanced.",
     "since_param": "n/a",
@@ -847,7 +847,7 @@
   "oecd": {
     "source_id": "oecd",
     "strategy": "giant_changed_units",
-    "strategy_reason": "OECD is one of the 4 designated giants (~1,413 dataflows, ~6.0B obs, ~57GB); refresh only whole CHANGED dataflows via the catalog change-feed rather than re-pulling everything.",
+    "strategy_reason": "OECD is a designated giant (~1,413 dataflows, ~6.0B obs, ~57GB); refresh only whole CHANGED dataflows via the catalog change-feed rather than re-pulling everything.",
     "cadence": "monthly",
     "vintage_signal": "OECD SDMX catalog as change-feed: re-download the catalog (--catalog -> data/raw/oecd/manifest.json + dataflows_all.xml, ~1509 flows) and diff per-flow last-updated/annotations to select changed dataflows to re-pull. (Per-flow SDMX startPeriod could refine within a changed flow, but selection is unit-level per the giants strategy.)",
     "since_param": "n/a (giant strategy refreshes whole changed units; optionally startPeriod=YYYY-MM on /rest/data/.../all within a changed flow)",

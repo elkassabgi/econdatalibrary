@@ -134,7 +134,7 @@ def test_carveouts_and_helpers_are_carried_verbatim(gen):
 
 
 def test_a_template_that_lost_a_carveout_refuses_to_write(gen, monkeypatch):
-    """The 5fc56cea1/be939627f regression: a template that no longer carries a hand-added
+    """The be939627f regression: a template that no longer carries a hand-added
     refusal must not be allowed to overwrite the file that has it."""
     G, out, db = gen
     _mk_db(db, set(), {"aaa_gated"})

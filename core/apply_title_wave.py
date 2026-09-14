@@ -28,7 +28,7 @@ OUT_DIR = os.path.join(ROOT, "dist", "d1", "titles")
 
 MAX_BYTES = 10_000_000
 MAX_STMTS = 1500
-_REFUSE = set()  # (emptied once the refused title files were corrected and checked against their ingest logs)
+_REFUSE = set()  # (emptied once the refused title files were corrected)
 
 
 def _lit(v: str) -> str:

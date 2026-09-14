@@ -131,7 +131,7 @@ GitHub Actions (cron 06:00 UTC)
 
 ---
 
-## 3. Source inventory (as of HEAD `0a927bf`)
+## 3. Source inventory
 
 - **Registry size:** 105 sources (`EXPECTED_SOURCE_COUNT`, [config.py](https://github.com/elkassabgi/econdatalibrary/blob/main/updater/config.py)).
 - **`live: true` (run daily in CI):** **2** — `cnb`, `frankfurter`.

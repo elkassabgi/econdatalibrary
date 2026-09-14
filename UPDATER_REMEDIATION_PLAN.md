@@ -1,6 +1,6 @@
 # Updater remediation plan — systematic, per-source
 
-**Date:** 2026-07-23 · **Base:** `main` @ `fcae3eb` · **Evidence:** production health run
+**Date:** 2026-07-23 · **Evidence:** production health run
 [30036391239](https://github.com/elkassabgi/econdatalibrary/actions/runs/30036391239) (every
 source's cadence + newest observation, computed against live R2 state).
 
@@ -43,7 +43,7 @@ The promotion contract for EVERY source (learned the hard way — ledger R35/R36
 ### Phase 0 — CI-safety (DONE, proven)
 The store-backed fetchers (`abs adb bls ecb eurostat insee_bdm insee_melodi istat scb
 stat_estonia treasury`) read the store via the R2-routed `blob` layer. Proven live: `scb` processed
-2,741 sub-units in CI where pre-patch it died at "source dir missing". `fcae3eb`.
+2,741 sub-units in CI where pre-patch it died at "source dir missing".
 
 ### Phase 1 — Promote the clean, current sources (the bulk win)
 Sources whose fetcher works and whose data is current — flip live after a clean dispatch, **cadence
@@ -141,7 +141,7 @@ second reviewer's note; attribution matters for knowing which loop caught what).
 | | norgesbank, unsdg | stale | Already deleted/denylisted | clear stale state |
 | Transient | bundesbank, cso, defillama, stat_slovenia | **by design** | Self-healing; data preserved, retries next tick | none (auto-retry once live) |
 | Memory | vdem | real | 77M-row OOM, mislabeled "transient" | overwrite-mode + keep OFF CI (giant → workstation) |
-| "dir missing" | abs, adb | **stale** | Already fixed by fcae3eb; stale recorded state | re-dispatch to clear |
+| "dir missing" | abs, adb | **stale** | Already fixed; stale recorded state | re-dispatch to clear |
 
 **Landmine noted:** `hagstofa.py:398`, `ssb.py:472`, `stat_latvia.py:382` still carry the raw
 `os.path.isdir` "source dir missing" pattern — they will fail in CI the moment they run there.

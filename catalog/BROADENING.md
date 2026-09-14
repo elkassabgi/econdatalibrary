@@ -34,7 +34,6 @@ they need bespoke resolvers like the existing relational set (wikidata/fhfa/cens
 2. **Flow-grain cataloging** for the 47 deferred giants (catalog at indicator/flow
    level, not full per-series).
 3. **Explicit resolvers** for the 10 relational sources.
-4. (Withdrawn under the owner's order.)
 
 ## Cutover implication
 At 1.27M series, do NOT pre-derive 1.27M per-series CSV objects to R2. The Worker

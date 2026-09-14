@@ -1806,7 +1806,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # built as a per-slug HTTP HEAD over thousands of chart URLs entered on 2026-08-07 at
             # 10:02 and again at 23:23 and produced NOTHING until GitHub's 250-minute step
             # cap killed the whole run — 150 and then 212 minutes inside a phase no cap
-            # covered. The first fix (cancellable_pool, 388bf5d5) was real but aimed at
+            # covered. The first fix (cancellable_pool) was real but aimed at
             # strat.run's drain-on-exception; the run that PROVED it insufficient carried
             # that very commit. A probe gets the same ceiling as the fetch: any vintage
             # check that needs longer than the unit timeout is a fetch wearing a probe's

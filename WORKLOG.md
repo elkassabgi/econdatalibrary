@@ -323,9 +323,7 @@ would have been a correctness regression, worse than what it replaced.** Not dep
 before shipping, which is the whole point of running the reviewer in parallel.
 
 Two further corrections from the same review, both verified here:
-- **Served is SUPPORTED_SOURCES minus the gated ids still in it, not its raw size.** My figure had
-  not subtracted every gated id there, including what my own RESERVED
-  brief covered. `docs/ECONLIB_COMPLETION_PLAN.md:78` carries the same stale figure.
+- **Served is SUPPORTED_SOURCES minus the gated ids still in it, not its raw size.**
 - **`unctad_cpia` is a LIVE array member**, not comment-only as my new `util.ts` comment claimed.
   Only `ksh` is comment-only. Corrected in place.
 
@@ -375,7 +373,7 @@ content matches the committed `sitemap.xml` exactly (331 pages, 328 × `2026-08-
 the *committed* state matches none of the current 331 pages, so **reverting or omitting it makes
 the next run stamp every page with the run date** — a false site-wide date bump, precisely what
 the mechanism exists to prevent. It is not deployed either way (`SITEMAP_STATE` sits outside
-`OUT_DIR`). Committed on its own, described as the lagging companion of `beb78ca78`, not folded
+`OUT_DIR`). Committed on its own, described as the lagging companion of an earlier commit, not folded
 into a commit about `catalog_coverage`. One thing remains **UNVERIFIED**: its mtime is today
 18:30 but its `generated` field is `2026-08-26`, and a run today would have stamped today — so
 its *content* is the 08-26 run's and what touched the file is unexplained.
@@ -432,15 +430,15 @@ after :  ?q=unemployment&source=worldbank -> total=0    returned=0   (consistent
 ```
 
 No collateral damage — `abs` 18, `bls` 9, `istat` 14,267, `ons_uk` 42, all unchanged. The
-exclusion is built **per source**, so the ~318 sources without carve-outs pay nothing; it is
-index-resident (billed `rows_read` unmoved), and only the 2–3 carve-out sources take a bounded
+exclusion is built **per source**, so sources without carve-outs pay nothing; it is
+index-resident (billed `rows_read` unmoved), and only carve-out sources take a bounded
 PK-range count instead of the carved-inclusive `source_counts`.
 
 Two latent SQL defects closed with it: the `<src>:<ind>:` prefix could never match a **two-part**
 id (so `worldbank_wdi`'s SQL exclusion, like every two-part carved id's, had always matched zero rows — the JS
 gate covered them, but carved series with no redistribution grant would have been exposed the
-day such a source is un-gated), and `_` is a LIKE wildcard present in two of the three carve-out
-source ids.
+day such a source is un-gated), and `_` is a LIKE wildcard that carve-out
+source ids can contain.
 
 **Still open, unchanged:** `q=gdp` returns `worldbank:NY.GDP.MKTP.CD:XD` first — one of R524's
 eight advertised-but-unresolvable ids. Recorded, not fixed; the remedy is update-path work.
@@ -524,7 +522,7 @@ non-demoting note. Review-hardened: the SDMX marker requirement (a plain-text 20
 must fall structural, never park silently for years), the ingester's split path fixed too, and
 the tests now drive the REAL `run_giant` (the first branch test ran zero lines of it). 11/11.
 
-## Licence refusal handling: recorded, holdings deleted, and a loaded gun defused (2026-08-31, `5aa5a1d97` + `9217c25f0`)
+## Licence refusal handling: recorded, holdings deleted, and a loaded gun defused
 
 Written refusal recorded VERBATIM in the canonical licence file and marked DENIED in the licence
 trail. Nothing user-facing changed

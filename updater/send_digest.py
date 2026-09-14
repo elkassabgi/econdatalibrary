@@ -158,7 +158,7 @@ def main() -> None:
     # (updater-daily.yml), i.e. as a SCRIPT - so `__package__` is empty and `from . import
     # registry` raises ImportError, is swallowed by the except below, and `managed` becomes None.
     # The orphan filter has therefore never run on a scheduled digest, which is why
-    # a source de-registered in July, unschedulable, last attempted 71 days ago, was
+    # sources de-registered in July, unschedulable and long unattempted, were
     # still being listed as needing attention every morning.
     #
     # The None fallback stays: a genuinely unreadable registry must report everything rather
@@ -321,7 +321,7 @@ def main() -> None:
             lines.append("")
     for r in ok:
         # A "data through" frontier far in the future is a legitimate projection
-        # horizon (e.g. a release-calendar source carrying CBO potential-GDP / WEO forecasts that
+        # horizon (e.g. official multi-year forecasts that
         # extend ~10y out), NOT a data bug. Flag it so a projection is never mistaken
         # for a stale/garbled date in the digest.
         _proj = ""

@@ -37,7 +37,7 @@ is measured absent. A source that merely has a written grant belongs in GRANTED_
 
 The SERIES_CARVEOUTS block and everything after the Set literal are carried over from the
 committed file VERBATIM. A template regression once silently WIPED carve-outs that had been
-added to denylist.ts by hand (commit be939627f dropped what 5fc56cea1 added), so the template
+added to denylist.ts by hand (commit be939627f dropped what an earlier commit had added), so the template
 no longer owns that block. main() still refuses to write if any carve-out the committed file
 protects — or the minimum set below — is missing from the output.
 
@@ -326,7 +326,7 @@ def main() -> None:
     for src, inds in carve_required.items():
         assert re.search(r"(?m)^\s*" + re.escape(src) + r"\s*:", block), (
             f"REFUSING to write: carve-out source '{src}' missing from the "
-            f"generated SERIES_CARVEOUTS (template regression — see 5fc56cea1)")
+            f"generated SERIES_CARVEOUTS (template regression — a hand-added carve-out would be dropped)")
         for ind in inds:
             # Either quote style: a prettier `singleQuote` pass rewrites the block, and a
             # double-quote-only check turned that into a refusal to regenerate at all.

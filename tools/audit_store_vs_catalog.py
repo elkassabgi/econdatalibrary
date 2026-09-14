@@ -309,11 +309,11 @@ DECLARED_GRAINS = ("flow", "dot-table", "file", "table", "group")
 def denylisted() -> set:
     """Sources deliberately GATED: they answer 451 and are hidden from the catalogue.
 
-    A gated source holds data, has zero catalogue rows and zero R2 objects BY DECISION - the
-    2026-07-22/23 licence purge. Reporting one as UNCATALOGUED without saying so invites the
+    Gated sources are kept out of the catalogue and out of R2 BY DECISION - the
+    2026-07-22/23 licence purge. Reporting any of them as UNCATALOGUED without saying so invites the
     reader to conclude data was forgotten, which is the error this function exists to stop:
     on 2026-09-06 I wrote that gated stores were "a dead store directory nothing owns", from a
-    registry lookup, when they have working fetchers (gated sources' ingest scripts) and sit in this
+    registry lookup, when they sit in this
     very set - twenty minutes after a reviewer told me the same about gated sources
     (R838). A rule broken by hand twice belongs in the instrument.
     """

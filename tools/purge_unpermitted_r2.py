@@ -5,7 +5,7 @@ Refusal and non-response are treated identically -- DELETE. Gating is not compli
 is recoverable: every one of these has an ingest script and a public upstream, so a mistake costs a
 re-crawl, while hosting without permission is real legal exposure.
 
-Fifteen sources, 14,469 objects, 1.24 GB. All are gated with 0 catalog series, so nothing that is
+Every source listed was believed gated with 0 catalog series, so nothing that is
 being served is touched.
 
 Still archives the PRIMARY parquet first -- cheap insurance, and it means a re-publish after a late

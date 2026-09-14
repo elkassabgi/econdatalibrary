@@ -57,7 +57,7 @@
 
 **Why this strategy** (registry `strategy_reason`):
 
-> OECD is one of the 4 designated giants (~1,413 dataflows, ~6.0B obs, ~57GB); refresh only whole CHANGED dataflows via the catalog change-feed rather than re-pulling everything.
+> OECD is a designated giant (~1,413 dataflows, ~6.0B obs, ~57GB); refresh only whole CHANGED dataflows via the catalog change-feed rather than re-pulling everything.
 
 **Adapter contract** (registry `adapter`):
 

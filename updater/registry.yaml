@@ -3361,7 +3361,7 @@ sources:
   # DATABASE_LICENSES_VERBATIM.md:3105) and Ahmed authorized serving it. The R2 store was purged
   # so the fetcher's first run performs the full backfill (its union-of-flows design fetches any
   # curated flow with no on-disk history in full). Entry recovered from the pre-purge registry
-  # (git 8d182e5a^); cadence weekly instead of monthly — EXR is daily data and 10 fast flows
+  # (git history); cadence weekly instead of monthly — EXR is daily data and 10 fast flows
   # cost seconds. API probed live 2026-08-06 (EXR startPeriod window: 200, 38 series).
   live: true
   scripts:
@@ -3396,7 +3396,7 @@ sources:
   scripts:
   - jobs/ingest_oecd.py
   strategy: giant_changed_units
-  strategy_reason: OECD is one of the 4 designated giants (~1,413 dataflows, ~6.0B obs, ~57GB); refresh only whole CHANGED
+  strategy_reason: OECD is a designated giant (~1,413 dataflows, ~6.0B obs, ~57GB); refresh only whole CHANGED
     dataflows via the catalog change-feed rather than re-pulling everything.
   cadence: monthly
   refresh_cost: giant

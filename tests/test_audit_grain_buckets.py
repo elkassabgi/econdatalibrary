@@ -381,10 +381,9 @@ def test_zero_catalogue_rows_is_its_own_bucket_and_is_COUNTED(tmp_path):
 def test_a_gated_source_is_not_reported_as_forgotten(tmp_path):
     """R838 - the rule I broke by hand, twice in one hour, now in the instrument.
 
-    A denylisted source holds data, has no catalogue row and no R2 object BY DECISION (the
-    2026-07-22/23 licence purge). Reporting it beside genuinely forgotten data is how I came to
-    write that gated stores were "a dead directory nothing owns" when they have working fetchers
-    and sit on the denylist.
+    Denylisted sources are kept out of the catalogue and out of R2 BY DECISION (the
+    2026-07-22/23 licence purge). Reporting them beside genuinely forgotten data is how I came to
+    write that gated stores were "a dead directory nothing owns" when they sit on the denylist.
 
     SIMPLIFIED after a second review: the gate is now checked BEFORE grain, at ANY catalogue row
     count, so gated sources never reach the zero-catalogue bucket at all. One gated bucket, and
@@ -598,8 +597,8 @@ def test_the_REAL_denylist_parses_against_the_REAL_file():
     assert re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new Set", raw), "declaration shape changed"
 
 def test_a_suspiciously_short_denylist_is_REFUSED(tmp_path):
-    """The <10-ids guard survived a mutant because the REAL file has 49 ids, so the guard never
-    fires and deleting it is invisible. A guard only counts as tested when something trips it.
+    """The fail-closed parse guard survived a mutant because nothing in the suite tripped it, so
+    deleting it was invisible. A guard only counts as tested when something trips it.
 
     Why it exists: a regex that half-matches (a renamed export, a reformatted file, a set written
     with single quotes) yields a SHORT list rather than an empty one, and a short denylist reports

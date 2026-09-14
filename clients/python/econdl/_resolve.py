@@ -1631,9 +1631,9 @@ def _resolve_generic_long(series_id: str, root: str) -> Resolution:
     # only what this reader reads.
     #
     # DELIBERATELY NOT A GENERIC "<src>/<src>.parquet beside shards" RULE. Measured across the
-    # fleet first: six sources match that shape (bea, stats_nz, vdem, wid and two purged ids), and
+    # fleet first: sources matching that shape include bea, stats_nz, vdem, wid and purged ids, and
     # only for wid is the same-named file PROVEN superseded. A generic rule would silently drop
-    # data for the other five on an unmeasured assumption.
+    # data for the others on an unmeasured assumption.
     if src == "wid":
         mono = os.path.join(src_dir, "wid.parquet")
         rest = [f for f in files if os.path.abspath(f) != os.path.abspath(mono)]

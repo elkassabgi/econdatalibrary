@@ -115,12 +115,12 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   this endpoint and hosting it would mean publishing a 2019 snapshot that can never
 #   update. Needs a different route or an explicit frozen-archive decision.
 # 2026-07-30: 125 -> 134, plus a warning about THIS TRIPWIRE'S OWN FAILURE MODE. Nine IMF
-#   direct-from-api.imf.org sources were added across two commits — 7c82c08 (imf_fsic_direct,
+#   direct-from-api.imf.org sources were added across two commits — the first (imf_fsic_direct,
 #   imf_fsibsis_direct, imf_fsicdm_direct: the Financial Soundness family) and b25e9c5 (imf_gfsbs_direct,
 #   imf_gfscofog_direct, imf_gfssfcp_direct, imf_gfssoef_direct, imf_gfssoo_direct,
 #   imf_gfsssuc_direct: the GFS family) — WITHOUT bumping this constant.
 #   A stale count here does not warn and does not degrade: registry.validate() reports it and
-#   orchestrate.py raises SystemExit, so from 7c82c08 (01:37 UTC) EVERY run would abort before
+#   orchestrate.py raises SystemExit, so from then on EVERY run would abort before
 #   touching a single source. A counter takes the whole refresh offline. Caught at 03:37 UTC
 #   with the 06:00 cron still pending, so no scheduled run actually hit it.
 #   The tripwire is worth keeping — it is what stops sources being added silently — but it has
@@ -170,7 +170,7 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   host (files.worldhappiness.report, real ETag/CL validators) — never a mirror (R215). New keys
 #   FIG21:* in whr_fig21.parquet; legacy mirror-era rows stay unserved. -> 174
 # 2026-08-06: +norgesbank RE-ADDED (cycle 37, Ahmed's answer #5): purged 2026-07-23, then
-#   audit-CLEARED (NLOD 2.0) and authorized to serve; entry recovered from git 8d182e5a^;
+#   audit-CLEARED (NLOD 2.0) and authorized to serve; entry recovered from git history;
 #   first run backfills the purged store (API probed live). -> 175
 # 2026-08-06: +unsdg RE-ADDED (cycle 38, same authorization): UNdata terms grant redistribution
 #   verbatim; fetcher reworked with rotation (R190) + chunked merges (R249), self-bounds at

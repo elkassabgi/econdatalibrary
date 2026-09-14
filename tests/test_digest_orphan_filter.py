@@ -59,7 +59,7 @@ def test_orphans_are_separated_when_run_as_a_script() -> None:
 
 @pytest.mark.skipif(not os.path.exists(STATE), reason="needs the local state store")
 def test_a_known_deregistered_source_is_not_listed_as_needing_attention() -> None:
-    """A de-registered source is the worked example: removed from the registry, so unschedulable.
+    """De-registered sources are the worked example: removed from the registry, so unschedulable.
 
     Anchored on the ORPHAN LINE rather than on that source staying broken — if it is ever
     re-registered this must not turn into a false failure, so the assertion is that whatever
