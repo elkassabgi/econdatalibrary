@@ -2,9 +2,9 @@
 
 WHY THIS MATTERS. `updater-daily.yml` sets AQUEDUCT_LIVE_ONLY=1 and `orchestrate.py` honours it
 by executing live-tier sources only, so a non-live source's status is FROZEN — it cannot improve
-however many mornings it is reported. Measured 2026-09-03 against the real state file, 7 of the
-digest's 36 attention rows were such sources (bls, census, imf_imts_direct, istat, oecd,
-A gated source): 19% of a list whose entire purpose is to say what needs doing.
+however many mornings it is reported. Measured 2026-09-03 against the real state file, the
+digest's attention rows included such sources (bls, census, imf_imts_direct, istat and oecd
+among them), in a list whose entire purpose is to say what needs doing.
 
 THE TRAP THIS PINS. `registry.load()["sources"]` returns the RAW yaml entries, and 15 of the 282
 have no `live` key at all. `registry.to_units()` reads it as `bool(entry.get("live", False))`, so

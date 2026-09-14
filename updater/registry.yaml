@@ -7673,7 +7673,7 @@ sources:
   # successors are the MFS_* family (all IMF.STA), this entry covering MFS_DC
   # (Depository Corporations). current_vintage() CALLED live 2026-08-05: MFS_DC -> MFS_DC:8.0.0.
   # live:false + heavy matrix, sized at the proof run, grain by the #45 arithmetic —
-  # the DIP/PIP precedent end to end. One id per flow, a gated source-trio precedent.
+  # the DIP/PIP precedent end to end. One id per flow.
   live: false
   scripts:
   - jobs/ingest_imf_direct.py
@@ -7699,7 +7699,7 @@ sources:
   # successors are the MFS_* family (all IMF.STA), this entry covering MFS_IR
   # (Interest Rates; fifth sibling, found by the IFS-families probe). current_vintage() CALLED live 2026-08-05: MFS_IR -> MFS_IR:9.0.0.
   # live:false + heavy matrix, sized at the proof run, grain by the #45 arithmetic —
-  # the DIP/PIP precedent end to end. One id per flow, a gated source-trio precedent.
+  # the DIP/PIP precedent end to end. One id per flow.
   live: false
   scripts:
   - jobs/ingest_imf_direct.py
@@ -7725,7 +7725,7 @@ sources:
   # successors are the MFS_* family (all IMF.STA), this entry covering MFS_MA
   # (Monetary Aggregates). current_vintage() CALLED live 2026-08-05: MFS_MA -> MFS_MA:10.0.1.
   # live:false + heavy matrix, sized at the proof run, grain by the #45 arithmetic —
-  # the DIP/PIP precedent end to end. One id per flow, a gated source-trio precedent.
+  # the DIP/PIP precedent end to end. One id per flow.
   live: false
   scripts:
   - jobs/ingest_imf_direct.py
@@ -7751,7 +7751,7 @@ sources:
   # successors are the MFS_* family (all IMF.STA), this entry covering MFS_OFC
   # (Other Financial Corporations). current_vintage() CALLED live 2026-08-05: MFS_OFC -> MFS_OFC:7.0.0.
   # live:false + heavy matrix, sized at the proof run, grain by the #45 arithmetic —
-  # the DIP/PIP precedent end to end. One id per flow, a gated source-trio precedent.
+  # the DIP/PIP precedent end to end. One id per flow.
   live: false
   scripts:
   - jobs/ingest_imf_direct.py
@@ -7777,7 +7777,7 @@ sources:
   # successors are the MFS_* family (all IMF.STA), this entry covering MFS_FMP
   # (Financial Markets and Positions). current_vintage() CALLED live 2026-08-05: MFS_FMP -> MFS_FMP:3.0.0.
   # live:false + heavy matrix, sized at the proof run, grain by the #45 arithmetic —
-  # the DIP/PIP precedent end to end. One id per flow, a gated source-trio precedent.
+  # the DIP/PIP precedent end to end. One id per flow.
   live: false
   scripts:
   - jobs/ingest_imf_direct.py

@@ -25,21 +25,21 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   gti (Global Terrorism Index), ppi (Positive Peace Index) and etr (Ecological
 #   Threat Report) were added alongside gpi (which was already counted; its dead
 #   URLs were repaired with the granted IEP source). See [[project_redistributability]].
-# 2026-07-22: -10 -> 123. Ten sources we are NOT permitted to re-host were purged from
-#   the catalog, but the crawler kept fetching them daily (ten ids, not repeated here; whr was
+# 2026-07-22: -> 123. Sources we are NOT permitted to re-host were purged from
+#   the catalog, but the crawler kept fetching them daily (ids not repeated here; whr was
 #   one of them and was later re-added under a written grant). Crawling data we can never serve wastes
 #   the run, and for the providers who declined us in writing it means hitting their API
 #   every day after they said no. Removed from registry.yaml; the ingest scripts stay on
 #   disk so any future permission is a re-add, not a rewrite.
-# 2026-07-23: -10 -> 113. Ahmed's ruling: permission emails went out
+# 2026-07-23: -> 113. Ahmed's ruling: permission emails went out
 #   ~2026-07-08 and two weeks of silence is a NO. Sources we may not host -- refused,
 #   silent, or never assessed -- are DELETED, not gated, and must stop being crawled or
-#   the daily run just re-uploads them (ten ids; norgesbank, unsdg, vdem and wid were later cleared
+#   the daily run just re-uploads them (norgesbank, unsdg, vdem and wid were later cleared
 #   and re-added, the rest are not repeated here).
-#   Also -2 same day: two ids were still being crawled while GATED, so a
+#   Also the same day: gated ids were still being crawled while gated, so a
 #   run would have re-uploaded to R2 exactly what the purge deleted.
-#   Also -6 same day: gated sources with no adapter -- we may not host them, so building a
-#   fetcher would be work in service of data we must delete (six ids, not repeated here).
+#   Also the same day: gated sources with no adapter -- we may not host them, so building a
+#   fetcher would be work in service of data we must delete (ids not repeated here).
 # 2026-07-28: +7 -> 112. IMF DIRECT. Seven datasets we were relaying through
 #   an aggregator relay now come from api.imf.org itself: imf_fdi_direct, imf_fas_direct,
 #   imf_world_direct, imf_afrreo_direct, imf_apdreo_direct, imf_cofer_direct,
@@ -263,9 +263,9 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 # 2026-08-08: +unctad_nonplasticsubststradebypartner — GIANT #7 at depth-2 dot-grain
 #   (22,079 ids / 9,298,529 series — the family's largest series count). -> 276
 # 2026-09-04: -zillow (permission_required, removed on Ahmed's instruction) -> 281
-# 2026-09-08: -3 -> 278. Three entries for licence-denied sources (gated, never served — two were
-#   live:false, one a gated store with no catalogued form) removed on Ahmed's order that no denied
-#   source is named or registered anywhere; their ids are deliberately not repeated here.
+# 2026-09-08: -> 278. The registry entries of licence-denied sources (gated, never served)
+#   were removed on Ahmed's order that no denied source is named or registered anywhere; their
+#   ids are deliberately not repeated here.
 EXPECTED_SOURCE_COUNT = 278
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.

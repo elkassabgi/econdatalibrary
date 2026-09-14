@@ -208,8 +208,8 @@ def main() -> None:
 
     # NOT IN THE LIVE TIER -> CANNOT IMPROVE. updater-daily.yml sets AQUEDUCT_LIVE_ONLY=1 and
     # orchestrate.py:1536 honours it, so a non-live source is never executed by the daily run and
-    # its status is frozen. Measured 2026-09-03: 7 of 36 attention rows were such sources (bls,
-    # census, imf_imts_direct, istat, oecd and gated sources) — 19% of a list whose whole
+    # its status is frozen. Measured 2026-09-03: attention rows included such sources (bls,
+    # census, imf_imts_direct, istat and oecd among them) in a list whose whole
     # purpose is to say what needs doing. Same shape as the unmanaged leftovers above, one layer
     # in: those had no registry entry, these have one and are simply not live.
     #
