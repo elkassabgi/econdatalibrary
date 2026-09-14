@@ -10,7 +10,7 @@ description: MANDATORY operating system for ALL econdatalibrary updater/serving 
 Five weeks of the same failures, each documented and each repeated: working code broken by
 fixes made without reading it first; the relay ban violated from memory; sources reported
 "live" that no user could reach; the whole updater taken down by a one-line count left stale.
-The knowledge existed — a 150-entry ledger, 249 runbook pages — but consulting it was
+The knowledge existed — a 150-entry ledger and the runbook pages — but consulting it was
 voluntary. This skill makes it the procedure, and three mechanical layers back it up:
 
 1. **PreToolUse hook** (D:\research\hfdatalibrary\.claude\settings.json) — DENIES any command

@@ -22,7 +22,7 @@ them to the store, and had the run recorded as a FAILURE with its vintage un-bum
 re-fetched the whole source, every run, and the health gate showed a permanently failing source
 that was in fact publishing perfectly.
 
-Measured blast radius at the time: of 168 sources that have ever merged obs, 11 report no
+Measured blast radius at the time: of the sources that have ever merged obs, 11 report no
 series_cursors, and gleif was the only one whose catalogue is genuinely EMPTY, so it alone
 reached the line. R380 later widened the reach by admitting `partial` runs as well.
 

@@ -18,9 +18,9 @@ mlist = [p['source_id'] for p in mat['profiles']]         # step 2 (profiles is 
 | What | Count |
 |---|---|
 | `updater/registry.yaml` `sources` entries | measured on the date above (unique source_ids, zero duplicates) |
-| `UPDATE_CAPABILITY_MATRIX.json` `profiles` entries | 133 list rows |
+| `UPDATE_CAPABILITY_MATRIX.json` `profiles` entries | list rows, counted on the date above |
 | ... of which unique `source_id`s | measured on the date above |
-| Matrix metadata `profiled` / `expected` fields | 133 / 133 (counts script-profile ROWS, not sources — misleading, see below) |
+| Matrix metadata `profiled` / `expected` fields | count script-profile ROWS, not sources — misleading, see below |
 
 ## Set diff and add-or-drop decisions (one line each)
 
@@ -45,8 +45,8 @@ re-running the procedure above and updating `config.py` + this file in the same 
 
 ## Follow-ups (outside this change's file ownership)
 
-- `UPDATE_CAPABILITY_MATRIX.json` metadata `profiled: 133` / `expected: 133` counts
+- `UPDATE_CAPABILITY_MATRIX.json` metadata `profiled` / `expected` counts
   script rows, not sources — correct to per-source counts (or rename the field) in the
   Phase-1 doc pass (§5.6).
-- `CONTINUOUS_UPDATE_DESIGN.md:66,112` "133 sources" matches only the script-row count —
+- the source count at `CONTINUOUS_UPDATE_DESIGN.md:66,112` matches only the script-row count —
   correct in the same doc pass (D-2).

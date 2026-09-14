@@ -17,7 +17,7 @@ production (GitHub Actions) rather than only on a local machine?"
 **My diagnosis (please confirm or refute):**
 
 1. **The rollout perimeter.** The scheduled job runs **only** sources flagged `live: true`
-   in the registry. Exactly **2 of ~105** are flagged (`cnb`, `frankfurter`), so every
+   in the registry. Exactly **2** are flagged (`cnb`, `frankfurter`), so every
    daily run processes 2 sources and skips the rest — by design, but the rollout was never
    advanced. Everything else is fetched-capable but never executed.
 
@@ -71,7 +71,7 @@ GitHub Actions (cron 06:00 UTC)
 - **[updater/orchestrate.py](https://github.com/elkassabgi/econdatalibrary/blob/main/updater/orchestrate.py)**
   — the heart. Key functions:
   - `run_once(...)` (~line 170) — selects units, applies the perimeter, runs due sources.
-  - `_is_live(unit)` (~line 74) — returns `unit.config.get("live")`; **this is the 2-of-105 gate**.
+  - `_is_live(unit)` (~line 74) — returns `unit.config.get("live")`; **this is the gate behind that live count**.
   - the `live_only` filter (~line 191–200): `if live_only and not _is_live(unit): skip`.
   - `_has_adapter(unit)` (~line 61), `_derive_changed_csvs(...)` (~line 88), `_record(...)` (~line 357).
 - **[updater/registry.py](https://github.com/elkassabgi/econdatalibrary/blob/main/updater/registry.py)**

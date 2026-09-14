@@ -59,11 +59,11 @@ skip/checkpoint/append sources are missing.
 
 ---
 
-## (2) Strategy taxonomy — 6 adapters, all 133 mapped
+## (2) Strategy taxonomy — 6 adapters, all sources mapped
 
 Each strategy implements `is_due(unit,state,now)` / `detect_change(unit) -> new_vintage|None` /
 `run(unit, since) -> Result`. Registry assigns exactly one strategy per source (per unit where they
-differ). A registry validator **fails CI** if `count != 133` or any unit lacks a strategy.
+differ). A registry validator **fails CI** if `count != EXPECTED_SOURCE_COUNT` or any unit lacks a strategy.
 
 - **S1 `overwrite_if_changed`** (~70) — whole-table refresh gated by an upstream vintage signal
   (ETag/Last-Modified, GitHub commit SHA, third-party CSV, faostat `datasets_E.json` FileRows/FileSize, bls
@@ -108,7 +108,7 @@ incremental, cost) decision table), then human-pinned overrides. No source ships
 ## (3) Orchestrator — `updater/orchestrate.py`
 
 ```
-load registry (YAML) -> validate (133, all units have a strategy) ->
+load registry (YAML) -> validate (the count, all units have a strategy) ->
 for each unit: load unit_state ->
   if strategy.is_due(unit,state,now):                 # cadence elapsed OR --force
       v = strategy.detect_change(unit)                # cheap HEAD/feed/manifest
@@ -122,7 +122,7 @@ each job: strategy.run(unit, since) -> Result(status, obs, new_vintage, last_obs
 ```
 **Resume:** `unit_state` is truth; a crash leaves a unit `running` with an expired lease, re-claimed
 next run. `ok` units are skipped. This generalizes the proven relay pull script's
-finalize-only-when-complete + resumable + skip-completed pattern to all 133.
+finalize-only-when-complete + resumable + skip-completed pattern to all sources.
 
 **In-flight protection:** cbs_nl, gus_dbw are seeded `status=running, owner=firstpass`;
 the lease check skips them until first-pass reports done. Aqueduct runs *update* passes only and never
@@ -187,7 +187,7 @@ Reads purely from StateStore; powers a one-page dashboard (HTML local / Worker r
 ## (8) Rollout order
 
 1. **Scaffold (no behavior change):** `updater/` with `StateStore`(SQLite), `Blob`(fs), registry
-   loader+validator, registry generated from the matrix (133 units, default strategy). Backfill
+   loader+validator, registry generated from the matrix (single-unit entries, default strategy). Backfill
    `unit_state.last_obs_date` by scanning each parquet's max(obs_date) once. Run nothing yet.
 2. **Shared helpers:** `merge_and_write()` (atomic, dedup, never-shrink), Transient/Definitive contract,
    rate governor. Unit-test against bcb fixtures.

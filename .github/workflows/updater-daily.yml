@@ -299,7 +299,7 @@ jobs:
         # whole run's state — every source that HAD been checked lost its advanced
         # checked_at/last_success and rotted toward RED-SLA despite having been probed.
         # The updater is designed to exit non-zero on a live-tier failure while still
-        # having done honest work on the other ~130 sources; discarding that is the
+        # having done honest work on the other sources; discarding that is the
         # opposite of the honest-status contract.
         #
         # Gated on the PULL succeeding, not on the updater succeeding: push_state()'s

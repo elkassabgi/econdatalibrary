@@ -279,7 +279,7 @@ directs were already LIVE. The genuinely-missing builds were mcdreo + fm:
 worker 21a17009, confirming run no_change.** **fm — DONE 2026-08-06 (cycle 34): `imf_fm_direct`
 SERVED — 128 series / 5,077 obs (FM v5.0.0, IMF.FAD), verify exit 0, worker 0d011df0; adopted
 from a concurrent session that died uncommitted, validated line-by-line before commit
-(count 172→173). CLASS B1 IS COMPLETE.** Remaining non-IMF builds: whr primary-provenance
+(count bumped in the same commit). CLASS B1 IS COMPLETE.** Remaining non-IMF builds: whr primary-provenance
 rebuild, unsdg + norgesbank rebuilds from upstream (their R2 residue was purged 2026-07-23 —
 un-gating = a build, not a toggle), unctad 38 (surveyed cycle 33, blocked on Ahmed's free
 UNCTADstat API key — see scratchpad survey), unesco 4. Also: imf (131, never-promoted entry)
@@ -303,7 +303,7 @@ truncation — add load_rotation/save_rotation + rotate_after (statfin pattern) 
 runs cover all 713 across ticks; (2) accumulate-then-merge is the R249 kill=discard class
 under the 45-min cap (~713 GETs at 7-9s ≈ 95 min) — merge in chunks inside the loop, and
 set a max_series default that self-bounds ≈30 min (~200 codes/run → 4 runs = full backfill).
-Also label the bare tally calls. THEN: registry re-add (count 175→176 same commit), CI
+Also label the bare tally calls. THEN: registry re-add (count bumped in the same commit), CI
 backfill runs (~4 forced), flow-grain catalogue tool pass (713 rows + _FLOW_GRAIN entry),
 derive at flow grain, refresh, D1, util.ts, denylist floor pin removal (unsdg is pinned —
 same barro_lee precedent, Ahmed's authorization), deploy, verify.
@@ -771,7 +771,7 @@ match on formatted text when an exact key exists.
 ### CLASS FIXED: a `partial` run now re-derives its CSVs (was: served data frozen)
 
 `orchestrate.run_once` gated the CSV re-derive on `status == "ok"`. Chronically partial
-sources never return ok — 136 of 173 sources with run history never had, ~56 of them live
+sources never return ok — 136 sources with run history never had, ~56 of them live
 AND served — so their served CSVs never advanced while their parquet did.
 
 Live impact, measured 2026-08-07:
@@ -850,7 +850,7 @@ source every CSV predates it. Measured against sources whose truth was already k
 
 So do NOT quote a "candidates" number as a backlog. `tools/audit_csv_staleness.py` is kept
 only for its one-directional half (a CSV newer than every parquet is provably fine, cheaply,
-over millions of objects) and now says all of this in its own output. The full 122-source
+over millions of objects) and now says all of this in its own output. The full fleet-wide
 screen was ABANDONED part-way rather than left running for hours to produce a list that
 cannot be acted on — partial output in data/_csv_staleness.log, not committed.
 

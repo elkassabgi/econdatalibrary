@@ -631,7 +631,7 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # success-path state write lives downstream of the call site, so none of them ran:
             # gleif merged 3,395,736 rows, published them to the store, and had the run booked
             # as a FAILURE with its vintage un-bumped, so it re-fetched in full every time.
-            # Measured: of 168 sources that have merged obs, 11 report no cursors, and gleif is
+            # Measured: of the sources that have merged obs, 11 report no cursors, and gleif is
             # the only one whose catalogue is genuinely empty — so it alone reached this line.
             # R380 widened the reach by admitting `partial` runs here too.
             # (The FOURTH element is as load-bearing as the third was.)

@@ -10,7 +10,7 @@
 
 What exists and works locally:
 
-- `updater/` Aqueduct package is real: `state.py` (SQLite StateStore: `source_state`, `unit_state`, `series_cursor`, `runs`, `leases` — schema ports verbatim to D1), `orchestrate.py` (leases, TTL-by-cost due-check, transient/definitive failure contract, first-pass protection via `FIRSTPASS_DIRS`), `merge.py` (never-shrink `merge_and_write`, atomic `.tmp` + `os.replace`, refuses 0-row/`min_ratio=0.97` shrink/column drops), `run.py` CLI, `health.py`, `registry.yaml` (130 sources), 6 strategy modules, ~71 source fetchers.
+- `updater/` Aqueduct package is real: `state.py` (SQLite StateStore: `source_state`, `unit_state`, `series_cursor`, `runs`, `leases` — schema ports verbatim to D1), `orchestrate.py` (leases, TTL-by-cost due-check, transient/definitive failure contract, first-pass protection via `FIRSTPASS_DIRS`), `merge.py` (never-shrink `merge_and_write`, atomic `.tmp` + `os.replace`, refuses 0-row/`min_ratio=0.97` shrink/column drops), `run.py` CLI, `health.py`, `registry.yaml`, 6 strategy modules, ~71 source fetchers.
 - It has run against production data: `data/_aqueduct/state.db` has 39 `source_state` rows, 48 `unit_state` rows, 1,964,592 `series_cursor` rows, 55 runs spanning 2026-06-23 → 2026-06-24.
 - The Worker serves freshness: `api/worker/src/sql.ts` (`LAST_UPDATES`, `UNIT_STATE_FOR_SOURCE`), `lastUpdates.ts` (`/v1/last-updates`), `sources.ts` — all reading `unit_state`/`source_state` from D1 `econ-catalog`.
 - R2 publishing exists as manual one-shots: `core/upload_r2.py` (bulk parquet), `core/derive_csv.py` (per-series CSV, byte-identical to the Worker's `/v1/series/{id}.csv` contract).
@@ -24,7 +24,7 @@ What is broken or missing (each is a work item below):
 | G3 | `.github/workflows/daily.yml` is a trap: legacy pipeline, wrong secret names (`R2_ACCESS_KEY` vs `R2_WRITE_ACCESS_KEY_ID`), wrong bucket (`econdatalibrary-data` vs `econ-data`), nonexistent `--incremental`/`--delta` flags, hardcoded `ROOT="D:/research/econfindatalibrary"` in the script it calls | daily.yml:38-43,72,84; jobs/daily_update.py:27-28 |
 | G4 | `updater/blob.py` is filesystem-only; no R2 backend; `AQUEDUCT_BACKEND=cloud` is an unimplemented flag | blob.py:1-7; config.py:10 |
 | G5 | `core/r2_util.py` reads creds ONLY from `.env`, never `os.environ` — GH secrets invisible | r2_util.py:18-26,38-53 |
-| G6 | Source-count gate not enforced: design says 133, matrix profiles dict has 129, registry has 130; `orchestrate.py:64` calls `registry.validate()` **without** `expected_count` | validate() signature in registry.py:29-48 |
+| G6 | Source-count gate not enforced: the design, the matrix profiles dict and the registry disagree on the count; `orchestrate.py:64` calls `registry.validate()` **without** `expected_count` | validate() signature in registry.py:29-48 |
 | G7 | Registry has ZERO `unit_id:` entries — every source collapses to a single `_all` unit despite design §"source ≠ directory" | grep -c 'unit_id:' registry.yaml = 0 |
 | G8 | D1 freshness refresh is a manual 945 MB full re-dump (`core/export_d1.py`); no incremental state→D1 sync; `/v1/last-updates` frozen at the June-24 snapshot | export_d1.py:56-62; dist/d1/econ_catalog.sql |
 | G9 | Local store is ~300.5 GB (clean_full 281.5 + clean_grouped 19.0) vs ~14 GB usable disk on ubuntu-latest — the store can NEVER exist in CI | robocopy byte scan; ARCHITECTURE.md:41 says ~130 GB (stale, 2.3x under) |
@@ -59,7 +59,7 @@ For each touched output object:
 4. `PUT` to a temp key, then copy over the final key (R2 has no rename; `CopyObject` + `Delete` of temp, or single `PUT` since R2 PUTs are atomic per key — see D-3 below).
 
 *Where hf's pattern fits:* per-object read-modify-write, sort/dedup keep-last, catch-up self-healing, env-var creds with `.env` fallback, GH cron + `workflow_dispatch`.
-*Where it doesn't:* (a) hf has ONE source and ~one schema; econ has 130 heterogeneous sources — hence the registry + strategy layer stays. (b) hf keeps its state ledger (`data/metadata.json`) in git via bot-commit; econ's state is a SQLite db with 1.96M cursor rows — too big and too hot for git. Econ's state round-trips via R2 instead (§1.2). (c) hf re-cleans with 100 context bars; econ's merge invariant replaces that role.
+*Where it doesn't:* (a) hf has ONE source and ~one schema; econ has many heterogeneous sources — hence the registry + strategy layer stays. (b) hf keeps its state ledger (`data/metadata.json`) in git via bot-commit; econ's state is a SQLite db with 1.96M cursor rows — too big and too hot for git. Econ's state round-trips via R2 instead (§1.2). (c) hf re-cleans with 100 context bars; econ's merge invariant replaces that role.
 
 **Step 4 — State + D1 freshness, only after verified publish.**
 Only after step 3 succeeds does the orchestrator write `unit_state` (`status=ok|no_change`, `last_obs_date` = max obs_date actually observed in fetched rows, `obs_count`, `upstream_vintage`, `checked_at_utc`). Then a **delta** sync pushes just the changed `unit_state`/`source_state` rows to D1 (new script `core/sync_state_d1.py`, §1.3). Note: the status enum officially includes `no_change` (dominant in practice, 35/48 rows); update `CONTINUOUS_UPDATE_DESIGN.md:46` to match (doc fix, D-2).
@@ -96,9 +96,9 @@ D1 gets only the *freshness projection* (`unit_state`, `source_state`), via idem
 | `updater/config.py` | Remove/parameterize any absolute `D:/` paths; everything relative to `ECONDL_ROOT` env with local default |
 | `jobs/daily_update.py`, `.github/workflows/daily.yml` | Delete `daily.yml`; add a deprecation header to `jobs/daily_update.py` pointing here (D-1) |
 
-**Registry count reconciliation (fixes G6):** at Phase-1 time, re-measure — do not trust a figure from any document. Procedure: (1) `len(yaml.safe_load('updater/registry.yaml')['sources'])`; (2) `len(json.load('UPDATE_CAPABILITY_MATRIX.json')['profiles'])`; (3) diff the two sets; (4) for each diff member decide add-or-drop with a one-line reason committed to `updater/REGISTRY_RECONCILIATION.md`; (5) set `EXPECTED_SOURCE_COUNT` to the reconciled number and fix the matrix's false `profiled=133` metadata. Today's known diff: registry has `sec_edgar_xbrl`, matrix doesn't; matrix metadata claims 133 but contains 129. The "133" in `CONTINUOUS_UPDATE_DESIGN.md:66,112` matches nothing on disk — correct the doc.
+**Registry count reconciliation (fixes G6):** at Phase-1 time, re-measure — do not trust a figure from any document. Procedure: (1) `len(yaml.safe_load('updater/registry.yaml')['sources'])`; (2) `len(json.load('UPDATE_CAPABILITY_MATRIX.json')['profiles'])`; (3) diff the two sets; (4) for each diff member decide add-or-drop with a one-line reason committed to `updater/REGISTRY_RECONCILIATION.md`; (5) set `EXPECTED_SOURCE_COUNT` to the reconciled number and fix the matrix's false `profiled` metadata. Today's known diff: registry has `sec_edgar_xbrl`, matrix doesn't; the matrix metadata and its contents disagree. The source count at `CONTINUOUS_UPDATE_DESIGN.md:66,112` matches nothing on disk — correct the doc.
 
-**Per-unit decomposition (G7):** v1 keeps single `_all` units for all non-giant sources (that is what has actually run and it is adequate for fast/medium sources). Real `units:[{unit_id, out_paths}]` lists are added ONLY for the giants when Phase 4 builds their change-feed refresh. Populating units for all 130 sources is a non-goal for v1.
+**Per-unit decomposition (G7):** v1 keeps single `_all` units for all non-giant sources (that is what has actually run and it is adequate for fast/medium sources). Real `units:[{unit_id, out_paths}]` lists are added ONLY for the giants when Phase 4 builds their change-feed refresh. Populating units for all sources is a non-goal for v1.
 
 ---
 
@@ -256,7 +256,7 @@ The Worker itself needs no cron (`wrangler.toml` correctly has none) — freshne
 3. **Failed source → loud + stale-marked, never silently skipped.** Transient/definitive contract stands (`orchestrate.py`). Every registry source inside the live tier gets a status EVERY run; the `_has_adapter()` silent skip is demoted to an explicit `PENDING` line in the run summary and is a **run failure** if the source is in the live tier (§1.3). `updater/health.py --fail-past-2x-sla` exits nonzero when any live source exceeds 2× its SLA → the Actions run goes red → GH notification (+ Resend email if A6). D1 keeps serving the true (stale) date — the public endpoint never lies to hide our failure.
 4. **Never-shrink is enforced at publish, not audited after.** `merge_and_write` invariants (0-row refusal, `min_ratio=0.97`, column-drop refusal) apply to every R2 write. A refused merge is a `definitive_fail` with the refusal reason in `runs`.
 5. **Idempotent re-runs.** Running the same day twice must be a no-op: dedup keep-last makes double-merges harmless; state uploads are serialized by the concurrency group AND guarded by the ETag compare-and-swap (§1.2) — never blind last-writer-wins; `sync_state_d1.py` upserts are idempotent by primary key; CSV re-derives are byte-identical re-PUTs. Phase-1 test T-4 proves this.
-6. **No fabricated counts anywhere.** `EXPECTED_SOURCE_COUNT` is measured at reconciliation time (§1.3), not copied from a doc. health.json snapshots carry their generation timestamp. Docs that state numbers (`ARCHITECTURE.md` ~130 GB vs measured 300.5 GB; matrix `profiled=133` vs actual 129) get corrected in Phase 1's doc pass.
+6. **No fabricated counts anywhere.** `EXPECTED_SOURCE_COUNT` is measured at reconciliation time (§1.3), not copied from a doc. health.json snapshots carry their generation timestamp. Docs that state numbers (`ARCHITECTURE.md` ~130 GB vs measured 300.5 GB; the matrix's `profiled` field vs the actual count) get corrected in Phase 1's doc pass.
 7. **CSV/parquet coherence.** Any series whose parquet changed gets its CSV re-derived in the same run (step 5 of the contract). If the CSV PUT fails after the parquet succeeded, the run is `partial` and the series_id goes into a retry queue table — never silently dropped.
 
 ---
@@ -304,7 +304,7 @@ Until all six hold, the updater is "in rollout", and we say so.
 
 1. **D1-native StateStore** (`AQUEDUCT_BACKEND=cloud` as designed) — v1 uses SQLite-via-R2 round-trip (D-3). Revisit only if state.db R2 round-trip proves fragile.
 2. **Giants full re-pulls in CI** — never. Change-detect + capped unit refresh only (§3.4).
-3. **Per-unit registry decomposition for all 130 sources** — units only for the giants.
+3. **Per-unit registry decomposition for all sources** — units only for the giants.
 4. **Finishing the 1.37M-series CSV derive backlog** — separate task; the updater only guarantees freshness for series it touches.
 5. **Fixing the hard-blocked sources** — they surface honestly as stale until Ahmed's input.
 6. **First-pass migration** (`cbs_nl`, `gus_dbw`) — protected, untouched, until their backfills finish.
@@ -318,7 +318,7 @@ Until all six hold, the updater is "in rollout", and we say so.
 
 | ID | Open question | How it gets resolved |
 |---|---|---|
-| O-1 | Reconciled source count (129 vs 130 vs 133) | §1.3 procedure at Phase-1 time; commit `updater/REGISTRY_RECONCILIATION.md` |
+| O-1 | Reconciled source count (three documents disagreed) | §1.3 procedure at Phase-1 time; commit `updater/REGISTRY_RECONCILIATION.md` |
 | O-2 | (withdrawn under the owner's order) | — |
 | O-3 | Worker deployment state (memory says live on workers.dev; repo doesn't prove it) | Phase-1 `wrangler deployments list` / HTTPS probe; record in `api/DEPLOY.md` |
 | O-4 | Per-source peak disk for the 25 large-cost sources | Measure during each source's onboarding run; record in registry |

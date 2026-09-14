@@ -101,7 +101,7 @@ If the error names sub-units as `deferred (budget N min)` or `budget spent`, **n
 - **R891** — The docs-side wipe edited generated files and certified itself with the narrow instrument
 - **R229** — I re-derived an analysis that existed, and my conclusion was the one it had rejected
 - **R252** — "the indicator is available" is not "the series are available"
-- **R258** — a colon in prose broke the load for all 141 sources, and only a pre-commit parse caught it
+- **R258** — a colon in prose broke the load for all sources, and only a pre-commit parse caught it
 - **R367** — my seventh hand-dispatched backfill run was cancelled by the scheduler I was racing
 
 ## 6. Rules that apply to every repair here

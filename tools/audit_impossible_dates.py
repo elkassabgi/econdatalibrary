@@ -380,7 +380,7 @@ def main() -> int:
     # lands in the partial case, so a trichotomy keyed on "every source failed" would have
     # returned 0 on exactly the run shape that produced R704's false clean.
     #
-    # MEASURED 2026-09-03 with the candidate resolution above: 3 of 282 registry sources have no
+    # MEASURED 2026-09-03 with the candidate resolution above: 3 registry sources have no
     # local parquet store under ANY candidate (gii, pxweb). Note the figure moved
     # BECAUSE of this file's own fix -- it was 5 when only clean_full/<source_id> was tried, and
     # sec_edgar + sec_edgar_xbrl came into range once out_dir and the clean_grouped tier were

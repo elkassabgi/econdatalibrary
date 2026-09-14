@@ -66,7 +66,7 @@ def late_label(cadence: str, run_location: str, ts, now) -> str:
 def live_source_ids(entries) -> set:
     """The live tier, read EXACTLY as `registry.to_units()` reads it.
 
-    `registry.load()["sources"]` hands back raw yaml entries and 15 of the 282 have no `live` key
+    `registry.load()["sources"]` hands back raw yaml entries, and 15 of them have no `live` key
     at all. `to_units` normalises with `bool(entry.get("live", False))`, so an absent flag means
     NOT live; a reader testing `e.get("live") is False` would classify those 15 as live and
     silently restore the noise this removes. One expression, one place — two interpretations of a

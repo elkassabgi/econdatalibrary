@@ -1,6 +1,6 @@
 # Updater proving status — measured, not assumed
 
-Denominator: **105 registry sources · 92 fetchers built · 15 live.** Building is not the
+Denominator: **all registry sources · 92 fetchers built · 15 live.** Building is not the
 bottleneck; **proving** is, and CI is serialized to one run at a time by the
 `aqueduct-updater` concurrency group.
 

@@ -3,7 +3,7 @@
 Single source of truth for the redistribution gate. Historically the worker's
 NON_REDISTRIBUTABLE set was hand-maintained and drifted from the site, which
 gates on license.reservable — so a source could read "metadata only" on the
-page yet still serve its .csv (observed 2026-07-14: transparency_ti and 141
+page yet still serve its .csv (observed 2026-07-14: transparency_ti and
 other reservable=0 sources were downloadable). This script makes the gate
 DB-derived so the two can never disagree again:
 

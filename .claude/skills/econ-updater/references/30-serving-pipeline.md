@@ -200,7 +200,7 @@ The workflow is `updater-daily.yml`, cron 06:00 UTC, concurrency group `aqueduct
    gh run view <run-id> --log-failed    # just the failing step's log
    ```
 
-2. **Registry-invalid failure** — the very first thing the "Run updater" step does is validate; the line reads `registry invalid (fix before running):` followed by the problems (updater/orchestrate.py:614-617), most commonly `expected 144 sources, found N` (updater/registry.py:55-56, count at updater/config.py:160). Fix = the registry entry or the `EXPECTED_SOURCE_COUNT` bump (R347). This kills EVERY run, not just one source — top priority.
+2. **Registry-invalid failure** — the very first thing the "Run updater" step does is validate; the line reads `registry invalid (fix before running):` followed by the problems (updater/orchestrate.py:614-617), most commonly `expected E sources, found N` (E is the current `EXPECTED_SOURCE_COUNT`) (updater/registry.py:55-56, count at updater/config.py:160). Fix = the registry entry or the `EXPECTED_SOURCE_COUNT` bump (R347). This kills EVERY run, not just one source — top priority.
 
 3. **Killed step, empty-looking log** — the step prints `updater exit code: N` at the end; `137`/`143` means the runner OOM/SIGTERM-killed it ("::error::updater was KILLED ... not a source failure"), and the `[mem] used=..MB avail=..MB` lines sampled every 15 s prove it rather than leave you guessing between OOM, hang, and rate-limit (three ons_uk investigations ran blind before this; updater-daily.yml:60-66, 226-247). `PYTHONUNBUFFERED=1` is what makes the partial log exist at all.
 

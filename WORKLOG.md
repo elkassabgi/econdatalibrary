@@ -46,8 +46,8 @@ never-shrink guard (`< 97% of existing`), `obs` frozen at 15,066,444, because id
 conflicting so a clean pull is *smaller* than the collided store. Same mechanism that refused the
 two UNCTAD stores three times and was right every time. **`min_ratio` stays as it is** (R519).
 
-**Also new** — 34 sources are invisible to `source_state` (249 with a row / 34 without;
-"has a row" ⇔ "has ever recorded `ok` or `no_change`", **zero exceptions across 283**), because a
+**Also new** — 34 sources are invisible to `source_state` (
+"has a row" ⇔ "has ever recorded `ok` or `no_change`", **zero exceptions**), because a
 `partial` run never creates the row. They are disproportionately the largest sources, including
 all eleven UNCTAD giants. Any freshness instrument keyed on that table reports nothing for them.
 
@@ -237,7 +237,7 @@ preflight stays green. Verified: `skill_check.py` → all 8 checks OK, `RESULT: 
 
 | baseline | value | instrument |
 |---|---|---|
-| coverage | 322 served / 270 scheduled / 52 archival / **0 actionable**; 13,486,342 series | `tools/audit_schedule_coverage.py` |
+| coverage | 322 served / **0 actionable**; 13,486,342 series | `tools/audit_schedule_coverage.py` |
 | untouched files | 26 sources flagged, **0 genuinely stuck** (13 rotating, 3 wrote today, 1 pre-attributed, 3 refuted by cadence, 1 real fault: `idb`) | `attribute_stale.py` + registry cadence + latest `runs` |
 | retry queue | **225,272** (was 231,782 — draining); `abs` 100,000 = **2 × CURSOR_CAP**, `ilostat` 50,000 = 1 × cap; `usda` 48,047 and `imf_qgfs_direct` 20,502 are real single-run counts; `cso` drained **7,256 → 0**; 3 rows now at attempts=3 | `GROUP BY enqueued_utc` on `csv_retry_queue` |
 | sources-endpoint cost | **1,442 rows read, 7.1 ms** — the flag CLOSES, no fix needed | one live run of the exact `sql.ts` query, reading `meta.rows_read` |

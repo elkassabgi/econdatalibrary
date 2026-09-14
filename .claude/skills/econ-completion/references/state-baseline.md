@@ -9,8 +9,8 @@ All figures dated 2026-08-30, instruments named. **Re-measure before acting** (R
 | Served sources | 322 | `py tools/audit_schedule_coverage.py` |
 | Catalogued series | 13,486,342 | audit + PK-range sweep (agree exactly) |
 | Served observations | 33,908,707,379 | `logs/stats-2026-08-26.json` |
-| Scheduled | 270 sources; 13,148,499 of 13,486,342 series (97.5%) | audit |
-| Unscheduled = archival | 52 sources / 337,843 series; **actionable: 0** | audit |
+| Scheduled | 13,148,499 of 13,486,342 series (97.5%) | audit |
+| Unscheduled = archival | 337,843 series; **actionable: 0** | audit |
 | Local catalogue | 349 source rows (322 with series + 27 empty); 71 licence rows; 11.91 GB | `catalog.db` |
 | Local store | 345 GB; 98,785 files; 430 dirs | os.walk |
 | State store | 11.30 GB; 28.77M `series_cursor` rows (50x the code's assumed size) | `data/_aqueduct/state.db` |

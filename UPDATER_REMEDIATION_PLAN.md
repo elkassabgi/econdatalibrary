@@ -13,12 +13,12 @@ Two independent things were being conflated:
 2. **Will it auto-update?** — is the source `live: true` (runs in the daily CI)?
 
 **Finding:** most sources are **current but frozen** — their data is fresh from a bulk load, but
-only **2 of 105** (`cnb`, `frankfurter`) actually auto-update. The health report's RED flags are
+only **2** (`cnb`, `frankfurter`) actually auto-update. The health report's RED flags are
 partly **false alarms** for quiet annual/static data (e.g. `ppi` "RED-DATA @2022" is IEP's genuine
 latest edition). So the job is mostly **enabling auto-update on sources whose data is already
 current**, not repairing stale data — plus a short list of genuinely broken things.
 
-## Scorecard (105 registry sources)
+## Scorecard (all registry sources)
 
 | Bucket | # | Meaning |
 |---|--:|---|

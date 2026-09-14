@@ -6,7 +6,7 @@ however many mornings it is reported. Measured 2026-09-03 against the real state
 digest's attention rows included such sources (bls, census, imf_imts_direct, istat and oecd
 among them), in a list whose entire purpose is to say what needs doing.
 
-THE TRAP THIS PINS. `registry.load()["sources"]` returns the RAW yaml entries, and 15 of the 282
+THE TRAP THIS PINS. `registry.load()["sources"]` returns the RAW yaml entries, and 15 of them
 have no `live` key at all. `registry.to_units()` reads it as `bool(entry.get("live", False))`, so
 absent means NOT live — but a reader who tested `e.get("live") is False` would classify those 15
 as live and undo the fix silently. Two interpretations of one flag is precisely how R676 and R685
