@@ -1,6 +1,6 @@
 # Database licenses — verbatim redistribution audit
 
-**Generated 2026-07-14** by the `econ-license-verbatim-audit` workflow (run wf_9ff754f5-37d): for every database, an agent fetched the provider's OFFICIAL terms, quoted the redistribution clause VERBATIM with the source URL, and classified it; a second, independent adversarial agent re-fetched the URL, confirmed the quote is word-for-word, and tried to refute any over-permissive reading. 88 providers, 191 databases, 176 agents, 0 errors.
+**Generated 2026-07-14** by the `econ-license-verbatim-audit` workflow (run wf_9ff754f5-37d): for every database, an agent fetched the provider's OFFICIAL terms, quoted the redistribution clause VERBATIM with the source URL, and classified it; a second, independent adversarial agent re-fetched the URL, confirmed the quote is word-for-word, and tried to refute any over-permissive reading. 0 errors.
 
 **This is the single source of truth. Do NOT re-derive it from scratch** — read it, and only re-run the workflow to fill gaps or refresh. Decision rule (asymmetric caution): a database is only *cleared to re-host* when the terms **explicitly permit redistribution/re-dissemination** by a third party AND the adversarial verifier CONFIRMED it. Anything restricted, ambiguous, unreachable, or DISPUTED stays gated / flagged for human review.
 
@@ -10,17 +10,17 @@
 
 **Decision tiers (per database):**
 
-- **CLEARED - re-host OK (attribution)** — 144
-- **RESTRICTED (keep gated)** — 18
-- **NEEDS HUMAN REVIEW** — 11
-- **CLEARED - re-host OK** — 9
-- **CLEARED - non-commercial only** — 6
-- **CLEARED by WRITTEN PERMISSION** — 2
-- **CLEARED by WRITTEN PERMISSION (scoped/conditional)** — 1
+- **CLEARED - re-host OK (attribution)**
+- **RESTRICTED (keep gated)**
+- **NEEDS HUMAN REVIEW**
+- **CLEARED - re-host OK**
+- **CLEARED - non-commercial only**
+- **CLEARED by WRITTEN PERMISSION**
+- **CLEARED by WRITTEN PERMISSION (scoped/conditional)**
 
-**Adversarial verdicts:** CONFIRMED=184, DISPUTED=7
+**Adversarial verdicts:** CONFIRMED or DISPUTED, per database, in the index below.
 
-**Classifications:** redistributable_attribution=144, permission_required=20, redistributable_open=9, noncommercial_only=6, unclear_not_found=5, non_redistributable — use-only grant. Personal/professional use, forwarding, and reproduction are permitted with mandatory attribution ("Source: Deutsche Bundesbank") and no alteration (no-derivatives). The terms grant NO right to republish, redistribute, or make the data publicly available to third parties, so a library re-hosting the data for public download is not covered. Treat as metadata-only / link-out unless the Bundesbank grants prior written permission for redistribution.=1, redistributable_attribution_noncommercial (with third-party-data carve-out) — re-dissemination is permitted with FAO attribution, but subject to (a) a non-commercial/anti-endorsement restriction that CC BY 4.0 does not impose, and (b) a subset of embedded third-party data that cannot be redistributed without the original provider's consent.=1, noncommercial_permission_required / no_open_redistribution — noncommercial USE with citation is permitted, but the FIW dataset is gated behind a <redacted> "FIW Data Request" (must state intended use), and third-party re-hosting for open public download is not authorized. Treat as not-freely-redistributable: link out to <redacted>'s data request rather than mirror the files (or gate to metadata-only), and note commercial use requires prior formal permission.=1, noncommercial_no_derivatives (CC BY-NC-ND: NonCommercial AND NoDerivatives). Only verbatim, non-commercial, attributed copies may be redistributed. Separately, per the finding's own license_name note, ~86% of IDB datasets carry NO declared license (no redistribution grant) and a minority are CC BY 4.0 — so a single source-level bucket is not accurate; the unlicensed majority should be treated as not-redistributable / needs-review, not noncommercial.=1, mixed / source-dependent — NOT blanket redistributable_attribution. Only the minority of data that the third-party mirror produces itself ("Data produced by us", flagged e.g. "with major processing by <redacted>") is CC BY and redistributable with attribution. The majority ("Most of the data") is third-party (WHO, UN, World Bank, and many others) and remains subject to each upstream provider's own license, which must be assessed per-source before re-hosting. Treat the source as partially/conditionally redistributable pending per-provider review, not uniformly CC BY.=1, redistributable_attribution_with_exceptions — CC BY 4.0 applies to the World Bank's own compiled data, but third-party-sourced datasets/indicators embedded in World Bank Open Data (e.g., WDI series from UN Population Division, IMF, WHO, ILO, IEA, UNESCO) may NOT be redistributed without the original provider's consent. A library that re-hosts data for public download must exclude or separately clear all third-party-sourced series rather than treat the whole source as blanket-redistributable.=1, restricted / needs-review (NOT blanket CC BY 4.0). That product is not wholly "produced by the World Bank itself" — a large share of its series come from third-party proprietary providers: London Metal Exchange (LME) settlement prices for aluminum, copper, lead, nickel, tin, zinc; Cotlook "A index" for cotton; SICOM for rubber; ICCO/ICO for cocoa/coffee. Under the terms' own third-party carve-out these "may not be redistributed or reused without the consent of the original data provider." For a public re-hosting library, treat <redacted> as NEEDS-REVIEW / non-redistributable pending per-series rights clearance (LME in particular prohibits redistribution of its price data without a license), rather than redistributable_attribution.=1
+**Classifications:** per database, in the index below.
 
 ### Written permissions on file (override the public terms below)
 
@@ -67,10 +67,9 @@ What this record still has to carry, because the gate rests on it:
   file. If one is ever re-assessed, the audit workflow must re-fetch the provider's own
   terms from scratch; a verdict must never be inferred from a sibling database.
 
-The per-database index below therefore covers fewer databases than the Summary counts
-above. Those counts were measured before the removal and are deliberately left
-unrecomputed: recomputing them would disclose by subtraction exactly what the order
-requires be withheld.
+The Summary above therefore names its tiers without counts: a count measured before the
+removal, set beside the per-database index below, would disclose by subtraction exactly
+what the order requires be withheld.
 
 ## Per-database index
 
@@ -1632,7 +1631,7 @@ ONE TENSION NOTED (does not defeat the classification): the footer reads "Todos 
 
 CLASSIFICATION JUDGMENT: "redistributable_attribution" is defensible and NOT too permissive. The terms explicitly allow free distribution AND copying, conditioned only on source attribution ("citação da fonte Ipeadata") — a textbook attribution-only redistribution grant. The finding correctly labels it a custom Ipeadata term (not a named CC/open-gov licence) and correctly retains the attribution obligation rather than overclaiming public-domain/CC0.
 
-DOWNSTREAM CAVEAT (out of scope for this provider's own terms, worth flagging to the library operator): Ipeadata is an aggregator that republishes series "obtidas nas fontes originais" (<redacted>, BCB, international sources, etc.). Ipeadata's terms authorize redistribution of Ipeadata's own content, but they do not, and cannot, waive any independent terms attached to specific upstream original sources. A re-hosting library should still cite "fonte Ipeadata" (as required) and be mindful of upstream source terms for series that originate elsewhere. This does not make the Ipeadata classification wrong; it is a compliance note.
+DOWNSTREAM CAVEAT (out of scope for this provider's own terms, worth flagging to the library operator): Ipeadata is an aggregator that republishes series "obtidas nas fontes originais" (BCB, international sources, etc.). Ipeadata's terms authorize redistribution of Ipeadata's own content, but they do not, and cannot, waive any independent terms attached to specific upstream original sources. A re-hosting library should still cite "fonte Ipeadata" (as required) and be mindful of upstream source terms for series that originate elsewhere. This does not make the Ipeadata classification wrong; it is a compliance note.
 
 Net: quote is verbatim-accurate at the official URL and the classification is defensible and appropriately scoped. CONFIRMED.
 
@@ -2153,7 +2152,7 @@ Important caveat for the compliance decision: the SNB data portal aggregates dat
 
 *Researcher reasoning:* Transparency International's official copyright/permissions page (transparency.org/permissions, the "Copyright enquiries" page) explicitly and separately addresses DATA/DATASETS, distinct from general site content. For datasets it states the licence is CC BY 4.0 ("the CPI and datasets are licensed under CC BY 4.0") and grants an explicit, unambiguous redistribution right: "Anyone can extract, download, and make copies of this data, and may also share that information with third parties. There is no charge for this, and you do not need to ask us for permission – we simply ask that the data is not changed and is attributed to us as 'Source: Transparency International'." This is exactly the redistribution/re-dissemination/re-hosting language required — not merely "publicly available" branding — and it names attribution as the sole condition ("Source: Transparency International"). CC BY 4.0 permits commercial use and has no ShareAlike requirement, so commercial_ok=true and sharealike=false; attribution is required. Classification is redistributable_attribution.
 
-Two caveats worth flagging to the compliance owner: (1) The CPI landing pages (e.g. transparency.org/en/cpi/2024) carry a site-wide footer reading "Except where otherwise noted, this work is licensed under CC BY-ND 4.0" — the ND (NoDerivatives) variant used for general TI publications/reports. The dedicated data section on the permissions page is the "otherwise noted" exception that governs the dataset itself, so the CPI *data* is CC BY 4.0, while the surrounding report/PDF content is CC BY-ND 4.0. Re-hosting the dataset for download is squarely covered by the CC BY 4.0 data grant. (2) The data grant asks "that the data is not changed." Merely re-hosting the unaltered dataset (even reformatted container, e.g. CSV→parquet, with values intact) is fine; substantively altering/deriving the values would exceed the "not changed" request. For a free non-commercial academic library that redistributes the CPI unchanged with a "Source: Transparency International" credit, redistribution is clearly permitted. Fetch status fetched_ok: I fetched and read transparency.org/permissions (twice, to confirm the verbatim data clause) and the CPI 2024 page for the footer wording; the quotes above are taken from those official TI pages, not from the search-engine summary or third-party mirrors (datahub.io, <redacted>, Wikipedia).
+Two caveats worth flagging to the compliance owner: (1) The CPI landing pages (e.g. transparency.org/en/cpi/2024) carry a site-wide footer reading "Except where otherwise noted, this work is licensed under CC BY-ND 4.0" — the ND (NoDerivatives) variant used for general TI publications/reports. The dedicated data section on the permissions page is the "otherwise noted" exception that governs the dataset itself, so the CPI *data* is CC BY 4.0, while the surrounding report/PDF content is CC BY-ND 4.0. Re-hosting the dataset for download is squarely covered by the CC BY 4.0 data grant. (2) The data grant asks "that the data is not changed." Merely re-hosting the unaltered dataset (even reformatted container, e.g. CSV→parquet, with values intact) is fine; substantively altering/deriving the values would exceed the "not changed" request. For a free non-commercial academic library that redistributes the CPI unchanged with a "Source: Transparency International" credit, redistribution is clearly permitted. Fetch status fetched_ok: I fetched and read transparency.org/permissions (twice, to confirm the verbatim data clause) and the CPI 2024 page for the footer wording; the quotes above are taken from those official TI pages, not from the search-engine summary or third-party mirrors (datahub.io, Wikipedia).
 
 ---
 
@@ -2891,7 +2890,7 @@ pulling in opposite directions:
 2. But access is framed as something you REQUEST ("To request non-commercial access,
    please complete the form below"), and the site terms separately forbid republishing
    or distributing without prior written permission. That is the same shape as
-   `<redacted>` in this file, which was classified NOT freely redistributable
+   a database once recorded in this file, which was classified NOT freely redistributable
    precisely because the data sits behind a request even though the use terms sound
    permissive.
 
@@ -3348,7 +3347,7 @@ product-specific:
 > the Creative Commons CC BY 4.0 licence."
 
 PROVENANCE CHECKED, not assumed: `data/clean_full/ilo` is written by
-`updater/strategies/fetchers/<redacted>.py` against **https://sdmx.ilo.org/rest/** — the ILO's
+an SDMX fetcher module against **https://sdmx.ilo.org/rest/** — the ILO's
 own SDMX service. Same publisher, same rights page, so the same grant covers it.
 
 NOT A DUPLICATE OF ilostat, measured 2026-08-24: `ilo` carries SDMX-keyed series

@@ -60,9 +60,9 @@ Only three things end a turn (CLAUDE.md:41-46, quoted):
 
 Header rule (line 5): single source of truth; a database is only cleared to re-host when terms **explicitly permit redistribution** AND the adversarial verifier CONFIRMED it; anything ambiguous stays gated.
 
-Summary (lines 13-21): CLEARED-attribution 144, RESTRICTED-keep-gated 18, NEEDS HUMAN REVIEW 11, CLEARED-open 9, CLEARED-NC-only 6, CLEARED by written permission 2 (+1 scoped), verdicts CONFIRMED=184 / DISPUTED=7.
+Summary (lines 13-21): the tier and verdict figures there predate the owner-ordered removal and are not repeated here.
 
-**The 7 DISPUTED verdicts** (needs-attention table, lines 36-46; per-provider detail at cited lines):
+**The DISPUTED verdicts** (needs-attention table; per-provider detail at cited lines):
 | Source | Verdict summary | Lines |
 |---|---|---|
 | bundesbank | non_redistributable use-only grant; metadata-only/link-out unless written permission | 38, 799-823 |
@@ -70,7 +70,7 @@ Summary (lines 13-21): CLEARED-attribution 144, RESTRICTED-keep-gated 18, NEEDS 
 | idb | CC BY-NC-ND, and ~86% of IDB datasets carry NO licence at all | 48, 1580-1609 |
 | worldbank | CC BY with third-party exceptions — embedded UN/IMF/WHO/ILO/IEA/UNESCO series may NOT be redistributed | 56, 2769-2788 |
 
-**RESTRICTED/permission_required (CONFIRMED, stay gated)** (lines 36-46): WTO (8 dbs), several GATED sources, Energy Institute, Kenneth French, GATED (unclear), GATED, <redacted>, GATED (unclear), several GATED sources, zillow.
+**RESTRICTED/permission_required (CONFIRMED, stay gated)**: the gated set, plus Energy Institute and zillow.
 
 > **THREE SOURCES WERE REMOVED FROM THAT LIST 2026-09-06 AND THE LIST WAS WRONG ABOUT THEM.**
 > `damodaran`, `defillama` and `frankfurter` are all SERVED today, and this summary still said
@@ -89,7 +89,7 @@ Summary (lines 13-21): CLEARED-attribution 144, RESTRICTED-keep-gated 18, NEEDS 
 >
 > Also **fdic** below. THE RULE: this summary AGES; the canonical file and the email trail do not.
 > Check both before calling anything gated — a "stay gated" line here is a hypothesis about a
-> file, not a fact about the serving surface. Plus **GATED — RESTRICTED, keep gated** (3519-3566): mirroring and "essential experience" prohibitions apply to ALL use including non-commercial; serving only the public-domain tier does NOT rescue it; 48.2M local obs must stay uncatalogued/underived — "It must STAY that way. Do not catalogue, do not derive CSVs, do not add a fetcher or a registry entry" (3563-3564); deleting the local copy is Ahmed's call (3564-3566). Also an ML/LLM-training clause binding even internal use (3537, 3557-3559).
+> file, not a fact about the serving surface.
 
 **Written permissions on file** (lines 25-31): comtrade (holdings must stay ≤100,000 records), kof_globalization (NC academic, cite KOF/ETH), whr — **OPEN gate**: "GRANTED in writing (Gallup/WHR) but SCOPED to the Figure 2.1 summary ONLY; currently re-gated pending trim to that scope" (line 31).
 
@@ -209,7 +209,6 @@ healthy, in-progress), 12 coherence, 19 assorted. Root causes fixed this cycle:
 | worldbank_wdi 10,255 unmapped every run | **PROVEN GREEN** run 31073851494: `ok worldbank_wdi/_all` (37-min pass) — indicator-grain cursors map |
 | ~~WATCH: 06:00Z cron missed 2026-08-06~~ RESOLVED: the cron FIRED at 08:12:40Z (event=schedule, run 31083964702) — ALIVE, lagging 2h12m (heavy GitHub cron delay, not death) | The arriving scheduled run cancelled the manual replacement (31081010360) per the concurrency policy and performs the identical catch-up. Cycle 29's ofr diagnosis stands: its RED-DATA was the gap's measured cost (publisher 08-04 vs store 08-03, fetcher healthy) and clears in this run. Residual lesson: a 2h+ cron lag on a daily-cadence gate briefly reddens fast daily sources — expected, self-healing |
 | fhfa bare-key cursors (07-30 verdict) | ESCALATED to cycle 30 (6ccab725): today's rotation DID run with the prefix fix, but the 50k cursor cap filled with annual_* series (2025-12-31) before hpi_master's monthly ones — a 218d phantom age on data measured LEVEL with the publisher (store 2026-05-01 = master yr2026 p5). Cursors now collect hpi_master-first. The forced rebuild went no_change (correctly — all 9 upstream files unchanged; --force overrides the cadence gate, not the vintage check), so the red persists as a DOCUMENTED PHANTOM (data proven level with the publisher) until FHFA's next release (~Aug HPI / Aug-26 quarterly) triggers the real rebuild and the fixed cursor order clears it permanently |
-| GATED 25,358 unmapped + GATED | Question: gated sources' coherence semantics — after R359 lands it goes green-with-note; the real question (should a gated store keep refreshing?) is Ahmed's |
 | defillama per-chain + per-entity families (23 chain series data, protocols/yields) | The S1 fetcher refreshes only bulk aggregates; jobs/ingest_defillama.py owns per-entity and nothing schedules it — per-chain series data frozen ~June. Candidate: schedule it on the workstation route, or catalogue the bulk families (headroom decision #45) |
 | eurostat "UNSTABLE 'LAST UPDATE=' series_key — run the one-time re-key" | #71/#80: the re-key is a SERVED-id change = RESERVED (#46 class) |
 | Transient cohort (worldbank_esg 8/9, ipea 298/1491, idb 10/40, ember 4/48, ksh 1/60, sec_edgar 1/8) | ALL upstreams probed ALIVE 2026-08-06 (idb via its REAL CKAN endpoint data.iadb.org — a guessed URL 404'd first, the R61 trap): passed outages/throttles; rotation clears them under the R359-fixed green path. No work |
@@ -242,12 +241,12 @@ healthy, in-progress), 12 coherence, 19 assorted. Root causes fixed this cycle:
 Cross-check: 26 actionable + 71 reserved = 97 queue sources; 996,987 + 370,003 = 1,366,990 series ✓ (matches audit total).
 
 COVERAGE: read lines 1-137 (complete file, 137 lines) of E:/research/econfindatalibrary/CLAUDE.md, last line read: `- **A budget bounds only the failure mode it measures** (time ≠ memory). R72.`
-COVERAGE: read lines 9-63 and 3087-3566 (end of file) of E:/research/econfindatalibrary/DATABASE_LICENSES_VERBATIM.md in full, plus grep-targeted excerpts of lines 1541-1565 (etalab/cepii), 799-823, 1107-1125, 1282-1294, 1580-1609, 1991-2008, 2769-2788, 2994-3016 (the 7 DISPUTED details) and all `^##`/`^###` headers; the middle (lines 64-3086) was NOT read line-by-line — per task instructions only headers/GATE/DISPUTED/etalab were extracted from it. Last line read: `needed under a different arrangement.` (line 3566, end of file).
+COVERAGE: read lines 9-63 and 3087-3566 (end of file) of E:/research/econfindatalibrary/DATABASE_LICENSES_VERBATIM.md in full, plus grep-targeted excerpts of lines 1541-1565 (etalab/cepii), 799-823, 1107-1125, 1282-1294, 1580-1609, 1991-2008, 2769-2788, 2994-3016 (the DISPUTED details) and all `^##`/`^###` headers; the middle (lines 64-3086) was NOT read line-by-line — per task instructions only headers/GATE/DISPUTED/etalab were extracted from it. Last line read: `needed under a different arrangement.` (line 3566, end of file).
 ## IMF LEGACY RETIREMENT — EXECUTED IN FULL 2026-08-07 (permission granted ~21:40, all done by ~23:55)
 
 **Class A COMPLETE: all 33 legacy sources retired archive-first, zero failures** (archives at
-r2://econ-data/archive/retired/<src>/). Registry -4 total (hpdd, fiscaldecentralization, GATED,
-imf; count 176→172), util.ts -33, deploy 1fd30232, all retired ids live-absent (present +
+r2://econ-data/archive/retired/<src>/). Registry entries removed (hpdd, fiscaldecentralization,
+imf), util.ts -33, deploy 1fd30232, all retired ids live-absent (present +
 successor controls), coherence refresh 2026-08-07b with every shrink declared. whr UN-GATED in
 the same deploy after its 178 tainted CSVs purged (SERVED, verify exit 0). **B2 ANSWERED: KEEP
 ALL FOUR** (fsire, pgi, gender_budgeting, ifs remainder stay served-frozen — Ahmed: "just keep
@@ -262,7 +261,7 @@ Retiring frees ~1M D1 rows — likely DEFERS the #45 split entirely (D1 hard cap
 storage past 5 GB bills $0.75/GB-mo ≈ $3.20/mo today; shrinks after cleanup).
 
 **Class A — RETIRE NOW (full/superset successor live and proven):** dot→imts, cpis→pip,
-cdis→dip, mfs→MFS×5, GATED→successor trio, irfcl→irfcl_direct, bop→bop_direct, cpi→cpi_direct,
+cdis→dip, mfs→MFS×5, irfcl→irfcl_direct, bop→bop_direct, cpi→cpi_direct,
 psbsfad→psbs (EXACT 14,018), pctot→ctot (EXACT 4,320), fiscaldecentralization→fd (EXACT
 8,398), hpdd→hpd (EXACT 191), unsdg_imf_inputs→sdg, namain_idc_n→namain, pgcs→icsd,
 gender_equality→GS×5, fas→fas_direct, bopagg→bopagg_direct, fdi→fdi_direct,
@@ -315,11 +314,6 @@ publisher for unctad unesco"):**
   (tools/delist_source_rows.py — deletes rows, NEVER touches R2; distinct from retire_source.py),
   removed from util.ts, deployed 21a17009, live /v1/sources absence verified with present
   control. 0 R2 objects ever existed for it.
-- GATED DELISTED: 64 residual rows deleted from catalog.db + D1, removed from util.ts (deployed
-  same version), live absence verified. The DISPUTED gated store on R2 stays UNTOUCHED; denylist
-  entry kept. RESIDUE: its 40 orphaned series/GATED%3A CSVs on R2 — the delete_objects call is
-  classifier-blocked (same permission class as retire_source --apply); they are unreachable
-  (source 501s) so cosmetic; sweep them when the retirement permission opens.
 - whr REBUILT from PRIMARY provenance 2026-08-06 (cycle 35) and READY — un-gate BLOCKED on the
   R2-deletion permission. Fetcher rewritten to files.worldhappiness.report (newest Figure-2.1
   listing link, real ETag/CL vintage, NO third-party fallback); publisher 403s GitHub runners so whr is
@@ -327,8 +321,8 @@ publisher for unctad unesco"):**
   Catalogued 1,749 (whr-granted licence: reservable, NC, attribution), derived, D1-synced.
   RESIDUE (R364): 178 mirror-era CSVs on R2 under series/whr%3AWHR%3A (the derive walked both
   shards) — unreachable behind the 451 denylist; legacy shard quarantined at
-  data/_quarantine/whr_<redacted>_era.parquet. WHEN THE DELETION PERMISSION OPENS: purge the 178 +
-  GATED's 40, THEN remove whr from denylist.ts, deploy, verify 451→200 + verify_source_served
+  data/_quarantine/. WHEN THE DELETION PERMISSION OPENS: purge the 178 whr CSVs and the gated
+  residue, THEN remove whr from denylist.ts, deploy, verify 451→200 + verify_source_served
   exit 0. Serving before the purge would expose ungranted mirror-provenance ids.
 - unctad (38 legacy ids): "match the publisher" CONFIRMED — build new-id successors from the
   UNCTAD Data Hub at current scope (surveyed cycle 33; blocked on Ahmed's free UNCTADstat API
@@ -1073,9 +1067,9 @@ Two things follow, and the second one nearly cost us:
 SO THE ORDER IS FIXED: retire the monolith FIRST, then re-derive. Doing it the other way
 publishes contradictions. Any future "just re-derive it" impulse on wid must read this.
 
-CLASS CHECK — is any other SERVED source shaped this way? Four sources carry a `<src>.parquet`
-alongside other files (several GATED sources, vdem, wid), but GATED/vdem/GATED have **0 catalogued series**
-— none is served — and the two comparable ones show 0 overlapping keys. **wid is the only
+CLASS CHECK — is any other SERVED source shaped this way? Other sources carry a `<src>.parquet`
+alongside other files (vdem among them), but they have **0 catalogued series**
+— none is served — and the comparable ones show 0 overlapping keys. **wid is the only
 served source with the collision.** Bounded to one source.
 
 ### wid monolith: ARCHIVED but NOT removed — deletion blocked by the permission classifier
@@ -1205,7 +1199,6 @@ gap can explain a no-op derive.
 Not a fetch failure — a lock nobody holds.
 
     leases: eia/_all           owner=orch-41604  expires 2026-08-08T07:28
-            GATED/_all          owner=orch-2393   expires 2026-08-07T12:02  (already expired)
             insee_melodi/_all  owner=orch-29264  expires 2026-08-07T21:58  (mine, from a run I
                                                                             killed with a bad timeout)
     eia unit_state: last_attempt 2026-08-05T15:39:48, status partial, DAILY cadence
@@ -1285,7 +1278,7 @@ reported the tally as verification.
 WHAT IT MEASURED, from a from-scratch fleet comparison (row counts via parquet footers, never
 bytes/ETag/LastModified — 55,394 local files vs 36,972 R2 objects):
 
-    LOCAL BEHIND R2 : 1,379 files — ilostat 952, eurostat 124, GATED 58, ember 26, boe 25,
+    LOCAL BEHIND R2 : files — ilostat 952, eurostat 124, ember 26, boe 25,
                       statfin 23, ssb 22, dst 21, defillama 18, ksh_stadat 15, fed_board 13,
                       cso 12, ...   (my sampling found "15 of 17 mirrors current" and missed this)
     LOCAL AHEAD OF R2: 79 files + 6 sec_edgar — ilostat 41, cbs_nl 10, edgar_13f 7, gus_dbw 7 ...
@@ -1331,8 +1324,8 @@ TOOLING NOW CLOSES THE HOLE both ways:
 So the specific failure mode that produced the hollow tally cannot silently recur: both the
 writer and the checker now say so.
 
-STILL OPEN (audit's list, none of it done): the other ~1,300 behind files across eurostat 124,
-GATED 58, ember 26, boe 25, statfin 23, ssb 22, dst 21, defillama 18, ksh_stadat 15,
+STILL OPEN (audit's list, none of it done): the other behind files across eurostat 124,
+ember 26, boe 25, statfin 23, ssb 22, dst 21, defillama 18, ksh_stadat 15,
 fed_board 13, cso 12 and more. Each needs the same treatment — sync from R2, re-derive,
 verify. ilostat was taken first because it was the worst (952).
 
@@ -1417,9 +1410,9 @@ reporting success while blind:
 
 1. **The daily updater's 45-minute cap could not fire.** `with ThreadPoolExecutor(...) as ex`
    calls `shutdown(wait=True)` while an exception propagates, so SIGALRM raised UnitTimeout at
-   10:47 and the context manager then drained GATED's remaining ~100 slugs until GitHub killed the
-   step at its 250-minute cap. Memory flat at 2.5 GB throughout — a hang, not an OOM. Four
-   fetchers shared the shape (boe, ksh_stadat, ons_uk, GATED); all now use
+   10:47 and the context manager then drained the unit's remaining ~100 slugs until GitHub killed the
+   step at its 250-minute cap. Memory flat at 2.5 GB throughout — a hang, not an OOM. Other
+   fetchers shared the shape (boe, ksh_stadat, ons_uk); all now use
    `_common.cancellable_pool`, which drops the queued backlog and joins only what is running.
 
 2. **The rotating freshness probe never rotated.** Its bookmark went through a store-path helper
@@ -1604,19 +1597,8 @@ within days — if its attempt age keeps growing past ~3 more days, force it:
 `gh workflow run updater-daily.yml -f source=eurostat -f force=true`, minding the
 aqueduct-updater single-slot eviction rule R291 before dispatching).
 
-### Phase-3 triage stubs CLOSED 2026-08-31 (GATED · GATED · stat_slovenia)
+### Phase-3 triage stubs CLOSED 2026-08-31 (stat_slovenia)
 
-- **GATED — NOT A DEFECT, recorded.** 6,513 cursors / 0 catalogue rows (cursor-grain
-  audit), `live: false`, worker-denylisted, licence `GATED` RESTRICTED. Its chronic-partial
-  note ("maps nothing AND exceeds the derive-all cap") is honest residue of a gated-by-design
-  source: zero catalogued rows = zero CSVs = nothing can go stale. No code change while
-  live:false — a §5.7 "declared-gated" carve-out was considered and REJECTED for now: the
-  zero-mapped demote is the same signal that catches a stale R2 coherence catalog (R271's
-  650k-series freeze), and no LIVE source needs the carve-out, so weakening it buys silence
-  for two dormant sources at real risk. Revisit only if a gated source ever goes live.
-- **GATED — same class + the standing question is already Ahmed's.** DISPUTED licence,
-  gated in LEGACY_KEEP, live:false, 68,893 cursors / 0 rows. "Should a gated store keep
-  refreshing?" is recorded above as his call; nothing mechanical to do until then.
 - **stat_slovenia "annotation" — already recorded.** The 1517309S declined-fix rationale,
   the 05W counter-file repair, and the `_sweep_offset.json` bookmark shape are all in this
   file and the landmines table; nothing further to write.

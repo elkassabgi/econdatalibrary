@@ -34,8 +34,8 @@ Run from a shell where `econfindatalibrary/.env` has the R2 write creds + wrangl
    - SAFE (single-source licenses): `UPDATE license SET reservable=1 WHERE license_id IN
      ('nlod-2.0','surs-terms','opendata-swiss-by-ask');`  (used only by ssb / stat_slovenia / bfs)
    - stat_latvia: `UPDATE source SET license_id='cc-by-4.0' WHERE source_id='stat_latvia';`
-     — its current `NEEDS-REVIEW` license is **shared by other restricted sources** (several GATED sources,
-     wid, whr, several GATED sources); do **NOT** flip NEEDS-REVIEW.
+     — its current `NEEDS-REVIEW` license is **shared by other restricted sources** (wid and whr among
+     them); do **NOT** flip NEEDS-REVIEW.
    - **stat_estonia — AHMED DECISION.** Its `cc-by-sa-4.0` is shared with `unesco_*`
      sources (check each against the gate before flipping). If those unesco_* are redistributable, flip
      `cc-by-sa-4.0` globally; if not, give stat_estonia its own row (e.g. `cc-by-sa-4.0-ee`,
@@ -54,8 +54,8 @@ Run from a shell where `econfindatalibrary/.env` has the R2 write creds + wrangl
 | nlod-2.0 | 0 | ssb only | YES |
 | surs-terms | 0 | stat_slovenia only | YES |
 | opendata-swiss-by-ask | 0 | bfs only | YES |
-| NEEDS-REVIEW | 0 | 9 (8 restricted) | NO — repoint stat_latvia to cc-by-4.0 |
-| cc-by-sa-4.0 | 0 | stat_estonia + 8 unesco_* | AHMED DECISION |
+| NEEDS-REVIEW | 0 | stat_latvia + other restricted sources | NO — repoint stat_latvia to cc-by-4.0 |
+| cc-by-sa-4.0 | 0 | stat_estonia + unesco_* sources | AHMED DECISION |
 
 Deployed production already has denylist.ts un-gating all 9 + D1 reservable=1 (2026-07-21); the
 LOCAL catalog.db just lags — see memory `project_redistributability`.
