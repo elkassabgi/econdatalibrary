@@ -36,7 +36,7 @@ D1 reads are ~free ($1/B row, 25B included); **D1 writes are $1/M**; **R2 Class 
 - API host: `https://econdl-api.elkassabgi.workers.dev`. `api.econdatalibrary.com` is NXDOMAIN; `econdatalibrary.com/v1` returns the site's index.html — never verify API behaviour against those.
 - `noaa` is sharded into `econ-catalog-climate`; global counts must merge both DBs or silently drop 3.1M rows.
 - `/v1/stats` serves the **July census** (79.8B obs / 7.73B series) from `_aqueduct/stats.json`; the honest measured store is 33.9B / 3.90B. Publication is RESERVED.
-- Scheduler count: FOUR paths (registry `live:true` 229 via updater-daily; updater-heavy matrix 34; sec-edgar-daily; `run_local_heavy.ps1` on `run_location: local` 29). The union is 272 registry entries; 10 are unscheduled; `EXPECTED_SOURCE_COUNT` must move with any registry edit or every run refuses.
+- Scheduler count: FOUR paths (registry `live:true` via updater-daily; updater-heavy matrix 34; sec-edgar-daily; `run_local_heavy.ps1` on `run_location: local` 29). Registry entries outside that union are unscheduled; `EXPECTED_SOURCE_COUNT` must move with any registry edit or every run refuses.
 - `upstream_vintage` advances only on clean success; a `partial` never sets `last_success_utc`; `series_cursors` drive the CSV derive; `CURSOR_CAP=50,000` — an exact-50,000 count is a cap until proven otherwise.
 
 ## Open-work register (the plan's W1–W7, one line each)

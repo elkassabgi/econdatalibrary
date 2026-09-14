@@ -35,7 +35,7 @@ STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # An age means nothing without the cadence it is measured against. Measured 2026-09-03 across all
-# 229 live sources: 6 are late by this rule, while the four OLDEST ages in the render (38.2 days —
+# live sources: 6 are late by this rule, while the four OLDEST ages in the render (38.2 days —
 # pwt, oxcgrt, barro_lee, gppd) are cadence `static` and perfectly fine. Before this, the digest's
 # `tried=` column read as alarming exactly where nothing was wrong, and read as unremarkable for
 # eia at 11.6 days, which is DAILY and four cycles late.

@@ -63,7 +63,7 @@ A `series_key` that drops a dimension the publisher varies, so distinct series c
 - **11 fetchers (`norgesbank` + 10 more) compute their "changed" set from disk before any network call**, violating the orchestrator's contract — their `series_cursors` mean "everything", so derives run 32x over-cost or never converge.
 
 ### W3 — Freshness & coverage gaps
-- **26 of 229 live sources hold files their fetcher has not rewritten** (`bea` 591/592, `dst` 594/813, `defillama` 94/112, `adb` 32/54, `cso` 32/57, `abs` 444/1222, `worldbank_esg` 13/93, `ecb` 17/540…). Each needs a dated, evidence-backed attribution: retired flow / ingester-owned tree / static reference / genuine gap. **Not yet attributed — real open work** (`tools/audit_untouched_files.py --live`).
+- **26 live sources hold files their fetcher has not rewritten** (`bea` 591/592, `dst` 594/813, `defillama` 94/112, `adb` 32/54, `cso` 32/57, `abs` 444/1222, `worldbank_esg` 13/93, `ecb` 17/540…). Each needs a dated, evidence-backed attribution: retired flow / ingester-owned tree / static reference / genuine gap. **Not yet attributed — real open work** (`tools/audit_untouched_files.py --live`).
 - **`eurostat`: 440 catalogued flows serve nothing, and 540 store files disappeared while the source was frozen 45 days.** Cause NOT ESTABLISHED. Investigate before touching anything.
 - **`oecd`: 60 of 131 flows have no `TIME_PERIOD` column** — cross-sectional data outside the series model (same shape as `gleif`). Serve or formally exclude → **RESERVED product decision**.
 - Gate has **no tolerance for a bounded known-broken minority** (`bfs` 649/650, `hagstofa` 1538/1568, `stat_slovenia` 95/97 permanently red) → gate policy → **RESERVED**.
