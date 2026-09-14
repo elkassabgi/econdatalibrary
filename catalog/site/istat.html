@@ -340,7 +340,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">istat</div>
 <h1>Istat (Italian National Institute of Statistics)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">cc-by-4.0-istat</span><span class="badge cat">Italy</span></div>
-<p class="lead">Complete ISTAT dataflows the normal pull left INCOMPLETE. The normal ISTAT sweep (jobs/ingest_sdmx_nso.py, providers &quot;istat&quot; + &quot;istat_esploradati&quot;) writes one Parquet per dataflow into data/clean_full/istat/. A subset of flows never land because a single SDMX data response is too large for the…</p>
+<p class="lead">Complete ISTAT dataflows the normal pull left INCOMPLETE. The normal ISTAT sweep (the main SDMX ingester, providers &quot;istat&quot; + &quot;istat_esploradati&quot;) writes one Parquet per dataflow into data/clean_full/istat/. A subset of flows never land because a single SDMX data response is too large for the…</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -365,15 +365,15 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>Update cadence</dt><dd>monthly <em>(target &mdash; not yet automated)</em></dd>
 <dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd>
 <dt>Update strategy</dt><dd>sdmx delta</dd>
-<dt>Storage layout</dt><dd>per-flow parquet files in data/clean_full/istat/ (755 files present, many MB-scale, e.g. 101_1015.parquet ~2.9MB; schema series_key:string, obs_date:date32, value:float64, zstd, sorted by (key,date)). SAME dir+filename convention as ingest_sdmx_nso.py so the two jobs dedupe via skip-existing across both. Plus JSON checkpoints _sliced_done.json / _sliced_unrecoverable.json (atomic tmp+os.replace, lines 603-607). Full mode: incomplete = no parquet (is_incomplete, lines 610-614); present flows skipped+marked done (lines 697-700). --only mode INTENTIONALLY ignores skip-existing and the done checkpoint and OVERWRITES the target flow (lines 654-665, 697).</dd></dl>
+<dt>Storage layout</dt><dd>per-flow parquet files in data/clean_full/istat/ (755 files present, many MB-scale, e.g. 101_1015.parquet ~2.9MB; schema series_key:string, obs_date:date32, value:float64, zstd, sorted by (key,date)). SAME dir+filename convention as the main SDMX ingester so the two jobs dedupe via skip-existing across both. Plus JSON checkpoints _sliced_done.json / _sliced_unrecoverable.json (atomic tmp+os.replace, lines 603-607). Full mode: incomplete = no parquet (is_incomplete, lines 610-614); present flows skipped+marked done (lines 697-700). --only mode INTENTIONALLY ignores skip-existing and the done checkpoint and OVERWRITES the target flow (lines 654-665, 697).</dd></dl>
 <h2>Full description</h2>
 <p class="lead">Complete ISTAT dataflows the normal pull left INCOMPLETE.
 
-The normal ISTAT sweep (jobs/ingest_sdmx_nso.py, providers &quot;istat&quot; +
+The normal ISTAT sweep (the main SDMX ingester, providers &quot;istat&quot; +
 &quot;istat_esploradati&quot;) writes one Parquet per dataflow into
 data/clean_full/istat/.  A subset of flows never land because a single SDMX
 data response is too large for the endpoint: the host returns HTTP 500 / times
-out, the body exceeds what we can parse, or (via DBnomics historically) the
+out, the body exceeds what we can parse, or (via the relay aggregator historically) the
 flow blows past the 100K-series cap.
 
 This job sweeps the ISTAT catalog, finds every flow that has NO parquet yet
@@ -395,7 +395,7 @@ so the run is fully resumable (a watcher relaunches this after ISTAT, whose
 esploradati host is chronically flaky, recovers).
 
 Output: data/clean_full/istat/{flow_id}.parquet  -- SAME dir + filename
-convention as ingest_sdmx_nso.py, so skip-existing dedupes across both jobs.
+convention as the main SDMX ingester, so skip-existing dedupes across both jobs.
 Schema: {series_key: string, obs_date: date32, value: float64}, zstd.
 
 Run:
