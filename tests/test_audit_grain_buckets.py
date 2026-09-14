@@ -383,8 +383,8 @@ def test_a_gated_source_is_not_reported_as_forgotten(tmp_path):
 
     A denylisted source holds data, has no catalogue row and no R2 object BY DECISION (the
     2026-07-22/23 licence purge). Reporting it beside genuinely forgotten data is how I came to
-    write that a gated store was "a dead directory nothing owns" when it has a working fetcher
-    and sits on the denylist.
+    write that gated stores were "a dead directory nothing owns" when they have working fetchers
+    and sit on the denylist.
 
     SIMPLIFIED after a second review: the gate is now checked BEFORE grain, at ANY catalogue row
     count, so gated sources never reach the zero-catalogue bucket at all. One gated bucket, and
@@ -572,9 +572,9 @@ def test_the_gated_split_cannot_be_inverted(tmp_path):
 
 
 def test_a_gated_source_WITH_catalogue_rows_is_not_a_coverage_gap(tmp_path):
-    """The real mis-assignment the review measured: a denylisted source holding 26 catalogue rows
-    missed the zero-catalogue split entirely, so its 233-key gap printed as an unexplained
-    coverage gap. The gate outranks the grain at ANY row count."""
+    """The real mis-assignment the review measured: denylisted sources holding catalogue rows
+    missed the zero-catalogue split entirely, so their key gaps printed as unexplained
+    coverage gaps. The gate outranks the grain at ANY row count."""
     stdout, tsv = _run2(tmp_path)
     assert "GATED WITH A GAP - 1 denylisted source(s), 280 keys" in stdout, stdout
     assert "EXCLUDED from the total above" in stdout, stdout

@@ -97,8 +97,8 @@ def store_only_sources(counts: dict) -> list:
 
     `--all` enumerates `catalogue_counts()`, which reads the local `catalog.db`. A source with no
     local row therefore never enters the run - so this audit cannot see it in EITHER direction,
-    and prints nothing to say so. Measured 2026-09-07: a gated source had 26 rows in D1 and 0
-    locally, and was silently outside every `--all` run.
+    and prints nothing to say so. Measured 2026-09-07: gated sources with rows in D1 and none
+    locally were silently outside every `--all` run.
 
     Named rather than counted, and reported under NOT MEASURED, because the honest statement is
     "this run did not look", not "there is nothing there".
@@ -171,8 +171,8 @@ def main() -> int:
     store_only = store_only_sources(counts) if a.all else []
     if store_only:
         # NEVER SILENT, and this one is invisible by construction: `--all` iterates the LOCAL
-        # catalogue, so a source with no local row is not in the run at all. A gated source has
-        # 26 rows in D1 and 0 locally (measured 2026-09-07).
+        # catalogue, so a source with no local row is not in the run at all. Gated sources had
+        # rows in D1 and none locally (measured 2026-09-07).
         print(f"  NOT MEASURED, and NOT in the totals above: {len(store_only)} source(s) hold a "
               f"store directory but ZERO local catalogue rows, so `--all` never enumerated them. "
               f"A source can be live in D1 with no local row - name it explicitly to audit it:")

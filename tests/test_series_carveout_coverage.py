@@ -62,7 +62,7 @@ def _count_holding(con, source, indicator):
 
     The obvious form -- `series_id LIKE '%:<ind>:%'` -- is WRONG and this test's first version
     used it, which is R129's unanchored match inside a test about unanchored matching. It
-    matches a segment anywhere in the id, so a carved source's generic indicator
+    matches a segment anywhere in the id, so generic carved indicator
     names collided with unrelated sources and reported
     `ksh_stadat holds 0 series of copper`. The contradiction -- "holds" a count of zero -- is
     what exposed it: the finder and the counter disagreed, so one of them was broken.
@@ -145,11 +145,11 @@ def test_carveout_like_prefixes_cover_both_id_shapes():
 def test_sources_endpoint_hides_denylisted_sources():
     """A source we refuse to serve must not be advertised in /v1/sources.
 
-    A gated source was listed there with a full licence block while every path to its
-    data answered 451 — a browsable entry nobody can obtain, which is the "metadata-only" listing
+    Any gated source with a `source` row was listed there with a full licence block
+    while every path to its data answered 451 — a browsable entry nobody can obtain, which is the "metadata-only" listing
     Ahmed's standing rule forbids (host it fully, or do not list it). Measured live
-    2026-08-30: /v1/sources still listed a denylisted source; both its catalog listing and
-    its series download returned 451.
+    2026-08-30: /v1/sources still listed every denylisted source that had a `source` row; the catalog
+    listing and the series download of each returned 451.
 
     Comments in catalog.ts and bundle.ts already ASSERTED this filtering happened, so the code
     contradicted its own documentation (R125). This pins the code, not the prose.

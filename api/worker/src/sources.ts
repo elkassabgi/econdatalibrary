@@ -39,7 +39,7 @@ export async function handleSources(env: Env): Promise<Response> {
   rows.sort((a, b) => (a.source_id < b.source_id ? -1 : a.source_id > b.source_id ? 1 : 0));
 
   // A SOURCE WE REFUSE TO SERVE MUST NOT BE ADVERTISED HERE. This handler applied no
-  // denylist at all, so a gated source was listed with a full licence block
+  // denylist at all, so any gated source with a `source` row was listed with a full licence block
   // (audit-restricted) while every path to its data answered 451 — /v1/catalog?source=<id>
   // and /v1/series/<id>:<indicator>.csv both measured 451 live on 2026-08-30. That is a browsable entry a user cannot obtain,
   // which is exactly the "metadata-only" listing Ahmed's standing rule forbids: host it fully
@@ -51,8 +51,8 @@ export async function handleSources(env: Env): Promise<Response> {
   // change that was never made.
   //
   // After this filter the listed count is exactly SUPPORTED_SOURCES minus
-  // NON_REDISTRIBUTABLE. (A gated id with no `source` row was absent for an unrelated reason,
-  // so it was never the discrepancy.)
+  // NON_REDISTRIBUTABLE. (Any gated id without a `source` row was already absent for an unrelated
+  // reason, so no such id was the discrepancy.)
   const servable = rows.filter((r) => !NON_REDISTRIBUTABLE.has(r.source_id));
 
   // CANONICAL v1.1 NESTED shape (CONTRACT.md "Canonical response shapes"):

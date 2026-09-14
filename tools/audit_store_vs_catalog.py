@@ -312,9 +312,9 @@ def denylisted() -> set:
     A gated source holds data, has zero catalogue rows and zero R2 objects BY DECISION - the
     2026-07-22/23 licence purge. Reporting one as UNCATALOGUED without saying so invites the
     reader to conclude data was forgotten, which is the error this function exists to stop:
-    on 2026-09-06 I wrote that a gated source was "a dead store directory nothing owns", from a
-    registry lookup, when it has a working fetcher (a gated source's ingest script) and sits in this
-    very set - twenty minutes after a reviewer told me the same about other gated sources
+    on 2026-09-06 I wrote that gated stores were "a dead store directory nothing owns", from a
+    registry lookup, when they have working fetchers (gated sources' ingest scripts) and sit in this
+    very set - twenty minutes after a reviewer told me the same about gated sources
     (R838). A rule broken by hand twice belongs in the instrument.
     """
     import re                                                    # noqa: PLC0415

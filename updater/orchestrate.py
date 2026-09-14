@@ -1802,8 +1802,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
 
         try:
             # THE DEADLINE COVERS THE PROBE TOO — this call sat OUTSIDE _unit_deadline, 85
-            # lines before it, and that hole ate two entire daily runs. A gated source's detect_change
-            # is a per-slug HTTP HEAD over ~3,786 chart URLs; on 2026-08-07 it entered at
+            # lines before it, and that hole ate two entire daily runs. A detect_change
+            # built as a per-slug HTTP HEAD over thousands of chart URLs entered on 2026-08-07 at
             # 10:02 and again at 23:23 and produced NOTHING until GitHub's 250-minute step
             # cap killed the whole run — 150 and then 212 minutes inside a phase no cap
             # covered. The first fix (cancellable_pool, 388bf5d5) was real but aimed at

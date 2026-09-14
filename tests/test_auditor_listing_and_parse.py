@@ -14,10 +14,10 @@ WHAT THEY CLAIMED, AND WHAT WAS TRUE
     independently-derived "resolvable (util.ts)" count. R0.4: never regex a language whose comments
     can contain the delimiter.
 
-  * The same tool labelled a gated source as DRIFT because its bare `except` turned an HTTP
-    **451 non_redistributable** into a `-1` sentinel. That source is a gated one (R526);
-    the gate firing is the system working. Reporting it as drift both invites someone to "fix" a
-    licence refusal and discredits the eight real drifts beside it.
+  * The same tool labelled gated sources as DRIFT because its bare `except` turned an HTTP
+    **451 non_redistributable** into a `-1` sentinel. A 451 there is the gate firing (R526),
+    which is the system working. Reporting that as drift both invites someone to "fix" a
+    licence refusal and discredits the real drifts beside it.
 
   * `audit_store_vs_catalog.py` listed each store with a ONE-LEVEL `glob`, so nested stores were
     undercounted and four vanished entirely: bea 1 file of 592, gus_dbw 194 of 868, eia 30 of 60,

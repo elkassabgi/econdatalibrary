@@ -26,16 +26,15 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   Threat Report) were added alongside gpi (which was already counted; its dead
 #   URLs were repaired with the granted IEP source). See [[project_redistributability]].
 # 2026-07-22: -> 123. Sources we are NOT permitted to re-host were purged from
-#   the catalog, but the crawler kept fetching them daily (ids not repeated here; whr was
-#   one of them and was later re-added under a written grant). Crawling data we can never serve wastes
+#   the catalog, but the crawler kept fetching them daily (ids not repeated here).
+#   Crawling data we can never serve wastes
 #   the run, and for the providers who declined us in writing it means hitting their API
 #   every day after they said no. Removed from registry.yaml; the ingest scripts stay on
 #   disk so any future permission is a re-add, not a rewrite.
 # 2026-07-23: -> 113. Ahmed's ruling: permission emails went out
 #   ~2026-07-08 and two weeks of silence is a NO. Sources we may not host -- refused,
 #   silent, or never assessed -- are DELETED, not gated, and must stop being crawled or
-#   the daily run just re-uploads them (norgesbank, unsdg, vdem and wid were later cleared
-#   and re-added, the rest are not repeated here).
+#   the daily run just re-uploads them (ids not repeated here).
 #   Also the same day: gated ids were still being crawled while gated, so a
 #   run would have re-uploaded to R2 exactly what the purge deleted.
 #   Also the same day: gated sources with no adapter -- we may not host them, so building a

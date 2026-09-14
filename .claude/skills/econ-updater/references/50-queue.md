@@ -245,8 +245,8 @@ COVERAGE: read lines 9-63 and 3087-3566 (end of file) of E:/research/econfindata
 ## IMF LEGACY RETIREMENT — EXECUTED IN FULL 2026-08-07 (permission granted ~21:40, all done by ~23:55)
 
 **Class A COMPLETE: all 33 legacy sources retired archive-first, zero failures** (archives at
-r2://econ-data/archive/retired/<src>/). Registry entries removed (hpdd, fiscaldecentralization,
-imf), util.ts -33, deploy 1fd30232, all retired ids live-absent (present +
+r2://econ-data/archive/retired/<src>/). Registry and util.ts resolver entries removed,
+deploy 1fd30232, all retired ids live-absent (present +
 successor controls), coherence refresh 2026-08-07b with every shrink declared. whr UN-GATED in
 the same deploy after its 178 tainted CSVs purged (SERVED, verify exit 0). **B2 ANSWERED: KEEP
 ALL FOUR** (fsire, pgi, gender_budgeting, ifs remainder stay served-frozen — Ahmed: "just keep
@@ -267,7 +267,7 @@ psbsfad→psbs (EXACT 14,018), pctot→ctot (EXACT 4,320), fiscaldecentralizatio
 gender_equality→GS×5, fas→fas_direct, bopagg→bopagg_direct, fdi→fdi_direct,
 gfsr/gfse/gfsmab→gfssoo (61/74 measured; the 13 unmatched are detail SOO no longer carries
 = publisher's current scope), gfsssuc→direct, gfscofog→direct, gfsibs→direct.
-(gfsfalcs: verify its direct successor exists before including.) ≈ 25 sources / ~1.02M rows.
+(gfsfalcs: verify its direct successor exists before including.) ~1.02M rows.
 
 **Class B1 — BUILD DIRECT FIRST, then retire (live IMF dataflows, no direct built yet):**
 CORRECTED 2026-08-06 (cycle 32, the R343 label-vs-system check): **weo and commodity need NO

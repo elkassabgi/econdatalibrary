@@ -23,7 +23,7 @@ BUCKET = "econ-data"
 LOCAL_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 
 # The ones holding R2 residue: gated, 0 catalog series, no permission (refused, silent, or unassessed).
-# DEFUSED 2026-08-31 (adversarial review of a gated source deletion): the old list still named
+# DEFUSED 2026-08-31 (found in an adversarial review of gated-source deletion work): the old list still named
 # vdem (un-gated 2026-08-24, CONFIRMED CC BY-SA, SERVED) and wid (SERVED, 2.47M series) under
 # a header claiming "gated, 0 catalog series, no permission" -- anyone re-running it would
 # have deleted served data from R2. A dormant tool whose target list has rotted is a loaded

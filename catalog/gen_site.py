@@ -1398,11 +1398,9 @@ _SOURCE_TOPICS = {
     "fhfa": ["Housing & Real Estate"],
     # institutions & society
     "vdem": ["Governance & Institutions"],
-    # A source was REMOVED 2026-07-30 — the publisher declined re-hosting (their director of
-    # research: "our preference is for the library to direct users to request the data
-    # directly from us"). Owner decision the same day: no hosting AND no mention of the data
-    # anywhere on the econ site. Any classification entry here is a route back onto a page,
-    # so the id is removed rather than left mapped-but-unused.
+    # Ids removed from the library on the owner's order get no classification entry: any entry
+    # here is a route back onto a page, so such ids are removed rather than left
+    # mapped-but-unused.
     "wgi": ["Governance & Institutions"],
     "transparency_ti": ["Governance & Institutions"],
     "fsi_fundforpeace": ["Governance & Institutions"],

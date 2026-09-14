@@ -133,9 +133,9 @@ def resolvable_sources() -> set:
     The second half of the same lesson as served_keys(). Being on R2 is necessary and not
     sufficient: a source can sit in the bucket and still be unreachable because the worker
     has no entry for it, which is exactly how a deliberately GATED source is held back.
-    A gated source is the clearest case - 3,791 objects and 72.7M observations on R2, licence
-    DISPUTED, removed from the catalogue on 2026-08-06, absent from util.ts, and correctly
-    404 to any user who asks. Counting it in a public total would advertise data nobody can
+    Gated sources are the clearest example: objects and observations on R2, a licence not cleared,
+    removal from the catalogue, no util.ts entry, and a correct
+    404 to any user who asks. Counting them in a public total would advertise data nobody can
     download.
 
     Measured 2026-08-23: 15 sources in the bucket are not resolvable, worth 2.83B

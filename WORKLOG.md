@@ -53,7 +53,7 @@ all eleven UNCTAD giants. Any freshness instrument keyed on that table reports n
 
 ### P0.5 / P0.6 — decision briefs · FILED
 
-Written to `docs/briefs/PHASE0_BRIEFS.md` (since removed under the owner's order). Re-measured today; nothing changed.
+Written to `docs/briefs/PHASE0_BRIEFS.md`, a local file that was never committed to this repository. Re-measured today; nothing changed.
 
 *Transient worth recording:* the first D1 call returned Cloudflare **7403**. Per R222/R363 an
 identical call succeeding moments later means transient, not a permission wall — re-probed once
@@ -248,8 +248,8 @@ preflight stays green. Verified: `skill_check.py` → all 8 checks OK, `RESULT: 
 
 **PHASE 0 EXIT GATE: PASSED.** `--digest` now covers every entry heading and states its scope
 explicitly; the enumerated backlog can only shrink; every baseline row above carries an instrument
-and a date; the briefs are filed (`docs/briefs/PHASE0_BRIEFS.md`, since removed under the owner's
-order).
+and a date; the briefs are filed (`docs/briefs/PHASE0_BRIEFS.md`, a local file never committed to
+this repository).
 
 **Two Phase-1/2 tasks are removed by these measurements**, which is worth stating because the plan
 still lists them: the sources-endpoint materialisation (the cost is 1,442 rows, not millions), and
@@ -323,9 +323,9 @@ would have been a correctness regression, worse than what it replaced.** Not dep
 before shipping, which is the whole point of running the reviewer in parallel.
 
 Two further corrections from the same review, both verified here:
-- **Served is SUPPORTED_SOURCES minus the gated ids still in it, not its raw size.** I had
-  missed a gated id there, which is the very source I filed a RESERVED
-  brief about. `docs/ECONLIB_COMPLETION_PLAN.md:78` carries the same stale figure.
+- **Served is SUPPORTED_SOURCES minus the gated ids still in it, not its raw size.** My figure had
+  not subtracted every gated id there, including what my own RESERVED
+  brief covered. `docs/ECONLIB_COMPLETION_PLAN.md:78` carries the same stale figure.
 - **`unctad_cpia` is a LIVE array member**, not comment-only as my new `util.ts` comment claimed.
   Only `ksh` is comment-only. Corrected in place.
 
@@ -524,15 +524,15 @@ non-demoting note. Review-hardened: the SDMX marker requirement (a plain-text 20
 must fall structural, never park silently for years), the ingester's split path fixed too, and
 the tests now drive the REAL `run_giant` (the first branch test ran zero lines of it). 11/11.
 
-## A gated source's publisher refused; recorded, deleted, and a loaded gun defused (2026-08-31, `5aa5a1d97` + `9217c25f0`)
+## Licence refusal handling: recorded, holdings deleted, and a loaded gun defused (2026-08-31, `5aa5a1d97` + `9217c25f0`)
 
-Written refusal from the publisher recorded VERBATIM in the canonical licence file; trail row
-DENIED; reply draft for Ahmed was kept under `docs/briefs/` (since removed under the owner's order). Nothing user-facing changed
-(already denylisted, 0 catalogue rows). The dormant holdings (23 MB store, fetcher, ingester)
+Written refusal recorded VERBATIM in the canonical licence file and marked DENIED in the licence
+trail. Nothing user-facing changed
+(already denylisted, 0 catalogue rows). The dormant holdings (stored data and code)
 deleted after their adversarial review — measured clean in every place a series lives first,
 including the reviewer's two additions (uppercase R2 prefixes; D1 `source_counts`, the R489
 fifth place my brief missed). Resurrection paths closed (capability matrix + classifications
-stripped; runbook regenerated). And the reviewer found `tools/purge_unpermitted_r2.py` still
+stripped; runbooks regenerated). And the reviewer found `tools/purge_unpermitted_r2.py` still
 naming SERVED sources (vdem, wid) in a "gated, no permission" purge list — one re-run away
 from deleting served data; it now refuses loudly until its list is re-derived and reviewed.
 
