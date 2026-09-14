@@ -3,7 +3,7 @@
 **Status:** PLAN, data-backed by a full-catalog scan on 2026-06-27. Execution is
 gated on official-label fetches + adversarial audit (see §4) — NOT rushed overnight,
 because composing wrong official-looking titles is worse than honest raw keys (the
-wave-2 `GATED` rejection is the cautionary case). Companion to
+wave-2 title rejection is the cautionary case). Companion to
 [BROADENING.md](BROADENING.md) follow-up #1 and [TITLE enrichment waves 1–2].
 
 ## 1. The gap (measured, full catalog — not sampled)
@@ -23,11 +23,10 @@ api.imf.org. So every cluster below needs an external official-label fetch:
 | **IMF SDMX** | ~30 `imf_*` (gfsssuc 36.9k, gfsfalcs 20.2k, fsire 18.6k, psbsfad 14k, fas 14k, pgi 8.9k, bopagg 7.8k, …) | ~190k | api.imf.org SDMX 2.1 DSD/codelists (`dataflow/IMF.STA/<CODE>?references=all`). **Proven**: 4 GFS siblings already done this way. |
 | **UNCTAD** | ~40 `unctad_*` (tabbapotta 29.4k, gdpgbtoevbkoeatasa 21.2k, sbtisvsaga 7.9k, …) | ~150k | UNCTADstat SDMX / data API dimension labels |
 | **FAO** | ~25 `fao_*` (fo 16.7k, ga 15k, ge 11.8k, gt 10.5k, …) | ~120k | FAOSTAT definitions API (element/item/area codelists) |
-| **WTO** | `wto_hs_a_00{10..40}` (6×~21.8k), `wto_its_mtv_*` | ~140k | WTO HS product-code descriptions + WTO API |
 | **UNESCO** | unesco_inno 18.9k, film 8.5k, dem 7.1k, cltt 6.2k | ~41k | UIS SDMX codelists |
-| **research / indices** | several GATED sources, fsi_fundforpeace, idb, oxcgrt, ggdc, ipea, yale/epi-adjacent | ~60k | each dataset's own codebook (heterogeneous) |
-| **central banks** | boc 12.9k, bundesbank 6.9k, rba 3.8k, snb, several GATED sources, riksbank, cnb, bcb, bcrp, nyfed, GATED, ofr | ~40k | each CB's series-name API/dictionary |
-| **other** | ei_statreview 18.5k, GATED, edgar_jrc 3.7k, comtrade, stats_nz, insee_sdmx | ~40k | per-source metadata |
+| **research / indices** | fsi_fundforpeace, idb, oxcgrt, ggdc, ipea, yale/epi-adjacent | ~60k | each dataset's own codebook (heterogeneous) |
+| **CB feeds** | boc 12.9k, bundesbank 6.9k, rba 3.8k, snb, riksbank, cnb, bcb, bcrp, nyfed, ofr | ~40k | each CB's series-name API/dictionary |
+| **other** | ei_statreview 18.5k, edgar_jrc 3.7k, comtrade, stats_nz, insee_sdmx | ~40k | per-source metadata |
 
 (Counts from the full scan; cluster subtotals are the sum of the per-source raw counts.)
 
@@ -43,9 +42,9 @@ invent a label.
 ## 4. Adversarial audit (REQUIRED gate before any apply)
 Independent verifier per source: re-checks a sample of composed titles against the
 fetched codelists — every dimension code maps to its claimed label, **units are
-correct** (the GATED lesson: A gated source milex is millions, not "US$ billions"; check base
+correct** (the wave-2 lesson: a series held in millions was labelled "US$ billions"; check base
 year), country/area names match. A source is applied ONLY with zero audit defects;
-flagged sources are fixed or left raw. This is why wave-2 correctly did NOT ship GATED.
+flagged sources are fixed or left raw. This is why wave-2 correctly did NOT ship the flagged source.
 
 ## 5. Execution shape (ultracode workflow, when run)
 `pipeline(rawSources, extract→adversarialAudit)`; apply only confirmed → catalog.db →
