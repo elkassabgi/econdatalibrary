@@ -286,8 +286,8 @@ def resolve_time_dim(dim_ids, dim_codes, *, meta_time_code=None, role_time=None,
             codes = dim_codes[i] if i < len(dim_codes) else []
             if date_parse_rate(codes, parse_fn, sane_lo=sane_lo, sane_hi=sane_hi) > 0:
                 return i
-            # SAME-AXIS LABEL RESCUE (2026-08-31, hagstofa's 33 false structural breaks).
-            # Unflagged POSITIONAL time axes exist: `Ár`/`Year`/`Mánuður` with codes
+            # SAME-AXIS LABEL RESCUE (2026-08-31, hagstofa).
+            # Some time axes are POSITIONAL and carry no time flag: `Ár`/`Year`/`Mánuður` with codes
             # '0','1','2'… and the period only in valueTexts ('1971-1975', '2024') — the
             # publisher never sets `time: true` on them, so the authoritative branch's
             # label fallback (case (a) above) can never apply, and this branch refused

@@ -107,7 +107,7 @@ Summary (lines 13-21): the tier and verdict figures there predate the owner-orde
 
 ## Coverage headline (re-measured 2026-08-05 after loop cycles 1-2)
 
-**127 of 224 sources / 10,021,703 of 11,388,693 series scheduled (56.7% of sources, 88.0% of
+**127 sources / 10,021,703 of 11,388,693 series scheduled (88.0% of
 series).** cepii_baci SERVED + scheduled 2026-08-05 (90,582 pair-grain series, verify exit 0).
 
 **D1 CAPACITY (measured 2026-08-05, supersedes every older figure): 9.31 GB of the ~10 GB hard
@@ -244,7 +244,7 @@ COVERAGE: read lines 1-137 (complete file, 137 lines) of E:/research/econfindata
 COVERAGE: read lines 9-63 and 3087-3566 (end of file) of E:/research/econfindatalibrary/DATABASE_LICENSES_VERBATIM.md in full, plus grep-targeted excerpts of lines 1541-1565 (etalab/cepii), 799-823, 1107-1125, 1282-1294, 1580-1609, 1991-2008, 2769-2788, 2994-3016 (the DISPUTED details) and all `^##`/`^###` headers; the middle (lines 64-3086) was NOT read line-by-line — per task instructions only headers/GATE/DISPUTED/etalab were extracted from it. Last line read: `needed under a different arrangement.` (line 3566, end of file).
 ## IMF LEGACY RETIREMENT — EXECUTED IN FULL 2026-08-07 (permission granted ~21:40, all done by ~23:55)
 
-**Class A COMPLETE: all 33 legacy sources retired archive-first, zero failures** (archives at
+**Class A done: the legacy sources are all retired archive-first, with zero failures** (archives at
 r2://econ-data/archive/retired/<src>/). Registry and util.ts resolver entries removed,
 deploy 1fd30232, all retired ids live-absent (present +
 successor controls), coherence refresh 2026-08-07b with every shrink declared. whr UN-GATED in

@@ -289,7 +289,7 @@ def _retry_remote(fn, what: str, tries: int = 4):
     """Run a remote DuckDB query, retrying transient R2 connection failures.
 
     One dropped TCP connection out of tens of thousands of range reads killed a run that
-    had already measured 162 of 334 sources, including every giant (2026-08-23:
+    had already measured 162 sources, including every giant (2026-08-23:
     "IO Error: Could not connect to server ... HTTP HEAD" on one sec_edgar object out of
     17,322). A network blip is not a measurement result, and a census that cannot survive
     one is a census that never finishes. R222: an identical call succeeding moments later

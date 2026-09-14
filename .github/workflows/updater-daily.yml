@@ -355,7 +355,7 @@ jobs:
         # repairing. orchestrate.py:665 queues EVERY re-derived id with no change detection,
         # so a sync that COMPLETES pushes a mean of 42,046 ids per run = 85 FTS scans =
         # ~$0.88/run in reads, ~2.86 runs/day => ~$75/month reads + ~$11/month writes, for
-        # rows D1 already holds: measured 0 of 322 sources short, D1 +285 rows vs local.
+        # rows D1 already holds: measured 0 sources short, D1 +285 rows vs local.
         # Today's FTS rebuild cut the per-scan constant 2.30x (23,843,482 -> 10,348,426),
         # projecting the failing 46-52 s chunks to ~20-23 s — so this step may repair ITSELF
         # on the next run and start spending ~$86/month INVISIBLY, because it is

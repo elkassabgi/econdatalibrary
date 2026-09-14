@@ -17,9 +17,9 @@ mlist = [p['source_id'] for p in mat['profiles']]         # step 2 (profiles is 
 
 | What | Count |
 |---|---|
-| `updater/registry.yaml` `sources` entries | **130** (130 unique source_ids, zero duplicates) |
+| `updater/registry.yaml` `sources` entries | measured on the date above (unique source_ids, zero duplicates) |
 | `UPDATE_CAPABILITY_MATRIX.json` `profiles` entries | 133 list rows |
-| ... of which unique `source_id`s | **129** |
+| ... of which unique `source_id`s | measured on the date above |
 | Matrix metadata `profiled` / `expected` fields | 133 / 133 (counts script-profile ROWS, not sources — misleading, see below) |
 
 ## Set diff and add-or-drop decisions (one line each)
@@ -30,15 +30,15 @@ mlist = [p['source_id'] for p in mat['profiles']]         # step 2 (profiles is 
 
 **In matrix, NOT in registry (0):** none — every profiled source has a registry entry.
 
-## Why the matrix says 133 but contains 129 sources
+## Why the matrix's row count is not its source count
 
 Some sources were profiled once **per legacy ingest script**, producing two profile rows each (not a set-diff issue; each pair belongs to one registry source, no add/drop needed).
 
-So: 129 unique sources plus their doubled rows = 133 rows; 129 unique + `sec_edgar_xbrl` (post-split, never profiled) = 130 registry sources. Every prior number now traces: "133" = script-profile rows, "129" = unique profiled sources, "130" = registry sources.
+So: the unique sources plus their doubled rows make up the matrix rows, and the unique sources plus `sec_edgar_xbrl` (post-split, never profiled) are the registry sources. Every earlier figure traces to script-profile rows, to unique profiled sources or to registry sources.
 
 ## Reconciled result
 
-**`EXPECTED_SOURCE_COUNT = 130`** — pinned in `updater/config.py` and enforced by
+**`EXPECTED_SOURCE_COUNT`** — pinned in `updater/config.py` and enforced by
 `registry.validate(reg, expected_count=...)` in `updater/orchestrate.py` (per honesty
 rule §5.6: measured, never copied from a doc). Adding or retiring a source requires
 re-running the procedure above and updating `config.py` + this file in the same commit.

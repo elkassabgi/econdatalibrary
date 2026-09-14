@@ -4,7 +4,7 @@ Made the uncataloged uniform-long sources discoverable + bundleable via one **ge
 resolver** (`<source>:<series_key|series_id>`) — no per-source resolver code needed.
 
 ## Result
-- **Catalog: 33 → 191 sources, 34,368 → 1,271,879 series.** 99.9% carry a real
+- **Catalog: more sources, 34,368 → 1,271,879 series.** 99.9% carry a real
   min/max obs_date range (from the data, not fabricated). Frequency taken from a
   freq/frequency column where the source has one, else null. Title = the native key
   (no fabricated titles — see the enrichment follow-up).

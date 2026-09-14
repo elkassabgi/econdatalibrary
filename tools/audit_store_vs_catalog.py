@@ -309,8 +309,8 @@ DECLARED_GRAINS = ("flow", "dot-table", "file", "table", "group")
 def denylisted() -> set:
     """Sources deliberately GATED: they answer 451 and are hidden from the catalogue.
 
-    Gated sources are kept out of the catalogue and out of R2 BY DECISION - the
-    2026-07-22/23 licence purge. Reporting any of them as UNCATALOGUED without saying so invites the
+    The ids are read from NON_REDISTRIBUTABLE in api/worker/src/denylist.ts (gated BY DECISION, the
+    2026-07-22/23 licence purge). Reporting any of them as UNCATALOGUED without saying so invites the
     reader to conclude data was forgotten, which is the error this function exists to stop:
     on 2026-09-06 I wrote that gated stores were "a dead store directory nothing owns", from a
     registry lookup, when they sit in this

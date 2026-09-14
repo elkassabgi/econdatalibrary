@@ -11,8 +11,7 @@ passes BEFORE this runs and cannot tell success from doing nothing.
 The real defect is STALENESS, not emptiness. 2,898 FFFD keys have a clean twin that is both
 catalogued and in the store, so the old decode has been posting fresh observations into an
 orphan key while the SERVED twin froze — 1,847 catalogued keys are measurably stale. Clearing
-these vintages makes the fixed decoder (commit 25178593a; the docstring previously cited
-7b8ac3900, which is in no branch) re-fetch those tables so the fresh observations land on the
+these vintages makes the fixed decoder re-fetch those tables so the fresh observations land on the
 served key instead.
 
 KNOWN COST, disclosed rather than discovered later: roughly 2,595 of the FFFD keys have no

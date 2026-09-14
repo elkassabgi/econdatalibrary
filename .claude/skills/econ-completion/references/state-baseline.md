@@ -9,7 +9,7 @@ All figures dated 2026-08-30, instruments named. **Re-measure before acting** (R
 | Served sources | 322 | `py tools/audit_schedule_coverage.py` |
 | Catalogued series | 13,486,342 | audit + PK-range sweep (agree exactly) |
 | Served observations | 33,908,707,379 | `logs/stats-2026-08-26.json` |
-| Scheduled | 270 of 322 sources; 13,148,499 of 13,486,342 series (97.5%) | audit |
+| Scheduled | 270 sources; 13,148,499 of 13,486,342 series (97.5%) | audit |
 | Unscheduled = archival | 52 sources / 337,843 series; **actionable: 0** | audit |
 | Local catalogue | 349 source rows (322 with series + 27 empty); 71 licence rows; 11.91 GB | `catalog.db` |
 | Local store | 345 GB; 98,785 files; 430 dirs | os.walk |
@@ -36,7 +36,7 @@ D1 reads are ~free ($1/B row, 25B included); **D1 writes are $1/M**; **R2 Class 
 - API host: `https://econdl-api.elkassabgi.workers.dev`. `api.econdatalibrary.com` is NXDOMAIN; `econdatalibrary.com/v1` returns the site's index.html — never verify API behaviour against those.
 - `noaa` is sharded into `econ-catalog-climate`; global counts must merge both DBs or silently drop 3.1M rows.
 - `/v1/stats` serves the **July census** (79.8B obs / 7.73B series) from `_aqueduct/stats.json`; the honest measured store is 33.9B / 3.90B. Publication is RESERVED.
-- Scheduler count: FOUR paths (registry `live:true` 229 via updater-daily; updater-heavy matrix 34; sec-edgar-daily; `run_local_heavy.ps1` on `run_location: local` 29). The union is 272 of 282 registry entries; 10 are unscheduled; `EXPECTED_SOURCE_COUNT=282` must move with any registry edit or every run refuses.
+- Scheduler count: FOUR paths (registry `live:true` 229 via updater-daily; updater-heavy matrix 34; sec-edgar-daily; `run_local_heavy.ps1` on `run_location: local` 29). The union is 272 registry entries; 10 are unscheduled; `EXPECTED_SOURCE_COUNT` must move with any registry edit or every run refuses.
 - `upstream_vintage` advances only on clean success; a `partial` never sets `last_success_utc`; `series_cursors` drive the CSV derive; `CURSOR_CAP=50,000` — an exact-50,000 count is a cap until proven otherwise.
 
 ## Open-work register (the plan's W1–W7, one line each)

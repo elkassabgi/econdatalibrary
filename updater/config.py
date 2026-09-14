@@ -19,19 +19,19 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 # never copied from a doc (honesty rule §5.6). Adding or retiring a source requires
 # re-measuring and updating both files in the same commit; orchestrate.run_once()
 # refuses to run when the registry disagrees.
-# 2026-07-03: 130 unique source_ids (the capability matrix's "133" is script-profile
+# 2026-07-03: unique source_ids counted (the capability matrix's figure is script-profile
 #   ROWS; full diff in updater/REGISTRY_RECONCILIATION.md).
-# 2026-07-06: +3 -> 133. IEP granted CC BY-NC-SA 4.0 non-commercial re-hosting, so
+# 2026-07-06: IEP granted CC BY-NC-SA 4.0 non-commercial re-hosting, so
 #   gti (Global Terrorism Index), ppi (Positive Peace Index) and etr (Ecological
 #   Threat Report) were added alongside gpi (which was already counted; its dead
 #   URLs were repaired with the granted IEP source). See [[project_redistributability]].
-# 2026-07-22: -> 123. Sources we are NOT permitted to re-host were purged from
+# 2026-07-22: Sources we are NOT permitted to re-host were purged from
 #   the catalog, but the crawler kept fetching them daily (ids not repeated here).
 #   Crawling data we can never serve wastes
 #   the run, and for the providers who declined us in writing it means hitting their API
 #   every day after they said no. Removed from registry.yaml; the ingest scripts stay on
 #   disk so any future permission is a re-add, not a rewrite.
-# 2026-07-23: -> 113. Ahmed's ruling: permission emails went out
+# 2026-07-23: Ahmed's ruling: permission emails went out
 #   ~2026-07-08 and two weeks of silence is a NO. Sources we may not host -- refused,
 #   silent, or never assessed -- are DELETED, not gated, and must stop being crawled or
 #   the daily run just re-uploads them (ids not repeated here).
@@ -39,7 +39,7 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   run would have re-uploaded to R2 exactly what the purge deleted.
 #   Also the same day: gated sources with no adapter -- we may not host them, so building a
 #   fetcher would be work in service of data we must delete (ids not repeated here).
-# 2026-07-28: +7 -> 112. IMF DIRECT. Seven datasets we were relaying through
+# 2026-07-28: IMF DIRECT. Seven datasets we were relaying through
 #   an aggregator relay now come from api.imf.org itself: imf_fdi_direct, imf_fas_direct,
 #   imf_world_direct, imf_afrreo_direct, imf_apdreo_direct, imf_cofer_direct,
 #   imf_whdreo_direct. ADDITIONS, not replacements — IMF retired IFS and re-keyed
@@ -51,7 +51,7 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   This guard worked exactly as intended — it refused every run the moment the
 #   count moved, which is why the number is ASSERTED here and not inferred from the
 #   file it is meant to protect.
-# 2026-07-28: 112 -> 114. imf_hpdd (191 series) and imf_fiscaldecentralization
+# 2026-07-28: imf_hpdd (191 series) and imf_fiscaldecentralization
 #   (8,398) were SERVED and downloadable with NO registry entry at all — never
 #   attempted, so they could not even go stale. IMF had renamed their flows
 #   (HPDD -> HPD, FISCALDECENTRALIZATION -> FD) and an exact-id lookup read the miss
@@ -62,7 +62,7 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   Eight more sit behind the same renames (imf_psbsfad, imf_pctot, imf_bopagg,
 #   imf_gender_*, imf_pgi, imf_pgcs, imf_unsdg_imf_inputs — 36,390 series); they are
 #   deliberately NOT registered yet because each needs that same proof first.
-# 2026-07-28 (later): 114 -> 115. fao_qcl, the first of the FAO family to be wired.
+# 2026-07-28 (later): fao_qcl, the first of the FAO family to be wired.
 #   ALL 25 fao_* sources (136,754 series) are served and downloadable with no
 #   registry entry — never attempted, exactly like the IMF ten. The family hid
 #   behind the registry's separate `faostat` entry, which is a DIFFERENT source.
@@ -70,7 +70,7 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   20,238 published ids reproduce exactly, values agree 92.22% across 988,719
 #   shared points, and upstream carries 78,944 series to 2024 against our 20,238
 #   to 2022. The remaining 24 follow one at a time, each proved the same way.
-# 2026-07-28 (later still): 115 -> 119. fao_fo, fao_pp, fao_oa, fao_et join fao_qcl.
+# 2026-07-28 (later still): fao_fo, fao_pp, fao_oa, fao_et join fao_qcl.
 #   Of the 12 fao_* sources whose code still matches a live FAOSTAT dataset, exactly
 #   five reproduce their published ids cleanly (96-100%) and are repaired in place;
 #   the other seven are REFUSED by the prover rather than shipped (gt 27.2%, rp
@@ -79,21 +79,21 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   and reports success. The remaining 13 fao_* sources are old FAOSTAT domains that
 #   were consolidated upstream (QL+QP+QA merged into QCL; the old emissions domains
 #   into the Agrifood-systems family) and need their own mapping work.
-# 2026-07-28 (final): 119 -> 121. fao_qa and fao_qp, recovered from a dataset they
+# 2026-07-28 (final): fao_qa and fao_qp, recovered from a dataset they
 #   were CONSOLIDATED INTO. FAOSTAT merged QL, QP and QA into QCL, and a literal key
 #   comparison against QCL matched 0% — because our ids are item.area.element where
 #   QCL's own are element.area.item. Same three codes read backwards; the apparent
 #   absence was a shape mismatch, not missing data (R75 again). The permutation
 #   search recovers them at 99.2% and 98.5%. fao_ql (84.3%) and fao_ge (11.1%) are
 #   REFUSED — a partial template forks the id space silently.
-# 2026-07-28: 121 -> 122. wid — the largest single unlock in the library's history:
+# 2026-07-28: wid — the largest single unlock in the library's history:
 #   124,367,162 observations across 2,465,197 series that were held locally and
 #   served to NOBODY, because WID publishes no licence text and re-hosting on an
 #   assumption was not acceptable. Resolved by reading WID's own rel="license" link
 #   (CC BY-NC-SA 4.0) plus written permission dated 2026-07-27. The permission came
 #   with a condition — "keep the most updated data sources" — which is why a fetcher
 #   was written rather than just publishing the snapshot we already had.
-# 2026-07-29: 122 -> 123. unesco_dem — it HAD no registry entry at all, which is why
+# 2026-07-29: unesco_dem — it HAD no registry entry at all, which is why
 #   it never updated: the orchestrator only ever iterates registered units, so an
 #   unregistered source is not "failing", it is invisible. Its 7,080 series came in
 #   through the aggregator-relay bulk ingest and froze when the relay stopped re-indexing
@@ -103,7 +103,7 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   and therefore still frozen; the current UIS API exposes too few of their indicator
 #   codes (5.1%, 0%, 1.3%, 0%) to rebuild them from this endpoint, so they need a
 #   different route (bulk downloads / SDG database), not a registry line.
-# 2026-07-29: 123 -> 125. unesco_natmon + unesco_sdg — 2,610,984 observations across
+# 2026-07-29: unesco_natmon + unesco_sdg — 2,610,984 observations across
 #   199,661 series that were in the local store and hosted NOWHERE: no catalog rows,
 #   no objects on R2, a denylist entry, and no registry unit, so nothing could even
 #   report them as missing. Both rebuild exactly from the live UIS API (natmon: 420 of
@@ -114,7 +114,7 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   indicator codes exist in the current UIS API, so it cannot be kept current from
 #   this endpoint and hosting it would mean publishing a 2019 snapshot that can never
 #   update. Needs a different route or an explicit frozen-archive decision.
-# 2026-07-30: 125 -> 134, plus a warning about THIS TRIPWIRE'S OWN FAILURE MODE. Nine IMF
+# 2026-07-30: A warning about THIS TRIPWIRE'S OWN FAILURE MODE. Nine IMF
 #   direct-from-api.imf.org sources were added across two commits — the first (imf_fsic_direct,
 #   imf_fsibsis_direct, imf_fsicdm_direct: the Financial Soundness family) and b25e9c5 (imf_gfsbs_direct,
 #   imf_gfscofog_direct, imf_gfssfcp_direct, imf_gfssoef_direct, imf_gfssoo_direct,
@@ -125,7 +125,7 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   with the 06:00 cron still pending, so no scheduled run actually hit it.
 #   The tripwire is worth keeping — it is what stops sources being added silently — but it has
 #   to fail at PUSH time rather than at 06:00 UTC. tests/test_registry_count.py now does that.
-# 2026-07-30: 134 -> 137. who_hwf + who_rs + who_sdg (34,788 series). These were SERVED and
+# 2026-07-30: who_hwf + who_rs + who_sdg (34,788 series). These were SERVED and
 #   downloadable with no registry entry, so they had never once been attempted. They are
 #   registered against the aggregator relay rather than WHO's own API for a specific, measured
 #   reason: our ids ARE the relay's series codes (WHO_HWF:HWF_0001.AFG.A), and its WHO index was re-run
@@ -134,135 +134,135 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   for those a relay-backed fetcher would run nightly, succeed, and transfer nothing.
 #   Id reproduction was checked as a FULL set comparison on WHO/HWF: 4,421 upstream codes vs
 #   4,421 published ids, 4,421 exact, 0 missing either direction.
-# 2026-07-30: 137 -> 138. boc (Bank of Canada Valet, 12,862 series / 2.73M obs). It had no
+# 2026-07-30: boc (Bank of Canada Valet, 12,862 series / 2.73M obs). It had no
 #   ingest script AND no registry entry, so it had never had an updater path at all. Registered
 #   against Valet directly, not the relay: Valet's own series names ARE our series_keys, verified
 #   as a full set comparison (12,862 of 12,862 exact, 0 missing upstream). The relay's BOC provider
 #   was last indexed 2025-02-15 and, more to the point, a matching provider NAME is not
 #   provenance (the bea trap: a matching provider name in an aggregator's index).
-# 2026-07-30: 138 -> 139. snb (Swiss National Bank, 12 cubes / 762 series / 303,358 obs). No
+# 2026-07-30: snb (Swiss National Bank, 12 cubes / 762 series / 303,358 obs). No
 #   ingest script and no registry entry, so it had never had an updater path. Each cube CSV
 #   carries its own PublishingDate, which is a publisher-supplied per-cube vintage - better than
 #   any HTTP validator. Keys and dates both verified at 100% against the existing store before
 #   wiring (762/762 keys, 303,358/303,358 rows).
-# 2026-08-04: 141 -> 144. imf_bop_direct, imf_irfcl_direct, imf_cpi_direct — the three IMF
+# 2026-08-04: imf_bop_direct, imf_irfcl_direct, imf_cpi_direct — the three IMF
 #   datasets pulled first-hand from api.imf.org (SDMX 2.1) instead of a relay. Each has a
 #   hand-pinned entry because the _direct family is absent from UPDATE_CAPABILITY_MATRIX.json,
 #   and each vintage_signal records a CALLED value (BOP 21.0.0, IRFCL 12.0.0, CPI 5.0.0).
 #
 #   I ADDED THE ENTRIES AND NOT THIS NUMBER, AND THAT TOOK THE WHOLE UPDATER DOWN. registry
 #   validation runs before any source does, so from that commit until this one every run — cloud
-#   and local — exited 1 at "expected 141 sources, found 144" having fetched NOTHING. It is not
+#   and local — exited at the registry count check, having fetched NOTHING. It is not
 #   a warning and it does not skip the offending entries; it refuses the run. The guard is right
 #   (a silently-appearing source is exactly what it exists to catch); updating it is part of
 #   adding a source, not an afterthought. Ledger R347.
-# 2026-08-05: +imf_imts_direct (IMTS v1.0.0 called live; DOTS successor) -> 145
-# 2026-08-05: +imf_pip_direct (PIP v5.0.0 called live; CPIS successor) -> 146
-# 2026-08-05: +imf_dip_direct (DIP v12.0.1 called live; CDIS successor) -> 147
+# 2026-08-05: +imf_imts_direct (IMTS v1.0.0 called live; DOTS successor)
+# 2026-08-05: +imf_pip_direct (PIP v5.0.0 called live; CPIS successor)
+# 2026-08-05: +imf_dip_direct (DIP v12.0.1 called live; CDIS successor)
 # 2026-08-06: +imf_mcdreo_direct (MCDREO v8.0.0 called live; agency IMF.MCD; Class B1 of the
-#   authorized retirement plan — Ahmed's "match the publisher" ruling resolves the 57% scope) -> 172
+#   authorized retirement plan — Ahmed's "match the publisher" ruling resolves the 57% scope)
 # 2026-08-06: +imf_fm_direct (FM v5.0.0 called live; agency IMF.FAD, NOT IMF.STA — read from the
 #   /dataflow catalogue with MCDREO as the present-control. Last genuinely-missing Class B1 build;
 #   the direct scope is ~9% of relay-era imf_fm, resolved by the same "match the publisher"
-#   ruling. Ignore the dated FM_2025_OCT_VINTAGE flow) -> 173
+#   ruling. Ignore the dated FM_2025_OCT_VINTAGE flow)
 # 2026-08-06: +whr RE-ADDED (cycle 35, Ahmed's "trim whr"): the Gallup/WHR written grant covers
 #   exactly the Figure 2.1 workbook, and the fetcher is rewritten to the PUBLISHER's own file
 #   host (files.worldhappiness.report, real ETag/CL validators) — never a mirror (R215). New keys
-#   FIG21:* in whr_fig21.parquet; legacy mirror-era rows stay unserved. -> 174
+#   FIG21:* in whr_fig21.parquet; legacy mirror-era rows stay unserved.
 # 2026-08-06: +norgesbank RE-ADDED (cycle 37, Ahmed's answer #5): purged 2026-07-23, then
 #   audit-CLEARED (NLOD 2.0) and authorized to serve; entry recovered from git history;
-#   first run backfills the purged store (API probed live). -> 175
+#   first run backfills the purged store (API probed live).
 # 2026-08-06: +unsdg RE-ADDED (cycle 38, same authorization): UNdata terms grant redistribution
 #   verbatim; fetcher reworked with rotation (R190) + chunked merges (R249), self-bounds at
-#   200 codes/run; 4 rotated runs backfill all 713 (API live, release 2026.Q2.G.01). -> 176
+#   200 codes/run; 4 rotated runs backfill all 713 (API live, release 2026.Q2.G.01).
 # 2026-08-07: -imf_hpdd, -imf_fiscaldecentralization RETIRED (Class A quartet, Ahmed's
 #   permission granted this hour): both fully absorbed by their EXACT-count direct successors
 #   (imf_hpd_direct 191, imf_fd_direct 8,398); data plane retired archive-first via
-#   tools/retire_source.py, D1+R2 clean. psbsfad/pctot had no registry entries. -> 174
+#   tools/retire_source.py, D1+R2 clean. psbsfad/pctot had no registry entries.
 # 2026-08-07: -imf_fsi, -imf RETIRED (Class A batches 2-3 complete — ALL 33 legacy IMF sources
 #   retired archive-first tonight on Ahmed's permission; only these two of the 29 batch-2/3
 #   ids had registry entries). The Financial Soundness successors = the served direct trio; 'imf' was the
-#   never-promoted 131-id entry. -> 172
+#   never-promoted 131-id entry.
 # 2026-08-08: +unctad_trademerchtotal — FIRST UNCTAD successor on the publisher's own data
-#   API (#70); served 1,220 series same day, keys are CI secrets. -> 173
+#   API (#70); served 1,220 series same day, keys are CI secrets.
 # 2026-08-08: +unctad_trademerchgr — successor #2 (period-coded axis, |SPAN=<n>Y design);
-#   served 1,754 series same day. -> 174
-# 2026-08-08: +unctad_trademerchbalance — successor #3; served 610 series same day. -> 175
+#   served 1,754 series same day.
+# 2026-08-08: +unctad_trademerchbalance — successor #3; served 610 series same day.
 # 2026-08-08: +unctad_merchvolumequarterly — successor #4 (Quarter axis taught);
-#   1,680 series. -> 176
-# 2026-08-08: +unctad_termsoftrade — successor #5; 2,328 series. -> 177
-# 2026-08-08: +unctad_tradepriceindicesq — successor #6; 258 series. -> 178
+#   1,680 series.
+# 2026-08-08: +unctad_termsoftrade — successor #5; 2,328 series.
+# 2026-08-08: +unctad_tradepriceindicesq — successor #6; 258 series.
 # 2026-08-08: +unctad_{concentdiversindices,concentstructindices,rca,tariff,
-#   merchtheilindices} — sized-then-served batch, 81,781 series. -> 183
+#   merchtheilindices} — sized-then-served batch, 81,781 series.
 # 2026-08-08: +unctad_totandcomservicesquarterly + the 6 commodity-price datasets
 #   (ucpia/ucpim/commoditypriceindicesa/m/commoditypricea/m; monthly 'YYYYM##'
-#   format taught) — 11,793 series. -> 190
+#   format taught) — 11,793 series.
 # 2026-08-08: +12 tiny successors (ifftrademisinvoicing, ictproductionsector,
 #   iffcrimesrelated, creativeservgroupe, sdgporfvol, contportthroughput,
 #   shipscrapping, vesselvaluebyownership, shipbuilding, vesselvaluebyregistration,
-#   biotrademerchgdpshare, sdglulfrg) — 2,318 series. -> 202
+#   biotrademerchgdpshare, sdglulfrg) — 2,318 series.
 # 2026-08-08: +12 wave-3 successors (biotrademerchprodconcent, curraccbalance,
 #   cpia, lscim, gni, inclusivegrowth, lsci, portcallsarrivals[+_S semiannual],
-#   remittances, poptotal, popdependency) — 8,377 series. -> 214
+#   remittances, poptotal, popdependency) — 8,377 series.
 # 2026-08-08: +12 wave-4 successors (ictuselocation, creativeservindivtot, ftri,
 #   seafarers, plsci, portcalls[+_S], gdptotal, genderdomesticvalueadded,
-#   tradeservict, wastewatertreatment, fdiflowsstock) — 16,785 series. -> 226
+#   tradeservict, wastewatertreatment, fdiflowsstock) — 16,785 series.
 # 2026-08-08: +12 wave-5 successors (pci, seabornetrade, goodsandservicesbpm6,
 #   goodsandservbalancebpm6, govexpenditures, gendertradableindustries,
 #   environmentalgoodsrca, goodsandservtradeopennessbpm6, oceanservices,
 #   biotrademerchmarketindices, merchantfleet, ictuseenterprsize) —
-#   61,632 series. -> 238
+#   61,632 series.
 # 2026-08-08: +11 wave-6 successors (gdpcomponent, ictuseeconactivity[+isic4],
 #   tradefoodproccat pair, popagestruct, fleetbeneficialowners,
 #   environmentalgoodstrade, digitallydeliverableservices, lsbci,
 #   exchangeratecrosstab) — 261,961 series; the mechanical band is fully
-#   ingested. -> 249
+#   ingested.
 # 2026-08-08: +3 gate cases at DOT-prefix TABLE grain (intratrade 247 ids /
 #   376,909 series; tradeservcattotal 562 / 101,079; biotrademerchshare 544 /
 #   144,552 — 1,353 D1 rows for 622,540 series, so no headroom conflict with
-#   the eia->wid order). -> 252
+#   the eia->wid order).
 # 2026-08-08: +unctad_biotrademerchrca (depth-1 dot-grain, 2,222 ids / 294,674
-#   series) + unctad_ecommercetotal (series grain, 33,818). -> 254
+#   series) + unctad_ecommercetotal (series grain, 33,818).
 # 2026-08-08: +the final 3 gate cases (associatedplastics 809 dot-grain ids /
 #   461,427 series; hiddenplastics 1,076 / 756,314; ecommerceinternational
 #   series-grain 9,316). ALL SEVEN six-figure gates now served; only the 13
-#   true giants remain in the family. -> 257
+#   true giants remain in the family.
 # 2026-08-08: +unctad_plasticstradebypartner — GIANT #1 at depth-2 dot-grain
-#   (1,615 ids / 1,177,515 series). -> 258
+#   (1,615 ids / 1,177,515 series).
 # 2026-08-08: +unctad_ictgoods — GIANT #2 at depth-3 dot-grain (4,608 ids /
-#   1,374,779 series). -> 259
+#   1,374,779 series).
 # 2026-08-08: +unctad_gstptradematrix — GIANT #3 at depth-2 dot-grain (18,714 ids /
-#   4,378,337 series). -> 260
+#   4,378,337 series).
 # 2026-08-08: +fao_ql — #19 fao campaign source 1: 16,997 of 20,179 ids auto-update
-#   via QCL restrict_to_published; 3,182 restructured-tail ids stay frozen (R91). -> 261
+#   via QCL restrict_to_published; 3,182 restructured-tail ids stay frozen (R91).
 # 2026-08-08: +fao_ga — #19 source 2: 7,712 of 15,018 ids auto-update from GCE
-#   (Source='FAO TIER 1' pinned); 4 dropped element classes frozen. -> 262
+#   (Source='FAO TIER 1' pinned); 4 dropped element classes frozen.
 # 2026-08-08: +fao_ge — #19 source 3: 6,209 of 11,813 ids auto-update from GLE
-#   (TIER 1 pinned, 9.5x superset restricted); 2 dropped element classes frozen. -> 263
+#   (TIER 1 pinned, 9.5x superset restricted); 2 dropped element classes frozen.
 # 2026-08-08: +fao_rp — #19 source 4: 4,504 of 5,440 ids auto-update from RP (own
-#   live domain); dropped seed-treatment/mineral-oil items frozen. -> 264
+#   live domain); dropped seed-treatment/mineral-oil items frozen.
 # 2026-08-08: +fao_ic — #19 source 5, FIRST RE-KEY: 403 series moved to Standard-LC
-#   codes (value-verified); 1,506 of 2,468 ids auto-update from IC. -> 265
+#   codes (value-verified); 1,506 of 2,468 ids auto-update from IC.
 # 2026-08-08: +unctad_creativegoodsvalue — GIANT #4 at depth-2 dot-grain (4,053 ids /
-#   5,487,666 series). -> 266
+#   5,487,666 series).
 # 2026-08-08: +fao_gb — #19 source 6: 2,899 of 6,980 ids auto-update from GCE
-#   (four-part keys carry the methodology); 5 dropped element classes frozen. -> 267
+#   (four-part keys carry the methodology); 5 dropped element classes frozen.
 # 2026-08-08: +fao_gn — #19 source 7: 3,976 of 4,761 ids auto-update from GN (own
-#   live domain); area-level tail (47 dropped areas) frozen. -> 268
+#   live domain); area-level tail (47 dropped areas) frozen.
 # 2026-08-08: +fao_gf — #19 source 8 (2nd re-key: 23 series): 819 of 2,591 ids
-#   auto-update from GF; methodology-break tail frozen. -> 269
+#   auto-update from GF; methodology-break tail frozen.
 # 2026-08-08: +fao_gt — #19 source 9: 2,858 native-gas ids auto-update from GT;
-#   AR5 re-key REFUTED by value verification (GWP-basis change), CO2eq frozen. -> 270
+#   AR5 re-key REFUTED by value verification (GWP-basis change), CO2eq frozen.
 # 2026-08-08: +fao_ep (98.7% clean from RP) +fao_gy (59.6% GCE, not RFN) +fao_gr
-#   (52.4% GCE) — #19 sources 10-12. -> 273
+#   (52.4% GCE) — #19 sources 10-12.
 # 2026-08-08: +unctad_creativegoodsgr — GIANT #5 at depth-2 dot-grain (3,986 ids /
-#   3,597,379 series; Period-axis spans). -> 274
+#   3,597,379 series; Period-axis spans).
 # 2026-08-08: +unctad_oceantrade — GIANT #6 at depth-3 dot-grain (32,374 ids /
-#   8,984,193 series — the family's largest). -> 275
+#   8,984,193 series — the family's largest).
 # 2026-08-08: +unctad_nonplasticsubststradebypartner — GIANT #7 at depth-2 dot-grain
-#   (22,079 ids / 9,298,529 series — the family's largest series count). -> 276
-# 2026-09-04: -zillow (permission_required, removed on Ahmed's instruction) -> 281
-# 2026-09-08: -> 278. The registry entries of licence-denied sources (gated, never served)
+#   (22,079 ids / 9,298,529 series — the family's largest series count).
+# 2026-09-04: -zillow (permission_required, removed on Ahmed's instruction)
+# 2026-09-08: The registry entries of licence-denied sources (gated, never served)
 #   were removed on Ahmed's order that no denied source is named or registered anywhere; their
 #   ids are deliberately not repeated here.
 EXPECTED_SOURCE_COUNT = 278

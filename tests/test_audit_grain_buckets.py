@@ -381,8 +381,8 @@ def test_zero_catalogue_rows_is_its_own_bucket_and_is_COUNTED(tmp_path):
 def test_a_gated_source_is_not_reported_as_forgotten(tmp_path):
     """R838 - the rule I broke by hand, twice in one hour, now in the instrument.
 
-    Denylisted sources are kept out of the catalogue and out of R2 BY DECISION (the
-    2026-07-22/23 licence purge). Reporting them beside genuinely forgotten data is how I came to
+    summarise() must put denylisted sources in their own bucket, excluded from the total (gated BY
+    DECISION, the 2026-07-22/23 licence purge). Reporting them beside genuinely forgotten data is how I came to
     write that gated stores were "a dead directory nothing owns" when they sit on the denylist.
 
     SIMPLIFIED after a second review: the gate is now checked BEFORE grain, at ANY catalogue row
