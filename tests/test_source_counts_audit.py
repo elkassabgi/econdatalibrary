@@ -11,8 +11,8 @@ test is for.
 The two, restated as the properties below:
 
   1. ABSENT AND ZERO ARE THE SAME THING. Comparing `cv != tv` made `None != 0` a mismatch, so the
-     first run after the source set was widened reported 27 not-yet-ingested sources
-     (cftc, gii, pxweb ...) as findings of +0 and buried the four real ones. The
+     first run after the source set was widened reported not-yet-ingested sources
+     (cftc, gii, pxweb ...) as findings of +0 and buried the real ones. The
      fix must NOT also swallow the case that matters: a source with rows and NO cache row is the
      `vdem` shape — ECONLIB_COMPLETION_PLAN.md:77, a live COUNT(*) of 783,100 rows per page view.
 

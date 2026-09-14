@@ -11,7 +11,7 @@ while the checker printed 25/25 identical.
 The same audit measured the scale from scratch (parquet footer row counts over 55,394 local
 files vs 36,972 R2 objects): local files BEHIND R2 — ilostat 952, eurostat 124,
 ember 26, boe 25, statfin 23, ssb 22, dst 21, defillama 18, ksh_stadat 15, fed_board 13,
-cso 12 — plus 79 AHEAD, with six sources diverging both ways at once.
+cso 12 — plus others AHEAD, with some sources diverging both ways at once.
 
 So per source: SYNC from the authoritative store, SAMPLE the served objects against the now
 correct mirror, and re-derive ONLY if the sample proves staleness. Sampling first matters —

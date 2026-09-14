@@ -25,9 +25,9 @@ That substitution is only safe if the range is EQUIVALENT, and the dangerous dir
 silent: a range that misses rows makes a source look smaller than it is, and one that
 over-reaches re-derives another source's series. Neither raises anything.
 
-The sharp case is a source id that is a PREFIX of another. The catalogue has 19 such pairs
+The sharp case is a source id that is a PREFIX of another. The catalogue has such pairs
 today -- `unctad_biotrademerch` against five longer siblings, `imf_fm` against
-`imf_fm_direct`, and more. All 19 are safe, and the reason is narrower than it first
+`imf_fm_direct`, and more. All of them are safe, and the reason is narrower than it first
 looks: ':' is 0x3A and ';' is 0x3B, adjacent bytes, and every one of those 19 extends with
 '_' (0x5F) or a letter (0x41+), which sort AFTER ';'.
 

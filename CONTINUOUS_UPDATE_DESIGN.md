@@ -65,7 +65,7 @@ Each strategy implements `is_due(unit,state,now)` / `detect_change(unit) -> new_
 `run(unit, since) -> Result`. Registry assigns exactly one strategy per source (per unit where they
 differ). A registry validator **fails CI** if `count != EXPECTED_SOURCE_COUNT` or any unit lacks a strategy.
 
-- **S1 `overwrite_if_changed`** (~70) — whole-table refresh gated by an upstream vintage signal
+- **S1 `overwrite_if_changed`** — whole-table refresh gated by an upstream vintage signal
   (ETag/Last-Modified, GitHub commit SHA, third-party CSV, faostat `datasets_E.json` FileRows/FileSize, bls
   sizes, bis HEAD). Re-pull + atomic overwrite **only when upstream moved**. Covers all overwrite-on-rerun
   + tiny static/annual full tables.

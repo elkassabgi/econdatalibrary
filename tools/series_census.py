@@ -138,8 +138,8 @@ def resolvable_sources() -> set:
     404 to any user who asks. Counting them in a public total would advertise data nobody can
     download.
 
-    Measured 2026-08-23: 15 sources in the bucket are not resolvable, worth 2.83B
-    observations and 177M series. cbs_nl and gus_dbw are mid-backfill,
+    Measured 2026-08-23: some sources in the bucket are not resolvable. cbs_nl
+    and gus_dbw are mid-backfill,
     edgar_13f/edgar_insider/cftc carry no series_key at all.
 
     The extraction is validated against known-served controls on every run rather than

@@ -165,8 +165,8 @@ def diff_counts(cache: dict, truth: dict, homes: dict, remote: bool) -> list:
     here were wrong when this shipped, and both were found by RUNNING it rather than reading it:
 
     ABSENT AND ZERO ARE THE SAME THING. A registered source with no series rows and no cache row
-    has simply not been ingested; comparing `cv != tv` made `None != 0` a mismatch and produced 27
-    false positives (cftc, gii, pxweb ...) that buried the four real findings on
+    has simply not been ingested; comparing `cv != tv` made `None != 0` a mismatch and produced
+    false positives (cftc, gii, pxweb ...) that buried the real findings on
     the first run. `(cv or 0)` collapses them while KEEPING the case that matters — an absent
     cache row over a source that does have rows is the vdem shape, a live COUNT(*) per page view.
 
