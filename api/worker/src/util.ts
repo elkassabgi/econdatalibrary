@@ -11,25 +11,25 @@
 import type { Env, LicenseRow, LicenseBlock } from "./types";
 
 // The 321 sources with an at-rest resolver (econdl._resolve.supported_sources()) — see the
-// 2026-09-08 note below for why the 2026-08-30 count of 323 is two higher.
+// 2026-09-08 note below for why an older count of this list was higher.
 // Measured 2026-08-30 by scanning from this declaration to its closing bracket and stripping
-// `//` and `/* */` before extracting literals: 323 distinct ids, ZERO duplicates. "191" was
-// stale by 132. Count this block WITH comments and you overcount badly (350 quoted strings by
+// `//` and `/* */` before extracting literals: distinct ids only, ZERO duplicates. "191" was
+// badly stale. Count this block WITH comments and you overcount badly (far more quoted strings by
 // that method) — the comments in here quote ids while explaining removals, so a plain
 // quoted-string count reads retired ids as members (R259).
 //   `ksh` is the comment-only one: it appears in a removal note and is NOT a member.
 //   `unctad_cpia` IS a live member, which also happens to be quoted in a comment below —
 //   do not confuse the two, as an earlier version of this comment did.
-// 2026-09-08: two ids that were ALSO in denylist.ts::NON_REDISTRIBUTABLE were removed from this
-// list — a resolver entry for a gated source is an offer the API refuses with 451 — so the 321
-// entries here are all SERVED.
+// 2026-09-08: ids that were ALSO in denylist.ts::NON_REDISTRIBUTABLE were removed from this
+// list — a resolver entry for a gated source is an offer the API refuses with 451 — so every
+// entry here is SERVED.
 // A series whose source is NOT in this set returns 501 not_migrated -- loud and
 // actionable, exactly as the dev shim does via ResolveError. KEEP IN SYNC with
 // clients/python/econdl/_resolve.py::_RESOLVERS (regenerate via supported_sources()).
 // Regenerated 2026-07-02 from supported_sources() (was a stale 33-entry list, which
 // made ~158 genuinely-migrated sources return 501 instead of the honest 502).
 export const SUPPORTED_SOURCES: readonly string[] = [
-  // zillow REMOVED 2026-08-01. Unlike the 17 removed above, this one WAS being served: 52
+  // zillow REMOVED 2026-08-01. Unlike the ids removed above, this one WAS being served: 52
   // catalogue rows, 52 derived CSVs in R2, and this listing. Zillow's Terms of Use (updated
   // 2025-10-28) are CONFIRMED permission_required and the audit's tier is RESTRICTED (keep
   // gated) — Section 5 forbids reproducing or "otherwise mak[ing] accessible on or through any
