@@ -10,7 +10,7 @@ These are the per-source decisions/risks to resolve while implementing each adap
 
 ## Open questions by strategy
 
-### extend_by_date (27)
+### extend_by_date
 - **bcb** [high]: Curated ~300-series list is hardcoded (not the full SGS catalog) - should new SGS series be auto-discovered, or is the curated list intentional and frozen?
 - **bea** [medium]: Errors are swallowed as empty [] and can silently write a 0-row group that is then marked done and skipped under --resume (data-loss-by-silence). Should the delta refactor fail loudly on empty responses rather than marking the group done?
 - **boe** [high]: Per-prefix .done resume files currently SKIP completed prefixes; for date-extend mode they must be ignored in favor of a max-obs-date check. Also confirm acceptable overlap window for the Datefrom dedup, and how often to re-run _boe_enumerate.py to catch newly added series codes.
@@ -46,7 +46,7 @@ These are the per-source decisions/risks to resolve while implementing each adap
 - **stat_slovenia** [high]: Catalog is a single flat GET cached to _catalog.json — should delta runs re-fetch it to catch newly published tables, or trust the cache?
 - **statfin** [high]: Cadence is undeclared in SCHEDULE (tables update irregularly monthly/quarterly/annual) — confirm a monthly cron is acceptable, and whether delta runs should always re-crawl the catalog to detect new tables/subjects.
 
-### bulk_snapshot_if_changed (33)
+### bulk_snapshot_if_changed
 - **bis** [high]: Two scripts share data/clean_full/bis - should CBS/LBS migrate to the SDMX ingest_bis_full.py path (enabling startPeriod deltas and removing the bulk-zip dependency), or keep the bulk-zip snapshot path as the source of record? Confirm CBS.zip/LBS.zip URLs return a usable Last-Modified header.
 - **bls** [high]: To pick up new periods on already-built surveys, the orchestrator must run _bls_build_manifest.py to refresh sizes AND pass --force (or clear *.meta.json sidecars); confirm that is acceptable cost weekly given the large refresh (~1GB+ across surveys) vs. a Current-only top-up that would need new code.
 - **cepii_baci** [high]: Vintage discovery is not automated -- the FILES dict is hardcoded to V202401b and nothing detects new releases (effectively manual today). Worth confirming a human will bump FILES, or building the CEPII-page scraper. CRITICAL: if FILES is updated but the cached raw zip is NOT cleared, the >1MB size check passes and the OLD vintage is silently reused.
@@ -76,7 +76,7 @@ These are the per-source decisions/risks to resolve while implementing each adap
 - **worldbank_wdi** [high]: A prior truncated/partial parquet is trusted forever by the skip-if-exists guard (only a row-count sanity, no integrity check) — add a vintage/row-count assertion so a bad parquet is rebuilt.
 - **zillow** [high]: Headline correctness bug: scheduled re-runs silently reuse cached raw CSVs and write 'fresh' cubes with no new months — fix by deleting/conditional-GET'ing the raw cache before this strategy can detect change reliably. Page redesign of the 'var data' object would break catalog enumeration.
 
-### overwrite_if_changed (39)
+### overwrite_if_changed
 - **barro_lee** [high]: When Barro-Lee publish a new vintage they may change file names / version prefix (BL_v3_* -> v4); the hardcoded 15-path list won't auto-discover that. Acceptable to require a human to bump the file list on a new release?
 - **bundesbank** [medium]: Does the Bundesbank per-flow endpoint actually return a reliable Last-Modified/ETag for change detection? If not, this degrades to unconditional whole-flow re-pull monthly. Also: the <1000-row auto-stub-delete re-pulls legitimately tiny flows (BBFI3 ~4.7KB) every run -- confirm intended.
 - **cbs_nl** [medium]: Wiring needed: replace the os.path.exists short-circuit with a Modified-vs-manifest comparison, and clean up the 139 stale .ckpt.json/164 .part files (resume relies on STABLE $skip order -- if upstream reorders between runs the resumed offset can double-count/drop). Note OData v3 supports $filter on Period, so a future S2 date-extend is possible but not wired.
@@ -109,10 +109,10 @@ These are the per-source decisions/risks to resolve while implementing each adap
 - **wikidata** [high]: Add a guard so a transient WDQS hiccup returning fewer entities does NOT overwrite a previously-complete cube with a smaller snapshot (require new count >= stored count, else keep old).
 - **yale_epi** [medium]: Confirm the 2026 release URL pattern when published and switch from skip-if-exists to read-existing+concat so multiple vintage years coexist; also add a retry since the no-retry single fetch can silently yield 0 obs and a moved/renamed 2024 URL would 404 to an empty file.
 
-### giant_changed_units (4)
+### giant_changed_units
 - **eurostat** [high]: Confirm the TOC txt lastUpdate field is reliably populated per code so the change-feed can drive unit-level refresh; and decide whether ingest_eurostat.py should be patched to honor a changed-codes list (its --delta currently does nothing).
 - **oecd** [high]: Does the OECD catalog (manifest.json/dataflows_all.xml) expose a reliable per-dataflow last-updated timestamp to drive change detection? If not, changed-unit selection has no clean signal and we'd fall back to periodic full or startPeriod-tail per flow — needs confirmation.
 - **statcan** [high]: .fail markers permanently suppress retries (404/BadZip/no-table) so a cube that later becomes available stays skipped until .fail is deleted — should the change-feed driven refresh also clear stale .fail markers for changed cubes?
 
-### manual_vintage (4)
+### manual_vintage
 - **gii** [high]: REQUIRES HUMAN: find a currently-live GII source and repair the URLS list. Likely candidate is the renamed/moved wipo-analytics/gii-data GitHub repo (verify its current path/branch) or the latest wipo.int wipo_pub_2000_20XX XLSX; until then the source produces zero output.

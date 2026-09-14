@@ -335,8 +335,6 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // as "distinct data" when it only meant "different key convention" — the same trap ilo/ilostat
   // set. A retirement decision is not visible in either check; it lives in git history and in
   // the absence of an ingest file (R226).
-  // (2026-08-06: a DISPUTED-licence source was delisted here — 64 residual rows deleted from
-  // catalog + D1; its denylist entry was kept.)
   // norgesbank added 2026-08-06 (cycle 37, Ahmed's authorized serve): 35,135 series /
   // 3,768,215 obs rebuilt in full from data.norges-bank.no (run 31129475260) after the
   // 07-23 purge; NLOD 2.0 CLEARED, floor pin removed the same day (see gen_denylist.py).
@@ -396,8 +394,6 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // Re-ingested direct from UIS, MISSING 0 / ORPHANED 0, values checked against parquet,
   // and un-pinned from the denylist floor on Ahmed's decision (the UIS terms are
   // publisher-wide, so their five cleared siblings above already covered them).
-  // One UIS sibling stays OUT: only 12 of its 1,230 indicator codes exist in the current UIS
-  // API, so it cannot be kept current and would be a frozen 2019 snapshot.
   // unsdg added 2026-08-07: 396 SDG indicator series that were CATALOGUED BUT NOT RESOLVABLE —
   // findable in search and a 501 on download, which is the worst of the three states to be in.
   // The data plane was already complete and nobody had flipped the flag: 396 catalogue rows
@@ -482,7 +478,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // NEEDS-REVIEW default for this source; that divergence was corrected before serving.
   "un_wpp",
   "who_sdg", "whr", "wikidata", "worldbank", "worldbank_esg",
-  "worldbank_wdi", "yale_epi", // 9 national-statistical PxWeb sources — flow-grain per-table publish (2026-07-22).
+  "worldbank_wdi", "yale_epi", // national-statistical PxWeb sources — flow-grain per-table publish (2026-07-22).
   "ssb", "stat_slovenia", "stat_latvia", "dst", "scb", "statfin", "hagstofa", "stat_estonia", "bfs",
 ];
 

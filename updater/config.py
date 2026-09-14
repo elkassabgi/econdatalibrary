@@ -110,10 +110,7 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 #   421 live indicators agree; sdg: 68,067 exact id matches). Registered live=false —
 #   they are not promoted until the data is actually SERVED, because refreshing a
 #   source nobody can download is motion without delivery.
-#   One UIS sibling (759,045 obs) is deliberately NOT registered: only 12 of its 1,230
-#   indicator codes exist in the current UIS API, so it cannot be kept current from
-#   this endpoint and hosting it would mean publishing a 2019 snapshot that can never
-#   update. Needs a different route or an explicit frozen-archive decision.
+# Needs a different route or an explicit frozen-archive decision.
 # 2026-07-30: A warning about THIS TRIPWIRE'S OWN FAILURE MODE. Nine IMF
 #   direct-from-api.imf.org sources were added across two commits — the first (imf_fsic_direct,
 #   imf_fsibsis_direct, imf_fsicdm_direct: the Financial Soundness family) and b25e9c5 (imf_gfsbs_direct,

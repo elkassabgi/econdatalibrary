@@ -18,7 +18,7 @@ millions of near-structural rows. They remain **generic-resolvable** and source-
 discoverable, just not series-level catalogued yet. Notable: insee_melodi (14.6M),
 istat, imf_ifs/mfs/irfcl/dot/cpis/cdis/bop/gfsr, vdem,
 wid, ilo, ons_uk, norgesbank, ssb, statfin, ksh_stadat, dst, unsdg, scb,
-stat_{estonia,latvia,slovenia}, un_wpp, unesco_{sci,sdg,natmon}, harvard_atlas,
+stat_{estonia,latvia,slovenia}, un_wpp, unesco_{sdg,natmon}, harvard_atlas,
 gapminder, global_findex, cso, ecb_sdmx, adb, bfs, hagstofa, cepii_gravity,
 fao_tp.
 
