@@ -183,21 +183,27 @@ if ($WhatIf) {
 # --- DO NOT RACE CI. Both writers compare-and-swap on the state ETag, so an overlap makes
 # --- one of them lose its entire run (push_state exits 2, "another writer won"). Ledger R5.
 if (-not $SkipCiCheck) {
-    $inflight = -1
-    try {
-        $runs = gh run list --workflow=updater-daily.yml --limit 5 --json status | ConvertFrom-Json
-        $inflight = @($runs | Where-Object { $_.status -ne 'completed' }).Count
-    } catch {
-        Say "WARNING: could not query CI. Re-run with -SkipCiCheck if you know it is idle."
-        exit 2
-    }
-    if ($inflight -gt 0) {
-        Say ("ABORT: " + $inflight + " updater-daily run(s) still in flight.")
+    # EVERY CLOUD STATE WRITER, AND A CRON GITHUB HAS NOT STARTED YET (tools/ci_writer_gate.py).
+    # This used to ask only whether an updater-daily run was in flight. GitHub now starts the
+    # scheduled runs hours late (06:00Z daily at 10:07-12:06Z, measured 2026-09-03..15), so on
+    # 2026-09-15 a pass started at 10:38Z with nothing in flight, the 06:00Z run started under it at
+    # 11:18Z, and the cloud run's push was refused; on 09-08 and 09-13 this pass lost instead.
+    $gate = Join-Path $repo 'tools\ci_writer_gate.py'
+    $gateOut = (& $pythonExe $gate 2>&1 | Out-String).Trim()
+    $gateRc = $LASTEXITCODE
+    Say ("CI writer gate: " + ($gateOut -replace '\s+', ' '))
+    if ($gateRc -eq 3) {
+        Say "ABORT: a cloud state writer is running or its scheduled run has not started yet."
         Say "       Both writers compare-and-swap on the state ETag, so overlapping means one"
-        Say "       run's state is thrown away. Wait for CI, or pass -SkipCiCheck."
+        Say "       run's bookkeeping is thrown away (R5). Next tick will check again."
         exit 2
     }
-    Say "CI idle - safe to proceed"
+    if ($gateRc -ne 0) {
+        Say ("WARNING: could not tell whether CI is busy (gate exit " + $gateRc + "). Re-run with " +
+             "-SkipCiCheck if you know it is idle.")
+        exit 2
+    }
+    Say "CI idle and no scheduled run pending - safe to proceed"
 }
 
 $env:AQUEDUCT_BACKEND = 'r2'
