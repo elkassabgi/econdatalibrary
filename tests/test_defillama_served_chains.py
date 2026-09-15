@@ -369,7 +369,7 @@ class _LocalDateOneDayBehindUTC(_dt.date):
 
 def test_a_point_dated_today_UTC_is_not_future_when_the_local_date_lags(monkeypatch):
     """The staleness guard compared UTC observation dates with the machine's LOCAL date. On a
-    desktop in US Central time between 00:00Z and 05:00Z a point dated today UTC counted as
+    desktop west of Greenwich, between 00:00Z and local midnight, a point dated today UTC counted as
     FUTURE, so a series whose only point was dated today was refused - both branches at once, and
     _chains_tvl_aggregate returned no table (seen 2026-09-15 00:39Z; passing again at 11:53Z on
     unchanged code). A clock one day behind UTC reproduces it at any hour."""
