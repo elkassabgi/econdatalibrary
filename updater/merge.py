@@ -602,7 +602,7 @@ BOUNDED_BATCH_ROWS = 1 << 19
 # DISK, NOT ONLY MEMORY (DeepSeek advisory review F3, 2026-09-15). DuckDB's default spill cap is
 # 90% of free disk, and the runner holds the unpacked state and catalogue databases on the same
 # volume; the largest eurostat stores hold 8-13 GB of uncompressed rows. The spill is capped at
-# free space minus this reserve (plus room for the local copy and the output), and a merge that
+# free space minus this reserve (plus room for the output file), and a merge that
 # would get less than BOUNDED_MIN_SPILL_BYTES is refused up front with a named reason.
 BOUNDED_DISK_RESERVE_BYTES = 3 * 1024 ** 3
 BOUNDED_MIN_SPILL_BYTES = 256 * 1024 ** 2
@@ -632,20 +632,51 @@ def _unit_timeout_fired() -> bool:
 
 def _bounded_temp_cap(spill: str, stored_bytes) -> int:
     """Bytes DuckDB may spill for one bounded merge: free space on the spill volume minus
-    BOUNDED_DISK_RESERVE_BYTES (env AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES) and twice the stored
-    object's size (its local copy and the new output file). Raises DefinitiveError, before any
+    BOUNDED_DISK_RESERVE_BYTES (env AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES) and the stored object's
+    size once more (room for the new output file; under r2 its local copy is already on disk when
+    free space is measured, so it is not counted twice). Raises DefinitiveError, before any
     query runs, when that leaves less than BOUNDED_MIN_SPILL_BYTES."""
     import os                                                        # noqa: PLC0415
     import shutil                                                    # noqa: PLC0415
     free = shutil.disk_usage(spill).free
     reserve = int(os.environ.get("AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES", BOUNDED_DISK_RESERVE_BYTES))
-    cap = free - reserve - 2 * int(stored_bytes or 0)
+    cap = free - reserve - int(stored_bytes or 0)
     if cap < BOUNDED_MIN_SPILL_BYTES:
         raise DefinitiveError(
             f"bounded merge refused: {free / 1024 ** 3:.1f} GiB free on the spill disk leaves "
             f"{max(cap, 0) / 1024 ** 2:,.0f} MiB after the reserve, below the "
             f"{BOUNDED_MIN_SPILL_BYTES / 1024 ** 2:,.0f} MiB minimum; existing data kept")
     return cap
+
+
+def _mirror_large_string(schema, ex_types, new_table, local_src):
+    """String column types exactly as merge_and_write would write them (DeepSeek advisory re-review
+    N1, 2026-09-15). merge_and_write keeps a published large_string column large_string (its
+    permissive concat), and when any 32-bit string column of the merged table reaches
+    _LARGE_STRING_TRIGGER bytes it promotes EVERY string column (_needs_large_string and
+    _promote_large_string). pyarrow stores that type in the file, so readers get it back; writing
+    plain string instead would change what they read. The bounded path never holds the merged column,
+    so the size test uses the stored file's uncompressed column bytes plus the new rows' bytes."""
+    stored_bytes = {}
+    if local_src is not None:
+        md = pq.read_metadata(local_src)
+        for g in range(md.num_row_groups):
+            rg = md.row_group(g)
+            for c in range(rg.num_columns):
+                col = rg.column(c)
+                stored_bytes[col.path_in_schema] = (stored_bytes.get(col.path_in_schema, 0)
+                                                    + col.total_uncompressed_size)
+
+    def published_large(name):
+        return ex_types is not None and ex_types.get(name) == pa.large_string()
+
+    promote_all = any(
+        f.type == pa.string() and not published_large(f.name)
+        and stored_bytes.get(f.name, 0) + new_table.column(f.name).nbytes >= _LARGE_STRING_TRIGGER
+        for f in schema)
+    return pa.schema([pa.field(f.name, pa.large_string())
+                      if f.type == pa.string() and (promote_all or published_large(f.name)) else f
+                      for f in schema])
 
 
 def _bounded_type(t):
@@ -777,7 +808,7 @@ def merge_and_write_bounded(out_path, new_table, *, dedup_keys=DEDUP_KEYS, min_r
                     f"bounded merge at {out_path}: column {name!r} (new {nt}, published {et}) "
                     f"is outside what this path round-trips; refusing. Existing data kept.")
             fields.append(pa.field(name, _bounded_type(nt)))
-        out_schema = pa.schema(fields)
+        out_schema = _mirror_large_string(pa.schema(fields), ex_types, new_table, local_src)
 
         spill = _bounded_spill_dir()
         con = duckdb.connect()

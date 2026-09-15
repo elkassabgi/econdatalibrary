@@ -311,8 +311,9 @@ class _unit_deadline:
                 signal.signal(signal.SIGALRM, self._prev)
             except Exception:                                # noqa: BLE001
                 pass
-        # Cleared only after the timer is disarmed, so an alarm landing in between is still
-        # attributed to this unit (DeepSeek advisory review F5, 2026-09-15).
+        # Cleared after the timer is disarmed and on every exit path, so the flag can never
+        # outlive this unit (DeepSeek advisory review F5, 2026-09-15). An alarm delivered inside
+        # the disarm window itself is swallowed by the except above and is not attributed.
         UNIT_TIMEOUT_FIRED = False
         return False
 

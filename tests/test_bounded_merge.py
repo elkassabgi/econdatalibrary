@@ -549,7 +549,34 @@ def test_the_bounded_merge_refuses_before_any_query_when_the_spill_disk_is_short
     assert os.listdir(tmp_path / "_spill") == []
     monkeypatch.setattr(shutil, "disk_usage", lambda p: usage(100 * 2**30, 50 * 2**30, 50 * 2**30))
     assert merge._bounded_temp_cap(str(tmp_path), 1000) == (
-        50 * 2**30 - merge.BOUNDED_DISK_RESERVE_BYTES - 2000)
+        50 * 2**30 - merge.BOUNDED_DISK_RESERVE_BYTES - 1000)
+
+
+def test_the_bounded_merge_keeps_a_published_large_string_column_large_string(tmp_path):
+    store = tmp_path / "L.parquet"
+    t = _tbl([("A", 19000, 1.0), ("B", 19000, 2.0)])
+    pq.write_table(t.cast(pa.schema([pa.field("series_key", pa.large_string()),
+                                     t.schema.field("obs_date"), t.schema.field("value")])), store)
+    merge.merge_and_write_bounded(str(store), _tbl([("A", 19001, 3.0)]), **FORCE_BOUNDED)
+    assert pq.read_schema(store).field("series_key").type == pa.large_string()
+    small = tmp_path / "S.parquet"
+    pq.write_table(_tbl([("A", 19000, 1.0)]), small)
+    merge.merge_and_write_bounded(str(small), _tbl([("A", 19001, 3.0)]), **FORCE_BOUNDED)
+    assert pq.read_schema(small).field("series_key").type == pa.string()
+
+
+def test_the_bounded_merge_promotes_string_columns_exactly_when_merge_and_write_does(tmp_path,
+                                                                                   monkeypatch):
+    monkeypatch.setattr(merge, "_LARGE_STRING_TRIGGER", 64)
+    rows = [(f"key{i:04d}", 19000, float(i)) for i in range(40)]
+    for name, fn in (("mem", lambda p, t: merge.merge_and_write(p, t, mode="merge")),
+                     ("bounded", lambda p, t: merge.merge_and_write_bounded(p, t, **FORCE_BOUNDED))):
+        p = tmp_path / f"{name}.parquet"
+        pq.write_table(_tbl(rows), p)
+        fn(str(p), _tbl([("key0000", 19001, 9.0)]))
+    mem, bounded = pq.read_schema(tmp_path / "mem.parquet"), pq.read_schema(tmp_path / "bounded.parquet")
+    assert mem.field("series_key").type == pa.large_string()
+    assert [(f.name, f.type) for f in bounded] == [(f.name, f.type) for f in mem]
 
 
 def test_only_duckdbs_query_interruption_counts_as_the_timeout():
