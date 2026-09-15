@@ -11,11 +11,15 @@ A desktop pass started at 10:38Z on 2026-09-15 saw nothing in flight; the 06:00Z
 at 11:18Z and the cloud run's push was refused at 15:28Z. On 09-08 and 09-13 the desktop pass lost.
 
 So a cron whose time has passed but whose run GitHub has not created yet is as busy as a run in
-flight. This gate blocks on either, for both state-writing workflows, and never answers CLEAR when it
-cannot read CI. A cron counts as pending until its scheduled run appears or the workflow's next cron
-arrives (12 h, above the longest lag measured); after 8 h it also prints a warning, because GitHub may
-have skipped it. A disabled workflow cannot write, so its crons are not pending. A run left unfinished
-for more than a day (GitHub cancels queued runs after 24 h) is reported instead of blocking for ever.
+flight. The gate blocks on either, for both state-writing workflows, and never answers CLEAR when it
+cannot read CI. It errs towards blocking, because a wrong CLEAR costs a pass's whole bookkeeping while a
+wrong BLOCK costs one tick (run_local_heavy.ps1 -SkipCiCheck overrides it):
+  - every run that is not completed blocks, however old; one older than a day also prints a warning;
+  - a cron counts as pending until its scheduled run appears; the pending window equals the workflow's
+    cron spacing (12 h, above the longest lag measured), so while an ACTIVE workflow produces no runs
+    the gate stays BLOCKED from one cron to the next, with a warning on every tick after 8 h;
+  - only a workflow GitHub reports as explicitly not active (disabled) is not waited for; one GitHub
+    does not list at all is still waited for, with a warning.
 
   python tools/ci_writer_gate.py      # exit 0 CLEAR, 3 BLOCKED (reason printed), 2 cannot tell
 """
@@ -32,8 +36,9 @@ WRITERS = {"updater-daily.yml": (6, 18), "updater-heavy.yml": (3, 15)}
 CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
 PENDING_HORIZON = CRON_SPACING                  # longest measured start lag: 710 min
 WARN_PENDING_AFTER = dt.timedelta(hours=8)
-STUCK_AFTER = dt.timedelta(hours=24)
+WARN_UNFINISHED_AFTER = dt.timedelta(hours=24)
 RUN_LIMIT = 50
+WORKFLOW_LIMIT = 200
 EXIT_CLEAR, EXIT_UNKNOWN, EXIT_BLOCKED = 0, 2, 3
 
 
@@ -43,21 +48,23 @@ def _parse(ts: str) -> dt.datetime:
 
 def assess(runs: dict, now: dt.datetime, states: dict | None = None) -> tuple[bool, str, list]:
     """runs: {workflow file: [{"createdAt", "event", "status"}, ...]} as `gh run list --json` gives them;
-    states: {workflow file: "active" | "disabled_manually" | ...} or None when unknown.
+    states: {workflow file: "active" | "disabled_manually" | ...}, or None when not read.
     Returns (blocked, reason, notes)."""
     notes = []
     for wf in WRITERS:
         for r in runs.get(wf, []):
             if r["status"] == "completed":
                 continue
-            if now - _parse(r["createdAt"]) > STUCK_AFTER:
-                notes.append(f"WARNING: {wf} run created {r['createdAt']} is still {r['status']} after more than "
-                             f"a day; not treated as a writer - cancel it if it is stuck")
-                continue
+            if now - _parse(r["createdAt"]) > WARN_UNFINISHED_AFTER:
+                notes.append(f"WARNING: {wf} run created {r['createdAt']} has been {r['status']} for more than a "
+                             f"day; if it is stuck, cancel it (or run with -SkipCiCheck)")
             return True, f"{wf} run created {r['createdAt']} is {r['status']}", notes
     for wf, hours in WRITERS.items():
-        if states is not None and states.get(wf) != "active":
-            notes.append(f"NOTE: {wf} is {states.get(wf, 'not listed')}; its crons are not waited for")
+        state = None if states is None else states.get(wf)
+        if states is not None and state is None:
+            notes.append(f"WARNING: {wf} is not in GitHub's workflow list; still waiting for its crons")
+        elif state is not None and state != "active":
+            notes.append(f"NOTE: {wf} is {state}; its crons are not waited for")
             continue
         for back in (1, 0):
             day = (now - dt.timedelta(days=back)).date()
@@ -85,10 +92,10 @@ def decide(runs: dict, now: dt.datetime, states: dict | None = None) -> tuple[bo
 def _gh_json(args: list):
     out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
     if out.returncode != 0:
-        raise RuntimeError(f"gh {' '.join(args[:3])} failed: {out.stderr.strip()[:200]}")
+        raise RuntimeError(f"gh {' '.join(args)} failed: {out.stderr.strip()[:200]}")
     data = json.loads(out.stdout)
     if not isinstance(data, list):
-        raise RuntimeError(f"gh {' '.join(args[:3])} returned {type(data).__name__}, not a list")
+        raise RuntimeError(f"gh {' '.join(args)} returned {type(data).__name__}, not a list")
     return data
 
 
@@ -97,7 +104,7 @@ def _gh_runs(wf: str) -> list:
 
 
 def _gh_states() -> dict:
-    rows = _gh_json(["workflow", "list", "--all", "--json", "path,state"])
+    rows = _gh_json(["workflow", "list", "--all", "--limit", str(WORKFLOW_LIMIT), "--json", "path,state"])
     return {r["path"].rsplit("/", 1)[-1]: r["state"] for r in rows}
 
 

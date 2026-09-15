@@ -38,7 +38,8 @@ def at(s):
 
 
 def history_as_of(now, status="completed"):
-    """The scheduled runs GitHub had created by `now`, newest first, as `gh run list --json` shows them."""
+    """The scheduled runs GitHub had created by `now`, newest first, as `gh run list --json` shows them.
+    Every run here had ended by the times these tests use (daily runs end within 5 h 55 min, heavy 5 h)."""
     def rows(created):
         return [{"createdAt": c + ":00Z", "event": "schedule", "status": status}
                 for c in created if at(c) <= now]
@@ -112,16 +113,28 @@ def test_a_disabled_workflow_is_not_waited_for():
     assert any("disabled_manually" in n for n in notes), notes
 
 
-def test_a_run_unfinished_for_more_than_a_day_is_reported_not_obeyed():
+def test_a_workflow_missing_from_githubs_list_is_still_waited_for():
+    now = at("2026-09-15T15:40:00")
+    blocked, reason, notes = g.assess(history_as_of(now), now, {"updater-daily.yml": "active"})
+    assert blocked and "updater-heavy.yml 15:00Z" in reason, reason
+    assert any("not in GitHub's workflow list" in n for n in notes), notes
+
+
+def test_without_workflow_states_every_writer_is_waited_for():
+    now = at("2026-09-15T15:40:00")
+    blocked, reason, notes = g.assess(history_as_of(now), now, None)
+    assert blocked and "updater-heavy.yml 15:00Z" in reason, reason
+
+
+@pytest.mark.parametrize("status", ["queued", "waiting", "pending", "requested", "in_progress"])
+def test_an_unfinished_run_blocks_however_old_and_an_old_one_warns(status):
     now = at("2026-09-14T23:30:00")
     runs = history_as_of(now)
     runs["updater-daily.yml"].insert(0, {"createdAt": "2026-09-13T20:00:00Z", "event": "workflow_dispatch",
-                                         "status": "waiting"})
+                                         "status": status})
     blocked, reason, notes = g.assess(runs, now, ACTIVE)
-    assert not blocked, reason
+    assert blocked and status in reason, reason
     assert any("more than a day" in n for n in notes), notes
-    runs["updater-daily.yml"][0]["createdAt"] = "2026-09-14T23:00:00Z"   # a fresh one still blocks
-    assert g.decide(runs, now, ACTIVE)[0]
 
 
 def test_main_exit_codes_notes_and_unknown_is_never_clear(capsys):
@@ -155,14 +168,18 @@ def test_every_workflow_that_pushes_state_is_in_the_writer_list():
     assert pushers == sorted(g.WRITERS), pushers
 
 
-def test_the_runner_relaxes_Stop_around_both_python_calls():
+def test_every_stderr_redirect_in_the_runner_is_outside_Stop():
     """2>&1 on a native command under $ErrorActionPreference = 'Stop' terminates Windows PowerShell 5.1
-    as soon as the child writes to stderr (measured 2026-09-15), so both calls run under Continue."""
+    as soon as the child writes to stderr (measured 2026-09-15), so every redirect runs under Continue."""
     body = open(os.path.join(ROOT, "tools", "run_local_heavy.ps1"), encoding="utf-8", errors="replace").read()
-    for call in ("& $pythonExe $lister 2>&1", "& $pythonExe $gate 2>&1"):
-        i = body.index(call)
-        assert "$ErrorActionPreference = 'Continue'" in body[max(0, i - 200):i], call
-        assert "$ErrorActionPreference = $prevEap" in body[i:i + 200], call
+    code_lines = [(i, ln) for i, ln in enumerate(body.splitlines()) if "2>&1" in ln and not ln.lstrip().startswith("#")]
+    assert len(code_lines) >= 2, "expected the lister and gate redirects at least"
+    lines = body.splitlines()
+    for i, ln in code_lines:
+        before = "\n".join(lines[max(0, i - 8):i])
+        after = "\n".join(lines[i:i + 8])
+        assert "$ErrorActionPreference = 'Continue'" in before, (i + 1, ln.strip())
+        assert "$ErrorActionPreference = $prevEap" in after, (i + 1, ln.strip())
 
 
 POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
@@ -178,7 +195,7 @@ def test_stderr_from_a_native_call_under_Continue_reaches_the_exit_code_check(tm
         "| Out-String).Trim(); $rc = $LASTEXITCODE } finally { $ErrorActionPreference = $prevEap }\n"
         "'rc=' + $rc\n", encoding="utf-8")
     r = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, timeout=120)
     assert "rc=7" in r.stdout, (r.stdout, r.stderr)
 
 

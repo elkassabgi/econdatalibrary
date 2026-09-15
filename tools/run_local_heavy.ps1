@@ -447,7 +447,10 @@ while (-not $proc.HasExited) {
              "-min budget by " + $graceMin + " min and is still running. Terminating so " +
              "push-state happens BEFORE the CI window (R448). Data is safe - stores are " +
              "written atomically - and every fetcher resumes.")
-        & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null
+        # Continue for this call only: 2>&1 under Stop terminates PS 5.1 on the first stderr line.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null } finally { $ErrorActionPreference = $prevEap }
         Start-Sleep -Seconds 5
         $hardStopped = $true
         break
@@ -480,8 +483,16 @@ Say ("updater exit code: " + $rc)
 if ($hardStopped) {
     $elapsedS = [int]((Get-Date) - $updaterStart).TotalSeconds
     Say ("recording externally-killed unit (elapsed " + $elapsedS + "s) ...")
-    $recOut = & $pythonExe (Join-Path $PSScriptRoot 'record_killed_unit.py') `
-                $updaterLog $elapsedS --apply 2>&1
+    # Continue for this call only: it runs after the lock is taken and before push-state, and 2>&1
+    # under Stop terminates PS 5.1 on the first stderr line, which would skip push-state.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $recOut = & $pythonExe (Join-Path $PSScriptRoot 'record_killed_unit.py') `
+                    $updaterLog $elapsedS --apply 2>&1
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
     foreach ($ln in @($recOut)) { Say ("  recorder: " + $ln) }
     if ($LASTEXITCODE -ne 0) {
         Say ("RECORDER FAILED (exit " + $LASTEXITCODE + ") - the killed unit keeps its " +
