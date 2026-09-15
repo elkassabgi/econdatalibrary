@@ -64,6 +64,8 @@ GZIP_MAGIC = bytes([0x1F, 0x8B])   # a .csv.gz body served with a CSV Content-Ty
 # It has to PREVENT the parse: _giant's per-flow handler catches exceptions, and a process
 # that is killed raises nothing. Ledger R473.
 NEWLINE_BYTE = bytes([0x0A])
+CR_BYTE = bytes([0x0D])
+CRLF_BYTES = bytes([0x0D, 0x0A])
 MAX_FLOW_ROWS = 20_000_000
 CSV_ACCEPT = "text/html,*/*"   # Eurostat ignores Accept; format is in the query
 RATE = 1.0
@@ -196,6 +198,15 @@ def _parse_csv(content: bytes):
         # with startPeriod=2026 came back as 128,392,331 bytes of uncompressed CSV. A plain body
         # of any size was therefore decoded to one str and parsed into Python lists with no
         # ceiling at all. Counting newlines in bytes already held allocates nothing.
+        # A LONE CR IS REFUSED, NOT PARSED. With the old StringIO path a carriage return that is
+        # not part of CRLF raised csv.Error ("new-line character seen in unquoted field"); the
+        # streamed newline="" path would instead read it as a line end and drop that
+        # observation in silence, and a CR-only body would carry no LF for the row ceiling to
+        # count (2026-09-14 review). None of the cached real bodies holds one; raising keeps the
+        # old outcome - one named, retried flow.
+        if content.count(CR_BYTE) != content.count(CRLF_BYTES):
+            raise csv.Error("plain CSV body contains a carriage return that is not part of CRLF; "
+                            "refused rather than parsed (a lone CR would silently drop rows)")
         rows = max(0, content.count(NEWLINE_BYTE) - 1)
         if rows > MAX_FLOW_ROWS:
             raise TooBigForRunner(

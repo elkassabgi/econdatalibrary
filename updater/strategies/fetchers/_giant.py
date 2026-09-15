@@ -42,6 +42,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import sys
 import time
 
 import pyarrow as pa
@@ -184,6 +185,8 @@ def _max_obs_date(out_path: str) -> str | None:
         if complete:
             return str(best) if best is not None else None
     except Exception as e:                                   # noqa: BLE001
+        if _is_unit_timeout(e):
+            raise           # the hard per-unit limit, not an unreadable footer (2026-09-14)
         # Fall through to the batched scan rather than returning None: see below for
         # why a silent None here is expensive, not merely imprecise.
         print(f"[giant] footer stats unusable for {os.path.basename(out_path)} "
@@ -200,6 +203,8 @@ def _max_obs_date(out_path: str) -> str | None:
                 best = m
         return str(best) if best is not None else None
     except Exception as e:                                   # noqa: BLE001
+        if _is_unit_timeout(e):
+            raise           # never "unreadable -> full re-pull" for the hard per-unit limit
         # LOUD, because the caller cannot tell this apart from "no data yet". Returning
         # None is still the right fallback (a full re-pull is correct, just expensive) —
         # but it must never again be invisible. Ledger: every early exit has to answer
@@ -211,10 +216,25 @@ def _max_obs_date(out_path: str) -> str | None:
 
 
 def _is_unit_timeout(exc) -> bool:
-    """The orchestrator's SIGALRM UnitTimeout (updater/orchestrate.py), matched by class name
-    rather than imported: it subclasses plain Exception, so without this every `except
-    Exception` in the flow loop books the hard per-unit limit as one more transient flow."""
-    return any(c.__name__ == "UnitTimeout" for c in type(exc).__mro__)
+    """True when `exc` is, or stands in for, the orchestrator's SIGALRM UnitTimeout.
+
+    Three tests, because the exception type alone is not reliable:
+      * the class name (not an import: _giant is loaded by the orchestrator's strategies) -
+        UnitTimeout subclasses plain Exception, so every `except Exception` in the flow loop
+        would otherwise book the hard per-unit limit as one more transient flow;
+      * the orchestrator's UNIT_TIMEOUT_FIRED flag, set by the alarm before it raises - DuckDB,
+        interrupted mid-query by that alarm, hands back RuntimeError('Query interrupted')
+        instead of UnitTimeout (measured by the 2026-09-14 review), and the one-shot timer
+        never fires again;
+      * an interruption reported by a native library, for the same reason when no orchestrator
+        is loaded (Ctrl-C on a desktop run).
+    """
+    if any(c.__name__ == "UnitTimeout" for c in type(exc).__mro__):
+        return True
+    orch = sys.modules.get("updater.orchestrate")
+    if orch is not None and getattr(orch, "UNIT_TIMEOUT_FIRED", False):
+        return True
+    return merge._interrupted(exc)
 
 
 def select_flows(catalog: dict, state: dict, *, max_flows=DEFAULT_MAX_FLOWS_PER_TICK):
@@ -329,6 +349,26 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                   f"({type(e).__name__}: {str(e)[:120]}); the sweep continues and the "
                   f"end-of-run save still runs", flush=True)
 
+    # The two places in the loop that spend real time OUTSIDE every per-flow handler: the
+    # rate pause and the stored-footer read (a whole-object GET under r2). A timeout landing
+    # in either used to end the sweep without the timeout checkpoint (2026-09-14 review).
+    # Behaviour is otherwise unchanged: everything still propagates.
+    def _pause():
+        try:
+            time.sleep(rate)
+        except Exception as e:                          # noqa: BLE001
+            if checkpoint_every and _is_unit_timeout(e):
+                _checkpoint(n_done, "unit timeout")
+            raise
+
+    def _stored_max(out_path):
+        try:
+            return _max_obs_date(out_path)
+        except Exception as e:                          # noqa: BLE001
+            if checkpoint_every and _is_unit_timeout(e):
+                _checkpoint(n_done - 1, "unit timeout")
+            raise
+
     for n_done, fid in enumerate(selected, 1):
         # CHECKPOINT (opt-in): n_done - 1 flows are complete at this point. Without it the only
         # save_state is the one after the loop, which a killed or SIGALRM-interrupted sweep never
@@ -344,7 +384,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                   f"{time.time() - t_start:,.0f}s", flush=True)
         meta = catalog[fid]
         out_path = os.path.join(source_dir, meta["filename"])
-        since = sane_since(_max_obs_date(out_path))
+        since = sane_since(_stored_max(out_path))
         flow_st = dict(state.get(fid, {}))
         try:
             table, status = fetch_flow(fid, meta, since, sess)
@@ -355,14 +395,14 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             tally.transient_unit(f"{fid}: {str(e)[-60:]}")
             flow_st.update(status="transient_fail")  # vintage NOT advanced -> reselected next tick
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
         except DefinitiveError as e:
             # A structural/hard error on ONE flow must not abort the whole giant.
             tally.structural_unit(f"{fid}: {str(e)[-60:]}")
             flow_st.update(status="definitive_fail", error=str(e)[:200])
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
         except Exception as e:                      # noqa: BLE001
             # NEITHER OF THE TWO HANDLERS ABOVE CATCHES AN UNEXPECTED ERROR, AND ONE FLOW
@@ -386,20 +426,20 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             tally.transient_unit(f"{fid}: UNEXPECTED {type(e).__name__}: {str(e)[-60:]}")
             flow_st.update(status="transient_fail")
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
 
         if status == "transient":
             tally.transient_unit(f"{fid}: fetch_flow reported transient")
             flow_st.update(status="transient_fail")
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
         if status == "structural":
             tally.structural_unit(f"{fid}: fetch_flow reported structural")
             flow_st.update(status="definitive_fail")
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
         if status == "no_time_dimension":
             # The flow's export has no TIME_PERIOD column — its DSD declares no SDMX
@@ -413,7 +453,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             # blob). NOT `since`: sane_since() ALSO returns None when a has-rows store's max
             # date is corrupt far-future, which would misfile a genuine break as
             # outside-the-model — the exact conflation this branch exists to avoid.
-            if _max_obs_date(out_path) is not None:
+            if _stored_max(out_path) is not None:
                 tally.structural_unit(
                     f"{fid}: TIME_PERIOD column GONE from a flow that has rows (break)")
                 flow_st.update(status="definitive_fail")
@@ -423,7 +463,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                 # dataset, instead of re-fetching a permanent condition every tick.
                 flow_st.update(status="no_time_dimension", vintage=meta.get("vintage"))
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
         if status in ("empty", "no_change") or table is None or table.num_rows == 0:
             # 200 with no NEW rows in the tail = genuine quiet flow; SAFE to advance the
@@ -431,7 +471,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             tally.empty_unit()
             flow_st.update(status="empty", vintage=meta.get("vintage"))
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
 
         # status == "ok": merge the tail into the per-flow parquet (never-shrink/dedup).
@@ -479,7 +519,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             tally.transient_unit(f"{fid}: merge guard — {str(e)[-60:]}")
             flow_st.update(status="partial", error=str(e)[:200])
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
         except Exception as e:                      # noqa: BLE001
             if checkpoint_every and _is_unit_timeout(e):
@@ -494,7 +534,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             tally.transient_unit(f"{fid}: merge UNEXPECTED {type(e).__name__}: {str(e)[-60:]}")
             flow_st.update(status="transient_fail")
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
 
         added = table.num_rows
@@ -505,7 +545,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         flow_st.update(status="ok", vintage=meta.get("vintage"), last_obs_date=last,
                        obs_count=n)
         state[fid] = flow_st
-        time.sleep(rate)
+        _pause()
 
     # Mark flows present in the catalogue but never touched (not selected) so first-ever
     # runs don't perpetually re-select everything: only flows we DIDN'T select keep their

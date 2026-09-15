@@ -357,6 +357,122 @@ def test_an_unexpected_merge_error_fails_one_flow_not_the_sweep(tmp_path, monkey
     assert all(state[f]["status"] == "ok" for f in flows if f != "zz03")
 
 
+def test_duckdb_reporting_the_timeout_as_query_interrupted_still_ends_the_sweep(tmp_path,
+                                                                               monkeypatch):
+    """The review's round-2 blocker. The orchestrator's alarm handler raises UnitTimeout, but
+    when it fires inside a DuckDB query DuckDB hands back RuntimeError('Query interrupted'),
+    and a catch-all that trusts the exception TYPE books it as one failed flow while the
+    one-shot timer is already spent. The sweep must end regardless of which exception
+    surfaces. POSIX drives the orchestrator's real SIGALRM handler; Windows (no setitimer)
+    mirrors it with interrupt_main."""
+    import signal
+    import threading
+    import _thread
+    import numpy as np
+    from updater import orchestrate
+
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
+    monkeypatch.setenv("AQUEDUCT_BOUNDED_MERGE_MEMORY", "64MB")
+    n = 3_000_000
+    i = np.arange(n)
+    pool = pa.array([f"freq=W:geo=REG{k:07d}" for k in range(n // 50)])
+    pq.write_table(pa.table({
+        "series_key": pool.take(pa.array(i // 50)),
+        "obs_date": pa.array((19000 + (i % 50) * 7).astype(np.int32)).cast(pa.date32()),
+        "value": pa.array(np.random.default_rng(1).random(n))}), tmp_path / "BIG.parquet")
+    fetched = []
+
+    def fetch_flow(fid, meta, since, session):
+        fetched.append(fid)
+        return _tbl([("freq=W:geo=REG0000000", 19000 + 50 * 7, 1.0)]), "ok"
+
+    flows = ["big", "s1", "s2"]
+    cat = {f: {"vintage": "v1", "filename": f.upper() + ".parquet"} for f in flows}
+    monkeypatch.setattr(_giant.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(eurostat, "fetch_catalog", lambda: cat)
+    monkeypatch.setattr(eurostat, "_require_rekeyed", lambda: None)
+    monkeypatch.setattr(eurostat, "fetch_flow", fetch_flow)
+    real = merge.merge_and_write_bounded
+    posix = hasattr(signal, "setitimer")
+
+    def merge_with_alarm(out_path, table, **kw):
+        if posix:
+            signal.setitimer(signal.ITIMER_REAL, 0.3)     # re-aim the armed deadline's timer
+        else:
+            def _fire(signum, frame):                     # mirrors orchestrate._unit_deadline
+                orchestrate.UNIT_TIMEOUT_FIRED = True
+                raise orchestrate.UnitTimeout("zz/_all exceeded its hard limit")
+            monkeypatch.setattr(signal, "_eurostat_prev", signal.signal(signal.SIGINT, _fire),
+                                raising=False)
+            threading.Timer(0.3, _thread.interrupt_main, (signal.SIGINT,)).start()
+        return real(out_path, table, in_memory_max_bytes=-1, in_memory_max_new_rows=-1, **kw)
+
+    monkeypatch.setattr(merge, "merge_and_write_bounded", merge_with_alarm)
+    try:
+        with pytest.raises((orchestrate.UnitTimeout, RuntimeError)):
+            if posix:
+                with orchestrate._unit_deadline("zz/_all", 10.0):
+                    eurostat.update(_Unit(str(tmp_path)), None)
+            else:
+                eurostat.update(_Unit(str(tmp_path)), None)
+    finally:
+        if not posix:
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+    assert fetched == ["big"], f"the sweep ran on after the timeout: {fetched}"
+
+
+def test_a_timeout_in_the_footer_read_ends_the_sweep_after_saving(tmp_path, monkeypatch):
+    flows = _eurostat_sweep(tmp_path, monkeypatch,
+                            lambda fid, meta, since, s: (_tbl([("k", 19100, 1.0)]), "ok"), n=12)
+    for f in flows:
+        pq.write_table(_tbl([("k", 19000, 1.0)]), tmp_path / (f.upper() + ".parquet"))
+    real = blob.read_metadata
+
+    def read_metadata(path):
+        if path.endswith("ZZ07.parquet"):
+            raise UnitTimeout("alarm during the footer GET")
+        return real(path)
+
+    monkeypatch.setattr(blob, "read_metadata", read_metadata)
+    with pytest.raises(UnitTimeout):
+        eurostat.update(_Unit(str(tmp_path)), None)
+    state = json.loads((tmp_path / "_giant_state.json").read_text(encoding="utf-8"))
+    assert {f for f, s in state.items() if s.get("status") == "ok"} == set(flows[:7])
+
+
+def test_a_timeout_during_the_rate_sleep_ends_the_sweep_after_saving(tmp_path, monkeypatch):
+    flows = _eurostat_sweep(tmp_path, monkeypatch,
+                            lambda fid, meta, since, s: (_tbl([("k", 19000, 1.0)]), "ok"))
+    calls = []
+
+    def sleep(*_a, **_k):
+        calls.append(1)
+        if len(calls) == 15:                 # the pause after flow zz14 has been recorded
+            raise UnitTimeout("alarm during the per-flow pause")
+
+    monkeypatch.setattr(_giant.time, "sleep", sleep)
+    with pytest.raises(UnitTimeout):
+        eurostat.update(_Unit(str(tmp_path)), None)
+    state = json.loads((tmp_path / "_giant_state.json").read_text(encoding="utf-8"))
+    assert {f for f, s in state.items() if s.get("status") == "ok"} == set(flows[:15])
+
+
+def test_a_lone_carriage_return_is_refused_not_silently_dropped(monkeypatch):
+    head = "DATAFLOW,LAST UPDATE,freq,geo,TIME_PERIOD,OBS_VALUE\n"
+    rows = [f"ESTAT:ZZ(1.0),01/01/26 11:00:00,A,G{i},2024,{i}\n" for i in range(4)]
+    lf = (head + "".join(rows)).encode()
+    keys, _d, _v = eurostat._parse_csv(lf)
+    assert len(keys) == 4
+    crlf = lf.replace(b"\n", b"\r\n")
+    assert eurostat._parse_csv(crlf)[0] == keys                     # CRLF: same rows
+    lone = (head + rows[0] + rows[1].replace(",G1,", ",G\r1,") + rows[2] + rows[3]).encode()
+    with pytest.raises(eurostat.csv.Error):
+        eurostat._parse_csv(lone)                                   # was: 3 of 4, silently
+    monkeypatch.setattr(eurostat, "MAX_FLOW_ROWS", 2)
+    with pytest.raises(eurostat.csv.Error):
+        eurostat._parse_csv(lf.replace(b"\n", b"\r"))               # CR-only: no LF to count
+
+
 # ---- 7. plain-body ceiling ------------------------------------------------------------------
 
 def test_a_plain_csv_body_over_the_row_ceiling_is_deferred_not_parsed(monkeypatch):

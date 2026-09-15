@@ -603,6 +603,16 @@ _BOUNDED_TYPES = (pa.string(), pa.large_string(), pa.date32(), pa.float64(), pa.
                   pa.int64(), pa.int32(), pa.bool_())
 
 
+def _interrupted(exc) -> bool:
+    """True for an INTERRUPTION reported by a native library, which is never a property of the
+    data: DuckDB's InterruptException, or the RuntimeError('Query interrupted') DuckDB raises when
+    a Python signal handler - the orchestrator's SIGALRM UnitTimeout, or Ctrl-C - fires while a
+    query runs (measured 2026-09-14: the UnitTimeout itself never reaches Python)."""
+    if type(exc).__name__ in ("InterruptException", "KeyboardInterrupt"):
+        return True
+    return isinstance(exc, RuntimeError) and "interrupted" in str(exc).lower()
+
+
 def _bounded_type(t):
     return pa.string() if t == pa.large_string() else t
 
@@ -824,7 +834,9 @@ def merge_and_write_bounded(out_path, new_table, *, dedup_keys=DEDUP_KEYS, min_r
         # same outcome as a refusal — the stored object is untouched and the caller keeps the
         # flow for a retry (_giant books it transient and does not advance its vintage). Letting
         # it escape instead would end the whole giant sweep on one flow.
-        if published:
+        if published or _interrupted(e):
+            # An interruption is the orchestrator's hard timeout (or Ctrl-C) arriving through
+            # DuckDB, never a property of this flow: it must keep ending the unit.
             raise
         raise DefinitiveError(
             f"bounded merge at {out_path} failed before publishing "
