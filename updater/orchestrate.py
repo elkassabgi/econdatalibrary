@@ -188,6 +188,15 @@ class UnitTimeout(Exception):
     it must be caught by the unit handler and demote THAT source, never abort the run."""
 
 
+# SET BY THE ALARM ITSELF, BEFORE IT RAISES (2026-09-14). A native library can swallow the
+# exception the handler raises and hand back its own: DuckDB, interrupted mid-query by the
+# SIGALRM handler, reports RuntimeError('Query interrupted') instead of UnitTimeout (measured in
+# the eurostat bounded-merge review). Code that must not book the hard limit as an ordinary
+# failure - _giant's per-flow handlers - reads this flag instead of trusting the exception type.
+# Reset whenever a unit's alarm is armed or disarmed.
+UNIT_TIMEOUT_FIRED = False
+
+
 def _unit_timeout_min() -> float:
     try:
         return float(os.environ.get("AQUEDUCT_UNIT_TIMEOUT_MIN", "45"))
@@ -260,7 +269,8 @@ class _unit_deadline:
         self.armed = False
 
     def __enter__(self):
-        global _TIMEOUT_WARNED
+        global _TIMEOUT_WARNED, UNIT_TIMEOUT_FIRED
+        UNIT_TIMEOUT_FIRED = False
         if self.minutes <= 0:
             return self
         try:
@@ -269,6 +279,8 @@ class _unit_deadline:
                 raise AttributeError("setitimer")
 
             def _fire(signum, frame):
+                global UNIT_TIMEOUT_FIRED
+                UNIT_TIMEOUT_FIRED = True        # before raising: see the flag's note above
                 raise UnitTimeout(
                     f"{self.key} exceeded its {self.minutes:.0f}-minute hard limit and was "
                     f"interrupted; existing data untouched, re-queued for the next tick")
@@ -291,6 +303,7 @@ class _unit_deadline:
         return self
 
     def __exit__(self, *exc):
+        global UNIT_TIMEOUT_FIRED
         if self.armed:
             try:
                 import signal
@@ -298,6 +311,10 @@ class _unit_deadline:
                 signal.signal(signal.SIGALRM, self._prev)
             except Exception:                                # noqa: BLE001
                 pass
+        # Cleared after the timer is disarmed and on every exit path, so the flag can never
+        # outlive this unit (DeepSeek advisory review F5, 2026-09-15). An alarm delivered inside
+        # the disarm window itself is swallowed by the except above and is not attributed.
+        UNIT_TIMEOUT_FIRED = False
         return False
 
 

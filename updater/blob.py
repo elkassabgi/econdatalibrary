@@ -303,6 +303,90 @@ def publish_file(path: str) -> int:
     return os.path.getsize(path)
 
 
+def stored_size(path: str) -> int | None:
+    """Byte length of a stored object, R2-routed (one HEAD under r2); None when absent.
+
+    Lets a caller pick a bounded-memory path BEFORE it downloads anything
+    (merge.merge_and_write_bounded)."""
+    r2 = _r2_routed()
+    if r2 is not None:
+        return r2.size(_path_to_key(path))
+    return os.path.getsize(path) if os.path.exists(path) else None
+
+
+def _remove_quietly(p: str) -> None:
+    try:
+        if os.path.exists(p):
+            os.remove(p)
+    except OSError:
+        pass
+
+
+def local_copy(path: str) -> tuple[str, bool] | None:
+    """A local FILE holding the stored parquet, R2-routed like read_table.
+
+    For readers that need a filesystem path rather than bytes — DuckDB's read_parquet in
+    merge.merge_and_write_bounded. Returns (local_path, is_temporary), or None when the object
+    is absent.
+
+    Under the local backend the store file IS the answer and nothing is copied. Under r2 the
+    object is STREAMED to a sibling temp file with boto3's download_file — the same client call
+    tools/mirror_sync.py and tools/resync_and_repair.py already make against this bucket — so,
+    unlike read_table/get, the compressed bytes never sit in memory whole. The caller removes
+    the temp file when is_temporary is True.
+    """
+    r2 = _r2_routed()
+    if r2 is None:
+        return (path, False) if os.path.exists(path) else None
+    from botocore.exceptions import ClientError
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.src"
+    try:
+        r2.client.download_file(r2.bucket, _path_to_key(path), tmp)
+    except ClientError as e:
+        _remove_quietly(tmp)
+        if _is_404(e):
+            return None
+        raise
+    except BaseException:
+        _remove_quietly(tmp)
+        raise
+    return tmp, True
+
+
+# Above this a committed file is uploaded as a streamed multipart (put_file, as publish_file
+# does) instead of one PUT of its bytes, so a writer that streamed a table to disk does not
+# have to hold a large compressed file in memory just to publish it.
+_SINGLE_PUT_MAX_BYTES = 256 * 1024 * 1024
+
+
+def commit_local_file(tmp_path: str, path: str) -> None:
+    """Publish a parquet ALREADY WRITTEN to tmp_path as the store object at path.
+
+    For writers that stream a table to disk rather than materialise it
+    (merge.merge_and_write_bounded). Same two steps as write_table_atomic: the atomic local
+    replace, retried for the Windows transient-handle race exactly as write_table_atomic retries
+    it, then under r2 the same single put_atomic of the file's bytes (so the object keeps a
+    single-part ETag). Above _SINGLE_PUT_MAX_BYTES it streams a multipart upload instead.
+    """
+    for attempt in range(6):
+        try:
+            os.replace(tmp_path, path)
+            break
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.2 * (2 ** attempt))
+    r2 = _r2_routed()
+    if r2 is not None:
+        key = _path_to_key(path)
+        if os.path.getsize(path) <= _SINGLE_PUT_MAX_BYTES:
+            with open(path, "rb") as fh:
+                r2.put_atomic(key, fh.read())
+        else:
+            r2.put_file(key, path)
+
+
 def row_count(path: str) -> int:
     r2 = _r2_routed()
     if r2 is not None:
