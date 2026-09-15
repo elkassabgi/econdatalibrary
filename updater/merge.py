@@ -101,7 +101,16 @@ def _collect_changed(t, keys, same_as_next, n_existing, out):
     if n == 1:
         if new_flag[0].as_py():
             d = obs[0].as_py() if obs is not None else None
-            out[series[0].as_py()] = str(d) if d is not None else None
+            d = str(d) if d is not None else None
+            s = series[0].as_py()
+            prev = out.get(s)
+            # The same max-merge rule as the loop at the bottom, NOT a plain assignment: `out`
+            # can already hold this series when merge_and_write_bounded feeds a stream chunk by
+            # chunk, and a one-row chunk carrying a null date used to overwrite the series'
+            # real max with None (caught by tests/test_bounded_merge.py's randomized cases).
+            # With an empty `out` — every merge_and_write call — the result is unchanged.
+            if s not in out or (d is not None and (prev is None or d > prev)):
+                out[s] = d
         return
 
     sarn = (same_as_next.combine_chunks()
@@ -188,7 +197,21 @@ def _dedup(table, keys, _changed_out=None, _n_existing=0):
     # New data is appended after existing, so last still means "new wins".
     t = table.append_column("__i", pa.array(range(table.num_rows), type=pa.int64()))
     t = _sort(t, tuple(keys) + ("__i",))
+    return _keep_last_sorted(t, keys, _changed_out, _n_existing)
+
+
+def _keep_last_sorted(t, keys, _changed_out=None, _n_existing=0):
+    """The half of _dedup that runs AFTER its sort, shared with merge_and_write_bounded.
+
+    `t` must already be sorted by (keys..., __i) and carry the int64 `__i` column (existing
+    rows first, then new rows, in original order). Keeps the LAST row of every key run and
+    feeds the changed-key report from the same sorted table. Extracted verbatim from _dedup
+    (2026-09-14) so the in-memory merge and the bounded, externally sorted merge share ONE
+    keep-last and ONE report implementation instead of two that could drift apart.
+    """
     n = t.num_rows
+    if n == 0:
+        return t.drop_columns(["__i"])
     if n == 1:
         if _changed_out is not None:
             _collect_changed(t, keys, None, _n_existing, _changed_out)
@@ -355,21 +378,42 @@ def _report_impossible_dates(table, out_path) -> int:
     Cheap by construction: one Arrow comparison over a column already materialised, next to a
     sort and a serialise that dominate this function's cost.
     """
+    n_bad, key, when = _impossible_in(table)
+    if not n_bad:
+        return 0
+    return _announce_impossible(n_bad, table.num_rows, key, when, out_path)
+
+
+def _impossible_in(table):
+    """(rows dated after _IMPOSSIBLE_AFTER, sample series_key, sample date) for ONE table, or
+    (0, None, None) when there are none or they cannot be computed.
+
+    The COUNT half of _report_impossible_dates, split out (2026-09-14) so that
+    merge_and_write_bounded can count per streamed chunk and still announce ONCE per file with
+    the first offending row as its sample — exactly what the in-memory path prints."""
     try:
         if "obs_date" not in table.column_names:
-            return 0
+            return 0, None, None
         col = table.column("obs_date").combine_chunks()
         bad = pc.greater(col, _IMPOSSIBLE_AFTER)
         n_bad = pc.sum(pc.cast(bad, "int64")).as_py() or 0
         if not n_bad:
-            return 0
-        _impossible_seen["rows"] += int(n_bad)
-        _impossible_seen["files"] += 1
+            return 0, None, None
         sample = table.filter(bad).slice(0, 1)
         key = (sample.column("series_key")[0].as_py()
                if "series_key" in sample.column_names else "?")
         when = sample.column("obs_date")[0].as_py()
-        print(f"[merge] IMPOSSIBLE DATES: {n_bad:,} of {table.num_rows:,} row(s) at {out_path} "
+        return int(n_bad), key, when
+    except Exception:                                        # noqa: BLE001
+        return 0, None, None                                 # never fail a good publish
+
+
+def _announce_impossible(n_bad, n_rows, key, when, out_path) -> int:
+    """The ANNOUNCE half: one aggregated counter update and one printed line per FILE."""
+    try:
+        _impossible_seen["rows"] += int(n_bad)
+        _impossible_seen["files"] += 1
+        print(f"[merge] IMPOSSIBLE DATES: {n_bad:,} of {n_rows:,} row(s) at {out_path} "
               f"are dated after {_IMPOSSIBLE_AFTER.year} — e.g. {str(key)[:80]} -> {when}. "
               f"Published anyway (dropping would be data loss decided by a heuristic), but a "
               f"time axis is almost certainly being read off a non-time dimension.", flush=True)
@@ -514,3 +558,378 @@ def merge_and_write(out_path, new_table, *, mode="merge", dedup_keys=DEDUP_KEYS,
     if report_changed_keys:
         return n, last, changed
     return n, last
+
+
+# ---------------------------------------------------------------------------------------------
+# BOUNDED MERGE — peak memory set by DuckDB's memory_limit and one streamed chunk, NOT by the
+# size of the file already published (2026-09-14).
+#
+# merge_and_write materialises the WHOLE existing parquet, concatenates the new rows, appends an
+# index, sorts (sort_by materialises a full copy through take), filters, sorts again and writes.
+# Its peak therefore scales with the STORED file, however small the tail being merged. Measured
+# on eurostat demo_r_mweek3 — 83,287,439 stored rows plus a 1,656,986-row tail — under Python
+# 3.11 / pyarrow 25.0.1: 21,057 MB peak RSS (in-process sampler) and 23,493 MB peak commit (Job
+# Object); under a 14,000 MB cap it dies in _dedup -> _sort -> take with ArrowMemoryError. On
+# the 16 GB GitHub runner that is the "runner has received a shutdown signal" which ended
+# updater-daily 34780466566 and 34841580535 inside eurostat's flows 26-50, before any state was
+# pushed — and, since nothing was saved, at the same flow on every run after.
+#
+# This path writes the SAME rows in the SAME order with the SAME keep-last winner and the SAME
+# changed-key report:
+#   * DuckDB sorts existing (read_parquet with file_row_number as __i) UNION ALL new
+#     (__i = n_existing + position) by (dedup keys..., __i) with NULLS LAST — the order
+#     _dedup's sort_by(keys + __i) produces — spilling to disk under memory_limit;
+#   * the sorted result streams back in batches; every chunk is cut at a key-run boundary (the
+#     trailing run is carried into the next chunk) and goes through _keep_last_sorted, the SAME
+#     helper _dedup calls after its own sort, so keep-last and the report cannot drift apart;
+#   * a ParquetWriter streams the kept rows to a temp file; the zero-row and never-shrink
+#     refusals run on the streamed count; blob.commit_local_file publishes it.
+# One representational difference: a column the in-memory path would have promoted to
+# `large_string` (>= 1 GiB of keys) is written as `string` here. Same values; parquet stores
+# both as UTF-8.
+# ---------------------------------------------------------------------------------------------
+
+BOUNDED_IN_MEMORY_MAX_BYTES = 4 * 1024 * 1024
+"""A stored object of at most this many bytes, merged with a tail of at most
+BOUNDED_IN_MEMORY_MAX_NEW_ROWS rows, is handed to merge_and_write unchanged — the proven path
+for every small flow. Judged in stored BYTES because one HEAD answers it before anything is
+downloaded; the densest eurostat file measured packs ~1 row per byte (DEMO_R_MWEEK3.parquet:
+84,094,441 B for 83,287,439 rows), so this keeps the in-memory table to a few million rows."""
+BOUNDED_IN_MEMORY_MAX_NEW_ROWS = 1_000_000
+BOUNDED_MEMORY_LIMIT = "2GB"
+BOUNDED_THREADS = 2
+BOUNDED_BATCH_ROWS = 1 << 19
+# DISK, NOT ONLY MEMORY (DeepSeek advisory review F3, 2026-09-15). DuckDB's default spill cap is
+# 90% of free disk, and the runner holds the unpacked state and catalogue databases on the same
+# volume; the largest eurostat stores hold 8-13 GB of uncompressed rows. The spill is capped at
+# free space minus this reserve (plus room for the output file), and a merge that
+# would get less than BOUNDED_MIN_SPILL_BYTES is refused up front with a named reason.
+BOUNDED_DISK_RESERVE_BYTES = 3 * 1024 ** 3
+BOUNDED_MIN_SPILL_BYTES = 256 * 1024 ** 2
+_BOUNDED_TYPES = (pa.string(), pa.large_string(), pa.date32(), pa.float64(), pa.float32(),
+                  pa.int64(), pa.int32(), pa.bool_())
+
+
+def _interrupted(exc) -> bool:
+    """True for an INTERRUPTION reported by a native library, which is never a property of the
+    data: DuckDB's InterruptException, or the RuntimeError('Query interrupted') DuckDB raises when
+    a Python signal handler - the orchestrator's SIGALRM UnitTimeout, or Ctrl-C - fires while a
+    query runs (measured 2026-09-14: the UnitTimeout itself never reaches Python)."""
+    if type(exc).__name__ in ("InterruptException", "KeyboardInterrupt"):
+        return True
+    # "query interrupted", not any message containing "interrupted": a fetcher's own
+    # "read interrupted" must stay one flow's error (DeepSeek advisory review F5, 2026-09-15).
+    return isinstance(exc, RuntimeError) and "query interrupted" in str(exc).lower()
+
+
+def _unit_timeout_fired() -> bool:
+    """True once the orchestrator's per-unit alarm has fired (updater.orchestrate.UNIT_TIMEOUT_FIRED).
+    Any error surfacing from DuckDB after that is the timeout arriving in another form."""
+    import sys                                                       # noqa: PLC0415
+    orch = sys.modules.get("updater.orchestrate")
+    return bool(orch is not None and getattr(orch, "UNIT_TIMEOUT_FIRED", False))
+
+
+def _bounded_temp_cap(spill: str, stored_bytes) -> int:
+    """Bytes DuckDB may spill for one bounded merge: free space on the spill volume minus
+    BOUNDED_DISK_RESERVE_BYTES (env AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES) and the stored object's
+    size once more (room for the new output file; under r2 its local copy is already on disk when
+    free space is measured, so it is not counted twice). Raises DefinitiveError, before any
+    query runs, when that leaves less than BOUNDED_MIN_SPILL_BYTES."""
+    import os                                                        # noqa: PLC0415
+    import shutil                                                    # noqa: PLC0415
+    free = shutil.disk_usage(spill).free
+    reserve = int(os.environ.get("AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES", BOUNDED_DISK_RESERVE_BYTES))
+    cap = free - reserve - int(stored_bytes or 0)
+    if cap < BOUNDED_MIN_SPILL_BYTES:
+        raise DefinitiveError(
+            f"bounded merge refused: {free / 1024 ** 3:.1f} GiB free on the spill disk leaves "
+            f"{max(cap, 0) / 1024 ** 2:,.0f} MiB after the reserve, below the "
+            f"{BOUNDED_MIN_SPILL_BYTES / 1024 ** 2:,.0f} MiB minimum; existing data kept")
+    return cap
+
+
+def _mirror_large_string(schema, ex_types, new_table, local_src):
+    """String column types exactly as merge_and_write would write them (DeepSeek advisory re-review
+    N1, 2026-09-15). merge_and_write keeps a published large_string column large_string (its
+    permissive concat), and when any 32-bit string column of the merged table reaches
+    _LARGE_STRING_TRIGGER bytes it promotes EVERY string column (_needs_large_string and
+    _promote_large_string). pyarrow stores that type in the file, so readers get it back; writing
+    plain string instead would change what they read. The bounded path never holds the merged column,
+    so the size test uses the stored file's uncompressed column bytes plus the new rows' bytes."""
+    stored_bytes = {}
+    if local_src is not None:
+        md = pq.read_metadata(local_src)
+        for g in range(md.num_row_groups):
+            rg = md.row_group(g)
+            for c in range(rg.num_columns):
+                col = rg.column(c)
+                stored_bytes[col.path_in_schema] = (stored_bytes.get(col.path_in_schema, 0)
+                                                    + col.total_uncompressed_size)
+
+    def published_large(name):
+        return ex_types is not None and ex_types.get(name) == pa.large_string()
+
+    promote_all = any(
+        f.type == pa.string() and not published_large(f.name)
+        and stored_bytes.get(f.name, 0) + new_table.column(f.name).nbytes >= _LARGE_STRING_TRIGGER
+        for f in schema)
+    return pa.schema([pa.field(f.name, pa.large_string())
+                      if f.type == pa.string() and (promote_all or published_large(f.name)) else f
+                      for f in schema])
+
+
+def _bounded_type(t):
+    return pa.string() if t == pa.large_string() else t
+
+
+def _qi(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _trailing_run_start(t, keys) -> int:
+    """Row index where the LAST key run of a keys-sorted table starts (0 when it is one run).
+    Key equality uses the same GROUPING semantics as _keep_last_sorted: null == null."""
+    n = t.num_rows
+    if n <= 1:
+        return 0
+    same = None
+    for k in keys:
+        col = t.column(k).combine_chunks()
+        lhs, rhs = col.slice(0, n - 1), col.slice(1, n - 1)
+        eq = pc.or_(pc.fill_null(pc.equal(lhs, rhs), False),
+                    pc.and_(pc.is_null(lhs), pc.is_null(rhs)))
+        same = eq if same is None else pc.and_(same, eq)
+    ends = pc.indices_nonzero(pc.invert(same))
+    return 0 if len(ends) == 0 else ends[len(ends) - 1].as_py() + 1
+
+
+def _bounded_spill_dir() -> str:
+    """A DuckDB spill directory private to this call (the R228 rule: a shared temp_directory
+    makes concurrent sorts collide on DuckDB's fixed spill-file name). Beside the repo's data
+    tree by default, as core/derive_csv.py does; ECONDL_DUCKDB_TMP overrides."""
+    import os                                                        # noqa: PLC0415
+    import uuid                                                      # noqa: PLC0415
+    base = os.environ.get("ECONDL_DUCKDB_TMP")
+    if not base:
+        from . import config                                         # noqa: PLC0415
+        base = os.path.join(config.ROOT, "data", "_duckdb_spill")
+    d = os.path.join(base, f"merge_pid{os.getpid()}_{uuid.uuid4().hex[:8]}")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def merge_and_write_bounded(out_path, new_table, *, dedup_keys=DEDUP_KEYS, min_ratio=0.97,
+                            allow_empty=False, report_changed_keys=False,
+                            changed_keys_cap=CHANGED_KEYS_CAP, in_memory_max_bytes=None,
+                            in_memory_max_new_rows=None, memory_limit=None, batch_rows=None):
+    """merge_and_write(out_path, new_table, mode="merge", ...) with memory independent of the
+    stored file's size. Same contract: returns (rows_written, last_obs_date), plus the
+    changed-key dict when report_changed_keys=True; raises ValueError from the report's entry
+    guards before touching the store; raises DefinitiveError on a zero-row, would-shrink or
+    column-drop publish, leaving the published object untouched.
+
+    Inputs at or under BOUNDED_IN_MEMORY_MAX_BYTES stored bytes and
+    BOUNDED_IN_MEMORY_MAX_NEW_ROWS new rows go to merge_and_write itself. Everything larger is
+    merged by the external sort described above. Supports the flat column shapes a giant flow
+    stores (_BOUNDED_TYPES); any other shape is refused rather than guessed at.
+    """
+    import os                                                        # noqa: PLC0415
+    import shutil                                                    # noqa: PLC0415
+    import uuid                                                      # noqa: PLC0415
+
+    keys = list(dedup_keys)
+    if report_changed_keys:
+        # The same entry guards, with the same messages, as merge_and_write.
+        if new_table.num_rows > changed_keys_cap:
+            raise ValueError(
+                f"report_changed_keys refused: new_table has {new_table.num_rows:,} rows "
+                f"(> cap {changed_keys_cap:,}); raise changed_keys_cap deliberately or "
+                f"do not opt in for this source")
+        _absent = [k for k in keys if k not in new_table.column_names]
+        if _absent:
+            raise ValueError(
+                f"report_changed_keys refused: dedup key(s) {_absent} absent from "
+                f"new_table columns {new_table.column_names} — the report would be "
+                f"empty or keyed by the wrong column")
+
+    max_bytes = BOUNDED_IN_MEMORY_MAX_BYTES if in_memory_max_bytes is None else in_memory_max_bytes
+    max_new = (BOUNDED_IN_MEMORY_MAX_NEW_ROWS if in_memory_max_new_rows is None
+               else in_memory_max_new_rows)
+    stored = fsblob.stored_size(out_path)
+    if (stored is None or stored <= max_bytes) and new_table.num_rows <= max_new:
+        return merge_and_write(out_path, new_table, mode="merge", dedup_keys=dedup_keys,
+                               min_ratio=min_ratio, allow_empty=allow_empty,
+                               report_changed_keys=report_changed_keys,
+                               changed_keys_cap=changed_keys_cap)
+
+    absent = [k for k in keys if k not in new_table.column_names]
+    if absent:
+        raise DefinitiveError(
+            f"dedup key(s) {absent} absent from columns {new_table.column_names} at "
+            f"{out_path}; refusing to merge (dedup would silently break)")
+
+    import duckdb                                                    # noqa: PLC0415
+
+    copy = fsblob.local_copy(out_path) if stored is not None else None
+    local_src, src_is_tmp = copy if copy is not None else (None, False)
+    spill = None
+    tmp = f"{out_path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+    writer = None
+    published = False
+    try:
+        cols = list(new_table.column_names)
+        if local_src is not None:
+            old_rows = pq.read_metadata(local_src).num_rows
+            ex_schema = pq.read_schema(local_src)
+            order = list(ex_schema.names)
+            missing = [c for c in order if c not in cols]
+            if missing:
+                raise DefinitiveError(
+                    f"new data is missing column(s) {missing} present in the published file "
+                    f"(existing={order}, new={cols}); refusing to "
+                    f"drop historical columns — keeping old data, surfacing as partial")
+            extra = [c for c in cols if c not in order]
+            if extra:
+                raise DefinitiveError(
+                    f"bounded merge at {out_path}: new column(s) {extra} are not in the "
+                    f"published file {order}; refusing — merge_and_write would null-fill "
+                    f"them, this path does not widen a schema. Existing data kept.")
+            ex_types = {f.name: f.type for f in ex_schema}
+        else:
+            old_rows, order, ex_types = 0, cols, None
+        fields = []
+        for name in order:
+            nt = new_table.schema.field(name).type
+            et = ex_types[name] if ex_types is not None else nt
+            if (name in ("__i", "file_row_number") or nt not in _BOUNDED_TYPES
+                    or et not in _BOUNDED_TYPES or _bounded_type(nt) != _bounded_type(et)):
+                raise DefinitiveError(
+                    f"bounded merge at {out_path}: column {name!r} (new {nt}, published {et}) "
+                    f"is outside what this path round-trips; refusing. Existing data kept.")
+            fields.append(pa.field(name, _bounded_type(nt)))
+        out_schema = _mirror_large_string(pa.schema(fields), ex_types, new_table, local_src)
+
+        spill = _bounded_spill_dir()
+        con = duckdb.connect()
+        try:
+            _limit = (memory_limit or os.environ.get("AQUEDUCT_BOUNDED_MERGE_MEMORY")
+                      or BOUNDED_MEMORY_LIMIT)
+            if not all(ch.isalnum() or ch == "." for ch in str(_limit)):
+                raise ValueError(f"bad DuckDB memory_limit {_limit!r}")
+            con.execute(f"SET memory_limit='{_limit}'")
+            con.execute(f"PRAGMA threads={BOUNDED_THREADS}")
+            con.execute("SET preserve_insertion_order=false")
+            con.execute("SET temp_directory='%s'"
+                        % spill.replace("\\", "/").replace("'", "''"))
+            con.execute(f"SET max_temp_directory_size='{_bounded_temp_cap(spill, stored) // 1_000_000}MB'")
+            new_i = new_table.select(order).append_column(
+                "__i", pa.array(range(old_rows, old_rows + new_table.num_rows), type=pa.int64()))
+            con.register("__bounded_new_rows", new_i)
+            sel = ", ".join(_qi(c) for c in order)
+            parts = []
+            if local_src is not None:
+                src_q = local_src.replace("\\", "/").replace("'", "''")
+                parts.append(f"SELECT {sel}, CAST(file_row_number AS BIGINT) AS __i "
+                             f"FROM read_parquet('{src_q}', file_row_number=true)")
+            parts.append(f"SELECT {sel}, __i FROM __bounded_new_rows")
+            order_by = ", ".join(f"{_qi(k)} ASC NULLS LAST" for k in keys) + ", __i ASC"
+            reader = con.execute(
+                f"SELECT * FROM ({' UNION ALL '.join(parts)}) AS u ORDER BY {order_by}"
+            ).to_arrow_reader(batch_rows or BOUNDED_BATCH_ROWS)
+
+            changed = {} if report_changed_keys else None
+            n_out = 0
+            last = None
+            imp = [0, None, None]              # rows, first sample key, first sample date
+
+            def emit(chunk):
+                nonlocal writer, n_out, last
+                if chunk.num_rows == 0:
+                    return
+                kept = _keep_last_sorted(chunk.combine_chunks(), keys, changed, old_rows)
+                if kept.num_rows == 0:
+                    return
+                kept = kept.cast(out_schema)
+                if writer is None:
+                    writer = pq.ParquetWriter(tmp, out_schema, compression="zstd")
+                writer.write_table(kept)
+                n_out += kept.num_rows
+                if "obs_date" in kept.column_names:
+                    m = pc.max(kept.column("obs_date")).as_py()
+                    if m is not None and (last is None or m > last):
+                        last = m
+                nb, k, w = _impossible_in(kept)
+                if nb:
+                    if not imp[0]:
+                        imp[1], imp[2] = k, w
+                    imp[0] += nb
+
+            carry = None
+            for batch in reader:
+                if batch.num_rows == 0:
+                    continue
+                t = pa.Table.from_batches([batch])
+                if carry is not None and carry.num_rows:
+                    t = pa.concat_tables([carry, t])
+                cut = _trailing_run_start(t, keys)
+                emit(t.slice(0, cut))
+                carry = t.slice(cut)
+            if carry is not None:
+                emit(carry)
+        finally:
+            con.close()
+
+        if writer is not None:
+            writer.close()
+            writer = None
+        if n_out == 0 and not allow_empty:
+            raise DefinitiveError(f"refusing to publish 0 rows to {out_path} (existing={old_rows})")
+        if old_rows and n_out < old_rows * min_ratio:
+            raise DefinitiveError(
+                f"refusing shrink {old_rows}->{n_out} at {out_path} (< {min_ratio:.0%} of existing)")
+        if n_out == 0:
+            pq.write_table(out_schema.empty_table(), tmp, compression="zstd")
+        if imp[0]:
+            _announce_impossible(imp[0], n_out, imp[1], imp[2], out_path)
+        fsblob.commit_local_file(tmp, out_path)
+        published = True
+        last_s = str(last) if last is not None else None
+    except (duckdb.Error, OSError, MemoryError, pa.ArrowMemoryError) as e:
+        # A spill directory that runs out of disk, an allocation DuckDB cannot satisfy inside its
+        # limit, a failed read of the downloaded copy: nothing was published, so this is the
+        # same outcome as a refusal — the stored object is untouched and the caller keeps the
+        # flow for a retry (_giant books it transient and does not advance its vintage). Letting
+        # it escape instead would end the whole giant sweep on one flow.
+        if published or _interrupted(e) or _unit_timeout_fired():
+            # An interruption is the orchestrator's hard timeout (or Ctrl-C) arriving through
+            # DuckDB, never a property of this flow: it must keep ending the unit.
+            raise
+        raise DefinitiveError(
+            f"bounded merge at {out_path} failed before publishing "
+            f"({type(e).__name__}: {str(e)[:200]}); existing data kept") from e
+    finally:
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:                                        # noqa: BLE001
+                pass
+        if not published and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        if src_is_tmp and local_src and os.path.exists(local_src):
+            try:
+                os.remove(local_src)
+            except OSError:
+                pass
+        if spill:
+            shutil.rmtree(spill, ignore_errors=True)
+        try:
+            pa.default_memory_pool().release_unused()
+        except Exception:                                            # noqa: BLE001
+            pass
+    if report_changed_keys:
+        return n_out, last_s, changed
+    return n_out, last_s

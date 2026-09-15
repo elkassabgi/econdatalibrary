@@ -42,6 +42,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import sys
 import time
 
 import pyarrow as pa
@@ -184,6 +185,8 @@ def _max_obs_date(out_path: str) -> str | None:
         if complete:
             return str(best) if best is not None else None
     except Exception as e:                                   # noqa: BLE001
+        if _is_unit_timeout(e):
+            raise           # the hard per-unit limit, not an unreadable footer (2026-09-14)
         # Fall through to the batched scan rather than returning None: see below for
         # why a silent None here is expensive, not merely imprecise.
         print(f"[giant] footer stats unusable for {os.path.basename(out_path)} "
@@ -200,6 +203,8 @@ def _max_obs_date(out_path: str) -> str | None:
                 best = m
         return str(best) if best is not None else None
     except Exception as e:                                   # noqa: BLE001
+        if _is_unit_timeout(e):
+            raise           # never "unreadable -> full re-pull" for the hard per-unit limit
         # LOUD, because the caller cannot tell this apart from "no data yet". Returning
         # None is still the right fallback (a full re-pull is correct, just expensive) —
         # but it must never again be invisible. Ledger: every early exit has to answer
@@ -208,6 +213,28 @@ def _max_obs_date(out_path: str) -> str | None:
               f"{os.path.basename(out_path)} ({type(e).__name__}: {e}); falling back to a "
               f"FULL re-pull of this flow (no startPeriod tail)", flush=True)
         return None
+
+
+def _is_unit_timeout(exc) -> bool:
+    """True when `exc` is, or stands in for, the orchestrator's SIGALRM UnitTimeout.
+
+    Three tests, because the exception type alone is not reliable:
+      * the class name (not an import: _giant is loaded by the orchestrator's strategies) -
+        UnitTimeout subclasses plain Exception, so every `except Exception` in the flow loop
+        would otherwise book the hard per-unit limit as one more transient flow;
+      * the orchestrator's UNIT_TIMEOUT_FIRED flag, set by the alarm before it raises - DuckDB,
+        interrupted mid-query by that alarm, hands back RuntimeError('Query interrupted')
+        instead of UnitTimeout (measured by the 2026-09-14 review), and the one-shot timer
+        never fires again;
+      * an interruption reported by a native library, for the same reason when no orchestrator
+        is loaded (Ctrl-C on a desktop run).
+    """
+    if any(c.__name__ == "UnitTimeout" for c in type(exc).__mro__):
+        return True
+    orch = sys.modules.get("updater.orchestrate")
+    if orch is not None and getattr(orch, "UNIT_TIMEOUT_FIRED", False):
+        return True
+    return merge._interrupted(exc)
 
 
 def select_flows(catalog: dict, state: dict, *, max_flows=DEFAULT_MAX_FLOWS_PER_TICK):
@@ -237,7 +264,8 @@ def select_flows(catalog: dict, state: dict, *, max_flows=DEFAULT_MAX_FLOWS_PER_
 
 def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, timeout,
               max_flows=DEFAULT_MAX_FLOWS_PER_TICK, min_ratio=0.97,
-              report_changed_flows: bool = False):
+              report_changed_flows: bool = False, bounded_merge: bool = False,
+              checkpoint_every: int | None = None):
     """Generic S4 driver. Sources supply two callables:
 
       fetch_catalog() -> {flow_id: {"vintage", "filename", **meta}}   (raises Transient on net fail)
@@ -262,7 +290,20 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     fetcher's flow ids AS ITS CATALOGUE SPELLS THEM — for a grouped source the flow IS the
     catalogue id suffix (`eurostat:aact_ali01`), which `_catalog_ids_for`'s exact tier
     resolves by primary key. Never `series_cursors` (base.py: three contradictory
-    contracts), never derived from LastModified or from `selected`."""
+    contracts), never derived from LastModified or from `selected`.
+
+    bounded_merge=True (opt-in; default False keeps every other caller byte-identical) merges
+    each flow through merge.merge_and_write_bounded, whose peak memory does not grow with the
+    stored file. Without it one merge materialises the whole published parquet: eurostat's
+    demo_r_mweek3 (83,287,439 stored rows) peaked at 21,057 MB RSS for a 1,656,986-row tail and
+    destroyed the 16 GB runner on updater-daily 34780466566 and 34841580535.
+
+    checkpoint_every=N (opt-in) also saves the per-flow sidecar after every N flows. save_state
+    otherwise runs once, after the loop, so anything that ENDS the process inside the loop - a
+    runner OOM kill, the orchestrator's SIGALRM UnitTimeout, a job timeout - discards every
+    flow's recorded progress and the next tick re-selects the identical flows in the identical
+    order, meeting the identical failure. A failed checkpoint PUT is reported and the sweep goes
+    on; the final save still raises loudly."""
     source_dir = (unit.out_paths or [None])[0]
     if source_dir is None:
         raise DefinitiveError(f"{source}: unit has no out_paths (source dir unknown)")
@@ -292,7 +333,54 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     changed_flows: dict = {}   # {flow_id: max changed obs_date | None}, merge-measured
     merged_n = over_cap_n = 0  # flows that reached the merge; of those, over the report cap
 
+    if bounded_merge and not checkpoint_every:
+        # The timeout handling below that keeps a hard per-unit limit from being booked as one
+        # more failed flow is tied to checkpointing, so the bounded merge (the path a timeout
+        # most often lands in) is refused without it (DeepSeek advisory review F2, 2026-09-15).
+        raise ValueError("run_giant: bounded_merge=True requires checkpoint_every")
+
+    def _merge(out_path, table, **kw):
+        # bounded_merge=False is the pre-existing call, unchanged.
+        if bounded_merge:
+            return merge.merge_and_write_bounded(out_path, table, **kw)
+        return merge.merge_and_write(out_path, table, mode="merge", **kw)
+
+    def _checkpoint(done: int, why: str) -> None:
+        try:
+            save_state(source_dir, state)
+        except Exception as e:                          # noqa: BLE001
+            if _is_unit_timeout(e):
+                raise
+            print(f"[{source}] checkpoint ({why}) after {done:,} flow(s) NOT saved "
+                  f"({type(e).__name__}: {str(e)[:120]}); the sweep continues and the "
+                  f"end-of-run save still runs", flush=True)
+
+    # The two places in the loop that spend real time OUTSIDE every per-flow handler: the
+    # rate pause and the stored-footer read (a whole-object GET under r2). A timeout landing
+    # in either used to end the sweep without the timeout checkpoint (2026-09-14 review).
+    # Behaviour is otherwise unchanged: everything still propagates.
+    def _pause():
+        try:
+            time.sleep(rate)
+        except Exception as e:                          # noqa: BLE001
+            if checkpoint_every and _is_unit_timeout(e):
+                _checkpoint(n_done, "unit timeout")
+            raise
+
+    def _stored_max(out_path):
+        try:
+            return _max_obs_date(out_path)
+        except Exception as e:                          # noqa: BLE001
+            if checkpoint_every and _is_unit_timeout(e):
+                _checkpoint(n_done - 1, "unit timeout")
+            raise
+
     for n_done, fid in enumerate(selected, 1):
+        # CHECKPOINT (opt-in): n_done - 1 flows are complete at this point. Without it the only
+        # save_state is the one after the loop, which a killed or SIGALRM-interrupted sweep never
+        # reaches (see the checkpoint_every note in the docstring).
+        if checkpoint_every and n_done > 1 and (n_done - 1) % checkpoint_every == 0:
+            _checkpoint(n_done - 1, "periodic")
         # Every 25 flows, and always on the last one. Bounded on purpose: one line per flow
         # would bury a 1,400-flow sweep's real events in noise.
         if n_done % 25 == 0 or n_done == len(selected):
@@ -302,25 +390,33 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                   f"{time.time() - t_start:,.0f}s", flush=True)
         meta = catalog[fid]
         out_path = os.path.join(source_dir, meta["filename"])
-        since = sane_since(_max_obs_date(out_path))
+        since = sane_since(_stored_max(out_path))
         flow_st = dict(state.get(fid, {}))
         try:
             table, status = fetch_flow(fid, meta, since, sess)
         except TransientError as e:
+            if checkpoint_every and _is_unit_timeout(e):
+                # Raised after the unit's alarm fired: the timeout in another form, not this flow's
+                # failure (DeepSeek advisory review F2, 2026-09-15).
+                _checkpoint(n_done - 1, "unit timeout")
+                raise
             # NAME THE FLOW. _giant drives the biggest sources (oecd et al) over `selected`
             # flows, so an unlabelled count is the least actionable row in the system: hundreds
             # of flows, one number, five different causes below.
             tally.transient_unit(f"{fid}: {str(e)[-60:]}")
             flow_st.update(status="transient_fail")  # vintage NOT advanced -> reselected next tick
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
         except DefinitiveError as e:
+            if checkpoint_every and _is_unit_timeout(e):
+                _checkpoint(n_done - 1, "unit timeout")   # see the TransientError handler
+                raise
             # A structural/hard error on ONE flow must not abort the whole giant.
             tally.structural_unit(f"{fid}: {str(e)[-60:]}")
             flow_st.update(status="definitive_fail", error=str(e)[:200])
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
         except Exception as e:                      # noqa: BLE001
             # NEITHER OF THE TWO HANDLERS ABOVE CATCHES AN UNEXPECTED ERROR, AND ONE FLOW
@@ -335,23 +431,29 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             # whole source on a transient count the way it can on a structural one. This
             # recovers no rows by itself - it converts a run-killing crash into one named,
             # retryable flow.
+            if checkpoint_every and _is_unit_timeout(e):
+                # The orchestrator's hard per-unit limit is NOT one more transient flow: booking
+                # it here let the sweep run on past the cap (2026-09-14 review). Save what is
+                # done, then let it end the unit as the orchestrator intends.
+                _checkpoint(n_done - 1, "unit timeout")
+                raise
             tally.transient_unit(f"{fid}: UNEXPECTED {type(e).__name__}: {str(e)[-60:]}")
             flow_st.update(status="transient_fail")
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
 
         if status == "transient":
             tally.transient_unit(f"{fid}: fetch_flow reported transient")
             flow_st.update(status="transient_fail")
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
         if status == "structural":
             tally.structural_unit(f"{fid}: fetch_flow reported structural")
             flow_st.update(status="definitive_fail")
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
         if status == "no_time_dimension":
             # The flow's export has no TIME_PERIOD column — its DSD declares no SDMX
@@ -365,7 +467,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             # blob). NOT `since`: sane_since() ALSO returns None when a has-rows store's max
             # date is corrupt far-future, which would misfile a genuine break as
             # outside-the-model — the exact conflation this branch exists to avoid.
-            if _max_obs_date(out_path) is not None:
+            if _stored_max(out_path) is not None:
                 tally.structural_unit(
                     f"{fid}: TIME_PERIOD column GONE from a flow that has rows (break)")
                 flow_st.update(status="definitive_fail")
@@ -375,7 +477,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                 # dataset, instead of re-fetching a permanent condition every tick.
                 flow_st.update(status="no_time_dimension", vintage=meta.get("vintage"))
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
         if status in ("empty", "no_change") or table is None or table.num_rows == 0:
             # 200 with no NEW rows in the tail = genuine quiet flow; SAFE to advance the
@@ -383,7 +485,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             tally.empty_unit()
             flow_st.update(status="empty", vintage=meta.get("vintage"))
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
             continue
 
         # status == "ok": merge the tail into the per-flow parquet (never-shrink/dedup).
@@ -402,10 +504,9 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                 # exception path. The dedup-key refusal is unreachable here: every giant
                 # fetch_flow builds (series_key, obs_date, value) itself.
                 if table.num_rows <= merge.CHANGED_KEYS_CAP:
-                    n, last, _rep = merge.merge_and_write(out_path, table, mode="merge",
-                                                          min_ratio=min_ratio,
-                                                          report_changed_keys=True,
-                                                          changed_keys_cap=merge.CHANGED_KEYS_CAP)
+                    n, last, _rep = _merge(out_path, table, min_ratio=min_ratio,
+                                           report_changed_keys=True,
+                                           changed_keys_cap=merge.CHANGED_KEYS_CAP)
                     _flow_changed = bool(_rep)
                     _when = (max((str(v) for v in _rep.values() if v), default=None)
                              or (str(last) if last else None))
@@ -418,14 +519,18 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                     print(f"[{source}] {fid}: {table.num_rows:,} new rows exceed the "
                           f"changed-flow report cap ({merge.CHANGED_KEYS_CAP:,}) — merged "
                           f"without the report; flow treated as CHANGED", flush=True)
-                    n, last = merge.merge_and_write(out_path, table, mode="merge",
-                                                    min_ratio=min_ratio)
+                    n, last = _merge(out_path, table, min_ratio=min_ratio)
                     _flow_changed, _when = True, (str(last) if last else None)
                 if _flow_changed:
                     changed_flows[fid] = _when
             else:
-                n, last = merge.merge_and_write(out_path, table, mode="merge", min_ratio=min_ratio)
+                n, last = _merge(out_path, table, min_ratio=min_ratio)
         except DefinitiveError as e:
+            if checkpoint_every and _is_unit_timeout(e):
+                # A merge refusal raised after the unit's alarm fired (a spill or download error
+                # DuckDB reports instead of the interruption) ends the unit, not one flow.
+                _checkpoint(n_done - 1, "unit timeout")
+                raise
             # A would-shrink / column-drop / 0-row merge: keep old data, surface partial,
             # do NOT advance vintage so it is reattempted (could be a truncated upstream).
             # WHICH guard tripped is the difference between "upstream truncated" and "we broke
@@ -433,7 +538,22 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             tally.transient_unit(f"{fid}: merge guard — {str(e)[-60:]}")
             flow_st.update(status="partial", error=str(e)[:200])
             state[fid] = flow_st
-            time.sleep(rate)
+            _pause()
+            continue
+        except Exception as e:                      # noqa: BLE001
+            if checkpoint_every and _is_unit_timeout(e):
+                _checkpoint(n_done - 1, "unit timeout")
+                raise
+            if not bounded_merge:
+                raise                               # other callers: unchanged
+            # The bounded merge has more ways to fail than the in-memory one: an R2 download,
+            # a DuckDB spill that runs out of disk, the Windows replace race. None of them
+            # publishes anything, so one flow is retried next tick instead of the sweep ending
+            # here and the same flow ending the next sweep too (2026-09-14 review).
+            tally.transient_unit(f"{fid}: merge UNEXPECTED {type(e).__name__}: {str(e)[-60:]}")
+            flow_st.update(status="transient_fail")
+            state[fid] = flow_st
+            _pause()
             continue
 
         added = table.num_rows
@@ -444,7 +564,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         flow_st.update(status="ok", vintage=meta.get("vintage"), last_obs_date=last,
                        obs_count=n)
         state[fid] = flow_st
-        time.sleep(rate)
+        _pause()
 
     # Mark flows present in the catalogue but never touched (not selected) so first-ever
     # runs don't perpetually re-select everything: only flows we DIDN'T select keep their
