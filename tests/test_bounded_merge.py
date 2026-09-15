@@ -278,7 +278,7 @@ def test_run_giant_uses_the_bounded_merge_only_when_asked(tmp_path, monkeypatch)
 
     monkeypatch.setattr(merge, "merge_and_write_bounded",
                         lambda *a, **k: calls.append(1) or real(*a, **k))
-    assert _giant_run(tmp_path / "bounded", monkeypatch, bounded_merge=True,
+    assert _giant_run(tmp_path / "bounded", monkeypatch, bounded_merge=True, checkpoint_every=10,
                       report_changed_flows=True).status == "ok"
     assert len(calls) == 2
 
@@ -471,6 +471,90 @@ def test_a_lone_carriage_return_is_refused_not_silently_dropped(monkeypatch):
     monkeypatch.setattr(eurostat, "MAX_FLOW_ROWS", 2)
     with pytest.raises(eurostat.csv.Error):
         eurostat._parse_csv(lf.replace(b"\n", b"\r"))               # CR-only: no LF to count
+
+
+# ---- 8. timeout and disk guards (DeepSeek advisory review, 2026-09-15) --------------------
+
+def test_bounded_merge_without_checkpointing_is_refused(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="checkpoint_every"):
+        _giant_run(tmp_path / "nockpt", monkeypatch, bounded_merge=True)
+
+
+@pytest.mark.parametrize("where", ["fetch_transient", "fetch_definitive", "merge_guard"])
+def test_an_error_raised_after_the_unit_alarm_fired_ends_the_sweep(tmp_path, monkeypatch, where):
+    """The alarm handler sets UNIT_TIMEOUT_FIRED, but what surfaces can be any error type: a
+    TransientError from the fetch's HTTP layer, a DefinitiveError from the bounded merge's spill.
+    Booking it as one flow's failure let the sweep run on past the hard limit."""
+    from updater import orchestrate
+    from updater.errors import TransientError
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
+    fetched = []
+
+    def fetch_flow(fid, meta, since, session):
+        fetched.append(fid)
+        if fid == "zz03" and where.startswith("fetch"):
+            orchestrate.UNIT_TIMEOUT_FIRED = True
+            raise (TransientError if where == "fetch_transient" else DefinitiveError)("after the alarm")
+        return _tbl([("k", 19000, 1.0)]), "ok"
+
+    flows = _eurostat_sweep(tmp_path, monkeypatch, fetch_flow, n=8)
+    if where == "merge_guard":
+        real = merge.merge_and_write_bounded
+
+        def merge_after_alarm(out_path, table, **kw):
+            if out_path.endswith("ZZ03.parquet"):
+                orchestrate.UNIT_TIMEOUT_FIRED = True
+                raise DefinitiveError("bounded merge failed before publishing (OSError: no space)")
+            return real(out_path, table, **kw)
+
+        monkeypatch.setattr(merge, "merge_and_write_bounded", merge_after_alarm)
+    with pytest.raises((TransientError, DefinitiveError)):
+        eurostat.update(_Unit(str(tmp_path)), None)
+    assert fetched == flows[:4], fetched
+    state = json.loads((tmp_path / "_giant_state.json").read_text(encoding="utf-8"))
+    assert {f for f, s in state.items() if s.get("status") == "ok"} == set(flows[:3])
+
+
+def test_the_bounded_merge_reraises_instead_of_wrapping_once_the_alarm_fired(tmp_path, monkeypatch):
+    from updater import orchestrate
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
+    store = tmp_path / "S.parquet"
+    pq.write_table(_tbl([("A", 19000, 1.0)]), store)
+    before = store.read_bytes()
+
+    def no_space(*_a, **_k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(blob, "commit_local_file", no_space)
+    with pytest.raises(DefinitiveError, match="failed before publishing"):
+        merge.merge_and_write_bounded(str(store), _tbl([("A", 19001, 2.0)]), **FORCE_BOUNDED)
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", True)
+    with pytest.raises(OSError):
+        merge.merge_and_write_bounded(str(store), _tbl([("A", 19001, 2.0)]), **FORCE_BOUNDED)
+    assert store.read_bytes() == before
+
+
+def test_the_bounded_merge_refuses_before_any_query_when_the_spill_disk_is_short(tmp_path,
+                                                                               monkeypatch):
+    import shutil
+    from collections import namedtuple
+    usage = namedtuple("usage", "total used free")
+    store = tmp_path / "S.parquet"
+    pq.write_table(_tbl([("A", 19000, 1.0)] * 10), store)
+    before = store.read_bytes()
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: usage(10 * 2**30, 9 * 2**30, 2**30))
+    with pytest.raises(DefinitiveError, match="spill disk"):
+        merge.merge_and_write_bounded(str(store), _tbl([("A", 19001, 2.0)]), **FORCE_BOUNDED)
+    assert store.read_bytes() == before
+    assert os.listdir(tmp_path / "_spill") == []
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: usage(100 * 2**30, 50 * 2**30, 50 * 2**30))
+    assert merge._bounded_temp_cap(str(tmp_path), 1000) == (
+        50 * 2**30 - merge.BOUNDED_DISK_RESERVE_BYTES - 2000)
+
+
+def test_only_duckdbs_query_interruption_counts_as_the_timeout():
+    assert merge._interrupted(RuntimeError("Query interrupted"))
+    assert not merge._interrupted(RuntimeError("read interrupted by the peer"))
 
 
 # ---- 7. plain-body ceiling ------------------------------------------------------------------

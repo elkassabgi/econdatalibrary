@@ -333,6 +333,12 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     changed_flows: dict = {}   # {flow_id: max changed obs_date | None}, merge-measured
     merged_n = over_cap_n = 0  # flows that reached the merge; of those, over the report cap
 
+    if bounded_merge and not checkpoint_every:
+        # The timeout handling below that keeps a hard per-unit limit from being booked as one
+        # more failed flow is tied to checkpointing, so the bounded merge (the path a timeout
+        # most often lands in) is refused without it (DeepSeek advisory review F2, 2026-09-15).
+        raise ValueError("run_giant: bounded_merge=True requires checkpoint_every")
+
     def _merge(out_path, table, **kw):
         # bounded_merge=False is the pre-existing call, unchanged.
         if bounded_merge:
@@ -389,6 +395,11 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         try:
             table, status = fetch_flow(fid, meta, since, sess)
         except TransientError as e:
+            if checkpoint_every and _is_unit_timeout(e):
+                # Raised after the unit's alarm fired: the timeout in another form, not this flow's
+                # failure (DeepSeek advisory review F2, 2026-09-15).
+                _checkpoint(n_done - 1, "unit timeout")
+                raise
             # NAME THE FLOW. _giant drives the biggest sources (oecd et al) over `selected`
             # flows, so an unlabelled count is the least actionable row in the system: hundreds
             # of flows, one number, five different causes below.
@@ -398,6 +409,9 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             _pause()
             continue
         except DefinitiveError as e:
+            if checkpoint_every and _is_unit_timeout(e):
+                _checkpoint(n_done - 1, "unit timeout")   # see the TransientError handler
+                raise
             # A structural/hard error on ONE flow must not abort the whole giant.
             tally.structural_unit(f"{fid}: {str(e)[-60:]}")
             flow_st.update(status="definitive_fail", error=str(e)[:200])
@@ -512,6 +526,11 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             else:
                 n, last = _merge(out_path, table, min_ratio=min_ratio)
         except DefinitiveError as e:
+            if checkpoint_every and _is_unit_timeout(e):
+                # A merge refusal raised after the unit's alarm fired (a spill or download error
+                # DuckDB reports instead of the interruption) ends the unit, not one flow.
+                _checkpoint(n_done - 1, "unit timeout")
+                raise
             # A would-shrink / column-drop / 0-row merge: keep old data, surface partial,
             # do NOT advance vintage so it is reattempted (could be a truncated upstream).
             # WHICH guard tripped is the difference between "upstream truncated" and "we broke

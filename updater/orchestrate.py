@@ -304,7 +304,6 @@ class _unit_deadline:
 
     def __exit__(self, *exc):
         global UNIT_TIMEOUT_FIRED
-        UNIT_TIMEOUT_FIRED = False
         if self.armed:
             try:
                 import signal
@@ -312,6 +311,9 @@ class _unit_deadline:
                 signal.signal(signal.SIGALRM, self._prev)
             except Exception:                                # noqa: BLE001
                 pass
+        # Cleared only after the timer is disarmed, so an alarm landing in between is still
+        # attributed to this unit (DeepSeek advisory review F5, 2026-09-15).
+        UNIT_TIMEOUT_FIRED = False
         return False
 
 

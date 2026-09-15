@@ -599,6 +599,13 @@ BOUNDED_IN_MEMORY_MAX_NEW_ROWS = 1_000_000
 BOUNDED_MEMORY_LIMIT = "2GB"
 BOUNDED_THREADS = 2
 BOUNDED_BATCH_ROWS = 1 << 19
+# DISK, NOT ONLY MEMORY (DeepSeek advisory review F3, 2026-09-15). DuckDB's default spill cap is
+# 90% of free disk, and the runner holds the unpacked state and catalogue databases on the same
+# volume; the largest eurostat stores hold 8-13 GB of uncompressed rows. The spill is capped at
+# free space minus this reserve (plus room for the local copy and the output), and a merge that
+# would get less than BOUNDED_MIN_SPILL_BYTES is refused up front with a named reason.
+BOUNDED_DISK_RESERVE_BYTES = 3 * 1024 ** 3
+BOUNDED_MIN_SPILL_BYTES = 256 * 1024 ** 2
 _BOUNDED_TYPES = (pa.string(), pa.large_string(), pa.date32(), pa.float64(), pa.float32(),
                   pa.int64(), pa.int32(), pa.bool_())
 
@@ -610,7 +617,35 @@ def _interrupted(exc) -> bool:
     query runs (measured 2026-09-14: the UnitTimeout itself never reaches Python)."""
     if type(exc).__name__ in ("InterruptException", "KeyboardInterrupt"):
         return True
-    return isinstance(exc, RuntimeError) and "interrupted" in str(exc).lower()
+    # "query interrupted", not any message containing "interrupted": a fetcher's own
+    # "read interrupted" must stay one flow's error (DeepSeek advisory review F5, 2026-09-15).
+    return isinstance(exc, RuntimeError) and "query interrupted" in str(exc).lower()
+
+
+def _unit_timeout_fired() -> bool:
+    """True once the orchestrator's per-unit alarm has fired (updater.orchestrate.UNIT_TIMEOUT_FIRED).
+    Any error surfacing from DuckDB after that is the timeout arriving in another form."""
+    import sys                                                       # noqa: PLC0415
+    orch = sys.modules.get("updater.orchestrate")
+    return bool(orch is not None and getattr(orch, "UNIT_TIMEOUT_FIRED", False))
+
+
+def _bounded_temp_cap(spill: str, stored_bytes) -> int:
+    """Bytes DuckDB may spill for one bounded merge: free space on the spill volume minus
+    BOUNDED_DISK_RESERVE_BYTES (env AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES) and twice the stored
+    object's size (its local copy and the new output file). Raises DefinitiveError, before any
+    query runs, when that leaves less than BOUNDED_MIN_SPILL_BYTES."""
+    import os                                                        # noqa: PLC0415
+    import shutil                                                    # noqa: PLC0415
+    free = shutil.disk_usage(spill).free
+    reserve = int(os.environ.get("AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES", BOUNDED_DISK_RESERVE_BYTES))
+    cap = free - reserve - 2 * int(stored_bytes or 0)
+    if cap < BOUNDED_MIN_SPILL_BYTES:
+        raise DefinitiveError(
+            f"bounded merge refused: {free / 1024 ** 3:.1f} GiB free on the spill disk leaves "
+            f"{max(cap, 0) / 1024 ** 2:,.0f} MiB after the reserve, below the "
+            f"{BOUNDED_MIN_SPILL_BYTES / 1024 ** 2:,.0f} MiB minimum; existing data kept")
+    return cap
 
 
 def _bounded_type(t):
@@ -756,6 +791,7 @@ def merge_and_write_bounded(out_path, new_table, *, dedup_keys=DEDUP_KEYS, min_r
             con.execute("SET preserve_insertion_order=false")
             con.execute("SET temp_directory='%s'"
                         % spill.replace("\\", "/").replace("'", "''"))
+            con.execute(f"SET max_temp_directory_size='{_bounded_temp_cap(spill, stored) // 1_000_000}MB'")
             new_i = new_table.select(order).append_column(
                 "__i", pa.array(range(old_rows, old_rows + new_table.num_rows), type=pa.int64()))
             con.register("__bounded_new_rows", new_i)
@@ -834,7 +870,7 @@ def merge_and_write_bounded(out_path, new_table, *, dedup_keys=DEDUP_KEYS, min_r
         # same outcome as a refusal — the stored object is untouched and the caller keeps the
         # flow for a retry (_giant books it transient and does not advance its vintage). Letting
         # it escape instead would end the whole giant sweep on one flow.
-        if published or _interrupted(e):
+        if published or _interrupted(e) or _unit_timeout_fired():
             # An interruption is the orchestrator's hard timeout (or Ctrl-C) arriving through
             # DuckDB, never a property of this flow: it must keep ending the unit.
             raise
