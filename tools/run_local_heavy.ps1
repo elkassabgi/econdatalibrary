@@ -145,8 +145,17 @@ $lister = Join-Path $repo 'tools\_list_local_sources.py'
 # or on the WindowsApps store shim.
 $pythonExe = "C:\Users\aelkassabgi\AppData\Local\Programs\Python\Python314\python.exe"
 if (-not (Test-Path $pythonExe)) { $pythonExe = 'python' }
-$routed = (& $pythonExe $lister 2>&1 | Out-String).Trim()
-$listerRc = $LASTEXITCODE
+# 2>&1 ON A NATIVE COMMAND UNDER $ErrorActionPreference = 'Stop' TERMINATES Windows PowerShell 5.1
+# as soon as the child writes one line to stderr (measured 2026-09-15: RemoteException), so a
+# crashing lister never reached the FATAL branch below. Relax the preference for this call only.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $routed = (& $pythonExe $lister 2>&1 | Out-String).Trim()
+    $listerRc = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $prevEap
+}
 # A CRASHING LISTER MUST NOT LOOK LIKE AN EMPTY REGISTRY. Before this gate an
 # ImportError printed a traceback, produced no stdout, and fell straight into the
 # branch below - so the guard announced "nothing to do" and exited 0 while all 21
@@ -183,21 +192,35 @@ if ($WhatIf) {
 # --- DO NOT RACE CI. Both writers compare-and-swap on the state ETag, so an overlap makes
 # --- one of them lose its entire run (push_state exits 2, "another writer won"). Ledger R5.
 if (-not $SkipCiCheck) {
-    $inflight = -1
+    # EVERY CLOUD STATE WRITER, AND A CRON GITHUB HAS NOT STARTED YET (tools/ci_writer_gate.py).
+    # This used to ask only whether an updater-daily run was in flight. GitHub now starts the
+    # scheduled runs hours late (06:00Z daily at 10:07-12:06Z, measured 2026-09-03..15), so on
+    # 2026-09-15 a pass started at 10:38Z with nothing in flight, the 06:00Z run started under it at
+    # 11:18Z, and the cloud run's push was refused; on 09-08 and 09-13 this pass lost instead.
+    $gate = Join-Path $repo 'tools\ci_writer_gate.py'
+    # Continue for this call only: see the lister above (stderr under Stop terminates PS 5.1).
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
-        $runs = gh run list --workflow=updater-daily.yml --limit 5 --json status | ConvertFrom-Json
-        $inflight = @($runs | Where-Object { $_.status -ne 'completed' }).Count
-    } catch {
-        Say "WARNING: could not query CI. Re-run with -SkipCiCheck if you know it is idle."
-        exit 2
+        $gateOut = (& $pythonExe $gate 2>&1 | Out-String).Trim()
+        $gateRc = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
     }
-    if ($inflight -gt 0) {
-        Say ("ABORT: " + $inflight + " updater-daily run(s) still in flight.")
+    Say ("CI writer gate: " + ($gateOut -replace '\s+', ' '))
+    if ($gateRc -eq 3) {
+        Say "ABORT: a cloud state writer is running or its scheduled run has not started yet."
         Say "       Both writers compare-and-swap on the state ETag, so overlapping means one"
-        Say "       run's state is thrown away. Wait for CI, or pass -SkipCiCheck."
+        Say "       run's bookkeeping is thrown away (R5). Next tick will check again."
+        Say "       If you know CI is idle, re-run with -SkipCiCheck."
         exit 2
     }
-    Say "CI idle - safe to proceed"
+    if ($gateRc -ne 0) {
+        Say ("WARNING: could not tell whether CI is busy (gate exit " + $gateRc + "). Re-run with " +
+             "-SkipCiCheck if you know it is idle.")
+        exit 2
+    }
+    Say "CI idle and no scheduled run pending - safe to proceed"
 }
 
 $env:AQUEDUCT_BACKEND = 'r2'
@@ -424,7 +447,10 @@ while (-not $proc.HasExited) {
              "-min budget by " + $graceMin + " min and is still running. Terminating so " +
              "push-state happens BEFORE the CI window (R448). Data is safe - stores are " +
              "written atomically - and every fetcher resumes.")
-        & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null
+        # Continue for this call only: 2>&1 under Stop terminates PS 5.1 on the first stderr line.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null } finally { $ErrorActionPreference = $prevEap }
         Start-Sleep -Seconds 5
         $hardStopped = $true
         break
@@ -457,8 +483,16 @@ Say ("updater exit code: " + $rc)
 if ($hardStopped) {
     $elapsedS = [int]((Get-Date) - $updaterStart).TotalSeconds
     Say ("recording externally-killed unit (elapsed " + $elapsedS + "s) ...")
-    $recOut = & $pythonExe (Join-Path $PSScriptRoot 'record_killed_unit.py') `
-                $updaterLog $elapsedS --apply 2>&1
+    # Continue for this call only: it runs after the lock is taken and before push-state, and 2>&1
+    # under Stop terminates PS 5.1 on the first stderr line, which would skip push-state.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $recOut = & $pythonExe (Join-Path $PSScriptRoot 'record_killed_unit.py') `
+                    $updaterLog $elapsedS --apply 2>&1
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
     foreach ($ln in @($recOut)) { Say ("  recorder: " + $ln) }
     if ($LASTEXITCODE -ne 0) {
         Say ("RECORDER FAILED (exit " + $LASTEXITCODE + ") - the killed unit keeps its " +
