@@ -494,7 +494,13 @@ def _partial_parse_reason(parsed_dates):
     """
     if not parsed_dates:
         return "200 but parsed 0 points"
-    today = dt.date.today()
+    # THE UTC DATE, the frame of the epoch timestamps the chains endpoints send (_to_date reads them
+    # with utcfromtimestamp; an ISO string with an offset keeps that offset's own date).
+    # dt.date.today() is the machine's LOCAL date, a day behind UTC on a desktop west of
+    # Greenwich between 00:00Z and local midnight; a point dated today UTC then counted as a
+    # FUTURE point, and a series whose newest point was today was refused (local test failures
+    # at 2026-09-15 00:39Z that passed again at 11:53Z on unchanged code). Cloud runners are UTC.
+    today = dt.datetime.now(dt.timezone.utc).date()
     settled = [d for d in parsed_dates if d <= today]
     if not settled:
         return (f"every parsed point is in the FUTURE (newest {max(parsed_dates)}) - a sentinel or "
