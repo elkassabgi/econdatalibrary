@@ -145,8 +145,17 @@ $lister = Join-Path $repo 'tools\_list_local_sources.py'
 # or on the WindowsApps store shim.
 $pythonExe = "C:\Users\aelkassabgi\AppData\Local\Programs\Python\Python314\python.exe"
 if (-not (Test-Path $pythonExe)) { $pythonExe = 'python' }
-$routed = (& $pythonExe $lister 2>&1 | Out-String).Trim()
-$listerRc = $LASTEXITCODE
+# 2>&1 ON A NATIVE COMMAND UNDER $ErrorActionPreference = 'Stop' TERMINATES Windows PowerShell 5.1
+# as soon as the child writes one line to stderr (measured 2026-09-15: RemoteException), so a
+# crashing lister never reached the FATAL branch below. Relax the preference for this call only.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $routed = (& $pythonExe $lister 2>&1 | Out-String).Trim()
+    $listerRc = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $prevEap
+}
 # A CRASHING LISTER MUST NOT LOOK LIKE AN EMPTY REGISTRY. Before this gate an
 # ImportError printed a traceback, produced no stdout, and fell straight into the
 # branch below - so the guard announced "nothing to do" and exited 0 while all 21
@@ -189,13 +198,21 @@ if (-not $SkipCiCheck) {
     # 2026-09-15 a pass started at 10:38Z with nothing in flight, the 06:00Z run started under it at
     # 11:18Z, and the cloud run's push was refused; on 09-08 and 09-13 this pass lost instead.
     $gate = Join-Path $repo 'tools\ci_writer_gate.py'
-    $gateOut = (& $pythonExe $gate 2>&1 | Out-String).Trim()
-    $gateRc = $LASTEXITCODE
+    # Continue for this call only: see the lister above (stderr under Stop terminates PS 5.1).
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $gateOut = (& $pythonExe $gate 2>&1 | Out-String).Trim()
+        $gateRc = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
     Say ("CI writer gate: " + ($gateOut -replace '\s+', ' '))
     if ($gateRc -eq 3) {
         Say "ABORT: a cloud state writer is running or its scheduled run has not started yet."
         Say "       Both writers compare-and-swap on the state ETag, so overlapping means one"
         Say "       run's bookkeeping is thrown away (R5). Next tick will check again."
+        Say "       If you know CI is idle, re-run with -SkipCiCheck."
         exit 2
     }
     if ($gateRc -ne 0) {

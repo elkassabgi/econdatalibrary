@@ -7,6 +7,8 @@ start times of the desktop passes whose pull/push window overlapped one (logs/lo
 import datetime as dt
 import os
 import re
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -28,6 +30,7 @@ HEAVY_CREATED = [
     "2026-09-10T07:48", "2026-09-09T18:03", "2026-09-09T07:47", "2026-09-08T18:08", "2026-09-08T07:45",
     "2026-09-07T18:53", "2026-09-07T07:49",
 ]
+ACTIVE = {"updater-daily.yml": "active", "updater-heavy.yml": "active"}
 
 
 def at(s):
@@ -56,7 +59,7 @@ def test_every_recorded_collision_is_blocked_and_the_old_check_let_it_through(pa
     now = at(pass_start)
     runs = history_as_of(now)
     assert not old_check(runs), "fixture error: the old check must have said CI idle"
-    blocked, reason = g.decide(runs, now)
+    blocked, reason = g.decide(runs, now, ACTIVE)
     assert blocked, reason
     assert "updater-daily.yml 06:00Z cron has not started yet" in reason, reason
 
@@ -65,20 +68,32 @@ def test_a_run_in_flight_blocks():
     now = at("2026-09-15T12:00:00")
     runs = history_as_of(now)
     runs["updater-heavy.yml"][0] = dict(runs["updater-heavy.yml"][0], status="in_progress")
-    blocked, reason = g.decide(runs, now)
+    blocked, reason = g.decide(runs, now, ACTIVE)
     assert blocked and "in_progress" in reason, reason
 
 
-def test_clear_after_the_evening_run_and_before_the_next_cron():
-    now = at("2026-09-14T23:30:00")      # daily 18:00Z run created 21:29, heavy 15:00Z run created 19:38
-    blocked, reason = g.decide(history_as_of(now), now)
+def test_clear_after_the_evening_runs_and_before_the_next_cron():
+    # daily 18:00Z run 21:29->22:36 and heavy 15:00Z run 19:38->20:57 had both completed by 23:30
+    now = at("2026-09-14T23:30:00")
+    blocked, reason = g.decide(history_as_of(now), now, ACTIVE)
     assert not blocked, reason
 
 
 def test_a_pending_heavy_cron_blocks_after_the_morning_daily_run():
     now = at("2026-09-15T15:40:00")      # the 15:00Z heavy cron had no run yet
-    blocked, reason = g.decide(history_as_of(now), now)
+    blocked, reason = g.decide(history_as_of(now), now, ACTIVE)
     assert blocked and "updater-heavy.yml 15:00Z cron has not started yet" in reason, reason
+
+
+def test_the_longest_measured_lag_is_still_inside_the_pending_horizon():
+    # 710 min, the longest start lag among the 175 scheduled runs GitHub listed on 2026-09-15
+    cron = at("2026-09-15T15:00:00")
+    now = cron + dt.timedelta(minutes=710)
+    runs = history_as_of(at("2026-09-15T12:00:00"))
+    runs["updater-daily.yml"].insert(0, {"createdAt": "2026-09-15T20:00:00Z", "event": "schedule", "status": "completed"})
+    blocked, reason, notes = g.assess(runs, now, ACTIVE)
+    assert blocked and "updater-heavy.yml 15:00Z cron has not started yet" in reason, reason
+    assert any("may have skipped it" in n for n in notes), notes
 
 
 def test_a_manual_dispatch_does_not_count_as_the_scheduled_run():
@@ -86,32 +101,43 @@ def test_a_manual_dispatch_does_not_count_as_the_scheduled_run():
     runs = history_as_of(now)
     runs["updater-daily.yml"].insert(0, {"createdAt": "2026-09-15T09:00:00Z", "event": "workflow_dispatch",
                                          "status": "completed"})
-    assert g.decide(runs, now)[0]
+    assert g.decide(runs, now, ACTIVE)[0]
 
 
-def test_a_cron_github_never_ran_stops_blocking_after_the_horizon():
-    runs = {"updater-daily.yml": [{"createdAt": "2026-09-15T19:00:00Z", "event": "schedule", "status": "completed"},
-                                  {"createdAt": "2026-09-15T11:18:00Z", "event": "schedule", "status": "completed"},
-                                  {"createdAt": "2026-09-14T21:29:00Z", "event": "schedule", "status": "completed"}],
-            "updater-heavy.yml": [{"createdAt": "2026-09-15T08:19:00Z", "event": "schedule", "status": "completed"}]}
-    inside = at("2026-09-15T22:59:00")   # 7 h 59 min after the 15:00Z heavy cron, which never ran
-    outside = at("2026-09-15T23:01:00")  # 8 h 01 min after it
-    assert g.decide(runs, inside)[0]
-    assert not g.decide(runs, outside)[0], g.decide(runs, outside)[1]
+def test_a_disabled_workflow_is_not_waited_for():
+    now = at("2026-09-15T15:40:00")      # heavy 15:00Z pending, but the workflow is disabled
+    states = {"updater-daily.yml": "active", "updater-heavy.yml": "disabled_manually"}
+    blocked, reason, notes = g.assess(history_as_of(now), now, states)
+    assert not blocked, reason
+    assert any("disabled_manually" in n for n in notes), notes
 
 
-def test_main_exit_codes_and_unknown_is_never_clear(capsys):
+def test_a_run_unfinished_for_more_than_a_day_is_reported_not_obeyed():
+    now = at("2026-09-14T23:30:00")
+    runs = history_as_of(now)
+    runs["updater-daily.yml"].insert(0, {"createdAt": "2026-09-13T20:00:00Z", "event": "workflow_dispatch",
+                                         "status": "waiting"})
+    blocked, reason, notes = g.assess(runs, now, ACTIVE)
+    assert not blocked, reason
+    assert any("more than a day" in n for n in notes), notes
+    runs["updater-daily.yml"][0]["createdAt"] = "2026-09-14T23:00:00Z"   # a fresh one still blocks
+    assert g.decide(runs, now, ACTIVE)[0]
+
+
+def test_main_exit_codes_notes_and_unknown_is_never_clear(capsys):
     now = at("2026-09-15T10:38:56")
     runs = history_as_of(now)
-    assert g.main(fetch=lambda wf: runs[wf], now=now) == g.EXIT_BLOCKED
+    assert g.main(fetch=lambda wf: runs[wf], fetch_states=lambda: ACTIVE, now=now) == g.EXIT_BLOCKED
     later = at("2026-09-14T23:30:00")
-    assert g.main(fetch=lambda wf: history_as_of(later)[wf], now=later) == g.EXIT_CLEAR
+    assert g.main(fetch=lambda wf: history_as_of(later)[wf], fetch_states=lambda: ACTIVE, now=later) == g.EXIT_CLEAR
 
-    def broken(wf):
+    def broken(*_a):
         raise RuntimeError("gh: not logged in")
-    assert g.main(fetch=broken, now=now) == g.EXIT_UNKNOWN
-    assert g.main(fetch=lambda wf: [{"event": "schedule"}], now=now) == g.EXIT_UNKNOWN   # malformed rows
-    assert "UNKNOWN" in capsys.readouterr().out
+    assert g.main(fetch=broken, fetch_states=lambda: ACTIVE, now=now) == g.EXIT_UNKNOWN
+    assert g.main(fetch=lambda wf: runs[wf], fetch_states=broken, now=now) == g.EXIT_UNKNOWN
+    assert g.main(fetch=lambda wf: [{"event": "schedule"}], fetch_states=lambda: ACTIVE, now=now) == g.EXIT_UNKNOWN
+    out = capsys.readouterr().out
+    assert "UNKNOWN" in out and "CLEAR: " in out and "BLOCKED: " in out
 
 
 def test_the_writer_list_matches_the_workflows():
@@ -120,6 +146,40 @@ def test_the_writer_list_matches_the_workflows():
         crons = sorted(int(m.group(1)) for m in re.finditer(r"cron:\s*'0 (\d+) \* \* \*'", body))
         assert crons == sorted(hours), (wf, crons)
         assert "--pull-state" in body and "--push-state" in body, wf
+
+
+def test_every_workflow_that_pushes_state_is_in_the_writer_list():
+    wdir = os.path.join(ROOT, ".github", "workflows")
+    pushers = sorted(f for f in os.listdir(wdir)
+                     if f.endswith((".yml", ".yaml")) and "--push-state" in open(os.path.join(wdir, f), encoding="utf-8").read())
+    assert pushers == sorted(g.WRITERS), pushers
+
+
+def test_the_runner_relaxes_Stop_around_both_python_calls():
+    """2>&1 on a native command under $ErrorActionPreference = 'Stop' terminates Windows PowerShell 5.1
+    as soon as the child writes to stderr (measured 2026-09-15), so both calls run under Continue."""
+    body = open(os.path.join(ROOT, "tools", "run_local_heavy.ps1"), encoding="utf-8", errors="replace").read()
+    for call in ("& $pythonExe $lister 2>&1", "& $pythonExe $gate 2>&1"):
+        i = body.index(call)
+        assert "$ErrorActionPreference = 'Continue'" in body[max(0, i - 200):i], call
+        assert "$ErrorActionPreference = $prevEap" in body[i:i + 200], call
+
+
+POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="no PowerShell on this host")
+def test_stderr_from_a_native_call_under_Continue_reaches_the_exit_code_check(tmp_path):
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        "$prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'\n"
+        "try { $o = (& '" + sys.executable + "' -c \"import sys; sys.stderr.write('boom'); sys.exit(7)\" 2>&1 "
+        "| Out-String).Trim(); $rc = $LASTEXITCODE } finally { $ErrorActionPreference = $prevEap }\n"
+        "'rc=' + $rc\n", encoding="utf-8")
+    r = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+                       capture_output=True, text=True)
+    assert "rc=7" in r.stdout, (r.stdout, r.stderr)
 
 
 def test_the_runner_calls_the_gate_instead_of_the_old_single_workflow_check():
