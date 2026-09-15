@@ -359,6 +359,35 @@ def test_a_genuinely_fresh_parse_is_NOT_refused(monkeypatch):
 
 # ------------------------------------------------------- R795: the sibling branch, and the class
 
+class _LocalDateOneDayBehindUTC(_dt.date):
+    """today() as a machine west of Greenwich answers it between 00:00Z and local midnight."""
+
+    @classmethod
+    def today(cls):
+        return _dt.datetime.now(_dt.timezone.utc).date() - _dt.timedelta(days=1)
+
+
+def test_a_point_dated_today_UTC_is_not_future_when_the_local_date_lags(monkeypatch):
+    """The staleness guard compared UTC observation dates with the machine's LOCAL date. On a
+    desktop in US Central time between 00:00Z and 05:00Z a point dated today UTC counted as
+    FUTURE, so a series whose only point was dated today was refused - both branches at once, and
+    _chains_tvl_aggregate returned no table (seen 2026-09-15 00:39Z; passing again at 11:53Z on
+    unchanged code). A clock one day behind UTC reproduces it at any hour."""
+    import types
+    monkeypatch.setattr(defillama, "dt", types.SimpleNamespace(
+        date=_LocalDateOneDayBehindUTC, datetime=_dt.datetime, timezone=_dt.timezone,
+        timedelta=_dt.timedelta))
+    now = int(_dt.datetime.now(_dt.timezone.utc).timestamp())
+    monkeypatch.setattr(defillama, "SERVED_CHAINS", ("Alpha",))
+    _record_calls(monkeypatch, chain_resp=[{"date": now, "tvl": 7.0}],
+                  bulk_resp=[{"date": now, "tvl": 1.0}])
+    t = Tally()
+    tbl, _dk, _k, _d, _e = defillama._chains_tvl_aggregate(None, t)
+    assert tbl is not None, t.transient_ids
+    assert set(tbl.column("series_key").to_pylist()) == {"__ALL__", "Alpha"}, t.transient_ids
+    assert t.transient == 0, t.transient_ids
+
+
 def test_the_BULK_branch_gets_the_same_partial_parse_guard_as_the_chains(monkeypatch):
     """R795 #1, the blocker, and the ninth appearance of 'one example is a class' on this file. I
     put the partial-parse guard in the per-chain loop and NOT in the `__ALL__` branch thirty lines
