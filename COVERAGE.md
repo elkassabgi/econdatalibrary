@@ -60,7 +60,7 @@ Legend: ✅FULL · 🟡PARTIAL/growing · 🔗REFERENCED · ⛔BLOCKED(keys)
 | treasury | ✅ | 18,555,857 | 181/181 FiscalData endpoints (was 29 datasets / 6.6M) |
 | cepii_baci | ✅ | 308,561,322 | BACI bilateral trade HS17 (65.6M) + HS96 (242.9M); Etalab 2.0 |
 | worldbank_extra | 🔄 | 8,817,027 | 2/9 done (hnp 8.5M, ids 268K). gfdd/gender/gem returned 0 obs. EdStats (8,450 ind) running. |
-| nyfed | ✅ | 16,656 | SOFR/OBFR/SOFR-averages/SOFR-index/TGCR/TGCR-volume via FRED API; BGCR → see OFR fnyr above |
+| nyfed | ✅ | 16,656 | SOFR/OBFR/SOFR-averages/SOFR-index/TGCR/TGCR-volume via the St. Louis Fed API; BGCR → see OFR fnyr above |
 | bis_cbs_lbs | 🔄 | — | CBS+LBS bulk downloading (resumable) |
 
 ## Still needed before catalog ingest + cloud build

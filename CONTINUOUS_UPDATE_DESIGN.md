@@ -53,20 +53,20 @@ A unit is "due" when cadence says so OR `upstream_vintage` changed. A unit is "d
 skip/checkpoint/append sources are missing.
 
 > **Fix — source ≠ directory** (critic gap, design [0]): a source maps to **one or more units**, and
-> each unit declares its own output path(s). `GATED` → units `boc`,`snb`,`riksbank`,… each
+> each unit declares its own output path(s). A source → units `boc`,`snb`,`riksbank`,… each
 > with its own dir and its own atomic publish + state row. Coverage accounting and atomic publish are
 > **per unit**, never per source-dir. The registry carries `units: [{unit_id, out_paths:[...]}]`.
 
 ---
 
-## (2) Strategy taxonomy — 6 adapters, all 133 mapped
+## (2) Strategy taxonomy — 6 adapters, all sources mapped
 
 Each strategy implements `is_due(unit,state,now)` / `detect_change(unit) -> new_vintage|None` /
 `run(unit, since) -> Result`. Registry assigns exactly one strategy per source (per unit where they
-differ). A registry validator **fails CI** if `count != 133` or any unit lacks a strategy.
+differ). A registry validator **fails CI** if `count != EXPECTED_SOURCE_COUNT` or any unit lacks a strategy.
 
-- **S1 `overwrite_if_changed`** (~70) — whole-table refresh gated by an upstream vintage signal
-  (ETag/Last-Modified, GitHub commit SHA, OWID CSV, faostat `datasets_E.json` FileRows/FileSize, bls
+- **S1 `overwrite_if_changed`** — whole-table refresh gated by an upstream vintage signal
+  (ETag/Last-Modified, GitHub commit SHA, third-party CSV, faostat `datasets_E.json` FileRows/FileSize, bls
   sizes, bis HEAD). Re-pull + atomic overwrite **only when upstream moved**. Covers all overwrite-on-rerun
   + tiny static/annual full tables.
   > **Fix — lying vintage** (critic gap, design [2]): vintage signals can fail to bump on silent
@@ -76,13 +76,13 @@ differ). A registry validator **fails CI** if `count != 133` or any unit lacks a
 - **S2 `extend_by_date`** (~18–22) — true `since=last_obs` delta within existing series. Read
   `last_obs_date` (per series/unit), fetch only `>last_obs` via the native filter (`startPeriod`,
   `mindate`, `dataInicial`, `record_date:gt:`, `observation_start`), dedup `(series_key,obs_date)`,
-  merge, advance cursor. Covers GATED, treasury, ofr, bcb, bcrp, GATED (also fixes the
-  0-obs-marked-done bug), eia, fed_board, defillama, riksbank, ecb, GATED, the 8 partials.
+  merge, advance cursor. Covers treasury, ofr, bcb, bcrp (also fixes the
+  0-obs-marked-done bug), eia, fed_board, defillama, riksbank, ecb, the 8 partials.
 - **S3 `sdmx_delta`** (~25–30) — SDMX specialization of S2: `?updatedAfter=<last_success>` to detect,
   `?startPeriod=<last_obs+1>` to pull, merge per flow. Covers abs, adb, bis_full, bundesbank, ilostat,
-  insee_bdm/melodi, and the PxWeb/SIDRA NSOs (dst, scb, ssb, statfin, GATED, stat_*, hagstofa, cso,
-  GATED, ipea, idb, gus_bdl).
-- **S4 `giant_changed_units`** (the 4 giants) — catalog change-feed → selective **whole-unit** re-pull
+  insee_bdm/melodi, and the PxWeb/SIDRA NSOs (dst, scb, ssb, statfin, stat_*, hagstofa, cso,
+  ipea, idb).
+- **S4 `giant_changed_units`** (the giants) — catalog change-feed → selective **whole-unit** re-pull
   (no brute re-pull, no per-vector watermark):
   - **statcan:** `getChangedCubeList(last_success)` → re-pull only changed `productId`s in full.
     > **Fix — mixed-frequency vectors** (critic gap, design [1]): refresh the whole changed *cube*
@@ -90,14 +90,13 @@ differ). A registry validator **fails CI** if `count != 133` or any unit lacks a
   - **eurostat:** TOC `lastUpdate` per code → reparse only changed `.tsv.gz`.
   - **oecd:** dataflow `last-updated` → re-pull changed flows via `startPeriod` under the 4s token bucket;
     partial flows → `status=partial` (retried, never silently locked).
-  - **GATED:** per-provider `?updatedAfter=` + 800MB-XML guard → gaps become `status=partial`, retried.
 - **S5 `bulk_snapshot_if_changed`** (~12–15) — whole-file zip/CSV sources: HEAD `Last-Modified`/
   `Content-Length`/manifest gate, rebuild only changed files. Covers bis_cbs_lbs, sec_edgar, bfs,
   cepii_baci, cbs_nl, gus_dbw, insee_sirene_bulk, worldbank_wdi/extra, faostat per-domain, noaa.
 - **S6 `manual_vintage`** (~10–12) — publish-rarely / hardcoded-URL / credential-or-WAF-blocked sources
-  (stats_nz, ksh WAF, GATED 403, insee_sirene offset-ceiling, barro_lee, several GATED sources, edgar_jrc,
-  GATED, yale_epi, harvard_atlas, wid, fsi_fundforpeace, nasa_giss). **Never silently succeeds** —
-  `detect_change` polls a cheap signal (release page / GitHub tag / OWID mirror / calendar roll) and,
+  (stats_nz, ksh WAF, insee_sirene offset-ceiling, barro_lee, edgar_jrc,
+  yale_epi, harvard_atlas, wid, fsi_fundforpeace, nasa_giss). **Never silently succeeds** —
+  `detect_change` polls a cheap signal (release page / GitHub tag / third-party mirror / calendar roll) and,
   when it sees a likely new vintage it can't auto-fetch, opens a **"needs attention" alert**. Cadence
   still tracks "last verified" age.
 
@@ -109,7 +108,7 @@ incremental, cost) decision table), then human-pinned overrides. No source ships
 ## (3) Orchestrator — `updater/orchestrate.py`
 
 ```
-load registry (YAML) -> validate (133, all units have a strategy) ->
+load registry (YAML) -> validate (the count, all units have a strategy) ->
 for each unit: load unit_state ->
   if strategy.is_due(unit,state,now):                 # cadence elapsed OR --force
       v = strategy.detect_change(unit)                # cheap HEAD/feed/manifest
@@ -122,10 +121,10 @@ each job: strategy.run(unit, since) -> Result(status, obs, new_vintage, last_obs
           -> StateStore.put_unit_state(...) AFTER atomic data write -> run_log append.
 ```
 **Resume:** `unit_state` is truth; a crash leaves a unit `running` with an expired lease, re-claimed
-next run. `ok` units are skipped. This generalizes the proven `_dbnomics_pull.py`
-finalize-only-when-complete + resumable + skip-completed pattern to all 133.
+next run. `ok` units are skipped. This generalizes the proven relay pull script's
+finalize-only-when-complete + resumable + skip-completed pattern to all sources.
 
-**In-flight protection:** cbs_nl, gus_dbw, GATED-ISTAT are seeded `status=running, owner=firstpass`;
+**In-flight protection:** cbs_nl, gus_dbw are seeded `status=running, owner=firstpass`;
 the lease check skips them until first-pass reports done. Aqueduct runs *update* passes only and never
 touches their checkpoints or the watchdog.
 
@@ -137,12 +136,12 @@ A shared `merge_and_write()` helper enforces: **a write either advances `last_ob
 for a unit, or it is a no-op; it NEVER replaces good data with fewer/zero rows.** A 0-row fetch with
 unchanged vintage = legitimate no-op; a 0-row fetch from a transient error leaves the unit
 `transient_fail` and the existing parquet untouched. This kills the "silently write a 0-row group then
-mark done" class (bea, GATED) and the "skip series if key present" freeze (67 sources).
+mark done" class (bea) and the "skip series if key present" freeze (67 sources).
 Extension modes: date-tail append (S2/S3), whole-unit overwrite-if-changed (S1/S4/S5), manual-alert (S6).
 
 ---
 
-## (5) Failure model (generalized `_dbnomics_pull.py` contract)
+## (5) Failure model (generalized relay-pull-script contract)
 
 - **TransientError** (timeout/5xx/429/network): discard partial rows, unit → `transient_fail`, **don't
   touch existing parquet**, retry next run with backoff.
@@ -153,7 +152,7 @@ Extension modes: date-tail append (S2/S3), whole-unit overwrite-if-changed (S1/S
   re-probing holidays every run).
 - **Atomicity:** every write `.tmp`+`os.replace` (local) / staged-then-PUT (R2); state written *after*
   data. Retrofit atomic-write into the ~dozen non-atomic scripts the matrix flags (abs, bfs,
-  several GATED sources checkpoint, bcb/bcrp).
+  bcb/bcrp).
 
 ---
 
@@ -188,16 +187,16 @@ Reads purely from StateStore; powers a one-page dashboard (HTML local / Worker r
 ## (8) Rollout order
 
 1. **Scaffold (no behavior change):** `updater/` with `StateStore`(SQLite), `Blob`(fs), registry
-   loader+validator, registry generated from the matrix (133 units, default strategy). Backfill
+   loader+validator, registry generated from the matrix (single-unit entries, default strategy). Backfill
    `unit_state.last_obs_date` by scanning each parquet's max(obs_date) once. Run nothing yet.
 2. **Shared helpers:** `merge_and_write()` (atomic, dedup, never-shrink), Transient/Definitive contract,
-   rate governor. Unit-test against bcb/GATED fixtures.
-3. **S2 first** (highest currency, lowest risk): GATED, treasury, ofr, bcb, bcrp, GATED (+fix
+   rate governor. Unit-test against bcb fixtures.
+3. **S2 first** (highest currency, lowest risk): treasury, ofr, bcb, bcrp (+fix
    0-obs bug). Ship the daily cron for just these.
 4. **S1 broad sweep:** vintage gates on ~70 overwrite/static sources; retrofit atomic-write to the flagged dozen.
 5. **S3 SDMX delta:** ~25–30 medium SDMX/PxWeb NSOs.
 6. **S5 bulk-snapshot gates:** faostat, bis_cbs_lbs, sec_edgar, noaa, wdi.
-7. **S4 GIANTS one at a time behind change-feeds:** statcan → eurostat → oecd → GATED; each validated
+7. **S4 GIANTS one at a time behind change-feeds:** statcan → eurostat → oecd; each validated
    to touch only changed units before enabling its weekly cron.
 8. **S6 manual-vintage alerts** for hardcoded/blocked sources.
 9. **Monitoring dashboard + SLA gates** (developed throughout, formalized here).

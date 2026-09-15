@@ -21,7 +21,7 @@
 >   files it cannot read; this document was generated before that fix.
 > - Several per-source labels are simply wrong: `un_wpp` is annual mid-year (every
 >   observation on 07-01) but labelled quarterly-START; `bis` is quarterly, not monthly;
->   `ilostat` is annual-dominant; `abs` is annual-END; `GATED`, `cbs_nl` and `eurostat`
+>   `ilostat` is annual-dominant; `abs` is annual-END; `cbs_nl` and `eurostat`
 >   are not "daily" in any meaningful sense.
 >
 > **The DIRECTION of the finding survives** — period-END genuinely dominates by

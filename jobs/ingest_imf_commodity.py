@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""IMF Primary Commodity Prices ingest via DBnomics API.
+"""IMF Primary Commodity Prices ingest via the relay aggregator API.
 
-Source: IMF PCPS (Primary Commodity Price System) via DBnomics
-        https://db.nomics.world/IMF/PCPS
+Source: IMF PCPS (Primary Commodity Price System) via the relay aggregator
+        <the relay's site>
 License: IMF data Terms of Use (free for research)
 Coverage: 1,236 series; energy, metals, food, beverages, agricultural raw materials;
           monthly/quarterly/annual, 1980-present (~70 commodities)
@@ -14,10 +14,10 @@ Output: data/clean_full/imf_commodity/imf_commodity.parquet
 Run: python jobs/ingest_imf_commodity.py
 """
 
-# DEFUSED 2026-08-04: the guard below is the enforcement, the CI test tests/test_dbnomics_ban.py
+# DEFUSED 2026-08-04: the guard below is the enforcement, the CI test tests/test_relay_ban.py
 # is the proof, and the PreToolUse hook is the session-level backstop. Three layers on purpose.
 raise SystemExit(
-    "RETIRED: this script fetched from DBnomics, which is BANNED (CLAUDE.md \u00a70, ledger R251) - "
+    "RETIRED: this script fetched from the relay aggregator, which is BANNED (CLAUDE.md \u00a70, ledger R251) - "
     "no fetching, no probing, no relays or mirrors. The data it ingested is maintained by "
     "publisher-direct paths now (see updater/strategies/fetchers/ and jobs/ingest_imf_direct.py). "
     "Kept for history; running it is refused.")
@@ -31,7 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, 
 OUT  = os.path.join(ROOT, "data", "clean_full", "imf_commodity")
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 
-DBNOMICS = "https://api.db.nomics.world/v22"
+RELAY_BASE = "<the relay's API>"
 PAGE_SIZE = 1000  # Max series per request
 
 
@@ -40,8 +40,8 @@ def log(m):
 
 
 def fetch_pcps_page(offset: int) -> dict | None:
-    """Fetch a page of IMF PCPS series from DBnomics with observations."""
-    url = (f"{DBNOMICS}/series/IMF/PCPS"
+    """Fetch a page of IMF PCPS series from the relay aggregator with observations."""
+    url = (f"{RELAY_BASE}/series/IMF/PCPS"
            f"?observations=1&limit={PAGE_SIZE}&offset={offset}")
     for attempt in range(3):
         try:
@@ -65,7 +65,7 @@ def main():
         n = pq.read_metadata(out).num_rows
         log(f"IMF Commodity: already {n:,} rows"); return
 
-    log("=== IMF Primary Commodity Prices Ingest (DBnomics/PCPS) ===")
+    log("=== IMF Primary Commodity Prices Ingest (the relay aggregator/PCPS) ===")
 
     all_keys, all_dates, all_vals = [], [], []
     offset = 0

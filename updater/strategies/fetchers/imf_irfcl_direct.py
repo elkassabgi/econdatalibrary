@@ -2,7 +2,7 @@
 (flow IRFCL, agency IMF.STA).
 
 Thin wrapper; all behaviour lives in _imf_direct.py, including why these are NEW source ids
-rather than replacements for the DBnomics-era ones.
+rather than replacements for the relay-era ones.
 
 `imf_irfcl` holds 54,126 relay-era series with no fetcher, so it has never auto-updated. IRFCL is
 an EXACT dataflow id on api.imf.org (agency IMF.STA), read from IMF's own /dataflow catalogue

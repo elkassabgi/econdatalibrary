@@ -31,7 +31,7 @@ OUTDIR = os.path.join(ROOT, "dist", "broaden")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from core.broaden_catalog import KEY_COL_CANDIDATES               # noqa: E402
-PROTECTED = {"cbs_nl", "gus_dbw", "dbnomics"}  # running backfills — never touch
+PROTECTED = {"cbs_nl", "gus_dbw"}  # running backfills — never touch
 
 
 def main():
@@ -58,7 +58,7 @@ def main():
             continue
         if d.startswith("_") or d in PROTECTED:
             # THE SAME RULE AS THE BRANCH BELOW, WHICH THIS ONE DID NOT FOLLOW (review of PR #14,
-            # 2026-09-07). A bare `continue` here hid cbs_nl - 688,929,413 keys - and dbnomics
+            # 2026-09-07). A bare `continue` here hid cbs_nl - 688,929,413 keys - and the relay entry
             # from every number this tool prints. `skipped_cataloged` had been given the
             # "recorded, never silent" treatment and its three siblings had not: the PR fixed one
             # instance of a class with four members.
@@ -125,8 +125,8 @@ def main():
             print(f"   {d:24s} catalogue rows {n:>10,}")
     if skipped_protected:
         # NAME WHAT IS ACTUALLY HIDDEN, NOT WHAT THE PROTECTED SET CONTAINS (R875 #6). The first
-        # version of this message asserted that cbs_nl and `dbnomics` were the hidden pair and
-        # printed cbs_nl's key count unconditionally - but `dbnomics` has NO directory under the
+        # version of this message asserted that cbs_nl and the (since removed) relay entry were
+        # the hidden pair and printed cbs_nl's key count unconditionally - but that entry had NO directory under the
         # store, so it never reaches this loop and can never appear here, while `gus_dbw`, which
         # does, went unnamed. A message that hard-codes its own example stops describing the run.
         names = {d for d, _ in skipped_protected}

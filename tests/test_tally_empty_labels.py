@@ -4,7 +4,7 @@ Both halves matter, and each records a defect that actually shipped.
 
 COLLECTED, because five Tally methods take a `label` and only three recorded it. `empty_unit`
 and `added_unit` dropped theirs, so authors at nine modules - bea, census, defillama, hagstofa,
-stat_estonia, unsdg, wid, _imf_direct (imported by 105 fetchers) and _who_gho - had been passing
+stat_estonia, unsdg, wid, _imf_direct (imported by 105 fetchers) and _who_base - had been passing
 names into a void. `added_unit(0, label)` increments the same `empty` counter as `empty_unit`,
 so if only one of the two recorded, `empty_ids` would be a silent subset of what `empty` counts.
 

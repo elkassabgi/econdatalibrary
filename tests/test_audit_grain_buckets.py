@@ -129,8 +129,8 @@ def _run(tmp_path, spec, grain, fail_index=False):
 # bravo: DECLARED flow grain, a 95-key "gap" that is the design (100 keys, 5 rows)
 # charlie: bespoke resolver, 50-key gap - the abs/bls/bis shape: unknown, therefore COUNTED
 # zulu: a bespoke resolver with ZERO catalogue rows. The suite had no such case, which is
-# exactly why the cat == 0 branch kept the pre-review behaviour and dropped 5,353,886 real
-# store keys (imf 4,304,918 + owid 1,048,968) out of the headline on the last complete run.
+# exactly why the cat == 0 branch kept the pre-review behaviour and dropped real
+# store keys (imf 4,304,918 among them) out of the headline on the last complete run.
 SPEC = {"alpha": (40, 10), "bravo": (100, 5), "charlie": (60, 10), "zulu": (500, 0)}
 GRAIN = {"bravo": "flow", "charlie": "custom", "zulu": "custom"}
 # alpha 30 + charlie 50 + zulu 500
@@ -364,7 +364,7 @@ def test_zero_catalogue_rows_is_its_own_bucket_and_is_COUNTED(tmp_path):
     absent from the catalogue. The pre-review code added such a source's keys to the DECLARED
     grain tally ("NOT a coverage gap") and to NEITHER the headline nor the unestablished tally, so
     on the last complete run it printed "0 store keys" under a heading reading "INCLUDED in the
-    total above" while listing two sources, and dropped imf (4,304,918) and owid (1,048,968) out
+    total above" while listing sources, and dropped imf (4,304,918) and more out
     of the headline entirely. It also booked ilo - file grain, 29,447,518 keys, no catalogue at
     all - as design.
     """
@@ -381,10 +381,9 @@ def test_zero_catalogue_rows_is_its_own_bucket_and_is_COUNTED(tmp_path):
 def test_a_gated_source_is_not_reported_as_forgotten(tmp_path):
     """R838 - the rule I broke by hand, twice in one hour, now in the instrument.
 
-    A denylisted source holds data, has no catalogue row and no R2 object BY DECISION (the
-    2026-07-22/23 licence purge). Reporting it beside genuinely forgotten data is how I came to
-    write that a gated store was "a dead directory nothing owns" when it has a working fetcher
-    and sits on the denylist.
+    summarise() must put denylisted sources in their own bucket, excluded from the total (gated BY
+    DECISION, the 2026-07-22/23 licence purge). Reporting them beside genuinely forgotten data is how I came to
+    write that gated stores were "a dead directory nothing owns" when they sit on the denylist.
 
     SIMPLIFIED after a second review: the gate is now checked BEFORE grain, at ANY catalogue row
     count, so gated sources never reach the zero-catalogue bucket at all. One gated bucket, and
@@ -572,9 +571,9 @@ def test_the_gated_split_cannot_be_inverted(tmp_path):
 
 
 def test_a_gated_source_WITH_catalogue_rows_is_not_a_coverage_gap(tmp_path):
-    """The real mis-assignment the review measured: a denylisted source holding 26 catalogue rows
-    missed the zero-catalogue split entirely, so its 233-key gap printed as an unexplained
-    coverage gap. The gate outranks the grain at ANY row count."""
+    """The real mis-assignment the review measured: denylisted sources holding catalogue rows
+    missed the zero-catalogue split entirely, so their key gaps printed as unexplained
+    coverage gaps. The gate outranks the grain at ANY row count."""
     stdout, tsv = _run2(tmp_path)
     assert "GATED WITH A GAP - 1 denylisted source(s), 280 keys" in stdout, stdout
     assert "EXCLUDED from the total above" in stdout, stdout
@@ -598,8 +597,8 @@ def test_the_REAL_denylist_parses_against_the_REAL_file():
     assert re.search(r"NON_REDISTRIBUTABLE[^=]*=\s*new Set", raw), "declaration shape changed"
 
 def test_a_suspiciously_short_denylist_is_REFUSED(tmp_path):
-    """The <10-ids guard survived a mutant because the REAL file has 49 ids, so the guard never
-    fires and deleting it is invisible. A guard only counts as tested when something trips it.
+    """The fail-closed parse guard survived a mutant because nothing in the suite tripped it, so
+    deleting it was invisible. A guard only counts as tested when something trips it.
 
     Why it exists: a regex that half-matches (a renamed export, a reformatted file, a set written
     with single quotes) yields a SHORT list rather than an empty one, and a short denylist reports

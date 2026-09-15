@@ -42,7 +42,7 @@ FETCHER_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 # that always fits the budget. Removing a name is fine (it means rotation was added);
 # ADDING one requires reading the loop and recording why it is safe.
 NO_ROTATION_REVIEWED = {
-    "_dbnomics", "bea", "bis", "boc", "comtrade", "cso", "dst", "eia", "ember",
+    "bea", "bis", "boc", "comtrade", "cso", "dst", "eia", "ember",
     "fed_board", "idb", "ilostat", "ksh_stadat", "snb", "stats_nz", "zillow",
 }
 # stat_slovenia is deliberately ABSENT. It rolls its OWN rotation — a `_sweep_offset.json`

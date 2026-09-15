@@ -5,7 +5,7 @@ ATTEMPT, not the current code, so date the error before treating it as work" —
 broken twice by the person who wrote it, on the same day (R297, R301).
 
     bea        TypeError from a mid-run commit; the exact call worked when re-run
-    boc        AttributeError fixed in a1c42881, FIVE HOURS after the failure it still reports
+    boc        AttributeError fixed FIVE HOURS after the failure it still reports
     insee_bdm  201/201 sub-units "transient-failed"; INSEE answers HTTP 200 today
     hagstofa   "26/1906 returned 200 but parsed 0 rows" — fixed in 1188fb62 two days before I
                looked, and the commit message names that exact count. I probed the publisher,

@@ -5,7 +5,7 @@ Without it a giant source that merges rows returns neither `changed_keys` nor
 the only exit is a manual desktop campaign (eurostat, 2026-09-07: 400 flows selected, 360
 parquets rewritten, ~108 actually changed). Each test below has the direction that would
 have caught that defect AND the direction that keeps the old behaviour byte-identical for
-callers that do not opt in (oecd, sec_edgar, sdmx_nso, _iep).
+callers that do not opt in (oecd, sec_edgar, _iep).
 
 Hermetic: a tmp source dir under the LOCAL blob backend; no catalog.db, no store, no R2.
 """
@@ -240,7 +240,7 @@ def test_sidecar_state_unchanged_by_the_report(tmp_path, monkeypatch):
 
 def test_eurostat_opts_in_and_no_other_giant_caller_does():
     """Pinned so the opt-in cannot silently spread to a source whose catalogue grain has
-    not been measured (oecd, sec_edgar, sdmx_nso, _iep)."""
+    not been measured (oecd, sec_edgar, _iep)."""
     fdir = os.path.join(ROOT, "updater", "strategies", "fetchers")
     src = {f: open(os.path.join(fdir, f), encoding="utf-8").read()
            for f in os.listdir(fdir) if f.endswith(".py") and f != "_giant.py"}

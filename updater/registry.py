@@ -84,7 +84,7 @@ def validate(reg: dict, expected_count: int | None = None) -> list[str]:
 
 def to_units(entry: dict) -> list[Unit]:
     """Materialize an entry into refresh Units. A source with an explicit `units`
-    list (e.g. central_banks -> boc/snb/...) yields one Unit each; otherwise a
+    list (e.g. a multi-provider entry -> boc/snb/...) yields one Unit each; otherwise a
     single implicit `_all` unit covering the source dir.
 
     Per-flow giants (giant_changed_units: eurostat, oecd, ...) keep yielding the

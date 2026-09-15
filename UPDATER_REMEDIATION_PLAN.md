@@ -1,6 +1,6 @@
 # Updater remediation plan — systematic, per-source
 
-**Date:** 2026-07-23 · **Base:** `main` @ `fcae3eb` · **Evidence:** production health run
+**Date:** 2026-07-23 · **Evidence:** production health run
 [30036391239](https://github.com/elkassabgi/econdatalibrary/actions/runs/30036391239) (every
 source's cadence + newest observation, computed against live R2 state).
 
@@ -13,12 +13,12 @@ Two independent things were being conflated:
 2. **Will it auto-update?** — is the source `live: true` (runs in the daily CI)?
 
 **Finding:** most sources are **current but frozen** — their data is fresh from a bulk load, but
-only **2 of 105** (`cnb`, `frankfurter`) actually auto-update. The health report's RED flags are
+only **2** (`cnb`, `frankfurter`) actually auto-update. The health report's RED flags are
 partly **false alarms** for quiet annual/static data (e.g. `ppi` "RED-DATA @2022" is IEP's genuine
 latest edition). So the job is mostly **enabling auto-update on sources whose data is already
 current**, not repairing stale data — plus a short list of genuinely broken things.
 
-## Scorecard (105 registry sources)
+## Scorecard (all registry sources)
 
 | Bucket | # | Meaning |
 |---|--:|---|
@@ -41,9 +41,9 @@ The promotion contract for EVERY source (learned the hard way — ledger R35/R36
 > A green badge or a local run proves nothing.
 
 ### Phase 0 — CI-safety (DONE, proven)
-The 12 store-backed fetchers (`abs adb bls ecb eurostat insee_bdm insee_melodi istat scb GATED
+The store-backed fetchers (`abs adb bls ecb eurostat insee_bdm insee_melodi istat scb
 stat_estonia treasury`) read the store via the R2-routed `blob` layer. Proven live: `scb` processed
-2,741 sub-units in CI where pre-patch it died at "source dir missing". `fcae3eb`.
+2,741 sub-units in CI where pre-patch it died at "source dir missing".
 
 ### Phase 1 — Promote the clean, current sources (the bulk win)
 Sources whose fetcher works and whose data is current — flip live after a clean dispatch, **cadence
@@ -54,7 +54,7 @@ order (daily/weekly first, they benefit most)**:
 - **Monthly:** `bundesbank`, `epu`, `nasa_giss`, `dst`, `eurostat`, `oecd`, `faostat`,
   `insee_melodi`, `worldbank_wdi`.
 - **Annual/irregular (lowest urgency — rarely change):** `damodaran`, `gcb`, `wgi`,
-  `transparency_ti`, `undp_hdr`, `kof_globalization`, `GATED`, `swiid`, `ei_statreview`,
+  `transparency_ti`, `undp_hdr`, `kof_globalization`, `swiid`, `ei_statreview`,
   `gpi/gti/etr`, `harvard_atlas`, `edgar_jrc`, `fsi_fundforpeace`, `penn_world_table`, `ggdc`,
   `yale_epi`, `sec_edgar`, `adb`, `ksh`.
 - **Static (flip live harmlessly; they self-report no_change):** `barro_lee`, `pwt`, `gppd`,
@@ -64,13 +64,13 @@ Expected `no_change` for most annual/static on any given day — that is SUCCESS
 
 ### Phase 2 — The genuinely stale (verify against provider, then fix)
 - **`imf_commodity`** — monthly, stuck at 2025-06. **ROOT CAUSE VERIFIED 2026-07-23 (live probe):**
-  NOT our bug. It mirrors IMF PCPS *via DBnomics* (`api.db.nomics.world/v22/series/IMF/PCPS`), and
-  DBnomics's IMF/PCPS mirror is itself frozen — dataset metadata reads `updated: 2025-07-15,
-  indexed_at: 2025-07-16T02:22Z`, i.e. ~a year stale. Our data equals what DBnomics still serves;
+  NOT our bug. It mirrors IMF PCPS *via the relay aggregator*, and
+  the relay aggregator's IMF/PCPS mirror is itself frozen — dataset metadata reads `updated: 2025-07-15,
+  indexed_at: 2025-07-16T02:22Z`, i.e. ~a year stale. Our data equals what the relay aggregator still serves;
   the upstream link died (IMF migrated PCPS to its new data portal in 2025, deprecating the old
   mirror). FIX = repoint the fetcher to IMF's current PCPS feed (data.imf.org / new IMF SDMX API) —
   a fetcher rewrite against a new endpoint, not a delta tweak. Until then it is honestly frozen at
-  the last vintage DBnomics published.
+  the last vintage the relay aggregator published.
   UPDATE 2026-07-24: the repoint TARGET is confirmed LIVE — `api.imf.org/external/sdmx/3.0/data/dataflow/IMF.RES/PCPS/~/<key>` returns the PCPS dataflow (v9.0.0). BUT the new v9.0.0 has a DIFFERENT dimension structure than the old {FREQ}.{REF_AREA}.{COMMODITY}.{UNIT}; my guessed keys + `c[TIME_PERIOD]=ge:` time filter returned ZERO observations (a query-format issue, NOT proof of data absence). So current data past 2025-06 is NOT yet confirmed. The fetcher rewrite must first pull the DSD/codelists (dims INDICATOR/COMMODITY_CF/DATA_TRANSFORMATION/UNIT…), derive valid keys + the SDMX-3.0 time-filter syntax, THEN map to our series_key. Not a delta tweak; a real rewrite.
 - **`ppi`** — annual @2022. **Verify** IEP hasn't published 2023+; if not, it is CURRENT →
   reclassify A and silence the RED-DATA false alarm (raise its SLA or mark edition-final).
@@ -88,16 +88,16 @@ The new series exist upstream but aren't in the catalog. Fix = extend the per-so
 mapping so derive can place them. (`bls` ALSO gated on its legacy-inflation data-op, ledger R18 —
 do that first.)
 
-### Phase 5 — Build the 43 missing fetchers, cadence-prioritised
+### Phase 5 — Build the missing fetchers, cadence-prioritised
 `bea bis boe census cbs_nl cepii_baci cepii_gravity cftc comtrade edgar_13f eia ember fdic fed_board
 fhfa gii gleif gus_dbw idb ilostat imf imf_fsi insee_sirene ipea ksh_stadat maddison noaa nyfed
-ons_uk GATED pxweb rba riksbank sec_edgar_xbrl stats_nz ucdp un_wpp unhcr usda worldbank_esg
-worldbank_extra GATED zillow`
+ons_uk pxweb rba riksbank sec_edgar_xbrl stats_nz ucdp un_wpp unhcr usda worldbank_esg
+worldbank_extra zillow`
 
 - **Daily/weekly first** (`eia fed_board gleif nyfed riksbank cftc fdic sec_edgar_xbrl
   worldbank_esg`) — they go stale fastest.
-- **Monthly next** (`bea bis boe census ember fhfa ilostat imf imf_fsi noaa ons_uk GATED rba usda
-  GATED zillow gus_dbw ipea insee_sirene`).
+- **Monthly next** (`bea bis boe census ember fhfa ilostat imf imf_fsi noaa ons_uk rba usda
+  zillow gus_dbw ipea insee_sirene`).
 - **Annual/irregular/static last** (`comtrade cepii_* gii idb ksh_stadat maddison ucdp un_wpp unhcr
   edgar_13f cbs_nl stats_nz worldbank_extra`) — many change once a year.
 - ~20 already have bulk data on disk (20.5 GB) but are un-catalogued — those also need the
@@ -139,9 +139,9 @@ second reviewer's note; attribution matters for knowing which loop caught what).
 | | bls | real | `finalize()` called without `series_cursors=` | populate series_cursors |
 | | stat_latvia | real | Grain-aligned but catalog **never uploaded to R2** (R28) | upload its catalog to R2 |
 | | norgesbank, unsdg | stale | Already deleted/denylisted | clear stale state |
-| Transient | bundesbank, cso, defillama, GATED, stat_slovenia | **by design** | Self-healing; data preserved, retries next tick | none (auto-retry once live) |
+| Transient | bundesbank, cso, defillama, stat_slovenia | **by design** | Self-healing; data preserved, retries next tick | none (auto-retry once live) |
 | Memory | vdem | real | 77M-row OOM, mislabeled "transient" | overwrite-mode + keep OFF CI (giant → workstation) |
-| "dir missing" | abs, adb | **stale** | Already fixed by fcae3eb; stale recorded state | re-dispatch to clear |
+| "dir missing" | abs, adb | **stale** | Already fixed; stale recorded state | re-dispatch to clear |
 
 **Landmine noted:** `hagstofa.py:398`, `ssb.py:472`, `stat_latvia.py:382` still carry the raw
 `os.path.isdir` "source dir missing" pattern — they will fail in CI the moment they run there.
@@ -183,7 +183,7 @@ stat_estonia, ssb (bfs holds until its transients clear + a clean run). bls stay
 
 ## 2026-07-24 session — live tier 5 → 7, batch-dispatch + first bulk template
 
-**Promoted to live (CI-proven `ok`, data through today):** `nyfed` (NY Fed SOFR/OBFR/TGCR via FRED
+**Promoted to live (CI-proven `ok`, data through today):** `nyfed` (NY Fed SOFR/OBFR/TGCR via the St. Louis Fed API
 date-tail), `riksbank` (SWEA ~117 series, /Series freshness pre-filter + per-series date-tail).
 Run 30101500855 batch-proved both. **Live tier now 7:** bcb, cnb, frankfurter, nyfed, riksbank, scb, treasury.
 
