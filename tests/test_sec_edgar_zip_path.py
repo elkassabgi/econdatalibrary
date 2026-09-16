@@ -144,6 +144,23 @@ def test_the_download_requires_a_link_and_uses_the_one_it_is_given(monkeypatch):
         S._fetch_key(cfg, "2026q2", None, None)          # no composed-path fallback exists
 
 
+def test_each_product_pattern_has_exactly_one_capture_group():
+    """_zip_urls_on_page wraps zip_re in one more group and unpacks (href, key); a second group inside
+    zip_re would turn that unpack into a ValueError at run time."""
+    for pid, cfg in S.PRODUCTS.items():
+        assert re.compile(cfg["zip_re"]).groups == 1, pid
+
+
+def test_a_malformed_link_does_not_crash_and_is_reported_as_unlinked(monkeypatch):
+    """urlsplit raises ValueError on a malformed netloc; remote text must not produce a bare crash."""
+    page = INSIDER_PAGE + '<a href="//[/insider-transactions-data-sets/2026q3_form345.zip">broken</a>'
+    assert S._zip_urls_on_page(page, S.PRODUCTS["edgar_insider"]).get("2026q3") is None
+    monkeypatch.setattr(S, "_http_get", lambda *a, **k: page.encode())
+    with pytest.raises(S.TransientError) as e:
+        S._published_keys(S.PRODUCTS["edgar_insider"], None)
+    assert "2026q3" in str(e.value)
+
+
 def test_update_hands_each_download_the_link_from_that_product_page(monkeypatch):
     """Wires the whole path: without this, dropping url= in update() would pass every helper test."""
     per_product = {

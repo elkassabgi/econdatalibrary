@@ -289,7 +289,13 @@ def _zip_urls_on_page(text: str, prod_cfg) -> dict:
             href = "https:" + href
         elif href.startswith("/"):
             href = "https://" + _SEC_HOST + href
-        parts = _urlsplit(href)
+        try:
+            parts = _urlsplit(href)
+        except ValueError:
+            # urlsplit raises on a malformed netloc (measured: "https://[/x" -> ValueError:
+            # Invalid IPv6 URL). This is remote text, so that must not escape as an unclassified
+            # crash: skip the link, and the key then has none, which _published_keys reports.
+            continue
         if parts.scheme.lower() not in ("http", "https") or (parts.hostname or "").lower() != _SEC_HOST:
             continue                      # off sec.gov, or a relative form we will not guess at
         # Rebuilt, not echoed: the host is pinned, the scheme forced to https (SEC redirects
@@ -323,8 +329,8 @@ def _published_keys(prod_cfg, session) -> tuple:
         # as "transient, will retry" run after run - which is how it went unseen for a month.
         raise TransientError(
             f"{SOURCE}/{prod_cfg['out_dir']}: data-sets page published {len(out)} dataset key(s) "
-            f"but {len(unlinked)} carried no parseable sec.gov link (first: {unlinked[0]}); the "
-            f"page layout changed - refusing to guess a path; existing data kept")
+            f"but {len(unlinked)} carried no parseable sec.gov link (first in page order: "
+            f"{unlinked[0]}); refusing to guess a path for it; existing data kept")
     return sorted(out, key=_key_sort_value), urls
 
 
