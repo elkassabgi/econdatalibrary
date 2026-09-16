@@ -262,12 +262,56 @@ def _http_get(url, *, timeout, retries=4, rate=0.4, session=None):
     raise TransientError(f"{SOURCE}: {url[-80:]} -> {last} after {retries} attempts")
 
 
-def _published_keys(prod_cfg, session) -> list[str]:
-    """Scrape the data-sets page for every published <key>. Raises TransientError on
+_SEC_HOST = "www.sec.gov"
+
+
+def _zip_urls_on_page(text: str, prod_cfg) -> dict:
+    """Map every published <key> to the URL THE PAGE LINKS, instead of composing one.
+
+    Measured 2026-09-16: SEC publishes new releases under /files/datastandardsinnovation/data/...
+    while every older one stays under /files/structureddata/data/... . Composing the old path
+    returns HTTP 404 for each new release (insider 2026q2: 404 old, 200 new; 13F's
+    01jun2026-31aug2026 is on the new path too), and the 404 retried on every run for a month,
+    which kept the source `partial` and the cloud health gate red.
+
+    zip_re already anchors on the product directory and captures the key, so wrapping it in the
+    attribute quotes captures the href itself - no second pattern to keep in step with the first.
+    Only sec.gov links are accepted: a page that ever links elsewhere must not redirect a download.
+    """
+    from urllib.parse import urlsplit as _urlsplit
+
+    href_re = re.compile(r"[\"']([^\"'\s]*" + prod_cfg["zip_re"] + r")[\"']")
+    out: dict[str, str] = {}
+    for href, key in href_re.findall(text):
+        if not _valid_key(key) or key in out:
+            continue                      # page order is newest-first; a key's first link wins
+        if href.startswith("//"):
+            href = "https:" + href
+        elif href.startswith("/"):
+            href = "https://" + _SEC_HOST + href
+        try:
+            parts = _urlsplit(href)
+        except ValueError:
+            # urlsplit raises on a malformed netloc (measured: "https://[/x" -> ValueError:
+            # Invalid IPv6 URL). This is remote text, so that must not escape as an unclassified
+            # crash: skip the link, and the key then has none, which _published_keys reports.
+            continue
+        if parts.scheme.lower() not in ("http", "https") or (parts.hostname or "").lower() != _SEC_HOST:
+            continue                      # off sec.gov, or a relative form we will not guess at
+        # Rebuilt, not echoed: the host is pinned, the scheme forced to https (SEC redirects
+        # plaintext anyway, and requests follows redirects), any port or userinfo dropped.
+        out[key] = "https://" + _SEC_HOST + parts.path + (("?" + parts.query) if parts.query else "")
+    return out
+
+
+def _published_keys(prod_cfg, session) -> tuple:
+    """Scrape the data-sets page for every published <key>, and the URL it links for each. Raises TransientError on
     a network failure OR a 200 that yields zero keys (structural break — never
     laundered into no_change)."""
     html = _http_get(prod_cfg["page_url"], timeout=90, session=session)
-    keys = re.findall(prod_cfg["zip_re"], html.decode("utf-8", "replace"))
+    text = html.decode("utf-8", "replace")
+    urls = _zip_urls_on_page(text, prod_cfg)
+    keys = re.findall(prod_cfg["zip_re"], text)
     seen, out = set(), []
     for k in keys:
         if k not in seen and _valid_key(k):
@@ -277,7 +321,17 @@ def _published_keys(prod_cfg, session) -> list[str]:
         raise TransientError(
             f"{SOURCE}/{prod_cfg['out_dir']}: data-sets page parsed 0 dataset keys "
             f"(layout change or transient empty body); existing data kept")
-    return sorted(out, key=_key_sort_value)
+    unlinked = [k for k in out if k not in urls]
+    if unlinked:
+        # A published key whose link we cannot parse is a LAYOUT change, not a network flake.
+        # Composing zip_url for it is the 404 loop this whole change removes (measured
+        # 2026-09-16: the composed path 404s for every new release), and it would be recorded
+        # as "transient, will retry" run after run - which is how it went unseen for a month.
+        raise TransientError(
+            f"{SOURCE}/{prod_cfg['out_dir']}: data-sets page published {len(out)} dataset key(s) "
+            f"but {len(unlinked)} carried no parseable sec.gov link (first in page order: "
+            f"{unlinked[0]}); refusing to guess a path for it; existing data kept")
+    return sorted(out, key=_key_sort_value), urls
 
 
 def _keys_on_disk(prod_cfg) -> set[str]:
@@ -443,11 +497,14 @@ def _to_table(df: pd.DataFrame, prod_cfg: dict, table: str, key: str) -> pa.Tabl
 
 
 def _fetch_key(prod_cfg: dict, key: str, session, tally: Tally,
-               cursors: dict | None = None) -> int:
+               cursors: dict | None = None, *, url: str) -> int:
     """Download + parse one dataset key's zip and merge every table into its own
     per-period parquet (never-shrink/dedup). Returns rows added across tables.
     Raises TransientError on download/zip failure (the key re-runs next tick)."""
-    url = prod_cfg["zip_url"].format(key=key)
+    # `url` is the href the page carried for this key (see _zip_urls_on_page). There is
+    # deliberately NO composed-path fallback: SEC serves new releases from a directory
+    # zip_url does not know, so a guessed path 404s and the failure reads as "transient"
+    # for as long as nobody looks. _published_keys refuses the whole page instead.
     raw = _http_get(url, timeout=600, retries=4, session=session)
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
@@ -549,7 +606,7 @@ def current_vintage(unit) -> str | None:
     h = hashlib.sha256()
     try:
         for pid in sorted(PRODUCTS):
-            keys = _published_keys(PRODUCTS[pid], sess)
+            keys, _ = _published_keys(PRODUCTS[pid], sess)
             h.update(pid.encode())
             h.update(b"=")
             h.update(";".join(keys).encode())
@@ -576,7 +633,7 @@ def update(unit, since) -> Result:
 
     for pid in sorted(PRODUCTS):
         prod_cfg = PRODUCTS[pid]
-        published = _published_keys(prod_cfg, sess)  # TransientError -> whole unit partial
+        published, zip_urls = _published_keys(prod_cfg, sess)  # TransientError -> whole unit partial
         on_disk = _keys_on_disk(prod_cfg)
         pstate = state.setdefault(pid, {})
 
@@ -600,7 +657,8 @@ def update(unit, since) -> Result:
         for key in want:
             selected_total += 1
             try:
-                added = _fetch_key(prod_cfg, key, sess, tally, cursors=cursors)
+                added = _fetch_key(prod_cfg, key, sess, tally, cursors=cursors,
+                                   url=zip_urls[key])
             except TransientError as e:
                 tally.transient_unit(f"{key}: {str(e)[:150]}")
                 pstate[key] = {"status": "transient_fail"}
