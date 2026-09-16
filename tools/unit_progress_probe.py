@@ -33,8 +33,8 @@ old_last: new_last = old_last`), so the store never regresses it and the directi
 belt-and-braces. It is kept deliberately, not redundantly: the clamp is upstream code that could
 change, and this is the guard at the point of use.
 
-Ordering is applied ONLY to values that have the ISO shape on BOTH sides. 257 of the 258
-populated last_obs_date values are YYYY-MM-DD and one is not - sec_edgar holds
+Ordering is applied ONLY to values that have the ISO shape on BOTH sides. All of the
+populated last_obs_date values are YYYY-MM-DD but one - sec_edgar holds
 '01mar2026-31may2026', a Stata-style range - and sec_edgar is `partial` with a NULL
 last_success_utc, so last_obs_date is the only field that can ever make it count. A string
 comparison there is blind forwards (conservative) and PERMISSIVE backwards: if that value ever

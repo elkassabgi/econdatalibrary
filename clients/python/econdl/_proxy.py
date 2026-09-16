@@ -2,7 +2,7 @@
 
 Some cataloged sources carry a license whose ``reservable`` flag is 0 -- we are
 NOT permitted to re-host their observations or stamp our DOI on them. The honest
-posture (copying DBnomics' license-passthrough stance) is: for such a series,
+posture (copying the relay's license-passthrough stance) is: for such a series,
 ``bundle()`` must NEVER read or copy our parquet and must NEVER emit our citation
 as if it were ours. Instead it emits a *manifest-only* resource that points at the
 UPSTREAM provider with full license + provenance + attribution, explicitly marked
@@ -14,7 +14,7 @@ This module is the single place that:
      ``_catalog.get_license.reservable``), the EXACT gate the brief specifies; and
   2. builds the upstream-pointing proxy resource (path + provenance) for a
      non-redistributable series, drawing the true upstream provider from the
-     series' own catalog metadata (for an aggregator like DBnomics, each series
+     series' own catalog metadata (for an aggregator like the relay aggregator, each series
      names its real underlying provider/website/terms -- we point THERE, never at
      our re-hosted copy).
 
@@ -118,16 +118,11 @@ def upstream_url(series_id: str, *, db: str | None = None) -> str:
 
     Preference order (most specific first), all pointing AWAY from our store:
       1. the series' own upstream landing page derived from metadata
-         (for legacy relay-era series only, DBnomics: ``https://db.nomics.world/<dbnomics_path>`` -- fetching from it is BANNED (R251); this is a provenance pointer, the
-         provider-attributed series page), then the provider website / terms;
+         (the provider-attributed landing page), then the provider website / terms;
       2. the source's homepage / terms_url from the registry;
       3. a bare honest marker if nothing upstream is on record.
     """
     md = _series_metadata(series_id, db)
-    # DBnomics-style aggregator: the path locates the provider-attributed series.
-    path = md.get("dbnomics_path")
-    if path:
-        return f"https://db.nomics.world/{path}"  # provenance pointer ONLY - fetching BANNED (R251)
     for k in ("provider_website", "provider_terms_of_use"):
         if md.get(k):
             return str(md[k])
@@ -151,7 +146,7 @@ def _citation(series_id: str, md: dict[str, Any], src_row: dict[str, Any],
     Honors the producer-first rule (ARCHITECTURE §9 [w7]): credit the underlying
     provider. CRITICAL honesty fix: a proxied series is NOT redistributed by us, so
     we must never let a curated "compiled and redistributed by the Elkassabgi Data
-    Library" claim ride along (the dbnomics ``citation_long`` carries exactly that).
+    Library" claim ride along (the the relay aggregator ``citation_long`` carries exactly that).
     We therefore prefer the producer-first ``citation_short`` (no redistribution
     claim), fall back to the upstream provider name, and ALWAYS append an explicit
     "not redistributed by us" clause stamped with the access date.

@@ -53,7 +53,7 @@ portal (CKAN, ~20,730 datasets). Goal: structured, redistributable econ/finance
   since 1990). **Highest content value.** License CC-BY 4.0 confirmed. **BLOCKED:**
   catalog host `statistiek.api.dnb.nl` is **NXDOMAIN** (dead in public DNS); the live
   DNB Statistics API requires an **eHerkenning-based "Public" subscription key** — no
-  anonymous access. → needs credentials (like the GUS key) before any ingest.
+  anonymous access. → needs credentials (like the DBW key) before any ingest.
 - **Kadaster Vastgoed Dashboard** — monthly NL **house-price index (PBK)**, avg sale
   price, homes sold, mortgage counts/avg/total, building-plot & farmland prices,
   forced auctions. CC0. Excellent finance fit. Resource URLs were landing pages, not

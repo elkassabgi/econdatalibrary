@@ -17,7 +17,7 @@ That matters three ways, and each one alone is enough to hold publication:
   * the written permission on file is from Gallup/WHR, and data obtained via OWID is governed by
     OWID's terms (CC BY), which is a different licence question the audit never asked;
   * the owner's standing instruction is to take data from the source, not from an aggregator -
-    the same correction that removed two DBnomics-backed fetchers.
+    the same correction that removed two relay-backed fetchers.
 
 The store is also partial: ingest_whr lists eight indicators and only "Self-reported life
 satisfaction" is present.

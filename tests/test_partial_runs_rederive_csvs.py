@@ -7,7 +7,7 @@ assumes a source EVENTUALLY returns ok.
 
 Chronically partial sources never do. One flaky sub-unit out of eighty is enough, every run,
 forever, and the run reports `partial` with the parquet published perfectly well. Measured
-across the whole fleet that day: 136 of 173 sources with run history had NEVER returned ok,
+across the whole fleet that day: 136 sources with run history had NEVER returned ok,
 ~56 of them live AND served.
 
 The consequence was silent and user-visible. worldbank_esg has returned `partial` on 4 of

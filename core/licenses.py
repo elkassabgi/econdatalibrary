@@ -5,16 +5,16 @@ the public. The ingest pipeline calls assert_reservable() at both the source and
 per-series level, so restricted data can never be published by accident.
 
 Decisions locked 2026-06-01 (see configs/sources.yaml):
-  - HOST: all GREEN + kept YELLOW (IMF, ECB, BIS*, DBnomics*)
+  - HOST: all GREEN + kept YELLOW (IMF, ECB, BIS*)
   - DROP: CoinGecko, Alternative.me
-  - CARVE-OUT: Eurostat (non-EU/some trade), OWID (upstream 3rd-party), FRED (Copyright series)
-  * BIS = non-commercial only; DBnomics = per-series license passthrough.
+  - CARVE-OUT: Eurostat (non-EU/some trade)
+  * BIS = non-commercial only.
 """
 
 # Re-serveable license classes (green + the conditional ones we accepted).
 RESERVABLE = {
     "us-public-domain",      # SEC EDGAR, BLS, BEA, Census, Treasury, Fed, EIA, USDA, NOAA, FHFA
-    "cc-by-4.0",             # World Bank, OECD, Eurostat(EU), IMF, ILOSTAT, FAOSTAT, PWT, ABS, OWID(own)
+    "cc-by-4.0",             # World Bank, OECD, Eurostat(EU), IMF, ILOSTAT, FAOSTAT, PWT, ABS
     "cc0",                   # Wikidata
     "ogl-uk-3.0",            # Bank of England
     "etalab-2.0",            # INSEE
@@ -23,7 +23,6 @@ RESERVABLE = {
     "imf-terms",             # IMF (must disclose the data is free)
     "bis-attrib-nc",         # BIS (NON-COMMERCIAL redistribution only)
     "defillama-open",        # DeFiLlama
-    "dbnomics-passthrough",  # per-series: each series carries its provider's license
 }
 
 # Explicitly NOT re-serveable (dropped or red). Listed for clarity / tests.
@@ -32,7 +31,6 @@ EXCLUDED = {
     "altme-attrib",             # Alternative.me -- dropped with CoinGecko
     "vendor-no-redist",         # Alpha Vantage, Finnhub, Tiingo, Polygon, Alpaca, ...
     "cc-by-nc",                 # WHO GHO, Yale EPI
-    "fred-copyright",           # FRED "Copyright"-flagged series (e.g. S&P/Case-Shiller)
     "proprietary",              # LBMA/ICE metals, Baltic Dry, FINRA TRACE, MSRB EMMA
 }
 

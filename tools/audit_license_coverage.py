@@ -44,8 +44,8 @@ def assessed() -> dict[str, str]:
     licence gap has to be right about it: the number drives whether data gets withdrawn.
 
     Table rows are only trusted when the first cell looks like a source id (lowercase, digits,
-    underscore). Other tables in the file are keyed by PROVIDER NAME - "World Trade
-    Organization (WTO)", "Deutsche Bundesbank time series" - and those must not be mistaken for
+    underscore). Other tables in the file are keyed by PROVIDER NAME - a publisher's full name,
+    "Deutsche Bundesbank time series" - and those must not be mistaken for
     ids, so the shape test is what separates them.
     """
     txt = open(AUDIT, encoding="utf-8").read()

@@ -49,7 +49,7 @@ def main() -> int:
                        "last_attempt_utc FROM source_state").fetchall()
 
     # THE REGISTRY IS THE SCHEDULE. A source in source_state but absent from registry.yaml
-    # cannot be run at all - it was retired, and its row is a leftover. Ten sources were removed
+    # cannot be run at all - it was retired, and its row is a leftover. Sources were removed
     # on 2026-07-22/23 as material we are not permitted to re-host (updater/config.py), and
     # without this they show up as "stale" on every run of this tool, forever.
     reg = yaml.safe_load(open(os.path.join(ROOT, "updater", "registry.yaml"), encoding="utf-8"))

@@ -1,6 +1,6 @@
 # Updater proving status — measured, not assumed
 
-Denominator: **105 registry sources · 92 fetchers built · 15 live.** Building is not the
+Denominator: **all registry sources · 92 fetchers built · 15 live.** Building is not the
 bottleneck; **proving** is, and CI is serialized to one run at a time by the
 `aqueduct-updater` concurrency group.
 
@@ -24,7 +24,7 @@ bottleneck; **proving** is, and CI is serialized to one run at a time by the
 | `un_wpp` | peak RSS **14.93 GB** on a 16 GB runner | Full re-fetch/parse blows the runner. Reports `no_change` only because nothing changed — the day UN WPP republishes, production does the 14.93 GB path and OOMs. |
 | `bundesbank` | **6.28 GB**, >420 s | Memory + runtime. |
 | `adb` | 24 min at 0.16 GB | Hung on IO, not memory — same shape as the `worldbank_esg` 4xx-retry bug; likely the same class. |
-| `ksh` | crashes on import | `jobs/ingest_ksh_hungary.py` was deleted in `5095976` ("retire legacy duplicates", 2026-07-02) but the registry entry and fetcher stayed. **See the migration note below — this one is user-facing.** |
+| `ksh` | crashes on import | `jobs/ingest_ksh_hungary.py` was deleted but the registry entry and fetcher stayed. **See the migration note below — this one is user-facing.** |
 | `eia`, `cepii_gravity`, `vdem`, `oecd` (58 GB), `statcan` (175 GB) | — | Scale; need a streaming design. |
 
 ## Slow but working (>7 min local cap; fine in CI, bad for a serial cron)
@@ -33,7 +33,7 @@ bottleneck; **proving** is, and CI is serialized to one run at a time by the
 
 ## Healthy in local smoke (`--force`, rc=0)
 
-`transparency_ti`, `nasa_giss`, `swiid`, `gti`, `etr`, `GATED`, `fsi_fundforpeace`,
+`transparency_ti`, `nasa_giss`, `swiid`, `gti`, `etr`, `fsi_fundforpeace`,
 `gpi`, `damodaran`, `gppd`, `barro_lee`, `wgi`, `kof_globalization`, `undp_hdr`, `ppi`, `epu`,
 `yale_epi`, `wikidata`, `edgar_jrc`, `imf_commodity`, `pwt`, `gcb`, `ei_statreview`,
 `penn_world_table`, `oxcgrt` (4.81 GB), `imf_weo`, `ggdc`, `harvard_atlas`, `gapminder`,

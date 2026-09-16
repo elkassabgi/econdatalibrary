@@ -168,9 +168,9 @@ def main() -> int:
     # should not have been (ledger R385). `_series_csv_bytes` resolves through the LOCAL mirror
     # under data/clean_full/. If that mirror is behind R2, the served object and the "expected"
     # bytes come from the SAME wrong copy, so a clean result establishes served == local and
-    # says nothing about the store. An adversarial audit measured 1,379 local files behind R2
-    # (ilostat 952, eurostat 124, owid 58) while this tool was printing 25/25 identical, and two
-    # of those "clean" sources were live regressions — ons_uk/weekly-deaths-age-sex served
+    # says nothing about the store. An adversarial audit measured local files behind R2
+    # (ilostat 952, eurostat 124 among them) while this tool was printing every source identical,
+    # and some of those "clean" sources were live regressions — ons_uk/weekly-deaths-age-sex served
     # 31,878 rows against a 37,950-row store parquet.
     #
     # So check the mirror FIRST and withhold the byte verdict when it is behind. A withheld

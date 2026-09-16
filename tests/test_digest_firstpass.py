@@ -1,6 +1,6 @@
 """The first-pass crawlers had no monitoring at all, and the gap cost two hours on 2026-09-03.
 
-`FIRSTPASS_DIRS = {"cbs_nl", "gus_dbw", "dbnomics"}` (orchestrate.py:50) are excluded from the
+`FIRSTPASS_DIRS = {"cbs_nl", "gus_dbw"}` (orchestrate.py:50) are excluded from the
 normal run and have no `unit_state` row, so nothing in the daily email mentioned them. The project
 memory had said so outright — "nothing would report them if the crawlers stopped" — and that day
 gus_dbw's refresh sat stalled on upstream connection resets from 10:11 UTC and was found only
@@ -53,10 +53,10 @@ def test_a_checkpoint_counts_even_when_the_parquet_is_ancient(tmp_path):
 
 
 def test_a_missing_directory_is_omitted_not_alarmed(tmp_path):
-    """dbnomics has no directory — the domain is banned (R251). Reporting it daily is noise."""
+    """A name with no directory (the banned relay once sat here, R251) is omitted: reporting it daily is noise."""
     now = time.time()
     _touch(tmp_path / "cbs_nl" / "a.parquet", 0.01, now)
-    got = firstpass_ages(str(tmp_path), ["cbs_nl", "dbnomics"], now)
+    got = firstpass_ages(str(tmp_path), ["cbs_nl", "zzz_no_such_dir"], now)
     assert [g[0] for g in got] == ["cbs_nl"]
 
 

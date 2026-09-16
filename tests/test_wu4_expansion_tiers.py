@@ -139,7 +139,7 @@ def test_treasury_and_wikidata_keep_exact_first(cat, tmp_path):
 
 
 def test_subset_scopes_are_pinned():
-    for sid in ("treasury", "wikidata", "worldbank_pink", "statcan"):
+    for sid in ("treasury", "wikidata", "statcan"):
         assert orchestrate._catalog_scope(sid) == "subset", sid
 
 

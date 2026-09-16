@@ -2,7 +2,7 @@
 
 ONE shared implementation of "which axis of this JSON-stat2 cube is the date axis?"
 so every PxWeb source (SCB, SSB, StatFin, Hagstofa, BFS, Statistics Estonia /
-Latvia / Slovenia, DST, CSO, IRENA, …) selects it the same, robust way instead of
+Latvia / Slovenia, DST, CSO, …) selects it the same, robust way instead of
 each carrying a copy that can drift.
 
 WHY THIS EXISTS — the 2026-07-21 hagstofa / statfin freeze
@@ -286,8 +286,8 @@ def resolve_time_dim(dim_ids, dim_codes, *, meta_time_code=None, role_time=None,
             codes = dim_codes[i] if i < len(dim_codes) else []
             if date_parse_rate(codes, parse_fn, sane_lo=sane_lo, sane_hi=sane_hi) > 0:
                 return i
-            # SAME-AXIS LABEL RESCUE (2026-08-31, hagstofa's 33 false structural breaks).
-            # Unflagged POSITIONAL time axes exist: `Ár`/`Year`/`Mánuður` with codes
+            # SAME-AXIS LABEL RESCUE (2026-08-31, hagstofa).
+            # Some time axes are POSITIONAL and carry no time flag: `Ár`/`Year`/`Mánuður` with codes
             # '0','1','2'… and the period only in valueTexts ('1971-1975', '2024') — the
             # publisher never sets `time: true` on them, so the authoritative branch's
             # label fallback (case (a) above) can never apply, and this branch refused

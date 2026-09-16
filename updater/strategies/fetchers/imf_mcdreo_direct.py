@@ -2,7 +2,7 @@
 
 Thin wrapper: the registry resolves fetchers/<source_id>.py, so each IMF dataset
 needs its own module. All behaviour lives in _imf_direct.py — see that file for why
-these are NEW source ids rather than replacements for the DBnomics-era imf_mcdreo.
+these are NEW source ids rather than replacements for the relay-era imf_mcdreo.
 
 The direct feed carries ~623 series vs the frozen relay's 1,095 (57%) — Ahmed's
 2026-08-06 ruling ("refresh to match publisher... I need a clean database") makes

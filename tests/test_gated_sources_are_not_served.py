@@ -1,6 +1,6 @@
 """A source the licence record calls GATED must not be in SUPPORTED_SOURCES.
 
-WHY THIS EXISTS. On 2026-09-06 four sources were listed as "stay gated" in the econ-updater
+WHY THIS EXISTS. On 2026-09-06 sources were listed as "stay gated" in the econ-updater
 skill's licence summary while being SERVED: `damodaran` (24,687 rows), `fdic` (298,869),
 `defillama` (24) and `frankfurter` (46). Three had a legitimate basis that the summary had simply
 not caught up with — two written permissions and one recorded owner decision — and one
@@ -89,8 +89,8 @@ def denylisted():
     """Ids the deployed worker gates with a 451. Comments stripped first (R137/R329).
 
     This is the ACTUAL gate. `SUPPORTED_SOURCES` only says the worker can resolve an id, so a
-    source can be both supported and gated — `worldbank_pink` is exactly that, and reading only
-    SUPPORTED_SOURCES reports it as a breach when it is correctly withheld.
+    source could be both supported and gated (that happened until 2026-09-08), and reading only
+    SUPPORTED_SOURCES would report such a case as a breach when it is correctly withheld.
     """
     src = open(os.path.join(ROOT, "api", "worker", "src", "denylist.ts"), encoding="utf-8").read()
     src = re.sub(r"//[^\n]*", "", src)

@@ -33,7 +33,7 @@ const DENY_LIST_SQL = [...NON_REDISTRIBUTABLE].map((s) => `'${s}'`).join(",");
 // IMF-sourced CPI + ILO-sourced unemployment). Prefix match on `<src>:<ind>:`.
 // Two terms per carve-out, because ids come in two shapes and the prefix only covers one.
 // `<src>:<ind>:` matches three-part ids; the equality covers two-part ids like
-// `worldbank_wdi:FP.CPI.TOTL.ZG` and `worldbank_pink:aluminum`, for which the prefix had
+// `worldbank_wdi:FP.CPI.TOTL.ZG`, for which the prefix had
 // always matched zero rows. ESCAPE '\' because `_` is a LIKE wildcard and two of the three
 // carve-out source ids contain one.
 const _exclFor = (col: string) =>
@@ -125,14 +125,15 @@ WHERE series_fts MATCH ? ${EXCL_ALIASED}`;
  * index-resident (series_id lives in the PK autoindex, so `EXPLAIN QUERY PLAN` is unchanged
  * and D1's billed `rows_read` does not move), but the terms are evaluated per candidate
  * entry BEFORE OFFSET. Measured 2026-08-30 on the local catalogue at the MAX_OFFSET of
- * 100,000: applying all 11 carve-out terms globally costs 3.70M VDBE steps / 148 ms against
+ * 100,000: applying every carve-out term globally costs 3.70M VDBE steps / 148 ms against
  * 400.8k / 29.6 ms unfiltered, while the 2 terms `worldbank` actually needs cost 1.00M /
- * 52.8 ms. Per source, ~318 of 321 sources therefore pay exactly nothing.
+ * 52.8 ms. Per source, sources without carve-outs therefore pay exactly nothing.
  *
  * BOTH id shapes are emitted. The historical `<src>:<ind>:` prefix cannot match a two-part
- * id, so the SQL exclusion for `worldbank_wdi:FP.CPI.TOTL.ZG` and `worldbank_pink:aluminum`
+ * id, so the SQL exclusion for `worldbank_wdi:FP.CPI.TOTL.ZG` and every other two-part
+ * carved id
  * had always matched 0 rows; the equality term closes that. ESCAPE is required because `_`
- * is a LIKE wildcard and two of the three carve-out source ids contain one.
+ * is a LIKE wildcard and carve-out source ids can contain one.
  *
  * Values are interpolated, not bound, because they must be inside a prepared statement that
  * also takes positional binds; they come from SERIES_CARVEOUTS in this repo, never from a

@@ -281,8 +281,8 @@ def update(unit, since) -> Result:
             # _per_series_last passes through whatever _max_by_key returned, and _max_by_key
             # returns ISO STRINGS. `d.isoformat()` therefore raised
             #     'str' object has no attribute 'isoformat'
-            # and left bcrp in transient_fail on every run. a1c42881 fixed exactly this for boc
-            # and tcmb, and recorded that "bcrp and scb work only because ISO strings sort and
+            # and left bcrp in transient_fail on every run. An earlier commit fixed exactly this for boc
+            # (among others), and recorded that "bcrp and scb work only because ISO strings sort and
             # compare exactly like dates" — true of the _max_by_key CALL SITE, which is what was
             # checked, and false here, 120 lines downstream. bcrp attempted at 2026-08-03 09:33Z,
             # six hours AFTER that fix, and crashed with the identical message.

@@ -3,7 +3,7 @@
 
 WHY. The currently-served unctad_* sources carry machine-code titles - `008.M1900` is a
 catalogue row's entire title - so roughly 700,000 series cannot be found by name. The
-titles that DO read well live in the legacy DBnomics-era unctad stores, and that mirror is
+titles that DO read well live in the legacy relay-era unctad stores, and that mirror is
 BANNED as a source here (econ CLAUDE.md section 0, ledger R251), so it is not a lawful
 label source.
 

@@ -1,6 +1,6 @@
 """UNESCO UIS demographic & socio-economic series — DIRECT from api.uis.unesco.org.
 
-WHY. unesco_dem's 7,080 series arrive via DBnomics, whose UNESCO index was last
+WHY. unesco_dem's 7,080 series arrive via the relay aggregator, whose UNESCO index was last
 refreshed 2022-04-04 — over four years ago. UIS itself runs a public API whose
 catalogue reports every theme "lastUpdate 02/09/2026, February 2026 Data Release".
 Four years stale on our side, current at the publisher, and nothing in our pipeline
@@ -10,7 +10,7 @@ ONLY THIS UNESCO SOURCE IS REPAIRABLE THIS WAY, and that was measured rather tha
 assumed. Of our five unesco_* sources, the indicator codes we publish are present in
 UIS's live catalogue at: dem 35/35 (100%), clte 21/408 (5.1%), film 1/76 (1.3%),
 cltt 0/34, inno 0/638. The current API exposes 30 CULTURE and 12 SCIENCE indicators
-against the hundreds the DBnomics-era snapshot carried, so the other four cannot be
+against the hundreds the relay-era snapshot carried, so the other four cannot be
 rebuilt from it. That is a statement about this endpoint, NOT a claim that those
 series are gone — UIS bulk downloads and the SDG database are unchecked (R75).
 
@@ -54,7 +54,7 @@ def current_vintage(unit):
     """UIS's own release version and per-theme lastUpdate.
 
     The publisher's field, deliberately — these sources sat four years stale because
-    the previous signal certified DBnomics' index rather than UNESCO's release.
+    the previous signal certified the relay's index rather than UNESCO's release.
     """
     try:
         v = _get(f"{BASE}/versions", timeout=120)

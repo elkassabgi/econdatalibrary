@@ -17,10 +17,10 @@ mlist = [p['source_id'] for p in mat['profiles']]         # step 2 (profiles is 
 
 | What | Count |
 |---|---|
-| `updater/registry.yaml` `sources` entries | **130** (130 unique source_ids, zero duplicates) |
-| `UPDATE_CAPABILITY_MATRIX.json` `profiles` entries | 133 list rows |
-| ... of which unique `source_id`s | **129** |
-| Matrix metadata `profiled` / `expected` fields | 133 / 133 (counts script-profile ROWS, not sources — misleading, see below) |
+| `updater/registry.yaml` `sources` entries | measured on the date above (unique source_ids, zero duplicates) |
+| `UPDATE_CAPABILITY_MATRIX.json` `profiles` entries | list rows, counted on the date above |
+| ... of which unique `source_id`s | measured on the date above |
+| Matrix metadata `profiled` / `expected` fields | count script-profile ROWS, not sources — misleading, see below |
 
 ## Set diff and add-or-drop decisions (one line each)
 
@@ -30,28 +30,23 @@ mlist = [p['source_id'] for p in mat['profiles']]         # step 2 (profiles is 
 
 **In matrix, NOT in registry (0):** none — every profiled source has a registry entry.
 
-## Why the matrix says 133 but contains 129 sources
+## Why the matrix's row count is not its source count
 
-Four sources were profiled once **per legacy ingest script**, producing two profile rows each (not a set-diff issue; each pair belongs to one registry source, no add/drop needed):
+Some sources were profiled once **per legacy ingest script**, producing two profile rows each (not a set-diff issue; each pair belongs to one registry source, no add/drop needed).
 
-- `bis` — `jobs/ingest_bis_cbs_lbs.py` + `jobs/ingest_bis_full.py` (two scripts, one source).
-- `bls` — `jobs/ingest_bls.py` + `jobs/ingest_bls_full.py` (two scripts, one source).
-- `insee_sirene` — `jobs/ingest_insee_sirene.py` + `jobs/ingest_insee_sirene_bulk.py` (two scripts, one source).
-- `GATED` — `jobs/ingest_irena.py` + `jobs/ingest_irena_country.py` (two scripts, one source).
-
-So: 129 unique + 4 doubled rows = 133 rows; 129 unique + `sec_edgar_xbrl` (post-split, never profiled) = 130 registry sources. Every prior number now traces: "133" = script-profile rows, "129" = unique profiled sources, "130" = registry sources.
+So: the unique sources plus their doubled rows make up the matrix rows, and the unique sources plus `sec_edgar_xbrl` (post-split, never profiled) are the registry sources. Every earlier figure traces to script-profile rows, to unique profiled sources or to registry sources.
 
 ## Reconciled result
 
-**`EXPECTED_SOURCE_COUNT = 130`** — pinned in `updater/config.py` and enforced by
+**`EXPECTED_SOURCE_COUNT`** — pinned in `updater/config.py` and enforced by
 `registry.validate(reg, expected_count=...)` in `updater/orchestrate.py` (per honesty
 rule §5.6: measured, never copied from a doc). Adding or retiring a source requires
 re-running the procedure above and updating `config.py` + this file in the same commit.
 
 ## Follow-ups (outside this change's file ownership)
 
-- `UPDATE_CAPABILITY_MATRIX.json` metadata `profiled: 133` / `expected: 133` counts
+- `UPDATE_CAPABILITY_MATRIX.json` metadata `profiled` / `expected` counts
   script rows, not sources — correct to per-source counts (or rename the field) in the
   Phase-1 doc pass (§5.6).
-- `CONTINUOUS_UPDATE_DESIGN.md:66,112` "133 sources" matches only the script-row count —
+- the source count at `CONTINUOUS_UPDATE_DESIGN.md:66,112` matches only the script-row count —
   correct in the same doc pass (D-2).

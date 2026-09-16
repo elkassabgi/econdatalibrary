@@ -123,7 +123,7 @@ def main() -> int:
         summary[r["class"]] = summary.get(r["class"], 0) + 1
     print("\nsummary:", json.dumps(summary))
     # A FILTERED run must not clobber the fleet baseline (AR-032's note: the WU-1
-    # pilot's exit-gate run silently replaced the 260-source baseline with a 1-source
+    # pilot's exit-gate run silently replaced the fleet-wide baseline with a 1-source
     # file, and the "before" numbers survived only as spec text). --source runs land
     # in a .partial.json unless --json-out says otherwise; only full runs own the
     # baseline path.
