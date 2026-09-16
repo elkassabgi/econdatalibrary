@@ -4,7 +4,7 @@ Made the uncataloged uniform-long sources discoverable + bundleable via one **ge
 resolver** (`<source>:<series_key|series_id>`) — no per-source resolver code needed.
 
 ## Result
-- **Catalog: 33 → 191 sources, 34,368 → 1,271,879 series.** 99.9% carry a real
+- **Catalog: more sources, 34,368 → 1,271,879 series.** 99.9% carry a real
   min/max obs_date range (from the data, not fabricated). Frequency taken from a
   freq/frequency column where the source has one, else null. Title = the native key
   (no fabricated titles — see the enrichment follow-up).
@@ -16,22 +16,16 @@ resolver** (`<source>:<series_key|series_id>`) — no per-source resolver code n
 Each exceeds 50,000 distinct series; per-series cataloging would bloat D1 with
 millions of near-structural rows. They remain **generic-resolvable** and source-level
 discoverable, just not series-level catalogued yet. Notable: insee_melodi (14.6M),
-GATED (5.8M), istat, imf_ifs/mfs/irfcl/GATED/dot/cpis/cdis/bop/gfsr, GATED, vdem,
-wid, ilo, GATED, ons_uk, norgesbank, ssb, statfin, ksh_stadat, dst, unsdg, scb, GATED,
-stat_{estonia,latvia,slovenia}, un_wpp, unesco_{sci,sdg,natmon}, harvard_atlas,
-gapminder, global_findex, cso, ecb_sdmx, adb, bfs, GATED, hagstofa, cepii_gravity,
-fao_tp, wto_bat_bv_{m,x}.
+istat, imf_ifs/mfs/irfcl/dot/cpis/cdis/bop/gfsr, vdem,
+wid, ilo, ons_uk, norgesbank, ssb, statfin, ksh_stadat, dst, unsdg, scb,
+stat_{estonia,latvia,slovenia}, un_wpp, unesco_{sdg,natmon}, harvard_atlas,
+gapminder, global_findex, cso, ecb_sdmx, adb, bfs, hagstofa, cepii_gravity,
+fao_tp.
 
 ## Skipped — 10 relational/wide (need explicit resolvers, not the generic one)
 edgar_13f, edgar_insider, edgar_pointers, cepii_baci, cftc, fdic, gleif, insee_bdm,
 insee_sirene, worldbank_extra. These have no canonical (key, obs_date, value) shape;
 they need bespoke resolvers like the existing relational set (wikidata/fhfa/census/…).
-
-## Flagged data-op — GATED (store schema inconsistency)
-`data/clean_full/GATED/` mixes two schemas across its 165 files (some `series_key`,
-some `series_id` for what should be one uniform source). The cataloger errored
-honestly rather than emit partial rows. Fix = re-ingest GATED to a single uniform
-schema, then catalog it (it's high-value — FRED).
 
 ## Follow-ups (later waves)
 1. **Title enrichment** — extract real human titles from sidecar `<flow>__series.parquet`
@@ -40,7 +34,6 @@ schema, then catalog it (it's high-value — FRED).
 2. **Flow-grain cataloging** for the 47 deferred giants (catalog at indicator/flow
    level, not full per-series).
 3. **Explicit resolvers** for the 10 relational sources.
-4. **GATED re-ingest** (uniform schema), then catalog.
 
 ## Cutover implication
 At 1.27M series, do NOT pre-derive 1.27M per-series CSV objects to R2. The Worker

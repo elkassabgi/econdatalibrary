@@ -24,9 +24,9 @@ API = 'https://econdl-api.elkassabgi.workers.dev/v1/catalog?source=%s&limit=1'
 def live_count(src):
     """-> (total, None) or (None, reason). A GATE is not a count mismatch.
 
-    `worldbank_pink` answers 451 non_redistributable (R526: refused in writing), and the old
-    bare-except-to--1 turned that into a DRIFT row — a deliberate licence refusal presented as a
-    defect, beside eight real drifts it then discredited.
+    A gated source answers 451 non_redistributable (R526), and the old
+    bare-except-to--1 turned that into DRIFT rows — deliberate licence refusals presented as
+    defects, beside real drifts they then discredited.
     """
     req = urllib.request.Request(API % src, headers={'User-Agent': 'econdl-audit/1.0'})
     try:

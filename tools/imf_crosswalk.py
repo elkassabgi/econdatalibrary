@@ -1,4 +1,4 @@
-"""Map our DBnomics-era IMF series ids onto IMF's modern direct-API keys.
+"""Map our relay-era IMF series ids onto IMF's modern direct-API keys.
 
 WHY THIS EXISTS: IMF retired IFS and rebuilt its datasets with new vocabularies for
 BOTH country and indicator, so no string transform relates the two. A first attempt
@@ -29,7 +29,7 @@ UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com"}
 XL = "{http://www.w3.org/XML/1998/namespace}lang"
 BASE = "https://api.imf.org/external/sdmx/2.1"
 
-# Aggregate wordings that differ between the DBnomics-era titles and IMF's codelist.
+# Aggregate wordings that differ between the relay-era titles and IMF's codelist.
 # Evidence-based: every entry below was observed in our imf_fdi titles failing to
 # resolve against CL_COUNTRY. Kept as data, not buried in branching logic, so the
 # next dataset can extend it without touching the algorithm.

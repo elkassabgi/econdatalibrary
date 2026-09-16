@@ -200,7 +200,7 @@ The workflow is `updater-daily.yml`, cron 06:00 UTC, concurrency group `aqueduct
    gh run view <run-id> --log-failed    # just the failing step's log
    ```
 
-2. **Registry-invalid failure** — the very first thing the "Run updater" step does is validate; the line reads `registry invalid (fix before running):` followed by the problems (updater/orchestrate.py:614-617), most commonly `expected 144 sources, found N` (updater/registry.py:55-56, count at updater/config.py:160). Fix = the registry entry or the `EXPECTED_SOURCE_COUNT` bump (R347). This kills EVERY run, not just one source — top priority.
+2. **Registry-invalid failure** — the very first thing the "Run updater" step does is validate; the line reads `registry invalid (fix before running):` followed by the problems (updater/orchestrate.py:614-617), most commonly `expected E sources, found N` (E is the current `EXPECTED_SOURCE_COUNT`) (updater/registry.py:55-56, count at updater/config.py:160). Fix = the registry entry or the `EXPECTED_SOURCE_COUNT` bump (R347). This kills EVERY run, not just one source — top priority.
 
 3. **Killed step, empty-looking log** — the step prints `updater exit code: N` at the end; `137`/`143` means the runner OOM/SIGTERM-killed it ("::error::updater was KILLED ... not a source failure"), and the `[mem] used=..MB avail=..MB` lines sampled every 15 s prove it rather than leave you guessing between OOM, hang, and rate-limit (three ons_uk investigations ran blind before this; updater-daily.yml:60-66, 226-247). `PYTHONUNBUFFERED=1` is what makes the partial log exist at all.
 
@@ -252,7 +252,7 @@ python tools/refresh_r2_catalog.py 2026-08-04               # real upload
 2. Per-source superset guard against the current R2 copy. Proof: `SHRINK : none — clean superset` (or the abort).
 3. **`.bak` backup BEFORE any write** — server-side copy of the live object to `_aqueduct/catalog.db.zst.bak-<stamp>` (no download, no memory; lines 118-121).
 4. Streamed zstd compress → upload (everything chunked through disk; the old in-memory path would need ~17 GB RSS at today's 8.5 GB catalogue; lines 11-16, 123-132).
-5. Re-download and `quick_check` **the object that is now live** (another process can write catalog.db mid-stream), plus count round-trip and spot-checks including purged sources staying gone (`GATED`, `GATED`, `GATED` must read 0; lines 134-158). Proof: `uploaded object quick_check: ok` … `DONE`.
+5. Re-download and `quick_check` **the object that is now live** (another process can write catalog.db mid-stream), plus count round-trip and spot-checks including purged sources staying gone (each must read 0; lines 134-158). Proof: `uploaded object quick_check: ok` … `DONE`.
 
 **Rollback:** copy the printed `.bak` key back over `_aqueduct/catalog.db.zst` (the script's own final line: `Rollback: copy <bak> back over <KEY>`; line 159).
 

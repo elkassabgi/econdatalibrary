@@ -87,7 +87,7 @@ def test_served_reader_strips_comments():
     """
     served = _served_ids()
     assert len(served) > 200, f"implausibly small SUPPORTED_SOURCES ({len(served)}) — parse broke"
-    for src in ("ksh", "zillow", "owid"):
+    for src in ("ksh", "zillow"):
         assert src not in served, (
             f"{src} appears in the parsed SUPPORTED_SOURCES; it is retired/gated and is named "
             f"only in a util.ts comment — the comment stripping has regressed"

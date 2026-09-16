@@ -2,7 +2,7 @@
 
 Thin wrapper: the registry resolves fetchers/<source_id>.py, so each IMF dataset needs its own
 module. All behaviour lives in _imf_direct.py — see that file for why these are NEW source ids
-rather than replacements for the DBnomics-era ones.
+rather than replacements for the relay-era ones.
 
 WHY THREE MODULES FOR "FSI". Our legacy `imf_fsi` (73,288 series) keys on flow `FSI`, which IMF
 no longer publishes as a single dataflow: on api.imf.org the FSI family is FSIC (core and

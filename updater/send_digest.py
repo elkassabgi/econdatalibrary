@@ -35,7 +35,7 @@ STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # An age means nothing without the cadence it is measured against. Measured 2026-09-03 across all
-# 229 live sources: 6 are late by this rule, while the four OLDEST ages in the render (38.2 days —
+# live sources: 6 are late by this rule, while the four OLDEST ages in the render (38.2 days —
 # pwt, oxcgrt, barro_lee, gppd) are cadence `static` and perfectly fine. Before this, the digest's
 # `tried=` column read as alarming exactly where nothing was wrong, and read as unremarkable for
 # eia at 11.6 days, which is DAILY and four cycles late.
@@ -66,7 +66,7 @@ def late_label(cadence: str, run_location: str, ts, now) -> str:
 def live_source_ids(entries) -> set:
     """The live tier, read EXACTLY as `registry.to_units()` reads it.
 
-    `registry.load()["sources"]` hands back raw yaml entries and 15 of the 282 have no `live` key
+    `registry.load()["sources"]` hands back raw yaml entries, and 15 of them have no `live` key
     at all. `to_units` normalises with `bool(entry.get("live", False))`, so an absent flag means
     NOT live; a reader testing `e.get("live") is False` would classify those 15 as live and
     silently restore the noise this removes. One expression, one place — two interpretations of a
@@ -92,7 +92,7 @@ def firstpass_ages(store_root: str, names, now: float):
     alarm that trains a reader to skip the section.
 
     A directory that does not exist is OMITTED, not alarmed: it means no first pass is in flight
-    (dbnomics has none — the domain is banned, R251).
+    (the banned relay has none, R251).
     """
     out = []
     for name in sorted(names):
@@ -158,7 +158,7 @@ def main() -> None:
     # (updater-daily.yml), i.e. as a SCRIPT - so `__package__` is empty and `from . import
     # registry` raises ImportError, is swallowed by the except below, and `managed` becomes None.
     # The orphan filter has therefore never run on a scheduled digest, which is why
-    # `fred_releases` - de-registered in July, unschedulable, last attempted 71 days ago - was
+    # sources de-registered in July, unschedulable and long unattempted, were
     # still being listed as needing attention every morning.
     #
     # The None fallback stays: a genuinely unreadable registry must report everything rather
@@ -208,8 +208,8 @@ def main() -> None:
 
     # NOT IN THE LIVE TIER -> CANNOT IMPROVE. updater-daily.yml sets AQUEDUCT_LIVE_ONLY=1 and
     # orchestrate.py:1536 honours it, so a non-live source is never executed by the daily run and
-    # its status is frozen. Measured 2026-09-03: 7 of 36 attention rows were such sources (bls,
-    # census, imf_imts_direct, istat, oecd, owid, sipri_polity) — 19% of a list whose whole
+    # its status is frozen. Measured 2026-09-03: attention rows included such sources (bls,
+    # census, imf_imts_direct, istat and oecd among them) in a list whose whole
     # purpose is to say what needs doing. Same shape as the unmanaged leftovers above, one layer
     # in: those had no registry entry, these have one and are simply not live.
     #
@@ -321,7 +321,7 @@ def main() -> None:
             lines.append("")
     for r in ok:
         # A "data through" frontier far in the future is a legitimate projection
-        # horizon (e.g. fred_releases carries CBO potential-GDP / WEO forecasts that
+        # horizon (e.g. official multi-year forecasts that
         # extend ~10y out), NOT a data bug. Flag it so a projection is never mistaken
         # for a stale/garbled date in the digest.
         _proj = ""

@@ -10,7 +10,7 @@
 
 What exists and works locally:
 
-- `updater/` Aqueduct package is real: `state.py` (SQLite StateStore: `source_state`, `unit_state`, `series_cursor`, `runs`, `leases` — schema ports verbatim to D1), `orchestrate.py` (leases, TTL-by-cost due-check, transient/definitive failure contract, first-pass protection via `FIRSTPASS_DIRS`), `merge.py` (never-shrink `merge_and_write`, atomic `.tmp` + `os.replace`, refuses 0-row/`min_ratio=0.97` shrink/column drops), `run.py` CLI, `health.py`, `registry.yaml` (130 sources), 6 strategy modules, ~71 source fetchers.
+- `updater/` Aqueduct package is real: `state.py` (SQLite StateStore: `source_state`, `unit_state`, `series_cursor`, `runs`, `leases` — schema ports verbatim to D1), `orchestrate.py` (leases, TTL-by-cost due-check, transient/definitive failure contract, first-pass protection via `FIRSTPASS_DIRS`), `merge.py` (never-shrink `merge_and_write`, atomic `.tmp` + `os.replace`, refuses 0-row/`min_ratio=0.97` shrink/column drops), `run.py` CLI, `health.py`, `registry.yaml`, 6 strategy modules, ~71 source fetchers.
 - It has run against production data: `data/_aqueduct/state.db` has 39 `source_state` rows, 48 `unit_state` rows, 1,964,592 `series_cursor` rows, 55 runs spanning 2026-06-23 → 2026-06-24.
 - The Worker serves freshness: `api/worker/src/sql.ts` (`LAST_UPDATES`, `UNIT_STATE_FOR_SOURCE`), `lastUpdates.ts` (`/v1/last-updates`), `sources.ts` — all reading `unit_state`/`source_state` from D1 `econ-catalog`.
 - R2 publishing exists as manual one-shots: `core/upload_r2.py` (bulk parquet), `core/derive_csv.py` (per-series CSV, byte-identical to the Worker's `/v1/series/{id}.csv` contract).
@@ -24,7 +24,7 @@ What is broken or missing (each is a work item below):
 | G3 | `.github/workflows/daily.yml` is a trap: legacy pipeline, wrong secret names (`R2_ACCESS_KEY` vs `R2_WRITE_ACCESS_KEY_ID`), wrong bucket (`econdatalibrary-data` vs `econ-data`), nonexistent `--incremental`/`--delta` flags, hardcoded `ROOT="D:/research/econfindatalibrary"` in the script it calls | daily.yml:38-43,72,84; jobs/daily_update.py:27-28 |
 | G4 | `updater/blob.py` is filesystem-only; no R2 backend; `AQUEDUCT_BACKEND=cloud` is an unimplemented flag | blob.py:1-7; config.py:10 |
 | G5 | `core/r2_util.py` reads creds ONLY from `.env`, never `os.environ` — GH secrets invisible | r2_util.py:18-26,38-53 |
-| G6 | Source-count gate not enforced: design says 133, matrix profiles dict has 129, registry has 130; `orchestrate.py:64` calls `registry.validate()` **without** `expected_count` | validate() signature in registry.py:29-48 |
+| G6 | Source-count gate not enforced: the design, the matrix profiles dict and the registry disagree on the count; `orchestrate.py:64` calls `registry.validate()` **without** `expected_count` | validate() signature in registry.py:29-48 |
 | G7 | Registry has ZERO `unit_id:` entries — every source collapses to a single `_all` unit despite design §"source ≠ directory" | grep -c 'unit_id:' registry.yaml = 0 |
 | G8 | D1 freshness refresh is a manual 945 MB full re-dump (`core/export_d1.py`); no incremental state→D1 sync; `/v1/last-updates` frozen at the June-24 snapshot | export_d1.py:56-62; dist/d1/econ_catalog.sql |
 | G9 | Local store is ~300.5 GB (clean_full 281.5 + clean_grouped 19.0) vs ~14 GB usable disk on ubuntu-latest — the store can NEVER exist in CI | robocopy byte scan; ARCHITECTURE.md:41 says ~130 GB (stale, 2.3x under) |
@@ -59,7 +59,7 @@ For each touched output object:
 4. `PUT` to a temp key, then copy over the final key (R2 has no rename; `CopyObject` + `Delete` of temp, or single `PUT` since R2 PUTs are atomic per key — see D-3 below).
 
 *Where hf's pattern fits:* per-object read-modify-write, sort/dedup keep-last, catch-up self-healing, env-var creds with `.env` fallback, GH cron + `workflow_dispatch`.
-*Where it doesn't:* (a) hf has ONE source and ~one schema; econ has 130 heterogeneous sources — hence the registry + strategy layer stays. (b) hf keeps its state ledger (`data/metadata.json`) in git via bot-commit; econ's state is a SQLite db with 1.96M cursor rows — too big and too hot for git. Econ's state round-trips via R2 instead (§1.2). (c) hf re-cleans with 100 context bars; econ's merge invariant replaces that role.
+*Where it doesn't:* (a) hf has ONE source and ~one schema; econ has many heterogeneous sources — hence the registry + strategy layer stays. (b) hf keeps its state ledger (`data/metadata.json`) in git via bot-commit; econ's state is a SQLite db with 1.96M cursor rows — too big and too hot for git. Econ's state round-trips via R2 instead (§1.2). (c) hf re-cleans with 100 context bars; econ's merge invariant replaces that role.
 
 **Step 4 — State + D1 freshness, only after verified publish.**
 Only after step 3 succeeds does the orchestrator write `unit_state` (`status=ok|no_change`, `last_obs_date` = max obs_date actually observed in fetched rows, `obs_count`, `upstream_vintage`, `checked_at_utc`). Then a **delta** sync pushes just the changed `unit_state`/`source_state` rows to D1 (new script `core/sync_state_d1.py`, §1.3). Note: the status enum officially includes `no_change` (dominant in practice, 35/48 rows); update `CONTINUOUS_UPDATE_DESIGN.md:46` to match (doc fix, D-2).
@@ -96,9 +96,9 @@ D1 gets only the *freshness projection* (`unit_state`, `source_state`), via idem
 | `updater/config.py` | Remove/parameterize any absolute `D:/` paths; everything relative to `ECONDL_ROOT` env with local default |
 | `jobs/daily_update.py`, `.github/workflows/daily.yml` | Delete `daily.yml`; add a deprecation header to `jobs/daily_update.py` pointing here (D-1) |
 
-**Registry count reconciliation (fixes G6):** at Phase-1 time, re-measure — do not trust 129/130/133 from any document. Procedure: (1) `len(yaml.safe_load('updater/registry.yaml')['sources'])`; (2) `len(json.load('UPDATE_CAPABILITY_MATRIX.json')['profiles'])`; (3) diff the two sets; (4) for each diff member decide add-or-drop with a one-line reason committed to `updater/REGISTRY_RECONCILIATION.md`; (5) set `EXPECTED_SOURCE_COUNT` to the reconciled number and fix the matrix's false `profiled=133` metadata. Today's known diff: registry has `sec_edgar_xbrl`, matrix doesn't; matrix metadata claims 133 but contains 129. The "133" in `CONTINUOUS_UPDATE_DESIGN.md:66,112` matches nothing on disk — correct the doc.
+**Registry count reconciliation (fixes G6):** at Phase-1 time, re-measure — do not trust a figure from any document. Procedure: (1) `len(yaml.safe_load('updater/registry.yaml')['sources'])`; (2) `len(json.load('UPDATE_CAPABILITY_MATRIX.json')['profiles'])`; (3) diff the two sets; (4) for each diff member decide add-or-drop with a one-line reason committed to `updater/REGISTRY_RECONCILIATION.md`; (5) set `EXPECTED_SOURCE_COUNT` to the reconciled number and fix the matrix's false `profiled` metadata. Today's known diff: registry has `sec_edgar_xbrl`, matrix doesn't; the matrix metadata and its contents disagree. The source count at `CONTINUOUS_UPDATE_DESIGN.md:66,112` matches nothing on disk — correct the doc.
 
-**Per-unit decomposition (G7):** v1 keeps single `_all` units for all non-giant sources (that is what has actually run and it is adequate for fast/medium sources). Real `units:[{unit_id, out_paths}]` lists are added ONLY for the four giants when Phase 4 builds their change-feed refresh, starting with `GATED` (design's own example: boc/snb/riksbank sub-units) as the dry run since it's small. Populating units for all 130 sources is a non-goal for v1.
+**Per-unit decomposition (G7):** v1 keeps single `_all` units for all non-giant sources (that is what has actually run and it is adequate for fast/medium sources). Real `units:[{unit_id, out_paths}]` lists are added ONLY for the giants when Phase 4 builds their change-feed refresh. Populating units for all sources is a non-goal for v1.
 
 ---
 
@@ -107,8 +107,8 @@ D1 gets only the *freshness projection* (`unit_state`, `source_state`), via idem
 | Phase | What | Exit gate |
 |---|---|---|
 | 0 | Repo + secrets + hygiene (unblocks everything) | Public repo exists, CI hello-world green, all secrets set |
-| 1 | Contract hardening (code changes §1.3) | Full local dry-run + one real CI run of `frankfurter`/`cnb` (plus `GATED` only if A5 is answered — its skip-set blocker must not deadlock the phase gate) writing to R2 |
-| 2 | Tier-1 pilot: 11 daily/weekly-fast sources on cron | 14 consecutive green scheduled days, freshness visibly advancing on `/v1/last-updates` |
+| 1 | Contract hardening (code changes §1.3) | Full local dry-run + one real CI run of `frankfurter`/`cnb` writing to R2 |
+| 2 | Tier-1 pilot: daily/weekly-fast sources on cron | 14 consecutive green scheduled days, freshness visibly advancing on `/v1/last-updates` |
 | 3 | Tier-2/3 expansion: remaining fast, then medium, then large | All non-giant registry sources inside SLA or explicitly stale-marked |
 | 4 | Giants: change-detect in CI + capped unit refresh | Each giant has a freshness row that honestly advances or honestly says stale |
 | 5 | Steady state: SLA gate, doc cleanup, backlog derive | "Working updater" definition (§6.3) met for 30 days |
@@ -117,31 +117,27 @@ D1 gets only the *freshness projection* (`unit_state`, `source_state`), via idem
 
 ## 3. Rollout tiers
 
-### 3.1 Tier 1 — the 11 starters (Phase 2)
+### 3.1 Tier 1 — the starters (Phase 2)
 
 From the capability matrix (daily/weekly × fast, cross-checked against `rerun_safe_now` / `incremental_ready`):
 
 | Order | Source | Why / mechanism | Caveat |
 |---|---|---|---|
-| 1 | `GATED` | ONLY true incremental (append-only, incr=yes) | **OPEN:** ADAPTER_NOTES lists a "GATED skip-set" hard blocker needing human input — resolve with Ahmed before go-live; if unresolved, start with frankfurter |
-| 2 | `frankfurter` | daily full overwrite-single-file = always current, in `rerun_safe_now` | none |
-| 3 | `cnb` | rerun-safe overwrite-single-file | none |
-| 4 | `riksbank` | checkpoint-resume, incr=partial | needs_force_or_clear — adapter must drive from cursor, not file presence |
-| 5 | `bcrp` | incr=partial | same |
-| 6 | `nyfed` | daily fast | requires `FRED_API_KEY` (SystemExit without it) — GH secret |
-| 7 | `ofr` | daily fast | skip-if-exists — adapter must bypass |
-| 8 | `GATED` | daily fast | same |
-| 9 | `GATED` | keyless multi-CB | same |
-| 10 | `GATED` | daily fast | same |
-| 11 | `cftc` | weekly fast | same; weekly cadence |
+| 1 | `frankfurter` | daily full overwrite-single-file = always current, in `rerun_safe_now` | none |
+| 2 | `cnb` | rerun-safe overwrite-single-file | none |
+| 3 | `riksbank` | checkpoint-resume, incr=partial | needs_force_or_clear — adapter must drive from cursor, not file presence |
+| 4 | `bcrp` | incr=partial | same |
+| 5 | `nyfed` | daily fast | requires the upstream API key (SystemExit without it) — GH secret |
+| 6 | `ofr` | daily fast | skip-if-exists — adapter must bypass |
+| 7 | `cftc` | weekly fast | same; weekly cadence |
 
 Skip `worldbank_esg` despite its weekly/fast label — the matrix notes the data actually refreshes ~annually; give it monthly cadence in Tier 2.
 
-**The G11 trap, addressed head-on:** 8 of these 11 are in `needs_force_or_clear` — their legacy ingest scripts skip when a series file exists, so a naive CI wiring produces runs that *succeed and add nothing*. Rule: Tier-1 go-live for a source requires a **delta proof** — one CI run must demonstrably add ≥1 new observation to ≥1 series (compare `obs_count`/`last_obs_date` before/after in `unit_state`), OR record an honest `no_change` backed by a vintage probe. A source that can only "succeed" vacuously does not ship; its Aqueduct fetcher gets fixed first. ~71 fetchers exist in `updater/strategies/fetchers/` — whether each actually implements Aqueduct semantics (vs. wrapping legacy skip-if-exists logic) is UNVERIFIED until its delta proof passes (O-6); each of the 11 gets this proof individually — no assumptions.
+**The G11 trap, addressed head-on:** Several of these are in `needs_force_or_clear` — their legacy ingest scripts skip when a series file exists, so a naive CI wiring produces runs that *succeed and add nothing*. Rule: Tier-1 go-live for a source requires a **delta proof** — one CI run must demonstrably add ≥1 new observation to ≥1 series (compare `obs_count`/`last_obs_date` before/after in `unit_state`), OR record an honest `no_change` backed by a vintage probe. A source that can only "succeed" vacuously does not ship; its Aqueduct fetcher gets fixed first. ~71 fetchers exist in `updater/strategies/fetchers/` — whether each actually implements Aqueduct semantics (vs. wrapping legacy skip-if-exists logic) is UNVERIFIED until its delta proof passes (O-6); each of them gets this proof individually — no assumptions.
 
 ### 3.2 Tier 2 — remaining fast + weekly/monthly (Phase 3a)
 
-The rest of the 65-source fast tier plus weekly/monthly medium sources. Batches of ~10, each batch needing: adapter present, delta proof or honest-no-change proof, key present if keyed (`bea`, `census`, `GATED`, `insee_sirene`, `usda` are in `blocked_on_keys` — add GH secrets as each is reached). Sources with known upstream breakage (`GATED` all-403, `gpi` all-404, `GATED` 404s, `GATED` version-bump filenames, `whr` 403/404s — the 5 hard blockers in `ADAPTER_NOTES.md`) are marked `definitive_fail`/stale in state, visible in health, and parked for Ahmed input; they do NOT block the tier.
+The rest of the 65-source fast tier plus weekly/monthly medium sources. Batches of ~10, each batch needing: adapter present, delta proof or honest-no-change proof, key present if keyed (`bea`, `census`, `insee_sirene`, `usda` are in `blocked_on_keys` — add GH secrets as each is reached). Sources with known upstream breakage (`gpi` all-404, `whr` 403/404s — hard blockers in `ADAPTER_NOTES.md`) are marked `definitive_fail`/stale in state, visible in health, and parked for Ahmed input; they do NOT block the tier.
 
 ### 3.3 Tier 3 — medium (39) and large (25) cost sources (Phase 3b)
 
@@ -151,7 +147,7 @@ Runner constraint (G9) becomes binding: ubuntu-latest has ~14 GB usable disk and
 - Large-cost sources get their own workflow (`updater-large.yml`) with at most 2 sources per job, serialized.
 - Any source measured >10 GB peak footprint is escalated to the giants treatment (§3.4) regardless of the matrix label. **OPEN:** per-source peak-disk numbers exist only for a few sources in the matrix; measure each large source once during its onboarding run and record in the registry entry.
 
-### 3.4 Giants — `oecd`, `eurostat`, `GATED`, `statcan`: explicitly OUT of CI
+### 3.4 Giants — `oecd`, `eurostat`, `statcan`: explicitly OUT of CI
 
 Full sweeps are multi-hour/multi-GB (~57 GB oecd, ~6.1B-obs eurostat, statcan sandbox-kill hazard on concurrent >8MB streams) and can never fit a runner. How they update instead:
 
@@ -160,11 +156,11 @@ Full sweeps are multi-hour/multi-GB (~57 GB oecd, ~6.1B-obs eurostat, statcan sa
 3. **Oversize spillover runs locally, rarely, and honestly**: units exceeding the CI budget are left queued and surface in health as `pending_refresh`; they are drained by a manually launched local run (`python -m updater.run --source oecd --queued-only`) that round-trips state via R2 exactly like CI (§1.2). This is the ONE sanctioned local role — a spillover drain, not a schedule. The owner directive says never local desktop for the *dailies*; a monthly manual drain of oversize giant units is disclosed here as the exception until a paid always-on runner exists. **OPEN:** if Ahmed prefers zero local involvement, the alternative is a self-hosted/paid cloud VM — his call, costed separately.
 4. Giants never run the skip-if-exists legacy scripts; refresh = whole changed unit re-pull through `merge_and_write`.
 
-This is also where registry `units:[]` lists get real (G7): Phase 4 populates unit lists for the four giants (and `GATED` as the pilot) from their catalog endpoints via `updater/gen_registry.py`.
+This is also where registry `units:[]` lists get real (G7): Phase 4 populates unit lists for the giants from their catalog endpoints via `updater/gen_registry.py`.
 
-### 3.5 First-pass trio — untouched
+### 3.5 First-pass crawls — untouched
 
-`cbs_nl`, `gus_dbw`, `GATED`(-ISTAT) stay protected by `FIRSTPASS_DIRS` in `orchestrate.py:23-32`. The design wanted `owner=firstpass` seeding; the hardcoded skip is functionally equivalent — keep it, add a comment, update the design doc (D-2). When a first-pass job completes, removing it from `FIRSTPASS_DIRS` + adding its registry cadence is a deliberate, single-line PR.
+`cbs_nl` and `gus_dbw` stay protected by `FIRSTPASS_DIRS` in `orchestrate.py:23-32`. The design wanted `owner=firstpass` seeding; the hardcoded skip is functionally equivalent — keep it, add a comment, update the design doc (D-2). When a first-pass job completes, removing it from `FIRSTPASS_DIRS` + adding its registry cadence is a deliberate, single-line PR.
 
 ---
 
@@ -177,8 +173,8 @@ This is also where registry `units:[]` lists get real (G7): Phase 4 populates un
 | A1 | Create the **public GitHub repo** (suggested: `elkassabgi/econdatalibrary`) and grant push access | Public per the econ-infra design decision. Name choice is his |
 | A2 | Mint `CLOUDFLARE_API_TOKEN` for CI | Scopes exactly per `api/DEPLOY.md:13-14`: Account → **D1 Edit, Workers Scripts Edit, Workers R2 Storage Edit**. The local wrangler OAuth (`AppData/.../.wrangler/config/default.toml`) is machine-local and cannot run headless — there is no workaround. Add as GH secret `CLOUDFLARE_API_TOKEN`, plus `CLOUDFLARE_ACCOUNT_ID=ce51d5c7fe3859098751b89bbebeab7a` |
 | A3 | Add R2 secrets to GH | `R2_WRITE_ENDPOINT`, `R2_WRITE_ACCESS_KEY_ID`, `R2_WRITE_SECRET_ACCESS_KEY` — **same names as `.env`** so `core/r2_util.py` (post-fix) reads them identically local and CI. Values copied from the local `.env` |
-| A4 | Add `FRED_API_KEY` GH secret | Required by `nyfed` (Tier 1); also unblocks `GATED` later |
-| A5 | Answer the 5 hard-blocker questions in `updater/ADAPTER_NOTES.md` | GATED version-bump filenames, gpi 404s, GATED 404s + duplicate script, **GATED skip-set (blocks Tier-1 #1)**, whr 403/404s |
+| A4 | Add the upstream API key as a GH secret | Required by `nyfed` (Tier 1) |
+| A5 | Answer the hard-blocker questions in `updater/ADAPTER_NOTES.md` | gpi 404s, whr 403/404s |
 | A6 | (Optional) `RESEND_API_KEY` GH secret | Enables hf-style failure email; without it, failures are GH-Actions-red + health.json only |
 | A7 | (Later, Tier 2) `BEA_API_KEY`, `CENSUS_API_KEY`, `INSEE_SIRENE_KEY`, EIA/others as their sources onboard | From `blocked_on_keys` in the matrix |
 | A8 | Confirm the Cloudflare plan tier (Workers Paid) covers daily D1 writes + the D1 catalog size | Project notes record the custom-domain cutover as already pending Workers Paid activation; the catalog SQL dump is ~1.6 GB and daily `wrangler d1 execute` upserts add ongoing writes — verify plan limits BEFORE Phase 1's first `sync_state_d1.py` run, or the D1 sync fails on quota mid-rollout |
@@ -189,7 +185,7 @@ This is also where registry `units:[]` lists get real (G7): Phase 4 populates un
 
 - `git init` with the existing `.gitignore` (already excludes `data/` line 2, `.env*` line 14) **extended first** to also exclude: `dist/`, `api/worker/node_modules/`, `_raw_*/`, `*.log`, `*.db`, `data_playground/`, any `_aqueduct/` local copies, and top-level scratch JSON artifacts.
 - **Never `git add .`.** Curated allowlist add: `updater/`, `core/`, `api/` (minus node_modules/dist), `jobs/` (deprecated but historical), `connectors/`, `docs/`, `econdl/` (resolver), top-level `*.md`, `.github/`, `.gitignore`, `requirements*`. Then `git status --porcelain` audit: any file >5 MB or matching secret-ish patterns (`*key*`, `*token*`, `*.env*`, `*_vars_*.log`) is individually justified or excluded.
-- Pre-push scan of the staged tree for the **literal secret VALUES** read out of `.env` (every BLS/BEA/CENSUS/EIA/NOAA/FRED/INSEE/USDA/R2_*/HFDL/GUS value grepped verbatim against every staged blob) — grepping for variable *names* is not enough: a key hardcoded without its name (exactly the hf `local_backfill` incident) sails past a name scan. Plus a regex for 20+-char hex/base64 blobs as the catch-all, each hit individually justified.
+- Pre-push scan of the staged tree for the **literal secret VALUES** read out of `.env` (every value in `.env`, with no exceptions, grepped verbatim against every staged blob) — grepping for variable *names* is not enough: a key hardcoded without its name (exactly the hf `local_backfill` incident) sails past a name scan. Plus a regex for 20+-char hex/base64 blobs as the catch-all, each hit individually justified.
 - Delete `.github/workflows/daily.yml` **in the very first commit** so the stale trap can never fire on push (G3).
 - Push to Ahmed's repo (A1); verify a trivial `workflow_dispatch` hello-world action runs green.
 
@@ -228,7 +224,7 @@ jobs:
       R2_WRITE_SECRET_ACCESS_KEY: ${{ secrets.R2_WRITE_SECRET_ACCESS_KEY }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      # plus the upstream API key secret that nyfed needs (A4)
       AQUEDUCT_BACKEND: r2
     steps:
       - checkout; setup-python 3.11; pip install -r requirements-updater.txt
@@ -260,7 +256,7 @@ The Worker itself needs no cron (`wrangler.toml` correctly has none) — freshne
 3. **Failed source → loud + stale-marked, never silently skipped.** Transient/definitive contract stands (`orchestrate.py`). Every registry source inside the live tier gets a status EVERY run; the `_has_adapter()` silent skip is demoted to an explicit `PENDING` line in the run summary and is a **run failure** if the source is in the live tier (§1.3). `updater/health.py --fail-past-2x-sla` exits nonzero when any live source exceeds 2× its SLA → the Actions run goes red → GH notification (+ Resend email if A6). D1 keeps serving the true (stale) date — the public endpoint never lies to hide our failure.
 4. **Never-shrink is enforced at publish, not audited after.** `merge_and_write` invariants (0-row refusal, `min_ratio=0.97`, column-drop refusal) apply to every R2 write. A refused merge is a `definitive_fail` with the refusal reason in `runs`.
 5. **Idempotent re-runs.** Running the same day twice must be a no-op: dedup keep-last makes double-merges harmless; state uploads are serialized by the concurrency group AND guarded by the ETag compare-and-swap (§1.2) — never blind last-writer-wins; `sync_state_d1.py` upserts are idempotent by primary key; CSV re-derives are byte-identical re-PUTs. Phase-1 test T-4 proves this.
-6. **No fabricated counts anywhere.** `EXPECTED_SOURCE_COUNT` is measured at reconciliation time (§1.3), not copied from a doc. health.json snapshots carry their generation timestamp. Docs that state numbers (`ARCHITECTURE.md` ~130 GB vs measured 300.5 GB; matrix `profiled=133` vs actual 129) get corrected in Phase 1's doc pass.
+6. **No fabricated counts anywhere.** `EXPECTED_SOURCE_COUNT` is measured at reconciliation time (§1.3), not copied from a doc. health.json snapshots carry their generation timestamp. Docs that state numbers (`ARCHITECTURE.md` ~130 GB vs measured 300.5 GB; the matrix's `profiled` field vs the actual count) get corrected in Phase 1's doc pass.
 7. **CSV/parquet coherence.** Any series whose parquet changed gets its CSV re-derived in the same run (step 5 of the contract). If the CSV PUT fails after the parquet succeeded, the run is `partial` and the series_id goes into a retry queue table — never silently dropped.
 
 ---
@@ -276,7 +272,7 @@ The Worker itself needs no cron (`wrangler.toml` correctly has none) — freshne
 - T-2 creds: `core/r2_util.py` resolves creds from env-only (unset `.env`), from `.env`-only, and env-over-`.env` precedence.
 - T-3 end-to-end dry-run: `python -m updater.run --source frankfurter --dry-run` in CI prints the full plan, writes nothing (verify scratch prefix untouched).
 - T-4 idempotency: run `frankfurter` twice in one hour; second run must be `no_change` or byte-identical parquet (compare R2 ETags before/after).
-- T-5 delta proof for `frankfurter`/`cnb` (+`GATED` if A5 resolved): `unit_state.last_obs_date` advances or honest `no_change`; new obs visible via `GET /v1/series/{known_id}.csv` (CSV re-derive proven end-to-end).
+- T-5 delta proof for `frankfurter`/`cnb`: `unit_state.last_obs_date` advances or honest `no_change`; new obs visible via `GET /v1/series/{known_id}.csv` (CSV re-derive proven end-to-end).
 - T-6 D1 sync: after the CI run, `GET /v1/last-updates` shows `checked_at` within the last hour for the pilot sources.
 - T-7 failure honesty: point a scratch registry entry at a 404 URL and another at a connection-refused endpoint; verify the failure contract classifies each (persistent 404 → `definitive_fail` per the contract's retry policy; refused connection → `transient_fail`), run summary red, D1 date NOT advanced, no parquet touched.
 
@@ -308,10 +304,10 @@ Until all six hold, the updater is "in rollout", and we say so.
 
 1. **D1-native StateStore** (`AQUEDUCT_BACKEND=cloud` as designed) — v1 uses SQLite-via-R2 round-trip (D-3). Revisit only if state.db R2 round-trip proves fragile.
 2. **Giants full re-pulls in CI** — never. Change-detect + capped unit refresh only (§3.4).
-3. **Per-unit registry decomposition for all 130 sources** — units only for the 4 giants + `GATED` pilot.
+3. **Per-unit registry decomposition for all sources** — units only for the giants.
 4. **Finishing the 1.37M-series CSV derive backlog** — separate task; the updater only guarantees freshness for series it touches.
-5. **Fixing the 5 hard-blocked sources** (GATED/gpi/GATED/whr, GATED pending A5) — they surface honestly as stale until Ahmed's input.
-6. **First-pass trio migration** (`cbs_nl`, `gus_dbw`, `GATED`) — protected, untouched, until their backfills finish.
+5. **Fixing the hard-blocked sources** — they surface honestly as stale until Ahmed's input.
+6. **First-pass migration** (`cbs_nl`, `gus_dbw`) — protected, untouched, until their backfills finish.
 7. **Worker feature work, Pages, i18n, custom-domain cutover** — separate tracks; this plan only feeds them fresh data.
 8. **Legacy connector framework revival** — retired (D-1). No effort goes into `connectors/base.py` `fetch(since)`, `sources.yaml` cadences, or `data/_last_run.json`.
 9. **Cost re-estimation / R2 class changes** — flag only: measured 300.5 GB vs the ~130 GB in `ARCHITECTURE.md` and 130–240 GB in `PLAN.md:73` means storage-cost docs are stale; re-do the numbers in the Phase-1 doc pass, but no infra change in v1.
@@ -322,8 +318,8 @@ Until all six hold, the updater is "in rollout", and we say so.
 
 | ID | Open question | How it gets resolved |
 |---|---|---|
-| O-1 | Reconciled source count (129 vs 130 vs 133) | §1.3 procedure at Phase-1 time; commit `updater/REGISTRY_RECONCILIATION.md` |
-| O-2 | GATED skip-set hard blocker | Ahmed (A5) before Tier-1 slot #1; frankfurter leads meanwhile |
+| O-1 | Reconciled source count (three documents disagreed) | §1.3 procedure at Phase-1 time; commit `updater/REGISTRY_RECONCILIATION.md` |
+| O-2 | (withdrawn under the owner's order) | — |
 | O-3 | Worker deployment state (memory says live on workers.dev; repo doesn't prove it) | Phase-1 `wrangler deployments list` / HTTPS probe; record in `api/DEPLOY.md` |
 | O-4 | Per-source peak disk for the 25 large-cost sources | Measure during each source's onboarding run; record in registry |
 | O-5 | Giant spillover: manual local drain vs paid always-on runner | Ahmed decides when Phase 4 starts; plan defaults to disclosed manual drain |
@@ -339,8 +335,8 @@ Until all six hold, the updater is "in rollout", and we say so.
 
 ```
 Phase 0  (blocked on A1)          : curated git init → push → hello-world CI → secrets A2-A4
-Phase 1  (assistant, ~code only)  : §1.3 changes → T-1..T-7 → pilot sources (frankfurter/cnb, +GATED if A5) live in CI manually
-Phase 2  (cron on)                : Tier-1 11 sources → 14 green days
+Phase 1  (assistant, ~code only)  : §1.3 changes → T-1..T-7 → pilot sources (frankfurter/cnb) live in CI manually
+Phase 2  (cron on)                : Tier-1 sources → 14 green days
 Phase 3  (batches)                : fast remainder → medium → large (disk rules)
 Phase 4  (giants)                 : detect cron → capped refresh → unit lists real
 Phase 5  (steady state)           : SLA gate standing, §6.3 met 30 days, docs corrected

@@ -6,7 +6,7 @@ appearing in registry.yaml unnoticed is exactly what it exists to catch — but 
 updater stops dead.
 
 On 2026-08-04 I added three IMF entries and not the count. Every run, cloud and local, then
-exited 1 at "expected 141 sources, found 144" having fetched NOTHING, for ~14 hours, while I went
+exited at the registry count check, having fetched NOTHING, for ~14 hours, while I went
 on adding sources to a pipeline that was refusing to start (R347).
 
 Nothing in the suite caught it, because nothing asserted the two numbers agree. These tests do.

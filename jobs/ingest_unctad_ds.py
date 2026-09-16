@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generic UNCTADstat dataset ingest — the publisher's own documented data API.
 
-One source per CURRENT dataset (successor family to the 38 retired DBnomics-era
+One source per CURRENT dataset (successor family to the 38 retired relay-era
 unctad_* slugs; upstream re-coded all dataset ids, 0 of 38 match — see #70). The full
 contract was read from the app's own generated code sample and PROVEN live 2026-08-07
 (scratchpad unctad_auth_findings.md):
@@ -84,7 +84,7 @@ def report_metadata(ds_name: str) -> dict:
     return r.json()
 
 
-# Mechanical slugs that would COLLIDE with a legacy DBnomics-era source id get an
+# Mechanical slugs that would COLLIDE with a legacy relay-era source id get an
 # explicit override. R399: source_id_for("US.Cpi_A") produced "unctad_cpia" — the exact
 # id of a legacy source with 637 live series — and the ingest silently overwrote its
 # store (recovered exactly from the served CSVs). The guard in ingest() now refuses any

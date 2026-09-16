@@ -56,7 +56,7 @@ concurrency:
   cancel-in-progress: false
 
 # Least privilege (public repo): the workflow-wide token is READ-only, so the long
-# `pip install` + fetch steps — which run alongside the R2/Cloudflare/FRED secrets —
+# `pip install` + fetch steps — which run alongside the R2/Cloudflare/API-key secrets —
 # cannot write to the repo. The heartbeat commit needs write, so it elevates on its
 # own step below via a scoped token rather than granting write to everything.
 permissions:
@@ -299,7 +299,7 @@ jobs:
         # whole run's state — every source that HAD been checked lost its advanced
         # checked_at/last_success and rotted toward RED-SLA despite having been probed.
         # The updater is designed to exit non-zero on a live-tier failure while still
-        # having done honest work on the other ~130 sources; discarding that is the
+        # having done honest work on the other sources; discarding that is the
         # opposite of the honest-status contract.
         #
         # Gated on the PULL succeeding, not on the updater succeeding: push_state()'s
@@ -355,7 +355,7 @@ jobs:
         # repairing. orchestrate.py:665 queues EVERY re-derived id with no change detection,
         # so a sync that COMPLETES pushes a mean of 42,046 ids per run = 85 FTS scans =
         # ~$0.88/run in reads, ~2.86 runs/day => ~$75/month reads + ~$11/month writes, for
-        # rows D1 already holds: measured 0 of 322 sources short, D1 +285 rows vs local.
+        # rows D1 already holds: measured 0 sources short, D1 +285 rows vs local.
         # Today's FTS rebuild cut the per-scan constant 2.30x (23,843,482 -> 10,348,426),
         # projecting the failing 46-52 s chunks to ~20-23 s — so this step may repair ITSELF
         # on the next run and start spending ~$86/month INVISIBLY, because it is
@@ -372,12 +372,12 @@ jobs:
         continue-on-error: true
         run: python core/sync_catalog_d1.py
 
-      # RELAY-STALENESS STEP REMOVED 2026-08-03 — it live-probed api.db.nomics.world DAILY.
+      # RELAY-STALENESS STEP REMOVED 2026-08-03 — it live-probed a relay aggregator DAILY.
       #
-      # It ran `tools/audit_dbnomics_staleness.py`, whose API constant is
-      # https://api.db.nomics.world/v22/series/{prov}/{ds} and which urlopen()s it per dataset.
-      # DBnomics is BANNED (CLAUDE.md 0 / ledger R251): "no fetching, no probing
-      # api.db.nomics.world, no relays or mirrors." A monitoring probe is still a probe, and
+      # It ran a relay-staleness audit tool (since deleted), whose API constant was
+      # the relay's series endpoint and which urlopen()s it per dataset.
+      # The relay aggregator is BANNED (CLAUDE.md 0 / ledger R251): "no fetching, no probing
+      # the relay, no relays or mirrors." A monitoring probe is still a probe, and
       # this was the last automatic thing in CI that touched the host.
       #
       # The QUESTION it answered stays valid and is NOT lost: "is a relayed source frozen

@@ -219,7 +219,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
     "idb"
   ],
   "temporalCoverage": "1932-12-31/2026-12-31",
-  "creditText": "Source: Inter-American Development Bank, IDB Open Data. Licensed under CC BY 4.0.",
+  "creditText": "Source: Inter-American Development Bank, IDB Open Data. Licence varies BY DATASET: CC BY 4.0 for 5 datasets (14,416 series) and CC BY-NC-ND 4.0 for 15 (4,393); one dataset (29 series) is no longer published at data.iadb.org and its terms could not be re-verified. Check the dataset page at data.iadb.org before commercial use or redistribution. Re-hosted with the IDB Open Data team written permission of 2026-07-15.",
   "citation": "Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-idb",
@@ -325,7 +325,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-08-30');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-09-09');
     if(d.as_of){var _ag=tago(d.as_of);
       document.getElementById('sb-data').textContent='Data updated: '+fdate(d.as_of)+(_ag?' ('+_ag+')':'');}
   }).catch(function(){
@@ -349,7 +349,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <h2>Licensing &amp; provenance</h2>
 <dl class="kv"><dt>License</dt><dd>audit-restricted-idb</dd>
 <dt>License URL</dt><dd><a href="https://data.iadb.org">https://data.iadb.org</a></dd>
-<dt>Required attribution</dt><dd>Source: Inter-American Development Bank, IDB Open Data. Licensed under CC BY 4.0.</dd>
+<dt>Required attribution</dt><dd>Source: Inter-American Development Bank, IDB Open Data. Licence varies BY DATASET: CC BY 4.0 for 5 datasets (14,416 series) and CC BY-NC-ND 4.0 for 15 (4,393); one dataset (29 series) is no longer published at data.iadb.org and its terms could not be re-verified. Check the dataset page at data.iadb.org before commercial use or redistribution. Re-hosted with the IDB Open Data team written permission of 2026-07-15.</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Restricted / no</dd>
 <dt>Modification</dt><dd>Restricted</dd>
@@ -411,7 +411,7 @@ Run: python jobs/ingest_idb.py
     &quot;idb&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1932-12-31/2026-12-31&quot;,
-  &quot;creditText&quot;: &quot;Source: Inter-American Development Bank, IDB Open Data. Licensed under CC BY 4.0.&quot;,
+  &quot;creditText&quot;: &quot;Source: Inter-American Development Bank, IDB Open Data. Licence varies BY DATASET: CC BY 4.0 for 5 datasets (14,416 series) and CC BY-NC-ND 4.0 for 15 (4,393); one dataset (29 series) is no longer published at data.iadb.org and its terms could not be re-verified. Check the dataset page at data.iadb.org before commercial use or redistribution. Re-hosted with the IDB Open Data team written permission of 2026-07-15.&quot;,
   &quot;citation&quot;: &quot;Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development. Retrieved from https://data.iadb.org. Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-idb&quot;,

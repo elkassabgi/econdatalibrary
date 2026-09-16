@@ -2,11 +2,10 @@
 convert according to what ITS OWN consumer needs.
 
 WHAT HAPPENED. `_common._max_by_key` ends with `{k: d.isoformat() ...}` — the values are
-strings. Five fetchers call it and three got the type wrong, in two different ways:
+strings. Several fetchers called it and some got the type wrong, in two different ways:
 
     boc       .isoformat() on a str   -> AttributeError; boc's last recorded run is a
                                          transient_fail and it has never reported a success
-    tcmb      .isoformat() on a str   -> AttributeError
     riksbank  isinstance(v, dt.date)  -> no string satisfies it, so the map came back EMPTY on
                                          every run. No crash, no log line: every series then
                                          re-fetched from EARLIEST, no cursors reached the §5.7
@@ -19,7 +18,6 @@ THE FIX IS NOT THE SAME FOR ALL THREE, which is the part worth pinning. What eac
 its caller differs:
     boc._stored_maxes       -> ISO STRINGS. They are interpolated into a URL
                                (`start_date={start}`) and reduced with min().
-    tcmb._per_series_cursors-> ISO STRINGS. They are cursors, which are stored as strings.
     riksbank._stored_max    -> dt.date. update() compares `cat_max <= smax` against a date and
                                passes smax to revision_since(). Passing strings through here
                                would have swapped a silent empty for a TypeError — which is
@@ -78,14 +76,6 @@ def test_boc_returns_iso_strings_for_its_url(monkeypatch):
     assert all(isinstance(v, str) for v in out.values()), (
         "boc interpolates these into start_date={} and reduces with min(); dates would break "
         "the URL")
-
-
-def test_tcmb_returns_iso_strings_as_cursors(monkeypatch):
-    import updater.strategies.fetchers.tcmb as tcmb
-    _patch_store(monkeypatch, tcmb)
-    out = tcmb._per_series_cursors("x.parquet")
-    assert out == EXPECT, out
-    assert all(isinstance(v, str) for v in out.values())
 
 
 def test_riksbank_returns_DATES_because_its_caller_compares_against_one(monkeypatch):

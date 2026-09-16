@@ -112,7 +112,7 @@ def test_a_PROTECTED_source_is_skipped_AND_NAMED(tmp_path):
     """The review of PR #14 (2026-09-07) found the PR had fixed ONE instance of a class with four
     members: `skipped_cataloged` was recorded, while the PROTECTED skip, the no-parquet skip and
     the key-column candidate list were each silent. The PROTECTED branch hid `cbs_nl` - 688,929,413
-    keys - and `dbnomics` from every number this tool prints. Protection is a decision about
+    keys - and the relay entry from every number this tool prints. Protection is a decision about
     WRITING; it is not evidence that the store is covered."""
     root, store = _fixture(tmp_path)
     m = _load()
@@ -169,7 +169,7 @@ def test_the_cbs_nl_figure_appears_only_when_cbs_nl_is_the_thing_skipped(tmp_pat
     out = buf.getvalue()
     assert "688,929,413" in out, out
     # ...and a PROTECTED entry with no directory is reported as never reached, not as skipped -
-    # `dbnomics` is exactly that, and the first message named it as one of the hidden pair
+    # the relay entry was exactly that, and the first message named it as one of the hidden pair
     assert "no directory under the store" in out, out
     assert "not_on_disk_at_all" in out, out
 

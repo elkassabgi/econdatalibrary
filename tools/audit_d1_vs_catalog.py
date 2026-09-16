@@ -18,8 +18,8 @@ THREE GAPS, and they are NOT the same problem:
 
   IN D1, NOT SERVED         a source absent from SUPPORTED_SOURCES or from the local catalogue
                             entirely, still searchable in production. This is where the zillow
-                            breach was found: a RESTRICTED source, withdrawn from the catalogue
-                            and from R2, whose 52 D1 rows were never deleted and stayed
+                            breach was found: RESTRICTED sources, withdrawn from the catalogue
+                            and from R2, whose D1 rows were never deleted and stayed
                             searchable with titles.
 
 SO IT PROBES BEFORE IT JUDGES. For every ahead/orphan gap it FETCHES a sample from the live API

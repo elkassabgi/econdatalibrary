@@ -1,7 +1,7 @@
-# Plan — Explode the catalog to series grain (apples-to-apples with DBnomics)
+# Plan — Explode the catalog to series grain (apples-to-apples with the relay aggregator)
 
 **Goal:** make econdatalibrary's public series count reflect the individual series we
-actually hold (~1 billion, pending the census), the same way DBnomics counts its 1.72B —
+actually hold (~1 billion, pending the census), the same way the relay aggregator counts its 1.72B —
 because the data is already on disk; today's 1.37M is a *cataloging* artifact, not a data gap.
 
 ## The hard constraint that shapes everything
@@ -9,7 +9,7 @@ because the data is already on disk; today's 1.37M is a *cataloging* artifact, n
 1.37M-row catalog is already ~1.6 GB. A full per-series explosion (~1B rows + titles/metadata)
 would be ~100× over the ceiling. So "just insert every series into D1" is infeasible.
 
-Fortunately, **DBnomics doesn't statically materialize 1.72B pages either** — it *resolves*
+Fortunately, **the relay aggregator doesn't statically materialize 1.72B pages either** — it *resolves*
 series on demand from per-dataset structures. We should do the same: keep the catalog at
 dataset grain, but (a) *report* the true series count, and (b) *resolve* individual series on
 demand. That's both honest and architecturally sound.
@@ -67,5 +67,5 @@ updated ("7.7B+ / 79.8B / 309 sources" + methodology line).
 ## Recommendation
 Ship **Phase 0 now** (honest ~1B headline — closes the optics-and-substance gap the moment the
 census confirms the number), then **Phase 1** for real drill-down. Treat 2/3 as demand-driven.
-This matches how DBnomics actually operates (resolve, don't statically materialize) while
+This matches how the relay aggregator actually operates (resolve, don't statically materialize) while
 staying within Cloudflare's limits and our honesty rules.

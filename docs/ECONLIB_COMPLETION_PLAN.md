@@ -27,10 +27,10 @@ Every figure below is dated 2026-08-30 and has a named instrument. Re-measure be
 | Served sources | **322** | `py tools/audit_schedule_coverage.py`; cross-checked `SELECT COUNT(*) FROM source_counts` on both D1 DBs (321 + 1 noaa shard) |
 | Catalogued series | **13,486,342** | audit + independent PK-range sweep (both agree exactly) |
 | Served observations | **33,908,707,379** | `logs/stats-2026-08-26.json` (census over the served store) |
-| Sources scheduled for auto-update | **270 of 322** = 83.9% of sources, **97.5% of series** | audit |
-| Unscheduled = archival (publisher retired) | 52 | audit — each with a dated per-source finding |
+| Sources scheduled for auto-update | **97.5% of series** | audit |
+| Unscheduled = archival (publisher retired) | — | audit — each with a dated per-source finding |
 | **Actionable scheduling work** | **0** | audit |
-| Registry entries | 282 (229 `live: true` — NOT a count of anything scheduled; four scheduler paths exist) | `updater/registry.yaml` |
+| Registry entries | the current `EXPECTED_SOURCE_COUNT` (the `live: true` flag is NOT a count of anything scheduled; four scheduler paths exist) | `updater/registry.yaml` |
 | Local catalogue | 349 `source` rows (322 with >=1 series + 27 empty), 71 licence rows | `catalog.db` |
 | Local store | 345 GB, 98,785 files, 430 source dirs | os.walk sweep |
 | D1 shard | `noaa` lives in `econ-catalog-climate` (primary hit 9.35/10 GB) | `util.ts`, `wrangler.toml` |
@@ -48,8 +48,7 @@ A `series_key` that drops a dimension the publisher varies, so distinct series c
 | `unctad_tradefoodproccatcatrca` | 17,617 | `Flow` | 286,038 publisher two-flow cells = 286,038 duplicated pairs, zero residue |
 | `damodaran` | 24,687 (721 collided) | worksheet name | publisher workbook: India Adj. Default Spread = 0.0209, **we serve 0.3** (its corporate tax rate); rating ladder breaks monotonicity at 9/19 steps |
 | `bea` | 913,230 | (minor: 49,856 pairs = 0.074%) | per-file, cross-file is by design |
-| `defillama`, `istat`, `GATED` | served | smaller | see §10.3 of source doc |
-| `GATED`, `GATED` | 0 (gated) | various | — |
+| `defillama`, `istat` | served | smaller | see §10.3 of source doc |
 
 **The five giants unswept** by the fleet duplicate sweep: `statcan`, `eurostat`, `cbs_nl`, `oecd`, `ilostat`. The census is **not final** until they are measured. 13 stores are unmeasurable by the generic sweep (key on `series_id` or custom columns) and were partially measured separately (`bls` 282,931 conflicting pairs but only 9 catalogued ids; `ofr` clean).
 
@@ -58,23 +57,22 @@ A `series_key` that drops a dimension the publisher varies, so distinct series c
 **Why not fixed yet:** every remedy is a **re-key that changes PUBLIC series ids** → **RESERVED for Ahmed** (precedent R275/R276). Your job is to prepare per-source decision briefs (design, cost, migration plan, rollback, id-stability guarantees) and execute only after his written go.
 
 ### W2 — Updates reach the store but never the user
-- **73,125 changed series keys across 20 sources map to no catalogue id.** Leaders: `eia` 50,000 (exactly `CURSOR_CAP` — a cap, not a count; true number larger; its latest run banked **+235,050,106 rows** and delivered none), `GATED` 12,192, `GATED` 6,513.
+- **73,125 changed series keys across 20 sources map to no catalogue id.** Leaders: `eia` 50,000 (exactly `CURSOR_CAP` — a cap, not a count; true number larger; its latest run banked **+235,050,106 rows** and delivered none).
 - **231,782 series in `csv_retry_queue`**, oldest 12 days. **Every row is at attempts=1 — nothing has ever reached a second attempt.** 183,735 of them are hard `UnitTimeout` crashes (not the designed budget-deferral path); `abs` at exactly 100,000 and `ilostat` at exactly 50,000 are suspicious round numbers (cap artefacts?) — **establish** with `SELECT enqueued_utc, COUNT(*) … GROUP BY 1`.
 - **~56 live+served sources have never returned `ok`** (perpetual `partial`), so their CSVs were never re-derived on schedule (`worldbank_esg` served 2023 values while the store held 2024 — fixed only by forcing derive on partials).
 - **11 fetchers (`norgesbank` + 10 more) compute their "changed" set from disk before any network call**, violating the orchestrator's contract — their `series_cursors` mean "everything", so derives run 32x over-cost or never converge.
 
 ### W3 — Freshness & coverage gaps
-- **26 of 229 live sources hold files their fetcher has not rewritten** (`bea` 591/592, `dst` 594/813, `defillama` 94/112, `adb` 32/54, `cso` 32/57, `abs` 444/1222, `worldbank_esg` 13/93, `ecb` 17/540…). Each needs a dated, evidence-backed attribution: retired flow / ingester-owned tree / static reference / genuine gap. **Not yet attributed — real open work** (`tools/audit_untouched_files.py --live`).
+- **26 live sources hold files their fetcher has not rewritten** (`bea` 591/592, `dst` 594/813, `defillama` 94/112, `adb` 32/54, `cso` 32/57, `abs` 444/1222, `worldbank_esg` 13/93, `ecb` 17/540…). Each needs a dated, evidence-backed attribution: retired flow / ingester-owned tree / static reference / genuine gap. **Not yet attributed — real open work** (`tools/audit_untouched_files.py --live`).
 - **`eurostat`: 440 catalogued flows serve nothing, and 540 store files disappeared while the source was frozen 45 days.** Cause NOT ESTABLISHED. Investigate before touching anything.
 - **`oecd`: 60 of 131 flows have no `TIME_PERIOD` column** — cross-sectional data outside the series model (same shape as `gleif`). Serve or formally exclude → **RESERVED product decision**.
 - Gate has **no tolerance for a bounded known-broken minority** (`bfs` 649/650, `hagstofa` 1538/1568, `stat_slovenia` 95/97 permanently red) → gate policy → **RESERVED**.
 - `norgesbank` **un-gating provenance**: its R2 objects were deleted in the 2026-07-23 purge as "gated, 0 catalog series", then catalogued 2026-08-06. Confirm authorisation **before** anything publishes 35,135 new objects → **RESERVED**.
-- `GATED`: 26 residual catalogue rows while gated (the one "gated-but-present" source the 07-23 purge policy otherwise eliminated). Check whether they exist in D1; bring to Ahmed with a recommendation (purge vs keep) → **RESERVED**.
 
 ### W4 — Catalogue & search integrity
 - **`series_fts` holds 2.00x the series count** (26,981,683 rows): 1,052,814 orphans + 12,442,585 surplus duplicates (`wid` 7,395,591; `boc` **8.00x** → a search page is 84% repeats). Repair is known: PK-range statements only, **never** per-id statements on the UNINDEXED `series_id` column (23,843,482 rows/statement; an `IN` of 200 costs the same) — and the survival test must prove the *kept* rows carry the real **titles** (R488: proving on `series_id` is proving on the one column FTS ignores).
 - **`source_counts` drift** (R489): `vdem` had no cache row (live `COUNT(*)` of 783,100 rows per page view — the $82/day shape rebuilt), `ilo` advertised `total:1157` with `results:[]`. Reconcile all 322; every direct D1 write must refresh the cache in the same operation.
-- Stale strings worth fixing (one-liners, no data risk): `catalog_coverage: "series-level for 33 sources…"` (`catalog.ts:19`, actually 322 served); `SUPPORTED_SOURCES` header comment "The 191 sources" (array holds 323); `updater-daily.yml` comment drift (285/335/270 vs real 305/355/290). Remember: **the Worker deploys manually** — fixing the string in the repo changes nothing until `npx wrangler deploy` + live check.
+- Stale strings worth fixing (one-liners, no data risk): `catalog_coverage: "series-level for 33 sources…"` (`catalog.ts:19`, actually 322 served); `SUPPORTED_SOURCES` header comment "The 191 sources" (stale); `updater-daily.yml` comment drift (its figures no longer match). Remember: **the Worker deploys manually** — fixing the string in the repo changes nothing until `npx wrangler deploy` + live check.
 - `/v1/sources` per-request cost **NOT MEASURED** (349 correlated `EXISTS` probes against unindexed `series.source_id`, not edge-cached). Measure once with `meta.rows_read`; if it's millions, materialise or edge-cache. This is the documented instrument, exactly one query.
 
 ### W5 — Ledger & reliability-system defects (fix these FIRST — they protect everything else)
@@ -85,7 +83,6 @@ A `series_key` that drops a dimension the publisher varies, so distinct series c
 ### W6 — Public-facing honesty items (each ends in a decision brief)
 - `/v1/stats` serves the **July census (79.8B obs / 7.73B series)**; the measured store is **33.9B / 3.90B**. The census tool's >20% gate refuses to publish without `--force-publish`. Publishing the honest number is **Ahmed's Phase-4 decision** — prepare the one-page brief (both numbers, why they differ, what the site would show).
 - Homepage claims "Python and R clients available" — **no econ R client exists** (`clients/r` is hf's). Either build one (then verify live) or change the site copy + `.zenodo.json` + `STRATEGY.md`. Copy change is trivial; claiming is not.
-- `GATED`: gated in the Worker but its local licence row says `reservable=1` (cc-by-3.0). One of the two records is stale; settle from `DATABASE_LICENSES_VERBATIM.md` (the single source of truth — do NOT re-derive) and D1, then reconcile.
 
 ### W7 — Still-running jobs (do not disturb; verify by artefact only)
 - `statcan` derive: ~8,200/8,207 tables; last census tables ~2–3 h each; parquet re-upload queued behind it.
@@ -102,7 +99,7 @@ These are distilled from 519 ledger entries and the §8/§9 analysis. They are r
 | C1 | **Every number carries its instrument and date.** A figure without a named command/query/tool is not a measurement. | R0; NUMBERS.md exists for this; headline drift "77B → 30 → 20" had no instrument | Every figure you report gets a `NUMBERS.md` row (claim / number / instrument / date / note) in the same commit. Corrections are appended as new rows naming the retraction — never silently edited. |
 | C2 | **A claim about the running system is settled only by the running system.** "The registry says X" ≠ "X"; "the log shows N" ≠ "N rows fetched"; a commit ≠ a deploy. The Worker deploys MANUALLY (`npx wrangler deploy` from `api/worker/`); the site publishes MANUALLY (`workflow_dispatch` of `deploy-site.yml`); pushing to GitHub publishes **nothing**. | R345 (425,462 series called SERVED while the worker was 2 weeks undeployed), R408, R432, R461, R509, Class D | The skill's Claim Ladder: before saying "served/live/gated/complete/verified", name which surface you probed and paste the live response. A hedge goes **inside the sentence**, not in a caveat below it. |
 | C3 | **A probe that reports absence is VOID until it has been run against something known PRESENT — and the control must be in the probe list, every time.** | R0 sub-rule 4; R134/R316/R338/R433/R478 (the `id` vs `source` key, five times); R484 (five tools, one session, all reader bugs) | Skill checklist "Null-result protocol": positive control in the same run + print one raw record beside every count. A round number in the all-failed direction (0 of 61, 796,716 of 796,716) is a *reader-bug alarm*, not a finding. |
-| C4 | **A green run is not a proof.** Require positive evidence of work: units processed > 0, rows counted, artefact moved, and the consumer's path tested — not the writer's. | R50, R35 (4 days green, 2/113 processed), R380, Group D (48 entries) | Every run you report must quote the run's own work counters; a "0 units processed, exit 0" is a FAILED proof. Verification tests the path the user/pipeline actually reads (R491: titles correct, search index still bare keys). |
+| C4 | **A green run is not a proof.** Require positive evidence of work: units processed > 0, rows counted, artefact moved, and the consumer's path tested — not the writer's. | R50, R35 (4 days green, 2 units processed), R380, Group D (48 entries) | Every run you report must quote the run's own work counters; a "0 units processed, exit 0" is a FAILED proof. Verification tests the path the user/pipeline actually reads (R491: titles correct, search index still bare keys). |
 | C5 | **A guard ships with a discriminating pair** — one case it MUST block, one it MUST let through — in the same commit, and the guard's `except` branch IS the guard ("cannot measure" must refuse, never pass). | R414 (guard refused every seed), R488 (proof passed identically on the catastrophe), R501→R503→R508 (three fail-opens in one week), R492 (`ledger_check --titles` PASS on a destroyed index) | Every guard/check/test you write carries its two cases, proven failing/letting-through, and a guard without a denial path is rejected in review. |
 | C6 | **A reported example is one instance of a class.** Sweep the whole surface; the zero-result check is not confirmation, it is what *defines* the work. | Ahmed's standing rule; R95 (ten more licence rows, 105,301 series), R256 (hand-listed class, grep found 2 more = 40% more work), R390, Group G | Fix the instance, then enumerate by `grep -l '<the exact defective line>'` (or structured query) across **every** executable surface (`*.py,*.ps1,*.cmd,*.yml,*.sh,*.ts`), fix all, and commit the enumeration. |
 | C7 | **Destructive operations are a different species.** Plan the DESIRED END STATE, make every writer idempotent, print the delete-set before deleting, guard the POST-state, and the licence/gate authority is `DATABASE_LICENSES_VERBATIM.md` — never a diff between stores (a diff finds disagreement, never shared error). | R10, R107, R263, R503 (863,253 rows deleted outside approved scope), R117, R519 (603,467 rows nearly destroyed) | Skill "Destructive-op protocol" (full checklist in references). Destructive work requires the parallel adversarial review BEFORE the write, and review of the post-state AFTER. |
@@ -144,10 +141,9 @@ Execute strictly in order. A phase is **not complete** until its exit gate passe
    - `csv_retry_queue` breakdown incl. the `abs`/`ilostat` round-number provenance query (state.db, local)
    - the ONE D1 measurement: `SELECT_SOURCES` verbatim with `meta.rows_read` (closes the §10.2 flag; if rows_read is in the millions, schedule the materialisation/cache fix in Phase 2)
    - `ledger_check.py --numbers` and `test_reliability_system.py`
-5. Decide the `GATED` 26-rows question → **brief to Ahmed** (RESERVED). Check D1 presence first (one cheap query, count-only).
-6. Reconcile `GATED` licence drift → fix the stale record or brief Ahmed (RESERVED if it means changing a gate).
+5. (Withdrawn under the owner's order.)
 
-**Outputs.** Updated `WORKLOG.md` with dated baselines; fixed `ledger_check.py`; the two decision briefs.
+**Outputs.** Updated `WORKLOG.md` with dated baselines; fixed `ledger_check.py`; the decision briefs.
 **Exit gate.** `ledger_check.py --digest` passes with **zero invisible headings** and a demonstrated FAIL-on-gap test; every baseline row has an instrument + date; briefs filed and their resolution recorded.
 
 ## PHASE 1 — Safe repairs and honesty items (no data-plane risk)
@@ -156,8 +152,8 @@ Execute strictly in order. A phase is **not complete** until its exit gate passe
 
 **Tasks.**
 1. `catalog_coverage` string → real number (single source of truth: count from `SUPPORTED_SOURCES`/audit). Fix `api/CONTRACT.md` in the same commit (they share the constant). **Then `npx wrangler deploy` from `api/worker/` and verify live** — this is the rehearsal for C2. Record the deploy in the log.
-2. `SUPPORTED_SOURCES` header comment (323, not 191). Also fix the duplicated `unctad_cpia` literal if it is a duplicate (verify first — 325 literals, 324 ids).
-3. `updater-daily.yml` comment drift (285→305, 335→355, 270→290) — prose-only.
+2. `SUPPORTED_SOURCES` header comment (the real count, not 191). Also fix the duplicated `unctad_cpia` literal if it is a duplicate (verify first).
+3. `updater-daily.yml` comment drift — prose-only.
 4. Homepage "R client" claim → build or change copy (W6): cheapest honest path is copy change + `.zenodo.json` + `STRATEGY.md` step 4 note + `api.html`/`index.html`; building an R client is a later, separate decision (**RESERVED** whether to build).
 5. `worldbank_wdi` / geo-alias mapping correctness: verify the 8 legacy aggregates question is *closed* (R509/R500 show a history of wrong claims here — re-measure from the store the fetcher reads: `clean_full/worldbank/worldbank.parquet`; the grouped tier is NOT evidence). If genuinely broken, fix per the fetcher docstring's own `_migrate_legacy` guidance, never by deleting published series.
 6. `/v1/sources` cost: execute the Phase-0 measurement plan; if materialisation/caching needed, implement and verify rows_read drops (discriminating pair: before/after measurements).
@@ -201,7 +197,7 @@ Execute strictly in order. A phase is **not complete** until its exit gate passe
 **Tasks.**
 1. **Finish the measurement.** Sweep the five giants (`statcan`, `eurostat`, `cbs_nl`, `oecd`, `ilostat`) with the corrected per-file instrument (validate against hand-computed answers before use — the v1–v4 history). Include the 13 custom-schema stores with their own instruments. Publish the final table (store / conflicting pairs / % / files / served?) in `WORKLOG.md` and NUMBERS.md. This census is the evidence base for every brief.
 2. **One brief per affected source**, in a standard form: the dropped dimension (publisher evidence — `$metadata`, dimension list, workbook sheet), the proposed new id grammar (stable across snapshots — never embed vintage in the key), the migration (store re-key → re-derive → catalogue/D1/FTS/source_counts → denylist unaffected), the compatibility plan (what happens to old ids: alias, 410, or deprecation window — must be loud, never a silent 404), the cost (rows/objects/Class-A PUTs, wall time), the rollback (fixtures + backup), and the verification (publisher-value spot-checks like the Damodaran/UNCTAD confirmations). **RESERVED: no execution before Ahmed's written go.**
-3. **Order the executions** by (served ids affected × severity × reversibility): `damodaran` (721 wrong values, publisher-confirmed, smallest blast radius) → UNCTAD ×2 (Flow) → `idb` → `eia` (biggest; needs the Phase-3 cursor fix first) → the minors (`bea`, `defillama`, `istat`, `GATED`) → gated stores (`GATED`, `GATED`, `GATED`) which change nothing user-facing but stop the defect at its source.
+3. **Order the executions** by (served ids affected × severity × reversibility): `damodaran` (721 wrong values, publisher-confirmed, smallest blast radius) → UNCTAD ×2 (Flow) → `idb` → `eia` (biggest; needs the Phase-3 cursor fix first) → the minors (`bea`, `defillama`, `istat`) → gated stores, which change nothing user-facing but stop the defect at its source.
 4. **Fix the systemic cause**: route ingest jobs through `merge_and_write` (or a shared "ingest publish" wrapper with the same invariants) for all future writes — 146 writers to migrate or retire; each migration proven by a discriminating test (a fixture with duplicate `(key,date)` pairs must come out deduped; a shrink must be refused). Never re-run an ingest against a live store without the guard's protection.
 5. After each re-key: re-derive, sync all five places, regenerate the site + runbooks (`python tools/gen_runbook.py --with-store`), verify live (200s + correct values incl. a publisher-confirmed spot-check), log it, ledger it.
 

@@ -1,4 +1,4 @@
-"""Unflagged POSITIONAL time axes (hagstofa's 33 false structural breaks, 2026-08-31).
+"""Time axes with positional codes and no time flag (hagstofa, 2026-08-31).
 
 The publisher ships live tables whose time axis (`Ár`/`Year`/`Mánuður`) carries NO
 `time: true` flag, positional codes '0','1','2'… and the period only in valueTexts.

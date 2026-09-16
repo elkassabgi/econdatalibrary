@@ -90,15 +90,6 @@
     "n_series": 6872
   },
   {
-    "source_id": "cboe",
-    "name": "Cboe",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 59
-  },
-  {
     "source_id": "census",
     "name": "U.S. Census Bureau",
     "homepage": null,
@@ -126,15 +117,6 @@
     "n_series": 713
   },
   {
-    "source_id": "cow",
-    "name": "Cow",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 19979
-  },
-  {
     "source_id": "damodaran",
     "name": "Damodaran",
     "homepage": null,
@@ -142,15 +124,6 @@
     "license_id": "NEEDS-REVIEW",
     "attribution": null,
     "n_series": 23343
-  },
-  {
-    "source_id": "dbnomics",
-    "name": "DBnomics (87 providers)",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "dbnomics-passthrough",
-    "attribution": "Via DBnomics -- per-series provider license applies",
-    "n_series": 21
   },
   {
     "source_id": "defillama",
@@ -223,15 +196,6 @@
     "license_id": "cc-by-4.0",
     "attribution": "Source: Eurostat (CC BY 4.0)",
     "n_series": 7637
-  },
-  {
-    "source_id": "famafrench",
-    "name": "Famafrench",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 24
   },
   {
     "source_id": "fao_ae",
@@ -493,15 +457,6 @@
     "license_id": "ecb-attrib-nomodify",
     "attribution": "FX data from the ECB via Frankfurter",
     "n_series": 46
-  },
-  {
-    "source_id": "freedomhouse",
-    "name": "Freedomhouse",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 684
   },
   {
     "source_id": "fsi_fundforpeace",
@@ -864,15 +819,6 @@
     "n_series": 1241
   },
   {
-    "source_id": "irena",
-    "name": "Irena",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 10754
-  },
-  {
     "source_id": "kof_globalization",
     "name": "Kof Globalization",
     "homepage": null,
@@ -907,15 +853,6 @@
     "license_id": "NEEDS-REVIEW",
     "attribution": null,
     "n_series": 68
-  },
-  {
-    "source_id": "nbp",
-    "name": "Nbp",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 148
   },
   {
     "source_id": "noaa",
@@ -954,15 +891,6 @@
     "n_series": 423
   },
   {
-    "source_id": "owid",
-    "name": "Our World in Data",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "cc-by-4.0",
-    "attribution": "Source: Our World in Data (CC BY 4.0)",
-    "n_series": 64
-  },
-  {
     "source_id": "oxcgrt",
     "name": "Oxcgrt",
     "homepage": null,
@@ -988,15 +916,6 @@
     "license_id": "NEEDS-REVIEW",
     "attribution": null,
     "n_series": 32490
-  },
-  {
-    "source_id": "polity",
-    "name": "Polity",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 5672
   },
   {
     "source_id": "pwt",
@@ -1035,24 +954,6 @@
     "n_series": 17274
   },
   {
-    "source_id": "shiller",
-    "name": "Shiller",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 9
-  },
-  {
-    "source_id": "sipri",
-    "name": "Sipri",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 1861
-  },
-  {
     "source_id": "snb",
     "name": "Snb",
     "homepage": null,
@@ -1087,15 +988,6 @@
     "license_id": "NEEDS-REVIEW",
     "attribution": null,
     "n_series": 1084
-  },
-  {
-    "source_id": "tcmb",
-    "name": "Tcmb",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 137
   },
   {
     "source_id": "transparency_ti",
@@ -1611,15 +1503,6 @@
     "n_series": 4447
   },
   {
-    "source_id": "worldbank_pink",
-    "name": "World Bank Pink Sheet (commodities)",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "cc-by-4.0",
-    "attribution": "Source: World Bank Commodity Markets (CC BY 4.0)",
-    "n_series": 26
-  },
-  {
     "source_id": "worldbank_wdi",
     "name": "Worldbank Wdi",
     "homepage": null,
@@ -1627,78 +1510,6 @@
     "license_id": "NEEDS-REVIEW",
     "attribution": null,
     "n_series": 1486
-  },
-  {
-    "source_id": "wto_hs_a_0010",
-    "name": "Wto Hs A 0010",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 21778
-  },
-  {
-    "source_id": "wto_hs_a_0015",
-    "name": "Wto Hs A 0015",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 21866
-  },
-  {
-    "source_id": "wto_hs_a_0020",
-    "name": "Wto Hs A 0020",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 21778
-  },
-  {
-    "source_id": "wto_hs_a_0025",
-    "name": "Wto Hs A 0025",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 21866
-  },
-  {
-    "source_id": "wto_hs_a_0030",
-    "name": "Wto Hs A 0030",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 21905
-  },
-  {
-    "source_id": "wto_hs_a_0040",
-    "name": "Wto Hs A 0040",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 21905
-  },
-  {
-    "source_id": "wto_its_mtv_am",
-    "name": "Wto Its Mtv Am",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 3853
-  },
-  {
-    "source_id": "wto_its_mtv_ax",
-    "name": "Wto Its Mtv Ax",
-    "homepage": null,
-    "terms_url": null,
-    "license_id": "NEEDS-REVIEW",
-    "attribution": null,
-    "n_series": 3785
   },
   {
     "source_id": "yale_epi",

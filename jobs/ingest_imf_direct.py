@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""IMF — DIRECT from api.imf.org (SDMX 2.1), replacing the DBnomics relay.
+"""IMF — DIRECT from api.imf.org (SDMX 2.1), replacing the the relay aggregator relay.
 
-WHY DIRECT: 37.4% of this library (635,750 series) arrives via DBnomics, an
+WHY DIRECT: 37.4% of this library (635,750 series) arrives via the relay aggregator, an
 aggregator. That makes our freshness a function of THEIR refresh cadence and puts a
 third party between us and the source. Every IMF dataset we relay is published by
 IMF itself at api.imf.org with no key required.
@@ -31,13 +31,13 @@ IMF.STA. Guessing produced four spurious 404s in a first pass: FDI is IMF.MCM,
 AFRREO IMF.AFR, MCDREO IMF.MCD, APDREO IMF.APD, FM/WORLD IMF.FAD.
 
 KEY IDENTITY — the open question this script deliberately does NOT decide. Our
-stored keys are legacy dotted IFS-style codes from DBnomics (`IMF_CPI:A.AE.PCPI_IX`)
+stored keys are legacy dotted IFS-style codes from the relay aggregator (`IMF_CPI:A.AE.PCPI_IX`)
 while IMF's modern API uses named dimensions (COUNTRY, INDEX_TYPE, COICOP_1999,
 TYPE_OF_TRANSFORMATION, FREQUENCY). IMF RETIRED IFS — there are zero IFS dataflows
 in the public catalogue — so for restructured datasets there is no crosswalk to
 recover the old identities, and a naive switch would both re-key every series and,
 for CPI specifically, drop 41 countries and every annual frequency. This script
-writes under its own source ids so the decision to retire the DBnomics-era series
+writes under its own source ids so the decision to retire the relay-era series
 stays a deliberate one.
 
 Usage:

@@ -255,7 +255,7 @@ export async function handlePublicStats(env: Env): Promise<Response> {
 
   // Most-downloaded sources. The log's source is the series_id prefix before
   // the first ':'. CRITICAL: the log contains HISTORICAL downloads of sources
-  // that have since been PURGED from the catalog (e.g. WTO) — naming those
+  // that have since been PURGED from the catalog — naming those
   // would resurrect them. So we WHITELIST strictly against the current catalog
   // `source` table: a downloaded source appears only if it is still catalogued,
   // and is displayed with the catalog's own name. Purged sources vanish.

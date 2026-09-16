@@ -79,7 +79,7 @@ def current_vintage(unit):
     """UIS's own release version + per-theme lastUpdate — the PUBLISHER's field.
 
     These sources froze in the first place because the change signal belonged to
-    DBnomics, whose hash stays constant while UNESCO keeps publishing (R73).
+    the relay aggregator, whose hash stays constant while UNESCO keeps publishing (R73).
     """
     try:
         v = _get(f"{BASE}/versions", timeout=120)

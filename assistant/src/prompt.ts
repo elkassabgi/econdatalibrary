@@ -13,7 +13,7 @@ export const HONESTY_CHARTER = `ElkassabgiData honesty charter (relay these cave
 • HF universe (1,391 US stocks/ETFs) is a recent snapshot — SURVIVOR-BIASED before ~2022. Cross-sectional results on earlier years must disclose this.
 • HF source break: post-2022-03-01 bars come from IEX Exchange HIST (~2-3% of consolidated volume); earlier data from a consolidated-history vendor. Volume levels are not comparable across the break.
 • 1-minute bars are NOT tick data: no quotes, no trade-level timestamps, no order book.
-• Econ licensing is PER SOURCE: most are CC-BY-class (attribution required); some are academic-use-only (EPU, Fama-French) or non-redistributable (served as metadata/pointers only). The license ships in every series' metadata — honor it.
+• Econ licensing is PER SOURCE: most are CC-BY-class (attribution required); some are academic-use-only (e.g. EPU) or non-redistributable (served as metadata/pointers only). The license ships in every series' metadata — honor it.
 • Freshness is never fabricated: a series' date advances only when observations were actually fetched; failures surface as stale flags, not silent gaps (see data_freshness).
 • Missing values stay missing: nothing is interpolated, forward-filled, or invented anywhere in the pipeline.`;
 

@@ -29,12 +29,12 @@
 | comtrade | ingest dropped mot/customs/partner2 dims — conflicting values under one (key,date); responses cap at exactly 100,000 rows silently; pass aggregate dims as query params; `_get()` must return None, never `[]` | R177, R201 |
 | census | tails can mint new series (merge only stored keys, report skipped); 11 of 24 intltrade flows under-keyed (need extra dims in dedup); bds tail returns 0 for the stored columns; the header claim "non-EITS files don't gain periods" was false — probe one excluded file per source | R278, R280, R283, R284 |
 | treasury / ofr / worldbank_esg | non-default dedup keys (per-file identity tuple; `(series_id, obs_date)`; `(country, obs_date)`) — auditors must read DEDUP from the code or produce 166 false positives and skip 71 files | R281 |
-| bea | NOT a DBnomics source despite the provider-name collision (`bea:A191RC:Q` vs `BEA/GDPbyIndustry-1:...`); fetcher writes only bea.parquet — the 91 under-keyed files are the ingester's served tree; 913,230-series store serves 240 (gated on D1 capacity, a DECISION not a bug) | R171, R282, R268-digest |
+| bea | NOT a relay source despite the provider-name collision (`bea:A191RC:Q` vs `BEA/GDPbyIndustry-1:...`); fetcher writes only bea.parquet — the 91 under-keyed files are the ingester's served tree; 913,230-series store serves 240 (gated on D1 capacity, a DECISION not a bug) | R171, R282, R268-digest |
 | abs | 376,332,763 distinct series — any run-global per-series fold is a ~94 GB OOM; alphabetically FIRST, so it destroyed the runner before anything else ran; future dates (2046/2061) are real projections | R187–R190, R204 |
 | bis | LBS has 608,570 series / a >2GiB series_key column — `group_by` kills the process; Apache ETag mtime-half flaps across replicas — gate Content-Length + 30-day backstop; ingest helpers are backfill-shaped (skip-if-present), not wrappable | R197, R195, R165, K-note |
 | snb | `/dimensions/en` item ids are a DIFFERENT id space from the CSV codes (25% "reproduction" was an artefact); date conventions are mixed IN the store: annual period-END, monthly/quarterly period-START — derive conventions from the store per frequency by set equality | R179 |
 | fed_board | `Output.aspx` has NO stable validator (per-request Last-Modified, no ETag/CL/Range) — content-hash the zip; `lxml` module-level import must be in requirements; probe URL must match `download_zip`'s actual params (no `label=include`) | R164, R178, R162 |
-| whr | OWID grapher CSV Last-Modified is CDN cache-fill time — hash the body; two-probe stability audits pass it | R184 |
+| whr | third-party grapher CSV Last-Modified is CDN cache-fill time — hash the body; two-probe stability audits pass it | R184 |
 | defillama | parent protocols (aave, uniswap…) are absent from `/protocols` listing but live at `/protocol/<slug>` — never delist from the listing; its moving ETag is genuine content change, not a defect | R61, R165 |
 | ksh / ksh_stadat | key grains differ (compare at TABLE grain — 96.4% redundant, not 13%); 16 retired tables are NOT re-crawlable (the exception to "deletion is recoverable"); ksh_stadat's parser rejects one-column snapshot tables (`Denomination;2024`) as SKIPs nothing counts | R141, R149, I-note, R156 |
 | ipea | `$filter=VALDATA` is accepted and silently IGNORED (full series returned); ingest skips any series already on disk | R160 |
@@ -44,19 +44,19 @@
 | eia | `write_dataset` returns `n_obs` (not `rows`) — a guessed key reported `no_change` on a 119,105-row publish | R186 |
 | sec_edgar | ONE id, TWO products (served XBRL set vs unserved 13F/insider giant) — health gate and coverage audit both wrong, opposite directions; data lives under `clean_grouped/`, not `clean_full/`; 2,050 sibling tickers (GOOG vs GOOGL) resolve to nothing | R275-digest, R57, R106 |
 | bcrp / ofr | later periods are `n.d.` placeholders / weekend business-day arithmetic — both false-stale alarms; verify against the publisher before believing the gate | R51 |
-| riksbank / boc / GATED | `_max_by_key` returns ISO strings: boc/GATED crashed on `.isoformat()`, riksbank's isinstance filter returned an empty map silently — fix per-CALLER, never uniformly; riksbank's "(over derive-all cap)" note is a hardcoded lie (117 rows vs 5,000 cap) | R270, R152 |
+| riksbank / boc | `_max_by_key` returns ISO strings: boc crashed on `.isoformat()`, riksbank's isinstance filter returned an empty map silently — fix per-CALLER, never uniformly; riksbank's "(over derive-all cap)" note is a hardcoded lie (117 rows vs 5,000 cap) | R270, R152 |
 | adb | 54 per-flow parquets — `sync_parquet`'s `<src>/<src>.parquet` assumption dies on it; rotation genuinely stuck (44 of 54 flows frozen — behavioural write-time test, not filename test) | R126, R285 |
 | ilostat / zillow | cursor folds explode (30.8M distinct series; ~543k across 206 cubes) — accumulated `CURSOR_CAP` required | R175, R176 |
 | gapminder / maddison / ggdc | pre-1677 dates overflow pandas datetime64[ns] — keep `date_as_object`; NEVER `errors="coerce"` (silently blanks the oldest data); maddison pins `mpd2020.xlsx` + a Dataverse id, so new releases are invisible | R68, R69, K-note |
 | worldbank / worldbank_wdi | `SERIES_CARVEOUTS` keyed on `worldbank` alone leaked ILO/IMF data through `worldbank_wdi` — carve-outs must cover sibling ids | R32 |
 | cso | sentinels 3001/9998/9999; was the ONE ingester not routed through the shared PxWeb resolver (first-match-wins let a classification axis become years); its `_catalog.json`/cursor were local-only and ephemeral under r2; a change-driven fetcher can't rebuild a deleted file (no repull_file.py); 92 tables span multiple parquets (PUT-overwrite trap); audited in the verbatim file's summary TABLE, not a `###` section | R265, R266, R272, R133, R137 |
-| GATED / GATED, edgar_jrc, damodaran | prefix-match guards trip on `GATED`; missing `openpyxl`/`xlrd` deps surfaced as "no adapter built"/"parsed 0 rows", never naming the dep | R33, R178 |
+| edgar_jrc, damodaran | missing `openpyxl`/`xlrd` deps surfaced as "no adapter built"/"parsed 0 rows", never naming the dep | R33, R178 |
 
 ### From R208-R276
 
 | source_id | warning | (Rn) |
 |---|---|---|
-| (all `*_dbnomics` relays) | BANNED upstream — never fetch or probe api.db.nomics.world; 98/101 datasets frozen >180d; watchdog + daily audit tool were still contacting it | R251, R259 |
+| (all relay-mirror ids) | BANNED upstream — never fetch or probe the relay's API; 98/101 datasets frozen >180d; watchdog + daily audit tool were still contacting it | R251, R259 |
 | noaa | key `<station>:<element>` spans gsom+gsoy — 1,046,291 keys mix monthly+annual, invisible to (key,date) collision checks; was "SERVED" with only 10 D1 rows of 3,135,873; R2 coherence copy held 10 rows vs 3.1M local | R209, R224, R245 |
 | ksh | RETIRED 2026-07-02 (ksh_stadat is the owner) and WITHDRAWN after I re-served it — do not resurrect; fetcher imports a deleted ingest; R2 objects remain but unreachable | R226 |
 | zillow | RESTRICTED permission_required, recorded withdrawal — its 52 catalogue rows were the only live licence breach; keep gated | R213, R227 |
@@ -78,12 +78,12 @@
 | census (EITS) | qtax variables are UPPERCASE (case-insensitive lookup required); `for=state:*` and `for=us:*` return different headers AND different key shapes; keyless API returns HTTP 200 + HTML "Missing Key"; `run_location: local` (key in .env) | R235–R237 |
 | unesco_sdg | series title contains 🪵 — cp1252 console crash kills sync; set PYTHONIOENCODING=utf-8 | R234 |
 | oecd / eurostat (via `_giant`) | `_max_obs_date` must use row-group statistics — oecd's largest flow file is 1.79B rows (>125 GB decoded); the old bare read silently triggered full-history re-pulls | R244 |
-| riksbank / boc / GATED / bcrp / scb | `_max_by_key` returns ISO STRINGS; riksbank's `isinstance(v, dt.date)` filter yielded an empty map → permanent silent `partial`; fix per-caller (uniform string-passthrough crashes riksbank's consumer) | R270 |
+| riksbank / boc / bcrp / scb | `_max_by_key` returns ISO STRINGS; riksbank's `isinstance(v, dt.date)` filter yielded an empty map → permanent silent `partial`; fix per-caller (uniform string-passthrough crashes riksbank's consumer) | R270 |
 | sec_edgar | one id, two products: registry `sec_edgar` = UNSERVED 13f/insider giant (live:True, throws ArrowInvalid); the SERVED XBRL product is catalogued under `sec_edgar` but registry-named `sec_edgar_xbrl` (not live) and stays fresh only via sec-edgar-daily.yml — health gate and coverage audit are both wrong in opposite directions; repair is Ahmed's call (public ids) | R275, R276 |
 | cbs_nl / gus_dbw | registered with `run_location: local` (not "missing from registry"); count as STRANDED, not scheduled — no adapter in the local run path | R262, R276 |
 | ons_uk | crashed pass (0xC0000005) lost a whole run's state; cursor prune = delete-100% until one run completes and writes current cursors — sequence, don't guard harder | R208 "stamp", R263 |
 | unhcr / bcb | merge AFTER the sweep loop — kill = total discard (worst class); hagstofa/stat_latvia/stat_slovenia/insee_bdm merge inside the loop (truncate only) — verified by control flow, not grep or AST counts | R249 |
-| whr / transparency_ti / gpi | data actually retrieved from OWID fallbacks while cited to the primary publisher — provenance/licence exposure; check the ingest log's URLs | R215 "whr" |
+| whr / transparency_ti / gpi | data actually retrieved from the third-party mirror fallbacks while cited to the primary publisher — provenance/licence exposure; check the ingest log's URLs | R215 "whr" |
 | bis / bls / eia / faostat / vdem / statcan | workstation-scheduled via `run_location: local` despite `live:false` — reporting them "unscheduled" is the R262 error | R262, R234 "bypass" |
 
 ### From R277-R347
@@ -108,7 +108,7 @@
 | statfin | Thin budget headroom (30/45); `12tc.px` read `Koulutus` education codes (0011..9999) as years once the time grammar failed. | (R286, R331) |
 | scb | `Tid` grammars: weeks use `V` (`2025V01`) not `W`; multi-year windows `yyyy-yyyy` map to the OPENING year; unparsed Tid made Region municipality codes (0114..2584) the "years". Fix lives in BOTH ingest_scb.py and fetchers/scb.py; five tables quarantined in `_REGRAIN_QUARANTINE` until legacy-grain rows are pruned — enabling without pruning silently doubles the store. | (R331, R333, R334) |
 | bcrp | `_max_by_key` returns strings; crash sites are CONSUMERS far from the call (`.isoformat()` at two points, `date > str` TypeError at bcrp.py:343 — different exception type from the known one); type hints lie. Business-day publisher. | (R310 _max_by_key, R321, R318) |
-| boc / GATED / riksbank | Same `_max_by_key` string class, fixed a1c42881 — stale state rows kept advertising it afterwards. | (R297, R302) |
+| boc / riksbank | Same `_max_by_key` string class, fixed — stale state rows kept advertising it afterwards. | (R297, R302) |
 | bls | `current_vintage()` raised for weeks (2-way unpack of 4-tuple) — CALL it, don't read it; `_bls_selftest.py` is not in CI and its fixture deltas are NOT production numbers; obs_age 63d is publication-in-arrears, not a stall; its CURSOR_CAP-adjacent `transient_unit` is a genuine failure, not a deferral. | (R292, R294, R310 count-cap) |
 | ecb | `obs_count` flips to store-total on no-write runs (the "lost 168M rows"); budget-limited by design (35 min over 540 files); deferrals were mis-filed as transient failures. | (R326, R303) |
 | abs / ssb | Same deferral-as-failure class (805/1222, etc.). abs really holds ~976M rows (verified via parquet footers; distinct-count still unverified). | (R303, R342) |

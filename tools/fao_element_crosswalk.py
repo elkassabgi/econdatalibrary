@@ -1,6 +1,6 @@
 """Derive a VALUE-VERIFIED element/item crosswalk for a frozen fao_* source (#19).
 
-WHY. FAOSTAT re-coded element (and some item) codes when it merged the DBnomics-era
+WHY. FAOSTAT re-coded element (and some item) codes when it merged the relay-era
 domains (R180: fao_gt's 7231->723113 AR5 re-code took id reproduction 27%->79%).
 The re-code is legible in the element NAMES, but a name match alone can pick the
 wrong successor when several candidates share a name (current QCL carries TWO

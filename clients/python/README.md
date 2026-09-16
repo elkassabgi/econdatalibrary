@@ -1,6 +1,6 @@
 # econdl — the Econ Data Library Python client
 
-`econdl` does the one thing single-provider catalogs (FRED, World Bank, OECD) structurally **cannot**: it assembles a **multi-source** dataset into a single versioned, citable, **one-command-updatable** artifact.
+`econdl` does the one thing single-provider catalogs (World Bank, OECD) structurally **cannot**: it assembles a **multi-source** dataset into a single versioned, citable, **one-command-updatable** artifact.
 
 ```python
 import econdl

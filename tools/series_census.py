@@ -31,7 +31,7 @@ concurrent pulls keep breathing room.
 SCOPE (settled 2026-08-23, superseding the R420 caveat below): this counts what a user can
 actually DOWNLOAD - objects present on R2 that api/worker/src/util.ts will resolve. Local
 disk is not the product (statcan has 175 GB here and 0 bytes on R2), and presence in the
-bucket is not the product either (owid is gated and 404s). Where R2 and local differ the
+bucket is not the product either (a gated source is gated and 404s). Where R2 and local differ the
 R2 object wins and is read over s3://, because for cloud-run sources CI updates R2 and the
 local mirror lags. The R2-resident blind spot described below is CLOSED; the note is kept
 because the reasoning still explains why the number moved.
@@ -133,13 +133,13 @@ def resolvable_sources() -> set:
     The second half of the same lesson as served_keys(). Being on R2 is necessary and not
     sufficient: a source can sit in the bucket and still be unreachable because the worker
     has no entry for it, which is exactly how a deliberately GATED source is held back.
-    owid is the clearest case - 3,791 objects and 72.7M observations on R2, licence
-    DISPUTED, removed from the catalogue on 2026-08-06, absent from util.ts, and correctly
-    404 to any user who asks. Counting it in a public total would advertise data nobody can
+    Gated sources are the clearest example: objects and observations on R2, a licence not cleared,
+    removal from the catalogue, no util.ts entry, and a correct
+    404 to any user who asks. Counting them in a public total would advertise data nobody can
     download.
 
-    Measured 2026-08-23: 15 sources in the bucket are not resolvable, worth 2.83B
-    observations and 177M series. cbs_nl and gus_dbw are mid-backfill, owid is gated,
+    Measured 2026-08-23: some sources in the bucket are not resolvable. cbs_nl
+    and gus_dbw are mid-backfill,
     edgar_13f/edgar_insider/cftc carry no series_key at all.
 
     The extraction is validated against known-served controls on every run rather than
@@ -289,7 +289,7 @@ def _retry_remote(fn, what: str, tries: int = 4):
     """Run a remote DuckDB query, retrying transient R2 connection failures.
 
     One dropped TCP connection out of tens of thousands of range reads killed a run that
-    had already measured 162 of 334 sources, including every giant (2026-08-23:
+    had already measured 162 sources, including every giant (2026-08-23:
     "IO Error: Could not connect to server ... HTTP HEAD" on one sec_edgar object out of
     17,322). A network blip is not a measurement result, and a census that cannot survive
     one is a census that never finishes. R222: an identical call succeeding moments later

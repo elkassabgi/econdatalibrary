@@ -1,6 +1,6 @@
 """An age in the digest is only meaningful next to the cadence it is measured against.
 
-MEASURED 2026-09-03 across all 229 live registry sources: 6 are late against their own declared
+MEASURED 2026-09-03 across all live registry sources: 6 are late against their own declared
 cadence, while the four OLDEST `tried=` values in that morning's render — pwt, oxcgrt, barro_lee
 and gppd, all at 38.2 days — are cadence `static` and entirely fine. The column read as alarming
 exactly where nothing was wrong, and read as unremarkable for `eia` at 11.6 days, which is a

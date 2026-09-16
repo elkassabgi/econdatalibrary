@@ -193,16 +193,15 @@ def test_no_source_binds_a_table_grain_resolver_without_a_spec():
 # it needs a case it must BLOCK, and this one had none).
 _PINNED_RESOLVERS = [
     "_resolve_abs", "_resolve_bea", "_resolve_bis", "_resolve_bls", "_resolve_boe",
-    "_resolve_census_any", "_resolve_cepii_baci", "_resolve_dbnomics", "_resolve_defillama",
+    "_resolve_census_any", "_resolve_cepii_baci", "_resolve_defillama",
     "_resolve_ecb", "_resolve_eia", "_resolve_ember", "_resolve_eurostat", "_resolve_faostat",
     "_resolve_fed_board", "_resolve_fhfa", "_resolve_file_grain", "_resolve_frankfurter",
     "_resolve_hf_equities", "_resolve_ilostat_any", "_resolve_imf",
     "_resolve_imf_dip_direct", "_resolve_imf_gsli_direct", "_resolve_imf_imts_direct",
     "_resolve_imf_mfs_tables", "_resolve_imf_pip_direct", "_resolve_imf_qgfs_direct",
-    "_resolve_istat", "_resolve_noaa", "_resolve_oecd", "_resolve_owid", "_resolve_pwt",
+    "_resolve_istat", "_resolve_noaa", "_resolve_oecd", "_resolve_pwt",
     "_resolve_sec_edgar", "_resolve_statcan_any", "_resolve_treasury", "_resolve_usda",
     "_resolve_wdi", "_resolve_wikidata", "_resolve_worldbank", "_resolve_worldbank_esg",
-    "_resolve_worldbank_pink",
 ]
 
 

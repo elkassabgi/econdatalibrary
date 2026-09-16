@@ -1,11 +1,11 @@
 """Can a fao_* source be repaired in place from FAOSTAT's own bulk distribution?
 
-Our 25 fao_* sources (136,754 series) arrive via DBnomics, whose FAO index was last
+Our 25 fao_* sources (136,754 series) arrive via the relay aggregator, whose FAO index was last
 refreshed 2022-04-05. FAOSTAT itself publishes a bulk API of 69 datasets, several
 updated within the last month. The data is current at the publisher and four years
 stale in our copy (ledger R73).
 
-The repair turns out to need no translation table: the DBnomics-era keys ARE
+The repair turns out to need no translation table: the relay-era keys ARE
 FAOSTAT's own codes. `FAO_QCL:5111.1.1016` is element 5111 (Stocks), area 1
 (Armenia), item 1016 (Goats) — exactly what the series title says. What is NOT known
 in advance is WHICH code columns, in WHICH order, a given dataset's ids were built

@@ -1,10 +1,10 @@
 # econfindatalibrary — operating rules for Claude
 
-## 0. DBNOMICS IS BANNED. Ahmed's standing instruction. No exceptions.
+## 0. THE RELAY AGGREGATOR IS BANNED. Ahmed's standing instruction. No exceptions.
 
-**Do not fetch from DBnomics. Do not probe api.db.nomics.world. Do not build, keep or
-"temporarily" rely on a DBnomics-backed fetcher, relay, mirror or vintage signal. Do not
-run the DBnomics staleness audit as if it described a supported path.** Every source must
+**Do not fetch from the relay aggregator. Do not probe its API. Do not build, keep or
+"temporarily" rely on a relay-backed fetcher, relay, mirror or vintage signal. Do not
+run the relay staleness audit as if it described a supported path.** Every source must
 come from ITS OWN PUBLISHER.
 
 Ahmed has said this at least five times. It was never written down until 2026-08-02, which
@@ -12,20 +12,20 @@ is why it kept being violated — a spoken instruction that lives only in one se
 context does not survive compaction. It lives here now, in the file that is loaded every
 session, and in the Rules Digest of `.claude/MISTAKES.md`.
 
-Why it keeps recurring: DBnomics is *convenient*. It aggregates hundreds of datasets behind
+Why it keeps recurring: the relay aggregator is *convenient*. It aggregates hundreds of datasets behind
 one API, so it looks like leverage whenever coverage is the goal. It is not leverage, it is
 a dependency on a mirror that silently stops: 98 of the 101 datasets we ever took from it
 have not been re-indexed in over 180 days (UNCTAD: 1,581 days), and because the vintage
-signal is DBnomics' own hash, a frozen dataset reports `no_change` forever while the health
+signal is the relay aggregator's own hash, a frozen dataset reports `no_change` forever while the health
 gate sees a source succeeding every day. That is the exact opposite of the mission.
 
 **What this means in practice:**
-- Existing DBnomics-derived data STAYS until migrated to the publisher — nothing is deleted
+- Existing relay-derived data STAYS until migrated to the publisher — nothing is deleted
   by this rule. `who_hwf`, `who_rs`, `who_sdg` are the last three live relay fetchers and
-  are to be MIGRATED to WHO directly, not refreshed via DBnomics.
+  are to be MIGRATED to WHO directly, not refreshed via the relay aggregator.
 - Never add a new one. If a publisher has no usable API, say so and ask — do not reach for
   the aggregator.
-- Do not cite DBnomics coverage as evidence of anything about a source's freshness.
+- Do not cite relay coverage as evidence of anything about a source's freshness.
 
 
 ## 1. Do not end a turn to report. Report while working, or when actually done.

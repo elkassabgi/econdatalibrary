@@ -238,8 +238,8 @@ def test_metadata_task5_keys_present(base_url):
     # Task #5 is APPLIED: curated sources carry description_key + producer-first
     # citation_short/long + description_processing (core/build_series_metadata.py).
     #
-    # This asserted against OWID until 2026-08-23. OWID was REMOVED on 2026-08-06 on
-    # Ahmed's instruction ("remove owids") because its licence is DISPUTED - its 64 listed
+    # Until 2026-08-23 this asserted against a source that was REMOVED on 2026-08-06 on
+    # Ahmed's instruction because its licence is DISPUTED - its 64 listed
     # rows were deleted from the catalogue and D1 and it is absent from util.ts, so the
     # endpoint has correctly answered 404 ever since and this test has been red for 17
     # days against a working system. A conformance test must point at something the system

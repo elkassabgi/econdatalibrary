@@ -2,7 +2,7 @@
 
 WHY THIS EXISTS (ledger R542). `orchestrate.py` appends every re-derived series id to
 `pending_catalog_sync.txt` with no change detection, so a catalogue sync pushes a mean of
-42,046 ids per run — against a D1 catalogue measured 2026-08-31 to be 0 of 322 sources short
+42,046 ids per run — against a D1 catalogue measured 2026-08-31 to be 0 sources short
 and 285 rows AHEAD of local. Over 99% of that work re-writes rows D1 already holds correctly.
 It is not free: every 500 ids costs one `DELETE FROM series_fts WHERE series_id IN (...)`, and
 `series_fts` is `fts5(series_id UNINDEXED, ...)`, so each of those is a FULL TABLE SCAN

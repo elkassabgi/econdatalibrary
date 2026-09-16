@@ -111,20 +111,6 @@
     ]
   },
   {
-    "provider": "World Trade Organization (WTO)",
-    "hint": "WTO Tariff & Trade Data terms / WTO Stats",
-    "sources": [
-      "wto_hs_a_0010",
-      "wto_hs_a_0015",
-      "wto_hs_a_0020",
-      "wto_hs_a_0025",
-      "wto_hs_a_0030",
-      "wto_hs_a_0040",
-      "wto_its_mtv_am",
-      "wto_its_mtv_ax"
-    ]
-  },
-  {
     "provider": "UNESCO Institute for Statistics (UIS)",
     "hint": "UIS terms of use / UNESCO open data",
     "sources": [
@@ -215,13 +201,6 @@
     ]
   },
   {
-    "provider": "cboe",
-    "hint": "",
-    "sources": [
-      "cboe"
-    ]
-  },
-  {
     "provider": "census",
     "hint": "",
     "sources": [
@@ -243,24 +222,10 @@
     ]
   },
   {
-    "provider": "Correlates of War",
-    "hint": "",
-    "sources": [
-      "cow"
-    ]
-  },
-  {
     "provider": "Aswath Damodaran (NYU Stern) datasets",
     "hint": "",
     "sources": [
       "damodaran"
-    ]
-  },
-  {
-    "provider": "DBnomics (per-provider passthrough)",
-    "hint": "",
-    "sources": [
-      "dbnomics"
     ]
   },
   {
@@ -320,13 +285,6 @@
     ]
   },
   {
-    "provider": "Kenneth French Data Library (Dartmouth)",
-    "hint": "",
-    "sources": [
-      "famafrench"
-    ]
-  },
-  {
     "provider": "faostat",
     "hint": "",
     "sources": [
@@ -352,13 +310,6 @@
     "hint": "",
     "sources": [
       "frankfurter"
-    ]
-  },
-  {
-    "provider": "Freedom House",
-    "hint": "",
-    "sources": [
-      "freedomhouse"
     ]
   },
   {
@@ -432,13 +383,6 @@
     ]
   },
   {
-    "provider": "IRENA (Int'l Renewable Energy Agency)",
-    "hint": "",
-    "sources": [
-      "irena"
-    ]
-  },
-  {
     "provider": "KOF Swiss Economic Institute (ETH Zurich)",
     "hint": "",
     "sources": [
@@ -464,13 +408,6 @@
     "hint": "",
     "sources": [
       "nasa_giss"
-    ]
-  },
-  {
-    "provider": "Narodowy Bank Polski (NBP)",
-    "hint": "",
-    "sources": [
-      "nbp"
     ]
   },
   {
@@ -502,13 +439,6 @@
     ]
   },
   {
-    "provider": "owid",
-    "hint": "",
-    "sources": [
-      "owid"
-    ]
-  },
-  {
     "provider": "Oxford COVID-19 Government Response Tracker",
     "hint": "",
     "sources": [
@@ -527,13 +457,6 @@
     "hint": "",
     "sources": [
       "pip"
-    ]
-  },
-  {
-    "provider": "Polity5 (Center for Systemic Peace)",
-    "hint": "",
-    "sources": [
-      "polity"
     ]
   },
   {
@@ -565,20 +488,6 @@
     ]
   },
   {
-    "provider": "Robert Shiller (Yale) online data",
-    "hint": "",
-    "sources": [
-      "shiller"
-    ]
-  },
-  {
-    "provider": "SIPRI (Stockholm Int'l Peace Research Institute)",
-    "hint": "",
-    "sources": [
-      "sipri"
-    ]
-  },
-  {
     "provider": "Swiss National Bank (SNB) data portal",
     "hint": "",
     "sources": [
@@ -604,13 +513,6 @@
     "hint": "",
     "sources": [
       "swiid"
-    ]
-  },
-  {
-    "provider": "Central Bank of Turkey (TCMB) EVDS",
-    "hint": "",
-    "sources": [
-      "tcmb"
     ]
   },
   {
@@ -688,13 +590,6 @@
     "hint": "",
     "sources": [
       "worldbank_esg"
-    ]
-  },
-  {
-    "provider": "worldbank_pink",
-    "hint": "",
-    "sources": [
-      "worldbank_pink"
     ]
   },
   {

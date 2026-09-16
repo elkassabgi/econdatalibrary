@@ -2,7 +2,7 @@
 
 21,340 obs / 560 series (consumer price indices, annual). Source id is
 unctad_cpi_annual, NOT the mechanical slug: source_id_for("US.Cpi_A") produced
-"unctad_cpia", which is a LEGACY DBnomics-era source with 637 live series — the
+"unctad_cpia", which is a LEGACY relay-era source with 637 live series — the
 collision overwrote its store before the OVERRIDES map + guard existed (R399).
 All machinery shared via _unctad.py.
 """
