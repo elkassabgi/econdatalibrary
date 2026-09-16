@@ -278,6 +278,8 @@ def _zip_urls_on_page(text: str, prod_cfg) -> dict:
     attribute quotes captures the href itself - no second pattern to keep in step with the first.
     Only sec.gov links are accepted: a page that ever links elsewhere must not redirect a download.
     """
+    from urllib.parse import urlsplit as _urlsplit
+
     href_re = re.compile(r"[\"']([^\"'\s]*" + prod_cfg["zip_re"] + r")[\"']")
     out: dict[str, str] = {}
     for href, key in href_re.findall(text):
@@ -285,11 +287,14 @@ def _zip_urls_on_page(text: str, prod_cfg) -> dict:
             continue                      # page order is newest-first; a key's first link wins
         if href.startswith("//"):
             href = "https:" + href
-        if href.startswith("/"):
+        elif href.startswith("/"):
             href = "https://" + _SEC_HOST + href
-        if not href.startswith(("https://" + _SEC_HOST + "/", "http://" + _SEC_HOST + "/")):
-            continue                      # never follow a link off sec.gov
-        out[key] = href
+        parts = _urlsplit(href)
+        if parts.scheme.lower() not in ("http", "https") or (parts.hostname or "").lower() != _SEC_HOST:
+            continue                      # off sec.gov, or a relative form we will not guess at
+        # Rebuilt, not echoed: the host is pinned, the scheme forced to https (SEC redirects
+        # plaintext anyway, and requests follows redirects), any port or userinfo dropped.
+        out[key] = "https://" + _SEC_HOST + parts.path + (("?" + parts.query) if parts.query else "")
     return out
 
 
@@ -310,6 +315,16 @@ def _published_keys(prod_cfg, session) -> tuple:
         raise TransientError(
             f"{SOURCE}/{prod_cfg['out_dir']}: data-sets page parsed 0 dataset keys "
             f"(layout change or transient empty body); existing data kept")
+    unlinked = [k for k in out if k not in urls]
+    if unlinked:
+        # A published key whose link we cannot parse is a LAYOUT change, not a network flake.
+        # Composing zip_url for it is the 404 loop this whole change removes (measured
+        # 2026-09-16: the composed path 404s for every new release), and it would be recorded
+        # as "transient, will retry" run after run - which is how it went unseen for a month.
+        raise TransientError(
+            f"{SOURCE}/{prod_cfg['out_dir']}: data-sets page published {len(out)} dataset key(s) "
+            f"but {len(unlinked)} carried no parseable sec.gov link (first: {unlinked[0]}); the "
+            f"page layout changed - refusing to guess a path; existing data kept")
     return sorted(out, key=_key_sort_value), urls
 
 
@@ -476,14 +491,14 @@ def _to_table(df: pd.DataFrame, prod_cfg: dict, table: str, key: str) -> pa.Tabl
 
 
 def _fetch_key(prod_cfg: dict, key: str, session, tally: Tally,
-               cursors: dict | None = None, url: str | None = None) -> int:
+               cursors: dict | None = None, *, url: str) -> int:
     """Download + parse one dataset key's zip and merge every table into its own
     per-period parquet (never-shrink/dedup). Returns rows added across tables.
     Raises TransientError on download/zip failure (the key re-runs next tick)."""
-    # The page's own href wins: SEC serves new releases from a different directory than the
-    # one zip_url composes (see _zip_urls_on_page). The template remains the fallback for a
-    # key that reached here without a link.
-    url = url or prod_cfg["zip_url"].format(key=key)
+    # `url` is the href the page carried for this key (see _zip_urls_on_page). There is
+    # deliberately NO composed-path fallback: SEC serves new releases from a directory
+    # zip_url does not know, so a guessed path 404s and the failure reads as "transient"
+    # for as long as nobody looks. _published_keys refuses the whole page instead.
     raw = _http_get(url, timeout=600, retries=4, session=session)
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
@@ -637,7 +652,7 @@ def update(unit, since) -> Result:
             selected_total += 1
             try:
                 added = _fetch_key(prod_cfg, key, sess, tally, cursors=cursors,
-                                   url=zip_urls.get(key))
+                                   url=zip_urls[key])
             except TransientError as e:
                 tally.transient_unit(f"{key}: {str(e)[:150]}")
                 pstate[key] = {"status": "transient_fail"}
