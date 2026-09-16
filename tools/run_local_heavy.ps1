@@ -48,7 +48,10 @@ param(
     [int]      $MinHours = 20,
     # How long to keep waiting for a window worth using before taking whatever is free. Swept against 14 days
     # of real history: at 30 h the runner settles for a short pass at a busy hour and its end time re-anchors
-    # the cadence there, which cost 4 collisions; 36 h is the smallest value that reached zero. See R1037.
+    # the cadence there, which cost 4 collisions against 0 at 36 h. That comparison counts a collision as a
+    # cloud run STARTING inside the pass; under a stricter definition - interval overlap including the
+    # 10-minute hard-stop grace - both 30 and 36 show one, so 36 is the better of the two rather than a
+    # proven zero. See R1037 and `python tools/measure_ci_lag.py sweep`.
     [int]      $MaxHours = 36,
     # Usable minutes wanted before starting, when not yet past $MaxHours. Swept on 14 days of real history:
     # 120 and 150 measure identically (13 passes, 0 collisions), 160-170 drop to 11 passes, and 180 costs 4

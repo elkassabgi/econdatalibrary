@@ -89,6 +89,9 @@ def _longest_free_run(span_min):
     return best
 
 
+RUNNER_PS1 = pathlib.Path(__file__).resolve().parents[1] / "tools" / "run_local_heavy.ps1"
+
+
 def old_check(runs):
     """What run_local_heavy.ps1 asked before: is an updater-daily run in flight?"""
     return any(r["status"] != "completed" for r in runs["updater-daily.yml"])
@@ -449,3 +452,31 @@ def test_main_threads_the_schedule_only_fetch_through():
     rc_collapsed = g.main(fetch=lambda wf: flooded[wf], fetch_states=lambda: ACTIVE, now=now)
     assert rc_collapsed == g.EXIT_BLOCKED, (
         "control: without the schedule-only fetch the flooded list must block on a phantom pending cron")
+
+
+def test_the_runner_threshold_fits_inside_the_block_the_gate_guarantees():
+    """The two halves of this mechanism are in different languages and nothing coupled them.
+
+    run_local_heavy.ps1 refuses to start unless it sees $WantBlockMin + $marginMin minutes of clear time.
+    ci_writer_gate.py guarantees FREE_BLOCK_MIN. If the first ever exceeds the second the desktop stops running
+    and nothing says why - which is R1032's failure, reachable by editing one PowerShell default.
+    """
+    src = pathlib.Path(RUNNER_PS1).read_text(encoding="utf-8", errors="replace")
+    want = re.search(r"\$WantBlockMin\s*=\s*(\d+)", src)
+    margin = re.search(r"\$marginMin\s*=\s*(\d+)", src)
+    assert want and margin, f"cannot read the runner's thresholds from {RUNNER_PS1}; this test measures nothing"
+    need = int(want.group(1)) + int(margin.group(1))
+    have = int(g.FREE_BLOCK_MIN.total_seconds() // 60)
+    assert need <= have, (
+        f"the runner wants {need} min of clear time but the gate only guarantees {have}; "
+        "the desktop would hold for ever without ever saying why")
+
+
+def test_the_runner_escape_is_longer_than_its_cadence_floor():
+    """$MaxHours must exceed $MinHours, or the wait-for-a-better-window rule can never hold at all."""
+    src = pathlib.Path(RUNNER_PS1).read_text(encoding="utf-8", errors="replace")
+    mx = re.search(r"\$MaxHours\s*=\s*(\d+)", src)
+    mn = re.search(r"\$MinHours\s*=\s*(\d+)", src)
+    assert mx and mn, "cannot read the runner's cadence parameters"
+    assert int(mx.group(1)) > int(mn.group(1)), (
+        f"$MaxHours {mx.group(1)} must be greater than $MinHours {mn.group(1)}")
