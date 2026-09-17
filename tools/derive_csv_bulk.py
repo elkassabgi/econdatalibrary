@@ -286,6 +286,48 @@ def main() -> int:
         print(f"no parquet for {a.source} under data/clean_full or data/clean_grouped")
         return 2
 
+    # THE STORE WAS RESOLVED BY SOURCE ID; THE REGISTRY MAY NAME A DIFFERENT ONE (R1050).
+    # The loop above lands on data/<root>/<source_id>, which is right for 276 of the 278
+    # registry entries. For the other two it is the WRONG PRODUCT, because sec_edgar's pair
+    # have their directory names inverted:
+    #
+    #     source_id=sec_edgar        out_dir=edgar_13f   (relational 13F/insider, nothing served)
+    #     source_id=sec_edgar_xbrl   out_dir=sec_edgar   (the 17,467 served company-facts CSVs)
+    #
+    # So `--source sec_edgar` resolves clean_grouped/sec_edgar — the OTHER entry's store. On
+    # 2026-09-17 a health-gate remedy line named exactly that command for exactly that source
+    # and I was one step from running it; what stopped it was a review, not the tool. The tool
+    # should say so itself, and say it BEFORE the mirror preflight, whose "MIRROR BEHIND R2"
+    # reads as "just sync the mirror" and leads to --allow-stale-mirror on a source where that
+    # is the R386 failure verbatim.
+    #
+    # Refuse rather than guess: only the operator knows which product was meant, and for this
+    # id neither answer is a campaign the tool can actually run (the served files carry no
+    # series_key column, so the uniform-long filter writes zero objects; the 13F store has no
+    # catalogued series at all).
+    try:
+        import yaml                                                   # noqa: PLC0415
+        from updater import config as _cfg                            # noqa: PLC0415
+        _entries = yaml.safe_load(open(_cfg.REGISTRY, encoding="utf-8")) or []
+        if isinstance(_entries, dict):
+            _entries = _entries.get("sources") or list(_entries.values())
+        _e = next((e for e in _entries if e.get("source_id") == a.source), None)
+        _declared = (_e or {}).get("out_dir", a.source)
+    except Exception as _e:                                           # noqa: BLE001
+        # Cannot read the registry -> cannot prove the store is the right one. Say which,
+        # and do not let an unreadable registry read like agreement (R338's direction).
+        print(f"WARNING: could not check --source {a.source} against the registry's out_dir "
+              f"({type(_e).__name__}: {str(_e)[:80]}) — proceeding on the id-resolved store "
+              f"{src_dir}")
+        _declared = a.source
+    if _declared != a.source:
+        print(f"REFUSING: --source {a.source} resolved the store {src_dir}, but the registry "
+              f"entry named {a.source!r} writes {_declared!r}. Those are different products "
+              f"sharing one id (R275/R1050), so this command would derive from a store the "
+              f"named entry does not own. Decide which product you mean and address it by the "
+              f"id whose out_dir IS that directory.")
+        return 2
+
     # THE R383/R530 MIRROR PREFLIGHT — ported here the day its absence was re-committed.
     # This tool derives from the LOCAL tree; for a CLOUD source (run_location: cloud) R2
     # is the authoritative store and the local dir is a scratch mirror, so a campaign
