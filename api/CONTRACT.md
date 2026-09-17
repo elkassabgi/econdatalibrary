@@ -117,6 +117,19 @@ the ratio). All three are 400 `unsupported_filter`. The full object remains avai
   "csv_url": "/v1/series/bls%3ACUUR0000SA0.csv"
 }
 ```
+
+**The redistribution gate runs FIRST on this route (added 2026-09-17).** A gated series — a
+denylisted source, or a series-level third-party carve-out — returns **451** with
+`{"error":"not_redistributable","detail":...}`, exactly as `.csv` does, and it returns it
+*before* `?lang=` is validated and before the catalogue is consulted. So for a gated id the
+documented "unsupported `?lang=` → 400" below does not apply, and neither does 404 for an
+unknown id under a gated prefix; 451 wins.
+
+Until that date this route had no gate at all: title, geography, dates, licence block and
+citation were served unauthenticated for any row present in the catalogue, while every sibling
+route — `/v1/sources`, `/v1/catalog?source=`, `.csv` — refused. The same sweep closed
+`/v1/last-updates`, which listed gated sources with their cadence and freshness, and stopped
+`/v1/bundle` enumerating series-level carve-outs into its manifest.
 `description_key` / `description_processing` / `citation_*` come from the series-tier
 metadata pass (Task #5); fields absent until populated are omitted, never faked.
 
@@ -188,6 +201,13 @@ Per dataset, projected from `unit_state` + `source_state` + registry cadence:
     "obs_count": 12345 }] }
 ```
 
+> **Gated sources are omitted from `datasets` (since 2026-09-17).** The same denylist that hides
+> them from `/v1/sources` now filters this route. Until that date it ran the canonical SQL
+> unfiltered and published every `unit_state` row, so a source that was hidden two routes away
+> was listed here with its cadence, status and freshness. Note the rows themselves persist in D1
+> and are refreshed daily — the catalogue sync is frozen but the state sync is not — so the
+> filter is applied at the READ, and cleaning the table would not have been enough.
+
 > **`obs_count` here is not a count of observations added by that run, and is not comparable
 > across runs.** It is whatever the fetcher reported to `finalize()` as `total_rows`: measured
 > 2026-09-03, about 120 of ~123 call sites pass the STORE'S TOTAL row count and only three pass
@@ -215,6 +235,14 @@ Returns a Frictionless-shaped `datapackage.json` skeleton: one resource per sour
 The client fetches each resource URL and assembles the zip locally. **The Worker never
 streams the zip** (subrequest/memory limits). Unresolvable ids are returned under
 `"econdl:unresolved":[{id,reason}]` — loud, never dropped.
+
+**`source=` does not enumerate gated series (since 2026-09-17).** A denylisted source is refused
+outright, and a source's series-level carve-outs are excluded IN THE SQL, so they never reach
+`econdl:series_requested` or `econdl:unresolved`. Before that they did: the per-id loop refused
+them a `path`, but the ids had already been read out of the enumeration, so the manifest named
+exactly the series the rest of the API withholds — and this route has no auth. Asking for a
+carved id BY NAME still returns it under `econdl:unresolved` with its reason, which matches the
+451 the direct route gives and tells the caller nothing they did not already hold.
 
 ## Backend binding (one code path, two backends)
 | concern | dev shim (now) | Worker (prod) |
