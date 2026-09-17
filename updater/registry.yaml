@@ -741,6 +741,13 @@ sources:
   # The clear needs a rename/migration decided with it. It is NOT the cause of the current failures: the 8 of 45
   # transient sub-units on the 2026-09-14 run are all intltrade/* at time=2026-03.
   #
+  # DONE 2026-09-17: govslocalfin is INGESTED - 227,588 rows, 376 series, obs_date 2017-12-31..2024-12-31 (the
+  # publisher's advertised span), 22.3 s, 2 API calls. It did NOT require clearing the cache: the job resolves a
+  # dataset through ts_meta.json, so one probed entry was appended (93 -> 94, file backed up) and the ingest run with
+  # --only. That is the precedent for the AIES question too - a dataset can be added WITHOUT re-keying the family,
+  # so the rename stays an open decision rather than a precondition. Note what is NOT done: the new dataset is not
+  # catalogued, and with the D1 catalogue sync frozen nothing here reaches a user yet.
+  #
   # SCHEDULED 2026-08-02 via run_location, NOT live. Fetcher built and PROVEN:
   # updater/strategies/fetchers/census.py covers the 20 EITS time-series flows only — the other
   # 60 datasets here are wide periodic snapshots served at table grain and need a reference-year
