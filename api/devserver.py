@@ -31,7 +31,6 @@ import argparse
 import io
 import json
 import os
-import re
 import sqlite3
 import sys
 import threading
@@ -95,23 +94,18 @@ _LANGS = ("en", "ar", "es", "fr", "ru", "zh")
 # an unreadable gate), the series-level carve-outs parsed from SERIES_CARVEOUTS. Matching is exact and
 # case-sensitive, like the Worker's Set.has / Array.includes.
 def _load_gate():
+    """Both halves through core/gen_denylist - the repo's ONE reader of denylist.ts (review of #39: a second ad-hoc
+    parser here was the R483/R484 shape). Fails closed: an absent file, an empty set or empty carve-outs refuse."""
     if _REPO not in sys.path:
         sys.path.insert(0, _REPO)
     from core import gen_denylist
     if not os.path.exists(gen_denylist.OUT):
         raise RuntimeError(f"redistribution gate {gen_denylist.OUT} is absent - refusing to serve without it")
-    src = open(gen_denylist.OUT, encoding="utf-8").read()
-    m = re.search(r"SERIES_CARVEOUTS[^=]*=\s*\{(.*?)\};", src, re.S)
-    if not m:
-        raise RuntimeError("SERIES_CARVEOUTS not found in denylist.ts - refusing to serve without the carve-outs")
-    body = re.sub(r"//[^\n]*", "", m.group(1))
-    carve = {}
-    for km in re.finditer(r"""(?:"([^"]+)"|'([^']+)'|([A-Za-z_][A-Za-z0-9_]*))\s*:\s*\[(.*?)\]""", body, re.S):
-        key = km.group(1) or km.group(2) or km.group(3)
-        carve[key] = tuple(re.findall(r"""["']([^"']+)["']""", km.group(4)))
-    if not carve:
-        raise RuntimeError("SERIES_CARVEOUTS parsed empty - refusing to serve without the carve-outs")
-    return frozenset(gen_denylist.committed_gate()), carve
+    gate = frozenset(gen_denylist.committed_gate())
+    carve = {k: tuple(v) for k, v in gen_denylist.committed_carveouts().items()}
+    if not gate or not carve:
+        raise RuntimeError("the redistribution gate or its carve-outs read empty - refusing to serve without them")
+    return gate, carve
 
 
 _GATE, _CARVEOUTS = _load_gate()
@@ -123,16 +117,18 @@ def _series_source(series_id: str) -> str:
     return series_id if i < 0 else series_id[:i]
 
 
-def _is_gated(series_id: str) -> bool:
-    """denylist.ts::isGated = isNonRedistributable || isSeriesCarvedOut."""
-    src = _series_source(series_id)
-    if src in _GATE:
-        return True
-    carved = _CARVEOUTS.get(src)
+def _is_carved_out(series_id: str) -> bool:
+    """denylist.ts::isSeriesCarvedOut."""
+    carved = _CARVEOUTS.get(_series_source(series_id))
     if not carved:
         return False
     parts = series_id.split(":")
     return (parts[1] if len(parts) > 1 else "") in carved
+
+
+def _is_gated(series_id: str) -> bool:
+    """denylist.ts::isGated = isNonRedistributable || isSeriesCarvedOut."""
+    return _series_source(series_id) in _GATE or _is_carved_out(series_id)
 
 
 def _state_db_default() -> str:
@@ -541,6 +537,12 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             offset = 0
 
+        # catalog.ts: a denylisted source= answers 451 rather than an empty page.
+        if source and source in _GATE:
+            return self._json(451, {
+                "error": "non_redistributable",
+                "detail": f"source '{source}' cannot be re-hosted under its licence; "
+                          "fetch it from the original publisher (see /v1/sources terms links)"})
         conn = _catalog.connect(self.cfg.catalog)
         try:
             # Search via an FTS5 JOIN (NOT a `series_id IN (...)` list): an IN-list
@@ -580,6 +582,9 @@ class Handler(BaseHTTPRequestHandler):
         results = []
         for r in rows:
             d = dict(r)
+            # catalog.ts `visible`: gated sources and series carve-outs never appear in results.
+            if d.get("source") in _GATE or _is_carved_out(d.get("series_id") or ""):
+                continue
             if lang != "en":
                 md = d.pop("metadata", None)
                 extra = {}
@@ -618,6 +623,8 @@ class Handler(BaseHTTPRequestHandler):
         sstate = self._source_state_map()
         out = []
         for s in srcs:
+            if s["source_id"] in _GATE:          # sources.ts:56 - a gated source is unlisted, not just undownloadable
+                continue
             lic_id = s.get("license_id")
             lic = (_catalog.get_license(lic_id, db=self.cfg.catalog)
                    if lic_id else None)
@@ -672,6 +679,8 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
         datasets = []
         for r in rows:
+            if r["source_id"] in _GATE:          # lastUpdates.ts:41
+                continue
             last = r["last_success_utc"]
             datasets.append({
                 "source": r["source_id"],
@@ -696,11 +705,15 @@ class Handler(BaseHTTPRequestHandler):
         source = qs.get("source", [""])[0] or None
         snapshot = qs.get("snapshot", [""])[0] or datetime.now(timezone.utc).date().isoformat()
         if source and not ids:
+            if source in _GATE:                  # bundle.ts:79
+                return self._error(400, "bad_request",
+                                   detail=f"source '{source}' cannot be bundled: its licence forbids re-hosting (HTTP 451)")
             conn = _catalog.connect(self.cfg.catalog)
             try:
+                # seriesIdsForSourceSql: carve-outs are excluded from the enumeration itself
                 ids = [r["series_id"] for r in conn.execute(
                     "SELECT series_id FROM series WHERE source_id = ? ORDER BY series_id",
-                    (source,)).fetchall()]
+                    (source,)).fetchall() if not _is_carved_out(r["series_id"])]
             finally:
                 conn.close()
         if not ids:
@@ -710,6 +723,13 @@ class Handler(BaseHTTPRequestHandler):
         by_source: dict[str, list[str]] = {}
         unresolved: list[dict] = []
         for sid in ids:
+            # bundle.ts:108 - the gate FIRST, before catalogue membership
+            if _series_source(sid) in _GATE or _is_carved_out(sid):
+                reason = (f"not_redistributable: source '{_series_source(sid)}' licence forbids re-hosting (HTTP 451 on direct fetch)"
+                          if _series_source(sid) in _GATE else
+                          "not_redistributable: this series embeds third-party data and is gated (HTTP 451 on direct fetch)")
+                unresolved.append({"id": sid, "reason": reason})
+                continue
             row = _catalog.get_series(sid, db=self.cfg.catalog)
             if row is None:
                 unresolved.append({"id": sid, "reason": "not_found: unknown series id"})
