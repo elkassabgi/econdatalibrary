@@ -4345,8 +4345,9 @@ sources:
   - jobs/ingest_statcan.py
   strategy: extend_by_date
   strategy_reason: 'Genuine server-side date-tail (S2), not a whole-cube re-download. getFullTableDownloadCSV (the bulk path)
-    is full-table only, BUT WDS exposes a true delta keyed on the SAME vector ids already on disk: getChangedCubeList(date)
-    is a cheap change-feed of changed productIds, and getBulkVectorDataByRange(vectorIds, startDataPointReleaseDate, end)
+    is full-table only, BUT WDS exposes a true delta keyed on the SAME vector ids already on disk: getAllCubesListLite
+    carries every cube''s releaseTime so "changed since the watermark" is a filter over one request (NOT getChangedCubeList,
+    which is a SINGLE-DAY feed and was read as a since-feed until 2026-09-17), and getBulkVectorDataByRange(vectorIds, startDataPointReleaseDate, end)
     returns only the datapoints (new periods AND revisions) released in the window per vector. The fetcher reads each changed
     cube''s on-disk vectors + (geo,uom,coordinate) constants, pulls the release-dated tail, and merges (dedup (series_key,obs_date),
     new value wins, never-shrink). Emitted series_key = lowercase ''v''+vectorId — byte-identical to the bulk parquet — so
@@ -4356,11 +4357,21 @@ sources:
   out_dir: statcan
   review: true
   adapter:
-    vintage_signal: StatCan WDS getChangedCubeList(<last_success_date>) change-feed (alternatively each cube's releaseTime
-      from getAllCubesListLite) to select only cubes changed since last run; getAllCubesListLite is already re-enumerated
-      each run so new cubes are caught.
-    since_param: n/a (S4 uses the getChangedCubeList change-feed to pick whole cubes to re-pull; for true intra-cube obs delta
-      the alternative would be getBulkVectorDataByRange startRefPeriod=max stored obs_date, but base strategy is whole-changed-cube).
+    vintage_signal: >-
+      Each cube's releaseTime from StatCan WDS getAllCubesListLite, filtered to those on or after
+      the stored release-date watermark. CORRECTED 2026-09-17: this said getChangedCubeList(date),
+      and the fetcher implemented it that way, but THAT ENDPOINT IS A SINGLE-DAY FEED - it means
+      "changed ON date", not "since". Measured by the test a since-feed cannot pass, its count must
+      be non-increasing as the date advances and instead ran 3, 52, 30, 0, 15, 0, 16, 14, 15, 60
+      over 2026-08-18..09-17, with five increases and two zero days between larger ones. So a run
+      inspected ONE calendar day and then advanced the watermark past the rest; 505 cubes had been
+      released since 2026-07-29, 456 of them ones we hold. getAllCubesListLite returns the whole
+      catalogue in one request (8,270 cubes, releaseTime present on 8,270 of 8,270), which makes
+      "changed since" a filter rather than arithmetic that can skip a day.
+    since_param: >-
+      releaseTime >= watermark, applied to the getAllCubesListLite enumeration, to choose whole
+      cubes to re-pull; the intra-cube delta is then getBulkVectorDataByRange with
+      startDataPointReleaseDate over that same window.
     out_paths_note: per-cube files data/clean_full/statcan/<productId>.parquet (~8,207 cubes) plus _manifest.jsonl, _errors.log,
       _sizecache.json, _tmp/ staging and .done/.fail markers — one file per cube; S4 clears the .done marker for each changed
       cube only.

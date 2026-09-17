@@ -1773,3 +1773,67 @@ deferred cbs_nl collision census (census v3 skipped it while the sweep wrote).
 > current was skipped, and the only non-skipped tables were HTTP 403s), and `$skip` is O(offset) so
 > it is not linear in rows — R703 is the entry about a threshold reasoned to instead of measured
 > and then shipped as fact.
+
+### statcan: the change feed is SINGLE-DAY and the fetcher read it as a since-feed, for its whole life
+
+FIXED 2026-09-17 for new work; the BACKLOG IS NOT RECOVERED and needs two more steps, below.
+
+`getChangedCubeList/<date>` means "changed ON <date>", not "on or after". Measured against
+www150 by the test a since-feed cannot pass — its count can only be NON-INCREASING as the date
+advances, because a later date covers a subset:
+
+    2026-08-18   3        2026-09-10   15        2026-09-15   14
+    2026-08-27  52        2026-09-12    0        2026-09-16   15
+    2026-09-03  30        2026-09-14   16        2026-09-17   60
+    2026-09-07   0
+
+Five adjacent pairs increase, and two dates return ZERO while later dates return more. Confirmed
+by a second, independent instrument: `getAllCubesListLite`'s per-day histogram of `releaseTime`
+reproduces those daily counts on 9 of the 10 days (the shortfalls are cubes that changed that day
+AND again later, of which lite keeps only the latest release).
+
+What it cost: `update()` polled ONE date per run and then advanced the watermark to today, so on
+a weekly cadence six days in seven were never inspected by any feed. **505 cubes have been
+released since 2026-07-29 and we hold 456 of them.** None could have reached us by this route.
+
+`_changed_pids` now enumerates `getAllCubesListLite` (8,270 cubes, `releaseTime` present on
+8,270 of 8,270) and filters on it — one request, complete set, no arithmetic that can skip a day.
+It FAILS CLOSED: an empty or implausibly short list raises rather than reporting "no cubes
+changed", because that verdict advances the watermark.
+
+STILL OPEN, in this order — the first two are prerequisites for the third:
+
+1. **The per-cube vector map has no cache.** `_disk_vector_map` re-streams four string columns of
+   every changed cube from R2 on every visit, which is the ~7.5 min/cube term behind the 09-11
+   run's 13,567 s over 30 cubes. `_incr_state.json` is 35 bytes and holds only
+   `last_release_date`, while `registry.yaml:4391` describes it as "release-date watermark +
+   per-cube cursors". NOT a small change: the map is one entry per distinct vector and is
+   unbounded for the census giants, so a cache design needs its own size measurement first.
+2. **statcan is BUDGET SKIPPED, and the `killed_external` row is what locks it out.**
+   `orchestrate.py:1782` reserves `2 * _unit_timeout_min()` = 90 min worst case; before the kill
+   row its estimate reserved ~42 min, after it the reserve pins at the 90-minute cap and a
+   clamped local pass can never fit it. The recorder built to make starvation visible made this
+   source unschedulable. Log line to grep: `BUDGET SKIP statcan/_all`.
+3. **Then, and only then, rewind the watermark.** It reads 2026-09-05, so even the fixed
+   enumeration reaches only the 151 held cubes released since then — the ~305 released between
+   2026-07-29 and the watermark stay unreachable until it is rewound. Safe in itself
+   (`merge_and_write` dedups on `(series_key, obs_date)` and never shrinks), but at the observed
+   uncached rate it is ~456 cubes x 7.5 min = **~57 h** of local-route time, which is why (1)
+   comes first. Rewinding before (1) and (2) does nothing except re-walk a window that cannot
+   finish.
+
+ALSO WORTH KNOWING, because two numbers here mislead:
+
+  * **`newest_obs 2026-07-29` is not a store measurement.** It is the max of 24 per-series
+    cursors left over from the 2026-08-02 partial (`health.py:121` builds it from cursors, not
+    from the store). Measured from parquet footers under r2, cube 10100139 holds 675,830 rows to
+    **2026-09-08**. The gate is red for a real reason; that number is not the evidence.
+  * **The watermark advanced over a run that merged nothing.** R753's guard only raises when the
+    store holds ZERO cubes (`if not held:`); during a PARTIAL restore it stands down, and
+    `statcan.py` advances on `all_ok`, which stays true when every changed cube is skipped as
+    absent. The 2026-09-05 watermark was written 41 minutes into a multi-day restore. Given the
+    feed defect it cost little, but the mechanism is live.
+
+And the publisher IS ahead — confirmed at the datapoint level, not from metadata: 6 of 6 probed
+vectors across 3 cubes, with a negative control (vector 999999999 -> status FAILED, empty
+datapoints). The staleness is ours.
