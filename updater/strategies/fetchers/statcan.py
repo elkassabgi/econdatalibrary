@@ -298,25 +298,96 @@ def _disk_vector_map(path):
     unmeasured for the census giants. It is far smaller than the row count, but if a cube
     turns out to hold tens of millions of vectors this needs a cap too — see the work queue.
     """
+    # ANSWER FROM THE FOOTER FIRST. Some cubes carry no vector ids at all, and streaming one to discover that
+    # costs its whole decode: measured 250,644 rows/s, so the six such cubes reached on 2026-09-11 burned
+    # ~50 min to return {}. Parquet keeps per-row-group min/max for series_key, so the question is answerable
+    # from metadata (R1046).
+    if _footer_proves_no_vectors(path):
+        print(f"    statcan: {path} holds no vector ids at all (proved from the parquet footer, no decode). "
+              f"The incremental vector path cannot update it and it will be booked as unchanged - see "
+              f"_footer_proves_no_vectors for which cubes this is expected for.", flush=True)
+        return {}
+
     out = {}
+    seen = [0, 0]                      # [keys examined, keys skipped as non-vector]
     for batch in blob.iter_batches(
             path, columns=["series_key", "geo", "uom", "coordinate"]):
-        _fold_vectors(batch.to_pydict(), out)
+        _fold_vectors(batch.to_pydict(), out, seen)
+    # DO NOT let "could not read this cube's keys" look like "this cube has nothing new" (failure class H).
+    if seen[0] and not out:
+        print(f"    statcan: {path} has {seen[0]:,} series_key values and NONE parse as a vector id. The "
+              f"incremental vector path cannot update this cube and it will be booked as unchanged.",
+              flush=True)
+    elif seen[1]:
+        print(f"    statcan: {path} skipped {seen[1]:,} of {seen[0]:,} series_key values that do not parse "
+              f"as vector ids", flush=True)
     return out
 
 
-def _fold_vectors(d, out):
-    """Fold one batch of the four vector columns into `out` (see _disk_vector_map)."""
+def _footer_proves_no_vectors(path) -> bool:
+    """True only when the parquet footer PROVES no series_key can be a vector id. Never guesses.
+
+    Parquet string statistics are byte-wise unsigned, so a row group whose MAXIMUM sorts below "V" cannot hold
+    any key beginning with 'V' or 'v'. The threshold is "V" (0x56) and NOT "v" (0x76), because _fold_vectors
+    accepts both cases: a cube of 'V123' keys would be silently skipped by the looser bound.
+
+    Returns False - i.e. fall through and stream - whenever the footer cannot settle it: absent statistics, a
+    missing column, an unreadable file. "Cannot look" must never read as "nothing there" (failure class H).
+
+    WHICH CUBES THIS IS EXPECTED FOR. StatCan publishes its Census Program tables in a wide layout with no
+    VECTOR column, and jobs/ingest_statcan.py:369-376 keys those rows by Coordinate on purpose. 525 of the 531
+    such cubes in the store are that layout; the vector tail endpoint structurally cannot serve them, and
+    re-pulling reproduces the same keys. The remaining six (12100147..12100152) are a different matter - a blank
+    VECTOR cell falling back to COORDINATE at ingest_statcan.py:282-288 - and are a genuine defect (R1043/R1046).
+    """
+    try:
+        md = blob.read_metadata(path)
+    except Exception:                                              # noqa: BLE001 - cannot look != nothing there
+        return False
+    if md.num_row_groups == 0:
+        return False
+    for rg in range(md.num_row_groups):
+        g = md.row_group(rg)
+        col = None
+        for c in range(g.num_columns):
+            if g.column(c).path_in_schema == "series_key":
+                col = g.column(c)
+                break
+        if col is None or not col.is_stats_set:
+            return False
+        st = col.statistics
+        if st is None or not st.has_min_max:
+            return False
+        mx = st.max
+        if isinstance(mx, bytes):
+            mx = mx.decode("utf-8", "replace")
+        if str(mx) >= "V":
+            return False
+    return True
+
+
+def _fold_vectors(d, out, seen=None):
+    """Fold one batch of the four vector columns into `out` (see _disk_vector_map).
+
+    `seen` is [examined, skipped] and is counted so the caller can tell a cube with no vectors from a cube
+    whose keys it cannot read - those are the same empty dict otherwise, and one of them is a silent freeze.
+    """
     keys = d.get("series_key", [])
     geos = d.get("geo", [])
     uoms = d.get("uom", [])
     coords = d.get("coordinate", [])
     for i, k in enumerate(keys):
+        if seen is not None:
+            seen[0] += 1
         if not k or k[0] not in "vV":
+            if seen is not None:
+                seen[1] += 1
             continue
         try:
             vid = int(k[1:])
         except ValueError:
+            if seen is not None:
+                seen[1] += 1
             continue
         if vid in out:
             continue
