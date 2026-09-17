@@ -91,6 +91,33 @@ export function isNonRedistributable(seriesId: string): boolean {
 }
 
 /**
+ * Should `/v1/catalog?q=<bare token>` be routed to the SOURCE BROWSE rather than searched?
+ *
+ * A BARE `?q=<source id>` FOR A GATED SOURCE MUST REACH THE 451, NOT THE LIKE FALLBACK.
+ * `catalog.ts` promotes a recognised token to a source browse, and its redistribution gate a
+ * few lines later answers 451 for a denylisted source -- "a direct ?source= ask gets the honest
+ * refusal, not an empty result", as the comment there puts it. While the promotion tested
+ * SUPPORTED_SOURCES alone, an id that is gated AND absent from that list never promoted, never
+ * reached the gate, and fell into the search path instead.
+ *
+ * That path is the expensive one. `series_fts MATCH` finds nothing for such a token, so `ftsOk`
+ * stays false and execution drops to the `%token%` LIKE fallback across BOTH catalogue
+ * databases plus two COUNT(*) LIKE scans -- ~24.2M rows read, 40-65 s, for a 200 with an empty
+ * body. And a 200 is cached at the edge for 6 h, so a cheap, uncached, truthful refusal becomes
+ * an expensive, cached, misleading success. That is the endpoint class that produced August's
+ * bill: the surface that runs on an ordinary page load is the one worth guarding.
+ *
+ * Denylist membership is the right half to test, because it is what the gate itself reads.
+ *
+ * It lives HERE rather than in `catalog.ts` for the same reason `seriesHeader.ts` holds its two
+ * helpers: this module imports nothing, so a test can drive the property directly, while
+ * `catalog.ts` reaches D1 and cannot be imported by `node --test` at all.
+ */
+export function promotesToSourceBrowse(cand: string, supported: ReadonlySet<string>): boolean {
+  return supported.has(cand) || NON_REDISTRIBUTABLE.has(cand);
+}
+
+/**
  * Series-level carve-outs. The SOURCE is redistributable, but specific indicators
  * within it embed third-party data the source's licence does not cover, so those
  * series are gated individually. Keyed by source id -> indicator codes (the part
