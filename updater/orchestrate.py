@@ -125,25 +125,36 @@ def last_turn_utc(state_row, last_kill_utc):
     ORDERING ONLY. Nothing here stamps unit_state, admits or refuses a unit, or reads a duration:
     is_due's partial-retry clock and health.py still read last_attempt_utc exactly as before, so
     this cannot re-open R639 (a kill rule that stamps and runs away) or R684 (an admission change)
-    and does not trust a censored kill duration (R625). It expires on its own: the next success or
-    attempt the unit writes is later than the kill and takes over.
+    and does not trust a censored kill duration (R625). The state stamp it compares against is the
+    SAME one the old clock read - `last_success_utc`, falling back to `last_attempt_utc` - so a unit
+    with a success on record is judged by that success, exactly as before; the kill takes over only
+    while it is the later of the two, and a later success replaces it. (A unit whose newer PARTIAL
+    attempts are hidden behind an older success is an older property of this clock, left unchanged
+    here: changing it reorders every partial source and needs its own replay.)
 
     Unparseable values are ignored in favour of the other, so a malformed kill row can never make a
     unit look MORE overdue than its state says; if neither parses, the state value is returned
-    unchanged for overdue_key to judge.
+    unchanged for overdue_key to judge. An offset-less stamp is read as UTC - every writer here uses
+    UTC - because comparing a naive datetime with an aware one RAISES, and one hand-written row
+    would otherwise abort the whole pass (review of PR #37).
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
+
+    def _parse(v):
+        d = datetime.fromisoformat(str(v))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
     last = (state_row or {}).get("last_success_utc") or (state_row or {}).get("last_attempt_utc")
     if not last_kill_utc:
         return last
     try:
-        k = datetime.fromisoformat(str(last_kill_utc))
+        k = _parse(last_kill_utc)
     except (ValueError, TypeError):
         return last
     if not last:
         return last_kill_utc
     try:
-        s = datetime.fromisoformat(str(last))
+        s = _parse(last)
     except (ValueError, TypeError):
         return last_kill_utc
     return last_kill_utc if k > s else last

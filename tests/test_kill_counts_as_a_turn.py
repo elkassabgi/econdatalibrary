@@ -59,6 +59,45 @@ def test_a_malformed_state_stamp_yields_to_a_parseable_kill():
     assert last_turn_utc({"last_attempt_utc": "garbage"}, "2026-09-17T02:26:44+00:00") == "2026-09-17T02:26:44+00:00"
 
 
+def test_an_offset_less_stamp_on_either_side_does_not_raise():
+    """naive vs aware comparison raises TypeError; one hand-written row must not abort the pass."""
+    assert last_turn_utc({"last_attempt_utc": "2026-08-17T07:55:27"}, "2026-09-17T02:26:44+00:00") \
+        == "2026-09-17T02:26:44+00:00"
+    assert last_turn_utc({"last_success_utc": "2026-09-16T00:00:00+00:00"}, "2026-09-11T02:34:13") \
+        == "2026-09-16T00:00:00+00:00"
+    assert last_turn_utc({"last_success_utc": "2026-09-16"}, "2026-09-17T02:26:44+00:00") \
+        == "2026-09-17T02:26:44+00:00"                 # a date-only stamp parses naive too
+
+
+def test_run_once_feeds_the_kill_into_the_ordering_it_uses(tmp_path, monkeypatch):
+    """WIRING, through the real run_once: the staleness key handed to order_units must reflect a kill row.
+    order_units is replaced by a probe that records the key and stops the run before anything is fetched."""
+    from updater import orchestrate as orch
+    from updater.state import StateStore
+    store = StateStore(str(tmp_path / "state.db"))
+    store.db.execute("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES (?,?,?,?,?,?,?)",
+                     ("2099-01-01T00:00:00+00:00", "worldbank", "_all", "killed_external", 0, 9000.0, "planted"))
+    store.db.commit()
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def probe(units, costs, staleness_key, *a, **k):
+        for u in units:
+            seen[(u.source_id, u.unit_id)] = staleness_key(u)
+        raise _Stop()
+    monkeypatch.setattr(orch, "order_units", probe)
+    try:
+        orch.run_once(sources=["worldbank"], dry=True, store=store)
+    except _Stop:
+        pass
+    key = seen.get(("worldbank", "_all"))
+    assert key is not None, f"run_once never reached order_units with worldbank: {sorted(seen)}"
+    # a kill dated in the future makes the unit the LEAST overdue possible (positive age < 0 -> key > 0)
+    assert key[0] > 0, key
+
+
 # ---- the store read ------------------------------------------------------------------------
 
 def test_store_returns_the_newest_kill_per_unit_and_ignores_other_statuses(tmp_path):
