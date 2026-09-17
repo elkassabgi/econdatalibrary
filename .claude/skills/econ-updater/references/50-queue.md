@@ -1530,20 +1530,61 @@ not an acceptable way to leave it:
   to 2010)** — countries with NO catalogued siblings at all. Dead IMF tails; leaving them
   uncatalogued is correct.
 
-### istat — still upstream-dead at day 19 (re-probed 2026-08-26T15:11Z)
+### ~~istat — still upstream-dead at day 19~~ WITHDRAWN 2026-09-17: it recovered on 2026-08-30
 
-The runbook's 2026-08-07 note says "when ISTAT restores the host the preflight passes". That is
-a PREDICTION, and R475 says measure it rather than wait. Re-probed with a control:
+**Do not carry the heading below into another session.** It was true when written and had been
+false for eighteen days by the time I read it, and I nearly built a twenty-flow investigation on
+it. What follows is the original note, then what today's measurement says.
 
-    sdmx.istat.it         302 self-redirect -> https://sdmx.istat.it/   (TCP open)
-    esploradati.istat.it  TCP 443 timeout
-    www.istat.it          HTTP 200                                      <- control passes
+> (2026-08-26T15:11Z) The runbook's 2026-08-07 note says "when ISTAT restores the host the
+> preflight passes". That is a PREDICTION, and R475 says measure it rather than wait. Re-probed
+> with a control:
+>
+>     sdmx.istat.it         302 self-redirect -> https://sdmx.istat.it/   (TCP open)
+>     esploradati.istat.it  TCP 443 timeout
+>     www.istat.it          HTTP 200                                      <- control passes
+>
+> So it is ISTAT, not our egress, and the outage measured on 2026-08-07 is unchanged. Its daily
+> `transient_fail` is `UNEXPECTED:TooManyRedirects('Exceeded 30 redirects.')` rather than the
+> clean preflight abort the module documents — the 302-self-redirect shape is not caught by
+> `_preflight()`. Small, source-local, and worth doing so the verdict reads honestly; it does
+> not change the outcome. Nothing else to build here.
 
-So it is ISTAT, not our egress, and the outage measured on 2026-08-07 is unchanged. Its daily
-`transient_fail` is `UNEXPECTED:TooManyRedirects('Exceeded 30 redirects.')` rather than the
-clean preflight abort the module documents — the 302-self-redirect shape is not caught by
-`_preflight()`. Small, source-local, and worth doing so the verdict reads honestly; it does not
-change the outcome. Nothing else to build here.
+WHAT THE RUN HISTORY SAYS (state.db `runs`, read 2026-09-17). The three `TooManyRedirects`
+runs on 08-18, 08-22 and 08-23 ARE the outage. Every run from 2026-08-30 onward is a `partial`
+that merged rows, and the sweeps are real work: 1,081.6 s over 159 sub-units on 09-06,
+3,894.1 s over 395 on 09-09, 10,655.4 s over 100 on 09-14. A live probe with the same control
+on 2026-09-17T06:08Z now reads `esploradati.istat.it` at HTTP 302 with a 0.197 s connect, where
+2026-08-26 measured a TCP 443 timeout.
+
+WHY IT STILL READS RED, which is a different fact: `succ_age` is 65 days because a `partial`
+never stamps `last_success_utc` (R231), and istat is permanently `partial` for two reasons that
+have nothing to do with the outage.
+
+1. **Host-dead aborts.** `istat.py` stops a whole run when every HOSTS base fails a 10-second
+   TCP connect probe, which is deliberate — it stops istat paying a dead publisher's timeout on
+   2,483 flows — but it costs the source its slot. The signature is a ~40 s run booking exactly
+   two transient sub-units, the second being "every ISTAT host unusable this run".
+2. **Structural residue** — 20 of 395 sub-units on the 09-09 sweep, 5 of 100 on 09-14, 1 of 159
+   on 09-06, and a DIFFERENT set each time, which argues against a fixed list of broken flows.
+   The message covers two causes at once ("real body parsed 0 rows, **or** withdrawn from both
+   catalogs"), which is R299's shape: one label over a self-healing cause and a permanent one.
+
+OPEN, and the reason a measurement is running rather than a fix: every istat run that STARTED at
+22Z or 23Z died on the host-dead abort (8 runs), while the runs that swept began 00Z-01Z. A
+same-pass control on a different publisher (`bls`, same local runner) shows no such clustering,
+so it is not our egress. Eight runs is not enough, and the sample was chosen by the scheduler
+rather than by the clock. `tools/probe_istat_hosts.py --hours 21 --every 10` is sampling both
+hosts on a fixed cadence with a positive control (www.istat.it) and a negative one
+(127.0.0.1:9 — it MUST refuse), and `--summarise` withholds a verdict unless the controls hold
+and at least 12 distinct hours are covered. Read that before proposing a schedule change.
+
+ALSO MEASURED, and worth knowing before anyone reads istat's cost band: `run_cost_estimate` is
+MAX over the last five runs, so istat's own 15-42 s failures put it in the 120 s FAST LANE for
+the ten runs from 2026-07-14 to 2026-09-04. It left only when the 09-06 sweep entered the
+sample, and reads band 3 (10,655 s) today. Five consecutive aborts are enough to re-enter, and
+there have been six in a row. The fetcher's Deadline bounds the damage; it cannot fix the
+misclassification, because an abort is genuinely short.
 
 ### dst: 275 of 333 recently-active store tables have NO catalog row (measured 2026-08-27)
 
