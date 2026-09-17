@@ -18,6 +18,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Env } from "./types";
+import { NON_REDISTRIBUTABLE } from "./denylist";
 import { json } from "./util";
 
 // Full-name / abbreviation -> ISO-3166 alpha-2. Mirrors hf's COUNTRY_TO_ISO so
@@ -268,8 +269,18 @@ export async function handlePublicStats(env: Env): Promise<Response> {
     .all<{ source_id: string; name: string }>();
   const catName: Record<string, string> = {};
   for (const r of catRows.results ?? []) catName[r.source_id] = r.name || r.source_id;
+  // AND the redistribution gate, added 2026-09-17 by a whole-surface sweep. The catalogue
+  // whitelist above is not enough: a GATED source can still hold a `source` row in D1 — the
+  // catalogue sync is frozen, so rows persist — and the download log carries its historical
+  // downloads, so it could be named here as a top source while `/v1/sources` hides it and
+  // `/v1/series/...csv` answers 451.
+  //
+  // The sweep found this route currently clean, which is the point: it was clean by DATA, not
+  // by construction, and a single historical download would have changed that without any code
+  // changing. Two sibling routes in the same sweep were leaking for real.
   const topSources = (dlBySource.results ?? [])
-    .filter((r) => r.source && catName[r.source] !== undefined) // whitelist: still catalogued
+    .filter((r) => r.source && catName[r.source] !== undefined // whitelist: still catalogued
+                && !NON_REDISTRIBUTABLE.has(r.source))         // and not gated
     .slice(0, 5)
     .map((r) => ({ source_id: r.source, name: catName[r.source], downloads: r.downloads }));
 
