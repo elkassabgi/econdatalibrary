@@ -717,9 +717,15 @@ sources:
   # so no scheduled job fetches it - but `jobs/ingest_census.py --only timeseries/govs` will 404 from that date, and
   # the served copy is frozen for good. It is already static: the API catalogue gives its last modification as
   # 2019-09-25, against 2026-01/02 for the five survey-specific datasets we also hold (govsemp 176,862 rows,
-  # govsstatefin 273,258, govsschfin 84,604, govspension 53,037, govsstatetax 16,102). AFTER the release: ingest the
-  # two new datasets that complete the seven, then decide whether `census:govs` is retired as a duplicate of them -
-  # that is a serving decision, so it is Ahmed's.
+  # govsstatefin 273,258, govsschfin 84,604, govspension 53,037, govsstatetax 16,102).
+  #
+  # ALREADY MISSING, measured against the LIVE catalogue (api.census.gov/data.json, 2026-09-17, 1,807 datasets):
+  # `timeseries/govslocalfin` - "State and Local Government Finances: 2017-2024", modified 2026-02-12 - exists
+  # upstream today and we do NOT hold it; the live family is the old `govs` plus SIX survey-specific sets, and the
+  # seventh arrives with next week's release. So the work is: ingest govslocalfin now (jobs/ingest_census.py --only
+  # timeseries/govslocalfin, which needs CENSUS_API_KEY from the workstation .env), add the seventh when it lands,
+  # then decide whether `census:govs` is retired as a duplicate of them - that last part is a serving decision, so it
+  # is Ahmed's.
   #
   # SCHEDULED 2026-08-02 via run_location, NOT live. Fetcher built and PROVEN:
   # updater/strategies/fetchers/census.py covers the 20 EITS time-series flows only — the other
