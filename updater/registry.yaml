@@ -709,6 +709,18 @@ sources:
     - per-series files — one {tableId}.parquet per CBS table under data/clean_full/cbs_nl/ (~2180 files); huge tables flushed
       via {tableId}.part{i}.parquet + {tableId}.ckpt.json then concatenated into the final parquet and parts/ckpt removed.
 - source_id: census
+  # UPSTREAM RETIREMENT, 2026-09-24: `timeseries/govs` ("Public Sector: Public Sector Surveys") is being REMOVED by
+  # the Census Bureau, which calls it the "old, duplicate API dataset"; next week's release completes its split into
+  # seven survey-specific timeseries (publisher email, 2026-09-17; a crosswalk spreadsheet is offered). What that
+  # touches here, measured 2026-09-17: ONE catalogue row, `census:govs`, backed by data/clean_full/census/govs.parquet
+  # (20,680 rows, 185,168 B). Nothing breaks on the 24th - census.py's tail list is FAMILIES = ("eits", "intltrade"),
+  # so no scheduled job fetches it - but `jobs/ingest_census.py --only timeseries/govs` will 404 from that date, and
+  # the served copy is frozen for good. It is already static: the API catalogue gives its last modification as
+  # 2019-09-25, against 2026-01/02 for the five survey-specific datasets we also hold (govsemp 176,862 rows,
+  # govsstatefin 273,258, govsschfin 84,604, govspension 53,037, govsstatetax 16,102). AFTER the release: ingest the
+  # two new datasets that complete the seven, then decide whether `census:govs` is retired as a duplicate of them -
+  # that is a serving decision, so it is Ahmed's.
+  #
   # SCHEDULED 2026-08-02 via run_location, NOT live. Fetcher built and PROVEN:
   # updater/strategies/fetchers/census.py covers the 20 EITS time-series flows only — the other
   # 60 datasets here are wide periodic snapshots served at table grain and need a reference-year
