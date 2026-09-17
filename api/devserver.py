@@ -31,6 +31,7 @@ import argparse
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -82,6 +83,56 @@ _CADENCE_DAYS = {"daily": 1, "weekly": 7, "monthly": 30, "quarterly": 91, "annua
 # api/worker/src/util.ts::SUPPORTED_LANGS. A ?lang= outside this set is a 400 --
 # we never silently hand back English for a language we don't really have.
 _LANGS = ("en", "ar", "es", "fr", "ru", "zh")
+
+
+# --------------------------------------------------------------------------- #
+# redistribution gate - a Python reading of api/worker/src/denylist.ts
+# --------------------------------------------------------------------------- #
+# THE SHIM HAD NO GATE (found 2026-09-17 in review of the worker's 451 change). The module docstring and
+# CONTRACT.md promise the shim answers what the Worker answers, but a gated series was served here while the
+# Worker answered 451 - so a caller developing against the shim saw data production refuses. The gate is READ
+# from the committed denylist.ts, never retyped: the set through core/gen_denylist.committed_gate (which raises on
+# an unreadable gate), the series-level carve-outs parsed from SERIES_CARVEOUTS. Matching is exact and
+# case-sensitive, like the Worker's Set.has / Array.includes.
+def _load_gate():
+    if _REPO not in sys.path:
+        sys.path.insert(0, _REPO)
+    from core import gen_denylist
+    if not os.path.exists(gen_denylist.OUT):
+        raise RuntimeError(f"redistribution gate {gen_denylist.OUT} is absent - refusing to serve without it")
+    src = open(gen_denylist.OUT, encoding="utf-8").read()
+    m = re.search(r"SERIES_CARVEOUTS[^=]*=\s*\{(.*?)\};", src, re.S)
+    if not m:
+        raise RuntimeError("SERIES_CARVEOUTS not found in denylist.ts - refusing to serve without the carve-outs")
+    body = re.sub(r"//[^\n]*", "", m.group(1))
+    carve = {}
+    for km in re.finditer(r"""(?:"([^"]+)"|'([^']+)'|([A-Za-z_][A-Za-z0-9_]*))\s*:\s*\[(.*?)\]""", body, re.S):
+        key = km.group(1) or km.group(2) or km.group(3)
+        carve[key] = tuple(re.findall(r"""["']([^"']+)["']""", km.group(4)))
+    if not carve:
+        raise RuntimeError("SERIES_CARVEOUTS parsed empty - refusing to serve without the carve-outs")
+    return frozenset(gen_denylist.committed_gate()), carve
+
+
+_GATE, _CARVEOUTS = _load_gate()
+
+
+def _series_source(series_id: str) -> str:
+    """denylist.ts::seriesSource - the text before the first ':'."""
+    i = series_id.find(":")
+    return series_id if i < 0 else series_id[:i]
+
+
+def _is_gated(series_id: str) -> bool:
+    """denylist.ts::isGated = isNonRedistributable || isSeriesCarvedOut."""
+    src = _series_source(series_id)
+    if src in _GATE:
+        return True
+    carved = _CARVEOUTS.get(src)
+    if not carved:
+        return False
+    parts = series_id.split(":")
+    return (parts[1] if len(parts) > 1 else "") in carved
 
 
 def _state_db_default() -> str:
@@ -232,6 +283,11 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- GET /v1/series/{id}.csv ----
     def h_csv(self, series_id: str, qs: dict):
+        # 0) redistribution gate FIRST, exactly as index.ts: 451 before existence is consulted.
+        if _is_gated(series_id):
+            return self._json(451, {"error": "not_redistributable", "series_id": series_id,
+                                    "detail": "This source's licence does not permit third-party redistribution of the "
+                                              "data. Please obtain it directly from the original provider."})
         # 1) unknown id -> 404 (catalog is the authority on existence).
         row = _catalog.get_series(series_id, db=self.cfg.catalog)
         if row is None:
@@ -354,6 +410,11 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- GET /v1/series/{id}.metadata.json ----
     def h_metadata(self, series_id: str, qs: dict | None = None):
+        # The gate runs BEFORE ?lang= is validated and before the catalogue, as in index.ts (CONTRACT.md: 451 wins).
+        if _is_gated(series_id):
+            return self._json(451, {"error": "not_redistributable", "series_id": series_id,
+                                    "detail": "This source's licence does not permit third-party redistribution. "
+                                              "Please obtain it directly from the original provider."})
         lang, ok = self._req_lang(qs or {})
         if not ok:
             return
