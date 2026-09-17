@@ -17,7 +17,11 @@ WHY extend_by_date (a genuine date-tail), not a whole-cube re-download:
   disk: getBulkVectorDataByRange(vectorIds, startDataPointReleaseDate, end). It
   returns only the datapoints (RELEASE-dated) in the window — i.e. brand-new periods
   AND revisions to old periods — keyed by vectorId. So we:
-    1. Poll getChangedCubeList(<watermark>) — cheap change-feed of changed productIds.
+    1. Enumerate getAllCubesListLite and keep the productIds whose `releaseTime` is on or
+       after the watermark. NOT getChangedCubeList: that endpoint is a SINGLE-DAY feed
+       ("changed ON <date>"), and reading it as a since-feed meant one day in seven was
+       inspected while the watermark jumped over the rest — see `_changed_pids` for the
+       measurement that settles it, and for what it cost.
     2. For each changed cube WITH an on-disk parquet: read its distinct vectors and
        their (geo,uom,coordinate) constants from disk, then pull only datapoints
        released since the watermark via getBulkVectorDataByRange (chunked 250/req).
@@ -179,12 +183,12 @@ def _post(endpoint, payload, tries=5):
         raise DefinitiveError(f"statcan {endpoint} HTTP {r.status_code}")
 
 
-def _get(endpoint, tries=5):
+def _get(endpoint, tries=5, timeout=120):
     """GET a WDS endpoint (used for the change-feed). Same transient/definitive rules."""
     url = f"{BASE}/{endpoint}"
     for a in range(tries):
         try:
-            r = requests.get(url, headers=UA, timeout=120)
+            r = requests.get(url, headers=UA, timeout=timeout)
         except (requests.Timeout, requests.ConnectionError) as e:
             if a == tries - 1:
                 raise TransientError(f"statcan {endpoint}: {e}")
@@ -203,17 +207,69 @@ def _get(endpoint, tries=5):
         raise DefinitiveError(f"statcan {endpoint} HTTP {r.status_code}")
 
 
+_LITE_FLOOR = 1000     # StatCan publishes >8,000 cubes; a short list is a structural break
+
+
 def _changed_pids(feed_since: dt.date):
-    """getChangedCubeList(<date>) -> set of productIds changed on/after that date.
-    TransientError if the envelope is missing (treated as a flaky read, retried)."""
-    j = _get(f"getChangedCubeList/{feed_since.isoformat()}")
-    if not isinstance(j, dict) or j.get("status") != "SUCCESS":
-        raise TransientError(f"statcan getChangedCubeList bad envelope: {str(j)[:200]}")
-    pids = set()
-    for o in j.get("object") or []:
+    """Product ids whose RELEASE TIME is on or after `feed_since`.
+
+    NOT `getChangedCubeList`. THAT ENDPOINT IS A SINGLE-DAY FEED AND THIS FETCHER READ IT AS A
+    SINCE-FEED FOR ITS ENTIRE LIFE — the one defect that explains statcan's staleness.
+
+    Measured 2026-09-17 against www150 (never a relay), by the test a since-feed cannot pass:
+    if `getChangedCubeList/<date>` meant "changed on or after <date>", its count could only ever
+    be NON-INCREASING as the date advances, because a later date covers a subset. Observed:
+
+        2026-08-18   3        2026-09-10   15        2026-09-15   14
+        2026-08-27  52        2026-09-12    0        2026-09-16   15
+        2026-09-03  30        2026-09-14   16        2026-09-17   60
+        2026-09-07   0
+
+    Five adjacent pairs increase, and two dates return ZERO while later dates return more. That
+    is impossible for a since-feed and is exactly the shape of "changed ON <date>". Confirmed
+    with a second, independent instrument: `getAllCubesListLite`'s per-day histogram of
+    `releaseTime` reproduces those daily counts on 9 of the 10 days (the small shortfalls are
+    cubes that changed that day AND again later, of which lite keeps only the latest release).
+
+    What that cost: `update()` polls ONE date per run and then advances the watermark to today,
+    so on a weekly cadence six days in seven were never inspected by any feed. Measured the same
+    day: 505 cubes have been released since 2026-07-29 and WE HOLD 456 OF THEM. None of them
+    could have reached us.
+
+    The replacement is the one the runbook already named and nobody built. `getAllCubesListLite`
+    returns the whole catalogue in a single request — measured HTTP 200, 8,270 cubes, and
+    `releaseTime` present on 8,270 of 8,270 — so the honest "changed since" is a filter over it.
+    One request, complete set, no watermark arithmetic that can skip a day.
+
+    FAILS CLOSED, because the alternative is the silent empty result: an enumeration that comes
+    back empty or implausibly short raises TransientError rather than yielding "no cubes
+    changed", which would advance the watermark over a window nobody looked at. That is the
+    mechanism this docstring exists to describe, so it must not be reintroduced by a quiet [].
+    """
+    j = _get("getAllCubesListLite", timeout=300)
+    cubes = j if isinstance(j, list) else (j.get("object") if isinstance(j, dict) else None)
+    if not isinstance(cubes, list) or len(cubes) < _LITE_FLOOR:
+        raise TransientError(
+            f"statcan getAllCubesListLite returned {len(cubes) if isinstance(cubes, list) else 'no list'} "
+            f"cube(s), below the {_LITE_FLOOR} floor — refusing to read that as 'nothing changed'")
+    cutoff = feed_since.isoformat()
+    pids, dated = set(), 0
+    for o in cubes:
+        if not isinstance(o, dict):
+            continue
+        rt = str(o.get("releaseTime") or "")[:10]
         pid = o.get("productId")
-        if pid is not None:
+        if pid is None or len(rt) != 10:
+            continue
+        dated += 1
+        if rt >= cutoff:                      # ISO dates: lexicographic == chronological
             pids.add(int(pid))
+    if not dated:
+        raise TransientError(
+            "statcan getAllCubesListLite returned cubes but none carried a usable releaseTime — "
+            "the field this filter depends on is gone; refusing to report an empty change set")
+    print(f"    statcan: {len(cubes):,} cubes listed, {dated:,} with a release date, "
+          f"{len(pids):,} released on/after {cutoff}", flush=True)
     return pids
 
 
