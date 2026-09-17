@@ -151,6 +151,10 @@ def last_turn_utc(state_row, last_kill_utc):
         k = _parse(last_kill_utc)
     except (ValueError, TypeError):
         return last
+    # A kill dated in the FUTURE cannot be a turn that happened; taken at face value it would bury the unit (a 2099
+    # row gave key +880). Ignore it rather than trust it (review of PR #37).
+    if k > datetime.now(timezone.utc):
+        return last
     if not last:
         return last_kill_utc
     try:

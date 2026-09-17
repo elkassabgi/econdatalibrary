@@ -75,8 +75,10 @@ def test_run_once_feeds_the_kill_into_the_ordering_it_uses(tmp_path, monkeypatch
     from updater import orchestrate as orch
     from updater.state import StateStore
     store = StateStore(str(tmp_path / "state.db"))
+    from datetime import datetime, timedelta, timezone
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
     store.db.execute("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES (?,?,?,?,?,?,?)",
-                     ("2099-01-01T00:00:00+00:00", "worldbank", "_all", "killed_external", 0, 9000.0, "planted"))
+                     (recent, "worldbank", "_all", "killed_external", 0, 9000.0, "planted"))
     store.db.commit()
     seen = {}
 
@@ -94,8 +96,14 @@ def test_run_once_feeds_the_kill_into_the_ordering_it_uses(tmp_path, monkeypatch
         pass
     key = seen.get(("worldbank", "_all"))
     assert key is not None, f"run_once never reached order_units with worldbank: {sorted(seen)}"
-    # a kill dated in the future makes the unit the LEAST overdue possible (positive age < 0 -> key > 0)
-    assert key[0] > 0, key
+    # the store has no unit_state row for worldbank, so WITHOUT the kill its key is -inf (never run); with a kill five
+    # minutes ago it is a small finite number just below zero
+    assert -0.01 < key[0] <= 0, key
+
+
+def test_a_kill_dated_in_the_future_is_ignored():
+    st = {"last_attempt_utc": "2026-08-17T07:55:27+00:00"}
+    assert last_turn_utc(st, "2099-01-01T00:00:00+00:00") == "2026-08-17T07:55:27+00:00"
 
 
 # ---- the store read ------------------------------------------------------------------------
