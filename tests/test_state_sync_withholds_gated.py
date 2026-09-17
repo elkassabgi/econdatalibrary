@@ -110,8 +110,32 @@ def test_the_default_gate_is_the_committed_one(tmp_path, monkeypatch):
 def test_the_verifier_refuses_sql_that_carries_a_gated_row(tmp_path, monkeypatch):
     db, out = _setup(tmp_path, monkeypatch)
     files, counts = d1sync.emit_sql(db, out, gated=set())      # SQL built without the gate
-    with pytest.raises(SystemExit, match="FATAL"):
+    # the GATED-ROW refusal specifically, not the generic mismatch that would also fire
+    with pytest.raises(SystemExit, match="gated source's row reached"):
         d1sync.verify_replay(db, files, counts, gated={GATED})
+
+
+def test_an_absent_gate_stops_the_sync(tmp_path, monkeypatch):
+    """committed_gate returns an EMPTY set for an absent worker file; the publisher must not."""
+    db, out = _setup(tmp_path, monkeypatch)
+    from core import gen_denylist
+    monkeypatch.setattr(gen_denylist, "OUT", str(tmp_path / "no_such_denylist.ts"))
+    with pytest.raises(SystemExit, match="absent"):
+        d1sync.emit_sql(db, out)
+
+
+def test_it_runs_as_a_script_the_way_ci_calls_it(tmp_path):
+    """Both workflows run `python core/sync_state_d1.py`, where sys.path[0] is core/ and not the repo
+    root. The in-process tests above cannot see an import that only fails there - the first version
+    of this change shipped exactly that (ModuleNotFoundError: core), caught in review."""
+    import subprocess
+    db = str(tmp_path / "state.db")
+    _state_db(db)
+    env = dict(os.environ, ECONDL_CATALOG=str(tmp_path / "no_such_catalog.db"), PYTHONPATH="")
+    p = subprocess.run([sys.executable, os.path.join("core", "sync_state_d1.py"), "--dry-run", "--state-db", db],
+                       cwd=ROOT, capture_output=True, text=True, env=env, timeout=300)
+    assert p.returncode == 0, p.stderr[-800:]
+    assert "DRY RUN" in p.stdout
 
 
 def test_an_unreadable_gate_stops_the_sync(tmp_path, monkeypatch):

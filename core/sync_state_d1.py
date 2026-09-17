@@ -41,6 +41,12 @@ import sys
 import tempfile
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
+# Run as a script (`python core/sync_state_d1.py`, which is how BOTH workflows call it) sys.path[0]
+# is core/, not the repo root, so `import core.*` fails. The gate reader below needs it. The
+# sibling core/sync_catalog_d1.py documents the same trap and bootstraps the same way.
+_REPO = os.path.abspath(os.path.join(_THIS, ".."))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
 ROOT = os.path.abspath(os.environ.get("ECONDL_ROOT")
                        or os.path.join(_THIS, ".."))
 STATE_DB = os.path.join(
@@ -82,9 +88,15 @@ def _gated_ids() -> set[str]:
 
     Delegates to core/gen_denylist.committed_gate, which RAISES on an unreadable gate: a gate that
     cannot be read is not an empty gate, and syncing blind would re-publish every gated row.
+    committed_gate deliberately returns an EMPTY set when the worker file is ABSENT (a checkout
+    without the worker); that is right for a generator and wrong for a publisher, so an absent
+    gate stops this sync too.
     """
-    from core.gen_denylist import committed_gate   # reads the worker's own denylist.ts
-    return {s.lower() for s in committed_gate()}
+    from core import gen_denylist                  # reads the worker's own denylist.ts
+    if not os.path.exists(gen_denylist.OUT):
+        raise SystemExit(f"FATAL: the worker gate {gen_denylist.OUT} is absent - refusing to publish "
+                         "freshness rows without it (they would include every gated source)")
+    return {s.lower() for s in gen_denylist.committed_gate()}
 
 
 def _echo(s: str) -> str:
@@ -280,12 +292,15 @@ def verify_replay(state_db: str, files: list[str], counts: dict[str, int],
             q = f"SELECT {collist} FROM {table} ORDER BY {order}"
             want = _servable(src.execute(q).fetchall(), cols, gated)
             got = mem.execute(q).fetchall()
+            # BEFORE the equality test, so this refusal is the one that fires for a gated row: after
+            # it, the filtered `want` already makes any gated row a plain mismatch and this line
+            # would be unreachable (review of PR #36).
+            if len(_servable(got, cols, gated)) != len(got):
+                raise SystemExit(f"FATAL: a gated source's row reached the {table} SQL — not executing")
             if got != want:
                 raise SystemExit(
                     f"FATAL: replay verify failed for {table} "
                     f"({len(got)} vs {len(want)} rows, or content differs) — not executing")
-            if len(_servable(got, cols, gated)) != len(got):
-                raise SystemExit(f"FATAL: a gated source's row reached the {table} SQL — not executing")
             if counts[table] != len(want):
                 raise SystemExit(f"FATAL: emitted count for {table} disagrees with the replay — not executing")
             print(f"  verify {table:13} {len(got):>5} rows  OK (replayed twice, idempotent)")
