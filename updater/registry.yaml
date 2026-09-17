@@ -727,6 +727,20 @@ sources:
   # then decide whether `census:govs` is retired as a duplicate of them - that last part is a serving decision, so it
   # is Ahmed's.
   #
+  # WHY it is missing, found 2026-09-17: not a code gap. Discovery reads the CACHED catalogue at
+  # data/raw/census/data.json, which this adapter's own note says "otherwise hides new tables" - and that file is dated
+  # 2026-06-03. Live vs cached distinct `c_dataset` ids: 573 vs 571. Hidden from discovery: 8, namely
+  # timeseries/govslocalfin, timeseries/aies/historical and SIX re-keyed AIES datasets. Retired from the cache's point
+  # of view: 6, which are exactly the old AIES paths. Control: timeseries/govs is in both, so it appears in neither
+  # difference (scratchpad census_cache_gap.py).
+  #
+  # So the AIES family was RE-KEYED upstream, `timeseries/aies/<x>` -> flat `aies<x>`, and clearing the cache is
+  # therefore NOT a free action: discovery would fetch the six new ids and write new files beside the five we already
+  # hold under the old names (aies__basic, aies__ecom, aies__exp01, aies__exp02, aies__inv - miscsector was never
+  # ingested), leaving those five stored, served and frozen for ever, which is the frozen-store-region defect class.
+  # The clear needs a rename/migration decided with it. It is NOT the cause of the current failures: the 8 of 45
+  # transient sub-units on the 2026-09-14 run are all intltrade/* at time=2026-03.
+  #
   # SCHEDULED 2026-08-02 via run_location, NOT live. Fetcher built and PROVEN:
   # updater/strategies/fetchers/census.py covers the 20 EITS time-series flows only — the other
   # 60 datasets here are wide periodic snapshots served at table grain and need a reference-year
