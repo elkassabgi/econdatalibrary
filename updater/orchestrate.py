@@ -110,6 +110,45 @@ def overdue_key(last_utc, cadence, now_utc):
     return -(age_days / days)
 
 
+def last_turn_utc(state_row, last_kill_utc):
+    """When this unit last HAD A TURN, for ordering: the later of its state stamp and its last kill.
+
+    A HARD-STOPPED ATTEMPT IS STILL A TURN (2026-09-17). The staleness clock read
+    `last_success_utc or last_attempt_utc` from unit_state, and a unit killed by the desktop pass's
+    wall clock writes neither - the process dies before finalize - so its clock never moved. A
+    giant that cannot finish inside one pass therefore sorted MORE overdue after every kill and
+    led its band forever: unctad_tradefoodcatbyproc was killed on 2026-09-02, 09-14, 09-15 and
+    09-17 with its key still reading its 2026-08-17 attempt, while statcan, census, eia, oecd and
+    five other giants queued behind it and were never admitted. The kill IS recorded, as a
+    `killed_external` row in `runs` (tools/record_killed_unit.py), and that row is the attempt.
+
+    ORDERING ONLY. Nothing here stamps unit_state, admits or refuses a unit, or reads a duration:
+    is_due's partial-retry clock and health.py still read last_attempt_utc exactly as before, so
+    this cannot re-open R639 (a kill rule that stamps and runs away) or R684 (an admission change)
+    and does not trust a censored kill duration (R625). It expires on its own: the next success or
+    attempt the unit writes is later than the kill and takes over.
+
+    Unparseable values are ignored in favour of the other, so a malformed kill row can never make a
+    unit look MORE overdue than its state says; if neither parses, the state value is returned
+    unchanged for overdue_key to judge.
+    """
+    from datetime import datetime
+    last = (state_row or {}).get("last_success_utc") or (state_row or {}).get("last_attempt_utc")
+    if not last_kill_utc:
+        return last
+    try:
+        k = datetime.fromisoformat(str(last_kill_utc))
+    except (ValueError, TypeError):
+        return last
+    if not last:
+        return last_kill_utc
+    try:
+        s = datetime.fromisoformat(str(last))
+    except (ValueError, TypeError):
+        return last_kill_utc
+    return last_kill_utc if k > s else last
+
+
 def _protected(unit) -> bool:
     """Protected in-flight backfill. Announced, never silent — see below."""
     if unit.source_id in FIRSTPASS_DIRS:
@@ -1625,10 +1664,11 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     # deliberate — a never-run source has no cost on record precisely because it has never had
     # a turn, and putting it last would be the starvation this whole ordering exists to undo.
     _now = now_utc()
+    _kills = store.last_kill_utc()     # {(source_id, unit_id): ts} - one read of `runs` per pass
 
     def _staleness(unit):
         st = store.get_unit(unit.source_id, unit.unit_id) or {}
-        last = st.get("last_success_utc") or st.get("last_attempt_utc")
+        last = last_turn_utc(st, _kills.get((unit.source_id, unit.unit_id)))
         cadence = (unit.config or {}).get("cadence")
         # Cadence-normalized: a 5d-stale daily (5x overdue) outranks a 10d-stale
         # annual (0.03x) — absolute age inverted exactly that on 2026-08-18.
