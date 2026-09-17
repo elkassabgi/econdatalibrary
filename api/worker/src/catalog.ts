@@ -15,7 +15,7 @@ import {
   BROWSE_SOURCE_COUNT, BROWSE_SOURCE_COUNT_CACHED, BROWSE_ALL, BROWSE_ALL_COUNT,
 } from "./sql";
 import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor, supportedSources } from "./util";
-import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
+import { NON_REDISTRIBUTABLE, isSeriesCarvedOut, promotesToSourceBrowse } from "./denylist";
 
 // Carries no COUNT, and — the part that matters — it KEEPS THE CAVEAT. The old value,
 // "series-level for 33 sources; source-level for the rest", had rotted (33 was accurate when
@@ -90,7 +90,7 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
   let q = qRaw;
   if (q && q.trim() && !src) {
     const cand = q.trim().toLowerCase();
-    if (supportedSources(env).has(cand)) {
+    if (promotesToSourceBrowse(cand, supportedSources(env))) {
       src = cand;
       q = null; // browse the source; do not also MATCH its own name
     }
