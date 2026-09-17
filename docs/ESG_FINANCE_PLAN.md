@@ -18,8 +18,11 @@ update it here, not in chat.
 ## Measured foundations (2026-08-10)
 
 - 57.3% of econ's catalogue rows are ESG-adjacent (6,543,983 of 11,421,296; 51 sources).
-  noaa alone = 3,137,871 rows (27.5% of the catalogue) but only 0.69% of the library's
-  79.8B observations — row-expensive, observation-cheap, which is why it shards first.
+  noaa alone = 3,137,871 rows (27.5% of the catalogue) but a small fraction of the library's
+  observations — row-expensive, observation-cheap, which is why it shards first. (The 0.69%
+  here was taken against a 79.8B total that is now WITHDRAWN; `/v1/stats` served
+  24,054,980,219 observations when measured live on 2026-09-16. The ratio has not been
+  re-derived, so it is stated qualitatively rather than carried forward wrong.)
 - Finance-adjacent inside econ is only 6.3% (25 sources / 721,564 rows) and is mostly IMF
   BOP/FSI/central-bank data that IS economics — Finance is therefore built on filings we
   already hold, not carved out of econ's macro-financial series.
