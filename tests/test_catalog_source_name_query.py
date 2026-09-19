@@ -47,17 +47,57 @@ def _src() -> str:
         return fh.read()
 
 
+# THE ANCHOR MOVED 2026-09-17, AND THE PROPERTY GREW.
+#
+# These tests used to pin the literal `supportedSources(env).has(cand)`. The promotion now reads
+# `promotesToSourceBrowse(cand, supportedSources(env))`, a predicate in denylist.ts that answers
+# the allowlist OR the denylist. The reason is in that function's own docstring: while the
+# promotion tested the allowlist alone, a GATED id that is also absent from it never promoted,
+# never reached the 451 a few lines below, and fell into the search path — where MATCH finds
+# nothing, `ftsOk` stays false, and the `%token%` LIKE fallback scans both databases (~24.2M
+# rows, 40-65 s) to return a 200 with an empty body, which the edge then caches for six hours.
+#
+# So every assertion below still tests what it always tested, against the new call form, and one
+# of them now also tests the half that was missing.
+_RESOLVE = "promotesToSourceBrowse(cand,"
+
+
 def test_an_exact_source_id_query_is_resolved_to_that_source():
     s = _src()
-    assert "supportedSources(env).has(cand)" in s, (
+    assert _RESOLVE in s, (
         "catalog.ts no longer resolves a q= that is a source id; q=wid will fall back to "
         "whatever the FTS index happens to contain")
+    assert "supportedSources(env)" in s, (
+        "the allowlist half of the promotion is gone; a supported source's own id would stop "
+        "resolving to its browse")
+
+
+def test_the_promotion_covers_gated_ids_too_so_they_reach_the_451():
+    """The half added 2026-09-17: a gated id must PROMOTE, because only a promoted id reaches
+    the redistribution gate. Tested where the predicate lives, so this cannot pass on a
+    catalog.ts that calls something else of the same name."""
+    deny_ts = os.path.join(ROOT, "api", "worker", "src", "denylist.ts")
+    with open(deny_ts, encoding="utf-8") as fh:
+        d = fh.read()
+    m = re.search(r"export function promotesToSourceBrowse\([^)]*\)[^{]*\{(.*?)\n\}", d, re.S)
+    assert m, "promotesToSourceBrowse is not defined in denylist.ts"
+    # STRIP COMMENTS FIRST (R329/R347). Commenting the denylist half out leaves the literal
+    # sitting in a `//` comment, where a bare substring test still finds it and reports a pass —
+    # which is exactly how this check would have missed the change it exists to catch.
+    body = re.sub(r"//.*", "", m.group(1))
+    assert body.strip(), "the function body is empty after stripping comments — nothing to test"
+    assert "NON_REDISTRIBUTABLE.has(cand)" in body, (
+        "the promotion no longer consults the denylist, so `?q=<gated id>` stops reaching the "
+        "451 and falls into the LIKE fallback: an expensive, cached 200 with an empty body "
+        "where the honest answer is a free refusal")
+    assert "supported.has(cand)" in body, (
+        "the promotion no longer consults the allowlist passed in by the caller")
 
 
 def test_the_resolution_happens_before_the_search_paths():
     """Order is the whole point — after the MATCH it would be dead code."""
     s = _src()
-    i_resolve = s.index("supportedSources(env).has(cand)")
+    i_resolve = s.index(_RESOLVE)
     i_fts = s.index("SEARCH_FTS")
     # the import line also mentions SEARCH_FTS, so measure against its USE
     i_fts_use = s.index("prepare(SEARCH_FTS")
@@ -76,7 +116,7 @@ def test_the_resolution_does_not_fire_when_source_was_given_explicitly():
 def test_the_matched_query_is_cleared_so_it_is_a_browse_not_a_self_match():
     """Leaving q set would run MATCH 'wid' AND source_id='wid' — which the dedup empties."""
     s = _src()
-    i = s.index("supportedSources(env).has(cand)")
+    i = s.index(_RESOLVE)
     window = s[i:i + 400]
     assert re.search(r"\bq\s*=\s*null", window), (
         "q must be cleared once it has been resolved to a source, or the request still "
@@ -86,7 +126,7 @@ def test_the_matched_query_is_cleared_so_it_is_a_browse_not_a_self_match():
 def test_the_denylist_gate_still_runs_after_resolution():
     """A gated source named in q= must get the honest 451, not a silent browse."""
     s = _src()
-    i_resolve = s.index("supportedSources(env).has(cand)")
+    i_resolve = s.index(_RESOLVE)
     i_deny = s.index("NON_REDISTRIBUTABLE.has(src)")
     assert i_resolve < i_deny, (
         "resolution must precede the redistribution gate so q=<gated source> is refused, "

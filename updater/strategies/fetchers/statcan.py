@@ -17,7 +17,11 @@ WHY extend_by_date (a genuine date-tail), not a whole-cube re-download:
   disk: getBulkVectorDataByRange(vectorIds, startDataPointReleaseDate, end). It
   returns only the datapoints (RELEASE-dated) in the window — i.e. brand-new periods
   AND revisions to old periods — keyed by vectorId. So we:
-    1. Poll getChangedCubeList(<watermark>) — cheap change-feed of changed productIds.
+    1. Enumerate getAllCubesListLite and keep the productIds whose `releaseTime` is on or
+       after the watermark. NOT getChangedCubeList: that endpoint is a SINGLE-DAY feed
+       ("changed ON <date>"), and reading it as a since-feed meant one day in seven was
+       inspected while the watermark jumped over the rest — see `_changed_pids` for the
+       measurement that settles it, and for what it cost.
     2. For each changed cube WITH an on-disk parquet: read its distinct vectors and
        their (geo,uom,coordinate) constants from disk, then pull only datapoints
        released since the watermark via getBulkVectorDataByRange (chunked 250/req).
@@ -56,7 +60,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, sane_since
+from ._common import Deadline, Tally, finalize, sane_since
 
 OUT_DIR = os.path.join(config.DATA_ROOT, "statcan")
 STATE = os.path.join(OUT_DIR, "_incr_state.json")
@@ -77,6 +81,25 @@ COLD_LOOKBACK_DAYS = 30
 # Re-poll the change-feed from a few days BEFORE the watermark to absorb clock/feed
 # skew (a cube whose release lands right on the boundary must not be missed).
 FEED_SLACK_DAYS = 2
+
+# WALL-CLOCK BUDGET, with the per-cube RESUME that R190 requires beside one. Without both, this
+# fetcher was a self-certifying outage: it walks `sorted(changed)` - a fixed order - and advances
+# the watermark only after a clean WHOLE pass, so a pass the desktop's wall clock killed re-walked
+# the same prefix next time and the tail was never reached. Measured 2026-09-17: killed_external at
+# 13,567 s on 2026-09-11, with 505 cubes released since the watermark. The budget stops STARTING new
+# cubes; the resume set below means a kill mid-pass now costs only the cube in flight.
+BUDGET_MIN = 45.0
+# Save the resume set every N finished cubes (and at the end): the file is ~100 B per cube, and a
+# write per cube would add an R2 PUT to each one for no benefit.
+SAVE_EVERY = 10
+# THE RESUMPTION MECHANISM, named so it can be recognised rather than exempted. A budgeted sweep
+# over a fixed order re-walks the same prefix for ever unless something makes the next run start
+# somewhere new (R190; tests/test_budget_needs_resumption.py). This fetcher does not rotate its
+# start offset - it records the cubes FINISHED in the current window under this state key, so the
+# next pass skips them by construction and begins at the first cube that still owes work. Stronger
+# than a rotation bookmark: a kill mid-pass costs only the cube in flight, and the window's
+# identity (its feed_since) means a resume set can never be applied to a different window.
+RESUME_WINDOW_KEY = "window"
 
 # On-disk schema, byte-for-byte what jobs/ingest_statcan.py writes.
 SCHEMA = pa.schema([
@@ -143,6 +166,9 @@ def _load_state():
         try:
             d = json.loads(raw.decode("utf-8"))
             d.setdefault("last_release_date", None)   # 'YYYY-MM-DD'
+            # {"feed_since": 'YYYY-MM-DD', "done": {pid: 'YYYY-MM-DD fetched through'}} for the
+            # window currently being worked; absent or for another window means "start fresh".
+            d.setdefault(RESUME_WINDOW_KEY, {})
             return d
         except Exception:
             pass
@@ -179,12 +205,12 @@ def _post(endpoint, payload, tries=5):
         raise DefinitiveError(f"statcan {endpoint} HTTP {r.status_code}")
 
 
-def _get(endpoint, tries=5):
+def _get(endpoint, tries=5, timeout=120):
     """GET a WDS endpoint (used for the change-feed). Same transient/definitive rules."""
     url = f"{BASE}/{endpoint}"
     for a in range(tries):
         try:
-            r = requests.get(url, headers=UA, timeout=120)
+            r = requests.get(url, headers=UA, timeout=timeout)
         except (requests.Timeout, requests.ConnectionError) as e:
             if a == tries - 1:
                 raise TransientError(f"statcan {endpoint}: {e}")
@@ -203,17 +229,69 @@ def _get(endpoint, tries=5):
         raise DefinitiveError(f"statcan {endpoint} HTTP {r.status_code}")
 
 
+_LITE_FLOOR = 1000     # StatCan publishes >8,000 cubes; a short list is a structural break
+
+
 def _changed_pids(feed_since: dt.date):
-    """getChangedCubeList(<date>) -> set of productIds changed on/after that date.
-    TransientError if the envelope is missing (treated as a flaky read, retried)."""
-    j = _get(f"getChangedCubeList/{feed_since.isoformat()}")
-    if not isinstance(j, dict) or j.get("status") != "SUCCESS":
-        raise TransientError(f"statcan getChangedCubeList bad envelope: {str(j)[:200]}")
-    pids = set()
-    for o in j.get("object") or []:
+    """Product ids whose RELEASE TIME is on or after `feed_since`.
+
+    NOT `getChangedCubeList`. THAT ENDPOINT IS A SINGLE-DAY FEED AND THIS FETCHER READ IT AS A
+    SINCE-FEED FOR ITS ENTIRE LIFE — the one defect that explains statcan's staleness.
+
+    Measured 2026-09-17 against www150 (never a relay), by the test a since-feed cannot pass:
+    if `getChangedCubeList/<date>` meant "changed on or after <date>", its count could only ever
+    be NON-INCREASING as the date advances, because a later date covers a subset. Observed:
+
+        2026-08-18   3        2026-09-10   15        2026-09-15   14
+        2026-08-27  52        2026-09-12    0        2026-09-16   15
+        2026-09-03  30        2026-09-14   16        2026-09-17   60
+        2026-09-07   0
+
+    Five adjacent pairs increase, and two dates return ZERO while later dates return more. That
+    is impossible for a since-feed and is exactly the shape of "changed ON <date>". Confirmed
+    with a second, independent instrument: `getAllCubesListLite`'s per-day histogram of
+    `releaseTime` reproduces those daily counts on 9 of the 10 days (the small shortfalls are
+    cubes that changed that day AND again later, of which lite keeps only the latest release).
+
+    What that cost: `update()` polls ONE date per run and then advances the watermark to today,
+    so on a weekly cadence six days in seven were never inspected by any feed. Measured the same
+    day: 505 cubes have been released since 2026-07-29 and WE HOLD 456 OF THEM. None of them
+    could have reached us.
+
+    The replacement is the one the runbook already named and nobody built. `getAllCubesListLite`
+    returns the whole catalogue in a single request — measured HTTP 200, 8,270 cubes, and
+    `releaseTime` present on 8,270 of 8,270 — so the honest "changed since" is a filter over it.
+    One request, complete set, no watermark arithmetic that can skip a day.
+
+    FAILS CLOSED, because the alternative is the silent empty result: an enumeration that comes
+    back empty or implausibly short raises TransientError rather than yielding "no cubes
+    changed", which would advance the watermark over a window nobody looked at. That is the
+    mechanism this docstring exists to describe, so it must not be reintroduced by a quiet [].
+    """
+    j = _get("getAllCubesListLite", timeout=300)
+    cubes = j if isinstance(j, list) else (j.get("object") if isinstance(j, dict) else None)
+    if not isinstance(cubes, list) or len(cubes) < _LITE_FLOOR:
+        raise TransientError(
+            f"statcan getAllCubesListLite returned {len(cubes) if isinstance(cubes, list) else 'no list'} "
+            f"cube(s), below the {_LITE_FLOOR} floor — refusing to read that as 'nothing changed'")
+    cutoff = feed_since.isoformat()
+    pids, dated = set(), 0
+    for o in cubes:
+        if not isinstance(o, dict):
+            continue
+        rt = str(o.get("releaseTime") or "")[:10]
         pid = o.get("productId")
-        if pid is not None:
+        if pid is None or len(rt) != 10:
+            continue
+        dated += 1
+        if rt >= cutoff:                      # ISO dates: lexicographic == chronological
             pids.add(int(pid))
+    if not dated:
+        raise TransientError(
+            "statcan getAllCubesListLite returned cubes but none carried a usable releaseTime — "
+            "the field this filter depends on is gone; refusing to report an empty change set")
+    print(f"    statcan: {len(cubes):,} cubes listed, {dated:,} with a release date, "
+          f"{len(pids):,} released on/after {cutoff}", flush=True)
     return pids
 
 
@@ -242,25 +320,96 @@ def _disk_vector_map(path):
     unmeasured for the census giants. It is far smaller than the row count, but if a cube
     turns out to hold tens of millions of vectors this needs a cap too — see the work queue.
     """
+    # ANSWER FROM THE FOOTER FIRST. Some cubes carry no vector ids at all, and streaming one to discover that
+    # costs its whole decode: measured 250,644 rows/s, so the six such cubes reached on 2026-09-11 burned
+    # ~50 min to return {}. Parquet keeps per-row-group min/max for series_key, so the question is answerable
+    # from metadata (R1046).
+    if _footer_proves_no_vectors(path):
+        print(f"    statcan: {path} holds no vector ids at all (proved from the parquet footer, no decode). "
+              f"The incremental vector path cannot update it and it will be booked as unchanged - see "
+              f"_footer_proves_no_vectors for which cubes this is expected for.", flush=True)
+        return {}
+
     out = {}
+    seen = [0, 0]                      # [keys examined, keys skipped as non-vector]
     for batch in blob.iter_batches(
             path, columns=["series_key", "geo", "uom", "coordinate"]):
-        _fold_vectors(batch.to_pydict(), out)
+        _fold_vectors(batch.to_pydict(), out, seen)
+    # DO NOT let "could not read this cube's keys" look like "this cube has nothing new" (failure class H).
+    if seen[0] and not out:
+        print(f"    statcan: {path} has {seen[0]:,} series_key values and NONE parse as a vector id. The "
+              f"incremental vector path cannot update this cube and it will be booked as unchanged.",
+              flush=True)
+    elif seen[1]:
+        print(f"    statcan: {path} skipped {seen[1]:,} of {seen[0]:,} series_key values that do not parse "
+              f"as vector ids", flush=True)
     return out
 
 
-def _fold_vectors(d, out):
-    """Fold one batch of the four vector columns into `out` (see _disk_vector_map)."""
+def _footer_proves_no_vectors(path) -> bool:
+    """True only when the parquet footer PROVES no series_key can be a vector id. Never guesses.
+
+    Parquet string statistics are byte-wise unsigned, so a row group whose MAXIMUM sorts below "V" cannot hold
+    any key beginning with 'V' or 'v'. The threshold is "V" (0x56) and NOT "v" (0x76), because _fold_vectors
+    accepts both cases: a cube of 'V123' keys would be silently skipped by the looser bound.
+
+    Returns False - i.e. fall through and stream - whenever the footer cannot settle it: absent statistics, a
+    missing column, an unreadable file. "Cannot look" must never read as "nothing there" (failure class H).
+
+    WHICH CUBES THIS IS EXPECTED FOR. StatCan publishes its Census Program tables in a wide layout with no
+    VECTOR column, and jobs/ingest_statcan.py:369-376 keys those rows by Coordinate on purpose. 525 of the 531
+    such cubes in the store are that layout; the vector tail endpoint structurally cannot serve them, and
+    re-pulling reproduces the same keys. The remaining six (12100147..12100152) are a different matter - a blank
+    VECTOR cell falling back to COORDINATE at ingest_statcan.py:282-288 - and are a genuine defect (R1043/R1046).
+    """
+    try:
+        md = blob.read_metadata(path)
+    except Exception:                                              # noqa: BLE001 - cannot look != nothing there
+        return False
+    if md.num_row_groups == 0:
+        return False
+    for rg in range(md.num_row_groups):
+        g = md.row_group(rg)
+        col = None
+        for c in range(g.num_columns):
+            if g.column(c).path_in_schema == "series_key":
+                col = g.column(c)
+                break
+        if col is None or not col.is_stats_set:
+            return False
+        st = col.statistics
+        if st is None or not st.has_min_max:
+            return False
+        mx = st.max
+        if isinstance(mx, bytes):
+            mx = mx.decode("utf-8", "replace")
+        if str(mx) >= "V":
+            return False
+    return True
+
+
+def _fold_vectors(d, out, seen=None):
+    """Fold one batch of the four vector columns into `out` (see _disk_vector_map).
+
+    `seen` is [examined, skipped] and is counted so the caller can tell a cube with no vectors from a cube
+    whose keys it cannot read - those are the same empty dict otherwise, and one of them is a silent freeze.
+    """
     keys = d.get("series_key", [])
     geos = d.get("geo", [])
     uoms = d.get("uom", [])
     coords = d.get("coordinate", [])
     for i, k in enumerate(keys):
+        if seen is not None:
+            seen[0] += 1
         if not k or k[0] not in "vV":
+            if seen is not None:
+                seen[1] += 1
             continue
         try:
             vid = int(k[1:])
         except ValueError:
+            if seen is not None:
+                seen[1] += 1
             continue
         if vid in out:
             continue
@@ -390,13 +539,45 @@ def update(unit, since) -> Result:
     # leave it unchanged so the whole window is retried.
     all_ok = True
 
+    # RESUME SET for THIS window. A window is identified by its feed_since: while that is unchanged
+    # the change-feed returns the same set, so a cube finished in an earlier pass need not be fetched
+    # again. Its value is the date that pass fetched it THROUGH, which is what bounds the watermark
+    # below - taking `today` there would jump over releases a resumed pass never looked at.
+    win = state.get(RESUME_WINDOW_KEY) or {}
+    done: dict = dict(win.get("done") or {}) if win.get("feed_since") == feed_since.isoformat() else {}
+    if done:
+        print(f"[statcan] resuming the {feed_since.isoformat()} window: {len(done)} cube(s) already "
+              f"fetched in an earlier pass are skipped", flush=True)
+    dl = Deadline(minutes=BUDGET_MIN)
+    capped = False
+    since_save = 0
+
+    def _remember(pid, through):
+        """Record a finished cube and persist the window periodically (and on the last one)."""
+        nonlocal since_save
+        done[str(pid)] = through
+        since_save += 1
+        if since_save >= SAVE_EVERY:
+            state[RESUME_WINDOW_KEY] = {"feed_since": feed_since.isoformat(), "done": done}
+            _save_state(state)
+            since_save = 0
+
     for pid in sorted(changed):
+        if str(pid) in done:
+            continue
+        if dl.spent():
+            # Stop STARTING cubes; the rest keep their turn next pass because `done` is persisted.
+            capped = True
+            print(f"[statcan] budget of {dl.budget_min:g} min spent after "
+                  f"{len(done)} cube(s) this window; {len(changed) - len(done)} still owed", flush=True)
+            break
         path = os.path.join(OUT_DIR, f"{pid}.parquet")
         if not blob.exists(path):
             # brand-new cube — out of scope for the incremental fetcher (bulk ingester
             # owns first ingest; vector endpoint lacks the dimension metadata to build
             # a faithful cube from scratch). Skip without counting as a sub-unit.
             absent_pids.append(pid)
+            _remember(pid, today.isoformat())     # looked at and correctly skipped: do not re-walk it
             continue
         try:
             vmap = _disk_vector_map(path)
@@ -407,6 +588,7 @@ def update(unit, since) -> Result:
             continue
         if not vmap:
             tally.empty_unit(f"{os.path.basename(path)}: no vectors on disk")
+            _remember(pid, today.isoformat())
             continue
         try:
             tbl = _fetch_cube_tail(vmap, win_start, today)
@@ -426,6 +608,7 @@ def update(unit, since) -> Result:
             md = merge._max_obs_date(blob.read_table(path, columns=["obs_date"]))
             if md:
                 series_cursors[str(pid)] = md
+            _remember(pid, today.isoformat())
             continue
 
         before = blob.row_count(path)
@@ -463,6 +646,7 @@ def update(unit, since) -> Result:
                     maxd = md_d
             except ValueError:
                 pass
+        _remember(pid, today.isoformat())     # merged: this cube is fetched through today
 
     # THE STORE-ABSENT GUARD (see `absent_pids` above). Distinguish two look-alikes:
     #   the publisher changed cubes we simply do not hold  -> coverage, the bulk ingester's job,
@@ -490,10 +674,27 @@ def update(unit, since) -> Result:
                 f"AQUEDUCT_BACKEND=r2. Restore the store (or point this source's backend at the copy that "
                 f"holds it) before trusting any statcan status.")
 
-    # Advance the watermark only on a clean pass (no transient/structural sub-fault),
-    # so an interrupted/throttled run re-polls the same release window next time.
-    if all_ok:
-        state["last_release_date"] = today.isoformat()
+    # Advance the watermark only on a clean pass (no transient/structural sub-fault) that also
+    # FINISHED the window, and then only to the OLDEST date any of this window's cubes was fetched
+    # through. `today` would be wrong for a window spread over several passes: a cube finished on
+    # pass 1 was fetched through pass 1's date, so releases between that and pass 3's date would be
+    # jumped over. Taking the minimum re-polls that overlap next window - merge dedups it.
+    # Set containment, NOT len(done) >= len(changed): the feed can list MORE cubes for the same
+    # feed_since on a later pass, and `done` can hold cubes that pass no longer lists. Counting
+    # would then declare the window finished with a genuinely changed cube never fetched, and the
+    # watermark would jump over it - the silent skip this whole window exists to prevent.
+    everything = {str(p) for p in changed} <= set(done)
+    if all_ok and not capped and everything:
+        through = min(done.values()) if done else today.isoformat()
+        state["last_release_date"] = through
+        state[RESUME_WINDOW_KEY] = {}                       # window closed
+        _save_state(state)
+        if done and through != today.isoformat():
+            print(f"[statcan] window complete; watermark advanced to {through}, the oldest date any "
+                  f"cube in it was fetched through (not today) - a multi-pass window", flush=True)
+    else:
+        # Keep the resume set for the next pass, watermark unmoved.
+        state[RESUME_WINDOW_KEY] = {"feed_since": feed_since.isoformat(), "done": done}
         _save_state(state)
 
     last = maxd.isoformat() if maxd else (str(since)[:10] if since else None)
@@ -505,6 +706,10 @@ def update(unit, since) -> Result:
     # transport breaks already surface in _get/_post and _changed_pids.
     res = finalize(tally, tally.added, last, source=SOURCE,
                    series_cursors=series_cursors, empty_window_floor=10 ** 9)
+    if capped or not everything:
+        # More cubes in this window still owe work: never let the strategy stamp a vintage that
+        # says "fully current" (ons_uk's rule), or the backlog is skipped at the next tick.
+        res.new_vintage = None
     if changed_complete:
         # merge-measured vector-grain changed set; {} on a quiet pass is the honest
         # "nothing changed" (coherence met). A run with any unreported merge returns

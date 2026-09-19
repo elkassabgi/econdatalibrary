@@ -220,6 +220,25 @@ export default {
           const enc = tail.slice(0, -".metadata.json".length);
           const id = decodeURIComponent(enc);
           if (!id) return json({ error: "bad_request", detail: "empty series id" }, 400);
+          // THE REDISTRIBUTION GATE BELONGS HERE TOO, and did not exist until 2026-09-17.
+          //
+          // Everywhere else a gated source is not merely undownloadable, it is not REACHABLE:
+          // `/v1/sources` hides it (sources.ts filters on the same set), `/v1/catalog?source=`
+          // answers 451 rather than an empty result (catalog.ts), and `.csv` below answers 451
+          // before auth. This branch answered 200 — title, geography, dates, the licence block
+          // and the producer citation, unauthenticated, for any row still in D1. Verified live
+          // on a PUBLISHED carve-out rather than a protected id, so the probe names nothing:
+          //
+          //     /v1/series/worldbank:FP.CPI.TOTL.ZG:AGO.metadata.json -> 200
+          //     /v1/series/worldbank:FP.CPI.TOTL.ZG:AGO.csv           -> 451
+          //
+          // It matters more than a listing inconsistency: rows for gated sources still sit in
+          // D1 because the catalogue sync is frozen, so this was the one live path serving
+          // them. Closing it covers the whole class and keeps covering it for any row that
+          // lands in D1 later, which deleting today's rows would not.
+          if (isGated(id)) {
+            return json({ error: "not_redistributable", detail: "This source's licence does not permit third-party redistribution. Please obtain it directly from the original provider." }, 451);
+          }
           const { lang, error } = reqLang(url);
           if (error) return error; // unsupported ?lang= -> honest 400
           return await handleMetadata(id, env, lang);
