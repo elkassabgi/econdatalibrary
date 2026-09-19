@@ -526,6 +526,17 @@ def _time_windows(flow: str, mx) -> list[str]:
     return out
 
 
+def _why(e: Exception, limit: int = 120) -> str:
+    """A one-line reason for a sub-unit note: the exception's type and its message, trimmed.
+
+    Kept short on purpose - these notes are concatenated into one `unit_state.last_error` across
+    every failing sub-unit, so a full traceback per flow would push the useful part out of view.
+    Never returns an empty string: a note that says nothing is what this exists to stop.
+    """
+    msg = " ".join(str(e).split())[:limit]
+    return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+
+
 def _fetch(sess: requests.Session, flow: str, get_cols: list[str], time_value: str,
            key: str | None, pred: str = "us:*"):
     """One flow's date tail -> the raw JSON matrix. Raises TransientError on flaky failures,
@@ -668,12 +679,17 @@ def update(unit, since) -> Result:
             for pred in _predicates_for(flow, levels):
                 try:
                     part = _fetch(sess, flow, get_cols, tv, key, pred)
-                except TransientError:
-                    tally.transient_unit(f"{flow} time={tv} for={pred}")
+                except TransientError as e:
+                    # CARRY THE REASON. Until 2026-09-17 both branches discarded the exception, so
+                    # the run note read `intltrade/imports/sitc time=2026-03 for=None` and nothing
+                    # else. Eight sub-units failed that way for three days and the only way to learn
+                    # why was to replay the request by hand - a timeout, a 429 and an upstream error
+                    # page are three different problems wearing the same message.
+                    tally.transient_unit(f"{flow} time={tv} for={pred} - {_why(e)}")
                     failed = True
                     break
-                except DefinitiveError:
-                    tally.structural_unit(f"{flow} time={tv} for={pred}")
+                except DefinitiveError as e:
+                    tally.structural_unit(f"{flow} time={tv} for={pred} - {_why(e)}")
                     failed = True
                     break
                 time.sleep(RATE)
