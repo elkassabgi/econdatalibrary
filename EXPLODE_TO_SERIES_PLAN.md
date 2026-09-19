@@ -16,11 +16,18 @@ demand. That's both honest and architecturally sound.
 
 ## Phased plan
 
-### Phase 0 — Truthful headline number ✅ SHIPPED 2026-07-02
-Census measured **7,730,440,157 individual series / 79,782,631,887 observations**
+### Phase 0 — Truthful headline number ⚠️ SUPERSEDED (shipped 2026-07-02, figure WITHDRAWN)
+The July census reported **7,730,440,157 series / 79,782,631,887 observations**
 (`_series_census_hll.py` → `_series_census_hll.json`; eurostat reconciled: store has
-15,390 datasets vs 7,637 cataloged). Live on worker `/v1/stats`; site hero + gen_site.py
-updated ("7.7B+ / 79.8B / 309 sources" + methodology line).
+15,390 datasets vs 7,637 cataloged). **That figure is withdrawn — do not requote it.**
+
+Measured at the live endpoint on 2026-09-16
+(`curl https://econdl-api.elkassabgi.workers.dev/v1/stats`), `/v1/stats` serves
+**3,190,863,550 series / 24,054,980,219 observations**, `as_of` 2026-08-23, carrying
+`recalculating: true` and a note that the totals may change. The site hero renders whatever
+this endpoint returns, so it currently shows those numbers and **321 sources** — not the
+"7.7B+ / 79.8B / 309 sources" this line claimed. A revised published figure is reserved to
+Ahmed; `tools/series_census.py --publish` has a ±20% gate needing `--force-publish`.
 - We already store `n_series` per grouped dataset (verified exact: `aact_ali01` → 111 = 111),
   and the running census counts distinct `series_key` for the rest. Sum = the real total.
 - Surface it on the site: "**N individual series across M sources**" with a one-line
