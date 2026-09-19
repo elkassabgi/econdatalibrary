@@ -87,9 +87,28 @@ def test_an_unparseable_denylist_is_REFUSED(tmp_path):
 
 
 @needs_state
-def test_it_runs_and_subtracts_the_gate_from_served():
-    """End to end against the real repo: SERVED must be strictly smaller than SUPPORTED_SOURCES,
-    and the printed arithmetic must hold. If the gate were dropped the two would be equal."""
+def test_it_runs_and_the_gate_is_still_applied_to_served():
+    """End to end against the real repo: the gate must still stand between SUPPORTED_SOURCES and
+    SERVED, and the printed arithmetic must hold.
+
+    THE ASSERTION CHANGED 2026-09-17, BECAUSE ITS PREMISE DID (and it had been failing here since
+    2026-09-16 without anyone seeing it). This used to read `served < supported`, on the reasoning
+    the docstring at the top of this file still explains: a gated id was IN the allowlist and
+    answered 451, so subtracting the gate had to make the number smaller. The owner-ordered removal
+    took those ids out of `SUPPORTED_SOURCES` altogether, so the subtraction now removes nothing
+    and the two counts are equal. `served < supported` therefore asserts the OLD arrangement, and
+    on this machine it failed.
+
+    What must still be true is the property, not the inequality: no gated id may sit in the
+    allowlist, and `served` may never EXCEED `supported` (which would mean the gate was skipped).
+    Stated that way the guard survives either arrangement — if a gated id is ever re-added to the
+    allowlist the inequality returns on its own, and the membership check fails immediately either
+    way.
+
+    Note this test is `@needs_state`, so it SKIPS on a CI runner and only ever runs here. That is
+    why the stale assertion sat red for a day with the workflow green: the copy that can see real
+    numbers is the copy nobody watches.
+    """
     import subprocess
 
     repo = os.path.dirname(_HERE)
@@ -106,7 +125,26 @@ def test_it_runs_and_subtracts_the_gate_from_served():
 
     supported = num("SUPPORTED_SOURCES")
     served = num("SERVED = supported minus gated")
-    assert served < supported, (served, supported)
+    assert served <= supported, (
+        f"SERVED ({served}) exceeds SUPPORTED_SOURCES ({supported}) — the gate cannot ADD "
+        f"sources, so the arithmetic in the tool is wrong")
+
+    # The property the inequality used to stand in for. Read from the TOOL's own output rather
+    # than re-parsed here: the tool already computes this intersection, its denylist parser
+    # fails closed on an unparseable or implausibly short list, and this file's own docstring
+    # records what a second hand-rolled regex cost last time ("it reported `denylisted: 0`
+    # because a regex silently matched nothing, and no warning fired"). R249: the run and the
+    # test call the same code.
+    import re
+    m = re.search(r"\((\d+) of them in SUPPORTED_SOURCES\)", out)
+    assert m, ("the tool no longer prints the gated/SUPPORTED_SOURCES intersection, so this "
+               "property cannot be checked — treat that as a failure, not a pass:\n" + out)
+    assert supported > 0, f"SUPPORTED_SOURCES parsed as {supported}; the check would be vacuous"
+    assert int(m.group(1)) == 0, (
+        "a gated id is present in SUPPORTED_SOURCES. That is the arrangement the removal undid "
+        "and it must not come back by accident. The ids are deliberately not reproduced here; "
+        "run tools/audit_served_vs_updating.py to see the tool's own output")
+
     assert "NOT A VERDICT" in out, out
     assert "LOCAL route never" in out, out       # the local-route caveat must be printed
 
