@@ -147,7 +147,11 @@ def test_a_split_slice_with_no_rows_is_reported_not_swallowed():
 def test_the_split_list_is_declared_not_inferred():
     """A fallback that split whenever a request raised was reviewed and rejected: the exception
     carries no status and no timing, so a network blip would fan out into seven requests."""
-    assert cs._SPLIT_DIM == {"intltrade/exports/naics": "COMM_LVL"}, cs._SPLIT_DIM
+    assert cs._SPLIT_DIM == {"intltrade/exports/naics": "COMM_LVL",
+                             "intltrade/imports/statehs": "STATE"}, cs._SPLIT_DIM
+    # Pinned exactly, so ADDING a flow is a deliberate act that has to update this test - a split
+    # multiplies request count and each entry was earned by measuring that its parts reproduce the
+    # stored month (naics 73,628 = 73,628 on 7 slices; statehs 4,935 = 4,935 on all 53).
 
 
 def test_a_single_valued_column_outside_the_key_is_pinned(tmp_path):

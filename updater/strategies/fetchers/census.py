@@ -401,14 +401,22 @@ def _dims_from_store(path: str) -> tuple[list[str], list[str], list, dict]:
 # and no timing, so a network blip would fan out into seven requests, and at 3 attempts x ~150 s a
 # failing value costs 457 s before the next one is even tried.
 #
-# intltrade/exports/naics is the one flow that needs it and can be shown to work. Even with its
-# pins it returns HTTP 500 at ~151 s, but split on COMM_LVL every value succeeds and the parts
-# reproduce the stored month EXACTLY (2026-03, measured 2026-09-21):
-#     '-' 137, MAN 134, NA2 1,016, NA3 3,656, NA4 11,612, NA5 21,029, NA6 36,044
-#     summed 73,628 against 73,628 stored, 0 failures, ~537 s for the month.
-# Row counts, not status codes: the one split accepted on a 200 alone turned out to be 109x the
-# stored grain (R1066).
-_SPLIT_DIM = {"intltrade/exports/naics": "COMM_LVL"}
+# Two flows need it, and each was shown to work before being added. Row counts, not status codes:
+# the one split accepted on a 200 alone turned out to be 109x the stored grain (R1066).
+#
+#   exports/naics, split on COMM_LVL. With pins alone it returns HTTP 500 at ~151 s; split, every
+#   value succeeds and the parts reproduce the stored month EXACTLY (2026-03):
+#       '-' 137, MAN 134, NA2 1,016, NA3 3,656, NA4 11,612, NA5 21,029, NA6 36,044
+#       summed 73,628 against 73,628 stored, 0 failures, ~537 s for the month.
+#
+#   imports/statehs, split on STATE. Also 500 with pins alone. All 53 stored states fetched:
+#       summed 4,935 against 4,935 stored, 0 failures, 0 per-state mismatches, 2.0 min
+#       for the month at 2.3 s a slice - 53 requests is affordable precisely because each
+#       one is ~93 rows.
+# Cost is the reason this is a list and not a rule: a split multiplies request count, so it is
+# earned per flow by measurement, not applied wherever a dimension happens to be available.
+_SPLIT_DIM = {"intltrade/exports/naics": "COMM_LVL",
+              "intltrade/imports/statehs": "STATE"}
 
 
 def _split_requests(flow: str, path: str, dims: list, pins: dict) -> list:
