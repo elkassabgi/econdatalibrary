@@ -89,6 +89,44 @@ def test_no_single_valued_dimension_yields_no_pins(monkeypatch):
     assert pins == {}
 
 
+def test_every_return_path_yields_four_values(monkeypatch):
+    """An empty store must not return a differently shaped tuple. The caller unpacks four, so a
+    2-tuple here is a ValueError that kills the source - and it sat behind a short-circuit, which
+    is exactly how a latent crash survives review."""
+    monkeypatch.setattr(cs, "blob", _FakeBlob([], ["series_key", "obs_date"]))
+    got = cs._dims_from_store("empty.parquet")
+    assert len(got) == 4, got
+    dims, cols, shapes, pins = got
+    assert dims == [] and shapes == [] and pins == {}
+
+
+def test_a_single_valued_column_outside_the_key_is_pinned(tmp_path):
+    """The case that mattered most. exports/hs and imports/hs each store exactly ONE CTY_CODE, but
+    CTY_CODE is NOT in their series_key - so a key-only derivation could not see it and the request
+    still asked for every country. Those rows come back at a finer grain, and because the key omits
+    CTY_CODE a per-country row rebuilds the SAME key as the world total and ADDS under a published
+    id. Pinning it took both flows from HTTP 500 to exactly the stored row count."""
+    import pyarrow.parquet as pq_
+
+    f = tmp_path / "flow.parquet"
+    pq_.write_table(pa.table({
+        "series_key": ["flow|E_COMMODITY=01|COMM_LVL=HS2", "flow|E_COMMODITY=02|COMM_LVL=HS2"],
+        "CTY_CODE": ["-", "-"],          # single-valued, NOT in the key
+        "DISTRICT": ["-", "-"],          # likewise
+        "GEN_VAL_MO": ["1", "2"],        # varies, must not be pinned
+        "LAST_UPDATE": ["0", "0"],       # single-valued but a revision marker
+        "CTY_NAME": ["TOTAL", "TOTAL"],  # single-valued but a LABEL, not a selector
+    }), f)
+    got = cs._single_valued_columns(str(f), ["CTY_CODE", "DISTRICT", "GEN_VAL_MO",
+                                             "LAST_UPDATE", "CTY_NAME"])
+    assert got == {"CTY_CODE": "-", "DISTRICT": "-"}, got
+
+
+def test_an_unreadable_file_pins_nothing_rather_than_guessing(tmp_path):
+    """Fail safe: a column that cannot be PROVEN single-valued is simply not pinned."""
+    assert cs._single_valued_columns(str(tmp_path / "nope.parquet"), ["CTY_CODE"]) == {}
+
+
 def test_the_pins_reach_the_request(monkeypatch):
     """The wiring, not just the derivation: a pin that never reaches params changes nothing."""
     seen = {}

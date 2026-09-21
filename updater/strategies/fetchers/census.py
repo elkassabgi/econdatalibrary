@@ -331,7 +331,10 @@ def _dims_from_store(path: str) -> tuple[list[str], list[str], list, dict]:
     cols = [c for c in schema.names if c not in _DERIVED]
     tbl = blob.read_table(path, columns=["series_key"])
     if tbl.num_rows == 0:
-        return [], cols
+        # FOUR values on EVERY path. This returned a 2-tuple while the caller unpacked four,
+        # which is a ValueError that kills the whole source - unreachable today only because
+        # `mx is None` short-circuits before it, so it would have waited for an unrelated edit.
+        return [], cols, [], {}
 
     # THE UNION ACROSS EVERY KEY SHAPE, NOT ONE SAMPLE.
     #
@@ -379,7 +382,57 @@ def _dims_from_store(path: str) -> tuple[list[str], list[str], list, dict]:
     # count). Present-in-every-key is required so a heterogeneous shape cannot be narrowed away.
     pins = {n: first[n] for n in dims
             if single.get(n) and present.get(n) == n_keys and n.upper() not in _NEVER_PIN}
+    # AND THE SINGLE-VALUED COLUMNS THAT ARE NOT IN THE KEY. This is where the worst case lives.
+    # exports/hs, imports/hs and imports/statehs each store exactly ONE CTY_CODE ('-', the
+    # all-countries total the ingester deliberately requests) - but CTY_CODE is not part of their
+    # series_key, so a key-only derivation cannot see it and the request still asks for every
+    # country. Those rows come back at a FINER grain than we store, and because the key omits
+    # CTY_CODE a per-country row rebuilds the SAME series_key as the world total: it passes the
+    # known-series filter and ADDS, because the dedup keys do include CTY_CODE. That is silent
+    # double counting under a published id, which is worse than the 500 it replaces.
+    pins.update(_single_valued_columns(path, [c for c in cols if c not in pins]))
     return dims, cols, list(shapes.items()), pins
+
+
+def _single_valued_columns(path: str, candidates: list) -> dict:
+    """{column: value} for columns holding exactly ONE value in the whole file.
+
+    Read from parquet ROW-GROUP STATISTICS (min == max in every group, and the same value in all
+    of them), so this costs metadata rather than a scan - the alternative, reading twenty string
+    columns of an 8.7M-row file, is not something a fetcher should do. Returns {} when the file is
+    not reachable as a local parquet or any statistic is missing: an unprovable column is simply
+    not pinned, which is the safe direction (R900 - it never guesses single-valued).
+    """
+    try:
+        import pyarrow.parquet as _pq
+        if not os.path.isfile(path):
+            return {}
+        md = _pq.ParquetFile(path).metadata
+    except Exception:
+        return {}
+    names = {n: i for i, n in enumerate(md.schema.names)}
+    out = {}
+    for col in candidates:
+        # Pin identifiers, never their labels. CTY_NAME is single-valued precisely BECAUSE
+        # CTY_CODE is, so pinning it adds no narrowing - it only adds a way to fail, since the
+        # label text is the publisher's prose and a filter on it is not something the ingester
+        # ever relies on (jobs/ingest_census.py pins the CODE).
+        if col.upper() in _NEVER_PIN or col.upper().endswith("_NAME") or col not in names:
+            continue
+        j, val, ok = names[col], None, True
+        for g in range(md.num_row_groups):
+            st = md.row_group(g).column(j).statistics
+            if st is None or not st.has_min_max or st.min != st.max:
+                ok = False
+                break
+            if val is None:
+                val = st.min
+            elif st.min != val:
+                ok = False
+                break
+        if ok and val is not None:
+            out[col] = val
+    return out
 
 
 def _key_for(J, row, hidx, dims, shapes, path):
