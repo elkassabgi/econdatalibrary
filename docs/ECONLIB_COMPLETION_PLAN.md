@@ -81,7 +81,7 @@ A `series_key` that drops a dimension the publisher varies, so distinct series c
 - R504's open mechanism, R487's 50,000 boundary cause, R506's duplicate origin — listed as NOT ESTABLISHED. Do not re-litigate them; record them as open questions and move on.
 
 ### W6 — Public-facing honesty items (each ends in a decision brief)
-- `/v1/stats` serves the **July census (79.8B obs / 7.73B series)**; the measured store is **33.9B / 3.90B**. The census tool's >20% gate refuses to publish without `--force-publish`. Publishing the honest number is **Ahmed's Phase-4 decision** — prepare the one-page brief (both numbers, why they differ, what the site would show).
+- `/v1/stats` serves **3,190,863,550 series / 24,054,980,219 observations**, `as_of` 2026-08-23, flagged `recalculating: true` (measured at the live endpoint 2026-09-16). It does **not** serve the July census, and the 79.8B / 7.73B figure is **WITHDRAWN** — do not requote it. The site renders these numbers from this endpoint, so whatever it returns is what visitors see. The census tool's ±20% gate refuses to publish without `--force-publish`, and publishing a revised figure remains **Ahmed's decision** — the brief should carry the live number, the new census number, why they differ, and what the site would then show.
 - Homepage claims "Python and R clients available" — **no econ R client exists** (`clients/r` is hf's). Either build one (then verify live) or change the site copy + `.zenodo.json` + `STRATEGY.md`. Copy change is trivial; claiming is not.
 
 ### W7 — Still-running jobs (do not disturb; verify by artefact only)

@@ -624,10 +624,17 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         # same function already carries two scars from.
         if getattr(res, "merged_rows", None) == 0:
             return [], None, [], {}
-        if res.obs and _catalog_series_count(unit.source_id) == 0:
-            # VACUOUS COHERENCE. A source with ZERO catalogued series has no per-series
-            # CSVs, so there is nothing that can go stale and §5.7 is satisfied rather
-            # than violated. gleif is the case: a REFERENCE TABLE (LEI golden copy) with
+        # ASK ABOUT THE STORE THIS RUN WROTE, NOT THE SOURCE ID. Two registry entries have
+        # out_dir != source_id and both are the sec_edgar collision (R275), so keying on the id
+        # answered the wrong product in both directions: `sec_edgar` booked a debt every
+        # merging tick against a corpus it does not write, and `sec_edgar_xbrl` — which DOES
+        # write the 17,467-series served corpus — was exempt from §5.7 entirely. Measured
+        # across all 278 entries, this substitution changes exactly those two units and leaves
+        # every other source, gleif included, byte-identical. See `_store_dir_name`.
+        if res.obs and _catalog_series_count(_store_dir_name(unit) or unit.source_id) == 0:
+            # VACUOUS COHERENCE. A source whose store backs ZERO catalogued series has no
+            # per-series CSVs, so there is nothing that can go stale and §5.7 is satisfied
+            # rather than violated. gleif is the case: a REFERENCE TABLE (LEI golden copy) with
             # no series_key/obs_date at all, whose module docstring says plainly that
             # cursors "would be meaningless, not missing" and asks the sweep not to
             # "fix" it. Without this it merged 3,391,691 obs and demoted to `partial`
@@ -1136,6 +1143,61 @@ def _norm_id(s: str) -> str:
     module anything about FX pairs.
     """
     return "".join(ch for ch in s if ch.isalnum()).lower()
+
+
+def _store_dir_name(unit) -> "str | None":
+    """The store DIRECTORY this unit writes, when it differs from the source id — else None.
+
+    WHY THIS EXISTS. `_catalog_series_count` is asked whether anything catalogued could go
+    stale. Keyed on the SOURCE ID that question is wrong for both halves of the sec_edgar
+    collision (R275), and wrong in OPPOSITE directions:
+
+        source_id=sec_edgar       out_dir=edgar_13f    catalogue(sec_edgar)=yes, (edgar_13f)=no
+        source_id=sec_edgar_xbrl  out_dir=sec_edgar    catalogue(sec_edgar_xbrl)=no, (sec_edgar)=yes
+
+    So `sec_edgar` (the relational 13F/insider product, nothing catalogued) booked a
+    `full_rederive_owed` debt on every merging tick against the OTHER product's 17,467-series
+    corpus, while `sec_edgar_xbrl` — whose store DOES back those 17,467 served CSVs — was
+    silently EXEMPT from §5.7 altogether. Probing the store directory instead answers both.
+
+    MEASURED, not assumed: of the 278 registry entries exactly these two have
+    `out_dir != source_id`, so this returns None for every other source and the caller's
+    behaviour is byte-identical to what it was.
+
+    THIS IS A HEURISTIC THAT APPROXIMATES THE RESOLVER, NOT A RULE ABOUT THE CATALOGUE. The
+    authority on which store a catalogued series is derived from is the per-source registry in
+    `clients/python/econdl/_resolve.py` (`_RESOLVERS`), whose bodies hard-code their own paths —
+    `_resolve_sec_edgar` names `clean_grouped/sec_edgar` and mentions neither edgar directory.
+    The catalogue does not key on directory names; it is simply true today that the corpus
+    derived from a store is catalogued under that store's name. If that stops holding, fix this
+    against `_RESOLVERS` rather than extending a rule that does not exist (R275's closing
+    warning: a registry comment saying a source was "split out" is a re-pointing — go check what
+    each name now denotes).
+
+    TWO LIMITS, both deliberate and both worth knowing before trusting it:
+      * It covers only the DECLARED directory. `registry.py:123-125` puts one path in
+        `out_paths`, but `fetchers/sec_edgar.py:339,476` writes edgar_13f AND edgar_insider from
+        its own PRODUCTS table, and the registry declares only the first. Both probe 0 today so
+        the answer is unaffected, but a fetcher that writes an undeclared store is not fully
+        measured here.
+      * A file-grain `out_paths` (`registry.flow_unit`, registry.py:128-141, sets
+        `<dir>/<file>.parquet`) would have a basename that can never equal a source id and would
+        therefore always probe 0 — a blanket exemption. No entry reaches this path today; the
+        extension check below refuses it anyway rather than leaving the hole for later.
+
+    `getattr`, not a bare attribute access: this module's derive path is driven by duck-typed
+    stand-ins in the tests, and an AttributeError here lands in the orchestrator's outer
+    `except`, which books transient_fail AFTER a successful publish with every state write
+    skipped — the disease `_derive_changed_csvs` already carries two scars from.
+    """
+    paths = getattr(unit, "out_paths", None) or [None]
+    p = paths[0]
+    if not p:
+        return None
+    name = os.path.basename(os.path.normpath(p))
+    if not name or os.path.splitext(name)[1]:
+        return None                      # a file, not a store directory — see the second limit
+    return name if name != getattr(unit, "source_id", None) else None
 
 
 def _catalog_series_count(source_id: str) -> int:
