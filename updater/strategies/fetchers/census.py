@@ -314,7 +314,13 @@ def _flows(out_dir: str) -> list[str]:
     return sorted(out)
 
 
-def _dims_from_store(path: str) -> tuple[list[str], list[str]]:
+# NEVER PINNED, however single-valued the store looks. LAST_UPDATE is a revision marker, not a
+# grain selector: pinning it to the value we happen to hold would silently exclude exactly the rows
+# a refresh exists to collect - the revised ones.
+_NEVER_PIN = {"LAST_UPDATE", "TIME", "YEAR", "MONTH", "QUARTER"}
+
+
+def _dims_from_store(path: str) -> tuple[list[str], list[str], list, dict]:
     """(dim_cols, data_cols) recovered from the stored data itself.
 
     dim_cols come from parsing one existing series_key — see the module docstring for why
@@ -342,16 +348,38 @@ def _dims_from_store(path: str) -> tuple[list[str], list[str]]:
     dims: list[str] = []
     seen: set = set()
     shapes: dict = {}
+    first: dict = {}          # dim -> the first value seen
+    single: dict = {}         # dim -> has it held exactly ONE value so far
+    present: dict = {}        # dim -> in how many keys it appears
+    n_keys = 0
     for k in tbl.column("series_key").to_pylist():
         if not k:
             continue
+        n_keys += 1
         order = [seg.split("=", 1)[0] for seg in k.split("|")[1:] if "=" in seg]
         shapes.setdefault(frozenset(order), order)           # one ORDER per dimension SET
+        for seg in k.split("|")[1:]:
+            if "=" not in seg:
+                continue
+            name, val = seg.split("=", 1)
+            present[name] = present.get(name, 0) + 1
+            if name not in first:
+                first[name], single[name] = val, True
+            elif single[name] and val != first[name]:
+                single[name] = False
         for name in order:
             if name not in seen:
                 seen.add(name)
                 dims.append(name)
-    return dims, cols, list(shapes.items())
+    # THE GRAIN WE STORE, expressed as request pins. A dimension the store holds at exactly ONE
+    # value, in EVERY key, is not a dimension we vary - it is a slice we took. Asking the API for
+    # it unpinned makes it return every value of that dimension, which is how this fetcher came to
+    # request every country while storing only the country aggregate: ~200x the rows, and an
+    # HTTP 500 rather than data (measured 2026-09-20; pinning returned exactly the stored row
+    # count). Present-in-every-key is required so a heterogeneous shape cannot be narrowed away.
+    pins = {n: first[n] for n in dims
+            if single.get(n) and present.get(n) == n_keys and n.upper() not in _NEVER_PIN}
+    return dims, cols, list(shapes.items()), pins
 
 
 def _key_for(J, row, hidx, dims, shapes, path):
@@ -538,10 +566,16 @@ def _why(e: Exception, limit: int = 120) -> str:
 
 
 def _fetch(sess: requests.Session, flow: str, get_cols: list[str], time_value: str,
-           key: str | None, pred: str = "us:*"):
+           key: str | None, pred: str = "us:*", pins: dict | None = None):
     """One flow's date tail -> the raw JSON matrix. Raises TransientError on flaky failures,
-    DefinitiveError on a hard 4xx that is not a rate limit (a broken request, not a bad day)."""
+    DefinitiveError on a hard 4xx that is not a rate limit (a broken request, not a bad day).
+
+    `pins` narrows the request to the grain the store actually holds (see _dims_from_store). They
+    are sent as ordinary query parameters, which the API honours: an unknown value answers 204 with
+    an empty body rather than ignoring the pin, measured 2026-09-20 on two different dimensions."""
     params = {"get": ",".join(get_cols), "time": time_value}
+    for pin_name, pin_value in (pins or {}).items():
+        params[pin_name] = pin_value
     # pred None means "send no `for` at all" — the 16 intltrade flows require its ABSENCE, and
     # a `for=` they do not recognise is a 400, not a harmless extra.
     if pred is not None:
@@ -653,11 +687,13 @@ def update(unit, since) -> Result:
         if mx is None:
             tally.empty_unit(flow)
             continue
-        dim_cols, data_cols, shapes = _dims_from_store(path)
+        dim_cols, data_cols, shapes, pins = _dims_from_store(path)
         if not dim_cols:
             tally.structural_unit(f"{flow}: no dimensions recoverable from stored series_key")
             continue
         get_cols = [c for c in data_cols if c.lower() not in _IMPLICIT]
+        if pins:
+            print(f"[census] {flow}: pinning {pins} - the grain the store holds", flush=True)
         gcol = _geo_col(data_cols)
         levels = _store_geo_levels(path, gcol) if gcol else set()
 
@@ -678,7 +714,7 @@ def update(unit, since) -> Result:
         for tv in _time_windows(flow, mx):
             for pred in _predicates_for(flow, levels):
                 try:
-                    part = _fetch(sess, flow, get_cols, tv, key, pred)
+                    part = _fetch(sess, flow, get_cols, tv, key, pred, pins)
                 except TransientError as e:
                     # CARRY THE REASON. Until 2026-09-17 both branches discarded the exception, so
                     # the run note read `intltrade/imports/sitc time=2026-03 for=None` and nothing
