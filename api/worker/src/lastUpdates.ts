@@ -14,13 +14,33 @@
 
 import type { Env, LastUpdateRow } from "./types";
 import { LAST_UPDATES } from "./sql";
+import { NON_REDISTRIBUTABLE } from "./denylist";
 import { json, nextUpdateExpected } from "./util";
 
 export async function handleLastUpdates(env: Env): Promise<Response> {
   const res = await env.CATALOG.prepare(LAST_UPDATES).all<LastUpdateRow>();
   const rows = res.results ?? [];
 
-  const datasets = rows.map((u) => ({
+  // THE REDISTRIBUTION GATE APPLIES HERE TOO, and did not until 2026-09-17.
+  //
+  // `/v1/sources` filters its rows through this same set (sources.ts:56) precisely so a gated
+  // source is not merely undownloadable but unlisted. This route ran the canonical SQL, which
+  // selects EVERY unit_state row with no exclusion, and published the result — so a gated
+  // source was named here, with its cadence, status and freshness, while being hidden two
+  // routes away.
+  //
+  // It is not a stale-rows artefact, which is the tempting explanation: the CATALOGUE sync is
+  // frozen, but the STATE sync is not (core/sync_state_d1.py upserts all rows and never
+  // deletes), so these rows are refreshed and would come back on their own even if D1 were
+  // cleaned. Filtering at the read is what actually closes it.
+  //
+  // Measured live before the fix, reporting a boolean rather than the ids — disclosing the set
+  // is the leak: GET /v1/last-updates returned HTTP 200, 74,004 bytes, 283 source ids, and the
+  // intersection with this set was non-empty. Controls held (a known-served source present, an
+  // invented id absent).
+  const servable = rows.filter((u) => !NON_REDISTRIBUTABLE.has(u.source_id));
+
+  const datasets = servable.map((u) => ({
     source: u.source_id,
     unit: u.unit_id,
     status: u.status, // ok | no_change | partial | transient_fail (whatever state holds)

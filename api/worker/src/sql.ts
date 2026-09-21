@@ -256,6 +256,34 @@ FROM series ${EXCL_BARE_WHERE} ORDER BY series_id LIMIT ? OFFSET ?`;
 export const BROWSE_ALL_COUNT = `SELECT COUNT(*) AS n FROM series ${EXCL_BARE_WHERE}`;
 
 /** Every series id of one source (for /v1/bundle?source=). Mirrors _bundle.bundle. */
+/** Every series id of a source, MINUS its series-level carve-outs.
+ *
+ * This query is what `/v1/bundle?source=` enumerates, and it was the ONE member of this family
+ * that did not apply `carveoutExcl` — `browseSourceSql`, `browseSourceVisibleCountSql` and both
+ * scoped search forms all do. The omission made the bundle an enumeration oracle: the per-id
+ * loop in bundle.ts correctly refuses a carved id a CSV path, but the id had already been read
+ * out of this result set, so it still reached the manifest — echoed in
+ * `econdl:series_requested` and listed in `econdl:unresolved` with a reason naming it as gated.
+ *
+ * Verified live and anonymously on 2026-09-17 against a PUBLISHED carve-out, so the probe named
+ * nothing protected: `/v1/bundle?ids=worldbank:FP.CPI.TOTL.ZG:AGO,...` returned that id in both
+ * fields. bundle.ts:98-101 states the opposite intent in its own comment — "a series from a
+ * denylisted source must never appear in a bundle manifest, even as a stable URL ... the
+ * manifest itself must not advertise it" — so the code and its stated contract disagreed, and
+ * the contract is the right one.
+ *
+ * A function, not a const, for the same reason `browseSourceSql` is: the exclusion is built from
+ * SERIES_CARVEOUTS for THIS source. Sources without carve-outs get a byte-identical query.
+ *
+ * NOTE this narrows only the ENUMERATION. A client that names a carved id explicitly still gets
+ * it back in `unresolved` with an honest reason, which matches the 451 the direct route returns
+ * and discloses nothing the caller did not already hold. */
+export function seriesIdsForSourceSql(source: string): string {
+  return `
+SELECT series_id FROM series WHERE source_id = ?${carveoutExcl(source)} ORDER BY series_id`;
+}
+
+/** Kept for callers/tests that want the un-scoped shape. Prefer seriesIdsForSourceSql. */
 export const SERIES_IDS_FOR_SOURCE = `
 SELECT series_id FROM series WHERE source_id = ? ORDER BY series_id`;
 

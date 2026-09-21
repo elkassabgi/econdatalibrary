@@ -839,10 +839,43 @@ def main() -> None:
     if a.dry_run:
         ok = miss = 0
         diffs = 0
+        big = 0
         for sid, _src in rows:
             try:
                 body = _series_csv_bytes(sid)
                 ok += 1
+            except TooLarge as e:
+                # NOT "unresolvable" - that word means the STORE HAS NO DATA for this id, and
+                # this id has 136,120,337 rows. The dry run used to call `_series_csv_bytes`
+                # directly and file every over-cap table under a cause nobody had checked
+                # (R219), while `--allow-stream` sat inert because all of its handling lives in
+                # `_derive_and_put`, which this branch never reaches. So the one mode you would
+                # use to PLAN a streaming campaign could neither exercise nor honestly describe
+                # it.
+                if not _ALLOW_STREAM:
+                    big += 1
+                    print(f"  TOO LARGE for the in-memory path {sid}: {str(e)[:70]} "
+                          f"(pass --allow-stream to derive it by streaming)")
+                    continue
+                import tempfile, time as _t                           # noqa: PLC0415
+                fd, tmp = tempfile.mkstemp(suffix=".csv.gz", prefix="derivedry_")
+                os.close(fd)
+                try:
+                    t0 = _t.time()
+                    _series_csv_to_file_sorted(sid, tmp)
+                    n_bytes = os.path.getsize(tmp)
+                    ok += 1
+                    print(f"  STREAMED {sid}: {n_bytes:,} B gzipped in {_t.time()-t0:,.0f}s "
+                          f"(dry run - written to a temp file and deleted, nothing uploaded)")
+                except Exception as se:                               # noqa: BLE001
+                    miss += 1
+                    print(f"  SKIP(stream failed) {sid}: {type(se).__name__} {str(se)[:70]}")
+                finally:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                continue
             except Exception as e:  # store-coverage gaps error loudly, never silently skipped
                 miss += 1
                 print(f"  SKIP(unresolvable) {sid}: {str(e)[:80]}")
@@ -857,6 +890,7 @@ def main() -> None:
                 except Exception as e:
                     print(f"  {sid:42} shim fetch failed: {str(e)[:60]}")
         print(f"DRY RUN: derived {ok}, unresolvable {miss}"
+              + (f", too-large-for-memory {big}" if big else "")
               + (f", shim byte-diffs {diffs}" if a.verify_shim else "")
               + " (no R2 contact)")
         return
