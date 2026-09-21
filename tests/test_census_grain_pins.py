@@ -41,7 +41,12 @@ class _FakeBlob:
         return pa.schema([(c, pa.string()) for c in self._cols])
 
     def read_table(self, path, columns=None):
+        if columns and columns != ["series_key"]:
+            # honour the requested column so the split derivation can be driven too
+            return pa.table({c: pa.array(self._cols_data.get(c, [])) for c in columns})
         return pa.table({"series_key": pa.array(self._keys)})
+
+    _cols_data: dict = {}
 
 
 def _dims(monkeypatch, keys, cols=("series_key", "obs_date", "AMOUNT")):
@@ -98,6 +103,40 @@ def test_every_return_path_yields_four_values(monkeypatch):
     assert len(got) == 4, got
     dims, cols, shapes, pins = got
     assert dims == [] and shapes == [] and pins == {}
+
+
+def test_a_flow_with_no_declared_split_sends_one_request(monkeypatch):
+    monkeypatch.setattr(cs, "blob", _FakeBlob(["flow|A=1"], ["series_key"]))
+    got = cs._split_requests("intltrade/imports/sitc", "p.parquet", ["A"], {"CTY_CODE": "-"})
+    assert got == [{"CTY_CODE": "-"}], got
+
+
+def test_a_declared_flow_splits_into_one_request_per_stored_value(monkeypatch):
+    """Each part carries the base pins PLUS its own value of the split dimension."""
+    fb = _FakeBlob(["flow|COMM_LVL=NA6"], ["series_key", "COMM_LVL"])
+    fb._cols_data = {"COMM_LVL": ["NA6", "NA5", "NA6", "-"]}
+    monkeypatch.setattr(cs, "blob", fb)
+    got = cs._split_requests("intltrade/exports/naics", "p.parquet", ["COMM_LVL"],
+                             {"SUMMARY_LVL": "DET", "CTY_CODE": "-"})
+    assert len(got) == 3, got
+    assert all(r["SUMMARY_LVL"] == "DET" and r["CTY_CODE"] == "-" for r in got)
+    assert sorted(r["COMM_LVL"] for r in got) == ["-", "NA5", "NA6"]
+
+
+def test_it_refuses_to_split_on_a_dimension_absent_from_the_key(monkeypatch):
+    """Splitting on a dimension the key omits would iterate values the key cannot tell apart, so
+    rows for a value we do not store would rebuild an existing key and merge into it."""
+    fb = _FakeBlob(["flow|OTHER=1"], ["series_key", "COMM_LVL"])
+    fb._cols_data = {"COMM_LVL": ["NA6", "NA5"]}
+    monkeypatch.setattr(cs, "blob", fb)
+    got = cs._split_requests("intltrade/exports/naics", "p.parquet", ["OTHER"], {"A": "1"})
+    assert got == [{"A": "1"}], got
+
+
+def test_the_split_list_is_declared_not_inferred():
+    """A fallback that split whenever a request raised was reviewed and rejected: the exception
+    carries no status and no timing, so a network blip would fan out into seven requests."""
+    assert cs._SPLIT_DIM == {"intltrade/exports/naics": "COMM_LVL"}, cs._SPLIT_DIM
 
 
 def test_a_single_valued_column_outside_the_key_is_pinned(tmp_path):

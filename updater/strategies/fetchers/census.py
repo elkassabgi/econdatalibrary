@@ -394,6 +394,41 @@ def _dims_from_store(path: str) -> tuple[list[str], list[str], list, dict]:
     return dims, cols, list(shapes.items()), pins
 
 
+# FLOWS THAT NEED THEIR REQUEST SPLIT, DECLARED - not inferred from a failure.
+#
+# An explicit list rather than another heuristic, following this file's own precedent. A fallback
+# that split whenever a request raised was reviewed and rejected: TransientError carries no status
+# and no timing, so a network blip would fan out into seven requests, and at 3 attempts x ~150 s a
+# failing value costs 457 s before the next one is even tried.
+#
+# intltrade/exports/naics is the one flow that needs it and can be shown to work. Even with its
+# pins it returns HTTP 500 at ~151 s, but split on COMM_LVL every value succeeds and the parts
+# reproduce the stored month EXACTLY (2026-03, measured 2026-09-21):
+#     '-' 137, MAN 134, NA2 1,016, NA3 3,656, NA4 11,612, NA5 21,029, NA6 36,044
+#     summed 73,628 against 73,628 stored, 0 failures, ~537 s for the month.
+# Row counts, not status codes: the one split accepted on a 200 alone turned out to be 109x the
+# stored grain (R1066).
+_SPLIT_DIM = {"intltrade/exports/naics": "COMM_LVL"}
+
+
+def _split_requests(flow: str, path: str, dims: list, pins: dict) -> list:
+    """The pin dicts to request for one (time, pred) slice - normally one, or one per stored value
+    of this flow's declared split dimension.
+
+    The dimension MUST be part of the series_key: splitting on a dimension the key omits would
+    iterate values the key cannot distinguish, and rows for a value we do not store would rebuild
+    an existing key and merge as if they belonged to it.
+    """
+    d = _SPLIT_DIM.get(flow)
+    if not d or d not in dims:
+        return [pins]
+    try:
+        vals = sorted({v for v in blob.read_table(path, columns=[d]).column(d).to_pylist() if v})
+    except Exception:
+        return [pins]                      # cannot enumerate -> one request, as before
+    return [dict(pins, **{d: v}) for v in vals] or [pins]
+
+
 def _single_valued_columns(path: str, candidates: list) -> dict:
     """{column: value} for columns holding exactly ONE value in the whole file.
 
@@ -764,26 +799,49 @@ def update(unit, since) -> Result:
         # loop changes nothing about that invariant.
         parts = []
         failed = False
+        # Computed once per flow: the split set depends on the store, not on the time window.
+        reqs = _split_requests(flow, path, dim_cols, pins)
+        if len(reqs) > 1:
+            print(f"[census] {flow}: {len(reqs)} requests per window, split on "
+                  f"{_SPLIT_DIM.get(flow)} - the whole request 500s, the parts do not", flush=True)
         for tv in _time_windows(flow, mx):
             for pred in _predicates_for(flow, levels):
-                try:
-                    part = _fetch(sess, flow, get_cols, tv, key, pred, pins)
-                except TransientError as e:
-                    # CARRY THE REASON. Until 2026-09-17 both branches discarded the exception, so
-                    # the run note read `intltrade/imports/sitc time=2026-03 for=None` and nothing
-                    # else. Eight sub-units failed that way for three days and the only way to learn
-                    # why was to replay the request by hand - a timeout, a 429 and an upstream error
-                    # page are three different problems wearing the same message.
-                    tally.transient_unit(f"{flow} time={tv} for={pred} - {_why(e)}")
-                    failed = True
+                for req_pins in reqs:
+                    # THE BUDGET IS CHECKED BETWEEN SPLIT VALUES, not only between flows. A split
+                    # turns one request into seven, while the deadline is otherwise consulted two
+                    # loops out - which is how a 20-minute budget was once spent after 35.6 min.
+                    # Stopping mid-split abandons the whole flow rather than merging a fragment:
+                    # a part-month written as if complete is worse than no month at all.
+                    if len(reqs) > 1 and dl.spent():
+                        # A DEFERRAL, NOT A FAILURE. Nothing here failed: the budget ran out and
+                        # rotation takes this flow next tick. transient_unit would inflate
+                        # `attempted` and report a deliberate stop as a failure - the exact defect
+                        # that made ecb read "252/540 sub-unit(s) transient-failed" when 0 of 288
+                        # attempted had failed.
+                        tally.deferred_unit(f"{flow} time={tv}: budget spent mid-split, "
+                                            f"{len(reqs)} part(s) required - nothing merged")
+                        failed = True
+                        break
+                    try:
+                        part = _fetch(sess, flow, get_cols, tv, key, pred, req_pins)
+                    except TransientError as e:
+                        # CARRY THE REASON. Until 2026-09-17 both branches discarded the exception,
+                        # so the run note read `intltrade/imports/sitc time=2026-03 for=None` and
+                        # nothing else. Eight sub-units failed that way for three days and the only
+                        # way to learn why was to replay the request by hand - a timeout, a 429 and
+                        # an upstream error page are three different problems wearing one message.
+                        tally.transient_unit(f"{flow} time={tv} for={pred} - {_why(e)}")
+                        failed = True
+                        break
+                    except DefinitiveError as e:
+                        tally.structural_unit(f"{flow} time={tv} for={pred} - {_why(e)}")
+                        failed = True
+                        break
+                    time.sleep(RATE)
+                    if part and len(part) >= 2:
+                        parts.append(part)
+                if failed:
                     break
-                except DefinitiveError as e:
-                    tally.structural_unit(f"{flow} time={tv} for={pred} - {_why(e)}")
-                    failed = True
-                    break
-                time.sleep(RATE)
-                if part and len(part) >= 2:
-                    parts.append(part)
             if failed or dl.spent():
                 break
         if failed:
