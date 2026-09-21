@@ -799,6 +799,7 @@ def update(unit, since) -> Result:
         # loop changes nothing about that invariant.
         parts = []
         failed = False
+        empty_slices: list = []
         # Computed once per flow: the split set depends on the store, not on the time window.
         reqs = _split_requests(flow, path, dim_cols, pins)
         if len(reqs) > 1:
@@ -840,12 +841,24 @@ def update(unit, since) -> Result:
                     time.sleep(RATE)
                     if part and len(part) >= 2:
                         parts.append(part)
+                    elif len(reqs) > 1:
+                        # A SPLIT SLICE THAT CAME BACK WITH NO ROWS IS SAID OUT LOUD. Unsplit, an
+                        # empty body leaves `parts` empty and the structural guard below fires.
+                        # Split, it is one slice of several: the others merge and the flow reports
+                        # success over a month that is quietly short. It can be legitimate - a
+                        # commodity level with nothing published this month - so it is reported
+                        # rather than failed, but it is never silent.
+                        empty_slices.append(f"{tv}/{_SPLIT_DIM.get(flow)}="
+                                            f"{req_pins.get(_SPLIT_DIM.get(flow))}")
                 if failed:
                     break
             if failed or dl.spent():
                 break
         if failed:
             continue
+        if empty_slices:
+            print(f"[census] {flow}: {len(empty_slices)} split slice(s) returned no rows - "
+                  f"{empty_slices[:6]}", flush=True)
         rows = parts[0] if parts else []
 
         if not parts:

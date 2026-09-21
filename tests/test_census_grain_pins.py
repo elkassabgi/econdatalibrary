@@ -133,6 +133,17 @@ def test_it_refuses_to_split_on_a_dimension_absent_from_the_key(monkeypatch):
     assert got == [{"A": "1"}], got
 
 
+def test_a_split_slice_with_no_rows_is_reported_not_swallowed():
+    """Unsplit, an empty body leaves `parts` empty and the structural guard fires. Split, it is one
+    slice of several: the others merge and the flow reports success over a month that is quietly
+    short. It can be legitimate, so it is reported rather than failed - but never silent."""
+    import inspect
+    code = "\n".join(ln.split("#")[0] for ln in inspect.getsource(cs).splitlines())
+    assert "empty_slices.append(" in code, "an empty split slice must be recorded"
+    assert "empty_slices: list = []" in code, "the per-flow accumulator must be reset per flow"
+    assert "split slice(s) returned no rows" in code, "and it must be printed"
+
+
 def test_the_split_list_is_declared_not_inferred():
     """A fallback that split whenever a request raised was reviewed and rejected: the exception
     carries no status and no timing, so a network blip would fan out into seven requests."""
