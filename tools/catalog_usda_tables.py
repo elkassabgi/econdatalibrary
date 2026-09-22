@@ -35,6 +35,10 @@ import duckdb
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
+import atexit
+import shutil
+
+from core import duck_spill  # noqa: E402  (after the sys.path insert above)
 
 from derive_usda_tables import SOURCE, STORE, table_id         # noqa: E402
 
@@ -62,8 +66,13 @@ def main() -> int:
                    for f in glob.glob(os.path.join(STORE, "**", "*.parquet"), recursive=True))
     if not files:
         raise SystemExit(f"no parquet under {STORE} — refusing to catalogue an empty store")
-    spill = os.path.join(ROOT, "logs", "_duckspill")
+    # ONE spill directory PER PROCESS (R612): DuckDB names spill files by block size
+    # with no instance id, so two runs sharing a directory open each other's files and
+    # exit 139. atexit, not try/finally, so an early return or a crash still cleans up -
+    # 32 orphaned spill files, 73.37 GB, were measured in logs/ on 2026-09-22.
+    spill = duck_spill.spill_path("catalog_usda")
     os.makedirs(spill, exist_ok=True)
+    atexit.register(shutil.rmtree, spill, True)
     q = duckdb.connect()
     q.execute(f"SET memory_limit='{a.memory_limit}'")
     q.execute(f"SET temp_directory='{spill}'")

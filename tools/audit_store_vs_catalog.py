@@ -87,6 +87,16 @@ if ROOT not in sys.path:
 # agreed with core/broaden_catalog.py "only by both being edited"; a third copy in
 # core/measure_uncataloged.py was then found short by `idbank`. Now there is one.
 from core.broaden_catalog import KEY_COL_CANDIDATES              # noqa: E402
+import atexit                                                    # noqa: E402
+import shutil                                                    # noqa: E402
+from core import duck_spill                                      # noqa: E402
+
+# ONE spill directory for this PROCESS (R612). Built once, not per call: temp_directory is
+# set inside a function that runs once per source, so a fresh path per call would leave one
+# directory behind for every source audited. atexit removes it on any exit path.
+_SPILL = duck_spill.spill_path("audit_store_vs_catalog")
+os.makedirs(_SPILL, exist_ok=True)
+atexit.register(shutil.rmtree, _SPILL, True)
 
 
 def dir_gb(files) -> float:
@@ -566,7 +576,7 @@ def main() -> int:
         q = duckdb.connect()
         try:
             q.execute(f"SET memory_limit='{a.memory_limit}'")
-            q.execute(f"SET temp_directory='{os.path.join(ROOT, 'logs', '_duckspill')}'")
+            q.execute(f"SET temp_directory='{_SPILL}'")
             lst = "[" + ",".join(f"'{f}'".replace("\\", "/") for f in files) + "]"
             n = q.execute(f'select count(distinct "{key}") from '
                           f"read_parquet({lst}, union_by_name=true)").fetchone()[0]
