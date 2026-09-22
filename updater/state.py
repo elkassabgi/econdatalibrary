@@ -319,6 +319,18 @@ class StateStore:
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))]
 
+    def last_kill_utc(self) -> dict:
+        """{(source_id, unit_id): ts_utc of its newest `killed_external` run} - for ORDERING only.
+
+        See orchestrate.last_turn_utc: a hard-stopped unit writes no unit_state stamp, so this row is
+        the only record that it had a turn. `runs` is small (1,840 rows on 2026-09-17), so one
+        GROUP BY per pass is cheap. ts_utc values are ISO strings written by now_utc(), so MAX is
+        chronological; the caller still parses before comparing.
+        """
+        return {(sid, uid): ts for sid, uid, ts in self.db.execute(
+            "SELECT source_id, unit_id, MAX(ts_utc) FROM runs "
+            "WHERE status = 'killed_external' GROUP BY source_id, unit_id")}
+
     def run_cost_estimate(self, sample=5) -> dict:
         """{source_id: seconds} — what a run of this source COSTS, for scheduling.
 

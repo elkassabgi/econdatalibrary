@@ -709,6 +709,45 @@ sources:
     - per-series files — one {tableId}.parquet per CBS table under data/clean_full/cbs_nl/ (~2180 files); huge tables flushed
       via {tableId}.part{i}.parquet + {tableId}.ckpt.json then concatenated into the final parquet and parts/ckpt removed.
 - source_id: census
+  # UPSTREAM RETIREMENT, 2026-09-24: `timeseries/govs` ("Public Sector: Public Sector Surveys") is being REMOVED by
+  # the Census Bureau, which calls it the "old, duplicate API dataset"; next week's release completes its split into
+  # seven survey-specific timeseries (publisher email, 2026-09-17; a crosswalk spreadsheet is offered). What that
+  # touches here, measured 2026-09-17: ONE catalogue row, `census:govs`, backed by data/clean_full/census/govs.parquet
+  # (20,680 rows, 185,168 B). Nothing breaks on the 24th - census.py's tail list is FAMILIES = ("eits", "intltrade"),
+  # so no scheduled job fetches it - but `jobs/ingest_census.py --only timeseries/govs` will 404 from that date, and
+  # the served copy is frozen for good. It is already static: the API catalogue gives its last modification as
+  # 2019-09-25, against 2026-01/02 for the five survey-specific datasets we also hold (govsemp 176,862 rows,
+  # govsstatefin 273,258, govsschfin 84,604, govspension 53,037, govsstatetax 16,102).
+  #
+  # ALREADY MISSING, measured against the LIVE catalogue (api.census.gov/data.json, 2026-09-17, 1,807 datasets):
+  # `timeseries/govslocalfin` - "State and Local Government Finances: 2017-2024", modified 2026-02-12 - exists
+  # upstream today and we do NOT hold it; the live family is the old `govs` plus SIX survey-specific sets, and the
+  # seventh arrives with next week's release. So the work is: ingest govslocalfin now (jobs/ingest_census.py --only
+  # timeseries/govslocalfin, which needs CENSUS_API_KEY from the workstation .env), add the seventh when it lands,
+  # then decide whether `census:govs` is retired as a duplicate of them - that last part is a serving decision, so it
+  # is Ahmed's.
+  #
+  # WHY it is missing, found 2026-09-17: not a code gap. Discovery reads the CACHED catalogue at
+  # data/raw/census/data.json, which this adapter's own note says "otherwise hides new tables" - and that file is dated
+  # 2026-06-03. Live vs cached distinct `c_dataset` ids: 573 vs 571. Hidden from discovery: 8, namely
+  # timeseries/govslocalfin, timeseries/aies/historical and SIX re-keyed AIES datasets. Retired from the cache's point
+  # of view: 6, which are exactly the old AIES paths. Control: timeseries/govs is in both, so it appears in neither
+  # difference (scratchpad census_cache_gap.py).
+  #
+  # So the AIES family was RE-KEYED upstream, `timeseries/aies/<x>` -> flat `aies<x>`, and clearing the cache is
+  # therefore NOT a free action: discovery would fetch the six new ids and write new files beside the five we already
+  # hold under the old names (aies__basic, aies__ecom, aies__exp01, aies__exp02, aies__inv - miscsector was never
+  # ingested), leaving those five stored, served and frozen for ever, which is the frozen-store-region defect class.
+  # The clear needs a rename/migration decided with it. It is NOT the cause of the current failures: the 8 of 45
+  # transient sub-units on the 2026-09-14 run are all intltrade/* at time=2026-03.
+  #
+  # DONE 2026-09-17: govslocalfin is INGESTED - 227,588 rows, 376 series, obs_date 2017-12-31..2024-12-31 (the
+  # publisher's advertised span), 22.3 s, 2 API calls. It did NOT require clearing the cache: the job resolves a
+  # dataset through ts_meta.json, so one probed entry was appended (93 -> 94, file backed up) and the ingest run with
+  # --only. That is the precedent for the AIES question too - a dataset can be added WITHOUT re-keying the family,
+  # so the rename stays an open decision rather than a precondition. Note what is NOT done: the new dataset is not
+  # catalogued, and with the D1 catalogue sync frozen nothing here reaches a user yet.
+  #
   # SCHEDULED 2026-08-02 via run_location, NOT live. Fetcher built and PROVEN:
   # updater/strategies/fetchers/census.py covers the 20 EITS time-series flows only — the other
   # 60 datasets here are wide periodic snapshots served at table grain and need a reference-year
@@ -4345,8 +4384,9 @@ sources:
   - jobs/ingest_statcan.py
   strategy: extend_by_date
   strategy_reason: 'Genuine server-side date-tail (S2), not a whole-cube re-download. getFullTableDownloadCSV (the bulk path)
-    is full-table only, BUT WDS exposes a true delta keyed on the SAME vector ids already on disk: getChangedCubeList(date)
-    is a cheap change-feed of changed productIds, and getBulkVectorDataByRange(vectorIds, startDataPointReleaseDate, end)
+    is full-table only, BUT WDS exposes a true delta keyed on the SAME vector ids already on disk: getAllCubesListLite
+    carries every cube''s releaseTime so "changed since the watermark" is a filter over one request (NOT getChangedCubeList,
+    which is a SINGLE-DAY feed and was read as a since-feed until 2026-09-17), and getBulkVectorDataByRange(vectorIds, startDataPointReleaseDate, end)
     returns only the datapoints (new periods AND revisions) released in the window per vector. The fetcher reads each changed
     cube''s on-disk vectors + (geo,uom,coordinate) constants, pulls the release-dated tail, and merges (dedup (series_key,obs_date),
     new value wins, never-shrink). Emitted series_key = lowercase ''v''+vectorId — byte-identical to the bulk parquet — so
@@ -4356,11 +4396,21 @@ sources:
   out_dir: statcan
   review: true
   adapter:
-    vintage_signal: StatCan WDS getChangedCubeList(<last_success_date>) change-feed (alternatively each cube's releaseTime
-      from getAllCubesListLite) to select only cubes changed since last run; getAllCubesListLite is already re-enumerated
-      each run so new cubes are caught.
-    since_param: n/a (S4 uses the getChangedCubeList change-feed to pick whole cubes to re-pull; for true intra-cube obs delta
-      the alternative would be getBulkVectorDataByRange startRefPeriod=max stored obs_date, but base strategy is whole-changed-cube).
+    vintage_signal: >-
+      Each cube's releaseTime from StatCan WDS getAllCubesListLite, filtered to those on or after
+      the stored release-date watermark. CORRECTED 2026-09-17: this said getChangedCubeList(date),
+      and the fetcher implemented it that way, but THAT ENDPOINT IS A SINGLE-DAY FEED - it means
+      "changed ON date", not "since". Measured by the test a since-feed cannot pass, its count must
+      be non-increasing as the date advances and instead ran 3, 52, 30, 0, 15, 0, 16, 14, 15, 60
+      over 2026-08-18..09-17, with five increases and two zero days between larger ones. So a run
+      inspected ONE calendar day and then advanced the watermark past the rest; 505 cubes had been
+      released since 2026-07-29, 456 of them ones we hold. getAllCubesListLite returns the whole
+      catalogue in one request (8,270 cubes, releaseTime present on 8,270 of 8,270), which makes
+      "changed since" a filter rather than arithmetic that can skip a day.
+    since_param: >-
+      releaseTime >= watermark, applied to the getAllCubesListLite enumeration, to choose whole
+      cubes to re-pull; the intra-cube delta is then getBulkVectorDataByRange with
+      startDataPointReleaseDate over that same window.
     out_paths_note: per-cube files data/clean_full/statcan/<productId>.parquet (~8,207 cubes) plus _manifest.jsonl, _errors.log,
       _sizecache.json, _tmp/ staging and .done/.fail markers — one file per cube; S4 clears the .done marker for each changed
       cube only.

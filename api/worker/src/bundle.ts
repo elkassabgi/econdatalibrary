@@ -15,7 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Env, SourceRow, LicenseRow, SeriesRow, SeriesIdRow } from "./types";
-import { SELECT_SOURCE, SELECT_LICENSE, SELECT_SERIES, SERIES_IDS_FOR_SOURCE } from "./sql";
+import { SELECT_SOURCE, SELECT_LICENSE, SELECT_SERIES, seriesIdsForSourceSql } from "./sql";
 import { json, badRequest, licenseBlock, supportedSources, sourceOf, dbFor, dbForSeries } from "./util";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
 
@@ -79,7 +79,13 @@ export async function handleBundle(url: URL, env: Env): Promise<Response> {
     if (NON_REDISTRIBUTABLE.has(source)) {
       return badRequest(`source '${source}' cannot be bundled: its licence forbids re-hosting (HTTP 451)`);
     }
-    const res = await dbFor(env, source).prepare(SERIES_IDS_FOR_SOURCE).bind(source).all<SeriesIdRow>();
+    // Carve-outs are excluded IN THE SQL (seriesIdsForSourceSql), not by the per-id loop below.
+    // The loop refuses a carved id a CSV path, but by then the id has been read out of this
+    // result set and still reaches the manifest — echoed in `econdl:series_requested` and named
+    // in `econdl:unresolved`. That made this endpoint an enumeration oracle for exactly the ids
+    // the gate exists to withhold, which the comment twenty lines below forbids in terms.
+    const res = await dbFor(env, source).prepare(seriesIdsForSourceSql(source))
+      .bind(source).all<SeriesIdRow>();
     ids = (res.results ?? []).map((r) => r.series_id);
     if (ids.length === 0) return badRequest(`no catalog series found for source '${source}'`);
   }
