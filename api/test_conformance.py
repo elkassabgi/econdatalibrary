@@ -76,13 +76,57 @@ def _free_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def base_url():
-    """Boot devserver.py on a free port; tear it down at module end."""
+def store():
+    """Build the small conformance store once per module and point this process at it.
+
+    Until 2026-09-22 nothing built a store at all: the devserver booted with no --catalog and
+    fell back to "the bundled catalog.db" - present only in the main checkout, at 11.9 GB. CI
+    therefore never ran this file (`pytest tests/` never collects api/), and by hand it scored
+    16 failures of 18 in any worktree. An 18-test contract no runner reaches is not coverage,
+    and reporting a suite total that silently excluded it is R1069.
+
+    `api/conformance_fixture.py` builds what these tests actually need, with every value copied
+    from the real catalogue rather than invented. ECONDL_DATA is exported for BOTH processes on
+    purpose: the devserver reads it, and so does `econdl._resolve` inside this test process -
+    `test_csv_identity_column_is_native_key` and the bundle test compare the HTTP answer against
+    the local resolver, so if the two read different stores the comparison is meaningless rather
+    than failing.
+
+    The environment is RESTORED on teardown. Leaving ECONDL_DATA set would silently redirect any
+    later test in the same session, and an unset-vs-empty mix-up is how a "pointed at the fixture"
+    run quietly reads the real store instead.
+    """
+    import shutil
+    import tempfile
+
+    import conformance_fixture
+
+    tmp = tempfile.mkdtemp(prefix="econdl_conformance_")
+    paths = conformance_fixture.build(tmp)
+    prev = {k: os.environ.get(k) for k in ("ECONDL_DATA", "ECONDL_CATALOG")}
+    os.environ["ECONDL_DATA"] = paths["data_root"]      # this process's resolver
+    os.environ["ECONDL_CATALOG"] = paths["catalog"]
+    try:
+        yield paths
+    finally:
+        for k, v in prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@pytest.fixture(scope="module")
+def base_url(store):
+    """Boot devserver.py on a free port against the fixture store; tear it down at module end."""
+    paths = store
     port = _free_port()
     proc = subprocess.Popen(
-        [sys.executable, _DEVSERVER, "--host", "127.0.0.1", "--port", str(port)],
+        [sys.executable, _DEVSERVER, "--host", "127.0.0.1", "--port", str(port),
+         "--catalog", paths["catalog"], "--state", paths["state"]],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        cwd=_REPO,
+        cwd=_REPO, env={**os.environ, "ECONDL_DATA": paths["data_root"]},
     )
     base = f"http://127.0.0.1:{port}"
     # Wait until /health answers (or the process dies).
@@ -259,15 +303,19 @@ def test_metadata_task5_keys_present(base_url):
     assert m2["citation_short"] == "OECD."
 
 
-def test_metadata_description_citation_fallback():
+def test_metadata_description_citation_fallback(store):
     # The defensive fallback: a series carrying a bare `description` + `citation`
     # but NO Task#5 keys must surface `description` (not description_key) and derive
     # citation_short/long. No real series exercises this post-Task#5, so synthesise
     # one in a temp catalog (same pattern as the data_unavailable test).
+    #
+    # The copy source is the FIXTURE catalogue. It used to be data/catalog.db - copying
+    # 11.9 GB to insert one row, and a hard FileNotFoundError in any worktree, which is
+    # half of why this file never ran anywhere.
     import shutil
     import sqlite3
     import tempfile
-    src_cat = os.path.join(_REPO, "data", "catalog.db")
+    src_cat = store["catalog"]
     tmpdir = tempfile.mkdtemp(prefix="econdl_conf_md_")
     tmp_cat = os.path.join(tmpdir, "catalog.db")
     shutil.copy(src_cat, tmp_cat)
@@ -285,8 +333,9 @@ def test_metadata_description_citation_fallback():
     port = _free_port()
     proc = subprocess.Popen(
         [sys.executable, _DEVSERVER, "--host", "127.0.0.1", "--port", str(port),
-         "--catalog", tmp_cat],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=_REPO)
+         "--catalog", tmp_cat, "--state", store["state"]],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=_REPO,
+        env={**os.environ, "ECONDL_DATA": store["data_root"]})
     base = f"http://127.0.0.1:{port}"
     try:
         deadline = time.time() + 30
@@ -314,16 +363,18 @@ def test_metadata_description_citation_fallback():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def test_metadata_last_updated_fallback_to_unit_state(base_url):
+def test_metadata_last_updated_fallback_to_unit_state(base_url, store):
     # penn_world_table:rgdpe:USA has last_updated=NULL in the catalog; the contract
     # requires falling back to the source's unit_state('_all').last_success_utc.
     code, m = _get_json(base_url, f"/v1/series/{_enc(EX_PWT)}.metadata.json")
     assert code == 200
     # The fallback must produce a real timestamp, not null and not fabricated.
     assert m["last_updated"], "expected unit_state('_all') fallback, got null"
-    # cross-check against state.db directly: it must EQUAL the _all last_success.
+    # cross-check against the state.db the server was actually given -- NOT the repo's
+    # real one. Reading a different store than the server reads compares two unrelated
+    # numbers, which passes or fails for reasons that have nothing to do with the contract.
     import sqlite3
-    state = os.path.join(_REPO, "data", "_aqueduct", "state.db")
+    state = store["state"]
     conn = sqlite3.connect(f"file:{state}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
@@ -397,15 +448,20 @@ def test_status_resolver_empty_zero_rows_in_window(base_url):
     assert json.loads(body)["error"] == "resolver_empty"
 
 
-def test_status_data_unavailable_vs_resolver_empty_distinct(base_url):
+def test_status_data_unavailable_vs_resolver_empty_distinct(store):
     # The DISTINCTION pin: a supported source whose at-rest FILE is absent must be
     # 502 data_unavailable (NOT resolver_empty, NOT 501). We synthesise this by
     # adding a catalog row for a supported source (bls) whose at-rest file cannot
     # exist (a bogus BLS code -> stem 'zz' -> bls/zz.parquet absent), pointing the
     # shim at a temp catalog that includes it.
+    #
+    # The fixture store makes this SHARPER than the real one did, not weaker: the real
+    # bls directory holds every survey file, so 'zz' was absent only by luck of naming.
+    # Here bls/ contains exactly cu.parquet, so the absent file is absent by construction
+    # while the source stays supported -- which is the distinction under test.
     import sqlite3
     import tempfile
-    src_cat = os.path.join(_REPO, "data", "catalog.db")
+    src_cat = store["catalog"]
     tmpdir = tempfile.mkdtemp(prefix="econdl_conf_")
     tmp_cat = os.path.join(tmpdir, "catalog.db")
     import shutil
@@ -427,8 +483,9 @@ def test_status_data_unavailable_vs_resolver_empty_distinct(base_url):
     port = _free_port()
     proc = subprocess.Popen(
         [sys.executable, _DEVSERVER, "--host", "127.0.0.1", "--port", str(port),
-         "--catalog", tmp_cat],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=_REPO)
+         "--catalog", tmp_cat, "--state", store["state"]],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=_REPO,
+        env={**os.environ, "ECONDL_DATA": store["data_root"]})
     base = f"http://127.0.0.1:{port}"
     try:
         deadline = time.time() + 30
