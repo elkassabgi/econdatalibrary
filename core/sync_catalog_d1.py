@@ -46,7 +46,7 @@ import tempfile
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
 from core.sync_state_d1 import (CATALOG_SHARD_FOR, MAX_FILE_BYTES,  # noqa: E402
-                                ROWS_PER_STMT, ROOT, _lit, execute_remote)
+                                ROWS_PER_STMT, ROOT, _gated_ids, _lit, execute_remote)
 
 # Ids per `DELETE FROM series_fts WHERE series_id IN (...)`. Deliberately NOT ROWS_PER_STMT:
 # that column is UNINDEXED, so the cost is one full table scan PER STATEMENT regardless of
@@ -351,6 +351,22 @@ def main(argv: list[str] | None = None) -> None:
                          "source list to pass here.")
     a = ap.parse_args(argv)
 
+    # THE GATE APPLIES TO THIS PUBLISHER TOO (2026-09-17). This sync reads the catalogue - in CI the
+    # R2 coherence copy, which was measured the same day still holding a gated source's series and
+    # source row - and upserts series, series_fts, source, license and source_counts into D1 with
+    # no gate consult. It is frozen behind CATALOG_SYNC_ENABLED today; unfreezing it would have
+    # re-published rows a reviewed delete had just removed. Gated ids are refused as a --source or
+    # --refresh-counts argument and withheld from the rows below. Nothing is deleted here (R889
+    # rule 3). _gated_ids refuses an absent or unreadable gate.
+    # Read only on the paths that PUBLISH: --seed-manifest sends nothing, and reading the gate there
+    # would make the bootstrap depend on the worker checkout for no benefit.
+    gated = set() if a.seed_manifest else _gated_ids()
+    for named in ([a.source] if a.source else []) + \
+            [s.strip() for s in (a.refresh_counts or "").split(",") if s.strip()]:
+        if named.lower() in gated:
+            raise SystemExit("FATAL: a named source is gated by the worker's denylist - refusing to "
+                             "publish its catalogue rows or counts")
+
     # WAIT FOR A WRITER INSTEAD OF DYING ON IT. Every other tool here opens catalog.db with a
     # busy timeout; this one did not, so a concurrent catalogue build -- an ordinary thing, since
     # cataloguing a source and syncing another are independent jobs -- aborted the sync outright
@@ -471,6 +487,11 @@ def main(argv: list[str] | None = None) -> None:
 
     cols, rows = _rows_for(conn, ids)
     print(f"catalog sync: {len(ids)} id(s) from {src} -> {len(rows)} local row(s)")
+    kept = [r for r in rows if str(r.get("source_id") or "").lower() not in gated]
+    if len(kept) != len(rows):
+        # the rows are withheld; which sources they belong to is not printed
+        print(f"  [gate] withheld {len(rows) - len(kept):,} row(s) of gated sources - not sent")
+    rows = kept
 
     # THE DIFF (ledger R542). Everything below sends only rows whose CONTENT changed since
     # the last successful sync, compared against a LOCAL manifest — never against D1, which
