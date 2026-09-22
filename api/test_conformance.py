@@ -917,3 +917,67 @@ def test_unsupported_filters_are_refused_not_silently_ignored(base_url):
     assert code == 200, f"?format=full answered {code}, expected 200"
     code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv?from=2026-01-01")
     assert code == 200, f"a well-formed ?from= answered {code}, expected 200"
+
+
+def _request(base: str, path: str, method: str):
+    req = urllib.request.Request(base + path, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def test_write_verbs_are_405_not_501(base_url):
+    """A write verb must be 405, and specifically NOT 501.
+
+    This is not pedantry about status codes. In THIS contract 501 means `not_migrated` - "the
+    source has no resolver" - so a client that POSTs by mistake and gets the stdlib's default
+    501 would read it as "this source is not available yet" and could plausibly stop asking
+    for a source that is perfectly fine. devserver.py:233 says the same: a clean Method Not
+    Allowed rather than the stdlib default. Losing the override was previously uncaught.
+    """
+    for verb in ("POST", "PUT", "DELETE", "PATCH"):
+        code, body = _request(base_url, f"/v1/series/{_enc(EX_BLS)}.csv", verb)
+        assert code == 405, f"{verb} answered {code}, expected 405 (501 would mean not_migrated)"
+        assert json.loads(body)["error"] == "method_not_allowed", body[:200]
+
+    # CONTROL: GET on the same path still works, so this is not "everything is refused".
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv")
+    assert code == 200, f"GET answered {code}, expected 200"
+
+
+def test_catalog_limit_is_honoured_and_coverage_reported(base_url):
+    """`limit=` must actually bound the page, and catalog_coverage must be present.
+
+    Ignoring `limit=` is a silently-wrong answer of the same family as an ignored filter: the
+    caller paginates, believes it has a page of N, and either re-reads rows or misses them.
+    Both were uncaught.
+    """
+    code, obj = _get_json(base_url, "/v1/catalog?limit=2")
+    assert code == 200
+    assert obj["limit"] == 2, f"limit echoed as {obj['limit']}, expected 2"
+    # NOTE the inner single quotes. A nested SAME-type quote inside an f-string is PEP 701,
+    # i.e. Python 3.12+. This desktop runs 3.14 and CI runs 3.11, where it is a SyntaxError
+    # that takes the WHOLE file out of collection - the local-is-newer-than-CI trap (R906).
+    assert len(obj["results"]) <= 2, f"limit=2 returned {len(obj['results'])} rows"
+    assert "catalog_coverage" in obj, sorted(obj)
+
+    # CONTROL: a larger limit really does return more, or limit=2 would be satisfied by a
+    # server that always returns two rows.
+    code, obj5 = _get_json(base_url, "/v1/catalog?limit=5")
+    assert obj5["limit"] == 5
+    assert len(obj5["results"]) >= len(obj["results"]), (
+        f"limit=5 returned {len(obj5['results'])}, limit=2 returned {len(obj['results'])}")
+
+
+def test_bundle_snapshot_is_echoed_not_ignored(base_url):
+    """`snapshot=` is the reproducibility anchor; ignoring it silently dates the bundle today."""
+    pinned = "2020-01-02"
+    code, dp = _get_json(base_url, f"/v1/bundle?ids={_enc(EX_BLS)}&snapshot={pinned}")
+    assert code == 200
+    assert dp["econdl:snapshot_date"] == pinned, (
+        f"snapshot= was ignored: manifest says {dp['econdl:snapshot_date']!r}")
+    # and it must reach the provenance citation, which is what a reader actually cites
+    prov = dp["resources"][0]["econdl:provenance"]
+    assert pinned[:4] in json.dumps(prov), f"snapshot year missing from provenance: {prov}"
