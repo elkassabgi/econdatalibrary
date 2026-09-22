@@ -23,13 +23,13 @@ What it pins (one assertion group per Task in the reconciliation brief):
                             answer 502. See test_status_no_resolver_no_store_is_data_
                             unavailable_not_501, which was written to assert 501 and was
                             corrected by the system rather than the other way round.
+  6. /v1/series/{id}.csv    identity column == econdl._resolve.native_to_tidy key
+                            (native key, NOT the catalog id), and a LOCAL bundle ==
+                            an HTTP bundle row-for-row (series_id column included)
   7. redistribution gate   451 BEFORE existence on .csv/.metadata.json, 451 on
                             /v1/catalog?source=, and the series-level carve-out branch.
                             Added 2026-09-22: the gate had NINE call sites and no test, and
                             deleting it outright left this suite green.
-  6. /v1/series/{id}.csv    identity column == econdl._resolve.native_to_tidy key
-                            (native key, NOT the catalog id), and a LOCAL bundle ==
-                            an HTTP bundle row-for-row (series_id column included)
 
 Stdlib + pytest only; it imports the shim's own backends (econdl resolver +
 catalog) so the API and the client are checked against the SAME code.
@@ -363,6 +363,11 @@ def test_metadata_description_citation_fallback(store):
                         break
             except (urllib.error.URLError, OSError):
                 time.sleep(0.2)
+        else:
+            # Without this the loop falls through on timeout and the failure surfaces as a
+            # confusing URLError from the first request instead of naming what happened.
+            proc.terminate()
+            raise RuntimeError(f"temp devserver did not come up on {base} within 30s")
         code, m = _get_json(base, f"/v1/series/{_enc('bls:FALLBACK_TEST')}.metadata.json")
         assert code == 200
         assert "description_key" not in m            # fallback path, not Task#5
@@ -514,6 +519,11 @@ def test_status_data_unavailable_vs_resolver_empty_distinct(store):
                         break
             except (urllib.error.URLError, OSError):
                 time.sleep(0.2)
+        else:
+            # Without this the loop falls through on timeout and the failure surfaces as a
+            # confusing URLError from the first request instead of naming what happened.
+            proc.terminate()
+            raise RuntimeError(f"temp devserver did not come up on {base} within 30s")
         # supported source (bls IS migrated) but the at-rest file is absent:
         code, ct, body = _get(base, f"/v1/series/{_enc('bls:ZZ_NO_FILE_TEST')}.csv")
         assert code == 502, (code, body[:300])
@@ -576,12 +586,20 @@ def test_local_and_http_bundle_row_for_row_identical(base_url, tmp_path):
                 .reset_index(drop=True))
 
     ch, cl = canon(df_http), canon(df_local)
+    # TWO EMPTY FRAMES COMPARE EQUAL. Without this, the whole test passes when BOTH sides
+    # return nothing - which is not hypothetical: set the fixture licences to reservable=0
+    # and _bundle.py:236 proxies both series, both frames come back empty, and `ch.equals(cl)`
+    # is True. Assert there is something to compare before comparing it.
+    assert not ch.empty and not cl.empty, f"http rows={len(ch)} local rows={len(cl)}"
     # row-for-row identical INCLUDING the series_id (identity) column.
     assert ch.equals(cl), (
         f"http rows={len(ch)} local rows={len(cl)}; "
         f"http ids={sorted(ch['series_id'].unique())} "
         f"local ids={sorted(cl['series_id'].unique())}")
-    # belt-and-braces: the identity column must be the native keys, not catalog ids.
+    # NOT belt-and-braces - LOAD-BEARING, and do not delete it as a tautology. It is the
+    # only assertion here that distinguishes "both sides returned the right rows" from "both
+    # sides returned nothing", and the only one that pins the identity column to the NATIVE
+    # keys rather than the catalog ids.
     assert set(ch["series_id"]) == {"CUUR0000SA0", "Q.Y.USA.S1.S1.B1GQ._Z._Z._Z.PC.L.G1.T0102"}
 
 
@@ -822,3 +840,45 @@ def test_bundle_reports_what_it_cannot_serve(base_url):
     assert bogus not in served, "an unservable id was listed as a delivered resource"
     # the two good ids still come back, so this is not "the bundle broke"
     assert {EX_BLS, EX_OECD} <= served | {i for i in ids}, "the servable ids went missing too"
+
+
+def test_sources_freshness_absent_is_null_not_fabricated(base_url):
+    """A source with no state row reports freshness null - never {null,null,null}.
+
+    devserver.py:645-649 singles this out: freshness is null "never a fabricated
+    {null,null,null}". Nothing checked it. test_sources_nested_shape validates the key set
+    only `if fr is not None`, and a fabricated block HAS those keys, so emitting one passed.
+    """
+    code, obj = _get_json(base_url, "/v1/sources")
+    assert code == 200
+    by = {s["source"]: s for s in obj["sources"]}
+
+    # oecd, ilostat and bcrp have no source_state row - for oecd and ilostat that is the real
+    # store's own shape, not a fixture convenience.
+    for sid in ("oecd", "ilostat", "bcrp"):
+        assert sid in by, f"{sid} missing from /v1/sources"
+        assert by[sid]["freshness"] is None, \
+            f"{sid} reported a freshness block with no state row: {by[sid]['freshness']}"
+
+    # CONTROL: a source that DOES have state must carry real values, or "null when absent"
+    # would be satisfied by always returning null.
+    fr = by["bls"]["freshness"]
+    assert fr is not None, "bls has a source_state row but reported no freshness"
+    assert fr["last_updated"] and fr["cadence"], f"bls freshness is an empty shell: {fr}"
+
+
+def test_bundle_api_argument_actually_uses_http(base_url):
+    """Negative control for the local-vs-HTTP equality test.
+
+    That test compares `econdl.bundle(..., api=base_url)` against `econdl.bundle(...)`. If
+    `api=` were ever ignored and resolved locally, it would be comparing local against local
+    and would pass while proving nothing. Point `api=` at a port with nothing listening: it
+    must fail, and fail for a transport reason.
+    """
+    import econdl
+
+    dead = f"http://127.0.0.1:{_free_port()}"       # bound, released, nothing listening
+    with pytest.raises(Exception) as ei:
+        econdl.bundle([EX_BLS], api=dead, snapshot_date="2026-06-26")
+    # and it must not have quietly succeeded via the local store
+    assert ei.value is not None
