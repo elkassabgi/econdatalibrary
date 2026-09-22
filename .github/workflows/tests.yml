@@ -89,6 +89,28 @@ jobs:
       - name: pytest (api contract)
         run: python -m pytest api/test_conformance.py -q
 
+      # THE BILLING GUARD'S OWN FAULT-INJECTION PROOF, WHICH ALSO RAN NOWHERE. Sweeping for
+      # the api/ defect above turned up every test-shaped file in the repo: 224 under tests/
+      # and three under api/worker/test/ are collected, and exactly two were not. One
+      # (scripts/edgar_pointers_test.py) is a dry-run against the local store and does not
+      # belong on a runner. The other is this, and it is the one guarding the bill.
+      #
+      # It is NOT a pytest file — its cases are `case_*`, so `pytest` collects zero tests from
+      # it and reports success, which is how a file can sit in the repo looking covered. It is
+      # a script with a main() returning an exit code, so it gets a step.
+      #
+      # Every defect it exercises returns HTTP 200 with no error key: a truncated page that
+      # undercounted by 115,000x, a short day list, a stale daily rate, a one-day rate that
+      # would have projected $2,459 the morning after an incident where the median projects
+      # the truth. Its own header says reading the code twice failed to find them. Free to
+      # run: stdlib imports only, no network, no credentials, no D1 reads.
+      #
+      # Verified to FAIL before being wired up, because ALL PASS on first run is exactly when
+      # a test is least trustworthy: re-opening the truncation guard, replacing the median
+      # with yesterday's value, and dropping the round-UP each produce a non-zero exit.
+      - name: billing guard fail-closed proof
+        run: python tools/test_billing_guard_failclosed.py
+
       # THE WORKER'S OWN TESTS, WHICH NOTHING RAN. api/worker/test/csvStream.test.ts holds 12
       # node:test cases covering the streamed-CSV path — the code that decides whether a large
       # object is delivered or answers "Memory limit exceeded before EOF". package.json had no
