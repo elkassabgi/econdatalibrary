@@ -58,13 +58,15 @@ def test_no_tool_points_temp_directory_at_the_shared_root(rel):
 def test_every_temp_directory_expression_resolves_to_a_private_path(rel):
     """Whatever the expression is, it must trace back to a per-process path.
 
-    Pinning the VALUE rather than the spelling: either the tool builds the path through
-    `duck_spill.spill_path`, or it mixes in the pid itself (mirror_sync predates the helper).
+    Pinning the VALUE rather than the spelling: the tool builds the path through the helper
+    (`ensure_spill`, or `spill_path` directly), or it mixes in the pid itself (mirror_sync
+    predates the helper).
     """
     src = _src(rel)
     exprs = SETTER.findall(src)
     assert exprs, f"{rel} no longer sets temp_directory - update this test or the tool"
-    private = ("duck_spill.spill_path" in src) or ("os.getpid()" in src)
+    private = (("duck_spill.ensure_spill" in src) or ("duck_spill.spill_path" in src)
+               or ("os.getpid()" in src))
     assert private, (
         f"{rel} sets temp_directory {exprs!r} but builds no per-process path; a shared spill "
         f"directory is the R612 crash")
@@ -111,3 +113,60 @@ def test_sweep_orphans_removes_an_old_directory(tmp_path, monkeypatch):
     removed, freed = duck_spill.sweep_orphans(older_than_hours=24)
     assert removed == 1 and freed >= 10
     assert not old.exists()
+
+
+def test_ensure_spill_creates_the_directory_and_returns_a_private_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(duck_spill, "SPILL_ROOT", str(tmp_path))
+    monkeypatch.setattr(duck_spill, "_SWEPT", False)
+    p = duck_spill.ensure_spill("t")
+    assert os.path.isdir(p), "ensure_spill must create the directory, not just name it"
+    assert str(os.getpid()) in p
+
+
+def test_ensure_spill_reaps_what_a_sigkill_left_behind(tmp_path, monkeypatch):
+    """atexit does not run on SIGKILL, and SIGKILL is how 83.73 GB accumulated. The sweep is the
+    only thing that reaches those."""
+    monkeypatch.setattr(duck_spill, "SPILL_ROOT", str(tmp_path))
+    monkeypatch.setattr(duck_spill, "_SWEPT", False)
+    orphan = tmp_path / "killed_999_dead"
+    orphan.mkdir()
+    (orphan / "duckdb_temp_storage_DEFAULT-0.tmp").write_bytes(b"x" * 64)
+    old = time.time() - 100 * 3600
+    os.utime(orphan, (old, old))
+    duck_spill.ensure_spill("t")
+    assert not orphan.exists(), "an old orphan must be reaped on the first ensure_spill of a process"
+
+
+def test_ensure_spill_sweeps_only_once_per_process(tmp_path, monkeypatch):
+    """A sweep per connection would rescan the root on every call of a long run."""
+    monkeypatch.setattr(duck_spill, "SPILL_ROOT", str(tmp_path))
+    monkeypatch.setattr(duck_spill, "_SWEPT", False)
+    calls = []
+    monkeypatch.setattr(duck_spill, "sweep_orphans", lambda *a, **k: calls.append(1) or (0, 0))
+    duck_spill.ensure_spill("t")
+    duck_spill.ensure_spill("t")
+    duck_spill.ensure_spill("t")
+    assert len(calls) == 1, f"swept {len(calls)} times, expected once per process"
+
+
+def test_ensure_spill_still_returns_a_path_when_the_sweep_fails(tmp_path, monkeypatch):
+    """Reaping is best-effort. A failure to tidy must never stop the real work."""
+    monkeypatch.setattr(duck_spill, "SPILL_ROOT", str(tmp_path))
+    monkeypatch.setattr(duck_spill, "_SWEPT", False)
+
+    def boom(*a, **k):
+        raise OSError("disk said no")
+
+    monkeypatch.setattr(duck_spill, "sweep_orphans", boom)
+    p = duck_spill.ensure_spill("t")
+    assert os.path.isdir(p)
+
+
+def test_sweep_is_skippable(tmp_path, monkeypatch):
+    """Negative control for the sweep tests - if sweep=False also swept, they would prove nothing."""
+    monkeypatch.setattr(duck_spill, "SPILL_ROOT", str(tmp_path))
+    monkeypatch.setattr(duck_spill, "_SWEPT", False)
+    calls = []
+    monkeypatch.setattr(duck_spill, "sweep_orphans", lambda *a, **k: calls.append(1) or (0, 0))
+    duck_spill.ensure_spill("t", sweep=False)
+    assert calls == []
