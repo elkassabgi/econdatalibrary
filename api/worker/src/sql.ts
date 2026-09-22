@@ -220,8 +220,15 @@ FROM series WHERE series_id >= ? AND series_id < ? ORDER BY series_id LIMIT ? OF
  *
  * Two things this must not be. It must not be `source_counts`, which counts carved rows and
  * so advertised 692 for worldbank where 262 are reachable. And it must not be
- * BROWSE_SOURCE_COUNT (`WHERE source_id = ?`): there is no index on source_id, and that form
- * measured 13.85 s locally for worldbank — the 2026-08-15 incident's exact shape.
+ * BROWSE_SOURCE_COUNT (`WHERE source_id = ?`). That form measured 13.85 s locally for
+ * worldbank in the 2026-08-15 incident, when `source_id` carried no index. IT DOES NOW —
+ * `idx_series_source` in D1, `ix_series_source_id` locally, both added since — so the old
+ * reason has expired: measured 2026-09-22, D1 reads 693 rows for worldbank and the local
+ * plan plainly says SEARCH ... USING COVERING INDEX (692 rows, 1.0 ms).
+ *
+ * The advice below still holds, for the reason that did NOT expire: D1 bills rows READ, and
+ * an index does not make a giant cheap. bea is 913,230 rows — 50.5 ms locally, but 913k rows
+ * read on every page view, which is precisely the shape of the 2026-08-15 bill.
  *
  * The PK range rides the autoindex, so this stays cheap for the sources that need it
  * (worldbank 692 rows / 1.1 ms, worldbank_wdi 1,486 / 2.8 ms). Call it ONLY when
