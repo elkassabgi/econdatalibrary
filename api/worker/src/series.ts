@@ -52,6 +52,7 @@ import { SELECT_SERIES, SELECT_SOURCE, SELECT_LICENSE } from "./sql";
 import {
   csv, csvStream, csvPassthrough, json, notFound, notMigrated, dataUnavailable, resolverEmpty,
   unsupportedFilter, badRequest, supportedSources, sourceOf, licenseBlock, dbForSeries,
+  isNativeOnly,
 } from "./util";
 import {
   CSV_HEADER, FILTER_MAX_STORED_BYTES, FILTER_MAX_TEXT_BYTES, LineFilter, MAX_RATIO, STREAM_MIN_BYTES,
@@ -249,6 +250,21 @@ export async function handleSeriesCsv(
   if (from !== null && !DATE_RE.test(from)) return badRequest("from must be YYYY-MM-DD");
   if (to !== null && !DATE_RE.test(to)) return badRequest("to must be YYYY-MM-DD");
 
+  // A WIDE source is stored with its OWN columns, so the row filters cannot be applied
+  // to it: applyDateWindow reads cols[1] because a canonical row is series_id,obs_date,
+  // value, and on an fhfa row cols[1] is `series_key`. Filtering there would drop the
+  // wrong rows and still answer 200 - worse than refusing, and the exact thing CONTRACT.md
+  // forbids for geo/freq/unit (`never a silently-unfiltered 200`). The object itself is
+  // served in full below.
+  const nativeOnly = isNativeOnly(source);
+  if (nativeOnly && (from !== null || to !== null || geoFilter !== null)) {
+    const which = from !== null ? "from" : to !== null ? "to" : "geo";
+    return unsupportedFilter(
+      `${which}= cannot be applied to ${source}: it is stored in its own wide column ` +
+      `layout, not series_id,obs_date,value, so filtering would drop the wrong rows. ` +
+      `Request the whole series and filter client-side.`);
+  }
+
   // 4) fetch the pre-derived CSV object from R2.
   const obj = await env.SERIES_BUCKET.get(objectKey(seriesId));
   if (obj === null) {
@@ -281,7 +297,8 @@ export async function handleSeriesCsv(
   //     still 502 / the geo 404 names real alternatives.
   if (obj.size >= STREAM_MIN_BYTES) {
     return streamLarge(obj, gzipped, seriesId, requestedId, series, env,
-                       { from, to, geo: geoFilter }, geoRequested, bare0, ctx, onDone);
+                       { from, to, geo: geoFilter, allowAnyHeader: nativeOnly },
+                       geoRequested, bare0, ctx, onDone);
   }
 
   const text = gzipped
@@ -294,7 +311,7 @@ export async function handleSeriesCsv(
   // refuses it — both must agree).
   const firstNl = text.indexOf("\n");
   const firstLine = (firstNl < 0 ? text : text.slice(0, firstNl)).replace(/\r$/, "");
-  if (firstLine !== CSV_HEADER) {
+  if (firstLine !== CSV_HEADER && !nativeOnly) {
     return json({ error: "data_unavailable", source, series_id: seriesId,
                   detail: `the at-rest object is malformed (header '${firstLine.slice(0, 60)}'); refusing to serve it` }, 502);
   }

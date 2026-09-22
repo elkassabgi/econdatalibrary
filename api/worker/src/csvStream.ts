@@ -85,6 +85,10 @@ export interface FilterOpts {
   from: string | null;
   to: string | null;
   geo: string | null;
+  /** A WIDE source's object carries its own columns, not series_id,obs_date,value.
+   *  Set for the sources in NATIVE_ONLY_SOURCES so the header check accepts it.
+   *  The caller refuses from/to/geo for those, so no row filter runs here. */
+  allowAnyHeader?: boolean;
 }
 
 export interface StreamStats {
@@ -212,7 +216,7 @@ export class LineFilter {
     const line = this.dec.decode(buf.subarray(start, end));
     if (this.first) {
       this.first = false;
-      this.stats.headerOk = line === CSV_HEADER;
+      this.stats.headerOk = line === CSV_HEADER || this.opts.allowAnyHeader === true;
       return pos;
     }
     if (rowPasses(line, this.opts, this.stats)) {
@@ -405,7 +409,8 @@ export function prefixBytes(prefix: string): Uint8Array {
 
 /** Peek the first CSV line of a gzipped object from its first stored chunk(s) without
  *  keeping the inflater: used to prime the passthrough (header validated, a data row seen). */
-export function peekGzipHeader(chunks: Uint8Array[]): { headerOk: boolean; hasRow: boolean } {
+export function peekGzipHeader(chunks: Uint8Array[], allowAnyHeader = false):
+    { headerOk: boolean; hasRow: boolean } {
   let text = "";
   const dec = new TextDecoder();
   let done = false;
@@ -417,7 +422,7 @@ export function peekGzipHeader(chunks: Uint8Array[]): { headerOk: boolean; hasRo
   }
   const nl = text.indexOf("\n");
   if (nl < 0) return { headerOk: text.replace(/\r$/, "") === CSV_HEADER && false, hasRow: false };
-  const headerOk = text.slice(0, nl).replace(/\r$/, "") === CSV_HEADER;
+  const headerOk = text.slice(0, nl).replace(/\r$/, "") === CSV_HEADER || allowAnyHeader;
   const hasRow = text.slice(nl + 1).split("\n").some((l) => l.trim() !== "");
   return { headerOk, hasRow };
 }
