@@ -94,8 +94,7 @@ from core import duck_spill                                      # noqa: E402
 # ONE spill directory for this PROCESS (R612). Built once, not per call: temp_directory is
 # set inside a function that runs once per source, so a fresh path per call would leave one
 # directory behind for every source audited. atexit removes it on any exit path.
-_SPILL = duck_spill.spill_path("audit_store_vs_catalog")
-os.makedirs(_SPILL, exist_ok=True)
+_SPILL = duck_spill.ensure_spill("audit_store_vs_catalog")
 atexit.register(shutil.rmtree, _SPILL, True)
 
 

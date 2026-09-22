@@ -98,8 +98,7 @@ def main() -> int:
     # with no instance id, so two runs sharing a directory open each other's files and
     # exit 139. atexit, not try/finally, so an early return or a crash still cleans up -
     # 32 orphaned spill files, 73.37 GB, were measured in logs/ on 2026-09-22.
-    spill = duck_spill.spill_path("catalog_census")
-    os.makedirs(spill, exist_ok=True)
+    spill = duck_spill.ensure_spill("catalog_census")
     atexit.register(shutil.rmtree, spill, True)
 
     meta = json.dumps({
