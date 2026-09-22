@@ -120,7 +120,9 @@ the ratio). All three are 400 `unsupported_filter`. The full object remains avai
 
 **The redistribution gate runs FIRST on this route (added 2026-09-17).** A gated series — a
 denylisted source, or a series-level third-party carve-out — returns **451** with
-`{"error":"not_redistributable","detail":...}`, exactly as `.csv` does, and it returns it
+`{"error":"not_redistributable","series_id":<the id requested>,"detail":...}`, exactly as `.csv` does
+(`series_id` added 2026-09-17: it echoes the caller's own id, so a client refused on several ids can tell which
+answer is which; additive, no field removed), and it returns it
 *before* `?lang=` is validated and before the catalogue is consulted. So for a gated id the
 documented "unsupported `?lang=` → 400" below does not apply, and neither does 404 for an
 unknown id under a gated prefix; 451 wins.
