@@ -61,6 +61,22 @@ if not sup:
     sys.exit('PARSE FAILED: SUPPORTED_SOURCES parsed to ZERO ids — refusing to report '
              'downloadability, because an empty parse would mark every source unservable.')
 
+# SERIES_CARVEOUTS: sources whose live total is DELIBERATELY lower than the catalogue, because
+# carved series are not served. Parsed the same guarded way as SUPPORTED_SOURCES above - comments
+# stripped first, and a refusal rather than a verdict if the parse comes back empty (R261, R503).
+_dl = open('api/worker/src/denylist.ts', encoding='utf-8').read()
+_cstart = re.search(r'SERIES_CARVEOUTS\b[^=]*=\s*\{', _dl)
+if not _cstart:
+    sys.exit('PARSE FAILED: no SERIES_CARVEOUTS object literal in api/worker/src/denylist.ts')
+_cbody = _dl[_cstart.end():]
+_cend = re.search(r'^\s*\};', _cbody, re.M)
+_cbody = _cbody[: _cend.start()] if _cend else _cbody
+_cbody = "\n".join(re.sub(r'//.*$', '', ln) for ln in _cbody.splitlines())
+carved = set(re.findall(r'^\s*([a-z0-9_]+)\s*:', _cbody, re.M))
+if not carved:
+    sys.exit('PARSE FAILED: SERIES_CARVEOUTS parsed to ZERO sources - refusing to report drift, '
+             'because every carve-out would then read as a defect.')
+
 con = sqlite3.connect('data/catalog.db')
 cat = {r[0]: r[1] for r in con.execute(
     'SELECT source_id, COUNT(*) FROM series GROUP BY source_id')}
@@ -69,6 +85,7 @@ print('%-20s %10s %10s  %-9s %s' % ('source', 'local', 'live D1', 'download', 's
 drift = []
 notdl = []
 unprobed = []
+carveouts = []
 for src in sorted(cat, key=lambda s: -cat[s]):
     n = cat[src]
     lv, reason = live_count(src)
@@ -78,18 +95,26 @@ for src in sorted(cat, key=lambda s: -cat[s]):
         unprobed.append((src, n, reason))
         print('%-20s %10d %10s  %-9s %s' % (src, n, '-', dl, reason))
         continue
-    ok = (lv == n) and (src in sup)
-    if lv != n:
+    # A carve-out source SHOULD read lower live than local: the carved series are not served.
+    # Counting that as drift is the same class of error this tool exists to catch.
+    is_carved = src in carved and lv < n
+    ok = (lv == n or is_carved) and (src in sup)
+    if is_carved:
+        carveouts.append((src, n, lv))
+    elif lv != n:
         drift.append((src, n, lv))
     if src not in sup:
         notdl.append((src, n))
-    if not ok:
-        print('%-20s %10d %10d  %-9s %s' % (src, n, lv, dl,
-                                            'DRIFT' if lv != n else 'not downloadable'))
+    if not ok or is_carved:
+        status = ('CARVE-OUT (%d series not served by licence)' % (n - lv)) if is_carved else (
+            'DRIFT' if lv != n else 'not downloadable')
+        print('%-20s %10d %10d  %-9s %s' % (src, n, lv, dl, status))
 
 print()
 print('series-level sources     : %d' % len(cat))
 print('catalog drift (local!=D1): %d' % len(drift))
+print('licence carve-outs (live lower BY DESIGN): %d  (%s series withheld)'
+      % (len(carveouts), format(sum(n - lv for _s, n, lv in carveouts), ',')))
 print('gated / unprobeable        : %d%s'
       % (len(unprobed),
          '  (' + ', '.join('%s: %s' % (s, r) for s, _n, r in unprobed) + ')'
