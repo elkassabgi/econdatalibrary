@@ -217,6 +217,19 @@ export class LineFilter {
     if (this.first) {
       this.first = false;
       this.stats.headerOk = line === CSV_HEADER || this.opts.allowAnyHeader === true;
+      // The canonical header is CONSUMED here because series.ts prepends its own copy. A WIDE
+      // object's first line is different: it is that object's own column list and the only
+      // description of the rows behind it, so swallowing it and letting the caller prepend
+      // `series_id,obs_date,value` answers 200 with a header that mis-labels 7-column fhfa
+      // rows - the silently-wrong body series.ts calls worse than refusing. So when the caller
+      // has declared the source wide, the stored header is EMITTED and series.ts prepends
+      // nothing (contractHeaderPrefix). It costs exactly the bytes it occupied in the input,
+      // so `out`'s size above still bounds the result.
+      if (this.stats.headerOk && this.opts.allowAnyHeader === true) {
+        out.set(buf.subarray(start, endExcl), pos);
+        pos += len;
+        out[pos++] = NL;
+      }
       return pos;
     }
     if (rowPasses(line, this.opts, this.stats)) {
@@ -407,9 +420,27 @@ export function prefixBytes(prefix: string): Uint8Array {
   return new TextEncoder().encode(prefix);
 }
 
+/** The header line the streamed body needs in FRONT of the rows, if any.
+ *
+ *  Exactly one of the two must supply it, and which one depends on the source: LineFilter
+ *  consumes a canonical header and this puts it back, but it EMITS a wide source's own
+ *  header, and adding the canonical one on top of that would label fhfa's seven columns
+ *  `series_id,obs_date,value`. Kept here, beside the consume/emit decision it mirrors, so the
+ *  two cannot be changed apart. */
+export function contractHeaderPrefix(allowAnyHeader: boolean | undefined): string {
+  return allowAnyHeader === true ? "" : CSV_HEADER + "\n";
+}
+
 /** Peek the first CSV line of a gzipped object from its first stored chunk(s) without
- *  keeping the inflater: used to prime the passthrough (header validated, a data row seen). */
-export function peekGzipHeader(chunks: Uint8Array[], allowAnyHeader = false):
+ *  keeping the inflater: used to prime the passthrough (header validated, a data row seen).
+ *
+ *  `allowAnyHeader` is REQUIRED, with no default, on purpose. It arrived with a default of
+ *  `false` and the passthrough call site in series.ts was not updated, so every gzipped WIDE
+ *  object at or above STREAM_MIN_BYTES kept answering the same 502 the flag was added to end
+ *  - and the tests stayed green, because they call this function directly. A required
+ *  parameter makes `npm run typecheck` the guard: a call site that forgets it does not
+ *  compile, which is a check that cannot be green while the path is broken. */
+export function peekGzipHeader(chunks: Uint8Array[], allowAnyHeader: boolean):
     { headerOk: boolean; hasRow: boolean } {
   let text = "";
   const dec = new TextDecoder();

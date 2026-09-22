@@ -56,8 +56,8 @@ import {
 } from "./util";
 import {
   CSV_HEADER, FILTER_MAX_STORED_BYTES, FILTER_MAX_TEXT_BYTES, LineFilter, MAX_RATIO, STREAM_MIN_BYTES,
-  VerifiedGunzip, completeLine, identityPipe, isGzipMagic, isizeFromTrailer, newStats, peekGzipHeader,
-  prefixBytes, primePump, slices,
+  VerifiedGunzip, completeLine, contractHeaderPrefix, identityPipe, isGzipMagic, isizeFromTrailer,
+  newStats, peekGzipHeader, prefixBytes, primePump, slices,
 } from "./csvStream";
 import type { FilterOpts, Primed } from "./csvStream";
 import { isGated } from "./denylist";
@@ -378,8 +378,13 @@ export async function handleSeriesCsv(
  *  error ABORTS the transfer (never a clean EOF on a 200). Refused UP FRONT (400,
  *  actionable) when the stored size could wrap the 4 GiB ISIZE or the decompressed size
  *  exceeds FILTER_MAX_TEXT_BYTES. Bytes written to the client are counted and handed to
- *  `onDone` when the transfer ends (the download log records delivered bytes, not produced). */
-async function streamLarge(
+ *  `onDone` when the transfer ends (the download log records delivered bytes, not produced).
+ *
+ *  EXPORTED FOR TESTS. Nothing else imports it. Both of this function's branches shipped
+ *  broken for wide sources while every unit test was green, because the tests called the
+ *  helpers (peekGzipHeader, LineFilter) directly and nothing entered the function that
+ *  chooses between them. test/wideSources.test.ts now drives it through a fake R2. */
+export async function streamLarge(
   obj: R2ObjectBody, gzipped: boolean, seriesId: string, requestedId: string,
   series: SeriesRow, env: Env, opts: FilterOpts, geoRequested: string | null, bare: boolean,
   ctx: ExecutionContext | undefined, onDone: ((bytes: number, ok: boolean) => Promise<void>) | undefined,
@@ -419,7 +424,7 @@ async function streamLarge(
           for (const c of held) { for (let i = 0; i < c.length && o < 3; i++) first3[o++] = c[i]; if (o >= 3) break; }
           if (!isGzipMagic(first3)) throw new Error("not a gzip member (flagged gzip at rest)");
         }
-        peek = peekGzipHeader(held);
+        peek = peekGzipHeader(held, opts.allowAnyHeader === true);
         if (peek.headerOk && peek.hasRow) break;
         if (held.reduce((n, c) => n + c.length, 0) > 4 * 1024 * 1024) break;   // 4 MB of gzip with no data row: give up
       }
@@ -529,7 +534,10 @@ async function streamLarge(
     ? `# Projection: rows for geo=${opts.geo} of grouped series ${seriesId}` +
       (requestedId !== seriesId ? ` (requested as ${requestedId})` : "") + "\n"
     : "";
-  const prefix = (bare ? "" : (await citationHeader(seriesId, series, env)) + note) + CSV_HEADER + "\n";
+  // contractHeaderPrefix, not CSV_HEADER: a wide object's own header is emitted by LineFilter
+  // and must not be covered with the canonical one (csvStream.ts).
+  const prefix = (bare ? "" : (await citationHeader(seriesId, series, env)) + note)
+    + contractHeaderPrefix(opts.allowAnyHeader);
   const { readable, writable } = identityPipe();
   const writer = writable.getWriter();
   const run = (async () => {
