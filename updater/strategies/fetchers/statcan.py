@@ -60,7 +60,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, sane_since
+from ._common import Deadline, Tally, finalize, sane_since
 
 OUT_DIR = os.path.join(config.DATA_ROOT, "statcan")
 STATE = os.path.join(OUT_DIR, "_incr_state.json")
@@ -81,6 +81,25 @@ COLD_LOOKBACK_DAYS = 30
 # Re-poll the change-feed from a few days BEFORE the watermark to absorb clock/feed
 # skew (a cube whose release lands right on the boundary must not be missed).
 FEED_SLACK_DAYS = 2
+
+# WALL-CLOCK BUDGET, with the per-cube RESUME that R190 requires beside one. Without both, this
+# fetcher was a self-certifying outage: it walks `sorted(changed)` - a fixed order - and advances
+# the watermark only after a clean WHOLE pass, so a pass the desktop's wall clock killed re-walked
+# the same prefix next time and the tail was never reached. Measured 2026-09-17: killed_external at
+# 13,567 s on 2026-09-11, with 505 cubes released since the watermark. The budget stops STARTING new
+# cubes; the resume set below means a kill mid-pass now costs only the cube in flight.
+BUDGET_MIN = 45.0
+# Save the resume set every N finished cubes (and at the end): the file is ~100 B per cube, and a
+# write per cube would add an R2 PUT to each one for no benefit.
+SAVE_EVERY = 10
+# THE RESUMPTION MECHANISM, named so it can be recognised rather than exempted. A budgeted sweep
+# over a fixed order re-walks the same prefix for ever unless something makes the next run start
+# somewhere new (R190; tests/test_budget_needs_resumption.py). This fetcher does not rotate its
+# start offset - it records the cubes FINISHED in the current window under this state key, so the
+# next pass skips them by construction and begins at the first cube that still owes work. Stronger
+# than a rotation bookmark: a kill mid-pass costs only the cube in flight, and the window's
+# identity (its feed_since) means a resume set can never be applied to a different window.
+RESUME_WINDOW_KEY = "window"
 
 # On-disk schema, byte-for-byte what jobs/ingest_statcan.py writes.
 SCHEMA = pa.schema([
@@ -147,6 +166,9 @@ def _load_state():
         try:
             d = json.loads(raw.decode("utf-8"))
             d.setdefault("last_release_date", None)   # 'YYYY-MM-DD'
+            # {"feed_since": 'YYYY-MM-DD', "done": {pid: 'YYYY-MM-DD fetched through'}} for the
+            # window currently being worked; absent or for another window means "start fresh".
+            d.setdefault(RESUME_WINDOW_KEY, {})
             return d
         except Exception:
             pass
@@ -517,13 +539,45 @@ def update(unit, since) -> Result:
     # leave it unchanged so the whole window is retried.
     all_ok = True
 
+    # RESUME SET for THIS window. A window is identified by its feed_since: while that is unchanged
+    # the change-feed returns the same set, so a cube finished in an earlier pass need not be fetched
+    # again. Its value is the date that pass fetched it THROUGH, which is what bounds the watermark
+    # below - taking `today` there would jump over releases a resumed pass never looked at.
+    win = state.get(RESUME_WINDOW_KEY) or {}
+    done: dict = dict(win.get("done") or {}) if win.get("feed_since") == feed_since.isoformat() else {}
+    if done:
+        print(f"[statcan] resuming the {feed_since.isoformat()} window: {len(done)} cube(s) already "
+              f"fetched in an earlier pass are skipped", flush=True)
+    dl = Deadline(minutes=BUDGET_MIN)
+    capped = False
+    since_save = 0
+
+    def _remember(pid, through):
+        """Record a finished cube and persist the window periodically (and on the last one)."""
+        nonlocal since_save
+        done[str(pid)] = through
+        since_save += 1
+        if since_save >= SAVE_EVERY:
+            state[RESUME_WINDOW_KEY] = {"feed_since": feed_since.isoformat(), "done": done}
+            _save_state(state)
+            since_save = 0
+
     for pid in sorted(changed):
+        if str(pid) in done:
+            continue
+        if dl.spent():
+            # Stop STARTING cubes; the rest keep their turn next pass because `done` is persisted.
+            capped = True
+            print(f"[statcan] budget of {dl.budget_min:g} min spent after "
+                  f"{len(done)} cube(s) this window; {len(changed) - len(done)} still owed", flush=True)
+            break
         path = os.path.join(OUT_DIR, f"{pid}.parquet")
         if not blob.exists(path):
             # brand-new cube — out of scope for the incremental fetcher (bulk ingester
             # owns first ingest; vector endpoint lacks the dimension metadata to build
             # a faithful cube from scratch). Skip without counting as a sub-unit.
             absent_pids.append(pid)
+            _remember(pid, today.isoformat())     # looked at and correctly skipped: do not re-walk it
             continue
         try:
             vmap = _disk_vector_map(path)
@@ -534,6 +588,7 @@ def update(unit, since) -> Result:
             continue
         if not vmap:
             tally.empty_unit(f"{os.path.basename(path)}: no vectors on disk")
+            _remember(pid, today.isoformat())
             continue
         try:
             tbl = _fetch_cube_tail(vmap, win_start, today)
@@ -553,6 +608,7 @@ def update(unit, since) -> Result:
             md = merge._max_obs_date(blob.read_table(path, columns=["obs_date"]))
             if md:
                 series_cursors[str(pid)] = md
+            _remember(pid, today.isoformat())
             continue
 
         before = blob.row_count(path)
@@ -590,6 +646,7 @@ def update(unit, since) -> Result:
                     maxd = md_d
             except ValueError:
                 pass
+        _remember(pid, today.isoformat())     # merged: this cube is fetched through today
 
     # THE STORE-ABSENT GUARD (see `absent_pids` above). Distinguish two look-alikes:
     #   the publisher changed cubes we simply do not hold  -> coverage, the bulk ingester's job,
@@ -617,10 +674,27 @@ def update(unit, since) -> Result:
                 f"AQUEDUCT_BACKEND=r2. Restore the store (or point this source's backend at the copy that "
                 f"holds it) before trusting any statcan status.")
 
-    # Advance the watermark only on a clean pass (no transient/structural sub-fault),
-    # so an interrupted/throttled run re-polls the same release window next time.
-    if all_ok:
-        state["last_release_date"] = today.isoformat()
+    # Advance the watermark only on a clean pass (no transient/structural sub-fault) that also
+    # FINISHED the window, and then only to the OLDEST date any of this window's cubes was fetched
+    # through. `today` would be wrong for a window spread over several passes: a cube finished on
+    # pass 1 was fetched through pass 1's date, so releases between that and pass 3's date would be
+    # jumped over. Taking the minimum re-polls that overlap next window - merge dedups it.
+    # Set containment, NOT len(done) >= len(changed): the feed can list MORE cubes for the same
+    # feed_since on a later pass, and `done` can hold cubes that pass no longer lists. Counting
+    # would then declare the window finished with a genuinely changed cube never fetched, and the
+    # watermark would jump over it - the silent skip this whole window exists to prevent.
+    everything = {str(p) for p in changed} <= set(done)
+    if all_ok and not capped and everything:
+        through = min(done.values()) if done else today.isoformat()
+        state["last_release_date"] = through
+        state[RESUME_WINDOW_KEY] = {}                       # window closed
+        _save_state(state)
+        if done and through != today.isoformat():
+            print(f"[statcan] window complete; watermark advanced to {through}, the oldest date any "
+                  f"cube in it was fetched through (not today) - a multi-pass window", flush=True)
+    else:
+        # Keep the resume set for the next pass, watermark unmoved.
+        state[RESUME_WINDOW_KEY] = {"feed_since": feed_since.isoformat(), "done": done}
         _save_state(state)
 
     last = maxd.isoformat() if maxd else (str(since)[:10] if since else None)
@@ -632,6 +706,10 @@ def update(unit, since) -> Result:
     # transport breaks already surface in _get/_post and _changed_pids.
     res = finalize(tally, tally.added, last, source=SOURCE,
                    series_cursors=series_cursors, empty_window_floor=10 ** 9)
+    if capped or not everything:
+        # More cubes in this window still owe work: never let the strategy stamp a vintage that
+        # says "fully current" (ons_uk's rule), or the backlog is skipped at the next tick.
+        res.new_vintage = None
     if changed_complete:
         # merge-measured vector-grain changed set; {} on a quiet pass is the honest
         # "nothing changed" (coherence met). A run with any unreported merge returns
