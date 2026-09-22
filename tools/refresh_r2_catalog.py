@@ -20,6 +20,16 @@ The old header recorded a superset check done BY HAND, once, for that day's uplo
 exactly the kind of check that is not repeated the next time. It is now enforced in code, per
 source, and the upload ABORTS on any shrink unless --allow-shrink names it deliberate.
 
+IT GUARDED ONE TABLE. Until 2026-09-22 the check counted rows in `series` and nothing else,
+so an upload could delete rows from the `source` METADATA table without a word. One did: the
+2026-09-22 refresh took `source` from 349 rows to 328 and printed no line about it. That
+upload was benign - every one of the 21 was an id we withhold - but the tool could not have
+told the difference, and a hosted source losing its `source` row loses its name, attribution,
+homepage and licence id while its series sit there untouched. Both tables are guarded now,
+under the same --allow-shrink declaration, because a guard covering one of the two tables a
+source lives in reads as full cover and is not (R709, R1061: the lesson that stopped one
+table short).
+
 Usage:
     python tools/refresh_r2_catalog.py <stamp> [--against <decompressed-r2-catalog.db>]
                                                [--allow-shrink src1,src2] [--dry-run]
@@ -58,6 +68,25 @@ def source_counts(db_path: str) -> dict:
         return dict(con.execute("SELECT source_id, COUNT(*) FROM series GROUP BY source_id"))
     finally:
         con.close()
+
+
+def source_row_ids(db_path: str) -> set:
+    """The ids in the `source` METADATA table - the other half of "does this source exist".
+
+    A source is reachable only with BOTH a `source` row and >=1 series (the worker requires
+    both for /v1/sources), so counting `series` alone answers half the question.
+    """
+    con = sqlite3.connect(f"file:{db_path.replace(os.sep, '/')}?mode=ro", uri=True)
+    try:
+        return {r[0] for r in con.execute("SELECT source_id FROM source")
+                if isinstance(r[0], str)}      # torn-page phantoms, as on the series side
+    finally:
+        con.close()
+
+
+def blocking_losses(old_ids: set, new_ids: set, allow: set) -> list:
+    """Source rows present on R2 and absent locally, minus the ones declared deliberate."""
+    return sorted(s for s in old_ids - new_ids if s not in allow)
 
 
 def stream_decompress(client, key: str, dest: str) -> None:
@@ -144,6 +173,28 @@ def main() -> int:
             return 2
     else:
         print("  SHRINK     : none — clean superset")
+
+    # ---- the SAME question, asked of the `source` metadata table ----------------------
+    # Rows here carry name/attribution/homepage/license_id. The series guard above does not
+    # count them, and losing one is exactly as silent.
+    old_src, new_src = source_row_ids(cur_db), source_row_ids(LOCAL)
+    lost = old_src - new_src
+    print(f"  source rows: {len(old_src)} on R2 -> {len(new_src)} local")
+    if lost:
+        declared = sorted(s for s in lost if s in allow)
+        blocked_src = blocking_losses(old_src, new_src, allow)
+        print(f"  SOURCE ROWS: {len(lost)} row(s) disappear "
+              f"({len(declared)} declared, {len(blocked_src)} not):")
+        for s in sorted(lost):
+            tag = "allowed (declared deliberate)" if s in allow else "*** BLOCKS THE UPLOAD"
+            print(f"     {s:<26} present -> absent   {tag}")
+        if blocked_src:
+            print("\n  ABORTED: the upload would delete the `source` metadata row for the "
+                  "source(s) above. If that is intended, re-run with --allow-shrink "
+                  + ",".join(blocked_src), file=sys.stderr)
+            return 2
+    else:
+        print("  SOURCE ROWS: none lost")
 
     if a.dry_run:
         print("\n  --dry-run: no write performed.")
