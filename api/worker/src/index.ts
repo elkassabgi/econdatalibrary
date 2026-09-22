@@ -237,7 +237,9 @@ export default {
           // them. Closing it covers the whole class and keeps covering it for any row that
           // lands in D1 later, which deleting today's rows would not.
           if (isGated(id)) {
-            return json({ error: "not_redistributable", detail: "This source's licence does not permit third-party redistribution. Please obtain it directly from the original provider." }, 451);
+            // `series_id` echoes the id the CALLER sent - nothing it did not already hold - so a client refused on
+            // several ids at once can tell which one this answer is about (DeepSeek review, 2026-09-17).
+            return json({ error: "not_redistributable", series_id: id, detail: "This source's licence does not permit third-party redistribution. Please obtain it directly from the original provider." }, 451);
           }
           const { lang, error } = reqLang(url);
           if (error) return error; // unsupported ?lang= -> honest 400
@@ -251,7 +253,7 @@ export default {
           // third-party re-hosting, and some individual series are third-party
           // carve-outs of an otherwise-served source. Hard-block the DATA with 451.
           if (isGated(id)) {
-            return json({ error: "not_redistributable", detail: "This source's licence does not permit third-party redistribution of the data. Please obtain it directly from the original provider." }, 451);
+            return json({ error: "not_redistributable", series_id: id, detail: "This source's licence does not permit third-party redistribution of the data. Please obtain it directly from the original provider." }, 451);
           }
           // Shared-login gate (auth.ts): data downloads need the free family
           // key (hf keys work as-is); catalog/metadata/freshness stay open.
