@@ -882,3 +882,38 @@ def test_bundle_api_argument_actually_uses_http(base_url):
         econdl.bundle([EX_BLS], api=dead, snapshot_date="2026-06-26")
     # and it must not have quietly succeeded via the local store
     assert ei.value is not None
+
+
+def test_unsupported_filters_are_refused_not_silently_ignored(base_url):
+    """A filter the store cannot honour must be 400, never a silently-unfiltered 200.
+
+    This is the sharpest guarantee in the file and nothing was checking it. The other status
+    pins are about an ABSENT answer; this one is about a WRONG one - a caller who asks for
+    `?geo=USA` and gets an unfiltered 200 receives data that does not match what they asked
+    for, with nothing in the response saying so. devserver.py:294 puts it exactly that way:
+    "never a silently-unfiltered 200". Removing any of these branches was previously uncaught.
+    """
+    # geo/freq/unit are not columns in the tidy projection -> refused outright.
+    for param in ("geo", "freq", "unit"):
+        code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv?{param}=USA")
+        assert code == 400, f"?{param}= answered {code}, expected 400"
+        obj = json.loads(body)
+        assert obj["error"] == "unsupported_filter", obj
+        assert obj.get("parameter") == param, obj
+
+    # an unknown format= is refused rather than falling back to 'full'
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv?format=parquet")
+    assert code == 400, f"?format=parquet answered {code}, expected 400"
+    assert json.loads(body)["error"] == "unsupported_filter"
+
+    # a malformed date window is refused rather than ignored (which would widen the window)
+    for param in ("from", "to"):
+        code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv?{param}=01-01-2026")
+        assert code == 400, f"?{param}=01-01-2026 answered {code}, expected 400"
+        assert json.loads(body)["error"] == "unsupported_filter"
+
+    # CONTROLS: the supported spellings must still work, or "refuse everything" would pass.
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv?format=full")
+    assert code == 200, f"?format=full answered {code}, expected 200"
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv?from=2026-01-01")
+    assert code == 200, f"a well-formed ?from= answered {code}, expected 200"
