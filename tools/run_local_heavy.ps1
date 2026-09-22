@@ -45,7 +45,19 @@ param(
     # R35/R50 false-green this repo already documents for the CLOUD dispatch path, which
     # is why updater-daily.yml grew its own force input). Only meaningful with -Only.
     [switch]   $Force,
-    [int]      $MinHours = 20
+    [int]      $MinHours = 20,
+    # How long to keep waiting for a window worth using before taking whatever is free. Swept against 14 days
+    # of real history: at 30 h the runner settles for a short pass at a busy hour and its end time re-anchors
+    # the cadence there, which cost 4 collisions against 0 at 36 h. That comparison counts a collision as a
+    # cloud run STARTING inside the pass; under a stricter definition - interval overlap including the
+    # 10-minute hard-stop grace - both 30 and 36 show one, so 36 is the better of the two rather than a
+    # proven zero. See R1037 and `python tools/measure_ci_lag.py sweep`.
+    [int]      $MaxHours = 36,
+    # Usable minutes wanted before starting, when not yet past $MaxHours. Swept on 14 days of real history:
+    # 120 and 150 measure identically (13 passes, 0 collisions), 160-170 drop to 11 passes, and 180 costs 4
+    # collisions. The flat part is narrow and the cliff is 30 min away, so do not raise this without re-running
+    # `python tools/measure_ci_lag.py sweep`.
+    [int]      $WantBlockMin = 150
 )
 
 $ErrorActionPreference = 'Stop'
@@ -124,12 +136,18 @@ if ($IfDue) {
 
     # Ran recently enough? Stamp is written ONLY after a pass that actually executed, so an
     # abort on a busy CI does not push the next attempt 20 hours out.
+    #
+    # $MinHours is a FLOOR, not the schedule. How long it has been is carried forward to the window choice
+    # below, because the cadence alone decided when passes ran and it locked onto the busiest hour of the day
+    # (R1037): the stamp is written at the END of a pass, so a pass clamped short re-anchors the next one.
+    $script:SinceLastHours = 9999
     if (Test-Path $stampFile) {
         try {
             $last = [DateTime]::Parse((Get-Content $stampFile -First 1),
                                       [Globalization.CultureInfo]::InvariantCulture,
                                       [Globalization.DateTimeStyles]::RoundtripKind)
-            if (((Get-Date).ToUniversalTime() - $last.ToUniversalTime()).TotalHours -lt $MinHours) {
+            $script:SinceLastHours = ((Get-Date).ToUniversalTime() - $last.ToUniversalTime()).TotalHours
+            if ($script:SinceLastHours -lt $MinHours) {
                 exit 0
             }
         } catch { }   # unreadable stamp: treat as due rather than never running again
@@ -209,6 +227,15 @@ if (-not $SkipCiCheck) {
     }
     Say ("CI writer gate: " + ($gateOut -replace '\s+', ' '))
     if ($gateRc -eq 3) {
+        # SILENT STARVATION IS THE FAILURE MODE OF THIS WHOLE MECHANISM (R1032): a gate that refuses every tick
+        # looks exactly like a gate that is working, and the desktop ran 0 passes in 112 attempts on 2026-09-16
+        # before anyone noticed. A refusal is normal; going a day and a half without a pass is not.
+        if ($null -ne $script:SinceLastHours -and $script:SinceLastHours -ge (2 * $MinHours)) {
+            Say ("WARNING: no desktop pass has completed for " + [int]$script:SinceLastHours + " h. The gate " +
+                 "has refused every attempt. Local-route sources advance ONLY on these passes, so they are " +
+                 "not updating. Run 'python tools/measure_ci_lag.py replay' to see how much clear time the " +
+                 "rule is actually leaving, and 'ci_writer_gate.py --until-block' for what it sees now.")
+        }
         Say "ABORT: a cloud state writer is running or its scheduled run has not started yet."
         Say "       Both writers compare-and-swap on the state ETag, so overlapping means one"
         Say "       run's bookkeeping is thrown away (R5). Next tick will check again."
@@ -263,46 +290,61 @@ if (-not $env:AQUEDUCT_RUN_BUDGET_MIN)      { $env:AQUEDUCT_RUN_BUDGET_MIN      
 # prevent. That pass was also budgeted to 05:15Z, straight through the 03:00Z heavy window, so
 # no scenario existed in which it could have pushed successfully.
 #
-# A window is an INTERVAL, not an instant. Ends MEASURED from the last six runs of each
-# workflow (gh run list, 2026-08-23) and expressed as minutes AFTER THE CRON so the model
-# absorbs GitHub's start lag, which is routinely 13-55 min:
-#     heavy  03:55->05:05, 15:13->16:30, 03:47->04:51, 15:12->16:11   worst 125 min after cron
-#     daily  06:21->10:07, 18:17->21:09, 06:19->10:10, 06:25->09:55   worst 250 min after cron
-# Rounded up to 150 and 270 for headroom. This leaves two usable slots a day, ~10:30-14:40Z and
-# ~22:30-02:40Z, each ~250 min. That is genuinely less runway than the old model believed it
-# had, and it is the honest number: the giants resume part-by-part (R190), so a pass that stops
-# on budget defers work rather than discarding it.
-$LEAD_MIN = 20      # never START this close to a cron - CI pulls state almost immediately
-$blackouts = @()
-foreach ($d in 0, 1) {
-    $base = [DateTime]::UtcNow.Date.AddDays($d)
-    $blackouts += , @($base.AddHours(3).AddMinutes(-$LEAD_MIN),  $base.AddHours(3).AddMinutes(150),  '03:00Z heavy')
-    $blackouts += , @($base.AddHours(6).AddMinutes(-$LEAD_MIN),  $base.AddHours(6).AddMinutes(270),  '06:00Z daily')
-    $blackouts += , @($base.AddHours(15).AddMinutes(-$LEAD_MIN), $base.AddHours(15).AddMinutes(150), '15:00Z heavy')
-    $blackouts += , @($base.AddHours(18).AddMinutes(-$LEAD_MIN), $base.AddHours(18).AddMinutes(270), '18:00Z daily')
-}
-$nowUtc = [DateTime]::UtcNow
-$inside = @($blackouts | Where-Object { $nowUtc -ge $_[0] -and $nowUtc -lt $_[1] })[0]
-if ($inside) {
-    Say ("ABORT: inside the " + $inside[2] + " CI window, which holds the state store until ~" +
-         $inside[1].ToString("HH:mm") + "Z. A pass started now would lose its whole run's " +
-         "bookkeeping to the compare-and-swap (R5). Next tick will pick this up.")
-    exit 0
-}
-$next = @($blackouts | Where-Object { $_[0] -gt $nowUtc } | Sort-Object { $_[0] })[0]
-$cronOpensUtc = $next[0]
-$cronLabel    = $next[2]
+# A window is an INTERVAL, not an instant - but it is no longer ours to guess.
+#
+# This block used to build a static blackout list from the NOMINAL cron times, with ends measured on
+# 2026-08-23 when GitHub's start lag was 13-55 min. That lag now has a weekly median of 301 min (2026-W38;
+# it was 25 min in W34), so the list had drifted out of phase with the system it modelled: it blocked
+# 01:00-07:00Z, which no cloud writer occupied on any of the last 15 days, and left open 10:30-14:40Z, which
+# a writer was in flight inside on 14 of the last 14. All three recorded state-store collisions began 1-9 min
+# after it lifted at 10:30Z. Two models of one schedule, and the one holding the budget could not see the runs.
+# See R1035/R1037 and `python tools/measure_ci_lag.py windows`.
+#
+# So ask the gate, which reads real run state. A clamped pass is still a useful pass: the giants resume
+# part-by-part (R190), so stopping on budget defers work rather than discarding it.
 $marginMin = 25
-$untilCron = [int](($cronOpensUtc - $nowUtc).TotalMinutes) - $marginMin
-if ($untilCron -lt 20) {
-    Say ("ABORT: only " + $untilCron + " usable min before the " + $cronLabel + " CI window - " +
-         "too little to be worth a state pull/push cycle. Next tick will pick this up.")
-    exit 0
-}
-if ([int]$env:AQUEDUCT_RUN_BUDGET_MIN -gt $untilCron) {
-    Say ("whole-run budget clamped " + $env:AQUEDUCT_RUN_BUDGET_MIN + " -> " + $untilCron +
-         " min so this pass ENDS before the " + $cronLabel + " CI window (R5: one writer on the state store)")
-    $env:AQUEDUCT_RUN_BUDGET_MIN = "$untilCron"
+if ($null -eq $script:SinceLastHours) { $script:SinceLastHours = 9999 }
+if ($SkipCiCheck) {
+    Say ("-SkipCiCheck: the run budget is NOT clamped to the CI schedule either. You are asserting the " +
+         "state store is yours for this whole pass (R5).")
+} else {
+    # Continue for this call only: see the lister above (stderr under Stop terminates PS 5.1).
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $untilOut = (& $pythonExe $gate --until-block 2>&1 | Out-String).Trim()
+        $untilRc  = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    $untilBlock = 0
+    if ($untilRc -ne 0 -or -not [int]::TryParse($untilOut, [ref]$untilBlock)) {
+        Say ("ABORT: could not read how long the state store stays free (gate exit " + $untilRc + ": " +
+             ($untilOut -replace '\s+', ' ') + "). Not starting a pass that cannot be bounded. If this " +
+             "repeats for hours the desktop is silently not updating - check the gh credential first.")
+        exit 2
+    }
+    $untilCron = $untilBlock - $marginMin
+    if ($untilCron -lt 20) {
+        Say ("ABORT: only " + $untilCron + " usable min before a cloud state writer is due - too little to " +
+             "be worth a state pull/push cycle. Next tick will pick this up.")
+        exit 0
+    }
+    # WAIT FOR A WINDOW WORTH USING. Without this the runner takes the first gap it is offered, and because
+    # the stamp is written at the END of a pass, a short pass at a busy hour re-anchors every later one there.
+    if ($untilCron -lt $WantBlockMin -and $script:SinceLastHours -lt $MaxHours) {
+        Say ("HOLDING: " + $untilCron + " usable min is less than the " + $WantBlockMin + " min wanted, and " +
+             "it is only " + [int]$script:SinceLastHours + " h since the last pass. Waiting for a longer " +
+             "window. Past " + $MaxHours + " h this preference is dropped and a short window is accepted - but " +
+             "that only relaxes THIS check: while the gate itself says BLOCKED the pass still cannot start, " +
+             "however long it has been. A multi-day silence means the gate, not this hold.")
+        exit 0
+    }
+    if ([int]$env:AQUEDUCT_RUN_BUDGET_MIN -gt $untilCron) {
+        Say ("whole-run budget clamped " + $env:AQUEDUCT_RUN_BUDGET_MIN + " -> " + $untilCron +
+             " min so this pass ENDS before the next cloud state writer (R5: one writer at a time)")
+        $env:AQUEDUCT_RUN_BUDGET_MIN = "$untilCron"
+    }
 }
 Say ("per-source budget override: " + $env:AQUEDUCT_BUDGET_MIN_OVERRIDE +
      " min; whole-run budget: " + $env:AQUEDUCT_RUN_BUDGET_MIN + " min")
