@@ -314,7 +314,13 @@ def _flows(out_dir: str) -> list[str]:
     return sorted(out)
 
 
-def _dims_from_store(path: str) -> tuple[list[str], list[str]]:
+# NEVER PINNED, however single-valued the store looks. LAST_UPDATE is a revision marker, not a
+# grain selector: pinning it to the value we happen to hold would silently exclude exactly the rows
+# a refresh exists to collect - the revised ones.
+_NEVER_PIN = {"LAST_UPDATE", "TIME", "YEAR", "MONTH", "QUARTER"}
+
+
+def _dims_from_store(path: str) -> tuple[list[str], list[str], list, dict]:
     """(dim_cols, data_cols) recovered from the stored data itself.
 
     dim_cols come from parsing one existing series_key — see the module docstring for why
@@ -325,7 +331,10 @@ def _dims_from_store(path: str) -> tuple[list[str], list[str]]:
     cols = [c for c in schema.names if c not in _DERIVED]
     tbl = blob.read_table(path, columns=["series_key"])
     if tbl.num_rows == 0:
-        return [], cols
+        # FOUR values on EVERY path. This returned a 2-tuple while the caller unpacked four,
+        # which is a ValueError that kills the whole source - unreachable today only because
+        # `mx is None` short-circuits before it, so it would have waited for an unrelated edit.
+        return [], cols, [], {}
 
     # THE UNION ACROSS EVERY KEY SHAPE, NOT ONE SAMPLE.
     #
@@ -342,16 +351,131 @@ def _dims_from_store(path: str) -> tuple[list[str], list[str]]:
     dims: list[str] = []
     seen: set = set()
     shapes: dict = {}
+    first: dict = {}          # dim -> the first value seen
+    single: dict = {}         # dim -> has it held exactly ONE value so far
+    present: dict = {}        # dim -> in how many keys it appears
+    n_keys = 0
     for k in tbl.column("series_key").to_pylist():
         if not k:
             continue
+        n_keys += 1
         order = [seg.split("=", 1)[0] for seg in k.split("|")[1:] if "=" in seg]
         shapes.setdefault(frozenset(order), order)           # one ORDER per dimension SET
+        for seg in k.split("|")[1:]:
+            if "=" not in seg:
+                continue
+            name, val = seg.split("=", 1)
+            present[name] = present.get(name, 0) + 1
+            if name not in first:
+                first[name], single[name] = val, True
+            elif single[name] and val != first[name]:
+                single[name] = False
         for name in order:
             if name not in seen:
                 seen.add(name)
                 dims.append(name)
-    return dims, cols, list(shapes.items())
+    # THE GRAIN WE STORE, expressed as request pins. A dimension the store holds at exactly ONE
+    # value, in EVERY key, is not a dimension we vary - it is a slice we took. Asking the API for
+    # it unpinned makes it return every value of that dimension, which is how this fetcher came to
+    # request every country while storing only the country aggregate: ~200x the rows, and an
+    # HTTP 500 rather than data (measured 2026-09-20; pinning returned exactly the stored row
+    # count). Present-in-every-key is required so a heterogeneous shape cannot be narrowed away.
+    pins = {n: first[n] for n in dims
+            if single.get(n) and present.get(n) == n_keys and n.upper() not in _NEVER_PIN}
+    # AND THE SINGLE-VALUED COLUMNS THAT ARE NOT IN THE KEY. This is where the worst case lives.
+    # exports/hs, imports/hs and imports/statehs each store exactly ONE CTY_CODE ('-', the
+    # all-countries total the ingester deliberately requests) - but CTY_CODE is not part of their
+    # series_key, so a key-only derivation cannot see it and the request still asks for every
+    # country. Those rows come back at a FINER grain than we store, and because the key omits
+    # CTY_CODE a per-country row rebuilds the SAME series_key as the world total: it passes the
+    # known-series filter and ADDS, because the dedup keys do include CTY_CODE. That is silent
+    # double counting under a published id, which is worse than the 500 it replaces.
+    pins.update(_single_valued_columns(path, [c for c in cols if c not in pins]))
+    return dims, cols, list(shapes.items()), pins
+
+
+# FLOWS THAT NEED THEIR REQUEST SPLIT, DECLARED - not inferred from a failure.
+#
+# An explicit list rather than another heuristic, following this file's own precedent. A fallback
+# that split whenever a request raised was reviewed and rejected: TransientError carries no status
+# and no timing, so a network blip would fan out into seven requests, and at 3 attempts x ~150 s a
+# failing value costs 457 s before the next one is even tried.
+#
+# Two flows need it, and each was shown to work before being added. Row counts, not status codes:
+# the one split accepted on a 200 alone turned out to be 109x the stored grain (R1066).
+#
+#   exports/naics, split on COMM_LVL. With pins alone it returns HTTP 500 at ~151 s; split, every
+#   value succeeds and the parts reproduce the stored month EXACTLY (2026-03):
+#       '-' 137, MAN 134, NA2 1,016, NA3 3,656, NA4 11,612, NA5 21,029, NA6 36,044
+#       summed 73,628 against 73,628 stored, 0 failures, ~537 s for the month.
+#
+#   imports/statehs, split on STATE. Also 500 with pins alone. All 53 stored states fetched:
+#       summed 4,935 against 4,935 stored, 0 failures, 0 per-state mismatches, 2.0 min
+#       for the month at 2.3 s a slice - 53 requests is affordable precisely because each
+#       one is ~93 rows.
+# Cost is the reason this is a list and not a rule: a split multiplies request count, so it is
+# earned per flow by measurement, not applied wherever a dimension happens to be available.
+_SPLIT_DIM = {"intltrade/exports/naics": "COMM_LVL",
+              "intltrade/imports/statehs": "STATE"}
+
+
+def _split_requests(flow: str, path: str, dims: list, pins: dict) -> list:
+    """The pin dicts to request for one (time, pred) slice - normally one, or one per stored value
+    of this flow's declared split dimension.
+
+    The dimension MUST be part of the series_key: splitting on a dimension the key omits would
+    iterate values the key cannot distinguish, and rows for a value we do not store would rebuild
+    an existing key and merge as if they belonged to it.
+    """
+    d = _SPLIT_DIM.get(flow)
+    if not d or d not in dims:
+        return [pins]
+    try:
+        vals = sorted({v for v in blob.read_table(path, columns=[d]).column(d).to_pylist() if v})
+    except Exception:
+        return [pins]                      # cannot enumerate -> one request, as before
+    return [dict(pins, **{d: v}) for v in vals] or [pins]
+
+
+def _single_valued_columns(path: str, candidates: list) -> dict:
+    """{column: value} for columns holding exactly ONE value in the whole file.
+
+    Read from parquet ROW-GROUP STATISTICS (min == max in every group, and the same value in all
+    of them), so this costs metadata rather than a scan - the alternative, reading twenty string
+    columns of an 8.7M-row file, is not something a fetcher should do. Returns {} when the file is
+    not reachable as a local parquet or any statistic is missing: an unprovable column is simply
+    not pinned, which is the safe direction (R900 - it never guesses single-valued).
+    """
+    try:
+        import pyarrow.parquet as _pq
+        if not os.path.isfile(path):
+            return {}
+        md = _pq.ParquetFile(path).metadata
+    except Exception:
+        return {}
+    names = {n: i for i, n in enumerate(md.schema.names)}
+    out = {}
+    for col in candidates:
+        # Pin identifiers, never their labels. CTY_NAME is single-valued precisely BECAUSE
+        # CTY_CODE is, so pinning it adds no narrowing - it only adds a way to fail, since the
+        # label text is the publisher's prose and a filter on it is not something the ingester
+        # ever relies on (jobs/ingest_census.py pins the CODE).
+        if col.upper() in _NEVER_PIN or col.upper().endswith("_NAME") or col not in names:
+            continue
+        j, val, ok = names[col], None, True
+        for g in range(md.num_row_groups):
+            st = md.row_group(g).column(j).statistics
+            if st is None or not st.has_min_max or st.min != st.max:
+                ok = False
+                break
+            if val is None:
+                val = st.min
+            elif st.min != val:
+                ok = False
+                break
+        if ok and val is not None:
+            out[col] = val
+    return out
 
 
 def _key_for(J, row, hidx, dims, shapes, path):
@@ -526,11 +650,28 @@ def _time_windows(flow: str, mx) -> list[str]:
     return out
 
 
+def _why(e: Exception, limit: int = 120) -> str:
+    """A one-line reason for a sub-unit note: the exception's type and its message, trimmed.
+
+    Kept short on purpose - these notes are concatenated into one `unit_state.last_error` across
+    every failing sub-unit, so a full traceback per flow would push the useful part out of view.
+    Never returns an empty string: a note that says nothing is what this exists to stop.
+    """
+    msg = " ".join(str(e).split())[:limit]
+    return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+
+
 def _fetch(sess: requests.Session, flow: str, get_cols: list[str], time_value: str,
-           key: str | None, pred: str = "us:*"):
+           key: str | None, pred: str = "us:*", pins: dict | None = None):
     """One flow's date tail -> the raw JSON matrix. Raises TransientError on flaky failures,
-    DefinitiveError on a hard 4xx that is not a rate limit (a broken request, not a bad day)."""
+    DefinitiveError on a hard 4xx that is not a rate limit (a broken request, not a bad day).
+
+    `pins` narrows the request to the grain the store actually holds (see _dims_from_store). They
+    are sent as ordinary query parameters, which the API honours: an unknown value answers 204 with
+    an empty body rather than ignoring the pin, measured 2026-09-20 on two different dimensions."""
     params = {"get": ",".join(get_cols), "time": time_value}
+    for pin_name, pin_value in (pins or {}).items():
+        params[pin_name] = pin_value
     # pred None means "send no `for` at all" — the 16 intltrade flows require its ABSENCE, and
     # a `for=` they do not recognise is a 400, not a harmless extra.
     if pred is not None:
@@ -642,11 +783,13 @@ def update(unit, since) -> Result:
         if mx is None:
             tally.empty_unit(flow)
             continue
-        dim_cols, data_cols, shapes = _dims_from_store(path)
+        dim_cols, data_cols, shapes, pins = _dims_from_store(path)
         if not dim_cols:
             tally.structural_unit(f"{flow}: no dimensions recoverable from stored series_key")
             continue
         get_cols = [c for c in data_cols if c.lower() not in _IMPLICIT]
+        if pins:
+            print(f"[census] {flow}: pinning {pins} - the grain the store holds", flush=True)
         gcol = _geo_col(data_cols)
         levels = _store_geo_levels(path, gcol) if gcol else set()
 
@@ -664,25 +807,66 @@ def update(unit, since) -> Result:
         # loop changes nothing about that invariant.
         parts = []
         failed = False
+        empty_slices: list = []
+        # Computed once per flow: the split set depends on the store, not on the time window.
+        reqs = _split_requests(flow, path, dim_cols, pins)
+        if len(reqs) > 1:
+            print(f"[census] {flow}: {len(reqs)} requests per window, split on "
+                  f"{_SPLIT_DIM.get(flow)} - the whole request 500s, the parts do not", flush=True)
         for tv in _time_windows(flow, mx):
             for pred in _predicates_for(flow, levels):
-                try:
-                    part = _fetch(sess, flow, get_cols, tv, key, pred)
-                except TransientError:
-                    tally.transient_unit(f"{flow} time={tv} for={pred}")
-                    failed = True
+                for req_pins in reqs:
+                    # THE BUDGET IS CHECKED BETWEEN SPLIT VALUES, not only between flows. A split
+                    # turns one request into seven, while the deadline is otherwise consulted two
+                    # loops out - which is how a 20-minute budget was once spent after 35.6 min.
+                    # Stopping mid-split abandons the whole flow rather than merging a fragment:
+                    # a part-month written as if complete is worse than no month at all.
+                    if len(reqs) > 1 and dl.spent():
+                        # A DEFERRAL, NOT A FAILURE. Nothing here failed: the budget ran out and
+                        # rotation takes this flow next tick. transient_unit would inflate
+                        # `attempted` and report a deliberate stop as a failure - the exact defect
+                        # that made ecb read "252/540 sub-unit(s) transient-failed" when 0 of 288
+                        # attempted had failed.
+                        tally.deferred_unit(f"{flow} time={tv}: budget spent mid-split, "
+                                            f"{len(reqs)} part(s) required - nothing merged")
+                        failed = True
+                        break
+                    try:
+                        part = _fetch(sess, flow, get_cols, tv, key, pred, req_pins)
+                    except TransientError as e:
+                        # CARRY THE REASON. Until 2026-09-17 both branches discarded the exception,
+                        # so the run note read `intltrade/imports/sitc time=2026-03 for=None` and
+                        # nothing else. Eight sub-units failed that way for three days and the only
+                        # way to learn why was to replay the request by hand - a timeout, a 429 and
+                        # an upstream error page are three different problems wearing one message.
+                        tally.transient_unit(f"{flow} time={tv} for={pred} - {_why(e)}")
+                        failed = True
+                        break
+                    except DefinitiveError as e:
+                        tally.structural_unit(f"{flow} time={tv} for={pred} - {_why(e)}")
+                        failed = True
+                        break
+                    time.sleep(RATE)
+                    if part and len(part) >= 2:
+                        parts.append(part)
+                    elif len(reqs) > 1:
+                        # A SPLIT SLICE THAT CAME BACK WITH NO ROWS IS SAID OUT LOUD. Unsplit, an
+                        # empty body leaves `parts` empty and the structural guard below fires.
+                        # Split, it is one slice of several: the others merge and the flow reports
+                        # success over a month that is quietly short. It can be legitimate - a
+                        # commodity level with nothing published this month - so it is reported
+                        # rather than failed, but it is never silent.
+                        empty_slices.append(f"{tv}/{_SPLIT_DIM.get(flow)}="
+                                            f"{req_pins.get(_SPLIT_DIM.get(flow))}")
+                if failed:
                     break
-                except DefinitiveError:
-                    tally.structural_unit(f"{flow} time={tv} for={pred}")
-                    failed = True
-                    break
-                time.sleep(RATE)
-                if part and len(part) >= 2:
-                    parts.append(part)
             if failed or dl.spent():
                 break
         if failed:
             continue
+        if empty_slices:
+            print(f"[census] {flow}: {len(empty_slices)} split slice(s) returned no rows - "
+                  f"{empty_slices[:6]}", flush=True)
         rows = parts[0] if parts else []
 
         if not parts:
