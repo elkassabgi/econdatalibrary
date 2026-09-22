@@ -684,21 +684,27 @@ def parse_cbs_period_ex(s: str) -> tuple[dt.date | None, str | None]:
                 # footers: min == max == 31 July). That looks like 1.14 BILLION suspect rows
                 # and is not one: 31 July is also what SJ and X0 write, and those are CORRECT.
                 # 263 of the 288 are academic-year tables. Probing the 59-table residue against
-                # CBS - all 59, two requests each, 2 s apart - gives the real exposure:
+                # CBS - all 59, two requests each, 2 s apart - gives the real exposure. Pick the
+                # period axis by EXACT name: a first-substring match lands on
+                # `LeeftijdBeginPeriode` (AGE at the start of the period) on 71038ned and
+                # misses the English `Periods` on 60046eng/80066eng:
                 #
                 #   X000-ONLY, i.e. the WHOLE date axis is this fabricated date:
-                #     7 tables / 136,804 rows - 85071NED 55,728 - 37450 24,480 -
+                #     8 tables / 136,862 rows - 85071NED 55,728 - 37450 24,480 -
                 #     85011NED 23,424 - 82810NED 21,675 - 82811NED 6,000 -
-                #     81976NED 5,439 - 80066ned 58
+                #     81976NED 5,439 - 80066ned 58 - 80066eng 58
                 #   MIXED (X000 alongside other families):
-                #     3 tables / 35,576 rows - 60046ned - 37117 - 80004ned
+                #     4 tables / 70,014 rows - 60046ned - 60046eng - 37117 - 80004ned
+                #   SJ/X0-only, i.e. correctly dated: 41 tables / 177,717,490 rows
+                #   period axis not located by name: 6 tables / 1,086,674 rows
                 #   plus 70895ned / 70895ENG at 288 rows each, where the prefix is a REAL year:
                 #     '1971X000' is titled "1971 week 0 (3 dagen)" and is stored as 1973-07-31.
                 #     That is the dangerous shape - a real prefix lands INSIDE the sane band, so
                 #     no date audit can see it.
                 #
                 # That reproduces this comment's own "8 served tables (136,862 rows)"
-                # independently, within drift. The list above is the target set for the
+                # EXACTLY - same table count, same row count - from CBS's codes, without
+                # reading the figure into the method. The list above is the target set for the
                 # title-driven rule when it is written. The rule is still OPEN, and what to do
                 # with a period CBS does not treat as a period is the owner's call - see R1079,
                 # where 1,038 of these rows turned out to be published STANDARD ERRORS and a
