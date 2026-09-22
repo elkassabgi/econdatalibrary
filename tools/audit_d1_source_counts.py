@@ -106,7 +106,8 @@ def local_counts(sources) -> dict:
     """Count each source in the local catalogue, using the PRIMARY KEY range.
 
     The obvious form -- `SELECT source_id, COUNT(*) FROM series GROUP BY source_id` -- is a full
-    scan of an ~11.9 GB table with no index on source_id. It took over 900 s and was killed by a
+    scan of an ~11.9 GB table which AT THE TIME had no index on source_id. It took over 900 s and
+    was killed by a
     timeout with an empty log, which is why this function announces itself before doing work
     (R706: never put a slow call at the start of a job without a print in front of it).
 
