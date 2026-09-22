@@ -47,6 +47,46 @@ CADENCE_LIMIT_DAYS = {"daily": 3, "weekly": 14, "monthly": 45, "quarterly": 120,
 
 
 
+def _gated_ids() -> set:
+    """Ids the committed denylist gates, read through the repo's ONE reader.
+
+    Returns None - meaning "cannot tell" - rather than an empty set when the gate cannot be read.
+    An unreadable gate is not an empty gate (R900), and here the consequence of guessing wrong is
+    that a withheld id is emailed.
+    """
+    try:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if here not in sys.path:
+            sys.path.insert(0, here)        # this module also runs as a script, not only as a package
+        from core.gen_denylist import committed_gate
+        return {s.lower() for s in committed_gate()}
+    except Exception:
+        return None
+
+
+def _split_withheld(ids):
+    """(nameable, withheld_count). Fails CLOSED: if the gate cannot be read, nothing is named.
+
+    The daily digest listed every unmanaged leftover state row BY ID. A released or gated source is
+    by construction absent from the registry, so its id is exactly what lands in that list - and
+    the digest is emailed. The count still tells the reader the rows are there; the ids do not have
+    to be in an email to do that.
+    """
+    gate = _gated_ids()
+    if gate is None:
+        return [], len(ids)
+    named = [i for i in ids if i.lower() not in gate]
+    return named, len(ids) - len(named)
+
+
+def _orphan_text(named, withheld: int) -> str:
+    if named and withheld:
+        return f"{', '.join(named)} (+{withheld} withheld)"
+    if named:
+        return ", ".join(named)
+    return f"{withheld} withheld" if withheld else "none"
+
+
 def late_label(cadence: str, run_location: str, ts, now) -> str:
     """The marker a digest row carries: '', ' LATE', or ' LATE(<route>)'.
 
@@ -185,6 +225,7 @@ def main() -> None:
     # 6 late sources were on the local route and no cloud source was late at all.
     route = {e["source_id"]: (e.get("run_location") or "any") for e in (_entries or [])}
     orphans = [r for r in rows if managed is not None and r[0] not in managed]
+    orphan_named, orphan_withheld = _split_withheld(sorted(r[0] for r in orphans))
     if managed is not None:
         rows = [r for r in rows if r[0] in managed]
 
@@ -297,7 +338,7 @@ def main() -> None:
     if orphans:
         lines.append(f"  ({len(orphans)} unmanaged leftover state row(s), excluded from the "
                      f"counts above — no registry entry, so they never re-run: "
-                     f"{', '.join(sorted(r[0] for r in orphans))})")
+                     f"{_orphan_text(orphan_named, orphan_withheld)})")
         lines.append("")
     if dormant:
         lines.append(f"  ({len(dormant)} source(s) not in the live tier, excluded from the "
@@ -361,7 +402,7 @@ def main() -> None:
         notes_html += _note(
             f"<b>{len(orphans)}</b> unmanaged leftover state row(s), excluded from the counts "
             f"above — no registry entry, so they never re-run: "
-            f"{esc(', '.join(sorted(r[0] for r in orphans)))}")
+            f"{esc(_orphan_text(orphan_named, orphan_withheld))}")
     if dormant:
         notes_html += _note(
             f"<b>{len(dormant)}</b> source(s) not in the live tier, excluded from the counts "
