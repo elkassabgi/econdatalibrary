@@ -41,6 +41,12 @@ import sys
 import tempfile
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
+# Run as a script (`python core/sync_state_d1.py`, which is how BOTH workflows call it) sys.path[0]
+# is core/, not the repo root, so `import core.*` fails. The gate reader below needs it. The
+# sibling core/sync_catalog_d1.py documents the same trap and bootstraps the same way.
+_REPO = os.path.abspath(os.path.join(_THIS, ".."))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
 ROOT = os.path.abspath(os.environ.get("ECONDL_ROOT")
                        or os.path.join(_THIS, ".."))
 STATE_DB = os.path.join(
@@ -67,6 +73,30 @@ ROWS_PER_STMT = 20        # matches core/export_d1.py (D1 statement-length cap)
 # stamps these sources from D1's own rows after every refresher run; this job leaves them alone.
 DATA_THROUGH_FROM_D1 = frozenset({"sec_edgar"})
 MAX_FILE_BYTES = 900_000  # per-file cap under wrangler's payload limit
+
+
+def _gated_ids() -> set[str]:
+    """Every source id the committed worker gate blocks, lower-cased. Read, never typed.
+
+    WITHHELD FROM THE PROJECTION, NOT DELETED FROM D1 (2026-09-17). This job upserts every
+    unit_state/source_state row and a data_through row per catalogued source, and never deletes,
+    so a gated source's freshness row was re-published into D1 twice a day: /v1/last-updates named
+    it with cadence, status and freshness until the worker learned to filter at the read, and a
+    row the owner had deleted from D1 came back at the next sync. Filtering here keeps new rows
+    out; it removes nothing, because the list that ENFORCES a gate is not the list of what to
+    delete (ledger R889 rule 3) - rows already in D1 stay until a reviewed delete takes them.
+
+    Delegates to core/gen_denylist.committed_gate, which RAISES on an unreadable gate: a gate that
+    cannot be read is not an empty gate, and syncing blind would re-publish every gated row.
+    committed_gate deliberately returns an EMPTY set when the worker file is ABSENT (a checkout
+    without the worker); that is right for a generator and wrong for a publisher, so an absent
+    gate stops this sync too.
+    """
+    from core import gen_denylist                  # reads the worker's own denylist.ts
+    if not os.path.exists(gen_denylist.OUT):
+        raise SystemExit(f"FATAL: the worker gate {gen_denylist.OUT} is absent - refusing to publish "
+                         "freshness rows without it (they would include every gated source)")
+    return {s.lower() for s in gen_denylist.committed_gate()}
 
 
 def _echo(s: str) -> str:
@@ -117,12 +147,21 @@ def _table_shape(conn: sqlite3.Connection, table: str) -> tuple[list[str], list[
     return cols, pk, ddl
 
 
-def emit_sql(state_db: str, out_dir: str) -> tuple[list[str], dict[str, int]]:
-    """Emit chunked upsert .sql files for ALL rows of the freshness tables.
+def _servable(rows, cols, gated):
+    """Rows whose source_id the gate does not block (case-insensitive)."""
+    i = cols.index("source_id")
+    return [r for r in rows if str(r[i]).lower() not in gated]
+
+
+def emit_sql(state_db: str, out_dir: str,
+             gated: set[str] | None = None) -> tuple[list[str], dict[str, int]]:
+    """Emit chunked upsert .sql files for every NON-GATED row of the freshness tables.
 
     Returns (ordered file paths, {table: row count}). Files must be executed in
-    the returned order (DDL for a table always precedes its upserts).
+    the returned order (DDL for a table always precedes its upserts). `gated`
+    defaults to the committed worker gate (_gated_ids); tests pass their own.
     """
+    gated = _gated_ids() if gated is None else {s.lower() for s in gated}
     # Strictly read-only: this script must never write (or WAL-touch) state.db.
     conn = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
     counts: dict[str, int] = {}
@@ -134,7 +173,7 @@ def emit_sql(state_db: str, out_dir: str) -> tuple[list[str], dict[str, int]]:
             upd = ", ".join(f'"{c}"=excluded."{c}"' for c in cols if c not in pk)
             conflict = ", ".join(f'"{c}"' for c in pk)
             stmts.append(ddl)  # no-op on the live D1; makes a fresh D1 workable
-            rows = conn.execute(f"SELECT {collist} FROM {table}").fetchall()
+            rows = _servable(conn.execute(f"SELECT {collist} FROM {table}").fetchall(), cols, gated)
             counts[table] = len(rows)
             for i in range(0, len(rows), ROWS_PER_STMT):
                 chunk = rows[i:i + ROWS_PER_STMT]
@@ -175,7 +214,8 @@ def emit_sql(state_db: str, out_dir: str) -> tuple[list[str], dict[str, int]]:
             # over them - MAX(<2900) gave 2215-09-30; MAX(<= today) gave a forward row that would
             # creep with the calendar - overwrote the correct stamp at every sync. Such sources are
             # left out here entirely and stamped by tools/stamp_source_data_through.py from D1.
-            dt_rows = [(sid, mx) for sid, mx in dt_rows if sid not in DATA_THROUGH_FROM_D1]
+            dt_rows = [(sid, mx) for sid, mx in dt_rows
+                       if sid not in DATA_THROUGH_FROM_D1 and str(sid).lower() not in gated]
         finally:
             cconn.close()
         stmts.append("CREATE TABLE IF NOT EXISTS source_data_through ("
@@ -228,12 +268,16 @@ def emit_sql(state_db: str, out_dir: str) -> tuple[list[str], dict[str, int]]:
     return files, counts
 
 
-def verify_replay(state_db: str, files: list[str], counts: dict[str, int]) -> None:
+def verify_replay(state_db: str, files: list[str], counts: dict[str, int],
+                  gated: set[str] | None = None) -> None:
     """Replay the emitted SQL into in-memory SQLite; require row-for-row equality.
 
     Runs the files TWICE to also prove idempotency (second pass must change
     nothing). Any mismatch is fatal — broken SQL must never reach remote D1.
+    Equality is against the NON-GATED rows of the source db, and the replay must
+    hold no gated row at all: a withheld row that still reached the SQL is fatal.
     """
+    gated = _gated_ids() if gated is None else {s.lower() for s in gated}
     src = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
     mem = sqlite3.connect(":memory:")
     try:
@@ -246,15 +290,24 @@ def verify_replay(state_db: str, files: list[str], counts: dict[str, int]) -> No
             order = ", ".join(f'"{c}"' for c in pk)
             collist = ", ".join(f'"{c}"' for c in cols)
             q = f"SELECT {collist} FROM {table} ORDER BY {order}"
-            want = src.execute(q).fetchall()
+            want = _servable(src.execute(q).fetchall(), cols, gated)
             got = mem.execute(q).fetchall()
+            # BEFORE the equality test, so this refusal is the one that fires for a gated row: after
+            # it, the filtered `want` already makes any gated row a plain mismatch and this line
+            # would be unreachable (review of PR #36).
+            if len(_servable(got, cols, gated)) != len(got):
+                raise SystemExit(f"FATAL: a gated source's row reached the {table} SQL — not executing")
             if got != want:
                 raise SystemExit(
                     f"FATAL: replay verify failed for {table} "
                     f"({len(got)} vs {len(want)} rows, or content differs) — not executing")
+            if counts[table] != len(want):
+                raise SystemExit(f"FATAL: emitted count for {table} disagrees with the replay — not executing")
             print(f"  verify {table:13} {len(got):>5} rows  OK (replayed twice, idempotent)")
-        assert all(counts[t] == len(src.execute(f"SELECT 1 FROM {t}").fetchall())
-                   for t in TABLES)
+        if "source_data_through" in counts:
+            dt = mem.execute("SELECT source_id FROM source_data_through").fetchall()
+            if any(str(r[0]).lower() in gated for r in dt):
+                raise SystemExit("FATAL: a gated source's row reached the source_data_through SQL — not executing")
     finally:
         src.close()
         mem.close()
@@ -340,11 +393,12 @@ def main(argv: list[str] | None = None) -> None:
                          "(run `python -m updater.run --pull-state` first in CI)")
 
     out_dir = tempfile.mkdtemp(prefix="d1_state_sync_")
-    files, counts = emit_sql(args.state_db, out_dir)
+    gated = _gated_ids()   # read ONCE, so the emit and its verifier judge the same gate
+    files, counts = emit_sql(args.state_db, out_dir, gated=gated)
     total = sum(counts.values())
     print(f"emitted {len(files)} file(s), {total} rows "
           f"({', '.join(f'{t}={n}' for t, n in counts.items())}) -> {out_dir}")
-    verify_replay(args.state_db, files, counts)
+    verify_replay(args.state_db, files, counts, gated=gated)
 
     if args.dry_run:
         print("DRY RUN — not executing. SQL files:")

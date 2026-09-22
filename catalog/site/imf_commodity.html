@@ -2,11 +2,11 @@
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="google-site-verification" content="JPQLV9lmydtD2e7IQ62JihpAvow7pUjLlTVUyAaKlSo">
-<title>Primary Commodity Price System (PCPS), redistributed via DBnomics — International Monetary Fund — Econ Data Library</title>
+<title>Primary Commodity Price System (PCPS) — International Monetary Fund — Econ Data Library</title>
 <meta name="description" content="Primary commodity prices — global price indices for energy, food, metals and raw materials. International Monetary Fund. 1,236 series, 1990–2025. Free download.">
 <meta name="author" content="Ahmed Elkassabgi">
 <link rel="canonical" href="https://econdatalibrary.com/imf_commodity">
-<meta property="og:title" content="Primary Commodity Price System (PCPS), redistributed via DBnomics — International Monetary Fund">
+<meta property="og:title" content="Primary Commodity Price System (PCPS) — International Monetary Fund">
 <meta property="og:description" content="Primary commodity prices — global price indices for energy, food, metals and raw materials. International Monetary Fund. 1,236 series, 1990–2025. Free download.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://econdatalibrary.com/imf_commodity">
@@ -17,7 +17,7 @@
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://econdatalibrary.com/assets/og-image.png">
-<meta name="twitter:title" content="Primary Commodity Price System (PCPS), redistributed via DBnomics — International Monetary Fund">
+<meta name="twitter:title" content="Primary Commodity Price System (PCPS) — International Monetary Fund">
 <meta name="twitter:description" content="Primary commodity prices — global price indices for energy, food, metals and raw materials. International Monetary Fund. 1,236 series, 1990–2025. Free download.">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -192,7 +192,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 {
   "@context": "https://schema.org/",
   "@type": "Dataset",
-  "name": "International Monetary Fund — Primary Commodity Price System (PCPS), redistributed via DBnomics",
+  "name": "International Monetary Fund — Primary Commodity Price System (PCPS)",
   "description": "Primary commodity prices — global price indices for energy, food, metals and raw materials. International Monetary Fund. 1,236 series, 1990–2025. Free download.",
   "url": "https://econdatalibrary.com/imf_commodity",
   "identifier": "imf_commodity",
@@ -211,15 +211,16 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   "creator": {
     "@type": "Organization",
     "name": "International Monetary Fund",
-    "url": "https://db.nomics.world/IMF"
+    "url": "http://datahelp.imf.org/tos"
   },
-  "license": "http://datahelp.imf.org/tos",
+  "license": "IMF Terms of Use (redistribution with attribution)",
   "keywords": [
     "Commodities",
     "imf_commodity"
   ],
   "temporalCoverage": "1990-01-01/2025-06-01",
-  "citation": "International Monetary Fund — Primary Commodity Price System (PCPS). Retrieved directly from the IMF SDMX API (api.imf.org). Observations first ingested before July 2026 were originally obtained via the DBnomics aggregation of the same IMF dataset; the series were since re-pointed to the IMF's own API with identical ids and values (value-agreement proven per indicator). Compiled and redistributed by the Elkassabgi Data Library.",
+  "creditText": "Source: International Monetary Fund, Primary Commodity Price System (PCPS).",
+  "citation": "International Monetary Fund — Primary Commodity Price System (PCPS). Retrieved directly from the IMF SDMX API (api.imf.org). Compiled and redistributed by the Elkassabgi Data Library.",
   "sameAs": [
     "https://huggingface.co/datasets/econdatalibrary-imf_commodity",
     "https://zenodo.org/communities/econdatalibrary"
@@ -229,8 +230,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
       "@type": "DataDownload",
       "name": "imf_commodity — CSV",
       "encodingFormat": "text/csv",
-      "contentUrl": "https://econdatalibrary.com/download.html?source=imf_commodity",
-      "license": "http://datahelp.imf.org/tos"
+      "contentUrl": "https://econdatalibrary.com/download.html?source=imf_commodity"
     }
   ]
 }
@@ -261,19 +261,19 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   "creator": {
     "@type": "sc:Organization",
     "name": "International Monetary Fund",
-    "url": "https://db.nomics.world/IMF"
+    "url": "http://datahelp.imf.org/tos"
   },
   "publisher": {
     "@type": "sc:Organization",
     "name": "Econ Data Library",
     "url": "https://econdatalibrary.com"
   },
-  "license": "http://datahelp.imf.org/tos",
+  "license": "IMF Terms of Use (redistribution with attribution)",
   "keywords": [
     "Commodities"
   ],
   "temporalCoverage": "1990-01-01/2025-06-01",
-  "citation": "International Monetary Fund — Primary Commodity Price System (PCPS). Retrieved directly from the IMF SDMX API (api.imf.org). Observations first ingested before July 2026 were originally obtained via the DBnomics aggregation of the same IMF dataset; the series were since re-pointed to the IMF's own API with identical ids and values (value-agreement proven per indicator). Compiled and redistributed by the Elkassabgi Data Library.",
+  "citation": "International Monetary Fund — Primary Commodity Price System (PCPS). Retrieved directly from the IMF SDMX API (api.imf.org). Compiled and redistributed by the Elkassabgi Data Library.",
   "distribution": [
     {
       "@type": "cr:FileObject",
@@ -324,7 +324,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-09-09');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-09-17');
     if(d.as_of){var _ag=tago(d.as_of);
       document.getElementById('sb-data').textContent='Data updated: '+fdate(d.as_of)+(_ag?' ('+_ag+')':'');}
   }).catch(function(){
@@ -335,10 +335,10 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 </script>
 
 <section class="dhero">
-<div class="crumb"><a href="index.html">Catalog</a> / International Monetary Fund — Primary Commodity Price System (PCPS), redistributed via DBnomics</div>
+<div class="crumb"><a href="index.html">Catalog</a> / International Monetary Fund — Primary Commodity Price System (PCPS)</div>
 <div class="pid">imf_commodity</div>
-<h1>International Monetary Fund — Primary Commodity Price System (PCPS), redistributed via DBnomics</h1>
-<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">dbnomics-passthrough-imf_commodity</span><span class="badge cat">Commodities</span></div>
+<h1>International Monetary Fund — Primary Commodity Price System (PCPS)</h1>
+<div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">IMF Terms of Use (redistribution with attribution)</span><span class="badge cat">Commodities</span></div>
 <p class="lead">IMF Primary Commodity Prices (PCPS). Source: IMF PCPS (Primary Commodity Price System) https://www.imf.org/en/Research/commodity-prices License: IMF data Terms of Use (free for research) Coverage: 1,236 series; energy, metals, food, beverages, agricultural raw materials; monthly/quarterly/annual,…</p>
 </section>
 <div class="wrap">
@@ -346,16 +346,15 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <h2>Coverage</h2>
 <div class="metrics"><div class="metric"><div class="mlabel">Series catalogued</div><div class="mval">1,236</div></div><div class="metric"><div class="mlabel">Temporal coverage</div><div class="mval">1990-01-01 – 2025-06-01</div></div><div class="metric"><div class="mlabel">Categories</div><div class="mval">Commodities</div></div></div>
 <h2>Licensing &amp; provenance</h2>
-<dl class="kv"><dt>License</dt><dd>dbnomics-passthrough-imf_commodity</dd>
-<dt>License URL</dt><dd><a href="http://datahelp.imf.org/tos">http://datahelp.imf.org/tos</a></dd>
-<dt>Required attribution</dt><dd>Source: International Monetary Fund, Primary Commodity Price System (PCPS), via DBnomics.</dd>
+<dl class="kv"><dt>License</dt><dd>IMF Terms of Use (redistribution with attribution)</dd>
+<dt>Required attribution</dt><dd>Source: International Monetary Fund, Primary Commodity Price System (PCPS).</dd>
 <dt>Redistribution</dt><dd>Permitted (served here)</dd>
 <dt>Commercial use</dt><dd>Restricted / no</dd>
 <dt>Modification</dt><dd>Permitted</dd>
-<dt>Provider homepage</dt><dd><a href="https://db.nomics.world/IMF">https://db.nomics.world/IMF</a></dd>
+<dt>Provider homepage</dt><dd><a href="http://datahelp.imf.org/tos">http://datahelp.imf.org/tos</a></dd>
 <dt>Provider terms</dt><dd><a href="http://datahelp.imf.org/tos">http://datahelp.imf.org/tos</a></dd></dl>
 <h2>How to cite</h2>
-<div class="citation-block"><p>International Monetary Fund — Primary Commodity Price System (PCPS). Retrieved directly from the IMF SDMX API (api.imf.org). Observations first ingested before July 2026 were originally obtained via the DBnomics aggregation of the same IMF dataset; the series were since re-pointed to the IMF&#x27;s own API with identical ids and values (value-agreement proven per indicator). Compiled and redistributed by the Elkassabgi Data Library.</p></div>
+<div class="citation-block"><p>International Monetary Fund — Primary Commodity Price System (PCPS). Retrieved directly from the IMF SDMX API (api.imf.org). Compiled and redistributed by the Elkassabgi Data Library.</p></div>
 <p class="proc"><b>Processing:</b> Retrieved from the official source, normalized to a long {series_key, obs_date, value} schema (period-start dates), de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the Elkassabgi Data Library.</p>
 <h2>Access &amp; mirrors</h2>
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=imf_commodity">Select &amp; download imf_commodity series as CSV &rarr;</a></dd>
@@ -383,7 +382,7 @@ Run: python jobs/ingest_imf_commodity.py</p>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
   &quot;@type&quot;: &quot;Dataset&quot;,
-  &quot;name&quot;: &quot;International Monetary Fund — Primary Commodity Price System (PCPS), redistributed via DBnomics&quot;,
+  &quot;name&quot;: &quot;International Monetary Fund — Primary Commodity Price System (PCPS)&quot;,
   &quot;description&quot;: &quot;Primary commodity prices — global price indices for energy, food, metals and raw materials. International Monetary Fund. 1,236 series, 1990–2025. Free download.&quot;,
   &quot;url&quot;: &quot;https://econdatalibrary.com/imf_commodity&quot;,
   &quot;identifier&quot;: &quot;imf_commodity&quot;,
@@ -402,15 +401,16 @@ Run: python jobs/ingest_imf_commodity.py</p>
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;Organization&quot;,
     &quot;name&quot;: &quot;International Monetary Fund&quot;,
-    &quot;url&quot;: &quot;https://db.nomics.world/IMF&quot;
+    &quot;url&quot;: &quot;http://datahelp.imf.org/tos&quot;
   },
-  &quot;license&quot;: &quot;http://datahelp.imf.org/tos&quot;,
+  &quot;license&quot;: &quot;IMF Terms of Use (redistribution with attribution)&quot;,
   &quot;keywords&quot;: [
     &quot;Commodities&quot;,
     &quot;imf_commodity&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1990-01-01/2025-06-01&quot;,
-  &quot;citation&quot;: &quot;International Monetary Fund — Primary Commodity Price System (PCPS). Retrieved directly from the IMF SDMX API (api.imf.org). Observations first ingested before July 2026 were originally obtained via the DBnomics aggregation of the same IMF dataset; the series were since re-pointed to the IMF&#x27;s own API with identical ids and values (value-agreement proven per indicator). Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;creditText&quot;: &quot;Source: International Monetary Fund, Primary Commodity Price System (PCPS).&quot;,
+  &quot;citation&quot;: &quot;International Monetary Fund — Primary Commodity Price System (PCPS). Retrieved directly from the IMF SDMX API (api.imf.org). Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;sameAs&quot;: [
     &quot;https://huggingface.co/datasets/econdatalibrary-imf_commodity&quot;,
     &quot;https://zenodo.org/communities/econdatalibrary&quot;
@@ -420,8 +420,7 @@ Run: python jobs/ingest_imf_commodity.py</p>
       &quot;@type&quot;: &quot;DataDownload&quot;,
       &quot;name&quot;: &quot;imf_commodity — CSV&quot;,
       &quot;encodingFormat&quot;: &quot;text/csv&quot;,
-      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=imf_commodity&quot;,
-      &quot;license&quot;: &quot;http://datahelp.imf.org/tos&quot;
+      &quot;contentUrl&quot;: &quot;https://econdatalibrary.com/download.html?source=imf_commodity&quot;
     }
   ]
 }</pre></details>
@@ -450,19 +449,19 @@ Run: python jobs/ingest_imf_commodity.py</p>
   &quot;creator&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;International Monetary Fund&quot;,
-    &quot;url&quot;: &quot;https://db.nomics.world/IMF&quot;
+    &quot;url&quot;: &quot;http://datahelp.imf.org/tos&quot;
   },
   &quot;publisher&quot;: {
     &quot;@type&quot;: &quot;sc:Organization&quot;,
     &quot;name&quot;: &quot;Econ Data Library&quot;,
     &quot;url&quot;: &quot;https://econdatalibrary.com&quot;
   },
-  &quot;license&quot;: &quot;http://datahelp.imf.org/tos&quot;,
+  &quot;license&quot;: &quot;IMF Terms of Use (redistribution with attribution)&quot;,
   &quot;keywords&quot;: [
     &quot;Commodities&quot;
   ],
   &quot;temporalCoverage&quot;: &quot;1990-01-01/2025-06-01&quot;,
-  &quot;citation&quot;: &quot;International Monetary Fund — Primary Commodity Price System (PCPS). Retrieved directly from the IMF SDMX API (api.imf.org). Observations first ingested before July 2026 were originally obtained via the DBnomics aggregation of the same IMF dataset; the series were since re-pointed to the IMF&#x27;s own API with identical ids and values (value-agreement proven per indicator). Compiled and redistributed by the Elkassabgi Data Library.&quot;,
+  &quot;citation&quot;: &quot;International Monetary Fund — Primary Commodity Price System (PCPS). Retrieved directly from the IMF SDMX API (api.imf.org). Compiled and redistributed by the Elkassabgi Data Library.&quot;,
   &quot;distribution&quot;: [
     {
       &quot;@type&quot;: &quot;cr:FileObject&quot;,

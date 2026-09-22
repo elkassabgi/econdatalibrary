@@ -535,10 +535,30 @@ def update(unit, since) -> Result:
         # nightly workstation budget goes to the other 28 local sources.
         #
         # THIS DOES NOT CLOSE THE STARVATION CLASS — it only stops istat paying for a
-        # DOWN publisher. istat still has no Deadline of its own and sits in the 120s
-        # fast lane on a cost estimate built from its own aborted runs, so the day ISTAT
-        # recovers, ~2,442 flows x >=1.0s RATE (plus two R2 reads each) will overrun the
-        # pass again. That fix is queued separately (50-queue.md, AR-017 SHOULD-FIX 3).
+        # DOWN publisher.
+        #
+        # CORRECTED 2026-09-17, because half of what this comment used to say is no longer
+        # true and the other half has gone from a prediction to a measurement.
+        #
+        # (a) "istat still has no Deadline of its own" — FALSE since the BUDGET+ROTATION block
+        #     above (`dl = Deadline(minutes=BUDGET_MIN)`), which closed AR-017 SHOULD-FIX 3.
+        #     The comment outlived its own fix by sitting 30 lines below it.
+        # (b) "sits in the 120s fast lane on a cost estimate built from its own aborted runs"
+        #     — this WAS true and is now observed rather than predicted. `run_cost_estimate`
+        #     is MAX over the last 5 runs (state.py:322-328) and `order_units` puts a source
+        #     in band 0 below FAST_LANE_SECONDS=120 (orchestrate.py:53,78-85). Replaying the
+        #     estimator over istat's 19 recorded runs: it sat in band 0 for the TEN runs from
+        #     2026-07-14 to 2026-09-04, every one of them a 15-42 s outage or host-dead abort,
+        #     and left only when the 1,081 s sweep of 2026-09-06 entered the sample. It reads
+        #     band 3 today (est 10,655 s). Controls: bls and ecb never re-enter band 0 after
+        #     their first run.
+        #
+        # So the loop is real and self-closing in the wrong direction: abort fast -> look
+        # cheap -> be guaranteed a nightly turn -> and the day the publisher recovers, the
+        # first real sweep lands in a slot budgeted for a two-minute source. Five consecutive
+        # aborts are enough to re-enter it, and this source has had six in a row (2026-08-30
+        # to 2026-09-04). The Deadline bounds the damage; it does not fix the misclassification,
+        # because the estimate is built from durations and an abort is genuinely short.
         if all(b in _DEAD_HOSTS for _l, b in HOSTS):
             # BREAK, NEVER RAISE. A TransientError here would book `transient_fail`, and
             # _should_derive_csvs admits only {ok, partial} — so a host dying at flow 801

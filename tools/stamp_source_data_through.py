@@ -57,8 +57,22 @@ def d1_json(sql: str, timeout: int = 600):
     raise RuntimeError(f"D1 statement failed: {last}")
 
 
+def _refuse_if_gated(source: str) -> None:
+    """The second publisher of source_data_through must honour the gate as core/sync_state_d1.py does.
+    An absent or unreadable gate refuses too: a publisher cannot tell 'not gated' from 'gate unread'."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import gen_denylist
+    if not os.path.exists(gen_denylist.OUT):
+        raise SystemExit(f"FATAL: the worker gate {gen_denylist.OUT} is absent - refusing to stamp")
+    if source.lower() in {s.lower() for s in gen_denylist.committed_gate()}:
+        raise SystemExit("FATAL: this source is gated - refusing to publish its data_through row")
+
+
 def stamp(source: str, apply: bool = True) -> tuple[str | None, str | None, int]:
     """Returns (value_stamped, value_read_back, rows_read). value None means the source has no ended row."""
+    if apply:
+        _refuse_if_gated(source)
     today = dt.datetime.now(dt.timezone.utc).date().isoformat()
     res = d1_json(f"SELECT MAX(end_date) AS mx FROM series WHERE series_id >= '{source}:' AND series_id < '{source};' "
                   f"AND end_date IS NOT NULL AND end_date <= '{today}'")

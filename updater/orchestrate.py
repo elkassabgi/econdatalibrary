@@ -110,6 +110,60 @@ def overdue_key(last_utc, cadence, now_utc):
     return -(age_days / days)
 
 
+def last_turn_utc(state_row, last_kill_utc):
+    """When this unit last HAD A TURN, for ordering: the later of its state stamp and its last kill.
+
+    A HARD-STOPPED ATTEMPT IS STILL A TURN (2026-09-17). The staleness clock read
+    `last_success_utc or last_attempt_utc` from unit_state, and a unit killed by the desktop pass's
+    wall clock writes neither - the process dies before finalize - so its clock never moved. A
+    giant that cannot finish inside one pass therefore sorted MORE overdue after every kill and
+    led its band forever: unctad_tradefoodcatbyproc was killed on 2026-09-02, 09-14, 09-15 and
+    09-17 with its key still reading its 2026-08-17 attempt, while statcan, census, eia, oecd and
+    five other giants queued behind it and were never admitted. The kill IS recorded, as a
+    `killed_external` row in `runs` (tools/record_killed_unit.py), and that row is the attempt.
+
+    ORDERING ONLY. Nothing here stamps unit_state, admits or refuses a unit, or reads a duration:
+    is_due's partial-retry clock and health.py still read last_attempt_utc exactly as before, so
+    this cannot re-open R639 (a kill rule that stamps and runs away) or R684 (an admission change)
+    and does not trust a censored kill duration (R625). The state stamp it compares against is the
+    SAME one the old clock read - `last_success_utc`, falling back to `last_attempt_utc` - so a unit
+    with a success on record is judged by that success, exactly as before; the kill takes over only
+    while it is the later of the two, and a later success replaces it. (A unit whose newer PARTIAL
+    attempts are hidden behind an older success is an older property of this clock, left unchanged
+    here: changing it reorders every partial source and needs its own replay.)
+
+    Unparseable values are ignored in favour of the other, so a malformed kill row can never make a
+    unit look MORE overdue than its state says; if neither parses, the state value is returned
+    unchanged for overdue_key to judge. An offset-less stamp is read as UTC - every writer here uses
+    UTC - because comparing a naive datetime with an aware one RAISES, and one hand-written row
+    would otherwise abort the whole pass (review of PR #37).
+    """
+    from datetime import datetime, timezone
+
+    def _parse(v):
+        d = datetime.fromisoformat(str(v))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+    last = (state_row or {}).get("last_success_utc") or (state_row or {}).get("last_attempt_utc")
+    if not last_kill_utc:
+        return last
+    try:
+        k = _parse(last_kill_utc)
+    except (ValueError, TypeError):
+        return last
+    # A kill dated in the FUTURE cannot be a turn that happened; taken at face value it would bury the unit (a 2099
+    # row gave key +880). Ignore it rather than trust it (review of PR #37).
+    if k > datetime.now(timezone.utc):
+        return last
+    if not last:
+        return last_kill_utc
+    try:
+        s = _parse(last)
+    except (ValueError, TypeError):
+        return last_kill_utc
+    return last_kill_utc if k > s else last
+
+
 def _protected(unit) -> bool:
     """Protected in-flight backfill. Announced, never silent — see below."""
     if unit.source_id in FIRSTPASS_DIRS:
@@ -624,10 +678,17 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         # same function already carries two scars from.
         if getattr(res, "merged_rows", None) == 0:
             return [], None, [], {}
-        if res.obs and _catalog_series_count(unit.source_id) == 0:
-            # VACUOUS COHERENCE. A source with ZERO catalogued series has no per-series
-            # CSVs, so there is nothing that can go stale and §5.7 is satisfied rather
-            # than violated. gleif is the case: a REFERENCE TABLE (LEI golden copy) with
+        # ASK ABOUT THE STORE THIS RUN WROTE, NOT THE SOURCE ID. Two registry entries have
+        # out_dir != source_id and both are the sec_edgar collision (R275), so keying on the id
+        # answered the wrong product in both directions: `sec_edgar` booked a debt every
+        # merging tick against a corpus it does not write, and `sec_edgar_xbrl` — which DOES
+        # write the 17,467-series served corpus — was exempt from §5.7 entirely. Measured
+        # across all 278 entries, this substitution changes exactly those two units and leaves
+        # every other source, gleif included, byte-identical. See `_store_dir_name`.
+        if res.obs and _catalog_series_count(_store_dir_name(unit) or unit.source_id) == 0:
+            # VACUOUS COHERENCE. A source whose store backs ZERO catalogued series has no
+            # per-series CSVs, so there is nothing that can go stale and §5.7 is satisfied
+            # rather than violated. gleif is the case: a REFERENCE TABLE (LEI golden copy) with
             # no series_key/obs_date at all, whose module docstring says plainly that
             # cursors "would be meaningless, not missing" and asks the sweep not to
             # "fix" it. Without this it merged 3,391,691 obs and demoted to `partial`
@@ -1138,6 +1199,61 @@ def _norm_id(s: str) -> str:
     return "".join(ch for ch in s if ch.isalnum()).lower()
 
 
+def _store_dir_name(unit) -> "str | None":
+    """The store DIRECTORY this unit writes, when it differs from the source id — else None.
+
+    WHY THIS EXISTS. `_catalog_series_count` is asked whether anything catalogued could go
+    stale. Keyed on the SOURCE ID that question is wrong for both halves of the sec_edgar
+    collision (R275), and wrong in OPPOSITE directions:
+
+        source_id=sec_edgar       out_dir=edgar_13f    catalogue(sec_edgar)=yes, (edgar_13f)=no
+        source_id=sec_edgar_xbrl  out_dir=sec_edgar    catalogue(sec_edgar_xbrl)=no, (sec_edgar)=yes
+
+    So `sec_edgar` (the relational 13F/insider product, nothing catalogued) booked a
+    `full_rederive_owed` debt on every merging tick against the OTHER product's 17,467-series
+    corpus, while `sec_edgar_xbrl` — whose store DOES back those 17,467 served CSVs — was
+    silently EXEMPT from §5.7 altogether. Probing the store directory instead answers both.
+
+    MEASURED, not assumed: of the 278 registry entries exactly these two have
+    `out_dir != source_id`, so this returns None for every other source and the caller's
+    behaviour is byte-identical to what it was.
+
+    THIS IS A HEURISTIC THAT APPROXIMATES THE RESOLVER, NOT A RULE ABOUT THE CATALOGUE. The
+    authority on which store a catalogued series is derived from is the per-source registry in
+    `clients/python/econdl/_resolve.py` (`_RESOLVERS`), whose bodies hard-code their own paths —
+    `_resolve_sec_edgar` names `clean_grouped/sec_edgar` and mentions neither edgar directory.
+    The catalogue does not key on directory names; it is simply true today that the corpus
+    derived from a store is catalogued under that store's name. If that stops holding, fix this
+    against `_RESOLVERS` rather than extending a rule that does not exist (R275's closing
+    warning: a registry comment saying a source was "split out" is a re-pointing — go check what
+    each name now denotes).
+
+    TWO LIMITS, both deliberate and both worth knowing before trusting it:
+      * It covers only the DECLARED directory. `registry.py:123-125` puts one path in
+        `out_paths`, but `fetchers/sec_edgar.py:339,476` writes edgar_13f AND edgar_insider from
+        its own PRODUCTS table, and the registry declares only the first. Both probe 0 today so
+        the answer is unaffected, but a fetcher that writes an undeclared store is not fully
+        measured here.
+      * A file-grain `out_paths` (`registry.flow_unit`, registry.py:128-141, sets
+        `<dir>/<file>.parquet`) would have a basename that can never equal a source id and would
+        therefore always probe 0 — a blanket exemption. No entry reaches this path today; the
+        extension check below refuses it anyway rather than leaving the hole for later.
+
+    `getattr`, not a bare attribute access: this module's derive path is driven by duck-typed
+    stand-ins in the tests, and an AttributeError here lands in the orchestrator's outer
+    `except`, which books transient_fail AFTER a successful publish with every state write
+    skipped — the disease `_derive_changed_csvs` already carries two scars from.
+    """
+    paths = getattr(unit, "out_paths", None) or [None]
+    p = paths[0]
+    if not p:
+        return None
+    name = os.path.basename(os.path.normpath(p))
+    if not name or os.path.splitext(name)[1]:
+        return None                      # a file, not a store directory — see the second limit
+    return name if name != getattr(unit, "source_id", None) else None
+
+
 def _catalog_series_count(source_id: str) -> int:
     """Does the CATALOGUE hold ANY series for this source? 1 = yes, 0 = none, -1 = unreadable.
 
@@ -1625,10 +1741,11 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     # deliberate — a never-run source has no cost on record precisely because it has never had
     # a turn, and putting it last would be the starvation this whole ordering exists to undo.
     _now = now_utc()
+    _kills = store.last_kill_utc()     # {(source_id, unit_id): ts} - one read of `runs` per pass
 
     def _staleness(unit):
         st = store.get_unit(unit.source_id, unit.unit_id) or {}
-        last = st.get("last_success_utc") or st.get("last_attempt_utc")
+        last = last_turn_utc(st, _kills.get((unit.source_id, unit.unit_id)))
         cadence = (unit.config or {}).get("cadence")
         # Cadence-normalized: a 5d-stale daily (5x overdue) outranks a 10d-stale
         # annual (0.03x) — absolute age inverted exactly that on 2026-08-18.
