@@ -455,7 +455,10 @@ def main(argv: list[str] | None = None) -> None:
         # identical to a run that had hung - two background jobs sat 70 and 15 minutes on this
         # exact query shape before anyone noticed they had produced nothing.
         print(f"selecting local catalogue rows for source={a.source} ...", flush=True)
-        # INDEX SEARCH, NOT A TABLE SCAN. `source_id` carries no index, so `WHERE source_id=?`
+        # INDEX SEARCH, NOT A TABLE SCAN. (`source_id` carried no index when this was written;
+        # it does now - idx_series_source in D1, ix_series_source_id locally, both verified
+        # 2026-09-22. The PK-range form below is still correct and still cheap, so nothing
+        # here changes - but do not repeat the missing-index premise elsewhere.) `WHERE source_id=?`
         # plans as `SCAN series` over an 11.9 GB file: measured still running after 20 minutes
         # while the workstation's crawlers held the disk, and R706 records the same shape timing
         # out at 400 s. `series_id` IS the primary key and is built as "<source>:<key>", so a

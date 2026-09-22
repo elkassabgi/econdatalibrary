@@ -87,7 +87,8 @@ def chunk_plan():
         n_chunks = (n + CHUNK_ROWS - 1) // CHUNK_ROWS
         step = (n // n_chunks) or 1
         # Boundary ids via PK-RANGE seeks, never a source_id filter: the local catalogue has
-        # no index on source_id, so the first version's window query full-scanned 13.5M rows
+        # no index on source_id BACK THEN, so the first version's window query full-scanned
+        # 13.5M rows (ix_series_source_id exists now, verified 2026-09-22)
         # PER BIG SOURCE (~10 of them) over a USB drive — the ~4-min plan phase wedged past
         # 15, and a control run alongside made two full scans thrash one disk. R492's lesson
         # in local form: the cost is the predicate's access path, not the row count.
