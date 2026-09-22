@@ -432,6 +432,55 @@ def _rows_and_key_batch(con, files: list[str]) -> tuple[int, list[str], int]:
     return obs, [], len(files)
 
 
+def impossible_sources(obs_by_src: dict, ser_by_src: dict) -> list:
+    """Sources reporting more distinct series than observations - arithmetically impossible.
+
+    A series is a set of observations, so distinct keys can never exceed rows. When this fires the figure is
+    not "surprising", it is WRONG, and the cause is upstream of any publish decision. Measured 2026-09-16:
+    approx_count_distinct reported 1,307,042,927 distinct keys over 893,928,960 rows for one statcan cube.
+
+    Deliberately NOT part of the R420 step-change gate. That gate asks whether the number MOVED and can be
+    overridden with --force-publish; this asks whether the number is POSSIBLE, and nothing overrides it.
+
+    KNOWN LIMIT, stated because it was measured: this works at SOURCE granularity and would NOT have caught the
+    2026-09-16 run. There, statcan reported 32,854,575,488 series over 56,846,068,336 observations - series
+    below obs, so it passes here - while the impossibility sat in individual FILES (98100620.parquet:
+    893,928,960 rows against approx_count_distinct 1,307,042,927). The census never computes per-file distincts,
+    so no source-level check can see that. `one_observation_sources` below is what surfaces that case.
+    """
+    out = []
+    for src, ser in sorted(ser_by_src.items()):
+        obs = obs_by_src.get(src, 0) or 0
+        if ser and obs and ser > obs:
+            out.append((src, obs, ser))
+    return out
+
+
+# A series with about one observation is a CELL, not a time series. This does not refuse anything - the module
+# docstring above already records that the 2021 census-profile tables carry ~32.85B one-observation coordinate
+# cells and that whether they count as "series" in the public number is the metric owner's call. The point is
+# that the call should be made knowingly: measured 2026-09-16, statcan sat at 1.73 obs/series against 8.97 for
+# the rest of the fleet, and nothing in the run said so.
+ONE_OBS_RATIO = 2.0
+
+
+def one_observation_sources(obs_by_src: dict, ser_by_src: dict, ratio: float = ONE_OBS_RATIO) -> list:
+    """Sources averaging fewer than `ratio` observations per series, largest series count first.
+
+    Returns (src, obs, series, obs_per_series). Sources with no series are skipped - that is a different
+    condition, not a thin one.
+    """
+    out = []
+    for src, ser in ser_by_src.items():
+        obs = obs_by_src.get(src, 0) or 0
+        if not ser or not obs:
+            continue
+        r = obs / ser
+        if r < ratio:
+            out.append((src, obs, ser, r))
+    return sorted(out, key=lambda t: -t[2])
+
+
 def main() -> int:
     srcs = source_files()
     _local_n = sum(len(v) for v in srcs.values())
@@ -520,11 +569,40 @@ def main() -> int:
         json.dump(detail, fh, indent=1)
     print(f"history written: {hist}")
 
+    # SAY IT ON EVERY RUN, not only when publishing. A measurement-only run is exactly where an impossible
+    # figure gets read, quoted and carried into a decision, which is what happened on 2026-09-16.
+    impossible = impossible_sources(obs_by_src, ser_by_src)
+    if impossible:
+        print("\nIMPOSSIBLE ARITHMETIC - these sources report more distinct series than observations:")
+        for src, obs, ser in impossible:
+            print(f"    {src}: {ser:,} series over {obs:,} obs  (+{(ser - obs) / obs:.1%})")
+        print("A series is a set of observations, so this cannot be true. The totals above are NOT usable "
+              "and must not be quoted or published until it is explained.\n")
+
+    thin = one_observation_sources(obs_by_src, ser_by_src)
+    if thin:
+        share = sum(t[2] for t in thin) / max(1, sum(ser_by_src.values()))
+        print(f"\nFOR REVIEW - {len(thin)} source(s) average fewer than {ONE_OBS_RATIO} observations per "
+              f"series, contributing {share:.1%} of the series total:")
+        for src, obs, ser, r in thin[:10]:
+            print(f"    {src}: {ser:,} series over {obs:,} obs = {r:.2f} obs/series")
+        print("A series with about one observation is a CELL, not a time series. Whether these belong in the "
+              "public number is the metric owner's call - this only makes the call visible.\n")
+
     if "--publish" not in sys.argv:
         print("NOT PUBLISHED (measurement-only run; pass --publish to upload). "
               "Totals cover the SERVED store: objects present on R2 that the worker "
               "will resolve.")
-        return 0
+        return 1 if impossible else 0
+
+    # IMPOSSIBILITY GATE, and --force-publish does NOT lift it. R420 below asks whether the number moved;
+    # this asks whether it can be true. A figure that cannot be true is never publishable, however deliberate
+    # the operator is being.
+    if impossible:
+        print(f"REFUSING to publish: {len(impossible)} source(s) report more distinct series than "
+              f"observations. This is not a step change and --force-publish does not apply to it. "
+              f"Fix the count, then re-run.")
+        return 1
 
     # R420 publish gate: refuse a silent step-change against the live object.
     s3 = r2_util.client(write=True)
