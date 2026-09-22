@@ -678,6 +678,31 @@ def parse_cbs_period_ex(s: str) -> tuple[dt.date | None, str | None]:
                 # (R589). The LEGACY dating (the X0 branch: yr+2, 31 July) is KEPT so the
                 # served content is unchanged, and every occurrence is COUNTED so the
                 # title-driven rule (open) can be sized. Never silently.
+                #
+                # SIZED 2026-09-22, from CBS's own period codes rather than from our dates.
+                # 288 of 5,626 cbs_nl parquets carry ONLY 31-July dates (read from parquet
+                # footers: min == max == 31 July). That looks like 1.14 BILLION suspect rows
+                # and is not one: 31 July is also what SJ and X0 write, and those are CORRECT.
+                # 263 of the 288 are academic-year tables. Probing the 59-table residue against
+                # CBS - all 59, two requests each, 2 s apart - gives the real exposure:
+                #
+                #   X000-ONLY, i.e. the WHOLE date axis is this fabricated date:
+                #     7 tables / 136,804 rows - 85071NED 55,728 - 37450 24,480 -
+                #     85011NED 23,424 - 82810NED 21,675 - 82811NED 6,000 -
+                #     81976NED 5,439 - 80066ned 58
+                #   MIXED (X000 alongside other families):
+                #     3 tables / 35,576 rows - 60046ned - 37117 - 80004ned
+                #   plus 70895ned / 70895ENG at 288 rows each, where the prefix is a REAL year:
+                #     '1971X000' is titled "1971 week 0 (3 dagen)" and is stored as 1973-07-31.
+                #     That is the dangerous shape - a real prefix lands INSIDE the sane band, so
+                #     no date audit can see it.
+                #
+                # That reproduces this comment's own "8 served tables (136,862 rows)"
+                # independently, within drift. The list above is the target set for the
+                # title-driven rule when it is written. The rule is still OPEN, and what to do
+                # with a period CBS does not treat as a period is the owner's call - see R1079,
+                # where 1,038 of these rows turned out to be published STANDARD ERRORS and a
+                # "repair" would have deleted them.
                 _discard("X000-legacy-dated", s)
                 return (dt.date(yr + 2, 7, 31), None)
             # Span of TWO academic years starting at yr, so it ends with the year
