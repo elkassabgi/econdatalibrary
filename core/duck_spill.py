@@ -44,6 +44,31 @@ def spill_path(tag: str) -> str:
     return p.replace(os.sep, "/")
 
 
+_SWEPT = False
+
+
+def ensure_spill(tag: str, sweep: bool = True) -> str:
+    """Create this run's private spill directory, and reap what a SIGKILL left behind.
+
+    The atexit cleanup in the call sites covers a normal exit and an unhandled exception. It does
+    NOT cover SIGKILL, and SIGKILL is how the 83.73 GB found on 2026-09-22 got there - 19 files
+    across three directories, the oldest 20.42 days, from processes that ran no handler at all.
+
+    The sweep runs ONCE per process and only on directories older than the guard, so a long query
+    in a sibling process cannot lose its temp. Returns the path, already created.
+    """
+    global _SWEPT
+    p = spill_path(tag)
+    os.makedirs(p, exist_ok=True)
+    if sweep and not _SWEPT:
+        _SWEPT = True
+        try:
+            sweep_orphans()
+        except OSError:
+            pass          # reaping is best-effort; never let it stop the real work
+    return p
+
+
 @contextlib.contextmanager
 def connection_spill(tag: str):
     """Yield a private spill directory and remove it afterwards, on success or on an exception."""
