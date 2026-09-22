@@ -13,8 +13,20 @@ What it pins (one assertion group per Task in the reconciliation brief):
   3. /v1/series/{id}.metadata.json  has `category`; description/citation fallback;
                             last_updated falls back to unit_state('_all')
   4. /v1/last-updates       cadence map incl `annual`; others -> next_update_expected null
-  5. status codes          501 not_migrated vs 502 data_unavailable vs 502 resolver_empty
-                            vs 404; the data_unavailable/resolver_empty DISTINCTION
+  5. status codes          502 data_unavailable vs 502 resolver_empty vs 404, and the
+                            data_unavailable/resolver_empty DISTINCTION. NOT 501: that leg
+                            is documented but UNREACHABLE for a catalogued id, because the
+                            404 check guarantees the series row exists and a source with
+                            series rows is by definition in supported_sources(). Measured
+                            2026-09-22: 0 ungated catalogued sources are missing from the
+                            Worker's 321-entry SUPPORTED_SOURCES either, so both backends
+                            answer 502. See test_status_no_resolver_no_store_is_data_
+                            unavailable_not_501, which was written to assert 501 and was
+                            corrected by the system rather than the other way round.
+  7. redistribution gate   451 BEFORE existence on .csv/.metadata.json, 451 on
+                            /v1/catalog?source=, and the series-level carve-out branch.
+                            Added 2026-09-22: the gate had NINE call sites and no test, and
+                            deleting it outright left this suite green.
   6. /v1/series/{id}.csv    identity column == econdl._resolve.native_to_tidy key
                             (native key, NOT the catalog id), and a LOCAL bundle ==
                             an HTTP bundle row-for-row (series_id column included)
@@ -61,6 +73,9 @@ EX_PWT = "penn_world_table:rgdpe:USA"
 #     fall back to English with NO title_en, exercising the graceful-fallback pin.
 EX_WB_AR = "worldbank:NY.GDP.MKTP.CD:ARB"
 EX_ILO_NOAR = "ilostat:UNE_DEAP_SEX_AGE_RT:AGE_YTHADULT_YGE15:AUS"
+# Catalogued, ungated, and deliberately WITHOUT a resolver -> the 501 leg.
+# Taken from the fixture module so the two cannot drift apart.
+BCRP_NOT_MIGRATED = "bcrp:BCRP:USDPEN_buy"
 
 
 # --------------------------------------------------------------------------- #
@@ -648,3 +663,162 @@ def test_catalog_q_and_source_combine(base_url):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --------------------------------------------------------------------------- #
+# The redistribution gate. UNTESTED until 2026-09-22, while three files said otherwise.
+#
+# The gate was added to the shim on 2026-09-17 because a review found the shim had none -
+# a gated series was served here while the Worker answered 451, so a caller developing
+# against the shim saw data production refuses. It has nine call sites. An adversarial
+# review of the fixture work then deleted the gate outright (`_is_gated` -> `return False`)
+# and this suite still reported 18 passed; I reproduced that independently before writing
+# these tests. Meanwhile the fixture's own docstring and the CI step both claimed the suite
+# "pins the redistribution gate". A false claim of coverage is worse than a known gap,
+# because it stops anyone looking.
+#
+# The gate is read at RUNTIME from the committed denylist and no member is ever hard-coded,
+# written to a file, printed, or placed inside an assert expression - the assertions compare
+# status codes only. That is possible because the gate answers 451 BEFORE existence is
+# consulted (devserver.py:282 "451 before existence is consulted"), so the probe id needs no
+# catalogue row anywhere.
+# --------------------------------------------------------------------------- #
+
+def _gate_and_carveouts():
+    """The committed gate + series-level carve-outs, through the repo's ONE reader."""
+    if _REPO not in sys.path:
+        sys.path.insert(0, _REPO)
+    from core import gen_denylist
+    return frozenset(gen_denylist.committed_gate()), gen_denylist.committed_carveouts()
+
+
+def test_gate_451_before_existence(base_url):
+    gate, _ = _gate_and_carveouts()
+    # Without this the whole test passes vacuously on an empty gate - which is exactly the
+    # failure `_load_gate` refuses at import, so it must be refused here too.
+    assert gate, "the committed redistribution gate read EMPTY; this test cannot mean anything"
+
+    probe = sorted(gate)[0] + ":CONFORMANCE_PROBE"      # no catalogue row, anywhere
+    for suffix in (".csv", ".metadata.json"):
+        code, ct, body = _get(base_url, f"/v1/series/{_enc(probe)}{suffix}")
+        assert code == 451, f"a gated id{suffix} answered {code}, expected 451"
+        assert json.loads(body)["error"] == "not_redistributable", suffix
+
+    # NEGATIVE CONTROL, and the reason this is a test rather than a smoke check: an id of
+    # exactly the same shape under an UNGATED source, equally absent from the catalogue,
+    # must answer 404. Without it, a server that returned 451 for everything would pass.
+    for suffix in (".csv", ".metadata.json"):
+        code, ct, body = _get(base_url, f"/v1/series/{_enc('bls:CONFORMANCE_PROBE')}{suffix}")
+        assert code == 404, f"an ungated unknown id{suffix} answered {code}, expected 404"
+
+
+def test_gate_catalog_browse_451(base_url):
+    gate, _ = _gate_and_carveouts()
+    assert gate, "the committed redistribution gate read EMPTY; this test cannot mean anything"
+    code, ct, body = _get(base_url, f"/v1/catalog?source={_enc(sorted(gate)[0])}")
+    assert code == 451, f"/v1/catalog for a gated source answered {code}, expected 451"
+    # TWO SPELLINGS, AND THIS ONE IS NOT A TYPO IN THE SHIM. `.csv` and `.metadata.json`
+    # answer "not_redistributable" (index.ts:242,256; CONTRACT.md:123); this route answers
+    # "non_redistributable" (catalog.ts:120), and the shim matches the Worker on both because
+    # matching the Worker is its whole job. The divergence is real and is the WORKER's: the
+    # catalog spelling arrived in 62aa0ef40 ("P1 compliance: denylist gating in bundle +
+    # catalog SQL") and the 2026-09-17 gate sweep used the other everywhere it touched. A
+    # client parsing `error` therefore has to accept both. Pinned as-is rather than quietly
+    # changed, because a served error code is a contract change and needs a worker deploy;
+    # this test now makes the inconsistency impossible to lose track of.
+    assert json.loads(body)["error"] == "non_redistributable"
+    # control: an ungated source browses normally.
+    code, ct, body = _get(base_url, "/v1/catalog?source=bls")
+    assert code == 200, f"/v1/catalog for an ungated source answered {code}, expected 200"
+
+
+def test_gate_series_level_carveout_451(base_url):
+    """isSeriesCarvedOut is a SECOND mechanism and fails independently of the source set.
+
+    It is exercised through worldbank, which is hosted, listed and ungated at source level
+    but carries series-level carve-outs - so this pins the carve-out branch without going
+    anywhere near the withheld-source set.
+    """
+    _, carve = _gate_and_carveouts()
+    carved = carve.get("worldbank") or ()
+    assert carved, "worldbank carries no carve-outs; this test would pass vacuously"
+
+    # denylist.ts matches the carve-out against parts[1] of the series id.
+    code, ct, body = _get(base_url, f"/v1/series/{_enc('worldbank:' + carved[0] + ':ARB')}.csv")
+    assert code == 451, f"a carved-out worldbank series answered {code}, expected 451"
+    assert json.loads(body)["error"] == "not_redistributable"
+
+    # CONTROL, and it is not decorative: EX_WB_AR is the same source and must still serve.
+    # If a carve-out ever swallowed the whole source this would catch it, and the i18n tests
+    # would go red rather than silently testing a 451.
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_WB_AR)}.csv")
+    assert code in (200, 502), f"an uncarved worldbank series answered {code}"
+
+
+# --------------------------------------------------------------------------- #
+# Claims this file's own docstring makes that nothing was checking (found by an
+# adversarial review, 2026-09-22). Line 16 promises "501 not_migrated vs 502
+# data_unavailable vs 502 resolver_empty vs 404" - the three 502/404 legs were pinned and
+# the 501 leg was not, so turning 501 into a 500 passed. And `econdl:unresolved` was only
+# ever asserted EMPTY, which cannot fail in the direction that matters: a bundle that
+# silently drops what it cannot serve looks exactly like a bundle with nothing to drop.
+# --------------------------------------------------------------------------- #
+
+def test_status_no_resolver_no_store_is_data_unavailable_not_501(base_url):
+    """A catalogued source with no explicit resolver AND no store dir is 502, NOT 501.
+
+    THIS TEST WAS WRITTEN TO ASSERT 501 AND THE SYSTEM SAID 502. The system is right and the
+    docstring at the top of this file is wrong, which is worth recording rather than quietly
+    re-aiming the assertion:
+
+        _resolve.supported_sources() is "explicit resolvers PLUS every source that has catalog
+        series rows (those are served by the generic uniform-long resolver)".
+
+    `h_csv` answers 404 first if the id is not in the catalogue, so by the time the 501 branch
+    is reached the series row EXISTS - which is exactly what puts its source into
+    supported_sources(). The 501 leg is therefore unreachable for any catalogued id. It is not
+    a shim quirk either: the Worker gates on a static SUPPORTED_SOURCES list in util.ts, and
+    measured against the real catalogue that list holds 321 sources while the number of ungated
+    catalogued sources missing from it is ZERO. Both implementations agree, and both agree on
+    502 rather than 501.
+
+    So this pins the branch that actually runs. `bcrp` is real, ungated, has no explicit
+    resolver and no store dir in the fixture, and `_selfcheck` refuses to build if it ever
+    gains a resolver.
+    """
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(BCRP_NOT_MIGRATED)}.csv")
+    assert code == 502, f"a catalogued source with no store answered {code}, expected 502"
+    assert json.loads(body)["error"] == "data_unavailable", body[:200]
+
+    # CONTROL: the same route, a source that resolves, must still serve. Without this a
+    # server that answered 502 for everything would pass the assertion above.
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv")
+    assert code == 200, f"a migrated, resolvable series answered {code}, expected 200"
+
+
+def test_bundle_reports_what_it_cannot_serve(base_url):
+    """`econdl:unresolved` must NAME the ids it dropped, not just be empty when nothing broke.
+
+    Every other bundle assertion checks `== []`, which passes whether the manifest is honest
+    or silently lossy. Asking for one id that cannot resolve alongside two that can is the
+    only way to tell those apart.
+    """
+    bogus = "bls:NO_SUCH_SERIES_CONFORMANCE"
+    path = (f"/v1/bundle?ids={_enc(EX_BLS)},{_enc(EX_OECD)},{_enc(bogus)}")
+    code, dp = _get_json(base_url, path)
+    assert code == 200, dp
+
+    unresolved = dp["econdl:unresolved"]
+    assert unresolved, "a bundle asked for an unservable id reported NOTHING unresolved"
+    # entries are {"id": ..., "reason": ...} -- the key is `id`, not `series_id`
+    ids = {u["id"] if isinstance(u, dict) else u for u in unresolved}
+    assert bogus in ids, f"the unservable id is missing from econdl:unresolved: {ids}"
+    # the reason must say something, or "reported it" degrades to "listed it blankly"
+    for u in unresolved:
+        if isinstance(u, dict):
+            assert (u.get("reason") or "").strip(), f"unresolved entry has no reason: {u}"
+    # and it must not be quietly counted as delivered
+    served = {sid for r in dp["resources"] for sid in r["econdl:series_ids"]}
+    assert bogus not in served, "an unservable id was listed as a delivered resource"
+    # the two good ids still come back, so this is not "the bundle broke"
+    assert {EX_BLS, EX_OECD} <= served | {i for i in ids}, "the servable ids went missing too"

@@ -18,7 +18,7 @@ carry NULL. A fixture whose values cannot occur in production tests a system tha
 exist. The literals here were generated mechanically by reading
 `data/catalog.db` and `data/_aqueduct/state.db` read-only, so they are the catalogue's own rows.
 
-The fixture is small because the tests are specific. Five series across five sources, of which
+The fixture is small because the tests are specific. Six series across six sources, of which
 only TWO need data on disk:
 
     bls:CUUR0000SA0                                   catalogue + parquet
@@ -26,6 +26,11 @@ only TWO need data on disk:
     penn_world_table:rgdpe:USA                        catalogue + a unit_state row
     worldbank:NY.GDP.MKTP.CD:ARB                      catalogue + an ARABIC title
     ilostat:UNE_DEAP_SEX_AGE_RT:AGE_YTHADULT_YGE15:AUS catalogue + es/fr and NO Arabic
+    bcrp:BCRP:USDPEN_buy                              catalogue, NO resolver, NO store dir
+
+The redistribution gate needs NO fixture row at all: it answers 451 before existence is
+consulted, so its tests read a member from the committed denylist at runtime and probe an id
+that exists in no file. No gated id is hard-coded, written to disk, or printed.
 
 The last one is deliberate and must stay that way: ILO publishes no Arabic, so `?lang=ar` has to
 fall back to English with no `title_en`, which is the graceful-fallback pin. A fixture that gave
@@ -64,6 +69,7 @@ OECD_ID = "oecd:GDP_GROWTH_QOQ:USA"
 PWT_ID = "penn_world_table:rgdpe:USA"
 WB_ID = "worldbank:NY.GDP.MKTP.CD:ARB"
 ILO_ID = "ilostat:UNE_DEAP_SEX_AGE_RT:AGE_YTHADULT_YGE15:AUS"
+BCRP_ID = "bcrp:BCRP:USDPEN_buy"     # catalogued, ungated, NO resolver -> the 501 pin
 
 BLS_NATIVE = "CUUR0000SA0"                                        # _resolve_bls filter
 OECD_NATIVE = "Q.Y.USA.S1.S1.B1GQ._Z._Z._Z.PC.L.G1.T0102"         # _OECD_TEMPLATES, geo=USA
@@ -85,6 +91,14 @@ SOURCES = [
      'cc-by-4.0', 'Source: World Bank, World Development Indicators (CC BY 4.0)', None),
     ('ilostat', 'ILOSTAT (International Labour Organization)', 'https://ilostat.ilo.org/',
      'cc-by-4.0', 'Source: ILOSTAT (CC BY 4.0)', 'https://www.ilo.org/rights-and-permissions'),
+    # CATALOGUED BUT NOT MIGRATED - the 501 case, and it is the common case rather than an
+    # oddity: 328 sources are catalogued and only 47 have a resolver, so 281 real ungated
+    # sources are in exactly this state. `bcrp` is the smallest (3 series). Without a source
+    # of this kind the contract's own "501 not_migrated" pin has nothing to fire on.
+    ('bcrp', 'Banco Central de Reserva del Perú (BCRP) — Estadísticas / BCRPData',
+     'https://estadisticas.bcrp.gob.pe',
+     'custom-terms-bcrp', 'Fuente: Banco Central de Reserva del Perú (BCRP)',
+     'https://www.bcrp.gob.pe/condiciones-de-uso.html'),
 ]
 
 # Without this table `_catalog.get_license` raises "no such table: license" and EVERY handler
@@ -93,6 +107,10 @@ LICENSES = [
     # license_id, name, reservable, commercial_ok, attribution_required, no_modify, url
     ('cc-by-4.0', 'cc-by-4.0', 1, 1, 1, 0, 'https://creativecommons.org/licenses/by/4.0/'),
     ('us-public-domain', 'us-public-domain', 1, 1, 0, 0, ''),
+    # commercial_ok=0, unlike the other two - so the nested licence block is not all-true and
+    # a handler that hard-coded `true` would be visible.
+    ('custom-terms-bcrp', 'Source-specific terms — see terms_url', 1, 0, 1, 0,
+     'https://www.bcrp.gob.pe/condiciones-de-uso.html'),
 ]
 
 SERIES = [
@@ -176,15 +194,41 @@ SERIES = [
      ' seg\\u00fan sexo y edad (%) - Edad (J\\u00f3venes, adultos): 15+ (Total) -'
      ' Australia", "fr": "Taux de ch\\u00f4mage par sexe et \\u00e2ge (%) - Age (Jeunes,'
      ' adultes): 15+ (Total) - Australie"}}'),
+    # The 501 case. Note frequency/unit/geography/category are ALL NULL here - that is the
+    # real row, not a shortcut, and it means the metadata route's canonical keys are
+    # exercised against a series that fills almost none of them.
+    (BCRP_ID, 'bcrp',
+     'Tipo de cambio - TC Sistema bancario SBS (S/ por US$) - Compra',
+     None, None, None, None, 'custom-terms-bcrp',
+     '1997-01-02', '2026-06-22', None,
+     '{"citation_long": "Banco Central de Reserva del Per\\u00fa (BCRP) \\u2014'
+     ' Estad\\u00edsticas / BCRPData. Retrieved from https://estadisticas.bcrp.gob.pe.'
+     ' Compiled and redistributed by the Elkassabgi Data Library.", "citation_short":'
+     ' "Banco Central de Reserva del Per\\u00fa (BCRP) \\u2014 Estad\\u00edsticas /'
+     ' BCRPData.", "description_processing": "Retrieved from the official source,'
+     ' normalized to a long {series_key, obs_date, value} schema (period-start dates),'
+     ' de-duplicated, and stored as zstd Parquet. Compiled and redistributed by the'
+     ' Elkassabgi Data Library."}'),
 ]
 
 # ---------------------------------------------------------------------------- #
-# State rows. `/v1/last-updates` is unit_state LEFT JOIN source_state, so a unit whose
-# source has NO source_state row gets cadence NULL -> next_update_expected null. That is
-# not a contrivance: `oecd` and `ilostat` genuinely have no source_state row, and 27 unit
-# rows fleet-wide are in that state. Keeping the real shape is what lets
-# `test_last_updates_cadence_annual_and_null` see BOTH branches honestly - penn_world_table
-# supplies the annual/365 branch, oecd and ilostat supply the null branch.
+# State rows. `/v1/last-updates` is unit_state LEFT JOIN source_state, and
+# `_next_update_expected` returns null when EITHER input is missing:
+# `if not last_success_utc or not cadence: return None` (devserver.py:165).
+#
+# BE PRECISE ABOUT WHICH MECHANISM IS AT WORK, because an earlier version of this comment was
+# not. For `oecd` and `ilostat` BOTH conditions hold - they have no source_state row (so the
+# LEFT JOIN yields cadence NULL) AND their unit rows carry last_success_utc NULL. The null is
+# therefore OVER-DETERMINED, and an adversarial review showed the consequence: giving either
+# one a cadence, on its own, changes no answer, because the missing timestamp still forces the
+# null. Saying "the missing source_state row supplies the null branch" named one of two causes
+# as if it were the cause.
+#
+# It is still the real shape - 27 unit rows fleet-wide have a source with no source_state row -
+# and it is what lets `test_last_updates_cadence_annual_and_null` see both branches honestly,
+# with penn_world_table supplying the annual/365 side. `_selfcheck` pins the cadence-NULL
+# mechanism SPECIFICALLY rather than the disjunction, so the LEFT-JOIN-miss path cannot quietly
+# disappear behind the half of the OR that would keep the test green.
 # ---------------------------------------------------------------------------- #
 
 SOURCE_STATE = [   # source_id, cadence, status, last_success_utc
@@ -342,6 +386,26 @@ def _selfcheck(catalog: str, state: str, data_root: str) -> None:
 
         # test_sources_nested_shape: needs at least one non-null freshness.
         assert any(r["cadence"] for r in joined), "no source carries freshness"
+
+        # test_status_501_not_migrated: bcrp is in the fixture PRECISELY because it has no
+        # resolver. If one is ever written for it, the 501 pin silently turns into a 502 or a
+        # 200 and nothing else would say so.
+        clients = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "clients", "python")
+        if clients not in sys.path:
+            sys.path.insert(0, clients)
+        from econdl import _resolve                                        # noqa: PLC0415
+        supported = set(_resolve.supported_sources())
+        # supported_sources() swallows every exception (a bare `except Exception: pass`), so
+        # an empty answer is a SILENT degradation, not an honest "none". Refuse it: otherwise
+        # `"bcrp" not in supported` is true for the wrong reason and both pins below go
+        # vacuous at once.
+        assert supported, "supported_sources() read EMPTY - it swallows exceptions, so this " \
+                          "is a silent failure rather than a real answer"
+        assert "bcrp" not in supported, \
+            "bcrp gained a resolver; the 501 not_migrated pin is now vacuous"
+        assert "bls" in supported, \
+            "bls lost its resolver; the data_unavailable-vs-501 distinction is now vacuous"
 
         # Task #6 identity pin: the parquets must hold the NATIVE keys, and the catalogue
         # ids must NOT appear in them, or "native key != catalog id" proves nothing.
