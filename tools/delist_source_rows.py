@@ -114,9 +114,16 @@ def main() -> int:
     # while leaving the count row behind produces the ilo symptom: the source vanishes from
     # /v1/sources, still contributes its old count to the fleet total, and still advertises
     # `total: N` over an empty result set.
+    # AND THE FRESHNESS PROJECTION - the same class as source_counts, one table further. A delisted
+    # source whose unit_state row survives keeps being served by /v1/last-updates, which selects
+    # from unit_state with no join to `source` and no denylist (sql.ts LAST_UPDATES). Measured
+    # 2026-09-21: 15 such ids were live, 11 of them gated.
     for stmt in (f"DELETE FROM series WHERE source_id='{src}';",
                  f"DELETE FROM source WHERE source_id='{src}';",
-                 f"DELETE FROM source_counts WHERE source_id='{src}';"):
+                 f"DELETE FROM source_counts WHERE source_id='{src}';",
+                 f"DELETE FROM unit_state WHERE source_id='{src}';",
+                 f"DELETE FROM source_state WHERE source_id='{src}';",
+                 f"DELETE FROM source_data_through WHERE source_id='{src}';"):
         r = subprocess.run(["npx", "wrangler", "d1", "execute", D1_NAME, "--remote",
                             "--command", stmt],
                            cwd=os.path.join(ROOT, "api", "worker"),

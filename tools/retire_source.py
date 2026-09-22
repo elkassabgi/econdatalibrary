@@ -112,9 +112,19 @@ def main() -> int:
     # /v1/sources, still contributes its old count to the fleet total, and still advertises
     # `total: N` over an empty result set. Retiring a source removes its count; it does not
     # recompute it to 0, because the source no longer exists.
+    # AND THE FRESHNESS PROJECTION, for the same reason one table over. /v1/last-updates selects
+    # from unit_state with NO join to `source` and no denylist filter (sql.ts LAST_UPDATES,
+    # lastUpdates.ts), so a source retired without these rows disappears from /v1/sources and goes
+    # on publishing its id, unit id, status, last_updated, last_obs_date and obs_count for ever.
+    # Measured 2026-09-21: 15 ids were being served that way, 11 of them gated. source_data_through
+    # belongs with them - it is read by the two LEFT JOINs in sql.ts and is emitted by the same
+    # freshness sync.
     for stmt in (f"DELETE FROM series WHERE source_id='{src}';",
                  f"DELETE FROM source WHERE source_id='{src}';",
-                 f"DELETE FROM source_counts WHERE source_id='{src}';"):
+                 f"DELETE FROM source_counts WHERE source_id='{src}';",
+                 f"DELETE FROM unit_state WHERE source_id='{src}';",
+                 f"DELETE FROM source_state WHERE source_id='{src}';",
+                 f"DELETE FROM source_data_through WHERE source_id='{src}';"):
         r = subprocess.run(["npx", "wrangler", "d1", "execute", D1_NAME, "--remote",
                             "--command", stmt],
                            cwd=os.path.join(ROOT, "api", "worker"),
