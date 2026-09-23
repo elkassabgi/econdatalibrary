@@ -20,7 +20,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 
 from . import config, registry
 from .state import StateStore
-from .strategies.base import CADENCE_DAYS, NOT_HOSTED_NOTE
+from .strategies.base import CADENCE_DAYS, NON_FAILURE_NOTES
 
 # A source is RED once it is this many cadence-periods past its last success / newest obs.
 SLA_TOLERANCE = 2.0
@@ -217,7 +217,10 @@ def _deferral_only(units) -> bool:
         # and may be joined onto the deferral note; so may a fetcher's NOT_HOSTED_NOTE
         # (ksh_stadat's link-only tables, R1121). Strip them, then the remainder must
         # match the anchored emitter grammar EXACTLY.
-        base = err.split("; csv coverage note:")[0].split(f"; {NOT_HOSTED_NOTE}")[0].strip()
+        base = err
+        for tail in NON_FAILURE_NOTES:          # 'csv coverage note:', NOT_HOSTED_NOTE, ROTATION_NOTE
+            base = base.split(f"; {tail}")[0]
+        base = base.strip()
         if not _DEFERRAL_BASE.match(base):
             return False
     return True

@@ -91,6 +91,8 @@ def get_bytes(url: str) -> bytes | None:
     waf_i = 0
     LAST_STATUS.pop(url, None)
     for attempt in range(12):
+        if _past_stop(url, 0):              # no new request past the stop time either (R1123)
+            return None
         try:
             r = requests.get(url, headers=HEADERS, timeout=60)
             LAST_STATUS[url] = r.status_code

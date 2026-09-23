@@ -147,10 +147,11 @@ def test_health_strips_only_the_named_note_tail():
                                 f"1/3 sub-unit(s) transient-failed [x]; {K.NOT_HOSTED_NOTE} 1 table(s)"}])
 
 
-def test_never_fetched_tables_go_first_then_the_oldest_owed(tmp_path, monkeypatch):
+def test_owed_and_never_fetched_tables_take_turns(tmp_path, monkeypatch):
     """R1121: sorted by id, the capped queue was always spent on themes a..k (monthly updates), and
-    802 tables in kor..tur were never fetched by the updater. Never-fetched first, then the owed table
-    whose stored updatedAt is oldest; the id breaks ties."""
+    802 tables in kor..tur were never fetched by the updater. R1123: never-fetched-FIRST froze the 840
+    maintained tables instead (headline series 99 days owed in simulation). So they take turns, owed
+    first; the owed side goes oldest stored updatedAt first, the never-fetched side by id."""
     monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
     monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
     cat = [{"id": t, "updatedAt": "2026-09-20T00:00:00Z", "correctedAt": None}
@@ -164,8 +165,8 @@ def test_never_fetched_tables_go_first_then_the_oldest_owed(tmp_path, monkeypatc
     asked = []
     monkeypatch.setattr(K, "_fetch_table", lambda tid: asked.append(tid) or (tid, []))
     res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
-    assert asked == ["tur0001", "tur0002", "aaa0002"], asked
-    assert "aaa0003" in res.error and "aaa0001" in res.error, "the rest booked deferred"
+    assert asked == ["aaa0002", "tur0001", "aaa0003"], asked
+    assert "tur0002 (per-run cap" in res.error and "aaa0001 (per-run cap" in res.error, res.error
 
 
 def _cat(n):
@@ -262,13 +263,158 @@ def test_a_table_cut_at_the_stop_time_is_deferred_and_the_stop_is_cleared(tmp_pa
         return None
     monkeypatch.setattr(K.ig, "get_bytes", _get)
     monkeypatch.setattr(K.ig, "parse_table", lambda tid, txt: ([(f"KSH:{tid}:r:c", dt.date(2025, 12, 31), 1.0)], None))
+    monkeypatch.setattr(K, "TABLE_WAVE", 1)                 # one wave's worth answered: not WAF-blocked
     res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
-    assert res.status == "partial" and "1 deferred" in res.error and "gdp0002 (budget" in res.error, res.error
-    assert "back-off cut" in res.error, res.error
+    assert res.status == "partial" and "1 deferred" in res.error, res.error
+    assert "gdp0002 (WAF/throttle back-off cut at the stop time)" in res.error, res.error
     assert _deferral_only([{"status": "partial", "last_error": res.error}]), res.error
-    budget = float(os.environ.get("KSH_BUDGET_MIN", "30"))
+    budget = float(os.environ.get("KSH_BUDGET_MIN", "25"))
     assert seen and all(s is not None for s in seen)
     assert abs(seen[0] - K.time.time() - (budget + K.STOP_GRACE_MIN) * 60) < 60
     assert K.ig.STOP_AT[0] is None, "the ingester's own main() keeps the full ladder"
     side = json.loads((tmp_path / K.SIDECAR).read_text())
     assert "gdp0001" in side and "gdp0002" not in side, "the cut table is not recorded as fetched"
+
+
+# ---- review R1123 -------------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _no_pace(monkeypatch):
+    monkeypatch.setattr(K, "PACE_S", 0.0)
+
+
+def _plain(monkeypatch, tmp_path, cat):
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: cat)
+
+
+def test_a_pass_the_waf_stops_before_one_wave_stays_in_attention(tmp_path, monkeypatch):
+    from updater.health import _deferral_only
+    _plain(monkeypatch, tmp_path, _cat(3))
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, "deadline"))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert "KSH's WAF blocked this pass: 0 table(s) answered, 3 cut at the stop time" in res.error, res.error
+    assert not _deferral_only([{"status": res.status, "last_error": res.error}]), "ATTENTION, not ROTATING"
+
+
+def test_the_rotation_note_names_what_is_owed_and_health_strips_it(tmp_path, monkeypatch):
+    from updater.health import _deferral_only
+    _plain(monkeypatch, tmp_path, _cat(3))
+    monkeypatch.setattr(K, "MAX_PER_RUN", 1)
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, []))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert "rotation note: 3 table(s) were owed at the start of this pass, 1 answered; 2 never fetched" \
+        in res.error, res.error
+    assert _deferral_only([{"status": "partial", "last_error": res.error}]), res.error
+
+
+def test_no_rotation_note_when_nothing_is_left_owed(tmp_path, monkeypatch):
+    _plain(monkeypatch, tmp_path, _cat(2))
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, []))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert "rotation note" not in (res.error or ""), res.error
+
+
+def test_the_stop_time_is_set_before_any_work_and_cleared_on_a_raise(tmp_path, monkeypatch):
+    """R1123 (a): the clock starts at entry, and STOP_AT is cleared in a finally."""
+    seen = []
+
+    def _boom(raise_transient):
+        seen.append(K.ig.STOP_AT[0])
+        raise K.TransientError("toc.json down")
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(K, "_catalog", _boom)
+    with pytest.raises(K.TransientError):
+        K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert seen and seen[0] is not None, "set before the catalogue read"
+    assert K.ig.STOP_AT[0] is None, "cleared although update() raised"
+
+
+def test_the_todo_scan_lists_the_store_once_and_heads_nothing(tmp_path, monkeypatch):
+    """R1123 (a): one HEAD per table was 167.7 s for 809 tables before the clock started."""
+    _plain(monkeypatch, tmp_path, _cat(3))
+    (tmp_path / K.SIDECAR).write_text(json.dumps({"gdp0001": "2026-09-10T00:00:00Z|None",
+                                                  "gdp0002": "2026-09-10T00:00:00Z|None"}))
+    pq.write_table(pa.table({"series_key": ["KSH:gdp0001:x"], "obs_date": pa.array([dt.date(2024, 12, 31)]),
+                             "value": [1.0]}), str(tmp_path / "gdp.parquet"))
+
+    def _no_head(path):
+        raise AssertionError(f"per-table HEAD {path}")
+    monkeypatch.setattr(K.blob, "exists", _no_head)
+    asked = []
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: asked.append(tid) or (tid, []))
+    K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert asked == ["gdp0003"], "the two current tables with a theme file were skipped without a HEAD"
+
+
+def test_every_table_request_is_paced(monkeypatch):
+    paced = []
+    monkeypatch.setattr(K, "_pace", lambda: paced.append(1))
+    monkeypatch.setattr(K.ig, "get_bytes", lambda url: None)
+    K._fetch_table("gdp0001")
+    assert paced == [1]
+
+
+def test_the_sidecar_is_saved_after_each_theme_so_a_kill_keeps_the_merged_ones(tmp_path, monkeypatch):
+    _plain(monkeypatch, tmp_path, [{"id": t, "updatedAt": "2026-09-10T00:00:00Z", "correctedAt": None}
+                                   for t in ("aaa0001", "bbb0001")])
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, [(f"KSH:{tid}:r:c", dt.date(2025, 12, 31), 1.0)]))
+    real = K.merge.merge_and_write
+    calls = []
+
+    class _Killed(BaseException):
+        pass
+
+    def _merge(path, tbl, **kw):
+        calls.append(path)
+        if len(calls) == 2:
+            raise _Killed("the 45-minute SIGALRM")
+        return real(path, tbl, **kw)
+    monkeypatch.setattr(K.merge, "merge_and_write", _merge)
+    with pytest.raises(_Killed):
+        K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    side = json.loads((tmp_path / K.SIDECAR).read_text())
+    assert len(side) == 1, "the first theme's table is recorded although the pass was killed"
+
+
+@pytest.mark.parametrize("answer", ["throttle", "raise"])
+def test_get_bytes_starts_no_request_and_no_sleep_past_the_stop_time(monkeypatch, answer):
+    """R1123 M1/M2: the 403/429/503 back-off and the error back-off must stop at the stop time too."""
+    asked, slept = [], []
+
+    def _get(url, headers=None, timeout=None):
+        asked.append(url)
+        if answer == "raise":
+            raise K.ig.requests.ConnectionError("connect timeout")
+        return types.SimpleNamespace(status_code=503, content=b"")
+    monkeypatch.setattr(K.ig.requests, "get", _get)
+    monkeypatch.setattr(K.ig.time, "sleep", slept.append)
+    monkeypatch.setattr(K.ig, "STOP_AT", [K.ig.time.time() + 3])
+    assert K.ig.get_bytes("https://x/c.csv") is None
+    assert len(asked) == 1 and slept == [] and K.ig.LAST_STATUS["https://x/c.csv"] == "deadline", (asked, slept)
+    monkeypatch.setattr(K.ig, "STOP_AT", [K.ig.time.time() - 1])
+    asked.clear()
+    assert K.ig.get_bytes("https://x/d.csv") is None and asked == [], "no request once past the stop time"
+
+
+def test_requests_are_paced_across_workers(monkeypatch):
+    monkeypatch.setattr(K, "PACE_S", 1.2)
+    now = [100.0]
+    slept = []
+    monkeypatch.setattr(K.time, "time", lambda: now[0])
+    monkeypatch.setattr(K.time, "sleep", lambda s: slept.append(round(s, 3)) or now.__setitem__(0, now[0] + s))
+    monkeypatch.setattr(K, "_LAST_START", [0.0])
+    K._pace()
+    K._pace()
+    now[0] += 5
+    K._pace()
+    assert slept == [1.2], slept
+
+
+def test_the_cap_default_is_the_budget_bound_400(monkeypatch):
+    monkeypatch.delenv("KSH_MAX_PER_RUN", raising=False)
+    import importlib
+    import updater.strategies.fetchers.ksh_stadat as mod
+    assert importlib.reload(mod).MAX_PER_RUN == 400
+    importlib.reload(mod)

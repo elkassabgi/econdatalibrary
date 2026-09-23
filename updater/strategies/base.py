@@ -17,6 +17,9 @@ from datetime import datetime, timezone
 # the publisher lists but serves no data for, named for the reader. health._deferral_only strips it
 # like a 'csv coverage note:' tail, so it never turns a pure deferral pass into ATTENTION (R1121).
 NOT_HOSTED_NOTE = "not hosted note:"
+# The same kind of tail for where a rotation stands (tables owed / never fetched) - ksh_stadat, R1123.
+ROTATION_NOTE = "rotation note:"
+NON_FAILURE_NOTES = ("csv coverage note:", NOT_HOSTED_NOTE, ROTATION_NOTE)
 
 # nominal days between upstream updates per cadence (0.9 slack applied in cadence_due)
 CADENCE_DAYS = {

@@ -26,15 +26,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from collections import defaultdict
+from itertools import zip_longest
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pyarrow as pa
 
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
-from ..base import NOT_HOSTED_NOTE, Result
+from ..base import NOT_HOSTED_NOTE, ROTATION_NOTE, Result
 from ._common import Deadline, Tally, finalize
 from ._common import cancellable_pool
 from jobs import ingest_ksh_stadat as ig   # reuse catalog + THE table parser / key builder
@@ -50,10 +52,13 @@ SIDECAR = "_bulk_vintages.json"       # {table_id: "updatedAt|correctedAt"}
 # stop at KSH_BUDGET_MIN and book the rest deferred, so the cap only has to be large enough never
 # to be the binding limit. At 60 it was: toc.json showed 413 of 1,642 tables updated within 30 days
 # (~96 a week) against one pass per ~7 days, so 60 a pass could never catch up, and 849 tables were
-# owed. Measured 2026-09-23 from the desktop with the cap lifted to 400: KSH's WAF rejected the
-# first request 28 s in, and the 30-min budget reached 120 tables (2,223 s; 16 WAF back-offs).
+# owed. Measured 2026-09-23 from the desktop with the cap lifted to 400 and NO pacing: the WAF let
+# ~56 back-to-back requests through, then blocked for ~18 min (rejections at queue positions 56/57,
+# 28 s in, and 112/113, 18.9 min in), so the 30-min budget reached 120 tables in two bursts
+# (2,223 s). Requests are now paced (_pace).
 MAX_WORKERS = 2
-STOP_GRACE_MIN = 7   # budget + this = the last moment a back-off sleep may start (see update())
+STOP_GRACE_MIN = 5   # budget + this = the last moment a request or back-off sleep may start (update())
+PACE_S = ig.RATE     # seconds between request STARTS across workers - the job's own pace (_pace)
 MAX_PER_RUN = int(os.environ.get("KSH_MAX_PER_RUN", "400"))
 # Tables submitted per deadline check. The pool is given a whole wave at once, so
 # the wave size — not the loop — is what actually bounds the fetch.
@@ -147,10 +152,28 @@ def _load_nodata(out_dir) -> dict:
         return {}
 
 
+_PACE_LOCK = threading.Lock()
+_LAST_START = [0.0]
+
+
+def _pace():
+    """At most one request START per PACE_S across the worker threads (review R1123). The fetcher
+    sent requests back to back: KSH's WAF let ~56 through, then blocked for ~18 min (dry run
+    2026-09-23: rejections at queue positions 56/57 and 112/113). The job's own main() waits
+    ig.RATE (1.2 s) between requests, and CI run 35022271104 fetched 60 tables in ~4.5 min with no
+    WAF line."""
+    with _PACE_LOCK:
+        wait = _LAST_START[0] + PACE_S - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_START[0] = time.time()
+
+
 def _fetch_table(tid):
     """Thread task -> (tid, rows|None). None marks a transport/WAF failure (transient)."""
     theme = tid[:3].lower()
     url = f"{ig.BASE}/{theme}/en/{tid}.csv"
+    _pace()
     try:
         raw = ig.get_bytes(url)          # returns None on WAF page / failure / 404
     except Exception:
@@ -180,6 +203,22 @@ def _fetch_table(tid):
 
 
 def update(unit, since) -> Result:
+    # THE CLOCK STARTS HERE (review R1123). The budget and the stop time used to start after the todo
+    # scan, which sent one R2 HEAD per table (809 HEADs = 167.7 s from the desktop), so on the
+    # orchestrator's clock a pass was ~40 min old before its first merge. Both now count from entry.
+    budget_min = float(os.environ.get("KSH_BUDGET_MIN", "25"))
+    dl = Deadline(minutes=budget_min)
+    # NO NEW REQUEST AND NO BACK-OFF SLEEP PAST budget + STOP_GRACE_MIN: one URL's WAF ladder is 33 min,
+    # and every fetched table merges only after the last wave - a kill at 45 min would lose them all.
+    # 25 + 5 = 30 min leaves the merges and the saves ~14 min under the 45-min kill.
+    ig.STOP_AT[0] = time.time() + (budget_min + STOP_GRACE_MIN) * 60
+    try:
+        return _update(dl, budget_min, since)
+    finally:
+        ig.STOP_AT[0] = None             # the ingester's own main() keeps the full ladder
+
+
+def _update(dl, budget_min, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -189,52 +228,45 @@ def update(unit, since) -> Result:
     nodata_before = dict(nodata)
     stubs: list[str] = []
 
+    present = set(blob.list_parquets(out_dir))      # ONE listing, not one HEAD per table (R1123)
     todo = []
     for e in cat:
         tid = _table_id(e)
         if not tid:
             continue
         cur_v = _vintage(e)
-        theme_path = os.path.join(out_dir, f"{tid[:3].lower()}.parquet")
-        if sidecar.get(tid) == cur_v and (blob.exists(theme_path) or nodata.get(tid) == cur_v):
+        if sidecar.get(tid) == cur_v and (f"{tid[:3].lower()}.parquet" in present
+                                          or nodata.get(tid) == cur_v):
             continue
         todo.append((tid, cur_v))
-    # NEVER-FETCHED FIRST, THEN OLDEST-OWED (review R1121). Sorted by id, the first 60 owed tables
-    # were always in themes a..k, which KSH updates monthly, so the cap was spent there on every pass
-    # and 802 tables in kor..tur were never fetched by the updater at all (166 with nothing stored).
-    # A table the sidecar has never recorded goes first; the rest by the updatedAt we last stored
-    # (ISO, so it sorts as text), oldest first.
-    todo.sort(key=lambda tv: (tv[0] in sidecar, str(sidecar.get(tv[0], "")).split("|")[0], tv[0]))
+    # OWED AND NEVER-FETCHED TAKE TURNS (reviews R1121, R1123). Sorted by id, the first 60 owed tables
+    # were always in themes a..k and 802 tables in kor..tur were never fetched by the updater (166 with
+    # nothing stored). Never-fetched-first fixed that and froze the other side: simulated on KSH's 2026
+    # release calendar at 120 tables a pass, 0 of the 840 maintained tables refreshed in the first six
+    # passes, and the headline series (price indices, industrial production, external trade) went
+    # 99 days owed. 1:1 turns clear the never-fetched set in ~12 weeks with the maintained worst at ~47
+    # days owed. The owed side goes oldest stored updatedAt first (ISO, sorts as text).
+    owed = sorted((tv for tv in todo if tv[0] in sidecar),
+                  key=lambda tv: (str(sidecar.get(tv[0], "")).split("|")[0], tv[0]))
+    never = sorted(tv for tv in todo if tv[0] not in sidecar)
+    todo = [tv for pair in zip_longest(owed, never) for tv in pair if tv is not None]
 
     tally = Tally()
     capped = len(todo) > MAX_PER_RUN
     batch = todo[:MAX_PER_RUN]
     # OWED, NOT SILENT (review R1118): tables past the per-run cap are booked deferred, so a pass
-    # that reached 60 of 849 owed tables reads partial (deferral-only: ROTATING), never ok.
+    # that reached part of the owed tables reads partial (deferral-only: ROTATING), never ok.
     for tid, _v in todo[MAX_PER_RUN:]:
         tally.deferred_unit(f"{tid} (per-run cap {MAX_PER_RUN})")
 
     # fetch+parse concurrently, accumulating rows per THEME (many tables -> one parquet)
     by_theme = defaultdict(list)           # theme -> [(key, date, val), ...]
     theme_tables = defaultdict(list)       # theme -> [(tid, vintage), ...] pending vintage bump
-    # FETCH IN WAVES UNDER A SELF-IMPOSED BUDGET.
-    # Runs are usually ~5 min but reach 50.2 — over the orchestrator's 45-minute per-unit
-    # cap. Every table in `batch` used to be submitted at once and nothing merged until all
-    # of them came back, so a kill during the fetch threw the whole batch away.
-    #
-    # Unlike boe/bcb that is not a permanent loss: the sidecar only advances after a theme
-    # MERGES, so discarded tables stay in `todo` and are retried. The risk here is a STALL —
-    # if a batch never fits inside the cap, the same tables are fetched and thrown away
-    # every run forever, and the log shows work each time. Waves bound the fetch so whatever
-    # came back is merged and its vintages recorded, which is what lets a backlog drain
-    # instead of resetting.
-    budget_min = float(os.environ.get("KSH_BUDGET_MIN", "30"))
-    dl = Deadline(minutes=budget_min)
-    # NO BACK-OFF SLEEP MAY START PAST budget + STOP_GRACE_MIN (37 min): a wave begun just inside the
-    # budget waits on get_bytes, whose WAF ladder for ONE URL is 33 min, and every fetched table merges
-    # only after the last wave - a kill at 45 min would lose them all. A table cut there is DEFERRED.
-    ig.STOP_AT[0] = time.time() + (budget_min + STOP_GRACE_MIN) * 60
+    # FETCH IN WAVES UNDER A SELF-IMPOSED BUDGET, so whatever came back is merged and its vintages
+    # recorded - which is what lets a backlog drain instead of resetting.
     fetched = 0
+    answered = 0                           # tables KSH actually answered (data, empty or 404)
+    waf_cut = 0                            # tables cut at the stop time inside a WAF/throttle back-off
     if batch:
         with cancellable_pool(MAX_WORKERS) as ex:
             for wave_start in range(0, len(batch), TABLE_WAVE):
@@ -252,9 +284,14 @@ def update(unit, since) -> Result:
                     tid, cur_v = futs[fut]
                     _t, rows = fut.result()
                     if rows == "deadline":
-                        tally.deferred_unit(f"{tid} (budget {budget_min:.0f} min, back-off cut)")
+                        # Every stop-time cut follows a WAF page, a throttle status or an error
+                        # (get_bytes only sleeps after one), so it is NAMED as the WAF's, not the
+                        # budget's (review R1123).
+                        waf_cut += 1
+                        tally.deferred_unit(f"{tid} (WAF/throttle back-off cut at the stop time)")
                         continue
                     if rows == "absent":
+                        answered += 1
                         held = _holds_table(out_dir, tid)
                         if held is False:
                             # NEVER STORED and no CSV: a link-only table (gdp0049). Its vintage is
@@ -278,6 +315,7 @@ def update(unit, since) -> Result:
                         # of "1/60 transient-failed" never said WHICH of the 60 (R669).
                         tally.transient_unit(f"{tid}: transport/WAF failure fetching the table")
                         continue
+                    answered += 1
                     theme = tid[:3].lower()
                     if not rows:
                         # genuinely empty table: advance its vintage so we don't refetch every tick
@@ -289,6 +327,11 @@ def update(unit, since) -> Result:
                     theme_tables[theme].append((tid, cur_v))
                     tally.added_unit(len(rows))
                 fetched += len(wave)
+    if waf_cut and answered < TABLE_WAVE:
+        # A pass the WAF stopped before one wave's worth of answers is not a rotation making
+        # progress: keep it in ATTENTION rather than ROTATING (review R1123).
+        tally.transient_unit(f"KSH's WAF blocked this pass: {answered} table(s) answered, "
+                             f"{waf_cut} cut at the stop time")
 
     cursors: dict[str, str] = {}
     maxd = None
@@ -319,8 +362,10 @@ def update(unit, since) -> Result:
             maxd = md
         for tid, cur_v in theme_tables[theme]:
             sidecar[tid] = cur_v            # advance ONLY after the theme merged cleanly
+        # SAVED AFTER EVERY THEME (review R1123): a kill during the merges used to lose the whole
+        # pass's vintages, and the next pass re-walked the same tables (the R190 stall).
+        _save_sidecar(out_dir, sidecar)
 
-    ig.STOP_AT[0] = None             # the ingester's own main() keeps the full ladder
     _save_sidecar(out_dir, sidecar)
     if nodata != nodata_before:
         blob.write_bytes_atomic(os.path.join(out_dir, NODATA),
@@ -343,4 +388,11 @@ def update(unit, since) -> Result:
         res.error = (f"{res.error}; " if res.error else "") + (
             f"{NOT_HOSTED_NOTE} {len(stubs)} table(s) - no CSV at KSH (HTTP 404) and nothing stored "
             f"[{', '.join(stubs[:5])}]")
+    if len(todo) > answered:
+        # WHERE THE ROTATION STANDS, on every pass that leaves work owed (review R1123 (c)). A
+        # stripped tail like the not-hosted note, so a pure deferral pass stays ROTATING.
+        never_left = sum(1 for tid, _v in todo if tid not in sidecar)
+        res.error = (f"{res.error}; " if res.error else "") + (
+            f"{ROTATION_NOTE} {len(todo)} table(s) were owed at the start of this pass, "
+            f"{answered} answered; {never_left} never fetched by the updater remain")
     return res
