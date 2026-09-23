@@ -685,7 +685,9 @@ def update(unit, since) -> Result:
     for subj in subjects:
         if subj in visited:
             # Visited this cycle: no work owed. Re-walking done subjects spent the budget on them
-            # (the ssb/abs review, R1105 P1, found the same shape in the shared helper).
+            # (the ssb/abs review, R1105 P1, found the same shape in the shared helper). Its rows
+            # still count toward the reported total, which is served as obs_count (AR-123).
+            total_rows += blob.row_count(os.path.join(out_dir, f"{subj}.parquet"))
             continue
         if dl.spent():
             stopped_early = True

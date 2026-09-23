@@ -130,6 +130,18 @@ def test_a_pass_skips_subjects_already_visited_this_cycle(monkeypatch, tmp_path)
         "the pass does only the owed subjects and closes the cycle"
 
 
+def test_skipped_subjects_still_count_toward_the_reported_total(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path, allow=1)
+    sf.update(None, None)                                              # aaa
+    monkeypatch.setattr(sf.blob, "row_count", lambda path: 7 if path.endswith("aaa.parquet") else 0)
+    _wire_keep_rowcount = sf.blob.row_count
+    visited = _wire(monkeypatch, tmp_path, allow=99)
+    monkeypatch.setattr(sf.blob, "row_count", _wire_keep_rowcount)
+    res = sf.update(None, None)                                        # skips aaa
+    assert "aaa" not in {p.split("/")[0] for p in visited}
+    assert res.obs >= 7, f"aaa's 7 stored rows must be in the total: {res.obs}"
+
+
 def test_negative_control_a_complete_pass_is_ok(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     res = sf.update(None, None)
