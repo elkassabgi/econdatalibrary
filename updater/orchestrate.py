@@ -597,6 +597,12 @@ def _book_owed_items(store, source_id: str, items) -> bool:
     try:
         store.note_csv_desktop_owed(source_id, items)
     except Exception as e:                                   # noqa: BLE001 - loud, caller falls back
+        # ROLL BACK (R1148): executemany has no rollback of its own, so the rows before the failing
+        # one stayed pending and the fallback's next commit saved them - 4 ids booked AND queued.
+        try:
+            store.db.rollback()
+        except Exception:                                    # noqa: BLE001
+            pass
         print(f"[orchestrator] {source_id}: booking {len(items):,} desktop debt(s) FAILED "
               f"({type(e).__name__}: {str(e)[:100]}) - kept in the retry queue", flush=True)
         return False
@@ -1089,12 +1095,28 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                 try:
                     _ids = [s for s in _catalog_ids_for(unit.source_id, changed)[0]
                             if isinstance(s, str) and s.startswith(unit.source_id + ":")]
-                except Exception:                            # noqa: BLE001 - fall back to the queue
+                except Exception as _me:                     # noqa: BLE001
+                    # NOTHING TO BOOK OR QUEUE BY ID (R1148 A3): the mapper failed twice. Leave the one
+                    # durable record health reads, carrying the changed keys, so a quiet next run
+                    # cannot erase it. Its remedy for a csv_misses source is the desktop, not the bulk
+                    # tool (health.py; R1137).
+                    try:
+                        if store is not None:
+                            store.note_full_rederive_owed(
+                                unit.source_id, note=(f"csv_derive crashed and the {len(changed)} changed "
+                                                      f"key(s) could not be mapped ({type(_me).__name__}); "
+                                                      f"re-derive on the desktop: {', '.join(map(str, changed[:20]))}"))
+                    except Exception:                        # noqa: BLE001 - the note below still demotes
+                        pass
                     _ids = []
             if _ids and _book_owed_items(store, unit.source_id,
                                          [(s, None, f"{_DESKTOP_OWED_FAILED} ({_crash[:120]})") for s in _ids]):
                 return [], (f"csv_derive crashed ({len(_ids)} of {len(changed)} changed series booked "
                             f"as desktop debts): " + repr(e))[:300], [], {}
+            if _ids and not _q:
+                # the booking failed: QUEUE the ids just mapped (R1148 A4 - the fallback returned the
+                # empty pre-crash list, so they were in neither home)
+                _q = _ids
         return _q, (f"csv_derive crashed ({len(_q)} of {len(changed)} changed series "
                     f"queued): " + repr(e))[:300], [], {s: _crash for s in _q}
 

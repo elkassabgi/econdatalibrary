@@ -513,6 +513,14 @@ def assess(store=None) -> dict:
                            f"against R2's parquets, then `tools/derive_csv_bulk.py --source "
                            f"{sid} --clear-owed-only`; the bulk tool alone writes nothing at "
                            f"this grain")
+            elif e.get("csv_misses") == "desktop_owed":
+                # A csv_misses SOURCE (ilostat, R1148): the bulk tool cannot pay this debt - for ilostat
+                # it would PUT 'ilostat:ilostat:...' objects across ~391M store rows and clear the row
+                # without paying it (R1137). The note names the changed keys; derive their ids.
+                _remedy = (f"re-derive the changed ids named in the note on the desktop with "
+                           f"`python -m core.derive_csv --bucket econ-data --source {sid} --only <ids>`, "
+                           f"read them back against R2's parquets, then clear this row; "
+                           f"tools/derive_csv_bulk.py cannot pay it for this source ({owe.get('note') or ''})"[:600])
             else:
                 _remedy = (f"run tools/derive_csv_bulk.py --source {sid}; its zero-error "
                            f"campaign stamp clears this row")

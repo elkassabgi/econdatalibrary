@@ -398,6 +398,71 @@ def test_under_subset_a_legacy_only_stem_still_demotes(tmp_path, catalog, monkey
     assert note and not note.startswith("csv coverage note:"), note
 
 
+def test_a_row_failing_inside_the_batch_books_none_on_the_real_store(tmp_path, catalog, monkeypatch):
+    """R1148: executemany kept the rows before the failing one pending and the next commit saved them."""
+    def _fake(ids, blob, **kw):
+        return {"put": 0, "failed": sorted(ids), "deferred": 0, "deferred_ids": [], "failed_reasons": {},
+                "skipped_identical": 0, "deferred_large": {}}
+    monkeypatch.setattr(derive, "derive_and_put", _fake)
+    monkeypatch.setattr(orchestrate, "_record_for_catalog_sync", lambda ids: None)
+    st = StateStore(path=str(tmp_path / "state.db"))
+    st.db.execute("CREATE TRIGGER boom BEFORE INSERT ON csv_desktop_owed WHEN NEW.series_id = "
+                  "'ilostat:EMP_A' BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+    res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"})
+    failed, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    st.db.commit()                                   # what the caller's next write does
+    assert len(failed) == 3 and st.csv_desktop_owed("ilostat") == [], (failed, st.csv_desktop_owed("ilostat"))
+
+
+def test_a_crash_whose_booking_fails_queues_the_ids_it_mapped(tmp_path, catalog, monkeypatch):
+    def _boom(ids, blob, **kw):
+        raise RuntimeError("resolver exploded")
+    monkeypatch.setattr(derive, "derive_and_put", _boom)
+    monkeypatch.setattr(orchestrate, "_record_for_catalog_sync", lambda ids: None)
+    real = orchestrate._catalog_ids_for
+    calls = []
+
+    def _flaky(src, keys):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("catalogue locked")
+        return real(src, keys)
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", _flaky)
+    res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"})
+    failed, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), None)   # booking fails
+    assert len(failed) == 3 and "queued" in note, (failed, note)
+
+
+def test_a_crash_that_cannot_map_leaves_a_record_health_reads(tmp_path, catalog, monkeypatch):
+    from updater import health
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: (_ for _ in ()).throw(OSError("db")))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"})
+    failed, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert failed == [] and note and not note.startswith("csv coverage note:"), note
+    owed = st.full_rederives_owed()
+    assert [r["source_id"] for r in owed] == ["ilostat"] and "EMP_A" in owed[0]["note"], owed
+    row = next(r for r in health.assess(st)["sources"] if r["source"] == "ilostat")
+    line = next(a for a in row["attention"] if "full re-derive OWED" in a)
+    assert "desktop" in line and "cannot pay it" in line and "run tools/derive_csv_bulk.py --source" not in line, line
+
+
+def test_a_booked_crash_still_demotes(tmp_path, catalog, monkeypatch):
+    def _boom(ids, blob, **kw):
+        raise RuntimeError("resolver exploded")
+    monkeypatch.setattr(derive, "derive_and_put", _boom)
+    monkeypatch.setattr(orchestrate, "_record_for_catalog_sync", lambda ids: None)
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"})
+    _f, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert note.startswith("csv_derive crashed"), note
+
+
+def test_the_publish_tool_refuses_an_unparsable_r2_map_even_with_a_good_catalogue(tmp_path, monkeypatch):
+    rc, fake = _publish(tmp_path, monkeypatch, b"not json", "--apply", "--replace")
+    assert rc == 2 and fake.puts == 0
+
+
 def test_a_failed_booking_books_none_and_keeps_all_queued(tmp_path, catalog, monkeypatch):
     def _fake(ids, blob, **kw):
         return {"put": 0, "failed": list(ids), "deferred": 0, "deferred_ids": [], "failed_reasons": {},
