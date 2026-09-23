@@ -1812,6 +1812,26 @@ changed", because that verdict advances the watermark.
 > the ingester already uses (one request per cube) for large ones. Design that FIRST; the budget-skip
 > item below still applies after it. Instruments: NUMBERS.md rows "statcan's release backlog is 478
 > held cubes" and "statcan's vector path costs ~40 s per 250-vector request".
+>
+> **UPDATE 2026-09-23 (R1091): DESIGNED AND BUILT on branch `fix/statcan-whole-table` — every cube,
+> not only the large ones.** The tail costs ~0.16 s PER VECTOR (1 vector 0.8 s, 10 vectors 1.7 s), so
+> the whole table wins on every cube measured (break-even ~21,000 observations per vector). The
+> fetcher now re-downloads each changed cube, parses it with `jobs/ingest_statcan.parse_zip_to_parquet`,
+> gates it on getCubeMetadata (exact for cubes with vectors; vectorless cubes need zero dropped rows
+> and at least the stored rows), requires 90% of the stored keys, and merges with
+> `merge_and_write_bounded(new_path=...)`. It also quarantines a cube after 3 deterministic failures
+> on one release, refetches re-released cubes, saves after every cube, goes smallest-first, and
+> checks the run's remaining time. 24100058 (53.3M rows) takes ~12 min in total. Once it merges,
+> the order below becomes:
+>   (a) the budget skip (item 2) - unchanged, still first;
+>   (b) rewind the watermark to 2026-07-29 (item 3) - now hours of work, not ~57 h, and item 1 is moot;
+>   (c) **SERVING**: users read statcan through table-grain CSVs from `tools/derive_statcan_tables.py`,
+>       which the updater never calls, so a refreshed cube reaches nobody until its tables are
+>       re-derived. Parts are named by dimension VALUE (`statcan:<pid>#<part>`), so a relabel
+>       (24100058: "Windsor" -> "Windsor - other locations", 590,276 rows) moves a public id and needs
+>       the catalogue. That runs into the frozen D1 sync (Ahmed's cost decision).
+>   (d) regenerate docs/runbook/statcan.md from a checkout that has `data/` (gen_runbook reads
+>       state.db and catalog.db).
 
 STILL OPEN, in this order — the first two are prerequisites for the third (SUPERSEDED, see above):
 
