@@ -141,6 +141,33 @@ def _holds_table(out_dir, tid):
 
 NODATA = "_no_data_tables.json"   # {tid: vintage} - tables with nothing to store at that vintage
 
+BACKFILL = "_backfill_vintages.json"
+"""{tid: "updatedAt|correctedAt"} - the vintage the June 2026 DESKTOP backfill stored, for every table the
+store holds rows of that the updater has never fetched (review R1134). Without it those tables had no
+stored vintage, so the drain signal and the 45-day limit could not see them: 658 were served, 231 of them
+behind a KSH release more than 45 days old (43 by 90 days or more), and every pass read ROTATING.
+Written once by tools/seed_ksh_backfill_vintages.py from the backfill's own toc snapshot
+(data/clean_full/ksh_stadat/_catalog.json) and the store's rows; the sidecar wins once the updater
+fetches a table. The snapshot was taken before the backfill fetched, so a table KSH updated in between
+reads OLDER than it is - the error is toward ATTENTION, never toward a hidden wait."""
+
+
+def _load_backfill(out_dir):
+    """The backfill vintages, or None when the file is absent or unreadable (said loudly: the never-
+    fetched stored tables are then not measured, and the rotation note says so)."""
+    try:
+        raw = blob.read_bytes(os.path.join(out_dir, BACKFILL))
+        d = json.loads(raw.decode("utf-8")) if raw else None
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[{SOURCE}] {BACKFILL} unreadable ({type(e).__name__}) - the never-fetched stored "
+              f"tables are not measured this pass", flush=True)
+        return None
+    if not isinstance(d, dict):
+        print(f"[{SOURCE}] {BACKFILL} is absent - the never-fetched stored tables are not measured "
+              f"this pass (run tools/seed_ksh_backfill_vintages.py)", flush=True)
+        return None
+    return d
+
 
 def _load_nodata(out_dir) -> dict:
     """Tables whose last fetch had NOTHING TO STORE (parsed empty, or a link-only 404) at a vintage.
@@ -275,10 +302,12 @@ def _update(dl, budget_min, since) -> Result:
     nodata = _load_nodata(out_dir)
     nodata_before = dict(nodata)
     stubs: list[str] = []
+    backfill = _load_backfill(out_dir)
 
     present = set(blob.list_parquets(out_dir))      # ONE listing, not one HEAD per table (R1123)
     todo = []
     missed: dict = {}                  # owed table -> its FIRST missed release (datetime)
+    stored_v: dict = {}                # table -> the vintage the STORE holds (sidecar, else backfill)
     now = dt.datetime.now(dt.timezone.utc)
     for e in cat:
         tid = _table_id(e)
@@ -288,9 +317,17 @@ def _update(dl, budget_min, since) -> Result:
         if sidecar.get(tid) == cur_v and (f"{tid[:3].lower()}.parquet" in present
                                           or nodata.get(tid) == cur_v):
             continue
-        todo.append((tid, cur_v))
         if tid in sidecar:
-            missed[tid] = _first_missed(e, str(sidecar[tid]).split("|")[0], now)
+            stored_v[tid] = str(sidecar[tid])
+        elif backfill and tid in backfill:
+            # A STORED table the updater never fetched (review R1134): the backfill's vintage is what
+            # we hold. Unchanged since then -> current, not fetched. Changed -> owed, and measured.
+            if backfill[tid] == cur_v:
+                continue
+            stored_v[tid] = str(backfill[tid])
+        todo.append((tid, cur_v))
+        if tid in stored_v:
+            missed[tid] = _first_missed(e, stored_v[tid].split("|")[0], now)
     # OWED AND NEVER-FETCHED TAKE TURNS (reviews R1121, R1123). Sorted by id, the first 60 owed tables
     # were always in themes a..k and 802 tables in kor..tur were never fetched by the updater (166 with
     # nothing stored). Never-fetched-first fixed that and froze the other side: simulated on KSH's 2026
@@ -301,9 +338,11 @@ def _update(dl, budget_min, since) -> Result:
     # denied KSH's newer one - simulated on KSH's 2026 calendar at the measured ~110 tables a pass, the
     # headline tables' worst wait was 49 days by stored updatedAt and 23 by first missed release.
     # Measured capacity is the desktop's (ksh_dryrun2); a GitHub runner's is not measured.
-    owed = sorted((tv for tv in todo if tv[0] in sidecar),
+    # A stored table the updater never fetched is on the OWED side (it has a stored vintage, R1134);
+    # "never" is now what the store holds nothing of.
+    owed = sorted((tv for tv in todo if tv[0] in stored_v),
                   key=lambda tv: (missed.get(tv[0]) or now, tv[0]))
-    never = sorted(tv for tv in todo if tv[0] not in sidecar)
+    never = sorted(tv for tv in todo if tv[0] not in stored_v)
     todo = [tv for pair in zip_longest(owed, never) for tv in pair if tv is not None]
 
     tally = Tally()
@@ -434,17 +473,23 @@ def _update(dl, budget_min, since) -> Result:
     # draining backlog from one that never drains (a WAF that allows one burst a pass answers ~55
     # tables, and headline tables then wait 155-190 days, every pass still ROTATING). The table owed
     # longest, by its first missed release, is named in the rotation note; past OWED_ATTENTION_DAYS it
-    # is booked as a failure so the source reads ATTENTION.
+    # makes the pass partial with a failure segment, so the source reads ATTENTION. NOT through the
+    # Tally (review R1134): a transient unit adds to `attempted`, and 12 all-empty tables plus one
+    # overdue table then read "1/13 transient-failed; will retry" instead of the structural break.
     still = [(missed[tid], tid) for tid, cur_v in todo
              if missed.get(tid) and sidecar.get(tid) != cur_v]
     oldest = min(still) if still else None
     owed_days = (now - oldest[0]).days if oldest else 0
-    if oldest and owed_days > OWED_ATTENTION_DAYS:
-        tally.transient_unit(f"rotation behind: {oldest[1]} has waited {owed_days} days for KSH's "
-                             f"{oldest[0].date()} release (limit {OWED_ATTENTION_DAYS})")
+    behind = (f"rotation behind: {oldest[1]} has waited {owed_days} days for KSH's "
+              f"{oldest[0].date()} release (limit {OWED_ATTENTION_DAYS})"
+              if oldest and owed_days > OWED_ATTENTION_DAYS else None)
 
     res = finalize(tally, published, maxd or (since or None), source=SOURCE,
                    series_cursors=cursors)
+    if behind:
+        if res.status in ("ok", "no_change"):
+            res.status = "partial"
+        res.error = (f"{res.error}; " if res.error else "") + behind
     if capped:
         res.new_vintage = None
     if stubs:
@@ -460,10 +505,12 @@ def _update(dl, budget_min, since) -> Result:
         # WHERE THE ROTATION STANDS, on every pass that leaves work owed (review R1123 (c)). A
         # stripped tail like the not-hosted note, so a pure deferral pass stays ROTATING.
         # No "; " inside: health drops a note SEGMENT by its prefix (R1127).
-        never_left = sum(1 for tid, _v in todo if tid not in sidecar)
+        never_left = sum(1 for tid, _v in todo if tid not in stored_v and tid not in sidecar)
         res.error = (f"{res.error}; " if res.error else "") + (
             f"{ROTATION_NOTE} {len(todo)} table(s) were owed at the start of this pass, "
-            f"{answered} answered, {never_left} never fetched by the updater remain"
+            f"{answered} answered, {never_left} with nothing stored remain"
             + (f", longest wait {owed_days} days ({oldest[1]}, KSH release {oldest[0].date()})"
-               if oldest else ""))
+               if oldest else "")
+            + ("" if backfill is not None else
+               f", backfill vintages absent so only tables the updater fetched are measured"))
     return res

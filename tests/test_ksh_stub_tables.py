@@ -304,7 +304,7 @@ def test_the_rotation_note_names_what_is_owed_and_health_strips_it(tmp_path, mon
     monkeypatch.setattr(K, "MAX_PER_RUN", 1)
     monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, []))
     res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
-    assert "rotation note: 3 table(s) were owed at the start of this pass, 1 answered, 2 never fetched" \
+    assert "rotation note: 3 table(s) were owed at the start of this pass, 1 answered, 2 with nothing stored" \
         in res.error, res.error
     assert _deferral_only([{"status": "partial", "last_error": res.error}]), res.error
 
@@ -455,19 +455,34 @@ def test_no_non_failure_note_in_the_code_contains_a_segment_separator():
     that is not a note, and a healthy deferral pass would read ATTENTION (or, worse, a failure would
     be read as a note's tail). Every literal note text in the orchestrator and this fetcher is checked."""
     import ast
+    from updater.strategies import base
     from updater.strategies.base import NON_FAILURE_NOTES
-    found = 0
+    # An f-string that OPENS with a note constant ({ROTATION_NOTE} ..., {NOT_HOSTED_NOTE} ...) is a note
+    # too: the fetcher builds both of its notes that way, and the first cut of this walk saw 0 of them
+    # (review R1134). Such a head is resolved to the constant's text before the prefix test.
+    heads = {n: getattr(base, n) for n in ("ROTATION_NOTE", "NOT_HOSTED_NOTE")}
+    found, by_head = 0, 0
     for rel in ("updater/orchestrate.py", "updater/strategies/fetchers/ksh_stadat.py"):
         tree = ast.parse(open(os.path.join(ROOT, rel), encoding="utf-8").read())
         for node in ast.walk(tree):
-            parts = ([node.value] if isinstance(node, ast.Constant) and isinstance(node.value, str) else
-                     [v.value for v in node.values if isinstance(v, ast.Constant)]
-                     if isinstance(node, ast.JoinedStr) else [])
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                parts = [node.value]
+            elif isinstance(node, ast.JoinedStr):
+                parts = []
+                for i, v in enumerate(node.values):
+                    if isinstance(v, ast.Constant):
+                        parts.append(v.value)
+                    elif (i == 0 and isinstance(v, ast.FormattedValue) and isinstance(v.value, ast.Name)
+                          and v.value.id in heads):
+                        parts.append(heads[v.value.id])
+                        by_head += 1
+            else:
+                parts = []
             text = "".join(parts)
             if text.startswith(NON_FAILURE_NOTES):
                 found += 1
                 assert "; " not in text, (rel, text[:120])
-    assert found >= 5, found
+    assert found >= 5 and by_head >= 2, (found, by_head)
 
 
 def test_owed_tables_go_by_first_missed_release_not_by_the_age_of_our_copy(tmp_path, monkeypatch):
@@ -580,3 +595,118 @@ def test_a_desktop_budget_override_moves_the_stop_time_too(tmp_path, monkeypatch
 def test_the_grace_and_the_pace_are_pinned(monkeypatch):
     monkeypatch.undo()                                      # the autouse no-pace patch
     assert K.STOP_GRACE_MIN == 5 and K.PACE_S == K.ig.RATE == 1.2 and K.MERGE_MARGIN_MIN == 5
+    assert K.OWED_ATTENTION_DAYS == 45
+
+
+# ---- review R1134: the never-fetched stored tables, and the limit outside the Tally ------------------
+def _ago(days):
+    return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _store(tmp_path, tids):
+    pq.write_table(pa.table({"series_key": [f"KSH:{t}:x" for t in tids],
+                             "obs_date": pa.array([dt.date(2024, 12, 31)] * len(tids)),
+                             "value": [1.0] * len(tids)}), str(tmp_path / f"{tids[0][:3]}.parquet"))
+
+
+def test_a_stored_table_the_updater_never_fetched_is_measured_from_its_backfill_vintage(tmp_path, monkeypatch):
+    from updater.health import _deferral_only
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    old, now_ = _ago(K.OWED_ATTENTION_DAYS + 20), _ago(1)
+    cat = [{"id": "tur0064", "updatedAt": now_, "correctedAt": None, "updateDates": [old, now_]},
+           {"id": "tur0001", "updatedAt": "2025-06-01T00:00:00Z", "correctedAt": None},
+           {"id": "tur0099", "updatedAt": now_, "correctedAt": None}]
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: cat)
+    _store(tmp_path, ["tur0064", "tur0001"])
+    (tmp_path / K.SIDECAR).write_text(json.dumps({"kkr0049": "2026-01-01T00:00:00Z|None"}))
+    (tmp_path / K.BACKFILL).write_text(json.dumps({"tur0064": "2025-06-01T00:00:00Z|None",
+                                                   "tur0001": "2025-06-01T00:00:00Z|None"}))
+    asked = []
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: asked.append(tid) or (tid, "deadline"))
+    monkeypatch.setattr(K, "TABLE_WAVE", 1)
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert "tur0001" not in asked, "unchanged since the backfill: current, not fetched"
+    assert asked[0] == "tur0064", "a stored owed table goes on the owed side, first"
+    assert f"rotation behind: tur0064 has waited {K.OWED_ATTENTION_DAYS + 20} days" in res.error, res.error
+    assert "1 with nothing stored remain" in res.error, res.error              # tur0099
+    assert not _deferral_only([{"status": res.status, "last_error": res.error}])
+
+
+def test_negative_control_no_backfill_file_measures_nothing_and_says_so(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    old, now_ = _ago(K.OWED_ATTENTION_DAYS + 20), _ago(1)
+    cat = [{"id": "tur0064", "updatedAt": now_, "correctedAt": None, "updateDates": [old, now_]}]
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: cat)
+    _store(tmp_path, ["tur0064"])
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, "deadline"))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert "rotation behind" not in res.error and "backfill vintages absent" in res.error, res.error
+    assert f"{K.BACKFILL} is absent" in capsys.readouterr().out
+
+
+def test_an_overdue_table_does_not_hide_a_structural_break(tmp_path, monkeypatch):
+    """12 tables that all parse empty raise DefinitiveError; one overdue owed table must not turn that
+    into '1/13 transient-failed; will retry' (review R1134 finding 2)."""
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    old, now_ = _ago(K.OWED_ATTENTION_DAYS + 5), _ago(1)
+    cat = _cat(12) + [{"id": "kkr0049", "updatedAt": now_, "correctedAt": None, "updateDates": [old, now_]}]
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: cat)
+    (tmp_path / K.SIDECAR).write_text(json.dumps({"kkr0049": "2025-01-01T00:00:00Z|None"}))
+    # kkr0049 is cut at the stop time (deferred) and stays owed past the limit
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, "deadline" if tid == "kkr0049" else []))
+    order = []
+    real = K.finalize
+    monkeypatch.setattr(K, "finalize", lambda t, *a, **k: order.append((t.attempted, t.empty)) or real(t, *a, **k))
+    with pytest.raises(K.DefinitiveError, match="all 12 attempted"):
+        K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert order == [(12, 12)], order
+
+
+def test_the_note_names_the_OLDER_of_two_owed_tables(tmp_path, monkeypatch):
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    a, b, now_ = _ago(30), _ago(10), _ago(1)
+    cat = [{"id": "gdp0001", "updatedAt": now_, "correctedAt": None, "updateDates": [b, now_]},
+           {"id": "gdp0002", "updatedAt": now_, "correctedAt": None, "updateDates": [a, now_]}]
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: cat)
+    (tmp_path / K.SIDECAR).write_text(json.dumps({"gdp0001": "2025-01-01T00:00:00Z|None",
+                                                  "gdp0002": "2025-01-01T00:00:00Z|None"}))
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, "deadline"))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert "longest wait 30 days (gdp0002" in res.error, res.error
+
+
+# ---- the one-time seed tool --------------------------------------------------------------------------
+def _seed_env(tmp_path, monkeypatch):
+    import importlib
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path / "store"))
+    (tmp_path / "store").mkdir()
+    snap = [{"id": t, "updatedAt": "2025-06-12T00:00:00Z", "correctedAt": None}
+            for t in ("kkr0049", "szo0065", "szo0066", "mez0112")]
+    (tmp_path / "cat.json").write_text(json.dumps(snap))
+    s = tmp_path / "store"
+    _store(s, ["kkr0049"])
+    _store(s, ["szo0065"])                                    # szo0066 in the snapshot, no rows
+    pq.write_table(pa.table({"series_key": ["KSH:mez0112:y"], "obs_date": pa.array([dt.date(2024, 1, 1)]),
+                             "value": [1.0]}), str(s / "_migrated_from_ksh_unparsed.parquet"))
+    (s / K.SIDECAR).write_text(json.dumps({"kkr0049": "2026-01-01T00:00:00Z|None"}))
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    return importlib.import_module("seed_ksh_backfill_vintages"), s
+
+
+def test_the_seed_holds_only_stored_never_fetched_tables_and_is_one_time(tmp_path, monkeypatch):
+    tool, s = _seed_env(tmp_path, monkeypatch)
+    assert tool.main(["--catalog", str(tmp_path / "cat.json"), "--apply"]) == 0
+    seed = json.loads((s / K.BACKFILL).read_text())
+    assert seed == {"szo0065": "2025-06-12T00:00:00Z|None", "mez0112": "2025-06-12T00:00:00Z|None"}, seed
+    assert tool.main(["--catalog", str(tmp_path / "cat.json"), "--apply"]) == 2, "one-time: refuses to replace"
+
+
+def test_the_seed_refuses_when_its_plant_does_not_read(tmp_path, monkeypatch):
+    tool, s = _seed_env(tmp_path, monkeypatch)
+    assert tool.main(["--catalog", str(tmp_path / "cat.json"), "--plant", "zzz0001", "--apply"]) == 2
+    assert not (s / K.BACKFILL).exists()
