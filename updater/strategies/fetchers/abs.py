@@ -54,7 +54,7 @@ import pyarrow.compute as pc
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import (CURSOR_CAP, Deadline, Tally, finalize, load_rotation,
+from ._common import (CURSOR_CAP, Deadline, RotationCycle, Tally, finalize, load_rotation,
                       rotate_after, save_rotation)
 
 # Reuse the ingester verbatim: enumeration, streaming+retry, parse helpers.
@@ -164,6 +164,13 @@ def update(unit, since) -> Result:
         pfiles = rotate_after(pfiles, resume)
         print(f"[abs] resuming after {resume} ({len(pfiles)} flows, rotated)", flush=True)
     last_attempted = None
+    # `ok` = EVERY flow attempted since the last ok (RotationCycle, 2026-09-23). A pass reaches
+    # ~118 of 1,222 flows (daily run 35783253243: "118 sub-unit(s) attempted, none failed; 1104
+    # deferred"), so every pass booked the rest deferred and abs read `partial` on every run - in
+    # the daily gate's failure list with nothing failing. Now only flows not yet attempted THIS
+    # CYCLE are booked, and the pass that completes the cycle reads ok.
+    cycle = RotationCycle(out_dir, pfiles)
+    owed_this_cycle = set(cycle.unvisited())
 
     for fn in pfiles:
         path = os.path.join(out_dir, fn)
@@ -178,11 +185,13 @@ def update(unit, since) -> Result:
         # on the next tick, so nothing is silently skipped. Without this a single source can
         # consume the whole 300-minute job and every runner byte.
         if dl.spent():
-            deferred += 1
-            tally.deferred_unit(f"{flow} deferred (budget {BUDGET_MIN:.0f} min)")
+            if fn in owed_this_cycle:          # attempted earlier this cycle: not owed
+                deferred += 1
+                tally.deferred_unit(f"{flow} deferred (budget {BUDGET_MIN:.0f} min)")
             total += before
             continue
         last_attempted = fn
+        cycle.visit(fn)
 
         max_obs = _flow_max_obs(path)
         start = _flow_start_param(max_obs)
@@ -284,6 +293,7 @@ def update(unit, since) -> Result:
     # either way, and no branch that could silently stop rotating.
     if last_attempted:
         save_rotation(out_dir, last_attempted)
+    cycle.close_if_complete(tally)
 
     if deferred:
         where = (f"the next run RESUMES AFTER {last_attempted} so they actually drain"
