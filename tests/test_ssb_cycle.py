@@ -80,6 +80,20 @@ def test_a_group_the_budget_cut_part_way_stays_owed_and_is_booked_once(monkeypat
     assert "grp_Aa.parquet" in cyc.unvisited(), "a cut group is not visited"
 
 
+def test_a_group_whose_table_failed_stays_owed(monkeypatch, tmp_path):
+    """stat_latvia review R1103 P2: a group whose table failed must not count as done."""
+    _wire(monkeypatch, tmp_path, allow=99)
+
+    def _meta(sess, tid):
+        if tid.startswith("Bb"):
+            raise ssb.TransientError("pretend SSB timed out")
+        return None
+    monkeypatch.setattr(ssb, "_get_meta", _meta)
+    assert ssb.update(None, None).status == "partial"
+    cyc = ssb.RotationCycle(str(tmp_path), ["grp_Aa.parquet", "grp_Bb.parquet", "grp_Cc.parquet"])
+    assert cyc.unvisited() == ["grp_Bb.parquet"], cyc.visited
+
+
 def test_negative_control_one_pass_that_reaches_everything_is_not_partial(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert ssb.update(None, None).status != "partial"

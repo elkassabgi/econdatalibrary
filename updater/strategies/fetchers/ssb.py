@@ -550,6 +550,7 @@ def update(unit, since) -> Result:
         # group rather than at the end, because the orchestrator's per-source cap KILLS a
         # source instead of breaking its loop and an end-of-function save is lost (R273).
         save_rotation(out_dir, fn)
+        fails_before = cycle.failures(tally)
         path = os.path.join(out_dir, fn)
         subj = fn[len("grp_"):-len(".parquet")]
         before = blob.row_count(path)
@@ -717,9 +718,9 @@ def update(unit, since) -> Result:
         for j, tid in enumerate(fetched_tables):
             tally.added_unit(net if j == 0 else 0)
         if cut_group != fn:
-            # VISITED only once every table was attempted: a group the budget cut part-way stays
-            # owed (statfin review AR-119 (c): marking at the START let a cut group count as done).
-            cycle.visit(fn)
+            # VISITED only once every table was attempted AND none failed: a group the budget cut
+            # part-way, or whose tables failed, stays owed (AR-119 (c); stat_latvia review R1103 P2).
+            cycle.visit(fn, failed=cycle.failures(tally) > fails_before)
 
     cycle.close_if_complete(tally)
     # last_obs: derive ONLY from sane cursor values. The merge-returned max and the
