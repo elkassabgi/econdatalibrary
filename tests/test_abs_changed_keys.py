@@ -61,6 +61,13 @@ def test_an_overflowed_pass_says_its_evidence_is_truncated(monkeypatch, tmp_path
     assert A.update(None, None).cursor_cap_hit is True
 
 
+def test_negative_control_a_complete_pass_does_not_flag_truncation(monkeypatch, tmp_path):
+    """AR-137: setting cursor_cap_hit on every pass would put abs in ATTENTION for ever."""
+    _wire(monkeypatch, tmp_path, allow=99)
+    res = A.update(None, None)
+    assert res.changed_keys is not None and res.cursor_cap_hit is False
+
+
 def test_a_truncated_pass_never_reads_as_a_green_coverage_note(tmp_path, monkeypatch):
     """AR-132: with bare-key cursors under the 50k cap, the subset sample 'proved' nothing served
     changed while a catalogued series had. A fetcher-declared truncation now refuses the exception."""
