@@ -582,16 +582,28 @@ def test_a_crash_whose_re_map_finds_nothing_records_its_keys(tmp_path, catalog, 
     failed, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
     assert failed == [] and "mapped to 0" in note and "recorded as unmapped keys" in note, note
     orchestrate._derive_changed_csvs(_unit(), Result(status="no_change", obs=10, changed_keys={}), object(), st)
-    assert "NOPE_A" in st.full_rederives_owed()[0]["note"]
+    rows = st.full_rederives_owed()
+    assert [r["source_id"] for r in rows] == ["ilostat"] and "NOPE_A" in rows[0]["note"], rows   # R1159 RV6-13
 
 
-@pytest.mark.parametrize("where", ["fence_dead_mapper", "fence_zero", "crash_dead_mapper", "normal_zero"])
+@pytest.mark.parametrize("where", ["fence_dead_mapper", "fence_zero", "crash_dead_mapper", "crash_zero",
+                                   "normal_zero"])
 def test_a_note_never_claims_a_record_the_write_did_not_make(tmp_path, catalog, monkeypatch, where):
-    """F5: the note said "recorded as unmapped keys" when the write had failed and nothing was kept."""
+    """F5: the note said "recorded as unmapped keys" when the write had failed and nothing was kept. Every
+    exit that writes the record is in this matrix (R1159: the crash-zero exit was not)."""
     st = StateStore(path=str(tmp_path / "state.db"))
     monkeypatch.setattr(st, "note_full_rederive_owed", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
     if where.endswith("dead_mapper"):
         monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: (_ for _ in ()).throw(OSError("db")))
+    elif where == "crash_zero":
+        calls = []
+
+        def _flaky(src, keys):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("catalogue locked")
+            return [], list(keys)
+        monkeypatch.setattr(orchestrate, "_catalog_ids_for", _flaky)
     else:
         monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: ([], list(keys)))
     res = Result(status="partial", obs=10, changed_keys={"EMP_TEMP_Q": "2025-12-31"})
@@ -600,6 +612,62 @@ def test_a_note_never_claims_a_record_the_write_did_not_make(tmp_path, catalog, 
     else:
         note = orchestrate._derive_changed_csvs(_unit(), res, object(), st)[1]
     assert "NOT recorded" in note and "recorded as unmapped keys" not in note, note
+
+
+# ---- review R1159 --------------------------------------------------------------------------------
+def test_the_zero_mapped_record_is_for_csv_misses_sources_only(tmp_path, catalog, monkeypatch):
+    """R1159 RV6-2: nothing in the suite told the scope guard from no guard."""
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: ([], list(keys)))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    unit = types.SimpleNamespace(key="abs/_all", source_id="abs", unit_id="_all")
+    _f, note, _d, _r = orchestrate._derive_changed_csvs(unit, Result(status="partial", obs=10,
+                                                                      changed_keys={"X": "2025"}), object(), st)
+    assert note and "recorded" not in note and st.full_rederives_owed() == [], (note, st.full_rederives_owed())
+
+
+def test_every_changed_key_is_recorded_under_the_right_source(tmp_path, catalog, monkeypatch):
+    """R1159 RV6-4/12/13: the test held 2 keys and read row [0] without its source id."""
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: ([], list(keys)))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    keys = {f"EMP_TEMP_Q{i:02d}": "2025-12-31" for i in range(30)}
+    keys["EMP_TEMP_Q"] = "2025-12-31"                                  # a catalogued '#part' stem: demotes
+    orchestrate._derive_changed_csvs(_unit(), Result(status="partial", obs=10, changed_keys=keys), object(), st)
+    rows = st.full_rederives_owed()
+    assert [r["source_id"] for r in rows] == ["ilostat"], rows
+    assert all(k in rows[0]["note"] for k in keys), "every key, not the first 20"
+
+
+@pytest.mark.parametrize("cat", ["empty", "unreadable"])
+def test_a_zero_mapped_pass_records_even_when_the_catalogue_cannot_be_counted(tmp_path, monkeypatch, cat):
+    """R1159 RV6-8: the n_ids 0 / None exits of the zero-mapped note were untested."""
+    monkeypatch.setattr(orchestrate.config, "BACKEND", "r2")
+    p = tmp_path / "catalog.db"
+    if cat == "empty":
+        con = sqlite3.connect(p)
+        con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+        con.commit()
+        con.close()
+    monkeypatch.setenv("ECONDL_CATALOG", str(p if cat == "empty" else tmp_path / "missing" / "catalog.db"))
+    orchestrate._REG_ENTRIES = None
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: ([], list(keys)))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    _f, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), Result(status="partial", obs=10,
+                                                                        changed_keys={"UNE_X_A": "2025"}), object(), st)
+    assert note and "recorded as unmapped keys" in note, note
+    assert "UNE_X_A" in st.full_rederives_owed()[0]["note"]
+
+
+def test_a_crash_with_a_dead_re_mapper_names_the_cause(tmp_path, catalog, monkeypatch):
+    """R1159 RV6-15: the old fall-through recorded the keys but its note named the wrong cause."""
+    def _boom(ids, blob, **kw):
+        raise RuntimeError("resolver exploded")
+    monkeypatch.setattr(derive, "derive_and_put", _boom)
+    monkeypatch.setattr(orchestrate, "_record_for_catalog_sync", lambda ids: None)
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: (_ for _ in ()).throw(OSError("db")))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    _f, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), Result(status="partial", obs=10,
+                                                                        changed_keys={"EMP_A": "2025"}), object(), st)
+    assert "could not be mapped" in note and "recorded as unmapped keys" in note, note
 
 
 def test_the_remedy_names_the_legacy_step_for_a_changed_annual_stem(tmp_path, monkeypatch, capsys):
