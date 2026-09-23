@@ -621,6 +621,16 @@ def update(unit, since) -> Result:
                   f"booked deferred; the sweep offset is saved, so the next tick resumes here",
                   flush=True)
             break
+        # Advance the sweep offset PAST this group BEFORE working it, as the other adopters' save_rotation
+        # does: written per group (not at the end) so a kill mid-sweep resumes, and written FIRST so a
+        # group that raises or is killed is not started first again on every pass - with the offset
+        # written after the work, it ended every pass and the groups after it were never reached
+        # (review R1114: passes asked [AAA,BBB] then [BBB] four times; CCC never).
+        try:
+            blob.write_bytes_atomic(
+                _cur, json.dumps({"next_group": (_start + _gi) % len(_groups)}).encode())
+        except Exception:                                      # noqa: BLE001
+            pass    # a lost offset costs one repeated sweep, never correctness
         cycle.begin(grp)                     # a raise or kill inside it counts (AR-127 P5)
         fails_before = cycle.failures(tally)
         before = blob.row_count(path)
@@ -825,14 +835,6 @@ def update(unit, since) -> Result:
                 if _sane(md_d) and (overall_max is None or md_d > overall_max):
                     overall_max = md_d
 
-        # Advance the sweep offset AFTER each group, not at the end of the run: the whole point
-        # is to survive being killed mid-sweep, and an offset written only on a clean finish
-        # would never be written at all on the runs that need it.
-        try:
-            blob.write_bytes_atomic(
-                _cur, json.dumps({"next_group": (_start + _gi) % len(_groups)}).encode())
-        except Exception:                                      # noqa: BLE001
-            pass    # a lost offset costs one repeated sweep, never correctness
         # VISITED only when none of its tables failed; a failed group stays owed (R1103 P2)
         cycle.visit(grp, failed=cycle.failures(tally) > fails_before)
 

@@ -120,6 +120,29 @@ def test_negative_control_one_pass_that_reaches_every_group_is_not_partial(monke
     assert res.status != "partial" and asked == list(GROUPS), (res.status, asked)
 
 
+def test_a_group_that_raises_every_pass_does_not_freeze_the_groups_after_it(monkeypatch, tmp_path):
+    """Review R1114: the sweep offset was written AFTER a group's work, so a raising group was
+    started first again on every pass and ended it - [AAA,BBB] then [BBB] four times, CCC never."""
+    class _Boom(Exception):
+        pass
+    asked_per_pass = []
+    for _ in range(5):
+        asked, unit = _wire(monkeypatch, tmp_path, allow=99)
+
+        def _meta(sess, tid, _asked=asked):
+            _asked.append(tid[:3])
+            if tid.startswith("BBB"):
+                raise _Boom("pretend a merge guard refused")
+            return {"title": "t", "variables": [{"code": "X", "values": ["0"]},
+                                                {"code": "LETO", "values": ["2026"], "time": True}]}
+        monkeypatch.setattr(S, "_get_meta", _meta)
+        with pytest.raises(_Boom):
+            S.update(unit, None)
+        asked_per_pass.append(sorted(set(asked)))
+    assert any("CCC" in a for a in asked_per_pass), asked_per_pass
+    assert sum("AAA" in a for a in asked_per_pass[2:]) >= 1, f"AAA refreshed again: {asked_per_pass}"
+
+
 def test_a_group_killed_mid_work_counts_as_a_failed_attempt(monkeypatch, tmp_path):
     """AR-127 P5: a raise or kill inside a group never reached visit(); begin() marks it in flight."""
     asked, unit = _wire(monkeypatch, tmp_path, allow=99)
