@@ -826,7 +826,7 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             note, demote = _classify_zero_mapped(
                 unit.source_id, scope, n_ids, sample_hits, sample_n, len(unmapped),
                 cap_saturated=((not migrated) and len(unmapped) >= _CCAP)
-                or bool(getattr(res, "cursor_cap_hit", False)))
+                or bool(getattr(res, "cursor_cap_hit", None)))   # (not the pinned booking read)
             if not demote:
                 print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
             return [], note, [], {}
