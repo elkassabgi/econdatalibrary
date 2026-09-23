@@ -19,11 +19,16 @@ PER GROUP, under a RotationCycle (ok = every group refreshed since the last ok):
   * the year window: newest stored year - LOOKBACK_YEARS through next year (BEA's Year is a LIST,
     not a range: "2023,2027" returns only 2023 - measured). A group whose newest year is more than
     DISCONTINUED_YEARS old is skipped between yearly full re-pulls; every group is re-pulled with
-    Year=ALL once a year (FULL_REPULL_DAYS) so old revisions are not spliced under a newer vintage;
+    Year=ALL once a year (FULL_REPULL_DAYS), and on its FIRST cycle, so old revisions are not
+    spliced under a newer vintage;
   * the fetch goes through the ingester's OWN parse (fetch_* in jobs/ingest_bea_full.py) with
     strict=True: a call that exhausts its retries raises instead of reading as an empty answer, and
     an empty answer for a window that starts inside the stored data is a failure too;
-  * merge.merge_and_write (keep-new, never-shrink); the group is visited only if nothing failed.
+  * COVERAGE: every stored key with an observation inside the window must come back, or the
+    group stays owed (one silently-empty call cannot pass as "nothing new" - review R1106);
+  * merge.merge_and_write (keep-new, never-shrink) REPORTS THE CHANGED KEYS - revisions included -
+    and those, not the fetched keys, are returned as changed_keys: a revision-only pass is a change
+    and reaches the served CSVs; the group is visited only if nothing failed.
 
 bea.parquet is no longer written, and is kept (retiring it would be a deletion). _tree_frontier
 still reports the whole served tree's newest observation; the run prints each dataset's.
@@ -62,9 +67,10 @@ GROUP_STATE = "_group_refresh.json"
 # Once a year a group is re-pulled with Year=ALL, so revisions older than the lookback are not
 # spliced under a newer vintage for ever (review R1104, condition 4).
 FULL_REPULL_DAYS = 365
-# The store was built by one Year=ALL ingest from the manifest dated 2026-06-03: that is every
-# group's first "full" pull, so the first yearly re-pull falls in 2027 rather than all at once now.
-INITIAL_FULL = "2026-06-03"
+# THE FIRST CYCLE IS Year=ALL (review R1106): the 2026-06-03 ingest is NOT a sound baseline -
+# revisions older than any window already exist (IntlServSTA 1999 stored 631,208, BEA now
+# 629,189), and a Year=ALL cycle costs about what a windowed one does (1,812 calls, ~21-24 min,
+# measured). A group with no `last_full` on record is therefore due a full pull.
 # A group whose newest stored year is this far behind is DISCONTINUED (NIPA holds tables ending in
 # 1966): between yearly full re-pulls it is skipped, and it does not drag any window back.
 DISCONTINUED_YEARS = 3
@@ -196,6 +202,31 @@ def _stored_profile(path) -> dict:
             "exact_dups": int(rows) - int(kdv), "conflicts": int(kdv) - int(kd)}
 
 
+def _stored_keys_since(path, year) -> set:
+    """Distinct stored series_keys with an observation in `year` or later - what a correct fetch of
+    that window must bring back (review R1106: a strict call cannot see an empty answer the API
+    phrased as an unknown error, but a missing key can be counted)."""
+    import duckdb                                                    # noqa: PLC0415
+    copy = blob.local_copy(path)
+    if copy is None:
+        raise FileNotFoundError(path)
+    try:
+        con = duckdb.connect()
+        try:
+            f = copy[0].replace("\\", "/").replace("'", "''")
+            return {r[0] for r in con.execute(
+                f"SELECT DISTINCT series_key FROM read_parquet('{f}') "
+                f"WHERE year(obs_date) >= {int(year)}").fetchall()}
+        finally:
+            con.close()
+    finally:
+        if copy[1]:
+            try:
+                os.remove(copy[0])
+            except OSError:
+                pass
+
+
 def update(unit, since) -> Result:
     """v1 (2026-09-23): refresh every stored group of the seven SOUND datasets in place, under a
     RotationCycle. The bea.parquet loop that wrote a shadowed copy is retired (every one of its
@@ -235,11 +266,15 @@ def update(unit, since) -> Result:
     today = dt.date.today()
     cycle = RotationCycle(out_dir, units)
     cursors: dict[str, str] = {}
+    changed: dict[str, str | None] = {}      # merge-measured: {series_key: newest changed date}
+    discontinued = 0
     total = 0
     frontier_by_ds: dict[str, str] = {}
     for rel in rotate_after(units, load_rotation(out_dir)):
         if cycle.done(rel):
-            continue                         # refreshed this cycle: no work owed (R1105 P1)
+            # refreshed this cycle: no work owed (R1105 P1); its rows still count (AR-123)
+            total += blob.row_count(os.path.join(out_dir, rel))
+            continue
         if dl.spent():
             n = cycle.defer_unvisited(tally, label=lambda u: f"{u} (budget {BUDGET_MIN:.0f} min)")
             print(f"[{SOURCE}] budget of {BUDGET_MIN:.0f} min spent; {n} group(s) not yet "
@@ -258,14 +293,18 @@ def update(unit, since) -> Result:
             # A sound dataset should hold none; a merge would silently pick one value per pair.
             tally.structural_unit(f"{rel}: {prof['conflicts']:,} (key, date) pair(s) with "
                                   f"different values in the stored file - not merged")
+            total += prof["rows"]
             cycle.visit(rel, failed=True)
             continue
-        g = gstate.setdefault(rel, {"last_full": INITIAL_FULL})
-        full_due = (today - dt.date.fromisoformat(g["last_full"])).days >= FULL_REPULL_DAYS
+        g = gstate.setdefault(rel, {"last_full": None})
+        full_due = (g.get("last_full") is None or
+                    (today - dt.date.fromisoformat(g["last_full"])).days >= FULL_REPULL_DAYS)
         mx = prof["max_year"]
         if not full_due and (mx is None or mx < today.year - DISCONTINUED_YEARS):
-            tally.empty_unit(f"{rel}: discontinued (newest {mx}), next full re-pull due "
-                             f"{dt.date.fromisoformat(g['last_full']) + dt.timedelta(days=FULL_REPULL_DAYS)}")
+            # NOT tallied: a skip is not an attempt, and counting it empty tripped finalize's
+            # all-empty guard on a clean pass (review R1106, P3)
+            discontinued += 1
+            total += prof["rows"]
             cycle.visit(rel)
             continue
         if full_due or mx is None:
@@ -279,6 +318,7 @@ def update(unit, since) -> Result:
             tbl = _fetch(ig, M, rel, year)
         except Exception as e:                               # noqa: BLE001
             tally.transient_unit(f"{rel}: fetch failed - {type(e).__name__}: {str(e)[:140]}")
+            total += prof["rows"]
             cycle.visit(rel, failed=True)
             continue
         if tbl.num_rows == 0:
@@ -287,18 +327,39 @@ def update(unit, since) -> Result:
             # 'no data'), never a quiet group (review R1104, condition 3).
             tally.transient_unit(f"{rel}: 0 rows for Year={year[:40]} although the store holds "
                                  f"data through {mx}")
+            total += prof["rows"]
             cycle.visit(rel, failed=True)
             continue
+        since_year = start if start is not None else (mx - LOOKBACK_YEARS if mx else None)
+        try:
+            owed_keys = _stored_keys_since(path, since_year) if since_year is not None else set()
+        except Exception as e:                               # noqa: BLE001
+            tally.transient_unit(f"{rel}: coverage check could not read the store - {e!r}")
+            total += prof["rows"]
+            cycle.visit(rel, failed=True)
+            continue
+        missing = owed_keys - set(tbl.column("series_key").to_pylist())
         ratio = ((prof["rows"] - prof["exact_dups"]) / prof["rows"]) if prof["exact_dups"] else 0.97
         try:
-            n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP,
-                                          min_ratio=min(0.97, ratio))
+            n, md, ch = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP,
+                                              min_ratio=min(0.97, ratio), report_changed_keys=True,
+                                              changed_keys_cap=max(tbl.num_rows, 1))
         except Exception as e:                               # noqa: BLE001
             tally.structural_unit(f"{rel}: merge refused - {str(e)[:160]}")
+            total += prof["rows"]
             cycle.visit(rel, failed=True)
             continue
         total += n
-        tally.added_unit(max(0, n - (prof["rows"] - prof["exact_dups"])), rel)
+        for k, d in ch.items():
+            ds_ = str(d) if d is not None else None
+            if k not in changed or (ds_ is not None and ds_ > (changed[k] or "")):
+                changed[k] = ds_
+        # the COUNT OF CHANGED SERIES is this group's change, revisions included (R1106, P4)
+        tally.added_unit(len(ch), rel)
+        if missing:
+            # merged what came back (never-shrink keeps the rest), but the group stays OWED
+            tally.transient_unit(f"{rel}: coverage - {len(missing):,} stored key(s) with data since "
+                                 f"{since_year} did not come back (e.g. {sorted(missing)[:3]})")
         merge_cursor_map(cursors, cursors_from_table(tbl, cap=CURSOR_CAP), cap=CURSOR_CAP)
         if year == "ALL":
             g["last_full"] = today.isoformat()
@@ -314,9 +375,17 @@ def update(unit, since) -> Result:
     print(f"[{SOURCE}] NOT refreshed (keys collide across tables, R1104): Regional, InputOutput, "
           f"MNE, ITA, GDPbyIndustry", flush=True)
     # The frontier of the WHOLE served tree, for the reason _tree_frontier gives.
+    if discontinued:
+        print(f"[{SOURCE}] {discontinued} discontinued group(s) skipped until their yearly full "
+              f"re-pull", flush=True)
     tf = _tree_frontier(out_dir)
+    # The all-empty heuristic is OFF (floor above the attempts, as ssb/treasury do): a group that
+    # re-fetched identical data is a healthy quiet group, and real breaks are caught per group
+    # exactly (strict calls, coverage, conflicts, the merge guards) - review R1106, P3.
     res = finalize(tally, total, tf.isoformat() if tf else (since or None), source=SOURCE,
-                   series_cursors=cursors or None)
-    if len(cursors) >= CURSOR_CAP:
-        res.cursor_cap_hit = True        # the orchestrator books the owed full re-derive
+                   series_cursors=cursors or None, empty_window_floor=tally.attempted + 1)
+    # COMPLETE by construction (every merge reports), so the orchestrator derives exactly these
+    # and never needs the cursor cap's full re-derive (the fetched-key cursors hit 50,000 on every
+    # full cycle - 63,238 keys - review R1106).
+    res.changed_keys = changed
     return res

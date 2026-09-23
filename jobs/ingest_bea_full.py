@@ -105,8 +105,13 @@ _RETRY_MSG = ("exceeded", "quota", "throttl", "denied", "try again", "temporar")
 _NODATA_MSG = ("no data", "not found", "invalid year", "the requested")
 
 
-def _classify_error(err):
-    """Return 'retry' (back off & retry), 'nodata' (accept empty), or 'fatal'."""
+def _classify_error(err, strict=False):
+    """Return 'retry' (back off & retry), 'nodata' (accept empty), or 'fatal'.
+
+    strict=True: an error that matches NEITHER the retry NOR the no-data wording is 'fatal', not
+    'nodata'. The bulk ingester reads unknown table-level errors as empty; the updater must not,
+    or one country whose call errored is merged as "no rows" and the cycle closes over it (bea v1
+    review R1106, P1)."""
     if isinstance(err, list):
         err = err[0] if err else {}
     if not isinstance(err, dict):
@@ -122,7 +127,7 @@ def _classify_error(err):
         return "retry"
     if any(k in s for k in _NODATA_MSG):
         return "nodata"
-    return "nodata"  # default: treat unknown table-level errors as empty
+    return "fatal" if strict else "nodata"  # default: unknown table-level errors read as empty
 
 
 class CallFailed(RuntimeError):
@@ -171,7 +176,7 @@ def call(method="GetData", strict=False, **params):
             elif isinstance(res, dict) and "Error" in res:
                 err = res.get("Error")
             if err is not None:
-                kind = _classify_error(err)
+                kind = _classify_error(err, strict=strict)
                 if kind == "retry":
                     with _stats_lock:
                         STATS["errors"] += 1
@@ -179,11 +184,17 @@ def call(method="GetData", strict=False, **params):
                     time.sleep(min(75, 12 + backoff_extra))
                     backoff_extra += 10
                     continue
+                if kind == "fatal" and strict:
+                    raise CallFailed(f"{params}: BEA error not recognised as 'no data': {str(err)[:200]}")
                 return []  # nodata / fatal-table -> genuine empty
             if isinstance(res, dict):
                 data = res.get("Data", [])
                 return data if isinstance(data, list) else []
             return []
+        except CallFailed:
+            # A verdict, not a network blip: retrying an error BEA returned would re-ask the same
+            # question 11 more times with ~4.4 min of sleeps before failing the same way.
+            raise
         except Exception as e:  # noqa: BLE001
             if attempt >= 11:
                 with _stats_lock:

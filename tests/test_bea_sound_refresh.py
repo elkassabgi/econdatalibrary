@@ -85,7 +85,7 @@ def test_a_sound_group_is_refreshed_in_place_with_its_window(store):
     res = bea.update(None, None)
     nipa = [c for c in calls if c[0] == "NIPA"]
     assert nipa and nipa[0][3] is True, "strict calls only"
-    assert nipa[0][2] == ",".join(str(v) for v in range(y - bea.LOOKBACK_YEARS, THIS_YEAR + 2))
+    assert nipa[0][2] == "ALL", "the FIRST cycle is a full pull (review R1106)"
     assert _rows(str(d / "NIPA" / "T10101.parquet")) == [
         ("A191RC:A", D(y - 1), 1.0), ("A191RC:A", D(y), 2.5), ("A191RC:A", D(y + 1), 3.0)], \
         "revised, extended, and the exact duplicate collapsed without the guard refusing"
@@ -103,10 +103,22 @@ def test_the_extra_column_is_carried_through_the_merge(store):
     assert "time_series_id" in t.schema.names and t.num_rows == 2
 
 
+def test_after_the_first_full_cycle_a_group_gets_its_year_window(store):
+    d, calls, y = store
+    bea.update(None, None)                                     # cycle 1: Year=ALL, closes
+    calls.clear()
+    bea.update(None, None)                                     # cycle 2: windowed
+    nipa = [c for c in calls if c[0] == "NIPA"]
+    assert nipa[0][2] == ",".join(str(v) for v in range(y + 1 - bea.LOOKBACK_YEARS, THIS_YEAR + 2)), nipa
+
+
 def test_a_discontinued_group_is_skipped_until_its_yearly_full_repull(store, monkeypatch):
     d, calls, y = store
+    bea.update(None, None)                                     # first cycle: everything, Year=ALL
+    assert any(c[0] == "FixedAssets" and c[2] == "ALL" for c in calls)
+    calls.clear()
     bea.update(None, None)
-    assert not any(c[0] == "FixedAssets" for c in calls), "newest 1990: skipped"
+    assert not any(c[0] == "FixedAssets" for c in calls), "newest 1990: skipped until its yearly pull"
     st = json.loads((d / bea.GROUP_STATE).read_text())
     st["FixedAssets/FAAt999.parquet"]["last_full"] = (dt.date.today()
                                                      - dt.timedelta(days=bea.FULL_REPULL_DAYS)).isoformat()
@@ -217,3 +229,65 @@ def test_a_strict_call_raises_when_every_attempt_gets_a_5xx(monkeypatch):
     monkeypatch.setattr(ig.time, "sleep", lambda s: None)
     with pytest.raises(ig.CallFailed, match="retries exhausted"):
         ig.call(datasetname="NIPA", TableName="T1", strict=True)
+
+
+def test_a_revision_only_pass_is_a_change_and_names_the_revised_key(store, monkeypatch):
+    """Review R1106 P4: values revised, no new period -> it read no_change and the served CSVs were
+    never re-derived."""
+    d, calls, y = store
+    bea.update(None, None)                                     # first cycle
+    monkeypatch.setattr(ig, "fetch_table_freq",
+                        lambda *a, **k: (["A191RC:A", "A191RC:A"], [D(y), D(y + 1)], [2.6, 3.0]))
+    res = bea.update(None, None)
+    assert res.status == "ok" and res.changed_keys == {"A191RC:A": D(y).isoformat()}, \
+        (res.status, res.changed_keys)
+
+
+def test_an_identical_refetch_is_a_quiet_pass_not_a_structural_break(store):
+    """Review R1106 P3: identical data plus discontinued skips tripped the all-empty guard."""
+    d, calls, y = store
+    bea.update(None, None)
+    res = bea.update(None, None)                               # same answers again
+    assert res.status in ("ok", "no_change") and res.changed_keys == {}, (res.status, res.error)
+
+
+def test_many_quiet_groups_are_not_a_wholesale_outage(store, monkeypatch):
+    """Review R1106 P3 at scale: finalize's all-empty guard fires past 10 attempted-and-empty units,
+    so a clean pass over the 449 sound groups read as a structural break."""
+    d, calls, y = store
+    for i in range(12):
+        _write(str(d / "NIPA" / f"T9{i:04d}.parquet"), [("A191RC:A", D(y), 2.5), ("A191RC:A", D(y + 1), 3.0)])
+    bea.update(None, None)                                     # first cycle
+    res = bea.update(None, None)                               # every group re-fetches identical data
+    assert res.status in ("ok", "no_change"), (res.status, res.error)
+
+
+def test_a_stored_key_missing_from_the_window_keeps_the_group_owed(store, monkeypatch):
+    """Review R1106 P1: one call that errored silently must not close the cycle."""
+    d, calls, y = store
+    _write(str(d / "NIPA" / "T10101.parquet"), [("A191RC:A", D(y), 2.0), ("B230RC:A", D(y), 5.0)])
+    res = bea.update(None, None)                               # the fetch returns only A191RC
+    assert res.status == "partial" and "coverage" in (res.error or "")
+    assert "NIPA/T10101.parquet" in bea.RotationCycle(str(d), ["NIPA/T10101.parquet"]).unvisited()
+
+
+def test_a_strict_call_refuses_an_error_it_does_not_recognise(monkeypatch):
+    class _R:
+        status_code, content = 200, b"{}"
+
+        def json(self):
+            return {"BEAAPI": {"Error": {"APIErrorCode": "999", "APIErrorDescription": "odd"}}}
+
+    asked = []
+
+    class _S:
+        def get(self, *a, **k):
+            asked.append(1)
+            return _R()
+    monkeypatch.setattr(ig, "_session", lambda: _S())
+    monkeypatch.setattr(ig, "_rate_limit_acquire", lambda: None)
+    monkeypatch.setattr(ig, "_rate_limit_record_bytes", lambda n: None)
+    with pytest.raises(ig.CallFailed, match="not recognised"):
+        ig.call(datasetname="IntlServSTA", AreaOrCountry="X", strict=True)
+    assert len(asked) == 1, f"a verdict is not retried: {len(asked)} requests (and ~4.4 min of sleeps)"
+    assert ig.call(datasetname="IntlServSTA", AreaOrCountry="X") == [], "the ingester default is unchanged"
