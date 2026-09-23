@@ -1,0 +1,219 @@
+"""bea v1: the seven sound datasets' group files are refreshed in place (2026-09-23; review R1104).
+
+The real update() runs over a real store directory (local backend); the BEA calls are faked at the
+ingester's fetch_* seam, so the merge, the profile, the cycle and the state are real.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import sys
+
+import pytest
+
+pa = pytest.importorskip("pyarrow")
+pq = pytest.importorskip("pyarrow.parquet")
+pytest.importorskip("duckdb")
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault("BEA_API_KEY", "test-key-not-real")
+
+import jobs.ingest_bea_full as ig  # noqa: E402
+from updater.errors import DefinitiveError, TransientError  # noqa: E402
+from updater.strategies.fetchers import bea  # noqa: E402
+
+THIS_YEAR = dt.date.today().year
+
+
+def _write(path, rows, tsid=False):
+    cols = {"series_key": [r[0] for r in rows],
+            "obs_date": pa.array([r[1] for r in rows], pa.date32()),
+            "value": [r[2] for r in rows]}
+    if tsid:
+        cols["time_series_id"] = [f"ts-{r[0]}" for r in rows]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    pq.write_table(pa.table(cols), path)
+
+
+def _rows(path):
+    t = pq.read_table(path).sort_by([("series_key", "ascending"), ("obs_date", "ascending")])
+    return [(r["series_key"], r["obs_date"], r["value"]) for r in t.to_pylist()]
+
+
+D = lambda y, m=12, d=31: dt.date(y, m, d)  # noqa: E731
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(bea.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(bea, "api_key", lambda name: "test-key-not-real")
+    monkeypatch.setattr(ig, "load_manifest", lambda: {"param_values": {}})
+    y = THIS_YEAR - 1
+    # a NIPA table with an EXACT duplicate row (the review measured 54 such files)
+    _write(str(tmp_path / "NIPA" / "T10101.parquet"),
+           [("A191RC:A", D(y - 1), 1.0), ("A191RC:A", D(y), 2.0), ("A191RC:A", D(y), 2.0)])
+    # a discontinued FixedAssets table (newest 1990)
+    _write(str(tmp_path / "FixedAssets" / "FAAt999.parquet"), [("K1", D(1990), 5.0)])
+    # IIP carries an extra column
+    _write(str(tmp_path / "IIP" / "all.parquet"), [("Assets:X:A", D(y), 7.0)], tsid=True)
+    # Regional collides across tables and must NOT be touched
+    _write(str(tmp_path / "Regional" / "CAGDP2.parquet"), [("13:48317", D(y), 245.0)])
+    calls = []
+
+    def _tf(dataset, table, freqs=("A", "Q", "M"), year="ALL", strict=False):
+        calls.append((dataset, table, year, strict))
+        return ["A191RC:A", "A191RC:A"], [D(y), D(y + 1)], [2.5, 3.0]
+
+    def _fa(table, year="ALL", strict=False):
+        calls.append(("FixedAssets", table, year, strict))
+        return ["K1"], [D(1990)], [5.0]
+
+    def _iip(M, year="ALL", strict=False):
+        calls.append(("IIP", "all", year, strict))
+        return ["Assets:X:A"], [D(y + 1)], [8.0], ["ts-Assets:X:A"]
+    monkeypatch.setattr(ig, "fetch_table_freq", _tf)
+    monkeypatch.setattr(ig, "fetch_fixedassets", _fa)
+    monkeypatch.setattr(ig, "fetch_iip", _iip)
+    return tmp_path, calls, y
+
+
+def test_a_sound_group_is_refreshed_in_place_with_its_window(store):
+    d, calls, y = store
+    before_regional = (d / "Regional" / "CAGDP2.parquet").read_bytes()
+    res = bea.update(None, None)
+    nipa = [c for c in calls if c[0] == "NIPA"]
+    assert nipa and nipa[0][3] is True, "strict calls only"
+    assert nipa[0][2] == ",".join(str(v) for v in range(y - bea.LOOKBACK_YEARS, THIS_YEAR + 2))
+    assert _rows(str(d / "NIPA" / "T10101.parquet")) == [
+        ("A191RC:A", D(y - 1), 1.0), ("A191RC:A", D(y), 2.5), ("A191RC:A", D(y + 1), 3.0)], \
+        "revised, extended, and the exact duplicate collapsed without the guard refusing"
+    assert (d / "Regional" / "CAGDP2.parquet").read_bytes() == before_regional
+    assert not any(c[0] == "Regional" for c in calls)
+    assert all(u.split("/")[0] in bea.SOUND for u in bea._group_units(str(d))), "Regional is not a unit"
+    assert not (d / "bea.parquet").exists(), "the shadowed copy is no longer written"
+    assert res.status in ("ok", "no_change"), (res.status, res.error)
+
+
+def test_the_extra_column_is_carried_through_the_merge(store):
+    d, calls, y = store
+    bea.update(None, None)
+    t = pq.read_table(str(d / "IIP" / "all.parquet"))
+    assert "time_series_id" in t.schema.names and t.num_rows == 2
+
+
+def test_a_discontinued_group_is_skipped_until_its_yearly_full_repull(store, monkeypatch):
+    d, calls, y = store
+    bea.update(None, None)
+    assert not any(c[0] == "FixedAssets" for c in calls), "newest 1990: skipped"
+    st = json.loads((d / bea.GROUP_STATE).read_text())
+    st["FixedAssets/FAAt999.parquet"]["last_full"] = (dt.date.today()
+                                                     - dt.timedelta(days=bea.FULL_REPULL_DAYS)).isoformat()
+    (d / bea.GROUP_STATE).write_text(json.dumps(st))
+    calls.clear()
+    bea.update(None, None)
+    fa = [c for c in calls if c[0] == "FixedAssets"]
+    assert fa and fa[0][2] == "ALL", "a year after its last full pull it is re-pulled with Year=ALL"
+    assert json.loads((d / bea.GROUP_STATE).read_text())["FixedAssets/FAAt999.parquet"]["last_full"] \
+        == dt.date.today().isoformat()
+
+
+def test_conflicting_pairs_refuse_the_merge_and_keep_the_group_owed(store):
+    d, calls, y = store
+    _write(str(d / "NIPA" / "T10101.parquet"), [("A191RC:A", D(y), 2.0), ("A191RC:A", D(y), 9.0)])
+    before = (d / "NIPA" / "T10101.parquet").read_bytes()
+    with pytest.raises(DefinitiveError):
+        bea.update(None, None)
+    assert (d / "NIPA" / "T10101.parquet").read_bytes() == before
+    assert "NIPA/T10101.parquet" in bea.RotationCycle(str(d), ["NIPA/T10101.parquet"]).unvisited()
+
+
+def test_an_empty_answer_for_a_window_inside_the_data_is_a_failure(store, monkeypatch):
+    d, calls, y = store
+    monkeypatch.setattr(ig, "fetch_table_freq", lambda *a, **k: ([], [], []))
+    res = bea.update(None, None)
+    assert res.status == "partial" and "0 rows" in (res.error or "")
+    assert "NIPA/T10101.parquet" in bea.RotationCycle(str(d), ["NIPA/T10101.parquet"]).unvisited()
+
+
+def test_a_strict_call_failure_keeps_the_group_owed(store, monkeypatch):
+    d, calls, y = store
+
+    def _boom(*a, **k):
+        raise ig.CallFailed("retries exhausted")
+    monkeypatch.setattr(ig, "fetch_table_freq", _boom)
+    res = bea.update(None, None)
+    assert res.status == "partial" and "fetch failed" in (res.error or "")
+    assert "NIPA/T10101.parquet" in bea.RotationCycle(str(d), ["NIPA/T10101.parquet"]).unvisited()
+
+
+def test_a_budget_stop_defers_the_unvisited_groups(store, monkeypatch):
+    class _Dl:
+        def __init__(self, minutes=None):
+            self.n = 0
+
+        def spent(self):
+            self.n += 1
+            return self.n > 1
+    monkeypatch.setattr(bea, "Deadline", _Dl)
+    res = bea.update(None, None)
+    assert res.status == "partial" and "budget" in (res.error or "")
+
+
+def test_no_sound_group_visible_is_an_unreachable_store(tmp_path, monkeypatch):
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(bea.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(bea, "api_key", lambda name: "k")
+    monkeypatch.setattr(ig, "load_manifest", lambda: {"param_values": {}})
+    with pytest.raises(TransientError, match="unreachable"):
+        bea.update(None, None)
+
+
+# ---- the ingester's strict call ------------------------------------------------------------
+def test_a_strict_call_raises_when_its_retries_are_exhausted(monkeypatch):
+    class _S:
+        def get(self, *a, **k):
+            raise ConnectionError("down")
+    monkeypatch.setattr(ig, "_session", lambda: _S())
+    monkeypatch.setattr(ig, "_rate_limit_acquire", lambda: None)
+    monkeypatch.setattr(ig.time, "sleep", lambda s: None)
+    with pytest.raises(ig.CallFailed):
+        ig.call(datasetname="NIPA", TableName="T1", strict=True)
+    assert ig.call(datasetname="NIPA", TableName="T1") == [], "the bulk ingester's default is unchanged"
+
+
+def test_fetch_table_freq_parses_exactly_as_the_ingest_did(monkeypatch):
+    rows = {"A": [{"SeriesCode": "X", "TimePeriod": "2025", "DataValue": "1,234.5"},
+                  {"SeriesCode": "X", "TimePeriod": "2026", "DataValue": "(NA)"}],
+            "Q": [{"SeriesCode": "X", "TimePeriod": "2026Q1", "DataValue": "7"}], "M": []}
+    monkeypatch.setattr(ig, "call", lambda **p: rows[p["Frequency"]])
+    assert ig.fetch_table_freq("NIPA", "T1") == (["X:A", "X:Q"], [D(2025), D(2026, 1, 1)], [1234.5, 7.0])
+
+
+def test_exact_duplicates_past_three_percent_merge_under_the_exact_ratio(store, monkeypatch):
+    """Review R1104: 54 sound-dataset files carry exact duplicates (worst 16.6%). A merge collapses
+    them; at the default 0.97 guard it refuses. The ratio is set to exactly (rows - dups) / rows."""
+    d, calls, y = store
+    rows = [(f"S{i}:A", D(y), float(i)) for i in range(5)]
+    _write(str(d / "NIPA" / "T10101.parquet"), rows + rows)          # 10 rows, 5 exact duplicates
+    monkeypatch.setattr(ig, "fetch_table_freq",
+                        lambda *a, **k: ([r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows]))
+    res = bea.update(None, None)
+    assert pq.read_metadata(str(d / "NIPA" / "T10101.parquet")).num_rows == 5, (res.status, res.error)
+    assert "merge refused" not in (res.error or "")
+
+
+def test_a_strict_call_raises_when_every_attempt_gets_a_5xx(monkeypatch):
+    class _R:
+        status_code, content = 500, b""
+
+    class _S:
+        def get(self, *a, **k):
+            return _R()
+    monkeypatch.setattr(ig, "_session", lambda: _S())
+    monkeypatch.setattr(ig, "_rate_limit_acquire", lambda: None)
+    monkeypatch.setattr(ig, "_rate_limit_record_bytes", lambda n: None)
+    monkeypatch.setattr(ig.time, "sleep", lambda s: None)
+    with pytest.raises(ig.CallFailed, match="retries exhausted"):
+        ig.call(datasetname="NIPA", TableName="T1", strict=True)
