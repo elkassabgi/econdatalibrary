@@ -598,8 +598,9 @@ def update(unit, since) -> Result:
     budget_min = float(os.environ.get("STAT_SLOVENIA_BUDGET_MIN", "40"))
     _dl = Deadline(minutes=budget_min)
     # `ok` = EVERY group worked since the last ok (RotationCycle, 2026-09-23). The budget stop
-    # booked nothing, so a pass that reached ~70% of the 146 groups (09-12: 75 of 146 deferred;
-    # 09-19: 102) would read ok and wait its cadence - hidden until now only because two
+    # booked nothing, so a pass that stopped part-way (CI 09-12: "stopping cleanly after 75 of 146
+    # group(s)", 71 left; 09-19: after 102, 44 left) would read ok and wait its cadence - hidden
+    # until now only because two
     # mis-flagged tables kept the source partial (review AR-125; NUMBERS budget-stop survey).
     cycle = RotationCycle(out_dir, _groups)
 

@@ -1,7 +1,7 @@
 """stat_slovenia: `ok` once every group was worked this cycle, never on a budget-stopped pass (2026-09-23).
 
-Its 40-minute budget stop booked nothing, so a pass that reached ~70% of the 146 groups (2026-09-12:
-75 of 146 left; 09-19: 102) would read ok and wait its cadence. Two mis-flagged tables kept the source
+Its 40-minute budget stop booked nothing, so a pass that stopped part-way (2026-09-12: after 75 of 146
+groups, 71 left; 09-19: after 102, 44 left) would read ok and wait its cadence. Two mis-flagged tables kept the source
 partial and hid it (review AR-125). The real update() runs over a real store; SURS is faked.
 """
 from __future__ import annotations
@@ -100,6 +100,18 @@ def test_obs_is_the_store_total_on_every_pass(monkeypatch, tmp_path):
     for allow in (0, 1, 1, 99):
         res = S.update(_wire(monkeypatch, tmp_path, allow=allow)[1], None)
         assert res.obs == stored, (allow, res.obs, stored)
+
+
+def test_one_group_failing_on_every_pass_does_not_freeze_the_others(monkeypatch, tmp_path):
+    """Review R1111 P6: CCC failed on every pass, and passes 2 and 3 asked only CCC while every
+    other group waited for ever. The quarantine (RotationCycle.QUARANTINE_AFTER) closes over it."""
+    asked_per_pass = []
+    for _ in range(4):
+        asked, unit = _wire(monkeypatch, tmp_path, allow=99, fail=("CCC",))
+        res = S.update(unit, None)
+        asked_per_pass.append(sorted(set(asked)))
+        assert res.status == "partial" and "CCC" in (res.error or ""), "the failure stays loud"
+    assert asked_per_pass[2:] == [list(GROUPS), list(GROUPS)], asked_per_pass
 
 
 def test_negative_control_one_pass_that_reaches_every_group_is_not_partial(monkeypatch, tmp_path):
