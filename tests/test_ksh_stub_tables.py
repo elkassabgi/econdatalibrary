@@ -807,3 +807,14 @@ def test_the_seed_fails_when_the_read_back_differs(tmp_path, monkeypatch):
     monkeypatch.setattr(tool.blob, "read_bytes", lambda p: b'{"x": 1}' if p.endswith(K.BACKFILL)
                         and (s / K.BACKFILL).exists() else real(p))
     assert tool.main(["--catalog", str(tmp_path / "cat.json"), "--apply"]) == 1
+
+
+def test_the_seed_refuses_a_catalogue_newer_than_the_june_snapshot(tmp_path, monkeypatch):
+    """R1143: a worktree's own _catalog.json is TODAY's toc; seeded from it, every owed table reads current."""
+    tool, s = _seed_env(tmp_path, monkeypatch)
+    fresh = json.loads((tmp_path / "cat.json").read_text())
+    fresh[0]["updatedAt"] = "2026-09-23T00:00:00Z"
+    (tmp_path / "fresh.json").write_text(json.dumps(fresh))
+    assert tool.main(["--catalog", str(tmp_path / "fresh.json"), "--apply"]) == 2
+    assert not (s / K.BACKFILL).exists()
+    assert tool.main(["--catalog", str(tmp_path / "cat.json")]) == 0, "negative control: the June-dated one passes"

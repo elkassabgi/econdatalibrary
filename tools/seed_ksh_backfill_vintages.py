@@ -42,6 +42,9 @@ from updater import blob, config  # noqa: E402
 from updater.strategies.fetchers import ksh_stadat as K  # noqa: E402
 
 
+SNAPSHOT_CUTOFF = "2026-06-11T05:46:00Z"   # when the June backfill saved the toc it then fetched from
+
+
 def held_tables(out_dir, tids) -> set:
     """The tids with at least one row in their own THEME parquet, reading each theme file ONCE. '_' side
     files are deliberately not read (see the module docstring)."""
@@ -72,6 +75,15 @@ def main(argv=None) -> int:
     print(f"backend={config.BACKEND} store={out_dir}")
     snap = json.load(open(a.catalog, encoding="utf-8-sig"))
     snap = {K._table_id(e): e for e in snap if K._table_id(e)}
+    # ONLY THE JUNE SNAPSHOT IS THE STORED VINTAGE (review R1143). A worktree holds its own
+    # data/clean_full/ksh_stadat/_catalog.json written from TODAY's toc; seeded from that, 658 of 660 tables
+    # read current and every owed table would be skipped for good. The backfill's snapshot was taken at
+    # 2026-06-11T05:46Z, so any updatedAt/correctedAt after that marks a snapshot that is not the backfill's.
+    newest = max((str(e.get(f) or "") for e in snap.values() for f in ("updatedAt", "correctedAt")), default="")
+    if newest > SNAPSHOT_CUTOFF:
+        print(f"REFUSED: {a.catalog} holds a date after the backfill's snapshot ({newest} > {SNAPSHOT_CUTOFF}) "
+              f"- it is not the June backfill's catalogue")
+        return 2
     sidecar = K._load_sidecar(out_dir)
     if not sidecar:
         print("REFUSED: the sidecar read empty - cannot tell never-fetched tables from fetched ones")
