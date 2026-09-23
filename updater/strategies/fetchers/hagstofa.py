@@ -83,6 +83,7 @@ MAX_ATTEMPTS = 4
 TRAIL_YEARS = 5        # trailing-window fallback when a boundary is corrupt/far-future
 # {"db/path": {"verdict": "withdrawn" | "moved", "to": [...], "date": "YYYY-MM-DD"}}, blob-routed:
 # the whole-tree search for a stored table that answers 400/404, cached and re-verified monthly
+LABELS_FILE = "_labels.json"          # {table prefix: {dimension: {code: label}}} (R1124)
 WITHDRAWN_FILE = "_withdrawn.json"
 WITHDRAWN_RECHECK_DAYS = 30
 
@@ -158,10 +159,12 @@ def _per_table_profile(path: str, boundary: dict | None = None
     through the '.px' segment. We bucket every row's max obs_date under that prefix so a
     table's date-tail boundary is its OWN latest period, not the whole db's.
 
-    `boundary`, when given, is filled from the same read with {prefix: {series_key: value}} at each
-    table's max date - what _codes_shifted compares a fetch against.
+    `boundary`, when given, is filled from the same read with {prefix: (date, {series_key: value})} at
+    each table's newest SANE date - what the shift check compares a fetch against. Not the raw max: a
+    far-future placeholder (MAN02007's 2100-12-31) would leave nothing to compare (review R1124).
     """
     out: dict[str, dt.date] = {}
+    sane_out: dict[str, dt.date] = {}
     schemes: dict[str, set] = {}
     if not blob.exists(path):
         return out, schemes
@@ -193,50 +196,92 @@ def _per_table_profile(path: str, boundary: dict | None = None
         prev = out.get(pref)
         if prev is None or o > prev:
             out[pref] = o
+        if sane_since(o) is not None:
+            prev = sane_out.get(pref)
+            if prev is None or o > prev:
+                sane_out[pref] = o
     if boundary is not None and "value" in t.column_names:
         for k, o, v, pref in zip(keys, dates, t.column("value").to_pylist(), prefs):
             if pref is None or o is None:
                 continue
             if isinstance(o, dt.datetime):
                 o = o.date()
-            if o == out.get(pref):
-                boundary.setdefault(pref, {})[k] = v
+            if o == sane_out.get(pref):
+                boundary.setdefault(pref, (o, {}))[1][k] = v
     return out, schemes
 
 
-def _codes_shifted(fetched, stored: dict, since_date) -> str | None:
-    """Did the publisher RENUMBER this table's value codes? Hagstofa's codes are positions in an
-    alphabetical list of labels, not identities (R1119): one new country shifts every code after it,
-    and a merge ('new wins') then overwrites each stored series with its neighbour's values under the
-    same key - silently, since the table neither shrinks nor changes scheme (R1120: SJA04901 from the
-    Icelandic site, 134 of 214 boundary pairs).
+def _key_codes(key: str, prefix: str) -> dict:
+    """{dimension: code} of a series key after its table prefix ('...SKO02102.px:Skóli=61:Kyn=1')."""
+    rest = key[len(prefix) + 1:]
+    return dict(seg.split("=", 1) for seg in rest.split(":") if "=" in seg) if rest else {}
 
-    The fetch re-reads the table's newest stored period (the tail is boundary-inclusive), so its
-    values there can be compared with the store. A REVISION changes values to new numbers; a SHIFT
-    moves existing numbers to other keys. So a differing value counts as MOVED only when it equals the
-    stored value of exactly one OTHER key (values stored under several keys - zeros, round totals -
-    prove nothing). Returns a reason when at least 2 differing values moved and they are at least half
-    of all differences; None otherwise (no stored boundary, no overlap, or plain revisions)."""
-    if since_date is None or not stored:
+
+def _labels_moved(stored: dict, now: dict) -> str | None:
+    """IDENTITY BY LABEL (review R1124 (a)). `stored` / `now`: {dimension: {code: label}}. Hagstofa's
+    codes are positions in each release's label list (R1119), so the label is the identity: a label
+    that now sits under a DIFFERENT code means the codes were renumbered, whatever the values say. A
+    label renamed in place (same code, the old label gone from the list) is not a shift."""
+    for dim, old in stored.items():
+        cur = now.get(dim)
+        if not cur:
+            continue
+        where = {}
+        for code, label in cur.items():
+            where.setdefault(label, []).append(code)
+        moved = [(c, lab, where[lab]) for c, lab in old.items()
+                 if cur.get(c) != lab and lab in where and c not in where[lab]]
+        if moved:
+            c, lab, to = moved[0]
+            return (f"{len(moved)} label(s) of {dim!r} moved to another code since the stored release "
+                    f"(e.g. {lab!r}: code {c} -> {to[0]})")
+    return None
+
+
+def _neighbour_shift(fetched, boundary: dict, bdate, prefix: str, positional: set) -> str | None:
+    """THE SHIFT SIGNATURE, for a table with no label map yet (review R1124 (b)). A renumbering moves
+    each series one or a few positions along a positional dimension, so after it most CHANGED values
+    at the newest stored period equal the stored value of the key 1-3 positions away - on ONE
+    consistent offset. SKO02102 (school codes, inserted at 61): 1,143 of 1,143 changed values equal the
+    stored value one code lower. A revision gives new numbers, which match a neighbour only by chance,
+    and never most of them on one offset. Needs at least 3 changed values: with 1-2 a revision and a
+    shift cannot be told apart, and the label map (seeded on this clean merge) takes over next time."""
+    if bdate is None or not boundary or not positional:
         return None
-    new = {k: v for k, d, v in fetched if d == since_date}
-    diff = [k for k in new.keys() & stored.keys()
-            if not _same(new[k], stored[k])]
-    if not diff:
+    new = {k: v for k, d, v in fetched if d == bdate}
+    diff = [k for k in new.keys() & boundary.keys() if not _same(new[k], boundary[k])]
+    if len(diff) < 3:
         return None
-    where: dict = {}
-    for k, v in stored.items():
-        if v is not None:
-            where.setdefault(round(v, 9), []).append(k)
-    moved = 0
-    for k in diff:
-        v = new[k]
-        homes = where.get(round(v, 9), []) if v is not None else []
-        if len(homes) == 1 and homes[0] != k:
-            moved += 1
-    if moved >= 2 and 2 * moved >= len(diff):
-        return (f"{moved} of {len(diff)} differing values at {since_date} (of {len(new)} fetched) are "
-                f"values stored under a DIFFERENT key - the value codes were renumbered")
+    best = (0, None, None, None)
+    for dim in positional:
+        for delta in (1, 2, 3, -1, -2, -3):
+            hits = 0
+            miss_codes = set()
+            for k in diff:
+                segs = k[len(prefix) + 1:].split(":")
+                at = next((i for i, s in enumerate(segs) if s.startswith(f"{dim}=")), None)
+                if at is None:
+                    continue
+                c = segs[at][len(dim) + 1:]
+                segs[at] = f"{dim}={int(c) - delta}" if c.isdigit() and int(c) - delta >= 0 else None
+                src = f"{prefix}:" + ":".join(segs) if segs[at] else None
+                if src is not None and src in boundary and _same(new[k], boundary[src]):
+                    hits += 1
+                else:
+                    miss_codes.add(c)
+            if hits > best[0]:
+                best = (hits, dim, delta, miss_codes)
+    hits, dim, delta, miss_codes = best
+    # The rows AT the insertion point carry the new member's values and match no neighbour. When every
+    # miss sits at ONE code, those are that member's rows and the rest is judged alone; misses spread
+    # over several codes (a revision) count in full.
+    denom = hits if miss_codes is not None and len(miss_codes) <= 1 else len(diff)
+    # 80%, not half: in a count table with a tiny value alphabet (3 distinct counts) a neighbour
+    # matches by chance about a third of the time, and half of 6 revised values did in the tests. A
+    # real shift matches almost all (SKO02102: 1,143 of 1,143).
+    if hits >= 3 and 5 * hits >= 4 * denom:
+        return (f"{hits} of {len(diff)} changed values at {bdate} equal the stored value {abs(delta)} "
+                f"code(s) {'lower' if delta > 0 else 'higher'} along {dim!r} - the codes were renumbered")
     return None
 
 
@@ -307,7 +352,9 @@ def _listing(sess, url):
             items = r.json()
         except ValueError:
             return None
-        return items if isinstance(items, list) and items else None
+        # An EMPTY folder is a folder with nothing in it, not an unreadable one: returning None for []
+        # voided a whole tree (review R1124). Only a non-list body is unreadable.
+        return items if isinstance(items, list) else None
     return None
 
 
@@ -340,6 +387,10 @@ def _table_tree(sess, base=None, dl=None):
     while ok and queue:
         if dl is not None and dl.spent():
             ok = False              # out of budget: an unfinished search is evidence of nothing
+            try:
+                sess._hagstofa_tree_cut = True      # -> _missing_verdict books it DEFERRED
+            except AttributeError:
+                pass
             break
         db, folder = queue.pop()
         items = _listing(sess, f"{base}/{db}/{folder}/" if folder else f"{base}/{db}/")
@@ -561,6 +612,11 @@ def _missing_verdict(sess, db, path, since_date, dl=None):
     trees = [_table_tree(sess, BASE, dl), _table_tree(sess, BASE_IS, dl)]
     leaf = path.rpartition("/")[2]
     if any(t is None for t in trees):
+        if getattr(sess, "_hagstofa_tree_cut", False):
+            # the run's budget ran out inside the search: nothing is known, nothing failed (R1124)
+            print(f"[hagstofa] {path}: HTTP 400/404; the table-tree search stopped at the budget - "
+                  f"moved or withdrawn is decided next run", flush=True)
+            return [], "deferred"
         print(f"[hagstofa] {path}: HTTP 400/404, and a table tree could not be read in full - "
               f"moved or withdrawn is unknown", flush=True)
         return [], "structural"
@@ -620,6 +676,13 @@ def _fetch_with_meta(sess, url, meta, path, prefix, since_date):
                 return [], "quiet"
             return [], "structural"
         return [], "empty"
+
+    # THE RELEASE'S LABELS, for update()'s identity check (review R1124): {dimension: {code: label}}.
+    labels = getattr(sess, "_hagstofa_labels", None)
+    if labels is not None:
+        labels[prefix] = {v.get("code", ""): dict(zip((str(c) for c in v.get("values") or []),
+                                                     (str(x) for x in v.get("valueTexts") or [])))
+                          for v in variables if v.get("code") != tvar.get("code")}
 
     time_codes = _newer_time_codes(tvar, since_date)
     if since_date is not None and not time_codes:
@@ -693,6 +756,17 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
         withdrawn = {}
     sess._hagstofa_withdrawn = withdrawn if isinstance(withdrawn, dict) else {}
     withdrawn_before = dict(sess._hagstofa_withdrawn)
+    # {table prefix: {dimension: {code: label}}} as of each table's last clean merge (review R1124).
+    lpath = os.path.join(out_dir, LABELS_FILE)
+    try:
+        raw_l = blob.read_bytes(lpath)
+        label_maps = json.loads(raw_l.decode("utf-8")) if raw_l else {}
+    except Exception:                                        # noqa: BLE001 - unreadable: re-seed
+        label_maps = {}
+    label_maps = label_maps if isinstance(label_maps, dict) else {}
+    labels_before = json.dumps(label_maps, sort_keys=True)
+    sess._hagstofa_labels = {}
+    unchecked = []                   # tables that merged with no stored value to compare against
     tally = Tally()
     cursors: dict[str, str] = {}     # table prefix -> max obs_date (per-table freshness)
     maxd: dt.date | None = None
@@ -737,6 +811,7 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                 cursors[pref] = mx.isoformat()
 
         # accumulate this db's new rows, merge ONCE.
+        pending_labels: dict = {}       # prefix -> this release's labels, kept once the db merges
         keys: list[str] = []
         dates: list[dt.date] = []
         vals: list[float] = []
@@ -756,6 +831,10 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                 tally.transient_unit(tpath)  # -> partial; existing rows for this table kept
                 continue
 
+            labels_now = sess._hagstofa_labels.pop(prefix, None)
+            if outcome == "deferred":
+                tally.deferred_unit(f"{tpath} (budget: table-tree search)")
+                continue
             if outcome == "structural":
                 tally.structural_unit(tpath)  # finalize() raises DefinitiveError
                 continue
@@ -777,18 +856,42 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                 incoming = {_key_scheme(k, prefix) for k, _d, _v in rows}
                 new = incoming - stored_schemes
                 if new:
-                    tally.structural_unit(
-                        f"{tpath}: RESTRUCTURED by the publisher - key scheme(s) "
-                        f"{sorted(new)[:2]} never stored for this table (stored: "
-                        f"{sorted(stored_schemes)[:2]}); merging would publish two id schemes "
-                        f"in one table. Not merged: re-key it deliberately")
+                    why = (f"{tpath}: RESTRUCTURED by the publisher - key scheme(s) "
+                           f"{sorted(new)[:2]} never stored for this table (stored: "
+                           f"{sorted(stored_schemes)[:2]}); merging would publish two id schemes "
+                           f"in one table. Not merged: re-key it deliberately")
+                    print(f"[{SOURCE}] {why}", flush=True)      # the result error is clipped (R1124)
+                    tally.structural_unit(why)
                     continue
-            # THE SAME NAMES CAN HIDE RENUMBERED CODES (R1119/R1120) - see _codes_shifted.
-            shifted = _codes_shifted(rows, db_boundary.get(db, {}).get(prefix, {}), since_date)
+            # THE SAME NAMES CAN HIDE RENUMBERED CODES (R1119, R1120, R1124). With a label map from the
+            # last clean merge the label decides, exactly; without one, the neighbour-shift signature.
+            bdate, bvals = db_boundary.get(db, {}).get(prefix, (None, {}))
+            fetched_schemes = {_key_scheme(k, prefix) for k, _d, _v in rows}
+            bvals = {k: v for k, v in bvals.items() if _key_scheme(k, prefix) in fetched_schemes}
+            if label_maps.get(prefix) and labels_now:
+                shifted = _labels_moved(label_maps[prefix], labels_now)
+            else:
+                positional = {d for d, m in (labels_now or {}).items()
+                              if m and all(c.isdigit() for c in m)}
+                if not labels_now:
+                    # no metadata labels to read: take the positional dimensions from the keys
+                    seen_codes: dict = {}
+                    for k, _d, _v in rows:
+                        for dim, code in _key_codes(k, prefix).items():
+                            seen_codes.setdefault(dim, set()).add(code)
+                    positional = {d for d, cs in seen_codes.items() if all(c.isdigit() for c in cs)}
+                shifted = _neighbour_shift(rows, bvals, bdate, prefix, positional)
             if shifted:
-                tally.structural_unit(f"{tpath}: CODES SHIFTED - {shifted}. Not merged: 'new wins' "
-                                      f"would overwrite stored series with other series' values")
+                why = (f"{tpath}: CODES SHIFTED - {shifted}. Not merged: 'new wins' would overwrite "
+                       f"stored series with other series' values; it stays refused until the table is "
+                       f"re-keyed deliberately")
+                print(f"[{SOURCE}] {why}", flush=True)
+                tally.structural_unit(why)
                 continue
+            if bdate is not None and not any(d == bdate and k in bvals for k, d, _v in rows):
+                unchecked.append(tpath)
+            if labels_now:
+                pending_labels[prefix] = labels_now
 
             # outcome == 'data'. Seed tbl_max from the SANE boundary only: if the on-disk
             # since_date is a corrupt far-future sentinel, start from None so the real
@@ -818,6 +921,7 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                 "value":      pa.array(vals, pa.float64()),
             })
             n, md = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
+            label_maps.update(pending_labels)      # the labels these merged rows were keyed under
             total += n
             if md:
                 md_d = dt.date.fromisoformat(md)
@@ -837,6 +941,18 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
         except Exception as e:                               # noqa: BLE001
             # losing it costs one more tree search next run, never a wrong verdict - but say so
             print(f"[{SOURCE}] could not save {wpath} ({type(e).__name__}: {e})", flush=True)
+
+    if unchecked:
+        print(f"[{SOURCE}] {len(unchecked)} table(s) merged with no stored value at their newest period "
+              f"to compare, so no shift check could run: {', '.join(unchecked[:10])}"
+              f"{' ...' if len(unchecked) > 10 else ''}", flush=True)
+    if json.dumps(label_maps, sort_keys=True) != labels_before:
+        try:
+            blob.write_bytes_atomic(lpath, json.dumps(label_maps, sort_keys=True,
+                                                      ensure_ascii=False).encode("utf-8"))
+        except Exception as e:                               # noqa: BLE001
+            # losing it costs a re-seed through the neighbour check next run - but say so
+            print(f"[{SOURCE}] could not save {lpath} ({type(e).__name__}: {e})", flush=True)
 
     last_obs = maxd.isoformat() if maxd else None
     # empty_window_floor = <#subunits> - 1 (per the S3 contract). The blunt all-empty

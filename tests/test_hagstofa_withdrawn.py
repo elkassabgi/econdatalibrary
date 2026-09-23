@@ -148,10 +148,11 @@ def test_an_english_rename_is_fetched_from_the_english_site_only(monkeypatch, st
 
 
 def test_a_tree_search_stops_at_the_deadline_and_is_no_evidence(monkeypatch):
-    """R1120 (d): the ~6-minute search is bounded by the run's Deadline; unfinished = unknown."""
+    """R1120 (d): the ~6-minute search is bounded by the run's Deadline; unfinished = unknown, and
+    booked DEFERRED - nothing failed (R1124)."""
     sess = _Sess()
     sess._hagstofa_withdrawn = {}
-    assert _fetch(sess, dl=_Spent()) == ([], "structural")
+    assert _fetch(sess, dl=_Spent()) == ([], "deferred")
     assert sess._hagstofa_withdrawn == {}
     assert not any(u.endswith("/Atvinnuvegir/") for u in sess.asked), "no folder listed past the deadline"
 
@@ -189,7 +190,6 @@ def test_a_table_only_the_icelandic_tree_still_lists_at_its_path_is_not_withdraw
     (f"{IS}/", _R(500, [{"dbid": "Atvinnuvegir"}])),
     (f"{EN}/Atvinnuvegir/fyrirtaeki/9_eldraefni/", _R(500, [_t("FYR02103.px")])),
     (f"{IS}/Atvinnuvegir/fyrirtaeki/9_eldraefni/", _R(429, [_t("FYR02103.px")])),
-    (f"{EN}/Atvinnuvegir/fyrirtaeki/9_eldraefni/", _R(200, [])),
     (f"{IS}/Atvinnuvegir/fyrirtaeki/9_eldraefni/", _R(200, {"a": 1})),
     (f"{EN}/Atvinnuvegir/fyrirtaeki/9_eldraefni/", _R(200, bad_json=True)),
     (f"{IS}/Atvinnuvegir/fyrirtaeki/9_eldraefni/", H.requests.ConnectionError("dropped")),
@@ -197,6 +197,21 @@ def test_a_table_only_the_icelandic_tree_still_lists_at_its_path_is_not_withdraw
 def test_a_tree_not_read_in_full_is_never_evidence_of_withdrawal(url, bad):
     """One unreadable listing voids the search: a partial tree would call a moved table withdrawn."""
     assert _fetch(_Sess(override={url: bad})) == ([], "structural")
+
+
+def test_an_empty_folder_is_empty_not_unreadable():
+    """R1124: _listing returned None for [], so one empty folder voided a whole tree."""
+    url = f"{EN}/Atvinnuvegir/fyrirtaeki/2_skraningar/"
+    sess = _Sess(override={url: _R(200, [])})
+    sess._hagstofa_withdrawn = {}
+    assert _fetch(sess) == ([], "quiet"), "both trees read in full: SJA04901 is withdrawn"
+
+
+def test_negative_control_an_unreadable_folder_still_voids_the_tree():
+    url = f"{EN}/Atvinnuvegir/fyrirtaeki/2_skraningar/"
+    sess = _Sess(override={url: _R(200, {"not": "a list"})})
+    sess._hagstofa_withdrawn = {}
+    assert _fetch(sess) == ([], "structural")
 
 
 def test_a_listing_refused_once_with_429_is_retried_not_given_up():
