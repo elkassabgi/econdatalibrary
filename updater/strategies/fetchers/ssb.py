@@ -526,6 +526,14 @@ def update(unit, since) -> Result:
     dl = Deadline(minutes=BUDGET_MIN)
     total = 0
     cursors: dict[str, str] = {}   # table_id -> frontier 'YYYY-MM-DD'
+    # THE MERGE-MEASURED CHANGED SET, at TABLE grain ('SSB:<tid>' -> newest changed obs_date).
+    # WHY (2026-09-23): the orchestrator derives CSVs for `series_cursors`' keys when a fetcher
+    # reports no changed_keys, and ssb's cursors are SEEDED for every table of every group it
+    # visits - groups with no new rows included. In CI the derive reads the runner's own copy of
+    # the store, which holds only the groups written THIS run, so each seeded-but-unwritten table
+    # failed "zero rows matched in 13 files": 246 of 947 on 2026-09-18, 2,088 ids queued, and ssb
+    # read `partial` on every run for a failure that was never about its data.
+    changed: dict[str, str] = {}
     # `ok` = EVERY group fully worked since the last ok (RotationCycle, 2026-09-23). Before it,
     # every pass the budget stopped booked the rest deferred, so ssb read `partial` on EVERY run
     # and had never succeeded - in the daily gate's failure list permanently ("979 sub-unit(s)
@@ -709,7 +717,15 @@ def update(unit, since) -> Result:
                 "obs_date":   pa.array(g_dates, pa.date32()),
                 "value":      pa.array(g_vals, pa.float64()),
             })
-            n, _md = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
+            n, _md, ch = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP,
+                                               report_changed_keys=True,
+                                               changed_keys_cap=max(new_tbl.num_rows, 1))
+            for key, d in ch.items():
+                # store key 'SSB:<tid>:<dims...>' -> the served (catalogued) table id 'SSB:<tid>'
+                tkey = ":".join(str(key).split(":")[:2])
+                ds = str(d) if d is not None else None
+                if tkey not in changed or (ds is not None and ds > (changed[tkey] or "")):
+                    changed[tkey] = ds
             total += n
             net = max(0, n - before)   # NET new rows the group actually gained
         else:
@@ -760,5 +776,8 @@ def update(unit, since) -> Result:
     # unmapped key can't be rescued and would demote every run to partial). Transform ONLY at
     # this emission boundary; all internal logic stays tid-keyed. (verified: csv_coherence diag)
     series_cursors = {f"SSB:{k}": v for k, v in cursors.items()}
-    return finalize(tally, total, last_obs, source=SOURCE, series_cursors=series_cursors,
-                    empty_window_floor=floor)
+    res = finalize(tally, total, last_obs, source=SOURCE, series_cursors=series_cursors,
+                   empty_window_floor=floor)
+    # {} is a real statement ("no served value changed") and is honoured by the orchestrator.
+    res.changed_keys = changed
+    return res
