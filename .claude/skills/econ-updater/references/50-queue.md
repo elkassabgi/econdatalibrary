@@ -1329,6 +1329,33 @@ ember 26, boe 25, statfin 23, ssb 22, dst 21, defillama 18, ksh_stadat 15,
 fed_board 13, cso 12 and more. Each needs the same treatment — sync from R2, re-derive,
 verify. ilostat was taken first because it was the worst (952).
 
+### ilostat — OPEN: 24 catalogued ids no fetch can ever refresh (measured 2026-09-23, review R1137)
+
+fix/ilostat-changed-indicators maps the fetcher's published indicator stems to the catalogue exactly
+(3,305 of 3,305 ids claimed over 1,986 stems, 0 over-claims). But 24 catalogued WHOLE ids sit on stems
+that are in neither the fresh ILO table of contents nor the 2026-08-03 one. No stem the fetcher
+publishes can ever name them, so their CSVs are frozen and nothing reports it. Measured by the review's
+`scratchpad/AR_ilostat/m1b_orphans.py` (store rows and max obs from the local store, 2026-08-07 files).
+
+- 18 look RENAMED by ILO, `X` -> `M` in the fourth letter; each has a candidate successor stem with
+  the `M` form (e.g. EMP_XFLB_SEX_ECO_NB_A -> EMP_MFLB_SEX_ECO_NB_A): EMP_XFLB_SEX_ECO_NB_A,
+  EMP_XFLB_SEX_OCU_NB_A, EMP_XFLC_SEX_ECO_NB_A, EMP_XFLC_SEX_OCU_NB_A, EMP_XFRB_SEX_CBR_NB_A,
+  EMP_XFRC_SEX_CCT_NB_A, EMP_XNAO_SEX_CDS_NB_A, EMP_XNAO_SEX_ECO_NB_A, EMP_XNAO_SEX_EDU_NB_A,
+  EMP_XNAO_SEX_OCU_NB_A, POP_XFLB_SEX_CBR_NB_A, POP_XFLB_SEX_EDU_NB_A, POP_XFLC_SEX_CCT_NB_A,
+  POP_XFLC_SEX_EDU_NB_A, POP_XFRB_SEX_CBR_NB_A, POP_XFRC_SEX_CCT_NB_A, POP_XNAO_SEX_CDS_NB_A,
+  POP_XNAS_SEX_CRS_NB_A.
+- 6 have no candidate successor: EMP_CARE_SEX_CAR_NB_A, POP_XNAI_SEX_CPR_NB_A, and the TUNE family
+  UNE_TUNE_SEX_ECO_EDU_NB_A, UNE_TUNE_SEX_ECO_NB_A, UNE_TUNE_SEX_OCU_EDU_NB_A, UNE_TUNE_SEX_OCU_NB_A.
+
+Stored max obs: 2024-01-01 for the renamed ones, 2025-01-01 for the rest. The catalogue ids are
+`ilostat:<stem>`. TO CLOSE: decide per stem - catalogue the successor and retire the old id (an id
+change on econ is ordinary, not reserved), or mark it discontinued. Cataloguing reaches users only after
+the D1 catalogue sync, which is frozen at the time of writing.
+
+ALSO RECORDED HERE: 39 stems the fetcher publishes have NO catalogue id. Before `catalog_scope: subset`
+was declared for ilostat (same branch), a pass that published only those read "csv coherence unmet" and
+ATTENTION although nothing served changed. The subset declaration is sound because the mapping is exact.
+
 ### Resync-first sweep, batch 1 — only 1 of 6 was genuinely stale
 
 Proof that "1,379 files behind R2" is NOT "1,379 stale served objects". After syncing each

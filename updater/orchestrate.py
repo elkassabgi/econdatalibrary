@@ -577,6 +577,36 @@ _DESKTOP_OWED_BUDGET = ("budget-deferred flow-grain id; the store file is absent
 _DESKTOP_OWED_MISSED = ("budget-deferred id of a csv_misses: desktop_owed source; its change signal has "
                         "already advanced, so no later run names it again; desktop: core.derive_csv --only, "
                         "read back, clear")
+_DESKTOP_OWED_FAILED = ("derive failed for an id of a csv_misses: desktop_owed source, whose change signal has "
+                        "already advanced")
+_DESKTOP_OWED_FENCE = ("csv fence tripped before this changed id was derived, on a csv_misses: desktop_owed "
+                       "source whose change signal has already advanced; desktop: core.derive_csv --only, "
+                       "read back, clear")
+
+
+def _book_fence_trip(unit, res, store, fence_min: float):
+    """A csv-fence trip on a `csv_misses: desktop_owed` source: book each mapped changed id as a
+    desktop debt and return the note that replaces "re-derives next run" (false here: the change
+    signal has already advanced). None for any other source (the caller keeps its note).
+
+    PER ID, NOT full_rederive_owed (review R1137): health's remedy for a full re-derive is
+    tools/derive_csv_bulk.py, which for ilostat would PUT 'ilostat:ilostat:...' objects across
+    390,875,664 store rows and clear the debt without paying it (R882's class). A mapping or booking
+    failure is a FAILURE segment, never a quiet note."""
+    if _csv_misses(unit.source_id) != "desktop_owed":
+        return None
+    ck = getattr(res, "changed_keys", None)
+    changed = sorted(k for k in (ck if ck is not None else (res.series_cursors or {})) if k is not None)
+    try:
+        ids, _unm = _catalog_ids_for(unit.source_id, changed)
+        if store is None:
+            raise RuntimeError("no state store to book them in")
+        _book_csv_desktop_owed(store, unit.source_id, {s: None for s in ids}, reason=_DESKTOP_OWED_FENCE)
+    except Exception as e:                                   # noqa: BLE001 - loud, never fatal
+        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
+                f"could NOT be booked as desktop debts ({type(e).__name__}: {str(e)[:100]})")
+    return (f"csv coverage note: csv phase exceeded its {fence_min:.0f}-min fence, {len(ids)} changed "
+            f"id(s) booked as desktop debts (csv_desktop_owed), none re-derive on their own")
 
 
 def _csv_misses(source_id: str) -> str:
@@ -879,6 +909,17 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             _book_csv_desktop_owed(store, unit.source_id, {s: None for s in deferred_ids},
                                    reason=_DESKTOP_OWED_MISSED)
             budget_owed, deferred_ids = list(deferred_ids), []
+        # FAILED IDS OF A csv_misses SOURCE ARE DEBTS TOO (review R1137). Queued for retry, 180 part ids
+        # failed twice while their sidecar stamps had advanced: on the second run the unit read
+        # no_change and nothing named them, and the queue cannot drain on r2 nor does health read it.
+        # Booked with their OWN reason; they still demote this run (the note below names them).
+        failed_owed: set = set()
+        if failed and _csv_misses(unit.source_id) == "desktop_owed":
+            _fr = out.get("failed_reasons") or {}
+            for _s in failed:
+                _book_csv_desktop_owed(store, unit.source_id, {_s: None},
+                                       reason=f"{_DESKTOP_OWED_FAILED} ({str(_fr.get(_s, '?'))[:120]})")
+            failed_owed = set(failed)
         # A derived CSV is HOSTED but not yet DISCOVERABLE: nothing in the daily
         # pipeline pushed catalog rows to D1 (sync_state_d1 syncs freshness only,
         # by design), so a new series reached R2 and never appeared in /v1/catalog.
@@ -957,7 +998,10 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             note = (f"csv coverage note: {len(unmapped)} changed keys have no catalog "
                     f"row for {unit.source_id} ({why}) — served ids coherent")
             print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
-        return failed, note, deferred_ids, dict(out.get("failed_reasons") or {})
+        # A csv_misses source's failures were booked as desktop debts above: NOT also queued (R1137).
+        # The note still names them, so the run demotes.
+        return ([s for s in failed if s not in failed_owed], note, deferred_ids,
+                dict(out.get("failed_reasons") or {}))
     except UnitTimeout:
         # THE FENCE'S OWN CONTROL SIGNAL — re-raise by name (R353). The csv fence at the
         # call site wraps this function in SIGALRM and carries a designed handler: abandon
@@ -2124,16 +2168,10 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                                "source on its next CHANGE")
                     _csv_fence_tripped = True
                     print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
-                    if _csv_misses(unit.source_id) == "desktop_owed" and store is not None:
-                        # "re-derives next run" is FALSE for a source whose change signal already
-                        # advanced (review R1131): book a durable, visible full re-derive instead.
-                        try:
-                            store.note_full_rederive_owed(
-                                unit.source_id, note=f"csv fence ({_csv_fence:.0f} min) tripped; the "
-                                f"changed set is not named again - re-derive the source's served ids")
-                        except Exception as _e:              # noqa: BLE001 - loud, never fatal
-                            print(f"[orchestrator] {unit.key}: could not book the full re-derive "
-                                  f"({type(_e).__name__}: {_e})", flush=True)
+                    _fence_note = _book_fence_trip(unit, res, store, _csv_fence)
+                    if _fence_note is not None:
+                        csv_err = _fence_note
+                        print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
                 else:
                     _csv_fence_tripped = False
                 # DRAIN THE RETRY QUEUE (2026-08-06). derive.py has promised since it

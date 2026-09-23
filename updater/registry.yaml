@@ -2610,11 +2610,18 @@ sources:
   live: true
   # csv_misses — DECLARED 2026-09-23 (review R1131). ilostat's change signal is its own
   # _toc_vintages.json, advanced when an indicator is PUBLISHED, before the CSV phase runs. A
-  # budget-deferred CSV id would never be named again (csv_retry_queue cannot drain on r2: the file
+  # budget-deferred OR FAILED CSV id (R1137) would never be named again (csv_retry_queue cannot drain on r2: the file
   # is not on a later runner, and health never reads the queue), and a csv-fence trip's "re-derives
-  # next run" is false here. Both are booked as visible debts instead. Series grain stays: a
+  # next run" is false here. All three are booked PER ID in csv_desktop_owed (never full_rederive_owed:
+  # its remedy, tools/derive_csv_bulk.py, cannot pay an ilostat debt - R1137). Series grain stays: a
   # csv_grain: flow declaration would stream WHOLE files for '#part' and legacy ids (R1131 finding 1).
   csv_misses: desktop_owed
+  # catalog_scope — DECLARED 2026-09-23 (review R1137): 39 published stems have no catalogue id, and a
+  # pass that published only those read "csv coherence unmet" and ATTENTION with nothing served
+  # changed. Sound: stem -> id mapping is exact (3,305 of 3,305 claimed, 0 over-claims), so a
+  # zero-mapped pass touched no served stem. 24 catalogued ids sit on stems ILO no longer publishes;
+  # they are recorded in the econ-updater work queue (50-queue.md, "ilostat - OPEN: 24 catalogued ids").
+  catalog_scope: subset
   scripts:
   - jobs/ingest_ilostat.py
   strategy: bulk_snapshot_if_changed

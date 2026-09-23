@@ -526,9 +526,18 @@ def assess(store=None) -> dict:
         if _dl:
             # PREPENDED for the same reason as the owed note: it changes the verdict.
             _ex = ", ".join(str(r["series_id"]) for r in _dl[:3])
+            # THE STORED REASON, not a fixed one (review R1137): a debt is booked for several
+            # reasons now (too large, budget-deferred flow, a csv_misses source's missed or failed
+            # id, a csv-fence trip), and "too large for the cloud path" sent readers after the
+            # wrong cause. Each distinct reason's first clause is shown, with its count.
+            _why = {}
+            for r in _dl:
+                _k = str(r["reason"] or "reason not recorded").split(";")[0]
+                _why[_k] = _why.get(_k, 0) + 1
+            _whys = "; ".join(f"{n} {k}" for k, n in sorted(_why.items(), key=lambda x: -x[1])[:3])
             attention = [
-                f"{len(_dl)} CSV(s) OWED to the desktop derive (too large for the cloud "
-                f"path; e.g. {_ex}): derive them with `python -m core.derive_csv --bucket "
+                f"{len(_dl)} CSV(s) OWED to the desktop derive ({_whys}; e.g. {_ex}): "
+                f"derive them with `python -m core.derive_csv --bucket "
                 f"econ-data --source {sid} --only <ids>`, read each back against R2's "
                 f"parquet, then `tools/clear_csv_desktop_owed.py --source {sid} --apply`"
             ] + list(attention)
