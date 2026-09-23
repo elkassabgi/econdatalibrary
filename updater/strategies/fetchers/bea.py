@@ -31,8 +31,10 @@ PER GROUP, under a RotationCycle (ok = every group refreshed since the last ok):
     value for: measured 2026-09-23, IIP GoldReserveAssets:ChgPosXRate:A and
     StDebtSecAssets:ChgPosPrice:A come back with DataValue '' for every year, and the parse drops
     blanks. Owing those held the whole cycle open for ever. DECIDED: their STORED ROWS ARE KEPT
-    (never-shrink; for these two, one row each, 2025 = 0.0) and served as last published, and the
-    run's note says how many such series there were, so the digest shows them;
+    (never-shrink; for these two, one row each, 2025 = 0.0) and served as last published. Each
+    group's such series are named in the run log, with one summary line per pass - the log only:
+    the digest does not print an ok row's note, and a note appended to the result broke health's
+    deferral match (review R1116);
   * merge.merge_and_write (keep-new, never-shrink) REPORTS THE CHANGED KEYS - revisions included -
     and those, not the fetched keys, are returned as changed_keys: a revision-only pass is a change
     and reaches the served CSVs; the group is visited only if nothing failed.
@@ -253,10 +255,11 @@ def _uncovered(dataset: str, missing: set, fetched_keys) -> tuple[set, set]:
 
     The coverage check exists to catch a CALL that failed while reading as an empty answer
     (R1106 P1). A call that returned other keys demonstrably succeeded, so a key missing from it
-    is the publisher no longer publishing that series - measured in the dry run of 2026-09-23:
-    IIP GoldReserveAssets:ChgPosXRate:A and StDebtSecAssets:ChgPosPrice:A, each one stored row
-    (2025, 0.0), absent from calls that returned the rest of their type. Owing those for ever kept
-    IIP out of every cycle. never-shrink keeps their stored rows either way."""
+    is a series BEA sent no value for - measured in the dry run of 2026-09-23: IIP
+    GoldReserveAssets:ChgPosXRate:A and StDebtSecAssets:ChgPosPrice:A, each one stored row (2025,
+    0.0), come back in calls that answered the rest of their type, with DataValue '' for every year,
+    which the parse drops. Owing those for ever kept IIP out of every cycle. never-shrink keeps their
+    stored rows either way."""
     answered = {_call_unit(dataset, k) for k in fetched_keys}
     owed = {k for k in missing if _call_unit(dataset, k) not in answered}
     return owed, missing - owed
@@ -439,9 +442,10 @@ def update(unit, since) -> Result:
     # full cycle - 63,238 keys - review R1106).
     res.changed_keys = changed
     if no_value:
-        # In the note the digest shows, not only on stdout (review AR-130): an `ok` must not hide
-        # that some stored series got no new value from BEA.
-        note = (f"note: BEA sent no value for {len(no_value):,} stored series in calls that answered "
-                f"- stored rows kept (e.g. {no_value[:2]})")
-        res.error = f"{res.error}; {note}" if res.error else note
+        # ONE summary line in the run log. NOT appended to res.error (review R1116): the digest never
+        # prints the error of an ok row, so the claim it would be seen there was false, and an
+        # appended note broke health's anchored deferral match (a budget-deferral pass read
+        # ATTENTION instead of ROTATING).
+        print(f"[{SOURCE}] BEA sent no value for {len(no_value):,} stored series in calls that "
+              f"answered this pass - stored rows kept (e.g. {no_value[:2]})", flush=True)
     return res

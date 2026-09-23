@@ -282,9 +282,34 @@ def test_a_series_the_publisher_dropped_from_an_answered_call_is_not_owed(store,
     res = bea.update(None, None)                               # IIP returns only Assets:X:A
     assert res.status != "partial", res.error
     assert ("Assets:Gone:A", D(y), 0.0) in _rows(str(d / "IIP" / "all.parquet")), "stored rows kept"
-    assert "IIP/all.parquet: BEA sent no value for 1 stored series" in capsys.readouterr().out
-    assert "BEA sent no value for 1 stored series" in (res.error or ""), \
-        f"the note the digest shows must carry it, not only stdout (AR-130): {res.error!r}"
+    out = capsys.readouterr().out
+    assert "IIP/all.parquet: BEA sent no value for 1 stored series" in out
+    assert "BEA sent no value for 1 stored series in calls that answered this pass" in out
+    assert "no value" not in (res.error or ""), "never appended to the result (review R1116)"
+
+
+def test_a_budget_deferral_pass_that_meets_a_no_value_series_still_reads_as_a_deferral(store, monkeypatch):
+    """Review R1116: a note appended to the result broke health's anchored deferral match, so the
+    pass read ATTENTION instead of ROTATING."""
+    from updater.health import _deferral_only
+    d, calls, y = store
+    _write(str(d / "IIP" / "all.parquet"), [("Assets:X:A", D(y), 7.0), ("Assets:Gone:A", D(y), 0.0)],
+           tsid=True)
+
+    class _DL:
+        n = 0
+
+        def __init__(self, minutes=None):
+            pass
+
+        def spent(self):
+            _DL.n += 1
+            return _DL.n > 2                                     # FixedAssets, IIP; NIPA deferred
+
+    monkeypatch.setattr(bea, "Deadline", _DL)
+    res = bea.update(None, None)
+    assert res.status == "partial" and _deferral_only([{"status": res.status, "last_error": res.error}]), \
+        res.error
 
 
 def test_the_call_unit_is_read_off_each_dataset_key():
