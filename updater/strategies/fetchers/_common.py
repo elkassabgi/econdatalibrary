@@ -691,20 +691,32 @@ class RotationCycle:
     next pass: statfin reached 28 of 134 subjects per 30-minute pass, so each subject was refreshed
     only every ~5 passes x 25.2 days = ~125 days, against an 84-day monthly data clock. With this,
     a pass that stops before the cycle is complete books every sub-unit NOT YET VISITED THIS CYCLE
-    as deferred (-> `partial`). A partial never advances last_success, so the source stays due on
-    every run until the cycle completes; the completing, CLEAN pass resets the cycle and reads ok.
+    as deferred (-> `partial`); the completing, CLEAN pass resets the cycle and reads ok.
 
-    Persisted beside the rotation bookmark (blob-routed, written per sub-unit - R273: a save only at
-    the end is what the orchestrator's kill destroys). An unreadable file starts a new cycle: every
-    sub-unit is owed again, which costs passes and never skips one.
+    SCHEDULING, as base.is_due does it (measured on real state rows, review R1103 - do not restate
+    this from memory): a `partial` never advances last_success, so
+      - a unit that HAS succeeded before is due on every run (twice daily) until the cycle closes;
+      - a unit that has NEVER succeeded takes the PARTIAL_RETRY_DAYS path: one pass per ~6.5 days
+        (hagstofa ran 09-11 and 09-18, stat_slovenia 09-12 and 09-19). Its FIRST cycle therefore
+        takes ~6.5 days per pass; after that first ok it is on the fast branch above.
+
+    A UNIT IS VISITED ONLY WHEN ITS WORK FINISHED WITHOUT FAILURE (review R1103, P2): marked at the
+    start, a group whose tables all failed transiently counted as done, the next pass closed the
+    cycle as `ok`, and the group was never fetched again. Callers pass failed=True for a unit whose
+    work raised or booked a transient/structural failure; it stays owed.
+
+    Persisted beside the rotation bookmark (blob-routed, written per unit - R273: a save only at the
+    end is what the orchestrator's kill destroys). An unreadable file starts a new cycle: every unit
+    is owed again, which costs passes and never skips one. A failed save is printed (R393).
 
         cycle = RotationCycle(out_dir, units)
         for u in rotate_after(units, load_rotation(out_dir)):
             if dl.spent():
                 cycle.defer_unvisited(tally, label=lambda u: f"{u} ({n[u]} tables)")
                 break
-            cycle.visit(u)
-            ...
+            before = cycle.failures(tally)
+            ...work on u...
+            cycle.visit(u, failed=cycle.failures(tally) > before)
         cycle.close_if_complete(tally)
     """
     FILE = "_cycle.json"
@@ -729,10 +741,24 @@ class RotationCycle:
         d["visited"] = sorted(visited)
         try:
             self._blob.write_bytes_atomic(self.path, json.dumps(d, indent=1).encode("utf-8"))
-        except Exception:                                    # noqa: BLE001
-            pass                                             # losing it re-owes the cycle
+        except Exception as e:                               # noqa: BLE001
+            # Losing it re-owes the cycle (safe), but SAY so: a cycle file that never saves keeps
+            # the source partial on every pass with no other trace (review R1103, P3; R393).
+            print(f"[rotation-cycle] could not save {self.path} ({type(e).__name__}: {e}) - this "
+                  f"cycle's progress is not recorded", flush=True)
 
-    def visit(self, unit) -> None:
+    @staticmethod
+    def failures(tally) -> int:
+        """The tally's failure count, to compare before and after one unit's work."""
+        return int(tally.transient) + int(tally.structural)
+
+    def visit(self, unit, failed: bool = False) -> None:
+        """Record `unit` as done this cycle - unless its work failed, in which case it stays owed."""
+        if failed:
+            if unit in self.visited:
+                self.visited.discard(unit)
+                self._save(self.visited)
+            return
         self.visited.add(unit)
         self._save(self.visited)
 

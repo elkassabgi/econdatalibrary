@@ -54,6 +54,33 @@ def test_a_failed_sub_unit_keeps_the_cycle_open(tmp_path):
     assert C.RotationCycle(str(tmp_path), ["a"]).unvisited() == [], "still complete, not reset"
 
 
+def test_a_structural_failure_also_keeps_the_cycle_open(tmp_path):
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+    cyc.visit("a")
+    t = C.Tally()
+    t.structural_unit("a/x: 200 but parsed 0")
+    assert cyc.close_if_complete(t) is False
+
+
+def test_a_failed_unit_is_not_visited_and_a_later_failure_unvisits(tmp_path):
+    cyc = C.RotationCycle(str(tmp_path), ["a", "b"])
+    cyc.visit("a", failed=True)
+    assert cyc.unvisited() == ["a", "b"]
+    cyc.visit("a")
+    cyc.visit("a", failed=True)                                   # re-attempted and failed again
+    assert "a" in C.RotationCycle(str(tmp_path), ["a", "b"]).unvisited()
+
+
+def test_a_save_that_fails_is_printed_not_swallowed(tmp_path, monkeypatch, capsys):
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+
+    def _boom(path, data):
+        raise OSError("disk full")
+    monkeypatch.setattr(cyc._blob, "write_bytes_atomic", _boom)
+    cyc.visit("a")
+    assert "could not save" in capsys.readouterr().out
+
+
 def test_an_unreadable_or_foreign_file_owes_everything(tmp_path):
     for body in ("{not json", '"a string"', "[1, 2]", json.dumps({"visited": ["gone", "a"]})):
         (tmp_path / C.RotationCycle.FILE).write_text(body)
@@ -80,7 +107,7 @@ class _Deadline:
         return 30.0
 
 
-def _wire(monkeypatch, tmp_path, allow):
+def _wire(monkeypatch, tmp_path, allow, failing=()):
     monkeypatch.setattr(sl.config, "source_dir", lambda source: str(tmp_path))
     (tmp_path / "_catalog.json").write_text(json.dumps(TABLES))
     for g in GROUPS:                                  # stat_latvia maintains groups that exist
@@ -91,7 +118,10 @@ def _wire(monkeypatch, tmp_path, allow):
     seen = []
 
     def _q(sess, t, boundary):
-        seen.append(t["path"].split("/")[0])
+        g = t["path"].split("/")[0]
+        seen.append(g)
+        if g in failing:
+            raise sl.TransientError("pretend CSP timed out")
         return [(t["path"] + ":k", dt.date(2026, 8, 1), 2.0)], "data"
     monkeypatch.setattr(sl, "_query_table_delta", _q)
     return seen
@@ -106,6 +136,50 @@ def test_stat_latvia_reads_partial_until_the_cycle_completes(monkeypatch, tmp_pa
     assert [r[0] for r in runs] == ["partial", "partial", "ok", "partial"], \
         f"the 4th pass starts a NEW cycle - a completed one must reset, not stay complete: {runs}"
     assert [r[1] for r in runs] == [["EMP"], ["POP"], ["WAG"], ["EMP"]], "the rotation still advances"
+
+
+def test_a_group_whose_tables_failed_is_refetched_before_the_cycle_can_close(monkeypatch, tmp_path):
+    """Review R1103, P2: EMP failed on pass 1, pass 2 fetched POP+WAG and closed the cycle as ok -
+    EMP was never fetched again."""
+    _wire(monkeypatch, tmp_path, allow=1, failing={"EMP"})
+    assert sl.update(None, None).status == "partial"                        # EMP failed
+    seen = _wire(monkeypatch, tmp_path, allow=2)
+    res = sl.update(None, None)                     # POP, WAG, then the budget stops before EMP
+    assert sorted(set(seen)) == ["POP", "WAG"]
+    assert res.status == "partial" and "OSP_PUB_EMP" in (res.error or ""), \
+        f"EMP failed and was never refetched, so the cycle must not close: {res.status} {res.error}"
+    seen = _wire(monkeypatch, tmp_path, allow=99)
+    assert sl.update(None, None).status == "ok" and "EMP" in seen
+
+
+def test_a_subset_run_does_not_close_the_cycle(monkeypatch, tmp_path):
+    """Review R1103, P1: groups `only_set` skipped were marked visited, so a 1-of-3 subset closed."""
+    _wire(monkeypatch, tmp_path, allow=99)
+    monkeypatch.setenv("STAT_LATVIA_ONLY_GROUPS", GROUPS[0])
+    sl.update(None, None)
+    cyc = C.RotationCycle(str(tmp_path), GROUPS)
+    assert set(cyc.unvisited()) == set(GROUPS[1:]), cyc.visited
+
+
+def test_the_bookmark_is_saved_per_group_not_only_at_the_end(monkeypatch, tmp_path):
+    """Review R1103, P4 (R273): a kill mid-pass kept the cycle file but not the bookmark."""
+    _wire(monkeypatch, tmp_path, allow=99)
+
+    class _Kill(BaseException):
+        pass
+    real = sl._query_table_delta
+    calls = {"n": 0}
+
+    def _q(sess, t, boundary):
+        calls["n"] += 1
+        if calls["n"] > 2:                     # killed inside the second group
+            raise _Kill()
+        return real(sess, t, boundary)
+    monkeypatch.setattr(sl, "_query_table_delta", _q)
+    with pytest.raises(_Kill):
+        sl.update(None, None)
+    bm = json.loads((tmp_path / C.ROTATION_FILE).read_text())["after"]
+    assert bm == GROUPS[1], f"the bookmark must name the group in flight, got {bm!r}"
 
 
 def test_stat_latvia_negative_control_a_full_pass_is_ok(monkeypatch, tmp_path):

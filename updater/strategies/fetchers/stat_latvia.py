@@ -443,19 +443,24 @@ def update(unit, since) -> Result:
                   f"{n_owed} of {len(groups)} group(s) not yet visited this cycle", flush=True)
             break
         last_group = fname
-        cycle.visit(fname)
+        # Saved per group, not only at the end (R273): the orchestrator's cap KILLS a source, and
+        # an end-of-function save is exactly what the kill destroys (review R1103, P4).
+        save_rotation(out_dir, fname)
         path = os.path.join(out_dir, fname)
         before = blob.row_count(path)
         # Only maintain groups that already exist on disk (the ingester decided which
         # groups produced time-series; e.g. OSP_OD_tautassk produced none). A brand-new
         # group is out of scope for the date-tail updater.
         if before == 0 and not blob.exists(path):
+            cycle.visit(fname)               # nothing to fetch here: done for this cycle
             continue
         if only_set is not None and fname not in only_set:
             # Test-only subset: keep this group's existing rows in the running total so
             # the never-shrink/after>=before assertion is honest, but skip fetching it.
+            # NOT visited: a subset run fetched nothing here, so it must not close the cycle.
             total += before
             continue
+        fails_before = cycle.failures(tally)
 
         per_table_max = _per_table_max(path)
         # Seed cursors from the on-disk frontier so an untouched table still reports
@@ -545,6 +550,9 @@ def update(unit, since) -> Result:
                     maxd = md_d
         else:
             total += before
+        # VISITED only if every table of the group finished without a failure (review R1103, P2):
+        # a group whose tables failed stays owed, so the cycle cannot close without refetching it.
+        cycle.visit(fname, failed=cycle.failures(tally) > fails_before)
 
     last_obs = maxd.isoformat() if maxd is not None else (since or None)
     # Floor above the table count so a healthy "everything current" run is honest
