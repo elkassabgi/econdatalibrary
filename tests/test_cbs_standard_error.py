@@ -33,6 +33,11 @@ SE = mod.SE_TAG
 T7042MC = {"0000X000": "Standaardfout", **{f"{y}JJ00": str(y) for y in range(1981, 2010)}}
 T37471 = {**{f"{y}JJ00": str(y) for y in (1991, 1995, *range(1997, 2010))}, "0000X000": "Standaardfout"}   # no 1996
 T37450 = {f"{y}X000": f"{y} tot {y + 5}" for y in range(1861, 2007, 5)}   # 5-year spans, NO SE
+# The ENGLISH twins, read the same day: key 'Stf ' (trailing space - get_period_titles strips
+# map keys, so the map holds 'Stf'), title 'Standard error', and BARE four-digit years.
+T7042ENG = {"Stf": "Standard error", **{str(y): str(y) for y in range(1981, 2010)}}
+T7068ENG = {"Stf": "Standard error", **{str(y): str(y) for y in range(1981, 2001)}}
+T7069ENG = {"Stf": "Standard error", **{str(y): str(y) for y in range(1989, 2001)}}
 
 
 def test_the_real_code_lists_are_the_ones_CBS_publishes():
@@ -48,6 +53,16 @@ def test_the_standard_error_is_keyed_and_dated_to_the_start_of_the_span(titles, 
     d, tag = mod.resolve_period("0000X000", titles)
     assert tag == SE
     assert d == dt.date(first_year, 1, 1), d
+
+
+@pytest.mark.parametrize("titles,first_year", [(T7042ENG, 1981), (T7068ENG, 1981), (T7069ENG, 1989)])
+def test_the_english_twins_standard_error_is_keyed_too(titles, first_year):
+    """The adversarial review found these: the same average standard error, under 'Stf ' /
+    'Standard error', which the first version of this rule could not see - and which the parser
+    had always dropped, so these tables never carried it at all."""
+    for raw in ("Stf ", "Stf"):                      # the data rows carry the trailing space
+        d, tag = mod.resolve_period(raw, titles)
+        assert tag == SE and d == dt.date(first_year, 1, 1), (raw, d, tag)
 
 
 def test_ordinary_years_are_untouched():
@@ -216,12 +231,70 @@ def test_a_request_for_a_vintage_already_re_pulled_to_ZERO_is_closed_not_looped(
 
 
 def test_the_repull_flag_needs_a_reason_and_never_starts_a_crawler(tmp_path, monkeypatch):
-    monkeypatch.setattr(mod, "OUT", str(tmp_path))
+    d = str(tmp_path)
+    for t in ("7042mc", "37471"):
+        mod.record_modified(d, t, STAMP)             # held here
+    monkeypatch.setattr(mod, "OUT", d)
     monkeypatch.setattr(mod, "get_catalog",
                         lambda: pytest.fail("--repull must record and exit, not crawl (R600)"))
-    monkeypatch.setattr("sys.argv", ["ingest_cbs_nl.py", "--repull=7042mc,37471:standard errors"])
+    monkeypatch.setattr("sys.argv", ["ingest_cbs_nl.py", "--repull=7042mc,37471:standard errors",
+                                     "--only", "7042mc"])       # --only must not start one either
     mod.main()
-    assert set(mod.load_repull_requests(str(tmp_path))) == {"7042mc", "37471"}
+    assert set(mod.load_repull_requests(d)) == {"7042mc", "37471"}
     monkeypatch.setattr("sys.argv", ["ingest_cbs_nl.py", "--repull=7042mc"])
     with pytest.raises(SystemExit):
         mod.main()
+
+
+def test_the_repull_flag_refuses_a_table_that_is_not_held(tmp_path, monkeypatch):
+    """A mistyped id - the match is case-sensitive - would otherwise wait for ever, doing nothing."""
+    d = str(tmp_path)
+    mod.record_modified(d, "7042mc", STAMP)
+    with pytest.raises(SystemExit, match="not held"):
+        mod.record_repull_requests(d, ["7042MC"], "typo")
+    assert mod.load_repull_requests(d) == {}, "nothing may be recorded when any id is refused"
+
+
+def test_the_repull_flag_does_not_swallow_a_later_flag(tmp_path, monkeypatch):
+    d = str(tmp_path)
+    mod.record_modified(d, "7042mc", STAMP)
+    monkeypatch.setattr(mod, "OUT", d)
+    seen = []
+    monkeypatch.setattr(mod, "record_accepts", lambda out, ids: seen.append(ids))
+    monkeypatch.setattr(mod, "get_catalog", lambda: pytest.fail("no crawler"))
+    monkeypatch.setattr("sys.argv", ["ingest_cbs_nl.py", "--repull=7042mc:r", "--accept-shrink=X1"])
+    mod.main()
+    assert seen == [["X1"]], "an --accept-shrink after --repull was dropped"
+
+
+def test_pending_requests_are_listed_where_the_crawler_reports_its_registries(tmp_path, monkeypatch):
+    d = str(tmp_path)
+    mod.record_modified(d, "7042mc", STAMP)
+    mod.record_repull_requests(d, ["7042mc"], "r")
+    lines = []
+    monkeypatch.setattr(mod, "log", lambda m: lines.append(m))
+    mod.registry_summary(d)
+    assert any("re-pull requests pending" in m and "7042mc" in m for m in lines), lines
+
+
+def test_a_re_pull_that_would_DROP_the_standard_error_is_refused(tmp_path, monkeypatch):
+    """R1079's shape: a dropped standard error is 1 row in 4 here and 22 in 352 in 37471 - far
+    above REPLACE_FLOOR - so only an explicit refusal stops it deleting a published figure."""
+    d = _held(tmp_path, monkeypatch)                  # held WITH its standard error
+    before = _read(d)
+    mod.record_repull_requests(d, ["T"], "test")
+    rows = _install(monkeypatch, CODES)
+
+    real = mod.get_json
+
+    def no_se_title(url):                             # CBS now lists no title for the SE code
+        out = real(url)
+        if f"/{DIM}" in url and "TypedDataSet" not in url:
+            out = {"value": [v for v in out["value"] if v["Key"] != "0000X000"]}
+        return out
+    monkeypatch.setattr(mod, "get_json", no_se_title)
+    assert rows                                        # the data still carries the SE row
+    mod.ingest_table("T", "t", d, STAMP)
+    assert _read(d) == before, "the served copy must be kept"
+    reg = json.load(open(os.path.join(d, mod.REFUSED_FILE), encoding="utf-8"))
+    assert "standard error dropped" in reg["T"]["reason"]
