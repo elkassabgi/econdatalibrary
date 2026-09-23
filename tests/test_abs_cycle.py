@@ -71,6 +71,32 @@ def test_only_flows_not_yet_attempted_this_cycle_are_booked(monkeypatch, tmp_pat
     assert "CCC deferred" in res.error and "AAA deferred" not in res.error, res.error
 
 
+def test_a_quiet_flow_counts_as_visited(monkeypatch, tmp_path):
+    """collect() returns [] for a quiet date-tail - most ABS flows on most runs. It must close its
+    part of the cycle, or no cycle ever closes."""
+    _wire(monkeypatch, tmp_path, allow=99)
+    monkeypatch.setattr(A.ing, "collect", lambda sess, flow, key, params=None:
+                        ([], [], []) if flow == "BBB" else ([f"{flow}.k"], [dt.date(2026, 8, 1)], [2.0]))
+    A.update(None, None)
+    import json as _json
+    cyc = _json.loads((tmp_path / A.RotationCycle.FILE).read_text())
+    assert cyc.get("completed_utc") and cyc["visited"] == [], \
+        f"a complete clean pass - quiet flow included - must close the cycle: {cyc}"
+
+
+def test_a_flow_whose_fetch_failed_stays_owed(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path, allow=99)
+
+    def _collect(sess, flow, key, params=None):
+        if flow == "AAA":
+            raise ConnectionError("pretend ABS dropped the body")
+        return [f"{flow}.k"], [dt.date(2026, 8, 1)], [2.0]
+    monkeypatch.setattr(A.ing, "collect", _collect)
+    assert A.update(None, None).status == "partial"
+    cyc = A.RotationCycle(str(tmp_path), [f"{f}.parquet" for f in FLOWS])
+    assert cyc.unvisited() == ["AAA.parquet"], cyc.visited
+
+
 def test_negative_control_one_pass_that_reaches_every_flow_is_not_partial(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert A.update(None, None).status != "partial"

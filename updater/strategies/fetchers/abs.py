@@ -191,7 +191,7 @@ def update(unit, since) -> Result:
             total += before
             continue
         last_attempted = fn
-        cycle.visit(fn)
+        fails_before = cycle.failures(tally)
 
         max_obs = _flow_max_obs(path)
         start = _flow_start_param(max_obs)
@@ -231,6 +231,7 @@ def update(unit, since) -> Result:
             mx = max_obs.isoformat() if max_obs else None
             if mx and (last_obs is None or mx > last_obs):
                 last_obs = mx
+            cycle.visit(fn)                  # a quiet flow was looked at and is current: done
             continue
 
         tbl = _build_table(keys, dates, vals)
@@ -279,6 +280,9 @@ def update(unit, since) -> Result:
             elif v > prev:
                 cursors[k] = v
 
+        # VISITED only once the flow's fetch finished without a failure (stat_latvia review R1103,
+        # P2): a flow whose fetch failed stays owed, so the cycle cannot close without it.
+        cycle.visit(fn, failed=cycle.failures(tally) > fails_before)
         # Return this flow's buffers to the OS before opening the next one. Dropping the
         # references is not enough: Arrow keeps freed blocks in its pool, so across 1,222
         # flows RSS only ever climbs.
