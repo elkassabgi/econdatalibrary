@@ -121,6 +121,15 @@ def test_the_deferral_names_only_subjects_unvisited_this_cycle(monkeypatch, tmp_
         f"aaa was visited earlier in this cycle and is not owed: {res.error}"
 
 
+def test_a_pass_skips_subjects_already_visited_this_cycle(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path, allow=1)
+    sf.update(None, None)                                              # aaa
+    visited = _wire(monkeypatch, tmp_path, allow=99)
+    res = sf.update(None, None)
+    assert {p.split("/")[0] for p in visited} == {"kbar", "ton"} and res.status == "ok", \
+        "the pass does only the owed subjects and closes the cycle"
+
+
 def test_negative_control_a_complete_pass_is_ok(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     res = sf.update(None, None)

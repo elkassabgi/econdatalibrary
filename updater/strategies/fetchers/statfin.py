@@ -683,6 +683,10 @@ def update(unit, since) -> Result:
     visited = set(cycle.get("visited") or []) & set(subjects)
 
     for subj in subjects:
+        if subj in visited:
+            # Visited this cycle: no work owed. Re-walking done subjects spent the budget on them
+            # (the ssb/abs review, R1105 P1, found the same shape in the shared helper).
+            continue
         if dl.spent():
             stopped_early = True
             owed = [s for s in subjects if s not in visited]
