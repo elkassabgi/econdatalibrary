@@ -134,3 +134,21 @@ def test_a_budget_stopped_pass_still_reports_the_store_total(monkeypatch, tmp_pa
 def test_negative_control_one_pass_that_reaches_everything_is_not_partial(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert ssb.update(None, None).status != "partial"
+
+
+def test_a_group_killed_mid_work_counts_as_a_failed_attempt(monkeypatch, tmp_path):
+    """AR-127 P5: a raise or kill inside a group never reached visit(); begin() marks it in flight."""
+    _wire(monkeypatch, tmp_path, allow=99)
+
+    class _Kill(BaseException):
+        pass
+
+    def _meta(sess, tid):
+        if tid.startswith("Bb"):
+            raise _Kill()
+        return None
+    monkeypatch.setattr(ssb, "_get_meta", _meta)
+    with pytest.raises(_Kill):
+        ssb.update(None, None)
+    cyc = ssb.RotationCycle(str(tmp_path), ["grp_Aa.parquet", "grp_Bb.parquet", "grp_Cc.parquet"])
+    assert cyc.failing == {"grp_Bb.parquet": 1}, cyc.failing
