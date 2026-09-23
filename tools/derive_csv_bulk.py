@@ -200,9 +200,10 @@ def _writers_quiet(manual: str, window_min: int = CLEAR_WINDOW_MIN) -> bool:
         pass                                   # the runner reads an absent/unreadable stamp as DUE
     if since_h is None or since_h + window_min / 60.0 >= LOCAL_MIN_HOURS:
         print(f"NOT clearing: a desktop heavy pass is due within {window_min} min "
-              f"({'no readable ' + stamp if since_h is None else f'last pass {since_h:.1f} h ago, cadence {LOCAL_MIN_HOURS} h'}), "
-              f"and the guard starts one the moment CI is clear. Run this right after a desktop pass "
-              f"has pushed (R1102 rule 2). The debt stands: {manual}", flush=True)
+              f"({'no readable ' + stamp if since_h is None else f'last stamped pass {since_h:.1f} h ago, cadence {LOCAL_MIN_HOURS} h'}), "
+              f"and the guard starts one the moment CI is clear. Run this after a desktop pass whose "
+              f"log says 'cadence stamped' - a pass that logs 'cadence NOT stamped' leaves the next "
+              f"one due ~10 min later (R1102 rule 2). The debt stands: {manual}", flush=True)
         return False
     return True
 
