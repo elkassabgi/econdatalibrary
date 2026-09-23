@@ -102,7 +102,11 @@ def _rate_limit_record_bytes(n):
 # error-code / message classification
 _RETRY_CODES = {"8"}  # 8 = Volume per minute quota exceeded
 _RETRY_MSG = ("exceeded", "quota", "throttl", "denied", "try again", "temporar")
-_NODATA_MSG = ("no data", "not found", "invalid year", "the requested")
+# "not currently available": BEA's answer for a table/frequency that does not exist (code 201,
+# ErrorDetail.Description; live 2026-09-23, NIPA T10101 M). 241 of 252 NIPA tables have no M, so
+# reading it as a failure owed nearly every NIPA group for ever (review R1107). A frequency a table
+# really has is still guarded by the updater's coverage check.
+_NODATA_MSG = ("no data", "not found", "invalid year", "the requested", "not currently available")
 
 
 def _classify_error(err, strict=False):
@@ -122,7 +126,8 @@ def _classify_error(err, strict=False):
             return "retry"
         s = (str(err.get("APIErrorDescription", "")) + " " +
              str(err.get("error", "")) + " " +
-             str(err.get("AdditionalDetail", ""))).lower()
+             str(err.get("AdditionalDetail", "")) + " " +
+             str(err.get("ErrorDetail", ""))).lower()
     if any(k in s for k in _RETRY_MSG):
         return "retry"
     if any(k in s for k in _NODATA_MSG):

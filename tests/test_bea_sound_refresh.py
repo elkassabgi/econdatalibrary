@@ -24,6 +24,7 @@ from updater.errors import DefinitiveError, TransientError  # noqa: E402
 from updater.strategies.fetchers import bea  # noqa: E402
 
 THIS_YEAR = dt.date.today().year
+_REAL_FETCH_TABLE_FREQ = ig.fetch_table_freq      # captured before any fixture fakes it
 
 
 def _write(path, rows, tsid=False):
@@ -291,3 +292,70 @@ def test_a_strict_call_refuses_an_error_it_does_not_recognise(monkeypatch):
         ig.call(datasetname="IntlServSTA", AreaOrCountry="X", strict=True)
     assert len(asked) == 1, f"a verdict is not retried: {len(asked)} requests (and ~4.4 min of sleeps)"
     assert ig.call(datasetname="IntlServSTA", AreaOrCountry="X") == [], "the ingester default is unchanged"
+
+
+# BEA's VERBATIM answer for a table/frequency that does not exist (live 2026-09-23 10:13Z, NIPA
+# T10101 M; the same envelope for T10111 A and NIUnderlyingDetail U001A A). Review R1107.
+_NO_SUCH_FREQUENCY = {"BEAAPI": {"Results": {"Error": {
+    "APIErrorDescription": "Error retrieving NIPA data.", "APIErrorCode": "201",
+    "ErrorDetail": {"Description": "Data for this table and frequency are not currently available. "
+                                   "Please check BEAs release schedule for more information."}}}}}
+
+
+def _real_calls(monkeypatch, answer_for):
+    """Undo the fixture's fetch fake: the real fetch_table_freq and call() run, BEA's HTTP is faked."""
+    real = ig
+    monkeypatch.setattr(real, "fetch_table_freq", _REAL_FETCH_TABLE_FREQ)
+    monkeypatch.setattr(real, "_rate_limit_acquire", lambda: None)
+    monkeypatch.setattr(real, "_rate_limit_record_bytes", lambda n: None)
+    monkeypatch.setattr(real.time, "sleep", lambda s: None)
+
+    class _R:
+        status_code, content = 200, b"{}"
+
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    class _S:
+        def get(self, url, params=None, timeout=None):
+            return _R(answer_for(params))
+    monkeypatch.setattr(real, "_session", lambda: _S())
+    return real
+
+
+def test_a_frequency_the_table_does_not_have_is_no_data_not_a_failure(store, monkeypatch):
+    """Review R1107: 241 of 252 NIPA tables have no M. Read as a failure, nearly every NIPA group
+    stayed owed for ever and the value that WAS fetched was thrown away."""
+    d, calls, y = store
+    _real_calls(monkeypatch, lambda p: _NO_SUCH_FREQUENCY if p.get("Frequency") != "A" else
+                {"BEAAPI": {"Results": {"Data": [
+                    {"SeriesCode": "A191RC", "TimePeriod": str(y), "DataValue": "2"},
+                    {"SeriesCode": "A191RC", "TimePeriod": str(y + 1), "DataValue": "3"}]}}})
+    res = bea.update(None, None)
+    assert res.status != "partial", res.error
+    assert ("A191RC:A", D(y + 1), 3.0) in _rows(str(d / "NIPA" / "T10101.parquet"))
+    cyc = json.loads((d / bea.RotationCycle.FILE).read_text())
+    assert cyc.get("completed_utc"), f"the one pass reached every group, so the cycle closes: {cyc}"
+
+
+def test_no_such_frequency_on_a_frequency_the_store_holds_keeps_the_group_owed(store, monkeypatch):
+    """Negative control: the same envelope for a frequency the table DOES have must not close the
+    group - the coverage check is what guards it."""
+    d, calls, y = store
+    _write(str(d / "NIPA" / "T10101.parquet"), [("A191RC:A", D(y), 2.0), ("A191RC:Q", D(y), 9.0)])
+    _real_calls(monkeypatch, lambda p: _NO_SUCH_FREQUENCY if p.get("Frequency") != "A" else
+                {"BEAAPI": {"Results": {"Data": [
+                    {"SeriesCode": "A191RC", "TimePeriod": str(y), "DataValue": "2"}]}}})
+    res = bea.update(None, None)
+    assert res.status == "partial" and "coverage" in (res.error or ""), res.error
+    assert "NIPA/T10101.parquet" in bea.RotationCycle(str(d), ["NIPA/T10101.parquet"]).unvisited()
+
+
+def test_the_classifier_reads_the_error_detail(monkeypatch):
+    err = _NO_SUCH_FREQUENCY["BEAAPI"]["Results"]["Error"]
+    assert ig._classify_error(err, strict=True) == "nodata"
+    odd = dict(err, ErrorDetail={"Description": "Something else went wrong."})
+    assert ig._classify_error(odd, strict=True) == "fatal", "only the no-such-frequency wording is empty"
