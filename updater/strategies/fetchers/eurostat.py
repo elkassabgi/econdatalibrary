@@ -34,6 +34,7 @@ import gzip
 import io
 import json
 import os
+import sys
 
 import pyarrow as pa
 
@@ -439,14 +440,19 @@ def _require_rekeyed() -> None:
 def _stable_file(out_dir, name) -> bool:
     """True when EVERY series_key of one store file is in the stable form (no 'LAST UPDATE=').
 
-    In ARROW, over the distinct keys (review R1145): turning every key into a Python string cost
-    179.8 s and +25.2 GB on HLTH_CD_YRO (136.1M rows) - enough to kill a 16 GB runner inside the
-    `finally` that calls this. Dictionary-encode, take the unique values, match the substring."""
+    STREAMED, in ARROW (reviews R1145, R1147): turning every key into a Python string cost 182.0 s and
+    +25.8 GB on HLTH_CD_YRO (136.1M rows), and reading the whole column into arrow still cost +12.0 GB -
+    either can kill a 16 GB runner inside the `finally` that calls this. Batch by batch, the distinct
+    keys of each batch are matched (R1147 measured +542 MB, 25.3 s on that file). Each batch is cast to
+    plain string first: match_substring has no dictionary kernel. A null key is not an unstable one.
+    The pattern is the exact, case-sensitive text the migration strips, anywhere in the key."""
+    import pyarrow as pa                                              # noqa: PLC0415
     import pyarrow.compute as pc                                      # noqa: PLC0415
-    col = blob.read_table(os.path.join(out_dir, name), columns=["series_key"]).column("series_key")
-    uniq = pc.unique(col)
-    hit = pc.any(pc.match_substring(uniq, "LAST UPDATE")).as_py()
-    return not bool(hit)
+    for batch in blob.iter_batches(os.path.join(out_dir, name), columns=["series_key"]):
+        uniq = pc.unique(batch.column(0).cast(pa.string()))   # the cast also decodes a dictionary column
+        if pc.any(pc.match_substring(uniq, "LAST UPDATE")).as_py():
+            return False
+    return True
 
 
 def _grow_marker(before) -> None:
@@ -468,6 +474,7 @@ def _grow_marker(before) -> None:
         return
     out_dir = config.source_dir("eurostat")
     path = os.path.join(out_dir, REKEY_MARKER)
+    new: list = []
     try:
         after = set(blob.list_parquets(out_dir))
         new = sorted(after - set(before))
@@ -497,10 +504,13 @@ def _grow_marker(before) -> None:
         # KNOWN LIMIT, stated (R1145): the marker holds a count, not names, so a growth that does not
         # finish - the unit alarm (UnitTimeout) firing here, or a hard kill that skips this `finally` -
         # leaves the next run refused. The alarm case says so distinctly, with the one-line remedy.
-        if type(e).__name__ == "UnitTimeout":
+        # The alarm by its class, or by the orchestrator's flag (a native library can swallow the
+        # alarm and raise its own error - R1147). The names are printed: nothing else records them.
+        _orch = sys.modules.get("updater.orchestrate")
+        if type(e).__name__ == "UnitTimeout" or bool(getattr(_orch, "UNIT_TIMEOUT_FIRED", False)):
             print(f"[eurostat] re-key marker growth INTERRUPTED by the unit alarm - the next run's guard "
-                  f"will refuse; run tools/grow_eurostat_rekey_marker.py --files <the new flow files>",
-                  flush=True)
+                  f"will refuse; run tools/grow_eurostat_rekey_marker.py --files {','.join(new) or '?'} "
+                  f"--apply", flush=True)
             return
         print(f"[eurostat] re-key marker NOT grown ({type(e).__name__}: {str(e)[:120]}) - the next "
               f"run's guard may refuse", flush=True)

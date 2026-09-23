@@ -156,6 +156,9 @@ class GrowBlob(FakeBlob):
             return pa.table({"series_key": pa.array([STABLE, key], pa.string())})
         return super().read_table(path, columns)
 
+    def iter_batches(self, path, columns=None, batch_size=1_000_000):
+        yield from self.read_table(path, columns).to_batches(max_chunksize=batch_size)
+
     def write_bytes_atomic(self, path, data):
         self.writes.append((path, data))
         self.marker = json.loads(data.decode())
@@ -165,6 +168,7 @@ def _update(monkeypatch, gb, land=True):
     monkeypatch.setattr(E.blob, "list_parquets", gb.list_parquets)
     monkeypatch.setattr(E.blob, "read_bytes", gb.read_bytes)
     monkeypatch.setattr(E.blob, "read_table", gb.read_table)
+    monkeypatch.setattr(E.blob, "iter_batches", gb.iter_batches)
     monkeypatch.setattr(E.blob, "write_bytes_atomic", gb.write_bytes_atomic)
     monkeypatch.setattr(E, "_run", lambda unit: (gb.land() if land else None) or "ran")
     return E.update(None, None)
@@ -203,6 +207,7 @@ def test_a_marker_changed_during_the_run_is_left_alone(monkeypatch):
     monkeypatch.setattr(E.blob, "list_parquets", gb.list_parquets)
     monkeypatch.setattr(E.blob, "read_bytes", gb.read_bytes)
     monkeypatch.setattr(E.blob, "read_table", gb.read_table)
+    monkeypatch.setattr(E.blob, "iter_batches", gb.iter_batches)
     monkeypatch.setattr(E.blob, "write_bytes_atomic", gb.write_bytes_atomic)
     monkeypatch.setattr(E, "_run", _run)
     E.update(None, None)
@@ -218,6 +223,7 @@ def test_the_marker_grows_even_when_the_run_raises(monkeypatch):
     monkeypatch.setattr(E.blob, "list_parquets", gb.list_parquets)
     monkeypatch.setattr(E.blob, "read_bytes", gb.read_bytes)
     monkeypatch.setattr(E.blob, "read_table", gb.read_table)
+    monkeypatch.setattr(E.blob, "iter_batches", gb.iter_batches)
     monkeypatch.setattr(E.blob, "write_bytes_atomic", gb.write_bytes_atomic)
     monkeypatch.setattr(E, "_run", _run)
     with pytest.raises(RuntimeError):
@@ -226,7 +232,7 @@ def test_the_marker_grows_even_when_the_run_raises(monkeypatch):
 
 
 def _wire(monkeypatch, gb, run):
-    for name in ("list_parquets", "read_bytes", "read_table", "write_bytes_atomic"):
+    for name in ("list_parquets", "read_bytes", "read_table", "iter_batches", "write_bytes_atomic"):
         monkeypatch.setattr(E.blob, name, getattr(gb, name))
     monkeypatch.setattr(E, "_run", run)
 
@@ -274,12 +280,89 @@ def test_a_vanished_file_blocks_the_growth(monkeypatch):
     assert gb.writes == []
 
 
+def _batches(arr, size):
+    t = pa.table({"series_key": arr})
+    return lambda p, columns=None, batch_size=None: iter(t.to_batches(max_chunksize=size))
+
+
 def test_the_stable_check_is_exact_over_every_distinct_key(monkeypatch):
     rows = ["freq=A:geo=AT"] * 100_000 + ["LAST UPDATE=1:freq=A:geo=AT"]
-    monkeypatch.setattr(E.blob, "read_table", lambda p, columns=None: pa.table({"series_key": pa.array(rows)}))
+    monkeypatch.setattr(E.blob, "iter_batches", _batches(pa.array(rows), 30_000))   # the bad key in batch 4
     assert E._stable_file("d", "x.parquet") is False
-    monkeypatch.setattr(E.blob, "read_table", lambda p, columns=None: pa.table({"series_key": pa.array(rows[:-1])}))
+    monkeypatch.setattr(E.blob, "iter_batches", _batches(pa.array(rows[:-1]), 30_000))
     assert E._stable_file("d", "x.parquet") is True
+
+
+@pytest.mark.parametrize("key,stable", [
+    ("freq=A:LAST UPDATE=1:geo=AT", False),          # the text anywhere, not only as a prefix
+    ("last update=1:freq=A:geo=AT", True),           # the migration strips the exact, case-sensitive text
+    (None, True),                                    # a null key is not an unstable one
+])
+def test_the_stable_check_pattern(monkeypatch, key, stable):
+    monkeypatch.setattr(E.blob, "iter_batches", _batches(pa.array(["freq=A:geo=AT", key]), 10))
+    assert E._stable_file("d", "x.parquet") is stable
+
+
+def test_a_dictionary_column_is_checked_not_refused(monkeypatch):
+    """R1147: match_substring has no dictionary kernel; a dictionary column raised and re-locked the guard."""
+    arr = pa.array(["freq=A:geo=AT", "LAST UPDATE=1:geo=AT"]).dictionary_encode()
+    monkeypatch.setattr(E.blob, "iter_batches", _batches(arr, 10))
+    assert E._stable_file("d", "x.parquet") is False
+    monkeypatch.setattr(E.blob, "iter_batches", _batches(pa.array(["freq=A:geo=AT"]).dictionary_encode(), 10))
+    assert E._stable_file("d", "x.parquet") is True
+
+
+def test_the_alarm_line_names_the_new_files_and_is_one_line(monkeypatch, capsys):
+    import sys as _sys
+    import types as _types
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet", "NEW_B.parquet"])
+    monkeypatch.setattr(gb, "read_table", lambda path, columns=None: (_ for _ in ()).throw(RuntimeError("duckdb")))
+    _wire(monkeypatch, gb, lambda unit: gb.land() or "ran")
+    monkeypatch.setitem(_sys.modules, "updater.orchestrate", _types.SimpleNamespace(UNIT_TIMEOUT_FIRED=True))
+    assert E.update(None, None) == "ran"
+    out = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    assert len(out) == 1, out
+    assert "INTERRUPTED by the unit alarm" in out[0] and \
+        "tools/grow_eurostat_rekey_marker.py --files NEW_A.parquet,NEW_B.parquet --apply" in out[0], out[0]
+
+
+def _tool(monkeypatch, gb):
+    import importlib
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+    tool = importlib.import_module("grow_eurostat_rekey_marker")
+    for name in ("list_parquets", "read_bytes", "read_table", "iter_batches", "write_bytes_atomic"):
+        monkeypatch.setattr(E.blob, name, getattr(gb, name))
+        monkeypatch.setattr(tool.blob, name, getattr(gb, name))
+    return tool
+
+
+def test_the_tool_refuses_without_a_marker(monkeypatch):
+    gb = GrowBlob(8, None, new_files=["NEW_A.parquet"])
+    gb.land()
+    assert _tool(monkeypatch, gb).main(["--files", "NEW_A.parquet", "--apply"]) == 2 and gb.writes == []
+
+
+def test_the_tool_refuses_a_named_file_the_store_lacks(monkeypatch):
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet"])
+    gb.land()
+    assert _tool(monkeypatch, gb).main(["--files", "NOT_THERE.parquet", "--apply"]) == 2 and gb.writes == []
+
+
+def test_the_tool_refuses_when_the_guard_sample_fails(monkeypatch):
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet"])
+    gb.unstable = {0}                                   # an OLD file, index 0, is still unstable
+    gb.land()
+    assert _tool(monkeypatch, gb).main(["--files", "NEW_A.parquet", "--apply"]) == 2 and gb.writes == []
+
+
+def test_the_tool_fails_when_the_read_back_differs(monkeypatch):
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet"])
+    gb.land()
+    tool = _tool(monkeypatch, gb)
+    real = gb.read_bytes
+    monkeypatch.setattr(tool.blob, "read_bytes", lambda p: b"{}" if gb.writes else real(p))
+    assert tool.main(["--files", "NEW_A.parquet", "--apply"]) == 1
 
 
 def test_the_one_time_tool_checks_the_count_and_every_key(monkeypatch, tmp_path):
@@ -290,7 +373,7 @@ def test_the_one_time_tool_checks_the_count_and_every_key(monkeypatch, tmp_path)
     tool = importlib.import_module("grow_eurostat_rekey_marker")
     gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet", "NEW_B.parquet"])
     gb.land()
-    for name in ("list_parquets", "read_bytes", "read_table", "write_bytes_atomic"):
+    for name in ("list_parquets", "read_bytes", "read_table", "iter_batches", "write_bytes_atomic"):
         monkeypatch.setattr(E.blob, name, getattr(gb, name))
         monkeypatch.setattr(tool.blob, name, getattr(gb, name))
     assert tool.main(["--files", "NEW_A.parquet"]) == 2, "count does not close: refused"
@@ -300,7 +383,7 @@ def test_the_one_time_tool_checks_the_count_and_every_key(monkeypatch, tmp_path)
     # "F00000a" sorts to index 1, which the guard's evenly spaced sample (0, 2, 4, 6, 8) never reads
     gb2 = GrowBlob(8, {"files_seen": 8}, new_files=["F00000a.parquet"], unstable_new=["F00000a.parquet"])
     gb2.land()
-    for name in ("list_parquets", "read_bytes", "read_table", "write_bytes_atomic"):
+    for name in ("list_parquets", "read_bytes", "read_table", "iter_batches", "write_bytes_atomic"):
         monkeypatch.setattr(E.blob, name, getattr(gb2, name))
         monkeypatch.setattr(tool.blob, name, getattr(gb2, name))
     assert tool.main(["--files", "F00000a.parquet", "--apply"]) == 2 and gb2.writes == []
