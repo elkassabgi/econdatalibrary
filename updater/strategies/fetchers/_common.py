@@ -777,6 +777,14 @@ class RotationCycle:
         self.in_flight = unit
         self._save(self.visited)
 
+    def release(self, unit) -> None:
+        """`unit`'s work STOPPED WITHOUT A VERDICT - a budget cut inside it (ssb stops mid-group):
+        neither visited nor failed. Without this the next load would count the cut as a failed
+        attempt, and two cuts in a row would quarantine a unit that never failed."""
+        if self.in_flight == unit:
+            self.in_flight = None
+            self._save(self.visited)
+
     def _save(self, visited, **extra):
         d = {k: v for k, v in self._prev.items() if k not in ("visited", "failing", "in_flight")}
         d.update(extra)
