@@ -1,8 +1,9 @@
-"""hagstofa: a stored table that answers HTTP 400/404 on the English site (reviews R1108, R1112).
+"""hagstofa: a stored table that answers HTTP 400/404 on the English site (reviews R1108, R1112, R1120).
 
   1. The Icelandic site may still serve it at the SAME path: SJA04901 answers 400 on pxen but 200 on
-     pxis, to 2025, first variable Fisktegund - the stored scheme. It is fetched there, but ONLY when
-     the Icelandic codes reproduce a key scheme the table already stores.
+     pxis. That is a NAMED structural break and is never fetched there: Hagstofa's value codes are
+     positions in each site's own label order (R1119), and SJA04901 fetched from pxis would have put a
+     neighbouring species' value under 134 of 214 stored 2024 keys (R1120).
   2. Otherwise both WHOLE trees (pxen and pxis) decide: listed at its own path -> structural; found
      elsewhere -> MOVED (structural, named - the path is in the key, so following it is a re-key);
      absent from both, read in full -> WITHDRAWN, kept frozen; any tree unreadable -> structural.
@@ -97,38 +98,39 @@ def _no_sleep(monkeypatch):
     monkeypatch.setattr(H.time, "sleep", lambda s: None)
 
 
-def _fetch(sess, path="sjavarutvegur/utf/SJA04901.px", since=dt.date(2024, 12, 31), schemes=None):
+def _fetch(sess, path="sjavarutvegur/utf/SJA04901.px", since=dt.date(2024, 12, 31), dl=None):
     return H._fetch_table(sess, "Atvinnuvegir", path, "ICE:Atvinnuvegir:" + path.replace("/", ":"), since,
-                          stored_schemes=schemes)
+                          dl=dl)
 
 
-# ---- 1. the Icelandic fallback -------------------------------------------------------------
-def test_a_table_dropped_from_the_english_site_is_fetched_from_the_icelandic_one(monkeypatch):
-    """R1112: SJA04901 answers 400 on pxen, 200 on pxis with the stored scheme - fetch it there."""
+class _Spent:
+    def spent(self):
+        return True
+
+
+# ---- 1. the Icelandic site is never a fallback (R1119/R1120) -------------------------------
+def test_a_table_dropped_from_the_english_site_is_a_named_break_never_fetched_from_the_icelandic_one(
+        monkeypatch, capsys):
+    """R1112: SJA04901 answers 400 on pxen, 200 on pxis. Its pxis codes are positions in another order:
+    fetched there, 134 of 214 stored 2024 pairs got a neighbouring species' value (R1120). So: structural,
+    named, no data request, no tree search."""
     posted = []
-
-    def _post(sess, url, body):
-        posted.append(url)
-        return {"id": ["Fisktegund", "Ár"], "size": [1, 1], "role": {"time": ["Ár"]},
-                "dimension": {"Fisktegund": {"category": {"index": {"0": 0}, "label": {"0": "Alls"}}},
-                              "Ár": {"category": {"index": {"2025": 0}, "label": {"2025": "2025"}}}},
-                "value": [5.0]}
-    monkeypatch.setattr(H, "_post_data", _post)
+    monkeypatch.setattr(H, "_post_data", lambda sess, url, body: posted.append(url) or {"value": [1.0]})
     sess = _Sess(is_meta={"sjavarutvegur/utf/SJA04901.px": SJA_IS_META})
-    rows, outcome = _fetch(sess, schemes={("Fisktegund",)})
-    assert outcome == "data" and posted == [f"{IS}/Atvinnuvegir/sjavarutvegur/utf/SJA04901.px/"], posted
-    assert rows == [("ICE:Atvinnuvegir:sjavarutvegur:utf:SJA04901.px:Fisktegund=0", dt.date(2025, 12, 31), 5.0)]
+    sess._hagstofa_withdrawn = {}
+    assert _fetch(sess) == ([], "structural")
+    assert posted == [], "no data request to either site"
+    assert sess.asked == [f"{EN}/Atvinnuvegir/sjavarutvegur/utf/SJA04901.px/",
+                          f"{IS}/Atvinnuvegir/sjavarutvegur/utf/SJA04901.px/"], sess.asked
+    assert "DROPPED from the English site" in capsys.readouterr().out
+    assert sess._hagstofa_withdrawn == {}, "not cached as withdrawn or moved"
 
 
-def test_an_icelandic_copy_whose_codes_match_no_stored_scheme_is_a_rekey_not_a_merge():
-    sess = _Sess(is_meta={"sjavarutvegur/utf/SJA04901.px": SJA_IS_META})
-    assert _fetch(sess, schemes={("Species",)}) == ([], "structural")
-    assert _fetch(_Sess(is_meta={"sjavarutvegur/utf/SJA04901.px": SJA_IS_META}), schemes=None) == ([], "structural")
-
-
-def test_an_english_rename_is_fetched_from_the_icelandic_site_that_still_produces_the_stored_keys(monkeypatch):
-    """R1117 (c): SJA04903's English site renamed Tegund/... to Species/...; the Icelandic site still
-    produces the stored scheme, and value codes are identical - stay on the stored scheme."""
+@pytest.mark.parametrize("stored_scheme_is_icelandic", [True, False])
+def test_an_english_rename_is_fetched_from_the_english_site_only(monkeypatch, stored_scheme_is_icelandic):
+    """SJA04903: the English site renamed Tegund/... to Species/...; the Icelandic site still produces
+    the stored NAMES, but not the stored codes (R1119). The English fetch stands whatever is stored, and
+    update()'s key-scheme guard decides - no Icelandic GET at all."""
     posted = []
     monkeypatch.setattr(H, "_post_data", lambda sess, url, body: posted.append(url) or None)
     en_meta = {"variables": [{"code": "Species", "values": ["0"], "valueTexts": ["All"]},
@@ -140,27 +142,18 @@ def test_an_english_rename_is_fetched_from_the_icelandic_site_that_still_produce
     url = "sjavarutvegur/utf/SJA04903.px"
     sess = _Sess(override={f"{EN}/Atvinnuvegir/{url}/": _R(200, en_meta),
                            f"{IS}/Atvinnuvegir/{url}/": _R(200, is_meta)})
-    _fetch(sess, url, schemes={("Tegund",)})
-    assert posted == [f"{IS}/Atvinnuvegir/{url}/"], posted
-    posted.clear()
-    sess = _Sess(override={f"{EN}/Atvinnuvegir/{url}/": _R(200, en_meta),
-                           f"{IS}/Atvinnuvegir/{url}/": _R(200, is_meta)})
-    _fetch(sess, url, schemes={("Species",)})
-    assert posted == [f"{EN}/Atvinnuvegir/{url}/"], "the English site when it matches - no Icelandic GET"
+    _fetch(sess, url)
+    assert posted == [f"{EN}/Atvinnuvegir/{url}/"], posted
     assert not any(u.startswith(IS) for u in sess.asked), sess.asked
 
 
-def test_when_both_sites_renamed_the_english_fetch_stands_and_the_guard_decides(monkeypatch):
-    """VIN00002: 'Kyn / aldur' -> 'Kyn/aldur' on BOTH sites. No site produces the stored scheme, so
-    the Icelandic copy is not preferred; the key-scheme guard refuses the merge (a re-key)."""
-    posted = []
-    monkeypatch.setattr(H, "_post_data", lambda sess, url, body: posted.append(url) or None)
-    meta = {"variables": [{"code": "Kyn/aldur", "values": ["0"], "valueTexts": ["x"]},
-                          {"code": "Mánuður", "values": ["2026M07"], "valueTexts": ["2026M07"], "time": True}]}
-    url = "vinnumarkadur/VIN00002.px"
-    sess = _Sess(override={f"{EN}/Atvinnuvegir/{url}/": _R(200, meta), f"{IS}/Atvinnuvegir/{url}/": _R(200, meta)})
-    _fetch(sess, url, since=dt.date(2026, 6, 1), schemes={("Kyn / aldur",)})
-    assert posted == [f"{EN}/Atvinnuvegir/{url}/"], posted
+def test_a_tree_search_stops_at_the_deadline_and_is_no_evidence(monkeypatch):
+    """R1120 (d): the ~6-minute search is bounded by the run's Deadline; unfinished = unknown."""
+    sess = _Sess()
+    sess._hagstofa_withdrawn = {}
+    assert _fetch(sess, dl=_Spent()) == ([], "structural")
+    assert sess._hagstofa_withdrawn == {}
+    assert not any(u.endswith("/Atvinnuvegir/") for u in sess.asked), "no folder listed past the deadline"
 
 
 # ---- 2. both trees decide -------------------------------------------------------------------

@@ -150,12 +150,16 @@ def _key_scheme(key: str, prefix: str) -> tuple:
     return tuple(seg.split("=", 1)[0] for seg in rest.split(":") if "=" in seg) if rest else ()
 
 
-def _per_table_profile(path: str) -> tuple[dict[str, dt.date], dict[str, set]]:
+def _per_table_profile(path: str, boundary: dict | None = None
+                       ) -> tuple[dict[str, dt.date], dict[str, set]]:
     """For a db parquet, per TABLE prefix: max(obs_date), and the set of key schemes stored.
 
     A series_key is 'ICE:<db>:<path>.px:<dim>=...'. The table prefix is the substring
     through the '.px' segment. We bucket every row's max obs_date under that prefix so a
     table's date-tail boundary is its OWN latest period, not the whole db's.
+
+    `boundary`, when given, is filled from the same read with {prefix: {series_key: value}} at each
+    table's max date - what _codes_shifted compares a fetch against.
     """
     out: dict[str, dt.date] = {}
     schemes: dict[str, set] = {}
@@ -166,7 +170,9 @@ def _per_table_profile(path: str) -> tuple[dict[str, dt.date], dict[str, set]]:
         return out, schemes
     keys = t.column("series_key").to_pylist()
     dates = t.column("obs_date").to_pylist()
+    prefs: list = []
     for k, o in zip(keys, dates):
+        prefs.append(None)
         if not k:
             continue
         # table prefix = up to and including the '.px' segment
@@ -178,6 +184,7 @@ def _per_table_profile(path: str) -> tuple[dict[str, dt.date], dict[str, set]]:
                 break
         if pref is None:
             continue
+        prefs[-1] = pref
         schemes.setdefault(pref, set()).add(_key_scheme(k, pref))
         if o is None:
             continue
@@ -186,7 +193,59 @@ def _per_table_profile(path: str) -> tuple[dict[str, dt.date], dict[str, set]]:
         prev = out.get(pref)
         if prev is None or o > prev:
             out[pref] = o
+    if boundary is not None and "value" in t.column_names:
+        for k, o, v, pref in zip(keys, dates, t.column("value").to_pylist(), prefs):
+            if pref is None or o is None:
+                continue
+            if isinstance(o, dt.datetime):
+                o = o.date()
+            if o == out.get(pref):
+                boundary.setdefault(pref, {})[k] = v
     return out, schemes
+
+
+def _codes_shifted(fetched, stored: dict, since_date) -> str | None:
+    """Did the publisher RENUMBER this table's value codes? Hagstofa's codes are positions in an
+    alphabetical list of labels, not identities (R1119): one new country shifts every code after it,
+    and a merge ('new wins') then overwrites each stored series with its neighbour's values under the
+    same key - silently, since the table neither shrinks nor changes scheme (R1120: SJA04901 from the
+    Icelandic site, 134 of 214 boundary pairs).
+
+    The fetch re-reads the table's newest stored period (the tail is boundary-inclusive), so its
+    values there can be compared with the store. A REVISION changes values to new numbers; a SHIFT
+    moves existing numbers to other keys. So a differing value counts as MOVED only when it equals the
+    stored value of exactly one OTHER key (values stored under several keys - zeros, round totals -
+    prove nothing). Returns a reason when at least 2 differing values moved and they are at least half
+    of all differences; None otherwise (no stored boundary, no overlap, or plain revisions)."""
+    if since_date is None or not stored:
+        return None
+    new = {k: v for k, d, v in fetched if d == since_date}
+    diff = [k for k in new.keys() & stored.keys()
+            if not _same(new[k], stored[k])]
+    if not diff:
+        return None
+    where: dict = {}
+    for k, v in stored.items():
+        if v is not None:
+            where.setdefault(round(v, 9), []).append(k)
+    moved = 0
+    for k in diff:
+        v = new[k]
+        homes = where.get(round(v, 9), []) if v is not None else []
+        if len(homes) == 1 and homes[0] != k:
+            moved += 1
+    if moved >= 2 and 2 * moved >= len(diff):
+        return (f"{moved} of {len(diff)} differing values at {since_date} (of {len(new)} fetched) are "
+                f"values stored under a DIFFERENT key - the value codes were renumbered")
+    return None
+
+
+def _same(a, b) -> bool:
+    if a is None or b is None:
+        return a is b
+    if a != a or b != b:                                     # NaN
+        return a != a and b != b
+    return abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))
 
 
 def _per_table_max(path: str) -> dict[str, dt.date]:
@@ -252,7 +311,7 @@ def _listing(sess, url):
     return None
 
 
-def _table_tree(sess, base=None):
+def _table_tree(sess, base=None, dl=None):
     """{table id: [db/path, ...]} over EVERY database of one language site (`base`: BASE, the English
     site, by default; BASE_IS the Icelandic), or None when any listing could not be read.
 
@@ -261,7 +320,8 @@ def _table_tree(sess, base=None):
     fyrirtaeki/skradfyrirtaeki/9_eldraefni/. The catalogue cache is never re-crawled, so only a
     search of the whole tree can tell the two apart - and a PARTIAL search cannot, which is why one
     unreadable listing voids the answer instead of shrinking it. Built at most once per run (cached
-    on the session), and only when a stored table answers 400/404."""
+    on the session), and only when a stored table answers 400/404. A search takes ~6 min, so it
+    stops at the run's Deadline `dl` (review R1120 (d)) and then answers None: unknown."""
     base = base or BASE
     cache = getattr(sess, "_hagstofa_trees", None)
     if cache is None:
@@ -278,6 +338,9 @@ def _table_tree(sess, base=None):
     queue = [(item.get("dbid"), "") for item in (root or []) if isinstance(item, dict) and item.get("dbid")]
     ok = ok and bool(queue)
     while ok and queue:
+        if dl is not None and dl.spent():
+            ok = False              # out of budget: an unfinished search is evidence of nothing
+            break
         db, folder = queue.pop()
         items = _listing(sess, f"{base}/{db}/{folder}/" if folder else f"{base}/{db}/")
         time.sleep(RATE)
@@ -422,7 +485,7 @@ def _build_query(variables, tvar, time_codes):
     return query
 
 
-def _fetch_table(sess, db, path, prefix, since_date, stored_schemes=None):
+def _fetch_table(sess, db, path, prefix, since_date, dl=None):
     """Date-tail fetch one table. Returns (rows, outcome) where outcome is one of:
       'data'       -> rows is a list of (series_key, obs_date, value)
       'quiet'      -> nothing newer than the boundary (legitimately empty tail)
@@ -445,56 +508,33 @@ def _fetch_table(sess, db, path, prefix, since_date, stored_schemes=None):
     time.sleep(RATE)
     if meta is None and since_date is not None:
         # THE ENGLISH SITE DROPS TABLES THE ICELANDIC SITE STILL SERVES AT THE SAME PATH (review
-        # R1112: SJA04901 answers 400 on pxen but 200 on pxis, to 2025, first variable 'Fisktegund'
-        # - the stored scheme). Fetch it there - but ONLY when the Icelandic codes reproduce a key
-        # scheme this table already stores; otherwise the merge would mint a second id scheme.
-        url_is = f"{BASE_IS}/{db}/{path}/"
-        meta_is = _get_meta(sess, url_is)
+        # R1112: SJA04901 answers 400 on pxen but 200 on pxis). That is a NAMED BREAK, never a
+        # fallback: Hagstofa's value codes are POSITIONS in each site's own alphabetical order of
+        # labels, not identities (R1119 - pxen SJA04905 Country 3 is Australia, pxis Land 3 is
+        # Azerbaijan), and they shift between releases on one site. Fetched from pxis, SJA04901's
+        # 2024 values landed one species code higher - 134 of 214 stored (key, date) pairs would have
+        # been overwritten with a neighbour's value (R1120). Matching dimension NAMES proves nothing.
+        meta_is = _get_meta(sess, f"{BASE_IS}/{db}/{path}/")
         time.sleep(RATE)
         if isinstance(meta_is, dict) and meta_is.get("variables"):
-            if stored_schemes and _meta_scheme(meta_is["variables"]) in stored_schemes:
-                print(f"[hagstofa] {path}: dropped from the English site; fetched from the Icelandic "
-                      f"site at the same path (its codes match the stored keys)", flush=True)
-                url, meta = url_is, meta_is
-            else:
-                print(f"[hagstofa] {path}: dropped from the English site, and the Icelandic copy's "
-                      f"codes {list(_meta_scheme(meta_is['variables']))[:4]} match no stored key "
-                      f"scheme - a re-key, not followed automatically", flush=True)
-                return [], "structural"
-        else:
-            return _missing_verdict(sess, db, path, since_date)
+            print(f"[hagstofa] {path}: DROPPED from the English site; the Icelandic site still serves "
+                  f"it at the same path, but its value codes are positions in a different order, so "
+                  f"it is not merged into the stored series - a re-key with a value-derived code map "
+                  f"(R1119/R1120)", flush=True)
+            return [], "structural"
+        return _missing_verdict(sess, db, path, since_date, dl)
     if meta is None or not isinstance(meta, dict):
         # a never-stored table that 404/400s is simply absent -> empty; a non-dict body on a
         # stored table is a break.
         return [], ("structural" if since_date is not None else "empty")
-    if (stored_schemes and url != f"{BASE_IS}/{db}/{path}/" and meta.get("variables")
-            and _meta_scheme(meta["variables"]) not in stored_schemes):
-        # KEEP THE STORED SCHEME WHILE EITHER SITE STILL PRODUCES IT (review R1117 (c)). The English
-        # site renames codes in BOTH directions (SJA0490x Icelandic->English; SKO02108 English->
-        # Icelandic) and value codes stay identical, so a rename on one site is not a change of
-        # series. If the Icelandic site still produces a stored scheme, fetch there; if neither does,
-        # the English fetch goes ahead and the key-scheme guard refuses it as RESTRUCTURED.
-        url_is = f"{BASE_IS}/{db}/{path}/"
-        meta_is = _get_meta(sess, url_is)
-        time.sleep(RATE)
-        if (isinstance(meta_is, dict) and meta_is.get("variables")
-                and _meta_scheme(meta_is["variables"]) in stored_schemes):
-            print(f"[hagstofa] {path}: the English site renamed its codes to "
-                  f"{list(_meta_scheme(meta['variables']))[:4]}; fetched from the Icelandic site, "
-                  f"which still produces the stored keys", flush=True)
-            url, meta = url_is, meta_is
+    # A table the English site RENAMED (SJA0490x, UMH51101, SKO02108, VIN00002/3) is fetched here as
+    # it is and refused by update()'s key-scheme guard as RESTRUCTURED. It is not fetched from the
+    # Icelandic site instead, even when that site still produces the stored dimension names: the value
+    # codes behind the names differ by site (R1119).
     return _fetch_with_meta(sess, url, meta, path, prefix, since_date)
 
 
-def _meta_scheme(variables) -> tuple:
-    """The key scheme a table's metadata produces: its non-time variable codes, in order - the
-    dimension names parse_jsonstat2 writes into every series key."""
-    tvar = _time_var(variables)
-    tcode = (tvar or {}).get("code") if isinstance(tvar, dict) else None
-    return tuple(v.get("code", "") for v in variables if v.get("code") != tcode)
-
-
-def _missing_verdict(sess, db, path, since_date):
+def _missing_verdict(sess, db, path, since_date, dl=None):
     """A STORED table that answers 400/404 on BOTH language sites: moved, withdrawn, or unknown -
     decided by a search of BOTH WHOLE TREES (reviews R1108, R1112).
       listed at its own path in either tree -> structural (mid-republication / broken endpoint);
@@ -518,7 +558,7 @@ def _missing_verdict(sess, db, path, since_date):
                   f"{seen['date']}) - a re-key, not followed automatically", flush=True)
             return [], "structural"
         return [], "quiet"
-    trees = [_table_tree(sess, BASE), _table_tree(sess, BASE_IS)]
+    trees = [_table_tree(sess, BASE, dl), _table_tree(sess, BASE_IS, dl)]
     leaf = path.rpartition("/")[2]
     if any(t is None for t in trees):
         print(f"[hagstofa] {path}: HTTP 400/404, and a table tree could not be read in full - "
@@ -638,8 +678,11 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
     # Per-db, per-table on-disk max obs_date (date-tail boundaries).
     db_table_max: dict[str, dict[str, dt.date]] = {}
     db_schemes: dict[str, dict[str, set]] = {}
+    db_boundary: dict[str, dict[str, dict]] = {}
     for db in by_db:
-        db_table_max[db], db_schemes[db] = _per_table_profile(os.path.join(out_dir, f"{db}.parquet"))
+        db_boundary[db] = {}
+        db_table_max[db], db_schemes[db] = _per_table_profile(os.path.join(out_dir, f"{db}.parquet"),
+                                                              boundary=db_boundary[db])
 
     sess = _session()
     wpath = os.path.join(out_dir, WITHDRAWN_FILE)
@@ -708,8 +751,7 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
             since_date = tmax.get(prefix)  # None -> first landing (full fetch)
 
             try:
-                rows, outcome = _fetch_table(sess, db, tpath, prefix, since_date,
-                                             stored_schemes=db_schemes.get(db, {}).get(prefix))
+                rows, outcome = _fetch_table(sess, db, tpath, prefix, since_date, dl=dl)
             except TransientError:
                 tally.transient_unit(tpath)  # -> partial; existing rows for this table kept
                 continue
@@ -741,6 +783,12 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                         f"{sorted(stored_schemes)[:2]}); merging would publish two id schemes "
                         f"in one table. Not merged: re-key it deliberately")
                     continue
+            # THE SAME NAMES CAN HIDE RENUMBERED CODES (R1119/R1120) - see _codes_shifted.
+            shifted = _codes_shifted(rows, db_boundary.get(db, {}).get(prefix, {}), since_date)
+            if shifted:
+                tally.structural_unit(f"{tpath}: CODES SHIFTED - {shifted}. Not merged: 'new wins' "
+                                      f"would overwrite stored series with other series' values")
+                continue
 
             # outcome == 'data'. Seed tbl_max from the SANE boundary only: if the on-disk
             # since_date is a corrupt far-future sentinel, start from None so the real
