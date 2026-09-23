@@ -39,6 +39,18 @@ UPSTREAM_RECHECK_DAYS = 180.0
 STALE_SERIES_DAYS = 730
 
 
+# The lateness clock's period for a cadence where it differs from the scheduling one: an irregular
+# publisher is judged on a year, not on the 7-day check cadence (see assess()).
+LATENESS_PERIOD = {"irregular": 365}
+
+
+def publication_lag_cap(lat_cadence, fallback_period=7) -> float:
+    """The most a `publication_lag_days` declaration may add to the data clock: 2 data periods.
+    ONE predicate, used by assess() to clamp and by tests/test_health_publication_lag.py to bound
+    the registry, so the two cannot disagree (review round 2: they did for irregular sources)."""
+    return 2.0 * LATENESS_PERIOD.get(lat_cadence, CADENCE_DAYS.get(lat_cadence, fallback_period))
+
+
 def _adapter_ready(e):
     """True if this source's strategy is implemented AND (for fetcher-backed strategies)
     its per-source fetcher exists — i.e. it SHOULD be producing state. A source whose
@@ -315,11 +327,23 @@ def assess(store=None) -> dict:
         # This field CAN hide staleness, so declaring one without evidence is the abuse
         # case. It cuts both ways: a source polled annually that publishes monthly gets a
         # TIGHTER clock, not a looser one.
-        LATENESS_PERIOD = {"irregular": 365}
         lat_cadence = e.get("data_cadence") or cadence
         data_days = (LATENESS_PERIOD.get(lat_cadence,
                                          CADENCE_DAYS.get(lat_cadence, period))
                      * (SLA_TOLERANCE + DATA_SLACK_PERIODS))
+        # A PUBLISHER'S OWN LAG (2026-09-23). The clock counts from the stored obs_date and allows
+        # one period of lag (DATA_SLACK_PERIODS), which a monthly publisher releasing ~2 months late
+        # outruns: measured on fhfa (FHFA calendar + the store's month-START dating), the newest
+        # stored obs is 89-122 days old on release day, while the monthly clock is 84, so fhfa read
+        # RED-DATA at 85 days on 2026-09-23 holding FHFA's latest release exactly.
+        # `publication_lag_days` adds a MEASURED allowance: the worst age at fetch (release-day age
+        # plus the polling delay) minus the clock. It can hide staleness, so it is bounded HERE -
+        # a real int/float, clamped to 2 data periods (a string, a bool, inf or 1e9 cannot mute the
+        # gate) - and by tests/test_health_publication_lag.py (a MEASURED comment beside it). It never
+        # replaces the clock: a real freeze still turns red, only later by the allowance.
+        _lag = e.get("publication_lag_days")
+        if isinstance(_lag, (int, float)) and not isinstance(_lag, bool):
+            data_days += min(max(0.0, float(_lag)), publication_lag_cap(lat_cadence, period))
 
         src = store.get_source(sid)
         units = store.units_for_source(sid)
