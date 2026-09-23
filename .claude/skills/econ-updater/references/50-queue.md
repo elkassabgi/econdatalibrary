@@ -1347,7 +1347,8 @@ publishes can ever name them, so their CSVs are frozen and nothing reports it. M
 - 6 have no candidate successor: EMP_CARE_SEX_CAR_NB_A, POP_XNAI_SEX_CPR_NB_A, and the TUNE family
   UNE_TUNE_SEX_ECO_EDU_NB_A, UNE_TUNE_SEX_ECO_NB_A, UNE_TUNE_SEX_OCU_EDU_NB_A, UNE_TUNE_SEX_OCU_NB_A.
 
-Stored max obs: 2024-01-01 for the renamed ones, 2025-01-01 for the rest. The catalogue ids are
+Stored max obs: 2024-01-01 for the 18 renamed ones and POP_XNAI_SEX_CPR_NB_A, 2025-01-01 for
+EMP_CARE_SEX_CAR_NB_A and the four UNE_TUNE ids. The catalogue ids are
 `ilostat:<stem>`. TO CLOSE: decide per stem - catalogue the successor and retire the old id (an id
 change on econ is ordinary, not reserved), or mark it discontinued. Cataloguing reaches users only after
 the D1 catalogue sync, which is frozen at the time of writing.

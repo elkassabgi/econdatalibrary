@@ -329,3 +329,138 @@ def test_run_once_books_a_fence_trip_through_the_helper():
     assert calls, "run_once's UnitTimeout handler must call _book_fence_trip"
     uses = [n for h in handlers for n in ast.walk(h) if isinstance(n, ast.Name) and n.id == "_fence_note"]
     assert len(uses) >= 2, "and must use its note"
+    assigns = [a for h in handlers for a in ast.walk(h) if isinstance(a, ast.Assign)
+               and any(getattr(t, "id", None) == "csv_err" for t in a.targets)
+               and getattr(a.value, "id", None) == "_fence_note"]
+    assert assigns, "csv_err must BE the helper's note (R1144 RV-D), not the false 're-derives next run'"
+
+
+# ---- review R1144 --------------------------------------------------------------------------------
+def _unit():
+    return types.SimpleNamespace(key="ilostat/_all", source_id="ilostat", unit_id="_all")
+
+
+def test_a_crash_books_the_mapped_ids_and_they_survive_a_quiet_second_run(tmp_path, catalog, monkeypatch):
+    def _boom(ids, blob, **kw):
+        raise RuntimeError("resolver exploded")
+    monkeypatch.setattr(derive, "derive_and_put", _boom)
+    monkeypatch.setattr(orchestrate, "_record_for_catalog_sync", lambda ids: None)
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"})
+    failed, note, _d, reasons = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert failed == [] and "booked as desktop debts" in note, (failed, note)
+    booked = sorted(r["series_id"] for r in st.csv_desktop_owed("ilostat"))
+    assert booked == sorted(["ilostat:EMP_A", "ilostat:EMP:ECO_TOTAL:USA", "ilostat:EMP:ECO_TOTAL:FRA"]), booked
+    assert orchestrate._derive_changed_csvs(_unit(), Result(status="no_change", obs=10, changed_keys={}),
+                                            object(), st)[1] is None
+    assert len(st.csv_desktop_owed("ilostat")) == 3, "still named for health on the quiet run"
+
+
+def test_a_crash_before_mapping_maps_the_changed_set_and_books_it(tmp_path, catalog, monkeypatch):
+    real = orchestrate._catalog_ids_for
+    calls = []
+
+    def _flaky(src, keys):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("catalogue locked")
+        return real(src, keys)
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", _flaky)
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"})
+    failed, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert failed == [] and "3 of 1 changed series booked" in note, (failed, note)
+
+
+def test_the_retry_drain_moves_a_misses_sources_residue_to_debts(tmp_path):
+    st = StateStore(path=str(tmp_path / "state.db"))
+    keep = orchestrate._drain_residue_to_debts(st, "ilostat", {"deferred_ids": ["ilostat:B"]}, {"ilostat:A"})
+    assert keep == set() and sorted(r["series_id"] for r in st.csv_desktop_owed("ilostat")) == ["ilostat:A", "ilostat:B"]
+    assert orchestrate._drain_residue_to_debts(None, "ilostat", {}, {"ilostat:C"}) == {"ilostat:C"}, \
+        "a failed booking keeps the id queued"
+
+
+def test_run_once_routes_a_misses_sources_drain_through_the_helper():
+    import inspect
+    src = inspect.getsource(orchestrate.run_once)
+    assert "_drain_residue_to_debts(store, unit.source_id, _out, _refailed)" in src
+
+
+def test_under_subset_a_legacy_only_stem_still_demotes(tmp_path, catalog, monkeypatch):
+    con = sqlite3.connect(catalog)
+    con.execute("INSERT INTO series VALUES (?,?)", ("ilostat:UNE:ECO_TOTAL:USA", "ilostat"))
+    con.commit()
+    con.close()
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: ([], list(keys)))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"UNE_A": "2025-12-31"})
+    _f, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert note and not note.startswith("csv coverage note:"), note
+
+
+def test_a_failed_booking_books_none_and_keeps_all_queued(tmp_path, catalog, monkeypatch):
+    def _fake(ids, blob, **kw):
+        return {"put": 0, "failed": list(ids), "deferred": 0, "deferred_ids": [], "failed_reasons": {},
+                "skipped_identical": 0, "deferred_large": {}}
+    monkeypatch.setattr(derive, "derive_and_put", _fake)
+    monkeypatch.setattr(orchestrate, "_record_for_catalog_sync", lambda ids: None)
+    st = StateStore(path=str(tmp_path / "state.db"))
+    monkeypatch.setattr(st, "note_csv_desktop_owed", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"})
+    failed, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert sorted(failed) == sorted(["ilostat:EMP_A", "ilostat:EMP:ECO_TOTAL:USA", "ilostat:EMP:ECO_TOTAL:FRA"])
+
+
+def test_under_subset_unmapped_part_stems_still_demote(tmp_path, catalog, monkeypatch):
+    """R1144: the zero-mapped sample only tried exact and dotted forms, so a mapper that missed every
+    '#part' stem read green 'nothing served changed'."""
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: ([], list(keys)))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"EMP_TEMP_Q": "2025-12-31"})
+    _f, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert note and not note.startswith("csv coverage note:"), note
+    res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"})
+    _f, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert note and not note.startswith("csv coverage note:"), "a legacy-bearing '_A' stem demotes too"
+    res = Result(status="partial", obs=10, changed_keys={"ZZZ_Q": "2025-12-31"})
+    _f, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert note.startswith("csv coverage note:"), "negative control: a truly uncatalogued stem is coverage"
+
+
+def test_a_fence_trip_whose_changed_set_maps_to_nothing_is_a_failure(tmp_path, catalog):
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"NOPE_A": "2025-12-31"},
+                 series_cursors={"EMP_A|x": "2025-12-31"})
+    note = orchestrate._book_fence_trip(_unit(), res, st, 12.0)
+    assert "could NOT be booked" in note and "mapped to 0" in note, note
+    res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"},
+                 series_cursors={"NOPE|x": "2025-12-31"})
+    assert orchestrate._book_fence_trip(_unit(), res, st, 12.0).startswith("csv coverage note:"), \
+        "the changed set, not the freshness cursors, is what gets mapped (RV-C)"
+
+
+def test_health_groups_debts_by_their_reason_prefix(tmp_path):
+    from updater import health
+    st = StateStore(path=str(tmp_path / "state.db"))
+    st.note_csv_desktop_owed("ilostat", [(f"ilostat:X{i}", None, f"derive failed for an id (ResolveError: X{i} "
+                                          f"unreadable)") for i in range(30)])
+    row = next(r for r in health.assess(st)["sources"] if r["source"] == "ilostat")
+    line = next(a for a in row["attention"] if "OWED to the desktop" in a)
+    assert "30 derive failed for an id e.g. (ResolveError" in line and line.count("derive failed") == 1, line
+    assert len(line) < 500, len(line)
+
+
+def test_the_publish_tool_refuses_an_unreadable_catalogue_or_r2_map(tmp_path, monkeypatch):
+    from updater import blob
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import publish_ilostat_split_map as T
+    local = tmp_path / "data" / "clean_full" / "ilostat" / "_split_map.json"
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b'{"EMP_TEMP_Q": {"col": "classif1"}}')
+    fake = _FakeR2(None)
+    monkeypatch.setattr(blob, "_r2_routed", lambda: fake)
+    assert T.main(["--local", str(local), "--catalog", str(tmp_path / "nope.db"), "--apply"]) == 2
+    fake2 = _FakeR2(b"not json")
+    monkeypatch.setattr(blob, "_r2_routed", lambda: fake2)
+    assert T.main(["--local", str(local), "--catalog", str(tmp_path / "nope.db"), "--apply", "--replace"]) == 2
+    assert fake.puts == 0 and fake2.puts == 0

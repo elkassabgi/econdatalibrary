@@ -530,11 +530,18 @@ def assess(store=None) -> dict:
             # reasons now (too large, budget-deferred flow, a csv_misses source's missed or failed
             # id, a csv-fence trip), and "too large for the cloud path" sent readers after the
             # wrong cause. Each distinct reason's first clause is shown, with its count.
-            _why = {}
+            # GROUPED BY THE REASON'S FIXED PREFIX (R1144): a reason carries its own id's cause in
+            # brackets, so 30 debts made 30 distinct "reasons" and a 969-character line. The prefix
+            # (before ';' or ' (') groups them; one sample cause is shown per group.
+            _why: dict = {}
             for r in _dl:
-                _k = str(r["reason"] or "reason not recorded").split(";")[0]
-                _why[_k] = _why.get(_k, 0) + 1
-            _whys = "; ".join(f"{n} {k}" for k, n in sorted(_why.items(), key=lambda x: -x[1])[:3])
+                _full = str(r["reason"] or "reason not recorded")
+                _k = _full.split(";")[0].split(" (")[0].strip()
+                _c = _full[len(_full.split(" (")[0]):].strip() if " (" in _full.split(";")[0] else ""
+                _n, _sample = _why.get(_k, (0, _c))
+                _why[_k] = (_n + 1, _sample or _c)
+            _whys = "; ".join(f"{n} {k}" + (f" e.g. {s[:90]}" if s else "")
+                              for k, (n, s) in sorted(_why.items(), key=lambda x: -x[1][0])[:3])
             attention = [
                 f"{len(_dl)} CSV(s) OWED to the desktop derive ({_whys}; e.g. {_ex}): "
                 f"derive them with `python -m core.derive_csv --bucket "
