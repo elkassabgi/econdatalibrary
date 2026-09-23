@@ -54,13 +54,15 @@ header (malformed at rest: refused, never served as data). The R2 ETag is attach
 
 **Wide sources (fhfa, census, wikidata, treasury).** These are stored with their OWN columns
 (`econdl._resolve._NATIVE_ONLY`; a long projection of a relational table would misstate it), so
-the header rule above does not apply to them: any non-empty first line is accepted, and the object
-is served WHOLE and byte-untouched. `from`/`to`/`geo` are refused with **400** `unsupported_filter`
-before any object is read, because the date column sits at a different position per source. A
-large wide object (≥ 256 KiB) goes out through the passthrough whatever its storage encoding: a
-gzipped one exactly as below; a PLAIN one with its exact `content-length` and
-`cache-control: no-transform`, so the length is its completeness check. Encoding and bytes must
-agree at rest - gzip bytes flagged plain, or plain bytes flagged gzip, are **502**.
+the header rule above does not apply to them, and the object is served WHOLE and byte-untouched.
+`from`/`to`/`geo` are refused with **400** `unsupported_filter` before any object is read, because
+the date column sits at a different position per source. A large wide object (≥ 256 KiB) goes out
+through the passthrough whatever its storage encoding: a gzipped one exactly as below; a PLAIN one
+with its exact `content-length` and `cache-control: no-transform`, so the length is its completeness
+check. For LARGE wide objects only, the passthrough's primer also refuses with **502** an empty first
+line and an encoding flag that disagrees with the bytes (gzip bytes flagged plain, or plain flagged
+gzip). The small-object path does not make those two checks; measured 2026-09-23 over all 90,324
+small wide objects, none has an empty first line and every flag matches its bytes.
 
 Large objects (stored size ≥ 256 KiB — table-grain series can be hundreds of MB gzipped;
 ledger R582): the body is never materialised in the worker.
