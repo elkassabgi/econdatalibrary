@@ -128,6 +128,14 @@ def update(unit, since) -> Result:
     sidecar = _load_sidecar(out_dir)
     tally = Tally()
     cursors: dict[str, str] = {}
+    # MERGE-MEASURED CHANGED KEYS, in the form '<file stem>:<series_key>'. The cursor set named every
+    # key in every merged file (90,422-167,041 per pass) and none can map: ember's 60 catalogue ids
+    # are ember:<A|M>:<metric>:<GEO>, which the resolver serves from ONE native key in ONE of two files
+    # (econdl._resolve._resolve_ember). The same native key can sit in other files that serve
+    # nothing, so the FILE is part of the changed key, and the orchestrator maps it back
+    # (_catalog_ids_for's ember block). Past merge.CHANGED_KEYS_CAP run-wide the set is dropped to None
+    # with cursor_cap_hit, as abs does (R1115): an unbounded dict on a 16 GB runner is not an option.
+    changed: dict | None = {}
     maxd = None
     published = 0
     dl = Deadline(minutes=BUDGET_MIN)
@@ -185,7 +193,9 @@ def update(unit, since) -> Result:
         tbl = _rows_to_table(rows)
         before = blob.row_count(path) if blob.exists(path) else 0
         try:
-            n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+            n, md, ch = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP,
+                                              report_changed_keys=True,
+                                              changed_keys_cap=max(tbl.num_rows, 1))
         except DefinitiveError as e:
             # a never-shrink/guard trip on ONE dataset must not abort the whole source —
             # but say WHICH dataset and WHICH guard, or the survival is untraceable
@@ -195,6 +205,15 @@ def update(unit, since) -> Result:
         published += n
         tally.added_unit(max(0, n - before))
         cursors.update(_series_maxes(tbl))
+        if changed is not None:
+            stem = os.path.basename(path)[:-len(".parquet")]
+            changed.update((f"{stem}:{k}", v) for k, v in ch.items())
+            if len(changed) > merge.CHANGED_KEYS_CAP:
+                print(f"[ember] changed keys passed {merge.CHANGED_KEYS_CAP:,} this run (at {ds_id}) - "
+                      f"reporting the changed set as UNKNOWN (cursor_cap_hit); a full re-derive is "
+                      f"owed", flush=True)
+                changed = None
+        del ch
         if md and (maxd is None or str(md) > str(maxd)):
             maxd = md
         sidecar[ds_id] = cur_v          # advance ONLY after a clean publish
@@ -205,5 +224,9 @@ def update(unit, since) -> Result:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
 
-    return finalize(tally, published, maxd or (since or None), source=SOURCE,
-                    series_cursors=cursors)
+    res = finalize(tally, published, maxd or (since or None), source=SOURCE,
+                   series_cursors=cursors)
+    res.changed_keys = changed
+    if changed is None:
+        res.cursor_cap_hit = True
+    return res

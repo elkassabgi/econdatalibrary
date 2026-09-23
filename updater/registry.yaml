@@ -1556,6 +1556,13 @@ sources:
       streams and never sits in RAM whole.'
 - source_id: ember
   live: true
+  # catalog_scope — DECLARED 2026-09-23. The store holds every series of Ember's ~72 published files
+  # (18,810 distinct keys in the two long-format files alone); the catalogue serves a curated 60
+  # (ember:<A|M>:<metric>:<GEO>, resolved from yearly/monthly_full_release_long_format). A pass that
+  # moves only uncatalogued series maps to zero and is COVERAGE, not a coherence failure. Paired with
+  # merge-measured changed keys in '<file stem>:<series_key>' form, which _catalog_ids_for maps back
+  # exactly. Adding this key does NOT change the source count (R347: no EXPECTED_SOURCE_COUNT bump).
+  catalog_scope: subset
   scripts:
   - jobs/ingest_ember.py
   strategy: bulk_snapshot_if_changed
