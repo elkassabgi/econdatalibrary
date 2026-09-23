@@ -161,7 +161,13 @@ def _pace():
     sent requests back to back: KSH's WAF let ~56 through, then blocked for ~18 min (dry run
     2026-09-23: rejections at queue positions 56/57 and 112/113). The job's own main() waits
     ig.RATE (1.2 s) between requests, and CI run 35022271104 fetched 60 tables in ~4.5 min with no
-    WAF line."""
+    WAF line.
+
+    MEASURED, NOT A CURE: paced, the desktop still met the WAF ~64 s in (ksh_dryrun2, 2026-09-23:
+    110 tables in a 25-min pass, 16 back-off lines). The allowance looks COUNT-based (~55 requests,
+    then an ~18-min block), so pacing buys little; it stays because it is the job's own pace and
+    costs ~2 min a pass. Throughput is set by the WAF, and the backlog needs more passes, not a
+    faster one."""
     with _PACE_LOCK:
         wait = _LAST_START[0] + PACE_S - time.time()
         if wait > 0:
