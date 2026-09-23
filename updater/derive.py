@@ -87,6 +87,66 @@ FLOW_DERIVE_WORKERS = 2
 3 GB DuckDB limit does not fit a 16 GB runner beside the orchestrator's own 2.5 GB."""
 
 
+def _merge_served_sources() -> set:
+    """Sources the registry declares `csv_merge_served: true` (ecb, review R1136). Read here, not
+    passed by the caller, so BOTH callers - the changed-CSV phase and the csv retry drain - get it.
+    Cached; a registry that cannot be read declares nothing."""
+    cache = _merge_served_sources.__dict__.setdefault("_cache", None)
+    if cache is None:
+        try:
+            from . import registry                                     # noqa: PLC0415
+            cache = {e.get("source_id") for e in registry.load().get("sources", [])
+                     if e.get("csv_merge_served") is True}
+        except Exception:                                              # noqa: BLE001
+            cache = set()
+        _merge_served_sources._cache = cache
+    return cache
+
+
+def _merge_with_served(new: bytes, served: bytes):
+    """-> (merged CSV bytes, served dates kept) or None when the two cannot be merged safely.
+
+    WHY (review R1136). ecb's resolver serves the union of its whole store directory, and a
+    served id lives in a primary file AND an ECB.DISS mirror. A runner holds only the files its
+    pass wrote, so a derive there sees part of the union and would drop the dates (or serve the
+    values) only the missing files carry. Store rows are only ever added or updated, never
+    deleted, so the served CSV is a valid lower bound: NEW rows win on a shared date, and dates
+    only the served CSV has are kept. Measured on 27 of 27 served ids over a mirror-only pass
+    followed by a primary-only pass: byte-identical to a derive from all 8 holder files.
+    Values are kept as their CSV text, never re-formatted. Refuses (None) on a header mismatch,
+    a missing obs_date column, or a date repeated inside one CSV."""
+    import csv as _csv                                                 # noqa: PLC0415
+    import gzip as _gzip                                               # noqa: PLC0415
+    import io as _io                                                   # noqa: PLC0415
+
+    def _rows(b):
+        if b[:2] == b"\x1f\x8b":
+            b = _gzip.decompress(b)
+        r = list(_csv.reader(_io.StringIO(b.decode("utf-8"))))
+        return (r[0], r[1:]) if r else (None, [])
+
+    h_new, r_new = _rows(new)
+    h_old, r_old = _rows(served)
+    if not h_new or h_new != h_old or "obs_date" not in h_new:
+        return None
+    i = h_new.index("obs_date")
+    by_date = {}
+    for rows in (r_old, r_new):                  # new last: it wins on a shared date
+        seen_here = set()
+        for row in rows:
+            if len(row) <= i or row[i] in seen_here:
+                return None
+            seen_here.add(row[i])
+            by_date[row[i]] = row
+    kept = len({r[i] for r in r_old} - {r[i] for r in r_new})
+    buf = _io.StringIO()
+    w = _csv.writer(buf, lineterminator="\n")    # the contract writer (core/derive_csv.py)
+    w.writerow(h_new)
+    for d in sorted(by_date):                    # ISO dates: string order is date order
+        w.writerow(by_date[d])
+    return buf.getvalue().encode("utf-8"), kept
+
+
 def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None, *,
                    flow_grain: bool = False, flow_max_rows: int | None = None) -> dict:
     """Derive the contract CSV for each series id and PUT it via `blob`.
@@ -104,6 +164,11 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
     streaming derive, and a row ceiling above which the id is returned in a THIRD outcome,
     `deferred_large` ({series_id: rows}) — not `failed`, not the retry queue, because a retry
     can never succeed on the runner and would re-fail every run (up to 20,000 a run).
+
+    A source declaring `csv_merge_served: true` (ecb) has each new CSV MERGED with the served
+    object before the PUT (see _merge_with_served); `served_dates_kept` ({series_id: n}) says how
+    many served dates this machine's store files did not hold. A served object that cannot be
+    read or merged is a FAILURE (queued for retry), never an unmerged upload.
     """
     # CONCURRENCY. Each series is an independent derive plus one PUT, and the PUT is
     # almost entirely round-trip latency to R2 — so serial execution ran at about ONE
@@ -190,6 +255,7 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
     deferred_ids: list[str] = []
     # THIRD OUTCOME (flow grain only): too large for the cloud path. {series_id: store rows}.
     large: dict[str, int] = {}
+    kept: dict[str, int] = {}            # csv_merge_served: {series_id: served dates kept}
     flow_cap = int(flow_max_rows if flow_max_rows is not None
                    else (os.environ.get("AQUEDUCT_FLOW_DERIVE_MAX_ROWS", "")
                          or FLOW_DERIVE_MAX_ROWS))
@@ -241,6 +307,8 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
         return ((sid, "ok", None, n) if _put_with_retry(_blob(), r2_key(sid), body)
                 else (sid, "fail", "PUT exhausted", n))
 
+    merge_sources = _merge_served_sources()
+
     def _one(sid):
         if flow_grain:
             return _one_flow(sid)
@@ -248,6 +316,19 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
             body = _series_csv_bytes(sid)
         except Exception as e:  # store-coverage gap or resolver error — loud, queued
             return sid, "fail", f"{type(e).__name__}: {str(e)[:90]}", None
+        if str(sid).split(":", 1)[0] in merge_sources:
+            try:
+                served = _blob().get(r2_key(sid))
+            except Exception as e:                                     # noqa: BLE001
+                return sid, "fail", f"served CSV unreadable for the merge ({type(e).__name__})", None
+            if served is not None:
+                merged = _merge_with_served(body, served)
+                if merged is None:
+                    return sid, "fail", "served CSV cannot be merged (header or dates differ)", None
+                body, n_kept = merged
+                if n_kept:
+                    with lock:
+                        kept[sid] = n_kept
         return ((sid, "ok", None, None) if _put_with_retry(_blob(), r2_key(sid), body)
                 else (sid, "fail", "PUT exhausted", None))
 
@@ -340,13 +421,17 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
         print(f"  of {put:,} CSVs handled, {skipped:,} were ALREADY CURRENT and were not "
               f"re-uploaded ({100.0 * skipped / put:.1f}%)", flush=True)
 
+    if kept:
+        print(f"  {sum(kept.values()):,} served date(s) in {len(kept):,} id(s) KEPT by the served-CSV "
+              f"merge - this machine's store files do not hold them (e.g. {sorted(kept)[:3]})",
+              flush=True)
     if large:
         print(f"  {len(large):,} flow-grain id(s) DEFERRED TO THE DESKTOP derive (over the "
               f"{flow_cap:,}-row ceiling) — booked as csv_desktop_owed by the caller, not "
               f"queued for retry", flush=True)
     return {"put": put, "failed": failed, "deferred": deferred,
             "deferred_ids": deferred_ids, "failed_reasons": failed_reasons,
-            "skipped_identical": skipped, "deferred_large": large}
+            "skipped_identical": skipped, "deferred_large": large, "served_dates_kept": kept}
 
 
 def _check(series_id: str | None) -> int:

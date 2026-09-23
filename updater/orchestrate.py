@@ -936,6 +936,21 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             note = (f"csv coverage note: {len(unmapped)} changed keys have no catalog "
                     f"row for {unit.source_id} ({why}) — served ids coherent")
             print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
+        _kept = out.get("served_dates_kept") or {}
+        if _kept and not note:
+            # registry csv_merge_served (ecb, R1136): the upload kept served dates this runner's
+            # store files do not hold. Disclosed, not a demotion. No "; " inside (health reads
+            # notes segment by segment).
+            note = (f"csv coverage note: {sum(_kept.values()):,} served date(s) in {len(_kept):,} "
+                    f"id(s) kept by the served-CSV merge, this machine's store files do not hold them")
+        _unread = list(getattr(_catalog_ids_for, "ecb_unreadable", None) or [])
+        if _unread:
+            # A FAILURE SEGMENT, deliberately not a coverage note (R1136): these files were claimed
+            # by the name rule, which never claims a mirror, so served ids may have gone stale.
+            _seg = (f"ecb containment read failed for {len(_unread)} changed file(s) "
+                    f"[{', '.join(_unread[:3])}] - claimed by file name, mirrors not claimed")
+            print(f"[orchestrator] {unit.source_id}: {_seg}", flush=True)
+            note = f"{_seg}; {note}" if note else _seg
         return failed, note, deferred_ids, dict(out.get("failed_reasons") or {})
     except UnitTimeout:
         # THE FENCE'S OWN CONTROL SIGNAL — re-raise by name (R353). The csv fence at the
@@ -1342,16 +1357,51 @@ def _ecb_store_key(key):
     return parts[1], parts[2], [p for p in parts[3:] if p]
 
 
+def _ecb_catalogued(con) -> dict:
+    """{native series_key '<FLOW>.<KEY>': catalogue id} for every catalogued ecb id (35 on
+    2026-09-23). PK range, never LIKE (R492). The resolver's own join (econdl `_resolve_ecb`)."""
+    out = {}
+    for (sid,) in con.execute("SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                              ("ecb:", "ecb;")):
+        parts = str(sid).split(":", 2)
+        if len(parts) == 3 and parts[1] and parts[2]:
+            out[f"{parts[1]}.{parts[2]}"] = sid
+    return out
+
+
+def _ecb_held_ids(key, native):
+    """The catalogued ecb ids whose native key the LOCAL store file `<key>.parquet` holds.
+
+    [] when it holds none, None when it cannot be read (the caller falls back to the name rule).
+    Reads the local file only, never R2: under r2 that is exactly what the derive will open."""
+    if not native:
+        return []
+    try:
+        import pyarrow as _pa                                       # noqa: PLC0415
+        import pyarrow.compute as _pc                               # noqa: PLC0415
+        import pyarrow.parquet as _pq                               # noqa: PLC0415
+        col = _pq.read_table(os.path.join(config.source_dir("ecb"), f"{key}.parquet"),
+                             columns=["series_key"]).column("series_key")
+        hits = _pc.unique(col.filter(_pc.is_in(col, value_set=_pa.array(sorted(native))))).to_pylist()
+    except Exception:                                               # noqa: BLE001
+        return None
+    return sorted(native[h] for h in hits if h in native)
+
+
 def _catalog_ids_for(source_id: str, changed_keys):
     """Map changed store series_keys to catalog series_ids (see hook comment).
     Returns (ids_to_derive, unmapped_keys). Reads the catalog read-only from
     $ECONDL_CATALOG or <root>/data/catalog.db."""
     import sqlite3
+    # ecb store files this call could not read for containment (review R1136): they were claimed
+    # by the NAME rule, which never claims a mirror, so the caller must demote, not stay quiet.
+    _catalog_ids_for.ecb_unreadable = []
     cat = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
     con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
     try:
         exact, unmapped = [], []
         seen = set()
+        _ecb_native = None                 # ecb: {native key: catalogue id}, loaded on first use
         # ONE-TO-MANY EXPANSIONS (WU-4 of the 2026-08-31 grain sweep): dst subject
         # groups, treasury endpoint tails, wikidata group containment. Each mirrors
         # its RESOLVER/fetcher predicate — dst via the fetcher's own _subj (imported,
@@ -1491,20 +1541,13 @@ def _catalog_ids_for(source_id: str, changed_keys):
             # given frequency, so a changed file means each catalogued id inside it may be
             # stale. Same ONE-TO-MANY shape as the split-part block below.
             #
-            # VERIFIED BY CONTAINMENT, not by name — the check the first attempt lacked and
-            # the reason it shipped broken. Across every `ECB__*` store file: 35 ids claimed,
-            # 35 of them actually present in the file that claims them, and 35 of 35
-            # catalogued ids reachable. `ECB__YC__B__G_N_C` and `__G_N_W` claim ZERO, which is
-            # correct — they hold none of the catalogued series, and a flow-only rule would
-            # have handed each of them ten ids they do not contain.
-            #
-            # A HEURISTIC WITH A MEASURED COUNTEREXAMPLE, not a proven rule. The review
-            # generalised the containment check from our 35 catalogued ids to all 3,728,675
-            # distinct store series and found one: `ECB__BSI__M` claims 38,897, of which 4 are
-            # NOT in that file (they live in `ECB.DISS__JDF_PUB_BSI_CROSS_BORDER_POSITIONS`).
-            # None of the four is catalogued, so there is no live impact — but 35 of 3.7M is
-            # 0.0009% of the store, and "the rule the data supports" was too strong a claim
-            # for that sample. It is a heuristic that is exact on everything we serve.
+            # THE NAME RULE BELOW IS NOW ONLY THE FALLBACK (R1136). It was checked in one
+            # direction: every id a primary file claims is in that file (35 of 35, 0 over-claims).
+            # The reverse fails: 27 of the 35 served ids are ALSO held by ECB.DISS mirror files it
+            # never claims (R1132), so its "35 of 35 reachable" was true of the primaries only.
+            # Containment (first, below) claims by what a file actually holds - exact over all 540
+            # R2 files: 8 hold a served id (4 primaries, 4 mirrors). The name rule runs only when a
+            # file cannot be read, and that case is a DEMOTING note, because it misses mirrors.
             #
             # PK RANGE on `ecb:<FLOW>:<SEG1>.`, never LIKE ('_' is a wildcard, R492). '/' is
             # the byte after '.', so the range is exactly that dotted prefix.
@@ -1537,9 +1580,29 @@ def _catalog_ids_for(source_id: str, changed_keys):
             # v1 harmful. It is CONDITIONAL, not guaranteed (a 200 almost always yields rows
             # because `_start_period` is inclusive), which is why it was invisible. The guard
             # is one line: under r2, only claim ids whose file is actually present.
+            #
+            # CLAIM BY CONTAINMENT, NOT BY NAME (review R1132, 2026-09-23). The name rule above is
+            # exact for the PRIMARY files, but 27 of the 35 served ids are also held by ECB.DISS
+            # mirror files (MOBILE_EXR, MOBILE_KEY_6, FM_PUB__M, YC_PUB__B) that no name rule
+            # claims, and the resolver serves the union of the whole ecb/ directory. The run of
+            # 2026-09-23 11:38Z wrote only mirrors and added a day to 23 served series whose CSVs
+            # stayed a day behind. So a changed file claims every catalogued id whose native key
+            # ('<FLOW>.<KEY>') it actually HOLDS - one series_key column read of a file this run
+            # has on the machine. Unreadable -> the name rule, as before.
             if source_id == "ecb" and (config.BACKEND != "r2"
                                        or _ecb_file_present(source_id, k)):
-                parsed = _ecb_store_key(k)
+                if _ecb_native is None:
+                    _ecb_native = _ecb_catalogued(con)
+                held = _ecb_held_ids(k, _ecb_native)
+                if held is None:
+                    _catalog_ids_for.ecb_unreadable.append(k)
+                if held:
+                    for cid in held:
+                        if cid not in seen:
+                            seen.add(cid)
+                            exact.append(cid)
+                    continue
+                parsed = _ecb_store_key(k) if held is None else None
                 if parsed:
                     flow, seg1, extras = parsed
                     got = [r[0] for r in con.execute(
@@ -1645,9 +1708,12 @@ def _catalog_ids_for(source_id: str, changed_keys):
         # "zero rows matched in N files". Those are not coverage gaps; they are requests
         # for data that was never on the machine.
         #
-        # So under r2 we derive exactly the ids we could MAP (their files are, by
-        # construction, the ones this run wrote) and surface the rest as an honest
-        # unmapped list. Locally, where the full store is present, derive-all still runs
+        # So under r2 we derive exactly the ids we could MAP and surface the rest as an honest
+        # unmapped list. "Their files are the ones this run wrote" is true of the file that
+        # CLAIMED an id, NOT of every file that serves it: an ecb id is served from the union
+        # of up to 8 files and a runner holds only the ones its pass wrote (R1136). ecb's
+        # uploads are therefore merged with the served CSV (registry csv_merge_served,
+        # updater/derive.py). Locally, where the full store is present, derive-all still runs
         # and still guarantees coherence for small sources.
         if config.BACKEND == "r2":
             return exact, unmapped
