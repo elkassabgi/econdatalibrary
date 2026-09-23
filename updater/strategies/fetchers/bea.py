@@ -238,6 +238,8 @@ def update(unit, since) -> Result:
     total = 0
     frontier_by_ds: dict[str, str] = {}
     for rel in rotate_after(units, load_rotation(out_dir)):
+        if cycle.done(rel):
+            continue                         # refreshed this cycle: no work owed (R1105 P1)
         if dl.spent():
             n = cycle.defer_unvisited(tally, label=lambda u: f"{u} (budget {BUDGET_MIN:.0f} min)")
             print(f"[{SOURCE}] budget of {BUDGET_MIN:.0f} min spent; {n} group(s) not yet "
