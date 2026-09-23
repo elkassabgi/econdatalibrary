@@ -574,6 +574,19 @@ _DESKTOP_OWED_BUDGET = ("budget-deferred flow-grain id; the store file is absent
                         "so a retry can never succeed there; desktop: core.derive_csv --only, read back, clear")
 
 
+_DESKTOP_OWED_MISSED = ("budget-deferred id of a csv_misses: desktop_owed source; its change signal has "
+                        "already advanced, so no later run names it again; desktop: core.derive_csv --only, "
+                        "read back, clear")
+
+
+def _csv_misses(source_id: str) -> str:
+    """The registry's optional `csv_misses` for a source ('desktop_owed' or '' by default)."""
+    global _REG_ENTRIES
+    if _REG_ENTRIES is None:
+        _catalog_scope(source_id)                            # loads _REG_ENTRIES
+    return str(((_REG_ENTRIES or {}).get(source_id) or {}).get("csv_misses") or "")
+
+
 def _book_csv_desktop_owed(store, source_id: str, large: dict, reason: str = _DESKTOP_OWED_TOO_LARGE) -> None:
     """Persist flow-grain ids the cloud derive could not take (too large, or budget-deferred:
     on the r2 backend the merged parquet exists only on the runner that wrote it, so a later
@@ -857,6 +870,14 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         if _flow and deferred_ids:
             _book_csv_desktop_owed(store, unit.source_id, {s: None for s in deferred_ids},
                                    reason=_DESKTOP_OWED_BUDGET)
+            budget_owed, deferred_ids = list(deferred_ids), []
+        elif deferred_ids and _csv_misses(unit.source_id) == "desktop_owed":
+            # A SERIES-GRAIN source that opts in (registry `csv_misses: desktop_owed`, review R1131):
+            # its change signal is a fetcher sidecar that has already advanced, so a budget-deferred
+            # id would never be named again - and csv_retry_queue cannot drain on r2 (the file is not
+            # on a later runner) and health never reads it. Book it as a visible, payable debt.
+            _book_csv_desktop_owed(store, unit.source_id, {s: None for s in deferred_ids},
+                                   reason=_DESKTOP_OWED_MISSED)
             budget_owed, deferred_ids = list(deferred_ids), []
         # A derived CSV is HOSTED but not yet DISCOVERABLE: nothing in the daily
         # pipeline pushed catalog rows to D1 (sync_state_d1 syncs freshness only,
@@ -1404,6 +1425,18 @@ def _catalog_ids_for(source_id: str, changed_keys):
             # those ranges). ADDITIVE, never a continue: replacing the flow claim
             # would starve the 20 exact-form flow ids. Indexed PK range per key,
             # colon-count filter as belt-and-braces.
+            # ilostat LEGACY OVERLAY (review R1131): 80 catalogued ids keep the older per-country form
+            # 'ilostat:<flow>:<classif1>:<geo>' and are served from the '<flow>_A' indicator file. The
+            # exact tier takes the stem first, so nothing claimed them and no note named them. ADDITIVE,
+            # like the census overlay below: a changed '<flow>_A' also claims its 3-colon ids.
+            if source_id == "ilostat" and k.endswith("_A"):
+                _f = k[:-2]
+                for (cid,) in con.execute(
+                        "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                        (f"ilostat:{_f}:", f"ilostat:{_f};")):
+                    if cid.count(":") == 3 and cid not in seen:
+                        seen.add(cid)
+                        exact.append(cid)
             if source_id == "census" and k.startswith("eits__"):
                 _f = k[6:]
                 for (cid,) in con.execute(
@@ -2091,6 +2124,16 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                                "source on its next CHANGE")
                     _csv_fence_tripped = True
                     print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
+                    if _csv_misses(unit.source_id) == "desktop_owed" and store is not None:
+                        # "re-derives next run" is FALSE for a source whose change signal already
+                        # advanced (review R1131): book a durable, visible full re-derive instead.
+                        try:
+                            store.note_full_rederive_owed(
+                                unit.source_id, note=f"csv fence ({_csv_fence:.0f} min) tripped; the "
+                                f"changed set is not named again - re-derive the source's served ids")
+                        except Exception as _e:              # noqa: BLE001 - loud, never fatal
+                            print(f"[orchestrator] {unit.key}: could not book the full re-derive "
+                                  f"({type(_e).__name__}: {_e})", flush=True)
                 else:
                     _csv_fence_tripped = False
                 # DRAIN THE RETRY QUEUE (2026-08-06). derive.py has promised since it

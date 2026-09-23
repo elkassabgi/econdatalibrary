@@ -41,7 +41,7 @@ import json
 import os
 
 from ... import config, blob
-from ...errors import TransientError
+from ...errors import DefinitiveError, TransientError
 from ..base import Result
 from ._common import CURSOR_CAP, Deadline, Tally, finalize, merge_cursors
 from jobs import ingest_ilostat as ig     # TOC + the production downloader/parser
@@ -100,6 +100,29 @@ def _save(out_dir, data) -> None:
                             json.dumps(data, indent=2, sort_keys=True).encode("utf-8"))
 
 
+SPLIT_MAP = "_split_map.json"
+
+
+def _fetch_split_map(out_dir) -> None:
+    """Put the store's _split_map.json on THIS machine before the CSV phase (review R1131). The
+    resolver reads it from the local store directory for every `ilostat:<stem>#<part>` id (1,470 of
+    the 3,305 catalogued ids); on a runner only the files this pass wrote are local, so every part
+    id raised ResolveError. Read through blob (R2 under the r2 backend) and written with a plain
+    write - write_bytes_atomic would PUT it back. Absent everywhere: said loudly."""
+    path = os.path.join(out_dir, SPLIT_MAP)
+    raw = blob.read_bytes(path)
+    if raw is None:
+        print(f"[ilostat] {SPLIT_MAP} is absent from the store - every '#part' id will fail to "
+              f"resolve in the CSV phase (upload the desktop tool's map, R1131)", flush=True)
+        return
+    try:
+        with open(path, "wb") as fh:
+            fh.write(raw)
+    except OSError as e:
+        print(f"[ilostat] could not write {path} locally ({e}) - '#part' ids will not resolve",
+              flush=True)
+
+
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
@@ -107,13 +130,21 @@ def update(unit, since) -> Result:
     rows = _toc(fresh=True)
     if not rows:
         raise TransientError("ilostat: TOC unreachable and no cached copy")
+    _fetch_split_map(out_dir)
 
     sidecar = _load(out_dir)
     tally = Tally()
     published = 0
     unchanged = 0
     deferred = 0
-    cursors: dict = {}          # §5.7 changed-series set, per re-pulled indicator
+    cursors: dict = {}          # per-series freshness for health (newest obs, discontinued series)
+    # THE CSV PHASE'S CHANGED SET, at the catalogue's grain (review R1131): {indicator stem: max
+    # date}. process_one REWRITES the whole <stem>.parquet, so every catalogued id of that stem -
+    # 'ilostat:<stem>', each 'ilostat:<stem>#<part>', and the legacy 'ilostat:<flow>:<c1>:<geo>'
+    # ids a '<flow>_A' stem holds - may have changed. The series cursors above could never map:
+    # they are store keys, capped at CURSOR_CAP (50,000), and every pass read "csv coherence
+    # unmet: 50000 changed series_keys have no catalog mapping". Complete: <= ~1,961 stems.
+    changed: dict = {}
     dl = Deadline(minutes=BUDGET_MIN)
 
     for ds in sorted(rows, key=lambda r: r.get("id") or ""):
@@ -149,10 +180,10 @@ def update(unit, since) -> Result:
             continue
 
         blob.publish_file(stored)
+        changed[iid] = str(_mx) if _mx else None
         # Bounded accumulation: ILOSTAT holds ~30.8M store series across 1,947 indicators, and
-        # every cursor costs one SQLite lookup plus one state.db row. Its 80 catalog ids sit
-        # under the derive-all cap, so a partial cursor set triggers exactly the same
-        # re-derive as a complete one.
+        # every cursor costs one SQLite lookup plus one state.db row. They feed health's
+        # freshness reading only; the CSV phase reads `changed` (above).
         merge_cursors(cursors, stored)
         published += n_rows
         tally.added_unit(n_rows, iid)
@@ -162,9 +193,8 @@ def update(unit, since) -> Result:
     if unchanged:
         print(f"[ilostat] {unchanged}/{len(rows)} indicator(s) unchanged — skipped", flush=True)
     if len(cursors) >= CURSOR_CAP:
-        print(f"[ilostat] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
-              f"not individually reported (catalog grain is 80 ids, so the derive-all path "
-              f"covers them)", flush=True)
+        print(f"[ilostat] cursor set hit the {CURSOR_CAP:,} cap — freshness cursors only; the "
+              f"CSV phase reads the {len(changed):,} changed indicator(s)", flush=True)
     if deferred:
         print(f"[ilostat] budget {BUDGET_MIN} min spent — {deferred} indicator(s) deferred "
               f"to the next run", flush=True)
@@ -172,5 +202,18 @@ def update(unit, since) -> Result:
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
-    return finalize(tally, published, since or None, source=SOURCE,
-                    series_cursors=cursors or None)
+    try:
+        res = finalize(tally, published, since or None, source=SOURCE,
+                       series_cursors=cursors or None)
+    except DefinitiveError as e:
+        if not changed:
+            raise
+        # THE CHANGED SET MUST SURVIVE A STRUCTURAL RAISE (review R1131, the _giant precedent): the
+        # indicators published before one broke are already served and their sidecar stamps have
+        # advanced, so the orchestrator's "partial, no derive" would leave their CSVs stale for good.
+        print(f"[ilostat] finalize raised structural with {len(changed):,} indicator(s) published - "
+              f"returning partial WITH the changed set: {str(e)[:120]}", flush=True)
+        res = Result(status="partial", obs=published, last_obs_date=since or None,
+                     new_vintage="date-tail", series_cursors=cursors or None, error=str(e))
+    res.changed_keys = changed
+    return res
