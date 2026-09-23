@@ -716,6 +716,7 @@ class RotationCycle:
             if dl.spent():
                 cycle.defer_unvisited(tally, label=lambda u: f"{u} ({n[u]} tables)")
                 break
+            cycle.begin(u)                       # in flight: a raise or kill counts as a failure
             before = cycle.failures(tally)
             ...work on u...
             cycle.visit(u, failed=cycle.failures(tally) > before)
@@ -747,12 +748,43 @@ class RotationCycle:
         self.failing = ({u: int(n) for u, n in fl.items() if u in set(self.units) and isinstance(n, int)}
                         if isinstance(fl, dict) else {})
         self._failed_now: set = set()
+        self.in_flight = None
+        # A UNIT STILL IN FLIGHT from an earlier pass never reached visit(): its work raised out of
+        # update() or the orchestrator killed the source mid-unit. That is a failed attempt, and it
+        # must count - otherwise such a unit is never visited, never counted, never quarantined, and
+        # freezes the rest (review AR-127 P5: a merge DefinitiveError that stat_latvia, ssb and
+        # stat_slovenia do not catch). Counted once, here, and persisted at once.
+        died = self._prev.get("in_flight")
+        if died in set(self.units):
+            self.visited.discard(died)
+            self.failing[died] = self.failing.get(died, 0) + 1
+            print(f"[rotation-cycle] {died} was in flight when the last pass ended (raised or killed): "
+                  f"counted as a failed attempt ({self.failing[died]} in a row)", flush=True)
+            self._save(self.visited)
+        # A pass that DIES never reaches close_if_complete. If every unit but the quarantined ones is
+        # already visited, that pass would have closed the cycle - close it now, or a unit that raises
+        # on every pass keeps the rest skipped for ever even after quarantine.
+        q = self.quarantined()
+        if q and self.visited and not (set(self.unvisited()) - q):
+            print(f"[rotation-cycle] closing the cycle the last pass could not close: every unit but "
+                  f"{sorted(q)[:5]} (quarantined) was visited", flush=True)
+            self.visited = set()
+            self._save(set(), completed_utc=_dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                       closed_over_quarantined=sorted(q))
+
+    def begin(self, unit) -> None:
+        """Mark `unit` in flight before its work starts (see __init__ for why)."""
+        self.in_flight = unit
+        self._save(self.visited)
 
     def _save(self, visited, **extra):
-        d = {k: v for k, v in self._prev.items() if k not in ("visited", "failing")}
+        d = {k: v for k, v in self._prev.items() if k not in ("visited", "failing", "in_flight")}
         d.update(extra)
+        if d.get("closed_over_quarantined") is None:
+            d.pop("closed_over_quarantined", None)       # a clean close clears it (AR-127 P4)
         d["visited"] = sorted(visited)
         d["failing"] = dict(sorted(self.failing.items()))
+        d["in_flight"] = self.in_flight
         try:
             self._blob.write_bytes_atomic(self.path, json.dumps(d, indent=1).encode("utf-8"))
         except Exception as e:                               # noqa: BLE001
@@ -769,6 +801,8 @@ class RotationCycle:
     def visit(self, unit, failed: bool = False) -> None:
         """Record `unit` as done this cycle - unless its work failed, in which case it stays owed and
         its run of consecutive failures grows (see QUARANTINE_AFTER)."""
+        if unit == self.in_flight:
+            self.in_flight = None
         if failed:
             self.visited.discard(unit)
             if unit not in self._failed_now:                 # one count per pass
@@ -805,19 +839,19 @@ class RotationCycle:
 
         EXCEPT a QUARANTINED unit (failed on QUARANTINE_AFTER consecutive attempts): it neither holds
         the cycle open nor blocks the reset with its own failure - otherwise it freezes every other
-        unit for good (R1111). The pass still tallies its failure, so the source stays partial, and
-        the reset says which units it closed over."""
+        unit for good (R1111). The pass still tallies its failure, so the source stays partial (or
+        red, for a structural failure), and the reset says which units it closed over."""
         q = self.quarantined()
         if set(self.unvisited()) - q:
             return False                     # includes every non-quarantined unit that failed now
         if (tally.transient or tally.structural) and not self._failed_now:
             return False                                     # a failure no unit owned: do not guess
-        extra = {"completed_utc": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        extra = {"completed_utc": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                 "closed_over_quarantined": sorted(q) or None}
         if q:
-            extra["closed_over_quarantined"] = sorted(q)
             print(f"[rotation-cycle] cycle closed over {len(q)} unit(s) that failed "
                   f"{self.QUARANTINE_AFTER}+ passes in a row: {sorted(q)[:5]} - they are still attempted "
-                  f"every pass and keep the source partial; every other unit is refreshed again",
+                  f"every pass and keep the source partial or red; every other unit is refreshed again",
                   flush=True)
         self._save(set(), **extra)
         return True

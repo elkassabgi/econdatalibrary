@@ -307,3 +307,71 @@ def test_stat_latvia_one_group_failing_for_good_does_not_freeze_the_others(monke
     # pass 2 retries only the owed EMP (one failure is not quarantine); once quarantined, every
     # full pass closes the cycle, so every other group is refreshed on every pass again
     assert asked == [["EMP", "POP", "WAG"], ["EMP"], ["EMP", "POP", "WAG"], ["EMP", "POP", "WAG"]], asked
+
+
+# --------------------------------------------------------------------------- #
+# in flight: a unit whose work raises or is killed still counts (review AR-127 P5)
+# --------------------------------------------------------------------------- #
+def test_a_unit_left_in_flight_counts_as_one_failed_attempt(tmp_path, capsys):
+    cyc = C.RotationCycle(str(tmp_path), ["a", "b"])
+    cyc.visit("a")
+    cyc.begin("b")                                               # ... and the pass dies here
+    cyc = C.RotationCycle(str(tmp_path), ["a", "b"])
+    assert cyc.failing == {"b": 1} and "in flight" in capsys.readouterr().out
+    saved = json.loads((tmp_path / C.RotationCycle.FILE).read_text())
+    assert saved["in_flight"] is None and saved["failing"] == {"b": 1}
+    C.RotationCycle(str(tmp_path), ["a", "b"])                    # read again: counted ONCE
+    assert json.loads((tmp_path / C.RotationCycle.FILE).read_text())["failing"] == {"b": 1}
+
+
+def test_a_unit_that_finished_is_not_in_flight(tmp_path):
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+    cyc.begin("a")
+    cyc.visit("a")
+    assert C.RotationCycle(str(tmp_path), ["a"]).failing == {}
+
+
+def test_a_pass_that_died_is_closed_at_the_next_load_once_the_rest_was_visited(tmp_path):
+    cyc = C.RotationCycle(str(tmp_path), ["a", "b"])
+    cyc.failing = {"b": 1}
+    cyc.visit("a")
+    cyc.begin("b")                                               # dies again: 2 in a row
+    cyc = C.RotationCycle(str(tmp_path), ["a", "b"])
+    assert cyc.quarantined() == {"b"} and cyc.unvisited() == ["a", "b"], "closed at load"
+    saved = json.loads((tmp_path / C.RotationCycle.FILE).read_text())
+    assert saved["completed_utc"] and saved["closed_over_quarantined"] == ["b"]
+
+
+def test_a_clean_close_clears_a_stale_closed_over_list(tmp_path):
+    """Review AR-127 P4."""
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+    cyc.failing = {"a": 2}
+    cyc.visit("a", failed=True)
+    t = C.Tally()
+    t.structural_unit("a")
+    assert cyc.close_if_complete(t)
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+    cyc.visit("a")
+    assert cyc.close_if_complete(C.Tally())
+    assert "closed_over_quarantined" not in json.loads((tmp_path / C.RotationCycle.FILE).read_text())
+
+
+def test_stat_latvia_a_group_whose_merge_raises_every_pass_does_not_freeze_the_others(monkeypatch, tmp_path):
+    """AR-127 P5: a merge DefinitiveError escapes update(); the group never reached visit()."""
+    real = sl.merge.merge_and_write
+
+    def _refuse(path, tbl, **k):
+        if "EMP" in os.path.basename(path):
+            raise sl.DefinitiveError("pretend never-shrink refused EMP")
+        return real(path, tbl, **k)
+    asked = []
+    for _ in range(6):
+        seen = _wire(monkeypatch, tmp_path, allow=99)
+        monkeypatch.setattr(sl.merge, "merge_and_write", _refuse)
+        try:
+            sl.update(None, None)
+        except sl.DefinitiveError:
+            pass
+        asked.append(sorted(set(seen)))
+    later = [a for a in asked[2:] if "POP" in a and "WAG" in a]
+    assert later, f"POP and WAG must be refetched once EMP is quarantined: {asked}"
