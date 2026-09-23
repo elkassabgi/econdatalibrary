@@ -236,3 +236,74 @@ def test_skipped_groups_still_count_toward_the_reported_total(monkeypatch, tmp_p
 def test_stat_latvia_negative_control_a_full_pass_is_ok(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert sl.update(None, None).status == "ok"
+
+
+# --------------------------------------------------------------------------- #
+# quarantine: one unit that fails for good must not freeze the rest (review R1111)
+# --------------------------------------------------------------------------- #
+def test_a_unit_that_fails_twice_in_a_row_is_quarantined_and_the_cycle_closes_over_it(tmp_path, capsys):
+    units = ["a", "b"]
+    cyc = C.RotationCycle(str(tmp_path), units)
+    cyc.visit("a")
+    cyc.visit("b", failed=True)
+    t = C.Tally()
+    t.structural_unit("b/x: 200 but parsed 0")
+    assert cyc.close_if_complete(t) is False, "ONE failure must not reset a cycle a retry could close"
+    cyc = C.RotationCycle(str(tmp_path), units)                   # the next pass: only b is owed
+    cyc.visit("b", failed=True)
+    t = C.Tally()
+    t.structural_unit("b/x: 200 but parsed 0")
+    assert cyc.quarantined() == {"b"}
+    assert cyc.close_if_complete(t) is True
+    assert "closed over 1 unit(s)" in capsys.readouterr().out
+    saved = json.loads((tmp_path / C.RotationCycle.FILE).read_text())
+    assert saved["visited"] == [] and saved["failing"] == {"b": 2} and saved["closed_over_quarantined"] == ["b"]
+    assert C.RotationCycle(str(tmp_path), units).unvisited() == units, "a is refreshed again"
+
+
+def test_a_failure_outside_quarantine_still_blocks_the_close(tmp_path):
+    cyc = C.RotationCycle(str(tmp_path), ["a", "b", "c"])
+    cyc.failing = {"b": 5}
+    cyc.visit("a", failed=True)                                   # a: first failure, not quarantined
+    cyc.visit("b", failed=True)
+    cyc.visit("c")
+    t = C.Tally()
+    t.transient_unit("a")
+    t.transient_unit("b")
+    assert cyc.close_if_complete(t) is False
+
+
+def test_an_unowned_failure_blocks_the_close(tmp_path):
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+    cyc.visit("a")
+    t = C.Tally()
+    t.transient_unit("source-level: catalogue fetch failed")
+    assert cyc.close_if_complete(t) is False
+
+
+def test_a_quarantined_unit_that_recovers_leaves_quarantine(tmp_path):
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+    cyc.failing = {"a": 3}
+    cyc.visit("a")
+    assert cyc.quarantined() == set()
+    assert json.loads((tmp_path / C.RotationCycle.FILE).read_text())["failing"] == {}
+
+
+def test_a_unit_counts_one_failure_per_pass(tmp_path):
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+    cyc.visit("a", failed=True)
+    cyc.visit("a", failed=True)                                   # the same pass, twice
+    assert cyc.failing == {"a": 1} and cyc.quarantined() == set()
+
+
+def test_stat_latvia_one_group_failing_for_good_does_not_freeze_the_others(monkeypatch, tmp_path):
+    """R1111 P6, on stat_latvia: EMP fails every pass. Before, passes 2 and 3 asked only EMP for ever."""
+    asked = []
+    for _ in range(4):
+        seen = _wire(monkeypatch, tmp_path, allow=99, failing={"EMP"})
+        res = sl.update(None, None)
+        asked.append(sorted(set(seen)))
+        assert res.status == "partial" and "EMP" in (res.error or ""), "the failure stays loud"
+    # pass 2 retries only the owed EMP (one failure is not quarantine); once quarantined, every
+    # full pass closes the cycle, so every other group is refreshed on every pass again
+    assert asked == [["EMP", "POP", "WAG"], ["EMP"], ["EMP", "POP", "WAG"], ["EMP", "POP", "WAG"]], asked
