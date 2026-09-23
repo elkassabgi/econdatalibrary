@@ -437,9 +437,16 @@ def _require_rekeyed() -> None:
 
 
 def _stable_file(out_dir, name) -> bool:
-    """True when EVERY series_key of one store file is in the stable form (no 'LAST UPDATE=')."""
-    t = blob.read_table(os.path.join(out_dir, name), columns=["series_key"])
-    return not any("LAST UPDATE" in (k or "") for k in t.column("series_key").to_pylist())
+    """True when EVERY series_key of one store file is in the stable form (no 'LAST UPDATE=').
+
+    In ARROW, over the distinct keys (review R1145): turning every key into a Python string cost
+    179.8 s and +25.2 GB on HLTH_CD_YRO (136.1M rows) - enough to kill a 16 GB runner inside the
+    `finally` that calls this. Dictionary-encode, take the unique values, match the substring."""
+    import pyarrow.compute as pc                                      # noqa: PLC0415
+    col = blob.read_table(os.path.join(out_dir, name), columns=["series_key"]).column("series_key")
+    uniq = pc.unique(col)
+    hit = pc.any(pc.match_substring(uniq, "LAST UPDATE")).as_py()
+    return not bool(hit)
 
 
 def _grow_marker(before) -> None:
@@ -487,6 +494,14 @@ def _grow_marker(before) -> None:
         print(f"[eurostat] re-key marker grown to {len(after):,} for {len(new)} new flow file(s) "
               f"{new[:5]} (all keys stable)", flush=True)
     except Exception as e:                       # noqa: BLE001 - a bookkeeping failure, loud
+        # KNOWN LIMIT, stated (R1145): the marker holds a count, not names, so a growth that does not
+        # finish - the unit alarm (UnitTimeout) firing here, or a hard kill that skips this `finally` -
+        # leaves the next run refused. The alarm case says so distinctly, with the one-line remedy.
+        if type(e).__name__ == "UnitTimeout":
+            print(f"[eurostat] re-key marker growth INTERRUPTED by the unit alarm - the next run's guard "
+                  f"will refuse; run tools/grow_eurostat_rekey_marker.py --files <the new flow files>",
+                  flush=True)
+            return
         print(f"[eurostat] re-key marker NOT grown ({type(e).__name__}: {str(e)[:120]}) - the next "
               f"run's guard may refuse", flush=True)
 

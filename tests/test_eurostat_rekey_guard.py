@@ -225,6 +225,63 @@ def test_the_marker_grows_even_when_the_run_raises(monkeypatch):
     assert gb.marker["files_seen"] == 9
 
 
+def _wire(monkeypatch, gb, run):
+    for name in ("list_parquets", "read_bytes", "read_table", "write_bytes_atomic"):
+        monkeypatch.setattr(E.blob, name, getattr(gb, name))
+    monkeypatch.setattr(E, "_run", run)
+
+
+def test_a_failure_inside_the_growth_never_replaces_the_runs_result(monkeypatch, capsys):
+    """R1145: `except Exception` -> `except ValueError` survived the first tests."""
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet"])
+    monkeypatch.setattr(gb, "read_table", lambda path, columns=None: (_ for _ in ()).throw(OSError("R2 read")))
+    _wire(monkeypatch, gb, lambda unit: gb.land() or "ran")
+    assert E.update(None, None) == "ran" and gb.writes == []
+    assert "re-key marker NOT grown (OSError" in capsys.readouterr().out
+
+
+def test_a_failure_inside_the_growth_never_replaces_the_runs_own_exception(monkeypatch):
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet"])
+
+    def _run(unit):
+        gb.land()
+        raise KeyError("the run's own failure")
+    monkeypatch.setattr(gb, "read_table", lambda path, columns=None: (_ for _ in ()).throw(OSError("R2 read")))
+    _wire(monkeypatch, gb, _run)
+    with pytest.raises(KeyError, match="the run's own failure"):
+        E.update(None, None)
+
+
+def test_the_unit_alarm_inside_the_growth_is_named_and_the_result_kept(monkeypatch, capsys):
+    class UnitTimeout(Exception):
+        pass
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet"])
+    monkeypatch.setattr(gb, "read_table", lambda path, columns=None: (_ for _ in ()).throw(UnitTimeout("alarm")))
+    _wire(monkeypatch, gb, lambda unit: gb.land() or "ran")
+    assert E.update(None, None) == "ran"
+    assert "INTERRUPTED by the unit alarm" in capsys.readouterr().out
+
+
+def test_a_vanished_file_blocks_the_growth(monkeypatch):
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet"])
+
+    def _run(unit):
+        gb.land()
+        gb.names.remove("F00003.parquet")
+        return "ran"
+    _wire(monkeypatch, gb, _run)
+    E.update(None, None)
+    assert gb.writes == []
+
+
+def test_the_stable_check_is_exact_over_every_distinct_key(monkeypatch):
+    rows = ["freq=A:geo=AT"] * 100_000 + ["LAST UPDATE=1:freq=A:geo=AT"]
+    monkeypatch.setattr(E.blob, "read_table", lambda p, columns=None: pa.table({"series_key": pa.array(rows)}))
+    assert E._stable_file("d", "x.parquet") is False
+    monkeypatch.setattr(E.blob, "read_table", lambda p, columns=None: pa.table({"series_key": pa.array(rows[:-1])}))
+    assert E._stable_file("d", "x.parquet") is True
+
+
 def test_the_one_time_tool_checks_the_count_and_every_key(monkeypatch, tmp_path):
     import importlib
     sys_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
