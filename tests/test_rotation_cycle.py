@@ -81,6 +81,19 @@ def test_a_save_that_fails_is_printed_not_swallowed(tmp_path, monkeypatch, capsy
     assert "could not save" in capsys.readouterr().out
 
 
+def test_the_orchestrators_timeout_is_not_swallowed_by_a_save(tmp_path, monkeypatch):
+    """Review R1114: SIGALRM's UnitTimeout landing inside a save was printed and swallowed, so the
+    fetcher ran on past its hard window."""
+    from updater import orchestrate
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+
+    def _alarm(path, data):
+        raise orchestrate.UnitTimeout("pretend the 45-min alarm fired here")
+    monkeypatch.setattr(cyc._blob, "write_bytes_atomic", _alarm)
+    with pytest.raises(orchestrate.UnitTimeout):
+        cyc.begin("a")
+
+
 def test_an_unreadable_or_foreign_file_owes_everything(tmp_path):
     for body in ("{not json", '"a string"', "[1, 2]", json.dumps({"visited": ["gone", "a"]})):
         (tmp_path / C.RotationCycle.FILE).write_text(body)
