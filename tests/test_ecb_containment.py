@@ -223,3 +223,55 @@ def test_a_zero_mapped_pass_is_a_coverage_note_under_the_declared_subset(env, tm
     assert orchestrate._catalog_scope("ecb") == "subset"
 
 
+# ---- review R1142 --------------------------------------------------------------------------------
+def test_an_unreadable_mirror_alone_demotes_even_though_it_maps_nothing(env, tmp_path, monkeypatch):
+    """The name rule never claims a mirror, so the pass maps zero ids; under catalog_scope subset that read
+    ROTATING. The failure segment must be on the zero-mapped return too, and FIRST."""
+    from updater.health import _deferral_only
+    (env / "ECB.DISS__MOBILE_EXR.parquet").write_bytes(b"not a parquet")
+    _file(env, "ECB.DISS__BSI_PUB__M", [], extra=("BSI.M.U2.Y.V.M30.X.1.U2.2300.Z01.E",))
+    for changed in (["ECB.DISS__MOBILE_EXR"], ["ECB.DISS__MOBILE_EXR", "ECB.DISS__BSI_PUB__M"]):
+        failed, note, _d, _r = _phase(env, tmp_path, monkeypatch, {}, changed)
+        assert note.startswith("ecb containment read failed"), note
+        err = "3 sub-unit(s) attempted, none failed; 2 deferred by budget and taken next tick; " + note
+        assert not _deferral_only([{"status": "partial", "last_error": err}]), err
+
+
+def test_the_kept_count_is_joined_to_an_unmapped_note(env, tmp_path, monkeypatch):
+    _file(env, "ECB__EXR__D", EXR)
+    _file(env, "ECB.DISS__BSI_PUB__M", [], extra=("BSI.M.U2.Y.V.M30.X.1.U2.2300.Z01.E",))
+    failed, note, _d, _r = _phase(env, tmp_path, monkeypatch, {"served_dates_kept": {EXR[0]: 2}},
+                                  ["ECB__EXR__D", "ECB.DISS__BSI_PUB__M"])
+    assert "changed keys have no catalog row" in note and "2 served date(s)" in note, note
+
+
+def test_an_empty_catalogue_marks_no_file_unreadable(env, monkeypatch):
+    _file(env, "ECB.DISS__MOBILE_EXR", EXR)
+    monkeypatch.setattr(orchestrate, "_ecb_catalogued", lambda con: {})
+    orchestrate._catalog_ids_for("ecb", ["ECB.DISS__MOBILE_EXR"])
+    assert orchestrate._catalog_ids_for.ecb_unreadable == []
+
+
+_HDR = b"series_id,obs_date,value" + bytes([10])
+_BAD_SERVED = [
+    gzip.compress(_HDR)[:-8],                                              # truncated gzip -> EOFError
+    _HDR + b"x," + bytes([0xFF, 0xFE]) + b",1" + bytes([10]),              # not UTF-8
+    b"",                                                                   # an empty object
+    _HDR + b"ecb:EXR:D.USD.EUR.SP00.A,2026-09-21 00:00:00,1.1" + bytes([10]),  # not YYYY-MM-DD
+    _HDR + b"ecb:EXR:D.USD.EUR.SP00.A,2026-9-1,1.1" + bytes([10]),             # unpadded
+    b"series_id,date,value" + bytes([10]) + b"ecb:EXR:D.USD.EUR.SP00.A,2026-09-21,1.1" + bytes([10]),
+]
+
+
+@pytest.mark.parametrize("served", _BAD_SERVED)
+def test_a_served_csv_that_cannot_be_merged_safely_fails_only_that_id(tmp_path, monkeypatch, served):
+    out, now = _derive(tmp_path, monkeypatch, served, _csv([("2026-09-21", "1.1")]))
+    assert out["put"] == 0 and out["failed"] == [EXR[0]] and now == served, out
+
+
+def test_a_new_csv_with_a_repeated_date_is_not_merged(tmp_path, monkeypatch):
+    out, _ = _derive(tmp_path, monkeypatch, _csv([("2026-09-20", "1.0")]),
+                     _csv([("2026-09-21", "1.1"), ("2026-09-21", "1.2")]))
+    assert out["failed"] == [EXR[0]], out
+
+

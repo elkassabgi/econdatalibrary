@@ -114,7 +114,13 @@ def _merge_with_served(new: bytes, served: bytes):
     only the served CSV has are kept. Measured on 27 of 27 served ids over a mirror-only pass
     followed by a primary-only pass: byte-identical to a derive from all 8 holder files.
     Values are kept as their CSV text, never re-formatted. Refuses (None) on a header mismatch,
-    a missing obs_date column, or a date repeated inside one CSV."""
+    a missing obs_date column, a date repeated inside one CSV, or any obs_date that is not exactly
+    YYYY-MM-DD (R1142: '2026-09-21 00:00:00' beside '2026-09-21' would give one day two rows, and an
+    unpadded date sorts out of order - and a served CSV now only grows, so drift would stay).
+
+    THIS PATH NEVER REMOVES A SERVED DATE. A date ECB withdraws stays served until a FULL desktop
+    derive rewrites the id from the whole store (core.derive_csv --only), which first needs the
+    desktop ecb store synced from R2."""
     import csv as _csv                                                 # noqa: PLC0415
     import gzip as _gzip                                               # noqa: PLC0415
     import io as _io                                                   # noqa: PLC0415
@@ -130,11 +136,13 @@ def _merge_with_served(new: bytes, served: bytes):
     if not h_new or h_new != h_old or "obs_date" not in h_new:
         return None
     i = h_new.index("obs_date")
+    import re as _re                                                   # noqa: PLC0415
+    iso = _re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
     by_date = {}
     for rows in (r_old, r_new):                  # new last: it wins on a shared date
         seen_here = set()
         for row in rows:
-            if len(row) <= i or row[i] in seen_here:
+            if len(row) <= i or row[i] in seen_here or not iso.fullmatch(row[i]):
                 return None
             seen_here.add(row[i])
             by_date[row[i]] = row
@@ -322,7 +330,12 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
             except Exception as e:                                     # noqa: BLE001
                 return sid, "fail", f"served CSV unreadable for the merge ({type(e).__name__})", None
             if served is not None:
-                merged = _merge_with_served(body, served)
+                try:
+                    merged = _merge_with_served(body, served)
+                except Exception as e:                                 # noqa: BLE001
+                    # A truncated gzip (EOFError) or a non-UTF-8 byte fails THIS id, never the call:
+                    # derive_and_put must not raise (R1142).
+                    return sid, "fail", f"served CSV unreadable for the merge ({type(e).__name__})", None
                 if merged is None:
                     return sid, "fail", "served CSV cannot be merged (header or dates differ)", None
                 body, n_kept = merged

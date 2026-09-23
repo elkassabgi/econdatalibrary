@@ -825,7 +825,7 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                 cap_saturated=(not migrated) and len(unmapped) >= _CCAP)
             if not demote:
                 print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
-            return [], note, [], {}
+            return [], _with_ecb_unread(unit, note), [], {}
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         _flow = _csv_grain(unit.source_id) == "flow"
         # The keyword is passed ONLY for a flow-grain source. Every series-grain call keeps the
@@ -937,21 +937,15 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                     f"row for {unit.source_id} ({why}) — served ids coherent")
             print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
         _kept = out.get("served_dates_kept") or {}
-        if _kept and not note:
+        if _kept:
             # registry csv_merge_served (ecb, R1136): the upload kept served dates this runner's
-            # store files do not hold. Disclosed, not a demotion. No "; " inside (health reads
-            # notes segment by segment).
-            note = (f"csv coverage note: {sum(_kept.values()):,} served date(s) in {len(_kept):,} "
-                    f"id(s) kept by the served-CSV merge, this machine's store files do not hold them")
-        _unread = list(getattr(_catalog_ids_for, "ecb_unreadable", None) or [])
-        if _unread:
-            # A FAILURE SEGMENT, deliberately not a coverage note (R1136): these files were claimed
-            # by the name rule, which never claims a mirror, so served ids may have gone stale.
-            _seg = (f"ecb containment read failed for {len(_unread)} changed file(s) "
-                    f"[{', '.join(_unread[:3])}] - claimed by file name, mirrors not claimed")
-            print(f"[orchestrator] {unit.source_id}: {_seg}", flush=True)
-            note = f"{_seg}; {note}" if note else _seg
-        return failed, note, deferred_ids, dict(out.get("failed_reasons") or {})
+            # store files do not hold. Disclosed, not a demotion, and JOINED to any other note - an
+            # ecb pass always has unmapped keys, so "only when there is no other note" never showed it
+            # (R1142). No "; " inside a note (health reads notes segment by segment).
+            _kn = (f"csv coverage note: {sum(_kept.values()):,} served date(s) in {len(_kept):,} "
+                   f"id(s) kept by the served-CSV merge, this machine's store files do not hold them")
+            note = f"{note}; {_kn}" if note else _kn
+        return failed, _with_ecb_unread(unit, note), deferred_ids, dict(out.get("failed_reasons") or {})
     except UnitTimeout:
         # THE FENCE'S OWN CONTROL SIGNAL — re-raise by name (R353). The csv fence at the
         # call site wraps this function in SIGALRM and carries a designed handler: abandon
@@ -1355,6 +1349,22 @@ def _ecb_store_key(key):
     if len(parts) < 3 or not parts[1] or not parts[2]:
         return None
     return parts[1], parts[2], [p for p in parts[3:] if p]
+
+
+def _with_ecb_unread(unit, note):
+    """Put a FAILURE segment for any ecb file the last `_catalog_ids_for` could not read FIRST in the
+    note (R1136, R1142). First, because health on main strips everything after '; csv coverage note:',
+    so a failure placed after a coverage note would be hidden. On EVERY return of the CSV phase: an
+    unreadable mirror alone maps zero ids (the name rule never claims a mirror), so the zero-mapped
+    return is exactly where it matters - and under catalog_scope subset it read ROTATING."""
+    unread = list(getattr(_catalog_ids_for, "ecb_unreadable", None) or []) \
+        if getattr(unit, "source_id", None) == "ecb" else []
+    if not unread:
+        return note
+    seg = (f"ecb containment read failed for {len(unread)} changed file(s) [{', '.join(unread[:3])}] "
+           f"- claimed by file name, mirrors not claimed")
+    print(f"[orchestrator] {unit.source_id}: {seg}", flush=True)
+    return f"{seg}; {note}" if note else seg
 
 
 def _ecb_catalogued(con) -> dict:
