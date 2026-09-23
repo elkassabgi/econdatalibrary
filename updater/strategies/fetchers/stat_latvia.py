@@ -436,7 +436,10 @@ def update(unit, since) -> Result:
 
     for fname in groups:
         if cycle.done(fname):
-            continue          # visited this cycle: no work owed (review R1105, P1)
+            # Visited this cycle: no work owed (review R1105, P1). Its rows still count toward
+            # the reported total - `obs` becomes obs_count, which /v1/last-updates serves.
+            total += blob.row_count(os.path.join(out_dir, fname))
+            continue
         if dl.spent():
             n_owed = cycle.defer_unvisited(
                 tally, label=lambda g: f"{g} ({len(by_group[g])} tables)")

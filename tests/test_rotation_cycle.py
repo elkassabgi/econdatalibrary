@@ -222,6 +222,17 @@ def test_a_pass_skips_groups_already_visited_this_cycle(monkeypatch, tmp_path):
     assert sorted(set(seen)) == ["EMP", "POP", "WAG"]
 
 
+def test_skipped_groups_still_count_toward_the_reported_total(monkeypatch, tmp_path):
+    """Review AR-123 / R1105 P5: `obs` (served as obs_count) dropped the skipped groups' rows."""
+    _wire(monkeypatch, tmp_path, allow=99)
+    full = sl.update(None, None).obs
+    _wire(monkeypatch, tmp_path, allow=1)
+    sl.update(None, None)                                          # visits one group
+    _wire(monkeypatch, tmp_path, allow=99)
+    completing = sl.update(None, None).obs                         # skips it, does the others
+    assert completing == full, (completing, full)
+
+
 def test_stat_latvia_negative_control_a_full_pass_is_ok(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert sl.update(None, None).status == "ok"
