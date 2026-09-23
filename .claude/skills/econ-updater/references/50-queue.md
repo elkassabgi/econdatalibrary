@@ -1801,7 +1801,19 @@ released since 2026-07-29 and we hold 456 of them.** None could have reached us 
 It FAILS CLOSED: an empty or implausibly short list raises rather than reporting "no cubes
 changed", because that verdict advances the watermark.
 
-STILL OPEN, in this order — the first two are prerequisites for the third:
+> **CORRECTED 2026-09-23 (R1090) — the order below is WRONG; read this first.** Step 1's premise,
+> that the vector-map read is "the ~7.5 min/cube term", was never measured (the run log records
+> nothing per cube). Measured today: one `getBulkVectorDataByRange` of 250 vectors takes **~40 s**
+> (43.99 / 43.99 / 32.09 s, n=3, cube 24100058, latency not tracking volume). The backlog is **478
+> held cubes released since 07-29, 1,514,219,430 rows, 69,547,320 vectors** (97 cubes over 1M rows
+> hold 97.7% of the rows) - so ~278,000 requests, on the order of MONTHS sequentially, against a map
+> read of ~1.7 h for the whole backlog at the fetcher's own 250,644 rows/s. A map cache saves ~1%.
+> The lever is the path per cube: the 250-vector tail for small cubes, the bulk full-table download
+> the ingester already uses (one request per cube) for large ones. Design that FIRST; the budget-skip
+> item below still applies after it. Instruments: NUMBERS.md rows "statcan's release backlog is 478
+> held cubes" and "statcan's vector path costs ~40 s per 250-vector request".
+
+STILL OPEN, in this order — the first two are prerequisites for the third (SUPERSEDED, see above):
 
 1. **The per-cube vector map has no cache.** `_disk_vector_map` re-streams four string columns of
    every changed cube from R2 on every visit, which is the ~7.5 min/cube term behind the 09-11
