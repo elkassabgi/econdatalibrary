@@ -263,13 +263,35 @@ def test_many_quiet_groups_are_not_a_wholesale_outage(store, monkeypatch):
     assert res.status in ("ok", "no_change"), (res.status, res.error)
 
 
-def test_a_stored_key_missing_from_the_window_keeps_the_group_owed(store, monkeypatch):
-    """Review R1106 P1: one call that errored silently must not close the cycle."""
+def test_a_stored_key_whose_call_came_back_empty_keeps_the_group_owed(store, monkeypatch):
+    """Review R1106 P1: one call that errored silently must not close the cycle. The Q call
+    answered nothing although the store holds Q data in the window."""
     d, calls, y = store
-    _write(str(d / "NIPA" / "T10101.parquet"), [("A191RC:A", D(y), 2.0), ("B230RC:A", D(y), 5.0)])
-    res = bea.update(None, None)                               # the fetch returns only A191RC
+    _write(str(d / "NIPA" / "T10101.parquet"), [("A191RC:A", D(y), 2.0), ("B230RC:Q", D(y), 5.0)])
+    res = bea.update(None, None)                               # the fetch returns only A191RC:A
     assert res.status == "partial" and "coverage" in (res.error or "")
     assert "NIPA/T10101.parquet" in bea.RotationCycle(str(d), ["NIPA/T10101.parquet"]).unvisited()
+
+
+def test_a_series_the_publisher_dropped_from_an_answered_call_is_not_owed(store, monkeypatch, capsys):
+    """Dry run 2026-09-23: IIP GoldReserveAssets:ChgPosXRate:A (one stored row, 2025 = 0.0) was
+    absent from a call that returned the rest of its type. Owed, it kept IIP out of every cycle."""
+    d, calls, y = store
+    _write(str(d / "IIP" / "all.parquet"), [("Assets:X:A", D(y), 7.0), ("Assets:Gone:A", D(y), 0.0)],
+           tsid=True)
+    res = bea.update(None, None)                               # IIP returns only Assets:X:A
+    assert res.status != "partial", res.error
+    assert ("Assets:Gone:A", D(y), 0.0) in _rows(str(d / "IIP" / "all.parquet")), "stored rows kept"
+    assert "IIP/all.parquet: 1 stored series no longer published" in capsys.readouterr().out
+
+
+def test_the_call_unit_is_read_off_each_dataset_key():
+    assert bea._call_unit("NIPA", "A191RC:Q") == "Q"
+    assert bea._call_unit("UnderlyingGDPbyIndustry", "T210:11:A") == "A"
+    assert bea._call_unit("IIP", "GoldReserveAssets:ChgPosXRate:A") == "GoldReserveAssets"
+    assert bea._call_unit("IntlServTrade", "Travel:Exp:AllAffiliations:Canada") == "Canada"
+    assert bea._call_unit("IntlServSTA", "Ch:De:Ind:Mexico") == "Mexico"
+    assert bea._call_unit("FixedAssets", "K100001") == ""
 
 
 def test_a_strict_call_refuses_an_error_it_does_not_recognise(monkeypatch):
@@ -359,3 +381,116 @@ def test_the_classifier_reads_the_error_detail(monkeypatch):
     assert ig._classify_error(err, strict=True) == "nodata"
     odd = dict(err, ErrorDetail={"Description": "Something else went wrong."})
     assert ig._classify_error(odd, strict=True) == "fatal", "only the no-such-frequency wording is empty"
+
+
+# ---- review round 3 (R1109): its probes P6, P7, P9, P10, pinned. Real update(), call() and parse. ----
+_REAL_IIP = ig.fetch_iip                            # captured before any fixture fakes it
+_REAL_INTLSERVTRADE = ig.fetch_intlservtrade
+
+# An outage worded with the no-data phrase: the coverage check, not the classifier, must catch it.
+_OUTAGE = {"BEAAPI": {"Results": {"Error": {
+    "APIErrorDescription": "Error retrieving data.", "APIErrorCode": "201",
+    "ErrorDetail": {"Description": "The service is not currently available. Try later."}}}}}
+
+
+def _data(rows):
+    return {"BEAAPI": {"Results": {"Data": rows}}}
+
+
+def _nipa_answer(p, y):
+    if p.get("datasetname") == "NIPA":
+        if p.get("Frequency") != "A":
+            return _NO_SUCH_FREQUENCY
+        return _data([{"SeriesCode": "A191RC", "TimePeriod": str(y), "DataValue": "2"}])
+    return None
+
+
+def test_an_outage_worded_as_no_data_on_one_country_keeps_the_group_owed(store, monkeypatch):
+    d, calls, y = store
+    _write(str(d / "IntlServTrade" / "all.parquet"),
+           [("S:Exp:Aff:C1", D(y), 1.0), ("S:Exp:Aff:C2", D(y), 2.0)], tsid=True)
+    monkeypatch.setattr(ig, "load_manifest", lambda: {"param_values": {
+        "IntlServTrade": {"AreaOrCountry": [{"Key": "C1"}, {"Key": "C2"}]}}})
+
+    def answer(p):
+        a = _nipa_answer(p, y)
+        if a is not None:
+            return a
+        if p.get("datasetname") == "IntlServTrade":
+            if p.get("AreaOrCountry") == "C2":
+                return _OUTAGE
+            return _data([{"TypeOfService": "S", "TradeDirection": "Exp", "Affiliation": "Aff",
+                           "TimePeriod": str(y), "DataValue": "1.5"}])
+        return _data([])
+    _real_calls(monkeypatch, answer)
+    monkeypatch.setattr(ig, "fetch_intlservtrade", _REAL_INTLSERVTRADE)
+    res = bea.update(None, None)
+    assert res.status == "partial" and "IntlServTrade/all.parquet: coverage" in (res.error or ""), res.error
+    assert "IntlServTrade/all.parquet" in bea.RotationCycle(str(d), ["IntlServTrade/all.parquet"]).unvisited()
+
+
+def test_a_frequency_outage_at_the_edge_of_the_window_is_caught(store, monkeypatch):
+    """R1109 P7: the mutant 'coverage window = newest year only' survived every earlier test."""
+    d, calls, y = store
+    _write(str(d / "NIPA" / "T10101.parquet"),
+           [("A191RC:A", D(y), 2.0), ("A191RC:Q", D(y - bea.LOOKBACK_YEARS, 10, 1), 9.0)])
+    _real_calls(monkeypatch, lambda p: _nipa_answer(p, y) or _data([]))
+    res = bea.update(None, None)
+    assert res.status == "partial" and "coverage" in (res.error or ""), res.error
+
+
+def test_a_budget_stopped_pass_reports_the_store_total(store, monkeypatch):
+    """R1109 P9 (the ssb defect, AR-124 P7): groups after the stop dropped out of obs."""
+    d, calls, y = store
+
+    class _DL:
+        n = 0
+
+        def __init__(self, minutes=None):
+            pass
+
+        def spent(self):
+            _DL.n += 1
+            return _DL.n > 1
+
+    monkeypatch.setattr(bea, "Deadline", _DL)
+    units = bea._group_units(str(d))
+    stored = sum(pq.read_metadata(str(d / u)).num_rows for u in units)
+    res = bea.update(None, None)
+    assert res.status == "partial"
+    assert res.obs >= stored - 1, (res.obs, stored)   # -1: the exact duplicate the merge collapses
+
+
+def test_a_series_bea_now_sends_blank_does_not_hold_the_cycle_open(store, monkeypatch):
+    """R1109 P10, inverted. Dry run 2026-09-23: IIP GoldReserveAssets:ChgPosXRate:A and
+    StDebtSecAssets:ChgPosPrice:A are stored (2025 = 0.0) and BEA now sends DataValue '' for every
+    year (reviewer, live, 10:48Z). The parse drops blanks; owing the key held IIP - and so the
+    whole cycle - open for ever, and NIPA was never asked again."""
+    d, calls, y = store
+    _write(str(d / "IIP" / "all.parquet"),
+           [("Gold:Pos:A", D(y), 7.0), ("Gold:ChgPosXRate:A", D(y), 0.0)], tsid=True)
+    monkeypatch.setattr(ig, "load_manifest", lambda: {"param_values": {
+        "IIP": {"TypeOfInvestment": [{"Key": "Gold"}]}}})
+    nipa_asks = []
+
+    def answer(p):
+        if p.get("datasetname") == "NIPA":
+            nipa_asks.append(p.get("Frequency"))
+        a = _nipa_answer(p, y)
+        if a is not None:
+            return a
+        if p.get("datasetname") == "IIP":
+            return _data([
+                {"Component": "Pos", "Frequency": "A", "TimePeriod": str(y), "DataValue": "7.5"},
+                {"Component": "ChgPosXRate", "Frequency": "A", "TimePeriod": str(y), "DataValue": ""}])
+        return _data([])
+    _real_calls(monkeypatch, answer)
+    monkeypatch.setattr(ig, "fetch_iip", _REAL_IIP)
+    first = bea.update(None, None)
+    assert first.status != "partial", first.error
+    assert json.loads((d / bea.RotationCycle.FILE).read_text()).get("completed_utc"), "the cycle closes"
+    assert ("Gold:ChgPosXRate:A", D(y), 0.0) in _rows(str(d / "IIP" / "all.parquet")), \
+        "never-shrink keeps the value BEA no longer publishes"
+    nipa_asks.clear()
+    bea.update(None, None)
+    assert nipa_asks, "the next cycle reaches NIPA again"

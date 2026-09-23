@@ -227,6 +227,34 @@ def _stored_keys_since(path, year) -> set:
                 pass
 
 
+def _call_unit(dataset: str, key: str) -> str:
+    """The ONE BEA call a stored key comes from, read off the key the ingester built
+    (jobs/ingest_bea_full.fetch_*): a frequency for NIPA / NIUnderlyingDetail /
+    UnderlyingGDPbyIndustry ('code:fr', 'Ttid:ind:fr'), a TypeOfInvestment for IIP
+    ('type:comp:fr'), a country for IntlServTrade / IntlServSTA ('...:country'), and the one
+    table call for FixedAssets."""
+    parts = key.split(":")
+    if dataset == "IIP":
+        return parts[0]
+    if dataset == "FixedAssets":
+        return ""
+    return parts[-1]
+
+
+def _uncovered(dataset: str, missing: set, fetched_keys) -> tuple[set, set]:
+    """Split the stored keys that did not come back into (owed, dropped).
+
+    The coverage check exists to catch a CALL that failed while reading as an empty answer
+    (R1106 P1). A call that returned other keys demonstrably succeeded, so a key missing from it
+    is the publisher no longer publishing that series - measured in the dry run of 2026-09-23:
+    IIP GoldReserveAssets:ChgPosXRate:A and StDebtSecAssets:ChgPosPrice:A, each one stored row
+    (2025, 0.0), absent from calls that returned the rest of their type. Owing those for ever kept
+    IIP out of every cycle. never-shrink keeps their stored rows either way."""
+    answered = {_call_unit(dataset, k) for k in fetched_keys}
+    owed = {k for k in missing if _call_unit(dataset, k) not in answered}
+    return owed, missing - owed
+
+
 def update(unit, since) -> Result:
     """v1 (2026-09-23): refresh every stored group of the seven SOUND datasets in place, under a
     RotationCycle. The bea.parquet loop that wrote a shadowed copy is retired (every one of its
@@ -270,7 +298,8 @@ def update(unit, since) -> Result:
     discontinued = 0
     total = 0
     frontier_by_ds: dict[str, str] = {}
-    for rel in rotate_after(units, load_rotation(out_dir)):
+    order = rotate_after(units, load_rotation(out_dir))     # fixed now: save_rotation moves the bookmark
+    for rel in order:
         if cycle.done(rel):
             # refreshed this cycle: no work owed (R1105 P1); its rows still count (AR-123)
             total += blob.row_count(os.path.join(out_dir, rel))
@@ -279,6 +308,10 @@ def update(unit, since) -> Result:
             n = cycle.defer_unvisited(tally, label=lambda u: f"{u} (budget {BUDGET_MIN:.0f} min)")
             print(f"[{SOURCE}] budget of {BUDGET_MIN:.0f} min spent; {n} group(s) not yet "
                   f"refreshed this cycle", flush=True)
+            # Every group this pass did not reach still holds its rows: count them, or obs (served
+            # as obs_count) drops on every budget-stopped pass (AR-124 P7, found here as R1109 P9).
+            for rest in order[order.index(rel):]:
+                total += blob.row_count(os.path.join(out_dir, rest))
             break
         save_rotation(out_dir, rel)
         path = os.path.join(out_dir, rel)
@@ -338,7 +371,11 @@ def update(unit, since) -> Result:
             total += prof["rows"]
             cycle.visit(rel, failed=True)
             continue
-        missing = owed_keys - set(tbl.column("series_key").to_pylist())
+        fetched_keys = set(tbl.column("series_key").to_pylist())
+        missing, dropped = _uncovered(rel.split("/")[0], owed_keys - fetched_keys, fetched_keys)
+        if dropped:
+            print(f"[{SOURCE}] {rel}: {len(dropped):,} stored series no longer published by BEA "
+                  f"(their calls answered; stored rows kept), e.g. {sorted(dropped)[:3]}", flush=True)
         ratio = ((prof["rows"] - prof["exact_dups"]) / prof["rows"]) if prof["exact_dups"] else 0.97
         try:
             n, md, ch = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP,
