@@ -614,6 +614,13 @@ def _note_unmapped_debt(store, source_id: str, keys, why: str) -> bool:
         return False
 
 
+def _recorded(ok: bool) -> str:
+    """What a note says about the unmapped-keys record: only what was actually written (R1157 F5 - the
+    fence note said "recorded" when the write had failed and nothing was kept)."""
+    return ("recorded as unmapped keys" if ok
+            else "NOT recorded: the state write failed, so these keys have no home - re-run the pass")
+
+
 def _book_owed_items(store, source_id: str, items) -> bool:
     """Book [(series_id, rows, reason)] in csv_desktop_owed in ONE statement batch - all or none
     (R1144). False, loudly, when there is no store or the write fails; the caller then keeps its
@@ -673,16 +680,16 @@ def _book_fence_trip(unit, res, store, fence_min: float):
     try:
         ids, _unm = _catalog_ids_for(unit.source_id, changed)
     except Exception as e:                                   # noqa: BLE001 - the mapper itself failed
-        _note_unmapped_debt(store, unit.source_id, changed,
-                            f"csv fence tripped and the changed keys could not be mapped ({type(e).__name__})")
+        ok = _note_unmapped_debt(store, unit.source_id, changed,
+                                 f"csv fence tripped and the changed keys could not be mapped ({type(e).__name__})")
         return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
-                f"could NOT be mapped ({type(e).__name__}: {str(e)[:100]}) - recorded as unmapped keys"), []
+                f"could NOT be mapped ({type(e).__name__}: {str(e)[:100]}) - {_recorded(ok)}"), []
     if changed and not ids:
         # A non-empty changed set that maps to NOTHING is a mapping failure (R1144 RV-C), not "nothing to
         # book": it demotes, and the keys are recorded.
-        _note_unmapped_debt(store, unit.source_id, changed, "csv fence tripped and 0 changed keys mapped")
+        ok = _note_unmapped_debt(store, unit.source_id, changed, "csv fence tripped and 0 changed keys mapped")
         return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
-                f"mapped to 0 catalogue ids - recorded as unmapped keys"), []
+                f"mapped to 0 catalogue ids - {_recorded(ok)}"), []
     if not _book_owed_items(store, unit.source_id, [(s, None, _DESKTOP_OWED_FENCE) for s in ids]):
         return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(ids)} changed id(s) "
                 f"could NOT be booked as desktop debts - queued for retry instead"), list(ids)
@@ -961,6 +968,13 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                 cap_saturated=(not migrated) and len(unmapped) >= _CCAP)
             if not demote:
                 print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
+            elif _csv_misses(unit.source_id) == "desktop_owed":
+                # A ZERO-MAPPED PASS MUST LEAVE A RECORD (R1157 Z1): its change signal has advanced, so the
+                # note alone vanished on the next quiet run - ilostat's passes of 09-01, 09-07 and 09-16
+                # carried exactly this note and nothing kept their changed keys.
+                ok = _note_unmapped_debt(store, unit.source_id, sorted(str(k) for k in unmapped),
+                                         "0 changed keys mapped to catalogue ids")
+                note = f"{note} - {_recorded(ok)}"
             return [], note, [], {}
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         _flow = _csv_grain(unit.source_id) == "flow"
@@ -1137,10 +1151,18 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                     # durable record health reads, carrying the changed keys, so a quiet next run
                     # cannot erase it. Its remedy for a csv_misses source is the desktop, not the bulk
                     # tool (health.py; R1137).
-                    _note_unmapped_debt(store, unit.source_id, changed,
-                                        f"csv_derive crashed and the changed keys could not be mapped "
-                                        f"({type(_me).__name__})")
-                    _ids = []
+                    _ok = _note_unmapped_debt(store, unit.source_id, changed,
+                                              f"csv_derive crashed and the changed keys could not be mapped "
+                                              f"({type(_me).__name__})")
+                    return [], (f"csv_derive crashed and its {len(changed)} changed key(s) could not be "
+                                f"mapped - {_recorded(_ok)}: " + repr(e))[:300], [], {}
+                if not _ids and changed:
+                    # THE RE-MAP RETURNED NOTHING (R1157 Z2): the same zero-mapped case as the normal path,
+                    # and the same record, or the keys are gone after the next quiet run.
+                    _ok = _note_unmapped_debt(store, unit.source_id, changed,
+                                              "csv_derive crashed and 0 changed keys mapped to catalogue ids")
+                    return [], (f"csv_derive crashed and its {len(changed)} changed key(s) mapped to 0 "
+                                f"catalogue ids - {_recorded(_ok)}: " + repr(e))[:300], [], {}
             if _ids and _book_owed_items(store, unit.source_id,
                                          [(s, None, f"{_DESKTOP_OWED_FAILED} ({_crash[:120]})") for s in _ids]):
                 return [], (f"csv_derive crashed ({len(_ids)} of {len(changed)} changed series booked "

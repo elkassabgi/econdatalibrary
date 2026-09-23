@@ -521,7 +521,10 @@ def assess(store=None) -> dict:
                 _n = _note.split(" keys=", 1)[0]
                 _remedy = (f"the note lists changed STORE keys (for ilostat: indicator stems), not catalogue "
                            f"ids: re-derive them on the desktop with the source's own tool (ilostat: "
-                           f"`tools/derive_ilostat_indicators.py --only <stems>`), read them back against "
+                           f"`tools/derive_ilostat_indicators.py --only <stems>`; that tool builds only "
+                           f"'<src>:<stem>[#part]' ids, so for a changed '<flow>_A' stem also derive its "
+                           f"3-colon legacy ids: `python -m core.derive_csv --source {sid} --only <file of "
+                           f"those ids>`), read them back against "
                            f"R2's parquets, then `tools/derive_csv_bulk.py --source {sid} --clear-owed-only "
                            f"--after-desktop-derive`; a bulk campaign cannot pay it and is refused. "
                            f"Note: {_n[:240]}; keys: {_note.split(' keys=', 1)[1][:300] if ' keys=' in _note else '?'}")

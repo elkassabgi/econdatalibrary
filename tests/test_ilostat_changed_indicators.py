@@ -543,6 +543,99 @@ def test_the_remedy_line_names_the_desktop_tool_the_clear_and_the_keys(tmp_path)
     assert "EMP_TEMP_Q" in line and "UNE_X_A" in line, "the keys reach the health line (R4-5)"
 
 
+# ---- review R1157 --------------------------------------------------------------------------------
+def test_a_zero_mapped_pass_records_its_keys_and_they_survive_a_quiet_run(tmp_path, catalog, monkeypatch):
+    """Z1: the normal path with the mapper returning 0 ids only demoted with a note; ilostat's passes of
+    09-01, 09-07 and 09-16 carried that note and nothing kept their changed keys."""
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: ([], list(keys)))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"EMP_TEMP_Q": "2025-12-31", "UNE_X_A": "2025-12-31"})
+    _f, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert note and not note.startswith("csv coverage note:") and "recorded as unmapped keys" in note, note
+    quiet = orchestrate._derive_changed_csvs(_unit(), Result(status="no_change", obs=10, changed_keys={}),
+                                             object(), st)
+    assert quiet[1] is None
+    rec = st.full_rederives_owed()[0]["note"]
+    assert "EMP_TEMP_Q" in rec and "UNE_X_A" in rec, rec
+
+
+def test_negative_control_a_subset_coverage_pass_records_nothing(tmp_path, catalog, monkeypatch):
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: ([], list(keys)))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"ZZZ_Q": "2025-12-31"})
+    _f, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert note.startswith("csv coverage note:") and st.full_rederives_owed() == [], note
+
+
+def test_a_crash_whose_re_map_finds_nothing_records_its_keys(tmp_path, catalog, monkeypatch):
+    """Z2: a crash before mapping whose re-map returned 0 ids lost the keys the same way."""
+    calls = []
+
+    def _flaky(src, keys):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("catalogue locked")
+        return [], list(keys)
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", _flaky)
+    st = StateStore(path=str(tmp_path / "state.db"))
+    res = Result(status="partial", obs=10, changed_keys={"NOPE_A": "2025-12-31"})
+    failed, note, _d, _r = orchestrate._derive_changed_csvs(_unit(), res, object(), st)
+    assert failed == [] and "mapped to 0" in note and "recorded as unmapped keys" in note, note
+    orchestrate._derive_changed_csvs(_unit(), Result(status="no_change", obs=10, changed_keys={}), object(), st)
+    assert "NOPE_A" in st.full_rederives_owed()[0]["note"]
+
+
+@pytest.mark.parametrize("where", ["fence_dead_mapper", "fence_zero", "crash_dead_mapper", "normal_zero"])
+def test_a_note_never_claims_a_record_the_write_did_not_make(tmp_path, catalog, monkeypatch, where):
+    """F5: the note said "recorded as unmapped keys" when the write had failed and nothing was kept."""
+    st = StateStore(path=str(tmp_path / "state.db"))
+    monkeypatch.setattr(st, "note_full_rederive_owed", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    if where.endswith("dead_mapper"):
+        monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: (_ for _ in ()).throw(OSError("db")))
+    else:
+        monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: ([], list(keys)))
+    res = Result(status="partial", obs=10, changed_keys={"EMP_TEMP_Q": "2025-12-31"})
+    if where.startswith("fence"):
+        note, _q = orchestrate._book_fence_trip(_unit(), res, st, 12.0)
+    else:
+        note = orchestrate._derive_changed_csvs(_unit(), res, object(), st)[1]
+    assert "NOT recorded" in note and "recorded as unmapped keys" not in note, note
+
+
+def test_the_remedy_names_the_legacy_step_for_a_changed_annual_stem(tmp_path, monkeypatch, capsys):
+    """R1157: tools/derive_ilostat_indicators.py builds only '<src>:<stem>[#part]', so the 80 legacy 3-colon
+    ids stayed stale and the clear removed the only record."""
+    from updater import health
+    st = StateStore(path=str(tmp_path / "state.db"))
+    orchestrate._note_unmapped_debt(st, "ilostat", ["EMP_A"], "csv_derive crashed")
+    row = next(r for r in health.assess(st)["sources"] if r["source"] == "ilostat")
+    line = next(a for a in row["attention"] if "full re-derive OWED" in a)
+    assert "python -m core.derive_csv --source ilostat --only" in line, line
+    _bulk(monkeypatch, "--source", "ilostat")
+    assert "python -m core.derive_csv --source ilostat --only" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("body", ["", "sources: []\n", "missing"])
+def test_the_bulk_tool_refuses_a_registry_that_proves_nothing(tmp_path, monkeypatch, capsys, body):
+    """R1157: a 0-byte registry read as 'not csv_misses', and --clear-owed-only cleared ilostat's debt."""
+    p = tmp_path / "registry.yaml"
+    if body != "missing":
+        p.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(orchestrate.config, "REGISTRY", str(p))
+    rc, cleared = _bulk(monkeypatch, "--source", "ilostat", "--clear-owed-only")
+    assert rc == 2 and cleared == [] and "REFUSING: cannot read the registry" in capsys.readouterr().out
+
+
+def test_the_bulk_tool_reads_csv_misses_from_a_list_form_registry(tmp_path, monkeypatch, capsys):
+    p = tmp_path / "registry.yaml"
+    p.write_text("- source_id: ilostat\n  csv_misses: desktop_owed\n- source_id: abs\n", encoding="utf-8")
+    monkeypatch.setattr(orchestrate.config, "REGISTRY", str(p))
+    rc, cleared = _bulk(monkeypatch, "--source", "ilostat", "--clear-owed-only")
+    assert rc == 2 and cleared == [] and "--after-desktop-derive" in capsys.readouterr().out
+    rc, cleared = _bulk(monkeypatch, "--source", "abs", "--clear-owed-only")
+    assert rc == 0 and cleared == ["abs"], "negative control"
+
+
 def _bulk(monkeypatch, *args):
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import derive_csv_bulk as B

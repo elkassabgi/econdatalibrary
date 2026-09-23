@@ -270,6 +270,11 @@ def main() -> int:
         _reg = _y.safe_load(open(_c.REGISTRY, encoding="utf-8")) or []
         if isinstance(_reg, dict):                                     # the same two forms the out_dir
             _reg = _reg.get("sources") or list(_reg.values())         # check below accepts
+        _reg = [e for e in (_reg if isinstance(_reg, list) else []) if isinstance(e, dict) and e.get("source_id")]
+        if not _reg:
+            # AN EMPTY REGISTRY PROVES NOTHING (R1157): a 0-byte file read as "not csv_misses", and
+            # --clear-owed-only then cleared ilostat's debt with no flag at all.
+            raise ValueError("the registry parses to no source entries")
         _ent = next((e for e in _reg if e.get("source_id") == a.source), {}) or {}
         _misses = _ent.get("csv_misses") == "desktop_owed"
     except Exception as _re:                                           # noqa: BLE001 - refuse, never guess
@@ -279,8 +284,9 @@ def main() -> int:
     if _misses and not a.clear_owed_only:
         print(f"REFUSING: {a.source} declares csv_misses: desktop_owed - this tool cannot derive its "
               f"catalogue ids. Re-derive the keys its full_rederive_owed note lists with the source's "
-              f"desktop tool (ilostat: tools/derive_ilostat_indicators.py --only <stems>), then run "
-              f"--clear-owed-only --after-desktop-derive.")
+              f"desktop tool (ilostat: tools/derive_ilostat_indicators.py --only <stems>, plus, for a "
+              f"changed '<flow>_A' stem, its 3-colon legacy ids: python -m core.derive_csv --source "
+              f"{a.source} --only <file of those ids>), then run --clear-owed-only --after-desktop-derive.")
         return 2
     if _misses and a.clear_owed_only and not a.after_desktop_derive:
         print(f"REFUSING: {a.source}'s debt is paid by its desktop tool, not by this one; after that "
