@@ -410,7 +410,37 @@ def _table_max_by_group(path: str) -> dict:
 # --------------------------------------------------------------------------- #
 # query building (mirror ingester's dim selection, but date-tail the time dim)
 # --------------------------------------------------------------------------- #
-def _time_var_index(variables: list):
+# PER-TABLE TIME AXIS, for tables where SURS flags `time: true` on a CATEGORY axis. The shared
+# resolver refuses a mis-flagged axis and, by design, never substitutes another (core/pxweb.py,
+# R331: scb's Region codes became years through exactly that door), so these tables read as
+# structural breaks on every run and stat_slovenia could never read ok. The recorded decision
+# (econ-updater queue, cycle 28) allows "a per-table override, never a resolver rule". Each entry
+# is checked live, and is used ONLY while the declared axis exists and the flagged one still parses
+# to no date - so a publisher fix makes the entry inert, never harmful.
+#   1517309S  flag on 'ŠTEVILO PRAŠIČEV' (one value, 'TOT'); ČETRTLETJE holds 2025Q1..2027Q2,
+#             the 10 quarters stored under 'SI:1517309S:ŠTEVILO PRAŠIČEV=TOT' (2026-09-23).
+#   1012308S  flag on 'ORGANIZACIJSKA OBLIKA' (codes 0..6); LETO holds '2012', the one year stored
+#             for its 7 series (2026-09-23).
+TIME_AXIS_OVERRIDE = {"1517309S": "ČETRTLETJE", "1012308S": "LETO"}
+
+
+def _meta_time_code(variables: list, table_id: str | None = None):
+    """The `time: true` code - or, for a table in TIME_AXIS_OVERRIDE, its declared axis, while
+    that axis exists and the flagged one parses to no date."""
+    flagged = next((v.get("code") for v in variables if v.get("time") is True), None)
+    declared = TIME_AXIS_OVERRIDE.get((table_id or "").replace(".px", ""))
+    if declared is None or declared == flagged:
+        return flagged
+    by_code = {v.get("code"): v for v in variables}
+    if declared not in by_code:
+        return flagged
+    fv = by_code.get(flagged) or {}
+    if any(_parse_date(str(c)) is not None for c in (fv.get("values") or []) + (fv.get("valueTexts") or [])):
+        return flagged                                   # the publisher fixed its flag
+    return declared
+
+
+def _time_var_index(variables: list, table_id: str | None = None):
     """Index of THE time variable, resolved exactly as _parse_jsonstat2 keys
     obs_date: the shared value-first resolver (core/pxweb.py) fed the same
     authoritative `time: true` code and _parse_date grammar the parser uses —
@@ -422,14 +452,14 @@ def _time_var_index(variables: list):
     parse to no date — so the tail froze while the parser keyed the year axis.
     Returns None when no axis carries dates at all (the parser writes nothing
     for such a cube either)."""
-    meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+    meta_time_code = _meta_time_code(variables, table_id)
     return _pxweb.resolve_time_dim(
         [v.get("code", "") for v in variables],
         [[str(c) for c in (v.get("values") or [])] for v in variables],
         meta_time_code=meta_time_code, parse_fn=_parse_date)
 
 
-def _build_query(variables: list, new_time_codes: list):
+def _build_query(variables: list, new_time_codes: list, table_id: str | None = None):
     """Build the PxWeb query var list, replicating jobs/ingest_stat_slovenia.query_table.
 
     The all-values-vs-one-aggregate branch is decided on the FULL total_cells (the
@@ -449,7 +479,7 @@ def _build_query(variables: list, new_time_codes: list):
     Returns [] when no time axis resolves (nothing is date-tailable): the caller
     records the legitimately-quiet verdict without a doomed POST — the same fringe
     handling bfs uses for a stored table with no resolvable axis."""
-    time_idx = _time_var_index(variables)
+    time_idx = _time_var_index(variables, table_id)
     if time_idx is None:
         return []
 
@@ -482,12 +512,12 @@ def _build_query(variables: list, new_time_codes: list):
     return query_vars
 
 
-def _time_var(variables: list):
+def _time_var(variables: list, table_id: str | None = None):
     """Return (code, values) of THE table's time dimension — the axis
     _time_var_index resolves (the same one _build_query date-tails and
     _parse_jsonstat2 keys obs_date on) — or (None, None) when the cube has
     no resolvable date axis."""
-    idx = _time_var_index(variables)
+    idx = _time_var_index(variables, table_id)
     if idx is None:
         return None, None
     var = variables[idx]
@@ -654,7 +684,7 @@ def update(unit, since) -> Result:
                 continue
 
             variables = meta["variables"]
-            tcode, tvals = _time_var(variables)
+            tcode, tvals = _time_var(variables, tid_clean)
             if not tcode or not tvals:
                 # Metadata 200 (table alive) but no detectable time dimension -> this table
                 # contributes no obs_date series (the ingester's parser yields nothing for
@@ -714,7 +744,7 @@ def update(unit, since) -> Result:
                 current += 1
                 continue
 
-            query_vars = _build_query(variables, new_codes)
+            query_vars = _build_query(variables, new_codes, tid_clean)
             if not query_vars:
                 tally.empty_unit()
                 continue
@@ -738,7 +768,7 @@ def update(unit, since) -> Result:
             prefix = f"SI:{tid_clean}"
             # Thread the AUTHORITATIVE PxWeb `time: true` flag so the parser's shared
             # resolver locks onto the same axis the query tailed; None -> value-first.
-            meta_time_code = next((v.get("code") for v in variables if v.get("time") is True), None)
+            meta_time_code = _meta_time_code(variables, tid_clean)   # TIME_AXIS_OVERRIDE applies
             rows = _parse_jsonstat2(resp, prefix, meta_time_code)
 
             if not rows:
@@ -754,7 +784,7 @@ def update(unit, since) -> Result:
                 # so the two can never disagree about whether an axis exists (R333). A table
                 # with no date-bearing axis is not a failure and not a break — it is not a time
                 # series, and the ingester writes nothing for it either.
-                if _time_var_index(variables) is None:
+                if _time_var_index(variables, tid_clean) is None:
                     current += 1
                     continue
                 # 200 POST but parsed 0 rows even though the requested time codes WERE
