@@ -205,6 +205,23 @@ def _get_meta(sess, url):
     raise TransientError(f"hagstofa GET {url}: {last}")
 
 
+def _listed_in_folder(sess, db, path):
+    """Is the table still in its parent folder's listing? True / False when the listing was READ,
+    None when it could not be (any error, a non-200, a body that is not a non-empty list).
+
+    Only a listing that was read and lacks the table is evidence the publisher WITHDREW it. A 400 on
+    the table alone is not: PxWeb also answers 400 mid-republication."""
+    folder, _, leaf = path.rpartition("/")
+    try:
+        r = sess.get(f"{BASE}/{db}/{folder}/", timeout=TIMEOUT)
+        items = r.json() if r.status_code == 200 else None
+    except (requests.RequestException, ValueError):
+        return None
+    if not isinstance(items, list) or not items:
+        return None
+    return any(isinstance(x, dict) and x.get("id") == leaf for x in items)
+
+
 def _post_data(sess, url, body):
     """POST a PxWeb query. 200 -> dict; 400/403 -> None (rejected query / no cells);
     timeout/5xx/429/network/non-JSON -> TransientError after the retry budget."""
@@ -351,9 +368,24 @@ def _fetch_table(sess, db, path, prefix, since_date):
     url = f"{BASE}/{db}/{path}/"
     meta = _get_meta(sess, url)
     time.sleep(RATE)
+    if meta is None and since_date is not None:
+        # A table with ON-DISK history that now 404/400s lost its endpoint -> structural, UNLESS
+        # its folder listing - read, not assumed - no longer lists it: then the publisher
+        # WITHDREW it, and its stored history is kept frozen, like the archival tables below.
+        # Measured 2026-09-23: SJA04901 (export by categories and species, 1999-2024) answered
+        # 400 and was gone from sjavarutvegur/utf, whose 2026-09-15 edition of SJA04903 now
+        # carries Species x Country x Product category. It had re-fired 'structural' on every
+        # run, so hagstofa could never read ok.
+        listed = _listed_in_folder(sess, db, path)
+        time.sleep(RATE)
+        if listed is False:
+            print(f"[hagstofa] {path}: withdrawn by the publisher (HTTP 400/404 and absent from "
+                  f"its folder listing); stored data to {since_date} kept frozen", flush=True)
+            return [], "quiet"
+        return [], "structural"
     if meta is None or not isinstance(meta, dict):
-        # A table with ON-DISK history that now 404/400s lost its endpoint -> structural;
-        # a never-stored table that 404/400s is simply absent -> empty.
+        # a never-stored table that 404/400s is simply absent -> empty; a non-dict body on a
+        # stored table is a break.
         return [], ("structural" if since_date is not None else "empty")
     variables = meta.get("variables", [])
     if not variables:
