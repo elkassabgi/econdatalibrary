@@ -176,3 +176,62 @@ def test_a_truncated_pass_never_reads_as_a_green_coverage_note(tmp_path, monkeyp
                                 series_cursors={WORLD_GEN: "2026-08-01", "x|y": "2026-08-01"})
     failed, note, deferred, reasons = orchestrate._derive_changed_csvs(unit, res, None, store=None)
     assert note.startswith("csv coherence unmet:") and "cap-saturated" in note, note
+
+
+# ---- review R1125: a revision-only pass must reach the CSV phase -------------------------------------
+def test_a_revision_only_pass_reads_ok_and_derives_the_served_id(monkeypatch, tmp_path):
+    files = {YEARLY: [(WORLD_GEN, D1, 1.0)]}
+    _wire(monkeypatch, tmp_path, files)
+    E.update(None, None)
+    _wire(monkeypatch, tmp_path, {YEARLY: [(WORLD_GEN, D1, 1.5)]}, version="v2")    # value revised, no new row
+    res = E.update(None, None)
+    assert orchestrate._should_derive_csvs(res.status), (res.status, res.error)
+    assert "1 sub-unit(s) revised stored values without adding rows" in res.error, res.error
+    _catalog(tmp_path, monkeypatch, IDS)
+    orchestrate._REG_ENTRIES = None
+    asked = []
+    from updater import derive
+    monkeypatch.setattr(derive, "derive_and_put", lambda ids, blob, **k: asked.extend(ids) or {})
+    unit = types.SimpleNamespace(key="ember/_all", source_id="ember", unit_id="_all")
+    orchestrate._derive_changed_csvs(unit, res, object(), store=None)
+    assert asked == ["ember:A:gen_total_twh:WORLD"], asked
+
+
+def test_many_revision_only_files_are_not_an_all_empty_break(monkeypatch, tmp_path):
+    files = {f"ds{i}": [(f"k{i}", D1, 1.0)] for i in range(12)}
+    _wire(monkeypatch, tmp_path, files)
+    E.update(None, None)
+    _wire(monkeypatch, tmp_path, {ds: [(k, d, 2.0) for k, d, _v in r] for ds, r in files.items()}, version="v2")
+    res = E.update(None, None)                             # 12 files, all revised, 0 new rows
+    assert res.status == "ok" and "12 sub-unit(s) revised" in res.error, res.error
+
+
+def test_negative_control_an_identical_republish_is_still_no_change(monkeypatch, tmp_path):
+    files = {YEARLY: [(WORLD_GEN, D1, 1.0)]}
+    _wire(monkeypatch, tmp_path, files)
+    E.update(None, None)
+    _wire(monkeypatch, tmp_path, files, version="v2")
+    assert E.update(None, None).status == "no_change"
+
+
+def test_after_an_overflow_later_files_still_merge(monkeypatch, tmp_path):
+    """R1125 survivor 1: the per-file update of `changed` must stop once it is None."""
+    monkeypatch.setattr(E.merge, "CHANGED_KEYS_CAP", 1)
+    _wire(monkeypatch, tmp_path, {"a_file": [("x", D1, 1.0), ("y", D1, 2.0)], "b_file": [("z", D1, 3.0)]})
+    res = E.update(None, None)
+    assert res.changed_keys is None and res.status == "ok", res.error
+
+
+def test_each_merge_is_asked_for_a_report_cap_of_its_own_size(monkeypatch, tmp_path):
+    """R1125 survivor 2: the merge's default per-call cap (2M) is below Ember's largest file
+    (generation_release_generation_monthly_global, 2,719,923 rows) and would raise mid-pass."""
+    seen = []
+    real = E.merge.merge_and_write
+
+    def _spy(path, tbl, **kw):
+        seen.append((tbl.num_rows, kw.get("changed_keys_cap")))
+        return real(path, tbl, **kw)
+    monkeypatch.setattr(E.merge, "merge_and_write", _spy)
+    _wire(monkeypatch, tmp_path, {YEARLY: [(WORLD_GEN, D1, 1.0), ("World|x|y|z|u", D1, 2.0)]})
+    E.update(None, None)
+    assert seen == [(2, 2)], seen

@@ -203,7 +203,15 @@ def update(unit, since) -> Result:
             continue
 
         published += n
-        tally.added_unit(max(0, n - before))
+        if n - before > 0:
+            tally.added_unit(n - before)
+        elif ch:
+            # REVISED, NOT EMPTY (review R1125): no row was added, but the merge changed served
+            # values. Booked empty, the pass read `no_change`, the CSV phase never ran, and the
+            # sidecar (advanced below) made the next pass skip the file - the old value stayed served.
+            tally.revised_unit(ds_id)
+        else:
+            tally.added_unit(0)
         cursors.update(_series_maxes(tbl))
         if changed is not None:
             stem = os.path.basename(path)[:-len(".parquet")]
