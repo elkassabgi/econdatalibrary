@@ -1,10 +1,11 @@
 """CBS's published STANDARD ERROR is its own series - never an observation inside a value series.
 
-Four CBS tables (37471, 7042mc, 7068gi, 7069LS) name their period dimension
-`Perioden(Incl|Inclusief)Standaardfout` and carry, beside the years, one code '0000X000' titled
-'Standaardfout'. CBS's own description (fetched 2026-09-23, identical in 7042mc, 7068gi and
-7069LS): the standard error is nearly the same in every year, so ONE average standard error is
-shown for the table; multiplied by 1.65 or 1.96 it gives the 90% and 95% margins.
+Seven CBS tables are known to carry, beside the years, one period code that is the table's
+standard error: '0000X000' titled 'Standaardfout' in 37471, 7042mc, 7068gi and 7069LS, and 'Stf '
+titled 'Standard error' in the English twins 7042eng, 7068eng and 7069eng. CBS's own description
+(fetched 2026-09-23; 37471's code carries none): the standard error is nearly the same in every
+year, so ONE average standard error is shown for the table; multiplied by 1.65 or 1.96 it gives
+the 90% and 95% margins.
 
 Two earlier parsers each got it wrong in a different direction:
   - dated it year 0000 + 2, 31 July, and served it as the FIRST OBSERVATION of every value
@@ -298,3 +299,69 @@ def test_a_re_pull_that_would_DROP_the_standard_error_is_refused(tmp_path, monke
     assert _read(d) == before, "the served copy must be kept"
     reg = json.load(open(os.path.join(d, mod.REFUSED_FILE), encoding="utf-8"))
     assert "standard error dropped" in reg["T"]["reason"]
+
+
+def _retitle_se(monkeypatch, title):
+    """CBS keeps the key and changes its title - the case a discard counter cannot see."""
+    real = mod.get_json
+
+    def fn(url):
+        out = real(url)
+        if f"/{DIM}" in url and "TypedDataSet" not in url:
+            out = {"value": [dict(v, Title=title) if v["Key"] == "0000X000" else v
+                             for v in out["value"]]}
+        return out
+    monkeypatch.setattr(mod, "get_json", fn)
+
+
+def test_a_RETITLED_standard_error_is_refused_too(tmp_path, monkeypatch):
+    """Review round 3 (R1089): the retitled code falls through the title test and is counted
+    as 'unparsed:X0', which no drop-reason list names. Only counting what the copies HOLD sees it."""
+    d = _held(tmp_path, monkeypatch)
+    before = _read(d)
+    mod.record_repull_requests(d, ["T"], "test")
+    _install(monkeypatch, CODES)
+    _retitle_se(monkeypatch, "Gemiddelde standaardfout")
+    mod.ingest_table("T", "t", d, STAMP)
+    assert _read(d) == before
+
+
+def test_a_pending_accept_is_dropped_when_the_refusal_fires(tmp_path, monkeypatch):
+    """R606: the accept would skip the REFUSED record and re-crawl the table every pass."""
+    d = _held(tmp_path, monkeypatch)
+    mod._write_accepts(d, {"T": {"vintage": STAMP, "refused_rows": 6}})
+    mod.record_repull_requests(d, ["T"], "test")
+    _install(monkeypatch, CODES)
+    _retitle_se(monkeypatch, "Iets anders")
+    mod.ingest_table("T", "t", d, STAMP)
+    assert "T" not in mod.load_accepts(d)
+
+
+def test_CONTROL_a_table_that_never_held_a_standard_error_still_updates(tmp_path, monkeypatch):
+    """The first version of the refusal froze every revision of such a table."""
+    d = str(tmp_path)
+    codes = ["1981JJ00", "1982JJ00"]
+    _install(monkeypatch, codes)
+    mod.ingest_table("T", "t", d, STAMP)
+    mod.record_repull_requests(d, ["T"], "test")
+    _install(monkeypatch, codes + ["1983JJ00"])
+    mod.ingest_table("T", "t", d, STAMP)
+    assert len(_read(d)[f"T:{TOPICS[0]}"]) == 3, "the revision must be taken"
+
+
+def test_CONTROL_a_LEGACY_year_0002_copy_is_replaced_by_the_keyed_one(tmp_path, monkeypatch):
+    """The served copies today hold the standard error as a year-0002 row inside each series.
+    Re-keying it is not a drop: the counts on both sides must match and the replacement go ahead."""
+    import pyarrow as pa
+    d = _held(tmp_path, monkeypatch)
+    t = pq.read_table(os.path.join(d, "T.parquet"))
+    keys = [k.replace(f":{SE}", "") for k in t.column("series_key").to_pylist()]
+    dates = [dt.date(2, 7, 31) if od == dt.date(1981, 1, 1) else od
+             for od in t.column("obs_date").to_pylist()]
+    pq.write_table(pa.table({"series_key": keys, "obs_date": pa.array(dates, pa.date32()),
+                             "value": t.column("value")}), os.path.join(d, "T.parquet"))
+    assert mod._se_row_count(os.path.join(d, "T.parquet")) == 2
+    mod.record_repull_requests(d, ["T"], "test")
+    mod.ingest_table("T", "t", d, STAMP)
+    got = _read(d)
+    assert f"T:{SE}:{TOPICS[0]}" in got, "the legacy copy must be replaced by the keyed one"

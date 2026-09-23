@@ -960,12 +960,27 @@ def span_tag(code: str) -> str | None:
 # fifteen meanings (R588).
 SE_KEYS = ("0000X000", "STF")
 SE_TITLES = ("standaardfout", "standard error")
-# Discard reasons that mean a published standard error was DROPPED rather than keyed. Either one
-# on a re-pull refuses the replacement of the served copy (see ingest_table): a dropped standard
-# error is a few percent of a table and sails through REPLACE_FLOOR, which is exactly how 37471
-# lost all 22 of its standard errors on 2026-09-05 (R1079).
+# Discard reasons that mean a standard-error CANDIDATE was dropped rather than keyed - counted so
+# the DONE line names them. The refusal in ingest_table does not key on these (a counter misses a
+# retitled code and a drop made before a resume, R1089); it compares the rows the served copy and
+# the new copy actually hold (_se_row_count).
 SE_DROP_REASONS = ("no-title-for-code:standard-error-candidate", "standard-error-span-not-annual")
 SE_KEPT = "kept:standard-error-keyed"   # a COUNTED keep, not a loss - named so the DONE line says so
+
+
+def _se_row_count(path: str) -> int:
+    """How many rows of a stored table are a published standard error: keyed ones (SE_TAG in
+    the series key) plus the LEGACY ones the old parser dated to year 0000 + 2 (R1079). Streamed
+    two columns at a time, so a large table costs a scan, not its size in memory."""
+    import pyarrow.compute as pc
+    if not os.path.exists(path):
+        return 0
+    n = 0
+    for b in pq.ParquetFile(path).iter_batches(columns=["series_key", "obs_date"]):
+        keyed = pc.match_substring(b.column(0), SE_TAG)
+        legacy = pc.less_equal(pc.year(b.column(1)), 2)
+        n += int(pc.sum(pc.or_kleene(keyed, legacy).cast("int64")).as_py() or 0)
+    return n
 
 
 def _is_se_shape(c: str) -> bool:
@@ -1014,7 +1029,7 @@ def _standard_error_period(c: str, titles) -> tuple[dt.date | None, str | None] 
     it is one but cannot be placed (dropped and COUNTED, never guessed); None when it is not a
     standard error at all, so the caller carries on exactly as before.
 
-    WHY IT IS ITS OWN SERIES. Seven CBS tables carry, beside the years, one period code that is
+    WHY IT IS ITS OWN SERIES. Seven CBS tables are known to carry, beside the years, one period code that is
     the table's standard error (SE_KEYS). It is a published figure - multiplied by 1.65 or 1.96
     it gives the 90% and 95% confidence margins - not a period. The English twins' copy was
     never ingested at all: the parser could not read 'Stf' and dropped it silently. The parser used to date it (year 0000 + 2, 31 July)
@@ -1862,12 +1877,24 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
             f"({(new_n / old_n if old_n else 0):.1%}; discards={discards_since(discards_before)})")
         # A DROPPED STANDARD ERROR REFUSES THE REPLACEMENT, whatever the row ratio. It is a few
         # percent of a table - 22 of 352 rows in 37471 - so REPLACE_FLOOR never sees it, and a
-        # re-pull that drops it deletes a published figure from the served copy (R1079). The
-        # refusal is recorded WITH a reason, so --accept-shrink cannot wave it through (R604).
-        se_dropped = {k: v for k, v in discards_since(discards_before).items() if k in SE_DROP_REASONS}
+        # re-pull that drops it deletes a published figure from the served copy (R1079).
+        #
+        # Judged on the DATA, not on this run's discard counter (review round 3, R1089): the
+        # counter cannot see a code CBS retitles (it lands in 'unparsed:X0'), nor a drop made on
+        # a page flushed before a resume (the resuming pass counts from zero), and it refused
+        # every revision of a table that never held a standard error. So: count the standard
+        # errors the served copy holds (keyed rows, or the legacy year-0002 rows) and refuse only
+        # when the new copy holds FEWER. Recorded WITH a reason, so --accept-shrink cannot wave it
+        # through (R604) - and any pending accept is dropped here, or the refused record would be
+        # skipped by the accept and the table re-crawled every pass (R606).
+        held_se, new_se = _se_row_count(out_path), _se_row_count(tmp_path)
+        se_dropped = held_se - new_se if new_se < held_se else 0
         if old_n and se_dropped:
-            log(f"  !! {table_id}: re-pull would DROP a published standard error {se_dropped} - "
-                f"REFUSED, served copy kept, vintage recorded in {REFUSED_FILE}")
+            if table_id in load_accepts(out_dir):
+                drop_accept(out_dir, table_id, "the re-pull would drop a published standard error")
+            log(f"  !! {table_id}: re-pull would DROP {se_dropped:,} of {held_se:,} published "
+                f"standard-error row(s) - REFUSED, served copy kept, vintage recorded in {REFUSED_FILE} "
+                f"(discards={discards_since(discards_before)})")
             os.remove(tmp_path)
             for i in range(parts):
                 os.remove(part_path(i))
@@ -1876,7 +1903,7 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
             end_repull(out_dir, table_id)          # close first, then record (R596)
             _note_vintage(out_dir, REFUSED_FILE, table_id, modified,
                           {"served_rows": old_n, "repull_rows": new_n,
-                           "reason": f"standard error dropped: {se_dropped}"})
+                           "reason": f"standard error dropped: {se_dropped} of {held_se} row(s)"})
             return 0
         if old_n and new_n < REPLACE_FLOOR * old_n and not accept_applies(out_dir, table_id, modified, new_n):
             acc = load_accepts(out_dir).get(table_id)
