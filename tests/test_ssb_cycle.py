@@ -106,6 +106,23 @@ def test_the_completing_pass_does_not_walk_into_visited_groups(monkeypatch, tmp_
     assert res.status != "partial", (res.status, res.error)
 
 
+def test_a_budget_stop_books_each_unvisited_group_once(monkeypatch, tmp_path):
+    """Review AR-123: `break` -> `continue` would book every unvisited group again per remaining
+    group; the note's deferral count pins it."""
+    _wire(monkeypatch, tmp_path, allow=2)                          # Aa done, stop at Bb's top
+    res = ssb.update(None, None)
+    assert "2 deferred" in (res.error or ""), res.error
+
+
+def test_skipped_groups_still_count_toward_the_reported_total(monkeypatch, tmp_path):
+    _wire(monkeypatch, tmp_path, allow=99)
+    full = ssb.update(None, None).obs
+    _wire(monkeypatch, tmp_path, allow=2)
+    ssb.update(None, None)                                         # Aa, then a new cycle begins
+    _wire(monkeypatch, tmp_path, allow=99)
+    assert ssb.update(None, None).obs == full
+
+
 def test_negative_control_one_pass_that_reaches_everything_is_not_partial(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert ssb.update(None, None).status != "partial"

@@ -538,7 +538,9 @@ def update(unit, since) -> Result:
         if cycle.done(fn):
             # Visited this cycle: no work owed. Re-walking it spent the budget on done work, and a
             # stop INSIDE such a group booked table deferrals on the pass that completed the cycle,
-            # so ssb almost never read ok (~15 tables per group; review R1105 P1).
+            # so ssb almost never read ok (~15 tables per group; review R1105 P1). Its rows still
+            # count toward the reported total (served as obs_count - AR-123).
+            total += blob.row_count(os.path.join(out_dir, fn))
             continue
         if dl.spent():
             # Announced, never silent — and recorded as DEFERRED, not transient (R303).
