@@ -52,6 +52,9 @@ def test_the_entry_goes_inert_when_the_publisher_fixes_its_flag():
     dated = [dict(PIGS[0], values=["2024"], valueTexts=["2024"]), PIGS[1]]
     assert S._meta_time_code(dated, "1517309S") == "ŠTEVILO PRAŠIČEV", \
         "a flagged axis that parses to dates is the publisher's call, never overridden"
+    positional = [dict(PIGS[0], values=["0", "1"], valueTexts=["2024", "2025"]), PIGS[1]]
+    assert S._meta_time_code(positional, "1517309S") == "ŠTEVILO PRAŠIČEV", \
+        "positional codes with year LABELS are a readable time axis too (review AR-125)"
 
 
 def test_a_declared_axis_the_table_no_longer_has_is_ignored():
