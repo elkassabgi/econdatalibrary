@@ -103,6 +103,10 @@ def _load_ingester():
 
 _ING = _load_ingester()
 BASE = _ING.BASE                      # https://px.hagstofa.is/pxen/api/v1/en
+# The Icelandic site. Same paths; the English site has been renaming variable codes and dropping
+# tables this one still serves (reviews R1108, R1112) - used ONLY as a same-path fallback whose codes
+# must reproduce a stored key scheme, and as the second tree searched before calling a table gone.
+BASE_IS = "https://px.hagstofa.is/pxis/api/v1/is"
 parse_jsonstat2 = _ING.parse_jsonstat2
 parse_date = _ING.parse_date
 is_time_dim = _ING.is_time_dim
@@ -139,9 +143,11 @@ def _table_prefix(db: str, path: str) -> str:
 
 def _key_scheme(key: str, prefix: str) -> tuple:
     """The dimension NAMES of a key after its table prefix: 'ICE:db:t.px:Land=1:Eining=0' ->
-    ('Land', 'Eining'). Two schemes in one table = two id systems for the same data."""
+    ('Land', 'Eining'). Two schemes in one table = two id systems for the same data. Only the
+    '='-bearing segments are dimensions: some VALUE codes contain ':' (THJ11002, UTA05000, THJ05551,
+    MAN10001 - review R1112), and their fragments are not dimension names."""
     rest = key[len(prefix) + 1:]
-    return tuple(seg.split("=", 1)[0] for seg in rest.split(":")) if rest else ()
+    return tuple(seg.split("=", 1)[0] for seg in rest.split(":") if "=" in seg) if rest else ()
 
 
 def _per_table_profile(path: str) -> tuple[dict[str, dt.date], dict[str, set]]:
@@ -246,8 +252,9 @@ def _listing(sess, url):
     return None
 
 
-def _table_tree(sess):
-    """{table id: [db/path, ...]} over EVERY database, or None when any listing could not be read.
+def _table_tree(sess, base=None):
+    """{table id: [db/path, ...]} over EVERY database of one language site (`base`: BASE, the English
+    site, by default; BASE_IS the Icelandic), or None when any listing could not be read.
 
     A table missing from its own folder may have MOVED, not been withdrawn: review R1108 found 3 of
     the 4 stored tables answering 400 (FYR02103, FYR02104, FYR03002) live at
@@ -255,17 +262,24 @@ def _table_tree(sess):
     search of the whole tree can tell the two apart - and a PARTIAL search cannot, which is why one
     unreadable listing voids the answer instead of shrinking it. Built at most once per run (cached
     on the session), and only when a stored table answers 400/404."""
-    cached = getattr(sess, "_hagstofa_tree", False)
-    if cached is not False:
-        return cached
+    base = base or BASE
+    cache = getattr(sess, "_hagstofa_trees", None)
+    if cache is None:
+        cache = {}
+        try:
+            sess._hagstofa_trees = cache
+        except AttributeError:
+            pass
+    if base in cache:
+        return cache[base]
     tree: dict = {}
-    root = _listing(sess, f"{BASE}/")
+    root = _listing(sess, f"{base}/")
     ok = root is not None
     queue = [(item.get("dbid"), "") for item in (root or []) if isinstance(item, dict) and item.get("dbid")]
     ok = ok and bool(queue)
     while ok and queue:
         db, folder = queue.pop()
-        items = _listing(sess, f"{BASE}/{db}/{folder}/" if folder else f"{BASE}/{db}/")
+        items = _listing(sess, f"{base}/{db}/{folder}/" if folder else f"{base}/{db}/")
         time.sleep(RATE)
         if items is None:
             ok = False
@@ -279,10 +293,7 @@ def _table_tree(sess):
             elif it.get("type") == "l":
                 queue.append((db, child))
     result = tree if ok else None
-    try:
-        sess._hagstofa_tree = result
-    except AttributeError:
-        pass
+    cache[base] = result
     return result
 
 
@@ -411,7 +422,7 @@ def _build_query(variables, tvar, time_codes):
     return query
 
 
-def _fetch_table(sess, db, path, prefix, since_date):
+def _fetch_table(sess, db, path, prefix, since_date, stored_schemes=None):
     """Date-tail fetch one table. Returns (rows, outcome) where outcome is one of:
       'data'       -> rows is a list of (series_key, obs_date, value)
       'quiet'      -> nothing newer than the boundary (legitimately empty tail)
@@ -433,58 +444,110 @@ def _fetch_table(sess, db, path, prefix, since_date):
     meta = _get_meta(sess, url)
     time.sleep(RATE)
     if meta is None and since_date is not None:
-        # A table with ON-DISK history that now 404/400s: search the WHOLE tree (review R1108).
-        #   found elsewhere -> MOVED. Still a break: the path is in every series key, so following
-        #                      it is a re-key, never a silent switch. Named, so it is actionable.
-        #   absent from a tree read in full -> WITHDRAWN by the publisher: its stored history is
-        #                      kept frozen, like the archival tables below (SJA04901, 2026-09-23:
-        #                      its content continues in SJA04903's 2026-09-15 edition).
-        #   tree not fully read -> cannot tell -> structural, as before.
-        # A verdict is cached for WITHDRAWN_RECHECK_DAYS: the whole-tree search costs ~6 min
-        # (395 listings, measured 2026-09-23) and these tables answer 400 on EVERY run.
-        verdicts = getattr(sess, "_hagstofa_withdrawn", None)
-        me = f"{db}/{path}"
-        seen = (verdicts or {}).get(me)
-        try:
-            fresh = (isinstance(seen, dict) and seen.get("verdict") in ("withdrawn", "moved") and
-                     (dt.date.today() - dt.date.fromisoformat(seen["date"])).days < WITHDRAWN_RECHECK_DAYS)
-        except (KeyError, TypeError, ValueError):
-            fresh = False
-        if fresh:
-            if seen["verdict"] == "moved":
-                print(f"[hagstofa] {path}: MOVED to {', '.join(seen.get('to') or [])} (verified "
-                      f"{seen['date']}) - a re-key, not followed automatically", flush=True)
+        # THE ENGLISH SITE DROPS TABLES THE ICELANDIC SITE STILL SERVES AT THE SAME PATH (review
+        # R1112: SJA04901 answers 400 on pxen but 200 on pxis, to 2025, first variable 'Fisktegund'
+        # - the stored scheme). Fetch it there - but ONLY when the Icelandic codes reproduce a key
+        # scheme this table already stores; otherwise the merge would mint a second id scheme.
+        url_is = f"{BASE_IS}/{db}/{path}/"
+        meta_is = _get_meta(sess, url_is)
+        time.sleep(RATE)
+        if isinstance(meta_is, dict) and meta_is.get("variables"):
+            if stored_schemes and _meta_scheme(meta_is["variables"]) in stored_schemes:
+                print(f"[hagstofa] {path}: dropped from the English site; fetched from the Icelandic "
+                      f"site at the same path (its codes match the stored keys)", flush=True)
+                url, meta = url_is, meta_is
+            else:
+                print(f"[hagstofa] {path}: dropped from the English site, and the Icelandic copy's "
+                      f"codes {list(_meta_scheme(meta_is['variables']))[:4]} match no stored key "
+                      f"scheme - a re-key, not followed automatically", flush=True)
                 return [], "structural"
-            return [], "quiet"
-        tree = _table_tree(sess)
-        leaf = path.rpartition("/")[2]
-        if tree is None:
-            print(f"[hagstofa] {path}: HTTP 400/404, and the table tree could not be read in "
-                  f"full - moved or withdrawn is unknown", flush=True)
-            return [], "structural"
-        if me in tree.get(leaf, []):
-            # still listed where it was, yet its metadata answers 400/404: mid-republication or a
-            # broken endpoint - never evidence of withdrawal
-            print(f"[hagstofa] {path}: HTTP 400/404 although its folder still lists it", flush=True)
-            return [], "structural"
-        elsewhere = [p for p in tree.get(leaf, []) if p != me]
-        today = dt.date.today().isoformat()
-        if elsewhere:
-            print(f"[hagstofa] {path}: MOVED by the publisher to {', '.join(elsewhere)} - "
-                  f"following it re-keys its series (the path is in the key); not followed "
-                  f"automatically", flush=True)
-            if verdicts is not None:
-                verdicts[me] = {"verdict": "moved", "to": elsewhere, "date": today}
-            return [], "structural"
-        print(f"[hagstofa] {path}: withdrawn by the publisher (HTTP 400/404 and absent from the "
-              f"whole table tree); stored data to {since_date} kept frozen", flush=True)
-        if verdicts is not None:
-            verdicts[me] = {"verdict": "withdrawn", "date": today}
-        return [], "quiet"
+        else:
+            return _missing_verdict(sess, db, path, since_date)
     if meta is None or not isinstance(meta, dict):
         # a never-stored table that 404/400s is simply absent -> empty; a non-dict body on a
         # stored table is a break.
         return [], ("structural" if since_date is not None else "empty")
+    if (stored_schemes and url != f"{BASE_IS}/{db}/{path}/" and meta.get("variables")
+            and _meta_scheme(meta["variables"]) not in stored_schemes):
+        # KEEP THE STORED SCHEME WHILE EITHER SITE STILL PRODUCES IT (review R1117 (c)). The English
+        # site renames codes in BOTH directions (SJA0490x Icelandic->English; SKO02108 English->
+        # Icelandic) and value codes stay identical, so a rename on one site is not a change of
+        # series. If the Icelandic site still produces a stored scheme, fetch there; if neither does,
+        # the English fetch goes ahead and the key-scheme guard refuses it as RESTRUCTURED.
+        url_is = f"{BASE_IS}/{db}/{path}/"
+        meta_is = _get_meta(sess, url_is)
+        time.sleep(RATE)
+        if (isinstance(meta_is, dict) and meta_is.get("variables")
+                and _meta_scheme(meta_is["variables"]) in stored_schemes):
+            print(f"[hagstofa] {path}: the English site renamed its codes to "
+                  f"{list(_meta_scheme(meta['variables']))[:4]}; fetched from the Icelandic site, "
+                  f"which still produces the stored keys", flush=True)
+            url, meta = url_is, meta_is
+    return _fetch_with_meta(sess, url, meta, path, prefix, since_date)
+
+
+def _meta_scheme(variables) -> tuple:
+    """The key scheme a table's metadata produces: its non-time variable codes, in order - the
+    dimension names parse_jsonstat2 writes into every series key."""
+    tvar = _time_var(variables)
+    tcode = (tvar or {}).get("code") if isinstance(tvar, dict) else None
+    return tuple(v.get("code", "") for v in variables if v.get("code") != tcode)
+
+
+def _missing_verdict(sess, db, path, since_date):
+    """A STORED table that answers 400/404 on BOTH language sites: moved, withdrawn, or unknown -
+    decided by a search of BOTH WHOLE TREES (reviews R1108, R1112).
+      listed at its own path in either tree -> structural (mid-republication / broken endpoint);
+      found elsewhere in either tree       -> MOVED: structural and named. The path is in every
+                                              series key, so following it is a re-key;
+      absent from both trees, read in full -> WITHDRAWN: stored history kept frozen ('quiet');
+      either tree not fully read           -> cannot tell -> structural.
+    A verdict is cached for WITHDRAWN_RECHECK_DAYS: one tree search costs ~6 min (395 listings,
+    measured 2026-09-23) and these tables answer 400 on EVERY run."""
+    verdicts = getattr(sess, "_hagstofa_withdrawn", None)
+    me = f"{db}/{path}"
+    seen = (verdicts or {}).get(me)
+    try:
+        fresh = (isinstance(seen, dict) and seen.get("verdict") in ("withdrawn", "moved") and
+                 (dt.date.today() - dt.date.fromisoformat(seen["date"])).days < WITHDRAWN_RECHECK_DAYS)
+    except (KeyError, TypeError, ValueError):
+        fresh = False
+    if fresh:
+        if seen["verdict"] == "moved":
+            print(f"[hagstofa] {path}: MOVED to {', '.join(seen.get('to') or [])} (verified "
+                  f"{seen['date']}) - a re-key, not followed automatically", flush=True)
+            return [], "structural"
+        return [], "quiet"
+    trees = [_table_tree(sess, BASE), _table_tree(sess, BASE_IS)]
+    leaf = path.rpartition("/")[2]
+    if any(t is None for t in trees):
+        print(f"[hagstofa] {path}: HTTP 400/404, and a table tree could not be read in full - "
+              f"moved or withdrawn is unknown", flush=True)
+        return [], "structural"
+    listed = [p for t in trees for p in t.get(leaf, [])]
+    if me in listed:
+        # still listed where it was, yet its metadata answers 400/404: mid-republication or a
+        # broken endpoint - never evidence of withdrawal
+        print(f"[hagstofa] {path}: HTTP 400/404 although a folder still lists it", flush=True)
+        return [], "structural"
+    elsewhere = sorted(set(listed))
+    today = dt.date.today().isoformat()
+    if elsewhere:
+        print(f"[hagstofa] {path}: MOVED by the publisher to {', '.join(elsewhere)} - "
+              f"following it re-keys its series (the path is in the key); not followed "
+              f"automatically", flush=True)
+        if verdicts is not None:
+            verdicts[me] = {"verdict": "moved", "to": elsewhere, "date": today}
+        return [], "structural"
+    print(f"[hagstofa] {path}: withdrawn by the publisher (HTTP 400/404 on both language sites and "
+          f"absent from both table trees); stored data to {since_date} kept frozen", flush=True)
+    if verdicts is not None:
+        verdicts[me] = {"verdict": "withdrawn", "date": today}
+    return [], "quiet"
+
+
+def _fetch_with_meta(sess, url, meta, path, prefix, since_date):
+    """_fetch_table's work once the table's metadata is in hand (from either language site)."""
     variables = meta.get("variables", [])
     if not variables:
         return [], ("structural" if since_date is not None else "empty")
@@ -645,7 +708,8 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
             since_date = tmax.get(prefix)  # None -> first landing (full fetch)
 
             try:
-                rows, outcome = _fetch_table(sess, db, tpath, prefix, since_date)
+                rows, outcome = _fetch_table(sess, db, tpath, prefix, since_date,
+                                             stored_schemes=db_schemes.get(db, {}).get(prefix))
             except TransientError:
                 tally.transient_unit(tpath)  # -> partial; existing rows for this table kept
                 continue

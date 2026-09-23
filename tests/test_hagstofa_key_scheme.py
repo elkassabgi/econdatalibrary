@@ -38,7 +38,7 @@ def _run(tmp_path, monkeypatch, stored_keys, fetched_keys):
         pq.write_table(pa.table({"series_key": stored_keys,
                                  "obs_date": pa.array([dt.date(2024, 12, 31)] * len(stored_keys)),
                                  "value": [1.0] * len(stored_keys)}), str(tmp_path / "Atvinnuvegir.parquet"))
-    monkeypatch.setattr(H, "_fetch_table", lambda sess, db, path, prefix, since:
+    monkeypatch.setattr(H, "_fetch_table", lambda sess, db, path, prefix, since, **k:
                         ([(k, dt.date(2025, 12, 31), 2.0) for k in fetched_keys], "data"))
     unit = types.SimpleNamespace(config={}, key="hagstofa/_all")
     try:
@@ -78,3 +78,11 @@ def test_a_table_already_holding_both_schemes_is_not_blocked_here(tmp_path, monk
 def test_the_key_scheme_is_the_dimension_names_after_the_prefix():
     assert H._key_scheme(OLD, PREFIX) == ("Tegund", "Land", "Eining")
     assert H._key_scheme(PREFIX, PREFIX) == ()
+
+
+def test_a_colon_inside_a_value_code_is_not_a_dimension():
+    """Review R1112: THJ11002, UTA05000, THJ05551, MAN10001 carry ':' inside value codes; the fragment
+    ' 01' is not a dimension name, or every new such code would read as a restructure."""
+    p = "ICE:Efnahagur:vinnumagn:THJ11002.px"
+    assert H._key_scheme(f"{p}:Atvinnugrein=A: 01:Mælikvarði=0:Starfandi=1", p) == \
+        ("Atvinnugrein", "Mælikvarði", "Starfandi")
