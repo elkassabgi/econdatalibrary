@@ -154,7 +154,8 @@ def test_owed_and_never_fetched_tables_take_turns(tmp_path, monkeypatch):
     first; the owed side goes oldest stored updatedAt first, the never-fetched side by id."""
     monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
     monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
-    cat = [{"id": t, "updatedAt": "2026-09-20T00:00:00Z", "correctedAt": None}
+    cal = ["2026-03-15T00:00:00Z", "2026-06-15T00:00:00Z", "2026-08-15T00:00:00Z", "2026-09-20T00:00:00Z"]
+    cat = [{"id": t, "updatedAt": "2026-09-20T00:00:00Z", "correctedAt": None, "updateDates": cal}
            for t in ("aaa0001", "aaa0002", "aaa0003", "tur0001", "tur0002")]
     monkeypatch.setattr(K, "_catalog", lambda raise_transient: cat)
     (tmp_path / K.SIDECAR).write_text(json.dumps({
@@ -209,7 +210,7 @@ def test_tables_past_the_budget_stop_are_booked_deferred(tmp_path, monkeypatch):
         n = 0
 
         def __init__(self, minutes=None):
-            pass
+            self.budget_min = minutes
 
         def spent(self):
             _DL.n += 1
@@ -303,7 +304,7 @@ def test_the_rotation_note_names_what_is_owed_and_health_strips_it(tmp_path, mon
     monkeypatch.setattr(K, "MAX_PER_RUN", 1)
     monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, []))
     res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
-    assert "rotation note: 3 table(s) were owed at the start of this pass, 1 answered; 2 never fetched" \
+    assert "rotation note: 3 table(s) were owed at the start of this pass, 1 answered, 2 never fetched" \
         in res.error, res.error
     assert _deferral_only([{"status": "partial", "last_error": res.error}]), res.error
 
@@ -418,3 +419,164 @@ def test_the_cap_default_is_the_budget_bound_400(monkeypatch):
     import updater.strategies.fetchers.ksh_stadat as mod
     assert importlib.reload(mod).MAX_PER_RUN == 400
     importlib.reload(mod)
+
+
+# ---- review R1127 -------------------------------------------------------------------------------
+BASE = "3 sub-unit(s) attempted, none failed; 5 deferred by budget and taken next tick [x]"
+
+
+@pytest.mark.parametrize("csv_err", [
+    "csv_derive failed 3/10 series [ksh_stadat:KSH:gdp0001]",
+    "csv coherence unmet: 9 changed series_keys have no catalog mapping for ksh_stadat",
+    "csv_derive crashed (0 of 3 changed series queued): UnitTimeout('x')",
+])
+def test_a_csv_failure_joined_after_the_rotation_and_not_hosted_tails_is_attention(csv_err):
+    """R1127: health cut at the first non-failure tail and dropped everything after it - the
+    orchestrator joins its csv verdict AFTER the fetcher's error with '; '."""
+    from updater.health import _deferral_only
+    fetcher = (f"{BASE}; {K.NOT_HOSTED_NOTE} 1 table(s) - no CSV [gdp0049]; "
+               f"{K.ROTATION_NOTE} 849 table(s) were owed at the start of this pass, 105 answered, "
+               f"744 never fetched by the updater remain")
+    err = "; ".join((fetcher, csv_err))                     # the orchestrator's own join
+    assert not _deferral_only([{"status": "partial", "last_error": err}]), err
+    assert _deferral_only([{"status": "partial", "last_error": fetcher}]), "negative control"
+
+
+def test_the_subset_coverage_note_and_the_fence_note_still_read_as_non_failures():
+    from updater import orchestrate
+    from updater.health import _deferral_only
+    note, demote = orchestrate._classify_zero_mapped("abs", "subset", 18, 0, 500, 60000)
+    assert not demote and "; " not in note, note
+    assert _deferral_only([{"status": "partial", "last_error": f"{BASE}; {note}"}])
+
+
+def test_no_non_failure_note_in_the_code_contains_a_segment_separator():
+    """Health drops a note SEGMENT by prefix; a '; ' inside a note would leave its tail as a segment
+    that is not a note, and a healthy deferral pass would read ATTENTION (or, worse, a failure would
+    be read as a note's tail). Every literal note text in the orchestrator and this fetcher is checked."""
+    import ast
+    from updater.strategies.base import NON_FAILURE_NOTES
+    found = 0
+    for rel in ("updater/orchestrate.py", "updater/strategies/fetchers/ksh_stadat.py"):
+        tree = ast.parse(open(os.path.join(ROOT, rel), encoding="utf-8").read())
+        for node in ast.walk(tree):
+            parts = ([node.value] if isinstance(node, ast.Constant) and isinstance(node.value, str) else
+                     [v.value for v in node.values if isinstance(v, ast.Constant)]
+                     if isinstance(node, ast.JoinedStr) else [])
+            text = "".join(parts)
+            if text.startswith(NON_FAILURE_NOTES):
+                found += 1
+                assert "; " not in text, (rel, text[:120])
+    assert found >= 5, found
+
+
+def test_owed_tables_go_by_first_missed_release_not_by_the_age_of_our_copy(tmp_path, monkeypatch):
+    """An annual table stored in January first missed a release in August; a monthly table stored in
+    March has been denied its April release since April - it goes first (R1127)."""
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    cat = [{"id": "ann0001", "updatedAt": "2026-08-10T00:00:00Z", "correctedAt": None,
+            "updateDates": ["2026-08-10T00:00:00Z"]},
+           {"id": "mon0001", "updatedAt": "2026-09-10T00:00:00Z", "correctedAt": None,
+            "updateDates": [f"2026-{m:02d}-10T00:00:00Z" for m in range(1, 10)]}]
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: cat)
+    (tmp_path / K.SIDECAR).write_text(json.dumps({"ann0001": "2026-01-05T00:00:00Z|None",
+                                                  "mon0001": "2026-03-10T00:00:00Z|None"}))
+    monkeypatch.setattr(K, "MAX_PER_RUN", 1)
+    asked = []
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: asked.append(tid) or (tid, []))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert asked == ["mon0001"], asked
+    assert "longest wait" in res.error and "ann0001" in res.error, res.error
+
+
+def test_a_table_owed_past_the_limit_turns_the_pass_to_attention(tmp_path, monkeypatch):
+    from updater.health import _deferral_only
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    now = dt.datetime.now(dt.timezone.utc)
+    old = (now - dt.timedelta(days=K.OWED_ATTENTION_DAYS + 5)).isoformat()
+    young = (now - dt.timedelta(days=K.OWED_ATTENTION_DAYS - 5)).isoformat()
+    cat = [{"id": "gdp0001", "updatedAt": young, "correctedAt": None, "updateDates": [old, young]},
+           {"id": "gdp0002", "updatedAt": young, "correctedAt": None, "updateDates": [young]}]
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: cat)
+    (tmp_path / K.SIDECAR).write_text(json.dumps({"gdp0001": "2025-01-01T00:00:00Z|None",
+                                                  "gdp0002": "2025-01-01T00:00:00Z|None"}))
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, "deadline" if tid == "gdp0001" else []))
+    monkeypatch.setattr(K, "TABLE_WAVE", 1)                 # one table answered: not the WAF floor
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert f"rotation behind: gdp0001 has waited {K.OWED_ATTENTION_DAYS + 5} days" in res.error, res.error
+    assert not _deferral_only([{"status": res.status, "last_error": res.error}])
+    cat[0]["updateDates"] = [young]
+    (tmp_path / K.SIDECAR).write_text(json.dumps({"gdp0001": "2025-01-01T00:00:00Z|None",
+                                                  "gdp0002": "2025-01-01T00:00:00Z|None"}))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert "rotation behind" not in res.error and _deferral_only(
+        [{"status": res.status, "last_error": res.error}]), res.error
+
+
+@pytest.mark.parametrize("answered,attention", [(9, True), (10, False)])
+def test_the_waf_blocked_floor_is_one_wave(tmp_path, monkeypatch, answered, attention):
+    from updater.health import _deferral_only
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: _cat(answered + 1))
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, "deadline" if tid == f"gdp{answered + 1:04d}" else []))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert (not _deferral_only([{"status": res.status, "last_error": res.error}])) is attention, res.error
+
+
+def test_the_budget_is_sized_from_the_alarm_and_can_start_nothing(monkeypatch):
+    import signal
+    monkeypatch.delenv("KSH_BUDGET_MIN", raising=False)
+    monkeypatch.setattr(signal, "ITIMER_REAL", 0, raising=False)
+    monkeypatch.setattr(signal, "getitimer", lambda which: (20 * 60.0, 0.0), raising=False)
+    assert K._budget_min() == pytest.approx(20 - K.STOP_GRACE_MIN - K.MERGE_MARGIN_MIN)
+    monkeypatch.setattr(signal, "getitimer", lambda which: (8 * 60.0, 0.0), raising=False)
+    assert K._budget_min() == 0.0, "under the grace + margin: start nothing"
+    monkeypatch.setattr(signal, "getitimer", lambda which: (3600.0, 0.0), raising=False)
+    assert K._budget_min() == 25.0
+    monkeypatch.setattr(signal, "getitimer", lambda which: (0.0, 0.0), raising=False)
+    assert K._budget_min() == 25.0, "no alarm (desktop): the cap"
+
+
+def test_a_zero_budget_starts_no_request(tmp_path, monkeypatch):
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: _cat(3))
+    monkeypatch.setattr(K, "_budget_min", lambda: 0.0)
+    asked = []
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: asked.append(tid) or (tid, []))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert asked == [] and "3 deferred" in res.error, res.error
+
+
+def test_first_missed_counts_only_releases_already_out():
+    now = dt.datetime(2026, 9, 23, tzinfo=dt.timezone.utc)
+    e = {"updatedAt": "2026-09-10T00:00:00Z",
+         "updateDates": ["2026-08-10T00:00:00Z", "2026-09-10T00:00:00Z", "2026-10-10T00:00:00Z"]}
+    assert K._first_missed(e, "2026-07-01T00:00:00Z", now) == dt.datetime(2026, 8, 10, tzinfo=dt.timezone.utc)
+    assert K._first_missed(e, "2026-09-10T00:00:00Z", now) is None, "the October date is KSH's calendar, not out"
+
+
+def test_a_desktop_budget_override_moves_the_stop_time_too(tmp_path, monkeypatch):
+    """AQUEDUCT_BUDGET_MIN_OVERRIDE replaces the Deadline's budget on the workstation; the stop time must
+    follow it, or a 600-min desktop pass would stop starting requests at 30 min."""
+    seen = []
+
+    def _cat_spy(raise_transient):
+        seen.append(K.ig.STOP_AT[0] - K.time.time())
+        return _cat(1)
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(K, "_catalog", _cat_spy)
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, []))
+    monkeypatch.setattr(K, "_budget_min", lambda: 25.0)
+    monkeypatch.setenv("AQUEDUCT_BUDGET_MIN_OVERRIDE", "600")
+    K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert seen and abs(seen[0] - (600 + K.STOP_GRACE_MIN) * 60) < 30, seen
+
+
+def test_the_grace_and_the_pace_are_pinned(monkeypatch):
+    monkeypatch.undo()                                      # the autouse no-pace patch
+    assert K.STOP_GRACE_MIN == 5 and K.PACE_S == K.ig.RATE == 1.2 and K.MERGE_MARGIN_MIN == 5

@@ -23,6 +23,7 @@ advances so we don't refetch it every tick — a content change moves the token 
 Cursors emitted for merged series (R41).
 """
 from __future__ import annotations
+import datetime as dt
 import hashlib
 import json
 import os
@@ -59,6 +60,9 @@ SIDECAR = "_bulk_vintages.json"       # {table_id: "updatedAt|correctedAt"}
 MAX_WORKERS = 2
 STOP_GRACE_MIN = 5   # budget + this = the last moment a request or back-off sleep may start (update())
 PACE_S = ig.RATE     # seconds between request STARTS across workers - the job's own pace (_pace)
+MERGE_MARGIN_MIN = 5  # after the stop time: theme merges + saves. Measured R1127: 28 theme GETs 5.7 s,
+                      # the largest merge (mun.parquet) 0.25 s; PUT time not measured - generous on purpose
+OWED_ATTENTION_DAYS = 45   # a table owed longer than this (first missed release) turns ROTATING -> ATTENTION
 MAX_PER_RUN = int(os.environ.get("KSH_MAX_PER_RUN", "400"))
 # Tables submitted per deadline check. The pool is given a whole wave at once, so
 # the wave size — not the loop — is what actually bounds the fetch.
@@ -152,6 +156,25 @@ def _load_nodata(out_dir) -> dict:
         return {}
 
 
+def _when(s):
+    """An ISO timestamp from toc.json ('2026-09-10T00:00:00Z' / '+00:00') as an aware datetime, or None."""
+    try:
+        d = dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
+
+
+def _first_missed(entry, stored_updated, now):
+    """The FIRST KSH release of this table after the copy we store - how long a reader has been denied
+    a newer one (review R1127). From toc.json's own calendar (`updateDates`, past and future) plus its
+    `updatedAt`; only releases already out (<= now) count. None when none is found."""
+    stored = _when(stored_updated)
+    out = [d for d in (_when(x) for x in list(entry.get("updateDates") or []) + [entry.get("updatedAt")])
+           if d is not None and d <= now and (stored is None or d > stored)]
+    return min(out) if out else None
+
+
 _PACE_LOCK = threading.Lock()
 _LAST_START = [0.0]
 
@@ -208,12 +231,31 @@ def _fetch_table(tid):
     return tid, rows or []
 
 
+def _budget_min() -> float:
+    """Minutes this pass may keep starting waves (review R1127 (5)). The orchestrator runs a unit under
+    SIGALRM (setitimer ITIMER_REAL, armed around the unit), and the gate can admit ksh with a window
+    as small as ~13 min on its cost estimate - smaller than KSH_BUDGET_MIN + STOP_GRACE_MIN - so a
+    fixed budget could be killed with nothing merged. Size it from the time the alarm actually leaves,
+    minus the grace and a margin for the merges and saves, capped at KSH_BUDGET_MIN (25). 0 or less
+    means start nothing (Deadline(0) is spent at once). No alarm (a desktop run) -> the cap."""
+    cap = float(os.environ.get("KSH_BUDGET_MIN", "25"))
+    try:
+        import signal
+        left_s = signal.getitimer(signal.ITIMER_REAL)[0]
+    except (AttributeError, ValueError, OSError):
+        left_s = 0.0
+    if left_s > 0:
+        return max(0.0, min(cap, left_s / 60.0 - STOP_GRACE_MIN - MERGE_MARGIN_MIN))
+    return cap
+
+
 def update(unit, since) -> Result:
     # THE CLOCK STARTS HERE (review R1123). The budget and the stop time used to start after the todo
     # scan, which sent one R2 HEAD per table (809 HEADs = 167.7 s from the desktop), so on the
     # orchestrator's clock a pass was ~40 min old before its first merge. Both now count from entry.
-    budget_min = float(os.environ.get("KSH_BUDGET_MIN", "25"))
+    budget_min = _budget_min()
     dl = Deadline(minutes=budget_min)
+    budget_min = dl.budget_min          # the EFFECTIVE budget (a desktop override replaces it)
     # NO NEW REQUEST AND NO BACK-OFF SLEEP PAST budget + STOP_GRACE_MIN: one URL's WAF ladder is 33 min,
     # and every fetched table merges only after the last wave - a kill at 45 min would lose them all.
     # 25 + 5 = 30 min leaves the merges and the saves ~14 min under the 45-min kill.
@@ -236,6 +278,8 @@ def _update(dl, budget_min, since) -> Result:
 
     present = set(blob.list_parquets(out_dir))      # ONE listing, not one HEAD per table (R1123)
     todo = []
+    missed: dict = {}                  # owed table -> its FIRST missed release (datetime)
+    now = dt.datetime.now(dt.timezone.utc)
     for e in cat:
         tid = _table_id(e)
         if not tid:
@@ -245,15 +289,20 @@ def _update(dl, budget_min, since) -> Result:
                                           or nodata.get(tid) == cur_v):
             continue
         todo.append((tid, cur_v))
+        if tid in sidecar:
+            missed[tid] = _first_missed(e, str(sidecar[tid]).split("|")[0], now)
     # OWED AND NEVER-FETCHED TAKE TURNS (reviews R1121, R1123). Sorted by id, the first 60 owed tables
     # were always in themes a..k and 802 tables in kor..tur were never fetched by the updater (166 with
     # nothing stored). Never-fetched-first fixed that and froze the other side: simulated on KSH's 2026
     # release calendar at 120 tables a pass, 0 of the 840 maintained tables refreshed in the first six
     # passes, and the headline series (price indices, industrial production, external trade) went
-    # 99 days owed. 1:1 turns clear the never-fetched set in ~12 weeks with the maintained worst at ~47
-    # days owed. The owed side goes oldest stored updatedAt first (ISO, sorts as text).
+    # 99 days owed. So they take turns 1:1, owed first. The owed side goes by FIRST MISSED RELEASE
+    # (review R1127): the stored updatedAt said how old OUR copy is, not how long a reader has been
+    # denied KSH's newer one - simulated on KSH's 2026 calendar at the measured ~110 tables a pass, the
+    # headline tables' worst wait was 49 days by stored updatedAt and 23 by first missed release.
+    # Measured capacity is the desktop's (ksh_dryrun2); a GitHub runner's is not measured.
     owed = sorted((tv for tv in todo if tv[0] in sidecar),
-                  key=lambda tv: (str(sidecar.get(tv[0], "")).split("|")[0], tv[0]))
+                  key=lambda tv: (missed.get(tv[0]) or now, tv[0]))
     never = sorted(tv for tv in todo if tv[0] not in sidecar)
     todo = [tv for pair in zip_longest(owed, never) for tv in pair if tv is not None]
 
@@ -381,6 +430,19 @@ def _update(dl, budget_min, since) -> Result:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
 
+    # HOW FAR BEHIND THE ROTATION IS, measured and bounded (review R1127): ROTATING could not tell a
+    # draining backlog from one that never drains (a WAF that allows one burst a pass answers ~55
+    # tables, and headline tables then wait 155-190 days, every pass still ROTATING). The table owed
+    # longest, by its first missed release, is named in the rotation note; past OWED_ATTENTION_DAYS it
+    # is booked as a failure so the source reads ATTENTION.
+    still = [(missed[tid], tid) for tid, cur_v in todo
+             if missed.get(tid) and sidecar.get(tid) != cur_v]
+    oldest = min(still) if still else None
+    owed_days = (now - oldest[0]).days if oldest else 0
+    if oldest and owed_days > OWED_ATTENTION_DAYS:
+        tally.transient_unit(f"rotation behind: {oldest[1]} has waited {owed_days} days for KSH's "
+                             f"{oldest[0].date()} release (limit {OWED_ATTENTION_DAYS})")
+
     res = finalize(tally, published, maxd or (since or None), source=SOURCE,
                    series_cursors=cursors)
     if capped:
@@ -397,8 +459,11 @@ def _update(dl, budget_min, since) -> Result:
     if len(todo) > answered:
         # WHERE THE ROTATION STANDS, on every pass that leaves work owed (review R1123 (c)). A
         # stripped tail like the not-hosted note, so a pure deferral pass stays ROTATING.
+        # No "; " inside: health drops a note SEGMENT by its prefix (R1127).
         never_left = sum(1 for tid, _v in todo if tid not in sidecar)
         res.error = (f"{res.error}; " if res.error else "") + (
             f"{ROTATION_NOTE} {len(todo)} table(s) were owed at the start of this pass, "
-            f"{answered} answered; {never_left} never fetched by the updater remain")
+            f"{answered} answered, {never_left} never fetched by the updater remain"
+            + (f", longest wait {owed_days} days ({oldest[1]}, KSH release {oldest[0].date()})"
+               if oldest else ""))
     return res
