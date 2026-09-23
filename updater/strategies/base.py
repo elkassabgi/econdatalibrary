@@ -13,6 +13,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+# A NON-FAILURE tail a fetcher may join onto its result error ("; not hosted note: ..."): tables
+# the publisher lists but serves no data for, named for the reader. health._deferral_only strips it
+# like a 'csv coverage note:' tail, so it never turns a pure deferral pass into ATTENTION (R1121).
+NOT_HOSTED_NOTE = "not hosted note:"
+
 # nominal days between upstream updates per cadence (0.9 slack applied in cadence_due)
 CADENCE_DAYS = {
     "daily": 1, "weekly": 7, "monthly": 28, "quarterly": 90,

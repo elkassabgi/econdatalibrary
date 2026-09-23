@@ -20,7 +20,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 
 from . import config, registry
 from .state import StateStore
-from .strategies.base import CADENCE_DAYS
+from .strategies.base import CADENCE_DAYS, NOT_HOSTED_NOTE
 
 # A source is RED once it is this many cadence-periods past its last success / newest obs.
 SLA_TOLERANCE = 2.0
@@ -214,9 +214,10 @@ def _deferral_only(units) -> bool:
         err = str(u.get("last_error") or "")
         # 'csv coverage note:' tails are NON-failures by design (R372: budget-deferred
         # derive ids, proven-uncatalogued residue, an abandoned csv fence — none demote)
-        # and may be joined onto the deferral note; strip them, then the remainder must
+        # and may be joined onto the deferral note; so may a fetcher's NOT_HOSTED_NOTE
+        # (ksh_stadat's link-only tables, R1121). Strip them, then the remainder must
         # match the anchored emitter grammar EXACTLY.
-        base = err.split("; csv coverage note:")[0].strip()
+        base = err.split("; csv coverage note:")[0].split(f"; {NOT_HOSTED_NOTE}")[0].strip()
         if not _DEFERRAL_BASE.match(base):
             return False
     return True

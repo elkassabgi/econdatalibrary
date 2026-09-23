@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -33,7 +34,7 @@ import pyarrow as pa
 
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
-from ..base import Result
+from ..base import NOT_HOSTED_NOTE, Result
 from ._common import Deadline, Tally, finalize
 from ._common import cancellable_pool
 from jobs import ingest_ksh_stadat as ig   # reuse catalog + THE table parser / key builder
@@ -43,10 +44,17 @@ DEDUP = ("series_key", "obs_date")
 SIDECAR = "_bulk_vintages.json"       # {table_id: "updatedAt|correctedAt"}
 # www.ksh.hu is SLOW and refuses load: run 30136135069 spent 32 minutes on connect-timeouts
 # (60s each) against /stadat_files/*/en/*.csv at 5 workers x 400 tables and never finished.
-# Keep concurrency low and the per-run batch small — the 1,632-table backlog drains over many
-# ticks, which is fine for a source whose tables update on a monthly-ish cadence. (R40b)
+# Keep concurrency low. (R40b)
+#
+# THE BUDGET BOUNDS A PASS, NOT THE CAP (review R1121). That run had no wave budget; now the waves
+# stop at KSH_BUDGET_MIN and book the rest deferred, so the cap only has to be large enough never
+# to be the binding limit. At 60 it was: toc.json showed 413 of 1,642 tables updated within 30 days
+# (~96 a week) against one pass per ~7 days, so 60 a pass could never catch up, and 849 tables were
+# owed. Measured 2026-09-23 from the desktop with the cap lifted to 400: KSH's WAF rejected the
+# first request 28 s in, and the 30-min budget reached 120 tables (2,223 s; 16 WAF back-offs).
 MAX_WORKERS = 2
-MAX_PER_RUN = 60
+STOP_GRACE_MIN = 7   # budget + this = the last moment a back-off sleep may start (see update())
+MAX_PER_RUN = int(os.environ.get("KSH_MAX_PER_RUN", "400"))
 # Tables submitted per deadline check. The pool is given a whole wave at once, so
 # the wave size — not the loop — is what actually bounds the fetch.
 TABLE_WAVE = int(os.environ.get("KSH_TABLE_WAVE", "10"))
@@ -150,7 +158,8 @@ def _fetch_table(tid):
     if not raw:
         # A 404 is not the WAF: the table has no CSV at this URL (gdp0049, 2026-09-23: listed in
         # toc.json as "Financial accounts (available at the related links)", a link-only stub).
-        return tid, ("absent" if getattr(ig, "LAST_STATUS", {}).get(url) == 404 else None)
+        st = getattr(ig, "LAST_STATUS", {}).get(url)
+        return tid, ("absent" if st == 404 else "deadline" if st == "deadline" else None)
     try:
         # DECODE EXACTLY AS THE INGESTER DOES (ingest_ksh_stadat.py:664-666): strict
         # utf-8-sig first, cp1250 fallback. This line used to read
@@ -190,7 +199,12 @@ def update(unit, since) -> Result:
         if sidecar.get(tid) == cur_v and (blob.exists(theme_path) or nodata.get(tid) == cur_v):
             continue
         todo.append((tid, cur_v))
-    todo.sort()
+    # NEVER-FETCHED FIRST, THEN OLDEST-OWED (review R1121). Sorted by id, the first 60 owed tables
+    # were always in themes a..k, which KSH updates monthly, so the cap was spent there on every pass
+    # and 802 tables in kor..tur were never fetched by the updater at all (166 with nothing stored).
+    # A table the sidecar has never recorded goes first; the rest by the updatedAt we last stored
+    # (ISO, so it sorts as text), oldest first.
+    todo.sort(key=lambda tv: (tv[0] in sidecar, str(sidecar.get(tv[0], "")).split("|")[0], tv[0]))
 
     tally = Tally()
     capped = len(todo) > MAX_PER_RUN
@@ -216,6 +230,10 @@ def update(unit, since) -> Result:
     # instead of resetting.
     budget_min = float(os.environ.get("KSH_BUDGET_MIN", "30"))
     dl = Deadline(minutes=budget_min)
+    # NO BACK-OFF SLEEP MAY START PAST budget + STOP_GRACE_MIN (37 min): a wave begun just inside the
+    # budget waits on get_bytes, whose WAF ladder for ONE URL is 33 min, and every fetched table merges
+    # only after the last wave - a kill at 45 min would lose them all. A table cut there is DEFERRED.
+    ig.STOP_AT[0] = time.time() + (budget_min + STOP_GRACE_MIN) * 60
     fetched = 0
     if batch:
         with cancellable_pool(MAX_WORKERS) as ex:
@@ -233,6 +251,9 @@ def update(unit, since) -> Result:
                 for fut in as_completed(futs):
                     tid, cur_v = futs[fut]
                     _t, rows = fut.result()
+                    if rows == "deadline":
+                        tally.deferred_unit(f"{tid} (budget {budget_min:.0f} min, back-off cut)")
+                        continue
                     if rows == "absent":
                         held = _holds_table(out_dir, tid)
                         if held is False:
@@ -299,6 +320,7 @@ def update(unit, since) -> Result:
         for tid, cur_v in theme_tables[theme]:
             sidecar[tid] = cur_v            # advance ONLY after the theme merged cleanly
 
+    ig.STOP_AT[0] = None             # the ingester's own main() keeps the full ladder
     _save_sidecar(out_dir, sidecar)
     if nodata != nodata_before:
         blob.write_bytes_atomic(os.path.join(out_dir, NODATA),
@@ -312,11 +334,13 @@ def update(unit, since) -> Result:
                    series_cursors=cursors)
     if capped:
         res.new_vintage = None
-    if stubs and res.status in ("ok", "no_change"):
-        # Named in the result - but only on a pass that did not defer: health reads a partial pass
-        # as a pure deferral only if its error is exactly the deferral note (review R1116). It is
-        # recorded in last_error and the runs table; the digest prints no error for ok rows.
+    if stubs:
+        # Named in the result on EVERY pass that found one, deferral passes included (review R1121:
+        # while the backlog stands every pass is capped, so an ok-only note was never written). It
+        # goes in last_error and the runs table; the digest prints no error for ok rows. Health reads
+        # a partial pass as a pure deferral only when its error is the deferral note, so this tail
+        # carries the NOT_HOSTED_NOTE prefix that health strips like a csv coverage note (R1116).
         res.error = (f"{res.error}; " if res.error else "") + (
-            f"{len(stubs)} table(s) not hosted - no CSV at KSH (HTTP 404) and nothing stored "
+            f"{NOT_HOSTED_NOTE} {len(stubs)} table(s) - no CSV at KSH (HTTP 404) and nothing stored "
             f"[{', '.join(stubs[:5])}]")
     return res
