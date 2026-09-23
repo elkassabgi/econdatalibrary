@@ -154,3 +154,21 @@ def test_obs_is_the_store_total_on_a_pass_that_skips_visited_flows(monkeypatch, 
 def test_negative_control_one_pass_that_reaches_every_flow_is_not_partial(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert A.update(None, None).status != "partial"
+
+
+def test_a_flow_killed_mid_work_counts_as_a_failed_attempt(monkeypatch, tmp_path):
+    """AR-127 P5: a raise or kill inside a flow never reached visit(); begin() marks it in flight."""
+    _wire(monkeypatch, tmp_path, allow=99)
+
+    class _Kill(BaseException):
+        pass
+
+    def _collect(sess, flow, key, params=None):
+        if flow == "BBB":
+            raise _Kill()
+        return [f"{flow}.k"], [dt.date(2026, 8, 1)], [2.0]
+    monkeypatch.setattr(A.ing, "collect", _collect)
+    with pytest.raises(_Kill):
+        A.update(None, None)
+    cyc = A.RotationCycle(str(tmp_path), [f"{f}.parquet" for f in FLOWS])
+    assert cyc.failing == {"BBB.parquet": 1}, cyc.failing

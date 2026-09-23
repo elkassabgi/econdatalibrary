@@ -199,6 +199,7 @@ def update(unit, since) -> Result:
         # Saved per flow, not only after the loop (R273): abs's fetch ran 43.9 min on 09-16 against
         # the 45-minute unit cap, and an end-of-loop save is what the kill destroys (R1105).
         save_rotation(out_dir, fn)
+        cycle.begin(fn)                     # a raise or kill inside it counts (AR-127 P5)
         fails_before = cycle.failures(tally)
 
         max_obs = _flow_max_obs(path)
