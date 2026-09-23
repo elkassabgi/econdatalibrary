@@ -391,7 +391,9 @@ def _why_unparsed(data) -> str:
             return "all_null"
         role_time = (data.get("role") or {}).get("time") or []
         ids = data.get("id") or []
-        tdim = next((d for d in ids if d in role_time or str(d).upper().startswith("TLIST")), None)
+        # the SAME authoritative rule parse_jsonstat2 applies before its heuristic fallback
+        tdim = next((d for d in ids if d in role_time or str(d).upper().startswith("TLIST")
+                     or str(d).upper() in ("TIME", "YEAR", "PERIOD", "TID")), None)
         if tdim is not None:
             idx = (data.get("dimension") or {}).get(tdim, {}).get("category", {}).get("index")
             codes = list(idx.keys()) if isinstance(idx, dict) else list(idx or [])

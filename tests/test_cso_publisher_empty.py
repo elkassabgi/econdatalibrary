@@ -88,9 +88,26 @@ def test_a_real_parser_gap_is_still_transient(tmp_path, monkeypatch):
     assert "GAP01: unparsed" in (res.error or "") and "GAP01" not in cursor
 
 
-def test_with_no_held_set_nothing_is_presumed_unstored(tmp_path, monkeypatch):
-    res, cursor, held_after, asked = _run(tmp_path, monkeypatch, held=())
+def test_a_stored_matrix_missing_from_held_is_still_transient(tmp_path, monkeypatch):
+    """Review R1113: _held.json is not the stored set (67 stored matrices missing from it on R2).
+    Whether a matrix is stored is read from its subject parquet."""
+    pq.write_table(pa.table({"series_key": ["CSO:HRD51:STATISTIC=S1"],
+                             "obs_date": pa.array([__import__("datetime").date(2024, 12, 31)]),
+                             "value": [1.0]}), str(tmp_path / "1_Sub.parquet"))
+    res, cursor, held_after, asked = _run(tmp_path, monkeypatch)
     assert "HRD51: all_null" in (res.error or "") and "HRD51" not in cursor, res.error
+    assert "ROA41" in cursor, "a matrix the subject file does not hold is still skipped"
+
+
+def test_an_unreadable_subject_file_is_treated_as_stored(tmp_path, monkeypatch):
+    (tmp_path / "1_Sub.parquet").write_bytes(b"not a parquet")
+    res, cursor, held_after, asked = _run(tmp_path, monkeypatch)
+    assert "HRD51: all_null" in (res.error or "") and "HRD51" not in cursor, res.error
+
+
+def test_with_no_held_set_the_store_still_decides(tmp_path, monkeypatch):
+    res, cursor, held_after, asked = _run(tmp_path, monkeypatch, held=())
+    assert "HRD51" in cursor and "HRD51" not in (res.error or ""), res.error
 
 
 def test_the_next_run_does_not_ask_again_until_cso_changes_it(tmp_path, monkeypatch):

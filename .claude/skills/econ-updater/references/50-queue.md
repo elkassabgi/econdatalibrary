@@ -1837,3 +1837,21 @@ ALSO WORTH KNOWING, because two numbers here mislead:
 And the publisher IS ahead — confirmed at the datapoint level, not from metadata: 6 of 6 probed
 vectors across 3 cubes, with a negative control (vector 999999999 -> status FAILED, empty
 datapoints). The staleness is ours.
+
+### cso ROA41-ROA52: ten road-injury tables NOT HOSTED - a date-convention decision, not a bug (2026-09-23)
+
+CSO indexes these tables' time axis (TLIST(A1)) by ROLLING FIVE-YEAR WINDOWS: '2019-2023',
+'2020-2024', '2021-2025' (measured live 2026-09-23; ROA52 has 252 of 336 values non-null). The period
+grammar declines multi-year spans ON PURPOSE - only a one-year span is an academic year - because a
+loose range rule once promoted a classification axis to time (R288). None of the ten is stored or
+catalogued (local catalog.db: 0 ids each). Branch fix/cso-publisher-empty stops them re-failing as
+'unparsed' transient every run (outcome `span_time`, cursor advanced, nothing claimed held), so the gap
+now shows only as one log line per release - THIS entry is where it is recorded.
+
+To host them, choose which date a window stands for (period-END, 2023-12-31 for '2019-2023', matches
+the library's dominant convention in DATE_CONVENTIONS.md) and apply it ONLY to an authoritatively
+flagged time axis whose codes are all spans, with an injectivity check (two window lengths ending the
+same year would collide). The catalogue title must then say the value is a five-year window.
+
+HRD51 and DOTA09 (the other two of the twelve) are published with EVERY value null (DOTA09's note:
+"removed pending a review"); they come back when CSO moves their release stamp.
