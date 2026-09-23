@@ -6870,6 +6870,20 @@ sources:
   # with a 581,450-row max (unusable), depth-3 = 18,419 at p50 42 — double the ids for
   # HALF the median table — and depth-4 = 496,132, alone 62% of D1's remaining headroom.
   # Series grain would overrun the whole headroom by 64%; depth-2 costs 1.2% of it.
+  # run_location: local - ROUTED TO THE DESKTOP 2026-09-23 (review R1151). It has NEVER succeeded in the
+  # cloud: six weekly runs since 2026-08-10 (08-10, 08-23, 08-29, 09-05, 09-11, 09-18) each hit the
+  # 45-minute unit limit at 2,700 s with 0 rows, memory near 2 GB (about 1.7-2.2 GB across the runs) -
+  # it is the PULL that is too long, not memory. The pull is 4 measures x 21 years x ~208 leaf POSTs
+  # (208 a year measured on one measure, M5011), timed on the desktop at ~55 leaves/min: about 5.5 h.
+  # A runner discards its disk, so the chunk spills (jobs/ingest_unctad_ds.py, data/_unctad_spill/) die
+  # with each killed run and it restarts from nothing. On the desktop the spills survive between passes,
+  # and a resume reuses the cached size-cap answers (_capped.tsv), so every turn it gets adds leaves and
+  # re-walking known work costs only disk reads. It still needs SEVERAL desktop turns: a pass is clamped
+  # to the time before the next cloud writer (223 and 171 min on the last two passes) and hard-stopped
+  # (_unctad has no Deadline of its own), the pass is shared with the other local sources, and a killed
+  # run moves the source to the most expensive cost band, which starts only after the cheaper bands.
+  # The number of turns is NOT measured (review R1152).
+  run_location: local
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed
