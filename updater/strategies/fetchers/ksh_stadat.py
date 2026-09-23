@@ -105,16 +105,31 @@ def _save_sidecar(out_dir, data) -> None:
                             json.dumps(data, sort_keys=True).encode("utf-8"))
 
 
+def _holds_table(theme_path, tid):
+    """Does the theme parquet hold any row of table `tid` (keys 'KSH:<tid>:...')? True / False when
+    READ, None when it could not be (never read as False - 'could not look' is not 'nothing there')."""
+    try:
+        if not blob.exists(theme_path):
+            return False
+        import pyarrow.compute as _pc
+        keys = blob.read_table(theme_path, columns=["series_key"]).column("series_key")
+        return bool(_pc.any(_pc.starts_with(keys, f"KSH:{tid}:")).as_py())
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
 def _fetch_table(tid):
     """Thread task -> (tid, rows|None). None marks a transport/WAF failure (transient)."""
     theme = tid[:3].lower()
     url = f"{ig.BASE}/{theme}/en/{tid}.csv"
     try:
-        raw = ig.get_bytes(url)          # returns None on WAF page / failure
+        raw = ig.get_bytes(url)          # returns None on WAF page / failure / 404
     except Exception:
         return tid, None
     if not raw:
-        return tid, None
+        # A 404 is not the WAF: the table has no CSV at this URL (gdp0049, 2026-09-23: listed in
+        # toc.json as "Financial accounts (available at the related links)", a link-only stub).
+        return tid, ("absent" if getattr(ig, "LAST_STATUS", {}).get(url) == 404 else None)
     try:
         # DECODE EXACTLY AS THE INGESTER DOES (ingest_ksh_stadat.py:664-666): strict
         # utf-8-sig first, cp1250 fallback. This line used to read
@@ -188,6 +203,23 @@ def update(unit, since) -> Result:
                 for fut in as_completed(futs):
                     tid, cur_v = futs[fut]
                     _t, rows = fut.result()
+                    if rows == "absent":
+                        theme_path = os.path.join(out_dir, f"{tid[:3].lower()}.parquet")
+                        held = _holds_table(theme_path, tid)
+                        if held is False:
+                            # NEVER STORED and no CSV: a link-only table (gdp0049). Its vintage is
+                            # recorded so it is fetched again only when KSH changes it; not tallied -
+                            # it is neither a failure nor data. It had been booked a WAF failure on
+                            # every run, keeping ksh_stadat partial (daily run 35783253243).
+                            print(f"[{SOURCE}] {tid}: no CSV (HTTP 404) and nothing of it stored - a "
+                                  f"link-only table; skipped until KSH updates it", flush=True)
+                            sidecar[tid] = cur_v
+                            continue
+                        # we SERVE it (or cannot tell): its CSV disappearing is a real break
+                        tally.structural_unit(f"{tid}: CSV now answers HTTP 404"
+                                              + (" although we store it" if held else
+                                                 " (could not read the store to tell if we hold it)"))
+                        continue
                     if rows is None:
                         # NAMED. `_fetch_table` returns None for a transport or WAF failure;
                         # the table id was in scope all along and never passed, so five weeks

@@ -63,15 +63,23 @@ def _is_waf_page(content: bytes) -> bool:
             or head.startswith(b"<!doctype"))
 
 
+LAST_STATUS: dict = {}   # url -> the final HTTP status get_bytes saw (404 = no such file)
+
+
 def get_bytes(url: str) -> bytes | None:
     """Fetch with F5-WAF awareness: the WAF serves HTTP 200 'Request Rejected'
     HTML when throttling. Sleep on an escalating schedule and retry; if the
     block persists ~30+ min for this URL, give up (caller counts WAF losses
-    and aborts the run rather than mass-skipping tables)."""
+    and aborts the run rather than mass-skipping tables).
+
+    Returns None for BOTH a 404 and a failure; LAST_STATUS[url] tells them apart (the updater
+    needs to: a 404 is a table with no CSV, not the WAF - 2026-09-23, gdp0049)."""
     waf_i = 0
+    LAST_STATUS.pop(url, None)
     for attempt in range(12):
         try:
             r = requests.get(url, headers=HEADERS, timeout=60)
+            LAST_STATUS[url] = r.status_code
             if r.status_code == 200:
                 if _is_waf_page(r.content):
                     if waf_i >= len(WAF_SLEEPS):
