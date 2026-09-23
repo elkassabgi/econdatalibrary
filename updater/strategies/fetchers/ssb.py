@@ -569,6 +569,7 @@ def update(unit, since) -> Result:
         # group rather than at the end, because the orchestrator's per-source cap KILLS a
         # source instead of breaking its loop and an end-of-function save is lost (R273).
         save_rotation(out_dir, fn)
+        cycle.begin(fn)                     # a raise or kill inside it counts (AR-127 P5)
         fails_before = cycle.failures(tally)
         path = os.path.join(out_dir, fn)
         subj = fn[len("grp_"):-len(".parquet")]
