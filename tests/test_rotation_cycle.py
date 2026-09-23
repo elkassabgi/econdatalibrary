@@ -210,6 +210,18 @@ def test_a_structural_table_keeps_stat_latvia_from_ok(monkeypatch, tmp_path):
     assert "OSP_PUB_EMP.parquet" in C.RotationCycle(str(tmp_path), GROUPS).unvisited()
 
 
+def test_a_pass_skips_groups_already_visited_this_cycle(monkeypatch, tmp_path):
+    """Review R1105, P1: re-walking visited groups spent the budget on work already done."""
+    _wire(monkeypatch, tmp_path, allow=1)
+    sl.update(None, None)                                          # EMP
+    seen = _wire(monkeypatch, tmp_path, allow=99)
+    res = sl.update(None, None)
+    assert sorted(set(seen)) == ["POP", "WAG"] and res.status == "ok", (seen, res.status)
+    seen = _wire(monkeypatch, tmp_path, allow=99)
+    sl.update(None, None)                                          # a new cycle: everything again
+    assert sorted(set(seen)) == ["EMP", "POP", "WAG"]
+
+
 def test_stat_latvia_negative_control_a_full_pass_is_ok(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert sl.update(None, None).status == "ok"

@@ -711,6 +711,8 @@ class RotationCycle:
 
         cycle = RotationCycle(out_dir, units)
         for u in rotate_after(units, load_rotation(out_dir)):
+            if cycle.done(u):
+                continue                         # visited this cycle: no work owed
             if dl.spent():
                 cycle.defer_unvisited(tally, label=lambda u: f"{u} ({n[u]} tables)")
                 break
@@ -764,6 +766,12 @@ class RotationCycle:
 
     def unvisited(self) -> list:
         return [u for u in self.units if u not in self.visited]
+
+    def done(self, unit) -> bool:
+        """Visited this cycle: the loop SKIPS it (review R1105, P1). Re-walking visited units spent
+        the budget on work already done, and a unit that can be stopped part-way (ssb stops inside a
+        group) then booked deferrals on the pass that completed the cycle, so it never read ok."""
+        return unit in self.visited
 
     def defer_unvisited(self, tally, label=str) -> int:
         owed = self.unvisited()

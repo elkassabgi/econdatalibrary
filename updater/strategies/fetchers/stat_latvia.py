@@ -435,6 +435,8 @@ def update(unit, since) -> Result:
     cycle = RotationCycle(out_dir, groups)
 
     for fname in groups:
+        if cycle.done(fname):
+            continue          # visited this cycle: no work owed (review R1105, P1)
         if dl.spent():
             n_owed = cycle.defer_unvisited(
                 tally, label=lambda g: f"{g} ({len(by_group[g])} tables)")
