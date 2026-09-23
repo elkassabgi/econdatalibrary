@@ -66,7 +66,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+from ._common import (Deadline, RotationCycle, Tally, finalize, load_rotation, rotate_after,
                       save_rotation)
 
 import sys
@@ -526,15 +526,24 @@ def update(unit, since) -> Result:
     dl = Deadline(minutes=BUDGET_MIN)
     total = 0
     cursors: dict[str, str] = {}   # table_id -> frontier 'YYYY-MM-DD'
+    # `ok` = EVERY group fully worked since the last ok (RotationCycle, 2026-09-23). Before it,
+    # every pass the budget stopped booked the rest deferred, so ssb read `partial` on EVERY run
+    # and had never succeeded - in the daily gate's failure list permanently ("979 sub-unit(s)
+    # attempted, none failed; 168 deferred", 2026-09-19). Now only groups not yet worked THIS
+    # CYCLE are owed, and the pass that completes the cycle reads ok.
+    cycle = RotationCycle(out_dir, pfiles)
+    cut_group = None               # a group the budget stopped part-way: owed, and booked per table
 
     for fn in pfiles:
         if dl.spent():
             # Announced, never silent — and recorded as DEFERRED, not transient (R303).
             # Nothing failed and nothing was attempted, so these must not enter the failure
             # count; ssb read "135/1515 transient-failed" on a run with 0 real failures.
-            # The vintage is still NOT advanced and the next tick takes them first.
-            tally.deferred_unit(f"{fn}: budget {BUDGET_MIN:.0f} min spent, group deferred")
-            continue
+            # The vintage is still NOT advanced; the rotation bookmark takes the next group.
+            for g in cycle.unvisited():
+                if g != cut_group:
+                    tally.deferred_unit(f"{g}: budget {BUDGET_MIN:.0f} min spent, group deferred")
+            break
         # AFTER the deferral check, never before: the bookmark names the last group this run
         # actually WORKED ON. Stamped above the check it would record a deferred group and
         # the next run would skip exactly what the deferral promised to return to. Saved per
@@ -568,6 +577,7 @@ def update(unit, since) -> Result:
         for tid in attempt_ids:
             if dl.spent():
                 tally.deferred_unit(f"{tid}: budget spent, table deferred")
+                cut_group = fn     # not visited: its remaining tables return with the cycle
                 continue
             stored_max = per_max.get(tid)
             floor = _floor_for(stored_max, today)
@@ -706,7 +716,12 @@ def update(unit, since) -> Result:
         # one per-group merge, so the group is the finest honest granularity here.)
         for j, tid in enumerate(fetched_tables):
             tally.added_unit(net if j == 0 else 0)
+        if cut_group != fn:
+            # VISITED only once every table was attempted: a group the budget cut part-way stays
+            # owed (statfin review AR-119 (c): marking at the START let a cut group count as done).
+            cycle.visit(fn)
 
+    cycle.close_if_complete(tally)
     # last_obs: derive ONLY from sane cursor values. The merge-returned max and the
     # on-disk frontier are unreliable here because legacy ingest left a handful of rows
     # with absurd parsed years (e.g. 9999-12-31, 5001-12-31 from malformed time codes);
