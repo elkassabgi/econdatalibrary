@@ -153,6 +153,60 @@ def _stream(con, paths, qualify=False):
             yield (f"{shard}:{k}" if qualify else k), rows
 
 
+# The window a clear holds the state store: pull, clear, push. Measured on the desktop over six passes on
+# 2026-09-20..21 (logs/local_heavy_*.log): pull-state 1 min 36 s to 2 min 01 s, push-state 5 min 37 s to
+# 6 min 51 s - and push_state's CAS is a HEAD compare followed by an unconditional PUT after VACUUM INTO +
+# zstd, so the whole push is race window (R1102 rule 3). Asked for with a 3x margin.
+CLEAR_WINDOW_MIN = 30
+LOCAL_MIN_HOURS = 20          # tools/run_local_heavy.ps1 `$MinHours` default; pinned by a test
+
+
+def _writers_quiet(manual: str, window_min: int = CLEAR_WINDOW_MIN) -> bool:
+    """True only when NO other state writer can start inside the next `window_min` minutes (R1102).
+
+    The local lock alone covered neither of the other two writers:
+      - the cloud updater workflows (tools/ci_writer_gate.py). A queued updater-heavy run read BLOCKED
+        while this tool, checking only the lock, would have pulled and pushed. The gate's --until-block
+        answer is the free time left; less than the window is a refusal, and so is "cannot tell";
+      - a desktop pass that STARTS mid-envelope. The guard ticks every 5 min and starts a pass the
+        moment one is due and CI is clear - which is exactly the moment this check passes. So a clear
+        runs only while the last pass is recent enough that the next is not due within the window.
+    """
+    import subprocess
+    gate = os.path.join(_REPO, "tools", "ci_writer_gate.py")
+    try:
+        p = subprocess.run([sys.executable, gate, "--until-block"], cwd=_REPO, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=300)
+        out = (p.stdout or "").strip()
+        free = int(out.splitlines()[-1]) if p.returncode == 0 and out else None
+    except Exception as e:  # noqa: BLE001 - cannot tell is never clear
+        out, free = f"{type(e).__name__}: {e}", None
+    if free is None or free < window_min:
+        print(f"NOT clearing: the CI writer gate does not show {window_min} free minutes "
+              f"({'cannot tell: ' + out[-200:] if free is None else f'{free} min before a cloud writer may run'}). "
+              f"A pull/push now can make a cloud run lose its whole bookkeeping at its push (R5, R1102). "
+              f"The debt stands. Retry later: {manual}", flush=True)
+        return False
+    stamp = os.path.join(ROOT, "logs", "local_heavy.last_success")
+    import datetime as _dt
+    since_h = None
+    try:
+        with open(stamp, encoding="ascii") as f:
+            last = _dt.datetime.fromisoformat(f.readline().strip().replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=_dt.timezone.utc)
+        since_h = (_dt.datetime.now(_dt.timezone.utc) - last).total_seconds() / 3600.0
+    except (OSError, ValueError):
+        pass                                   # the runner reads an absent/unreadable stamp as DUE
+    if since_h is None or since_h + window_min / 60.0 >= LOCAL_MIN_HOURS:
+        print(f"NOT clearing: a desktop heavy pass is due within {window_min} min "
+              f"({'no readable ' + stamp if since_h is None else f'last pass {since_h:.1f} h ago, cadence {LOCAL_MIN_HOURS} h'}), "
+              f"and the guard starts one the moment CI is clear. Run this right after a desktop pass "
+              f"has pushed (R1102 rule 2). The debt stands: {manual}", flush=True)
+        return False
+    return True
+
+
 def _durable_clear(source: str) -> bool:
     """Clear the full_rederive_owed row THROUGH the pull→push protocol (R529).
 
@@ -167,6 +221,10 @@ def _durable_clear(source: str) -> bool:
     REFUSED while the heavy runner's lock is live: a pull now would wholesale-
     replace state the pass is still writing. The debt then STANDS — the honest
     state — and the printed command re-runs the clear after the pass.
+
+    ALSO REFUSED unless no OTHER state writer can start inside the envelope (_writers_quiet,
+    R1102): the cloud updater workflows, and a desktop pass that comes due mid-envelope. Both
+    are checked before the pull and again before the push.
     """
     import subprocess
     manual = f"py tools/derive_csv_bulk.py --source {source} --clear-owed-only"
@@ -178,6 +236,8 @@ def _durable_clear(source: str) -> bool:
               f"({age_h:.1f}h old) — a heavy pass may be mid-run, and pulling state now "
               f"would wholesale-replace what it is writing (R340/R529). The debt stands. "
               f"After the pass finishes: {manual}", flush=True)
+        return False
+    if not _writers_quiet(manual):
         return False
 
     def _run(*args):
@@ -209,6 +269,11 @@ def _durable_clear(source: str) -> bool:
         print(f"full_rederive_owed cleared LOCALLY for {source} but a heavy pass "
               f"acquired the lock mid-envelope — NOT pushing over its run. The clear "
               f"will not survive its pull; after the pass: {manual}", flush=True)
+        return False
+    if not _writers_quiet(manual, window_min=CLEAR_WINDOW_MIN // 2):
+        # The pull and clear took part of the window; the push needs the rest (R1102).
+        print(f"full_rederive_owed cleared LOCALLY for {source} but NOT pushed: this clear will "
+              f"not survive the next pull.", flush=True)
         return False
     if _run("--push-state") != 0:
         print(f"full_rederive_owed cleared LOCALLY for {source} but push-state failed "
