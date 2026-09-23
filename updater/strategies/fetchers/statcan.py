@@ -1,69 +1,75 @@
-"""S2 fetcher — Statistics Canada WDS (extend_by_date).
+"""S2 fetcher - Statistics Canada: the REPORTER for the statcan lane (2026-09-23).
 
-Layout: ONE zstd parquet per cube (productId) under clean_full/statcan/<pid>.parquet
-(~8,207 files), schema EXACTLY as written by jobs/ingest_statcan.py:
-    series_key(string)  = StatCan VECTOR id, lowercase "v"+digits  (e.g. "v41690973")
+statcan's refresh does not run here any more. It runs in jobs/statcan_lane.py, a process of its own
+that RELAUNCH_GUARD.ps1 launches every guard tick: it refreshes every released cube WHOLE and then
+serves that cube's catalogued parts, with no time budget. Why: inside a local-heavy pass statcan gets
+a 20-76 minute slot, 108 backlog cubes need more than that and 12100152 alone ~380 min, and the
+orchestrator's inline derive re-scans a whole cube per served part (1.9-4.3 s/part) with ~0 minutes
+left. Four review rounds of budget machinery each failed on a new edge (ledger R1091-R1094).
+
+This unit now READS what the lane publishes and turns it into an honest status - seconds of work,
+nothing written to the store:
+    _lane_progress.json   the lane's beat: when it last did work, what it is working on, how long that
+                          is estimated to take, and the owed counts (jobs/statcan_lane.py `summarise`)
+    _lane_state.json      per-cube release / merged / served, quarantine, the newest obs merged
+Verdicts (design review finding 7 - `partial` is not an honest signal for a draining backlog):
+    DefinitiveError  no beat, or a beat older than max(2 h, the current cube's estimate x 1.5) while
+                     working (3 h while idle): the lane is dead or wedged;
+                     or the OLDEST owed release is older than OWED_AGE_MAX_DAYS: alive, not keeping up;
+                     or named cubes keep failing transiently (TRANSIENT_RED_AFTER in a row)
+    partial          alive and current, but something needs a human: QUARANTINED cubes, merged cubes
+                     whose served ids cannot be reproduced, or new-cube coverage debt older than
+                     NEW_CUBE_DEBT_AMBER_DAYS
+    ok               alive, and every owed release is younger than OWED_AGE_MAX_DAYS
+WHERE THOSE LAND (lane review, stated rather than implied). The orchestrator books a fetcher's
+DefinitiveError as `partial` too (orchestrate.py, `except DefinitiveError`), so in the health table
+both read ATTENTION, and neither advances last_success - staleness then escalates on its own. This
+unit runs on statcan's weekly cadence, so it can take ~6.5 days to look. The PROMPT red is CI's:
+tools/guard_heartbeat.py --check applies this same `verdict` to the lane's beat every day and fails
+the run (statcan is run_location: local, which the cloud health gate does not judge).
+changed_keys is {}: the lane serves what it merges, and the registry's `served_by: lane` keeps the
+orchestrator's CSV phase and retry drain off statcan (a second writer - design review finding 3).
+
+The helpers below - enumeration, download, StatCan's own completeness counts, the key-overlap gate,
+the whole-table fetch - are what the lane imports. They are unchanged from the whole-table fetcher.
+
+Layout of the store the lane writes: ONE zstd parquet per cube (productId) under
+clean_full/statcan/<pid>.parquet (~8,207 files), schema EXACTLY as written by jobs/ingest_statcan.py:
+    series_key(string)  = StatCan VECTOR id, lowercase "v"+digits  (e.g. "v41690973");
+                          Census wide-layout cubes: "<Coordinate>.<k>" (ingest_statcan._iter_census)
     obs_date(date32)    = REF_DATE parsed (annual->Dec-31, monthly/quarterly->day-1)
     value(float64)      = null when suppressed
-    geo(string), uom(string), coordinate(string)  = per-vector constants
-    status(string)      = ".." when value is suppressed/null, "" otherwise
-plus the bulk run's .done / .fail markers, _manifest.jsonl, _sizecache.json, _tmp/.
-This fetcher OWNS only the per-cube *.parquet (it merges into them) and its own
-_incr_state.json; it never touches the bulk markers/manifests or any other file.
+    geo(string), uom(string), coordinate(string)
+    status(string)      = StatCan's STATUS flag
 
-WHY extend_by_date (a genuine date-tail), not a whole-cube re-download:
-  getFullTableDownloadCSV (what the bulk ingester uses) is full-table only — no date
-  filter. But WDS exposes a true date-tail keyed on the SAME vector ids already on
-  disk: getBulkVectorDataByRange(vectorIds, startDataPointReleaseDate, end). It
-  returns only the datapoints (RELEASE-dated) in the window — i.e. brand-new periods
-  AND revisions to old periods — keyed by vectorId. So we:
-    1. Enumerate getAllCubesListLite and keep the productIds whose `releaseTime` is on or
-       after the watermark. NOT getChangedCubeList: that endpoint is a SINGLE-DAY feed
-       ("changed ON <date>"), and reading it as a since-feed meant one day in seven was
-       inspected while the watermark jumped over the rest — see `_changed_pids` for the
-       measurement that settles it, and for what it cost.
-    2. For each changed cube WITH an on-disk parquet: read its distinct vectors and
-       their (geo,uom,coordinate) constants from disk, then pull only datapoints
-       released since the watermark via getBulkVectorDataByRange (chunked 250/req).
-    3. Build rows in the EXACT 7-column on-disk schema (series_key="v"+vectorId;
-       geo/uom/coordinate backfilled per-vector from disk; status="." . when value
-       null) and merge.merge_and_write (dedup (series_key,obs_date); new value wins
-       on revision; never-shrink; atomic). Existing series gain new dates / revised
-       values — they are EXTENDED, never duplicated or shrunk.
-
-Scope: only cubes already on disk are refreshed (the merge target must exist, and
-the vector endpoint does not carry the dimension metadata needed to materialise a
-brand-new cube from scratch). Brand-new cubes remain the bulk ingester's job; this
-keeps the incremental run cheap and never invents geo/uom we cannot verify.
-
-Honest-status contract (Tally + finalize):
-  - Each changed cube is one sub-unit. A successful merge -> added_unit(n_new); a
-    cube whose tail genuinely has 0 new datapoints -> empty_unit().
-  - A timeout / 5xx / 429 / network drop -> transient_unit() (status 'partial'; the
-    orchestrator does NOT advance last_success and the watermark is NOT advanced, so
-    the same window is retried next run). Existing parquet is left untouched.
-  - empty_window_floor is set very high: a quiet poll where the change-feed lists few
-    or no cubes (StatCan does not release every cube every day) is LEGITIMATE and must
-    not be laundered into a structural DefinitiveError. Genuine structural breaks
-    surface at the HTTP/JSON layer instead.
+WHY THE WHOLE TABLE AND NOT THE VECTOR TAIL (measured, NUMBERS.md 2026-09-23 rows). The tail
+(getBulkVectorDataByRange) costs ~0.16 s PER VECTOR, so the release backlog of 478 cubes / 69,547,320
+vectors was ~278,000 requests - months. The whole table costs ~4.3 MB/s + ~187,000 rows/s to parse +
+~171,000 rows/s to merge: 24100058 (53,335,935 rows) in ~12 min against ~94 min of tail requests. It
+also carries what the tail could not: revisions to any period, relabelled members (24100058: 590,276
+rows of "Windsor" are now "Windsor - other locations"), the real STATUS flag, and the Census
+wide-layout cubes, which have no vector ids.
 """
 from __future__ import annotations
+import csv
 import datetime as dt
 import json
 import os
 import time
+import uuid
+import zipfile
+import zlib
 
-import pyarrow as pa
-import pyarrow.compute as pc
 import requests
 
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Deadline, Tally, finalize, sane_since
 
 OUT_DIR = os.path.join(config.DATA_ROOT, "statcan")
-STATE = os.path.join(OUT_DIR, "_incr_state.json")
+# What the lane publishes (jobs/statcan_lane.py STATE / PROGRESS - the same paths, blob-routed).
+LANE_STATE = os.path.join(OUT_DIR, "_lane_state.json")
+LANE_PROGRESS = os.path.join(OUT_DIR, "_lane_progress.json")
 
 BASE = "https://www150.statcan.gc.ca/t1/wds/rest"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
@@ -72,145 +78,82 @@ SOURCE = "statcan"
 
 DEDUP = ("series_key", "obs_date")
 
-# WDS caps the vector endpoints at 300 ids/request; stay safely under.
-VEC_CHUNK = 250
-# How far back to look when there is no stored watermark yet (first incremental run).
-# The change-feed + release-date window are both release-dated, so a generous backstop
-# only re-confirms already-stored points (merge dedups them) — it never loses data.
-COLD_LOOKBACK_DAYS = 30
-# Re-poll the change-feed from a few days BEFORE the watermark to absorb clock/feed
-# skew (a cube whose release lands right on the boundary must not be missed).
-FEED_SLACK_DAYS = 2
+# The whole-table endpoint: returns {"status": "SUCCESS", "object": <zip URL>} for one cube.
+FULL_TABLE = "getFullTableDownloadCSV/{pid}/en"
+# THE COMPLETENESS GATE is StatCan's own count, not ours. getCubeMetadata publishes
+# nbDatapointsCube and nbSeriesCube per cube, and the ingester's parse reproduced BOTH exactly on
+# every cube measured (NUMBERS.md 2026-09-23: 32100004 1,584/1,584, 33100330 10,080/10,080,
+# 14100442 285,824/6,496, 24100058 53,335,935/35,264). A ratio against the STORED rows could not
+# do this job: the merge keeps every stored row the new table lacks, so a short table would publish
+# as "a few rows updated", and the stored count only ever grows, so a publisher that trims history
+# would be refused for ever. VECTORLESS cubes (Census, coordinate-keyed) are the exception: their
+# counts do not describe the table, and _check_complete says what stands in for them.
+CUBE_META = "getCubeMetadata"
+# THE KEY GATE. Counts cannot see a table re-keyed under us: StatCan filling the blank VECTOR cells
+# of 12100147..12100152 (stored under COORDINATE keys, ingest_statcan._iter_standard's fallback)
+# would pass every count and then ADD every series again under 'v...' keys beside the old ones -
+# keep-old merging keeps both. At least this fraction of the stored cube's keys must reappear.
+KEY_OVERLAP_MIN = 0.90
+# Scratch space for one cube's zip and parsed parquet, removed in `finally`. Its own directory, so
+# the bulk ingester's _tmp/ is never touched.
+TMP_DIR = os.path.join(OUT_DIR, "_incr_tmp")
+# Seconds of work per STORED byte - the lane's estimate for a cube, and so the reporter's allowance
+# between beats. From 24100058 (253,240,781 stored bytes): download 110.8 s + parse 285.4 s + merge
+# 310.9 s = 707 s, i.e. 2.8e-6 s/B; doubled for the merge's 2 GB default memory limit (the
+# measurement ran at 4 GB) and one network.
+EST_SECONDS_PER_STORED_BYTE = 5.6e-6
+# A cube that fails DETERMINISTICALLY this many times on one release is quarantined by the lane.
+QUARANTINE_AFTER = 3
 
-# WALL-CLOCK BUDGET, with the per-cube RESUME that R190 requires beside one. Without both, this
-# fetcher was a self-certifying outage: it walks `sorted(changed)` - a fixed order - and advances
-# the watermark only after a clean WHOLE pass, so a pass the desktop's wall clock killed re-walked
-# the same prefix next time and the tail was never reached. Measured 2026-09-17: killed_external at
-# 13,567 s on 2026-09-11, with 505 cubes released since the watermark. The budget stops STARTING new
-# cubes; the resume set below means a kill mid-pass now costs only the cube in flight.
-BUDGET_MIN = 45.0
-# Save the resume set every N finished cubes (and at the end): the file is ~100 B per cube, and a
-# write per cube would add an R2 PUT to each one for no benefit.
-SAVE_EVERY = 10
-# THE RESUMPTION MECHANISM, named so it can be recognised rather than exempted. A budgeted sweep
-# over a fixed order re-walks the same prefix for ever unless something makes the next run start
-# somewhere new (R190; tests/test_budget_needs_resumption.py). This fetcher does not rotate its
-# start offset - it records the cubes FINISHED in the current window under this state key, so the
-# next pass skips them by construction and begins at the first cube that still owes work. Stronger
-# than a rotation bookmark: a kill mid-pass costs only the cube in flight, and the window's
-# identity (its feed_since) means a resume set can never be applied to a different window.
-RESUME_WINDOW_KEY = "window"
-
-# On-disk schema, byte-for-byte what jobs/ingest_statcan.py writes.
-SCHEMA = pa.schema([
-    ("series_key", pa.string()),
-    ("obs_date", pa.date32()),
-    ("value", pa.float64()),
-    ("geo", pa.string()),
-    ("uom", pa.string()),
-    ("coordinate", pa.string()),
-    ("status", pa.string()),
-])
-
-
-# --------------------------------------------------------------------------- #
-# date parsing — identical semantics to the bulk ingester's parse_refdate so a
-# merged row lands on the SAME obs_date the bulk file already uses (dedup works).
-# --------------------------------------------------------------------------- #
-def _parse_refper(p):
-    if not p:
-        return None
-    p = p.strip()
-    try:
-        n = len(p)
-        if n == 4 and p.isdigit():
-            return dt.date(int(p), 12, 31)            # annual -> year-end
-        if n == 7:                                     # YYYY-MM
-            y, m = p.split("-")
-            return dt.date(int(y), int(m), 1)
-        if n == 10:                                    # YYYY-MM-DD
-            y, m, d = p.split("-")
-            return dt.date(int(y), int(m), int(d))
-        if "/" in p:                                   # YYYY/YYYY fiscal range
-            first = p.split("/")[0].strip()
-            if first.isdigit() and len(first) == 4:
-                return dt.date(int(first), 12, 31)
-    except (ValueError, KeyError):
-        return None
-    return None
+# THE REPORTER'S THRESHOLDS.
+# statcan's registry cadence is weekly; SLA_TOLERANCE 2 -> an owed release older than 14 days means
+# the lane is not keeping up. The initial backlog (releases since 2026-07-29) is older than that, so
+# statcan reads RED until the lane has drained it - which is the truth.
+OWED_AGE_MAX_DAYS = 14
+# Between beats: the lane beats at every phase boundary and every 500 parts, never from a timer. A
+# phase can legitimately run as long as its cube's estimate (12100152 ~380 min), so the allowance
+# while working is max(BEAT_MIN_HOURS, estimate x 1.5).
+BEAT_MIN_HOURS = 2.0
+BEAT_EST_MARGIN = 1.5
+# While idle the lane beats every iteration (~5 min) and enumerates at least hourly.
+IDLE_BEAT_MAX_HOURS = 3.0
+# Behind the SLA but finished a cube (merged or served) within this long - or within the current
+# cube's own allowance, if longer - reads DRAINING (amber) rather than red.
+DRAIN_PROGRESS_MAX_HOURS = 6.0
+# A beat or progress stamp this far ahead of the reader's clock is treated as unreadable.
+FUTURE_SKEW_HOURS = 0.25
+# Released cubes we do not hold are booked as coverage debt by the lane; past this age the debt is
+# named (partial) so it cannot grow silently (lane review).
+NEW_CUBE_DEBT_AMBER_DAYS = 30
 
 
-def _coord_trim(coord):
-    """Vector endpoint returns a 10-part padded coordinate ('1.1.1.0.0.0.0.0.0.0');
-    on-disk it is trimmed to the significant prefix ('1.1.1'). Drop trailing '.0'
-    groups so the merged value matches the existing column (consistency, not a key)."""
-    if not coord:
-        return ""
-    parts = coord.split(".")
-    while len(parts) > 1 and parts[-1] == "0":
-        parts.pop()
-    return ".".join(parts)
-
-
-# --------------------------------------------------------------------------- #
-# state (release-date watermark + per-cube cursors)
-# --------------------------------------------------------------------------- #
-def _load_state():
-    """BLOB-ROUTED (R533's class). statcan is run_location: local today, so the plain open()
-    worked on this desktop — but the watermark is the whole incremental contract, and the
-    same code on a runner would restart from scratch every time. Local copy (35 B,
-    last_release_date 2026-08-21) was pushed to R2 before this shipped; under the local
-    backend blob reads the identical path, so nothing changes here today."""
-    raw = blob.read_bytes(STATE)
-    if raw is not None:
-        try:
-            d = json.loads(raw.decode("utf-8"))
-            d.setdefault("last_release_date", None)   # 'YYYY-MM-DD'
-            # {"feed_since": 'YYYY-MM-DD', "done": {pid: 'YYYY-MM-DD fetched through'}} for the
-            # window currently being worked; absent or for another window means "start fresh".
-            d.setdefault(RESUME_WINDOW_KEY, {})
-            return d
-        except Exception:
-            pass
-    return {"last_release_date": None}
-
-
-def _save_state(state):
-    blob.write_bytes_atomic(STATE, json.dumps(state).encode("utf-8"))
-
-
-def _post(endpoint, payload, tries=5):
-    """POST a WDS endpoint. Returns parsed JSON on 200. TransientError on
-    timeout/5xx/429/network/truncated-body (retry next run); DefinitiveError on a
-    hard non-200 (!=429)."""
-    url = f"{BASE}/{endpoint}"
-    for a in range(tries):
-        try:
-            r = requests.post(url, json=payload, headers=UA, timeout=180)
-        except (requests.Timeout, requests.ConnectionError) as e:
-            if a == tries - 1:
-                raise TransientError(f"statcan {endpoint}: {e}")
-            time.sleep(min(2 ** a, 30)); continue
-        if r.status_code == 200:
-            try:
-                return r.json()
-            except ValueError as e:
-                if a == tries - 1:
-                    raise TransientError(f"statcan {endpoint}: bad json on 200 ({e})")
-                time.sleep(min(2 ** a, 30)); continue
-        if r.status_code in (429, 500, 502, 503, 504):
-            if a == tries - 1:
-                raise TransientError(f"statcan {endpoint} HTTP {r.status_code}")
-            time.sleep(min(2 ** a, 30)); continue
-        raise DefinitiveError(f"statcan {endpoint} HTTP {r.status_code}")
+def _ingester():
+    """jobs/ingest_statcan.py, the producer of every stored cube. Imported lazily so importing this
+    fetcher stays cheap, and imported rather than copied so the parse cannot drift from it."""
+    import jobs.ingest_statcan as ing                                # noqa: PLC0415
+    return ing
 
 
 def _get(endpoint, tries=5, timeout=120):
-    """GET a WDS endpoint (used for the change-feed). Same transient/definitive rules."""
+    """GET a WDS endpoint. Returns parsed JSON on 200. TransientError on
+    timeout/5xx/429/network/truncated-body (retry next run); DefinitiveError on a
+    hard non-200 (!=429)."""
+    return _call("GET", endpoint, None, tries, timeout)
+
+
+def _post(endpoint, payload, tries=5, timeout=120):
+    """POST a WDS endpoint. Same transient/definitive rules as _get."""
+    return _call("POST", endpoint, payload, tries, timeout)
+
+
+def _call(method, endpoint, payload, tries, timeout):
     url = f"{BASE}/{endpoint}"
     for a in range(tries):
         try:
-            r = requests.get(url, headers=UA, timeout=timeout)
+            if method == "GET":
+                r = requests.get(url, headers=UA, timeout=timeout)
+            else:
+                r = requests.post(url, json=payload, headers=UA, timeout=timeout)
         except (requests.Timeout, requests.ConnectionError) as e:
             if a == tries - 1:
                 raise TransientError(f"statcan {endpoint}: {e}")
@@ -233,7 +176,12 @@ _LITE_FLOOR = 1000     # StatCan publishes >8,000 cubes; a short list is a struc
 
 
 def _changed_pids(feed_since: dt.date):
-    """Product ids whose RELEASE TIME is on or after `feed_since`.
+    """The product ids of `_changed_releases`, as a set."""
+    return set(_changed_releases(feed_since))
+
+
+def _changed_releases(feed_since: dt.date) -> dict:
+    """{productId: 'YYYY-MM-DDTHH:MM' release time} for every cube released on or after `feed_since`.
 
     NOT `getChangedCubeList`. THAT ENDPOINT IS A SINGLE-DAY FEED AND THIS FETCHER READ IT AS A
     SINCE-FEED FOR ITS ENTIRE LIFE — the one defect that explains statcan's staleness.
@@ -263,6 +211,9 @@ def _changed_pids(feed_since: dt.date):
     `releaseTime` present on 8,270 of 8,270 — so the honest "changed since" is a filter over it.
     One request, complete set, no watermark arithmetic that can skip a day.
 
+    THE RELEASE DATE IS KEPT (2026-09-22), not just the id: a cube finished earlier in an open
+    window and RE-released since must be fetched again, and only its release date says so.
+
     FAILS CLOSED, because the alternative is the silent empty result: an enumeration that comes
     back empty or implausibly short raises TransientError rather than yielding "no cubes
     changed", which would advance the watermark over a window nobody looked at. That is the
@@ -275,444 +226,317 @@ def _changed_pids(feed_since: dt.date):
             f"statcan getAllCubesListLite returned {len(cubes) if isinstance(cubes, list) else 'no list'} "
             f"cube(s), below the {_LITE_FLOOR} floor — refusing to read that as 'nothing changed'")
     cutoff = feed_since.isoformat()
-    pids, dated = set(), 0
+    rel, dated = {}, 0
     for o in cubes:
         if not isinstance(o, dict):
             continue
-        rt = str(o.get("releaseTime") or "")[:10]
+        # THE FULL TIMESTAMP ('YYYY-MM-DDTHH:MM'), not the day: a cube fetched at 07:00 and
+        # re-released at 08:30 the same day compared EQUAL on dates and was skipped (round-3 review).
+        rt = str(o.get("releaseTime") or "")[:16]
         pid = o.get("productId")
-        if pid is None or len(rt) != 10:
+        if pid is None or len(rt) < 10:
             continue
         dated += 1
-        if rt >= cutoff:                      # ISO dates: lexicographic == chronological
-            pids.add(int(pid))
+        if rt[:10] >= cutoff:                 # ISO dates: lexicographic == chronological
+            rel[int(pid)] = rt
     if not dated:
         raise TransientError(
             "statcan getAllCubesListLite returned cubes but none carried a usable releaseTime — "
             "the field this filter depends on is gone; refusing to report an empty change set")
     print(f"    statcan: {len(cubes):,} cubes listed, {dated:,} with a release date, "
-          f"{len(pids):,} released on/after {cutoff}", flush=True)
-    return pids
+          f"{len(rel):,} released on/after {cutoff}", flush=True)
+    return rel
 
 
-def _disk_vector_map(path):
-    """Read an on-disk cube parquet -> {vectorId(int): (geo, uom, coordinate)}.
-    Each vector maps to exactly one (geo,uom,coordinate) on disk (verified), so this
-    backfill is lossless and keeps merged rows consistent with existing columns.
-
-    MEMORY (2026-07-30). This runs for EVERY changed pid, before any other work on it. It
-    used to `blob.read_table(path)` whole and then `.to_pydict()` — every column, every
-    value, as Python objects. statcan's largest cube is 98100435.parquet at 962,150,400
-    rows: the Arrow decode alone is ~67 GB at ~70 B/row on a 16 GB runner, and to_pydict()
-    is far worse again. The moment StatCan's change feed listed a census cube this would
-    have destroyed the runner exactly the way abs did — and statcan is the first giant
-    reached now that abs is bounded, so the outage would simply have moved here.
-
-    Now: STREAMED via blob.iter_batches over only the four columns needed, so peak decoded
-    memory is one record batch plus the resulting map, not the whole cube.
-
-    `columns=` ALONE WAS NOT ENOUGH, and the first version of this fix stopped there:
-    read_table still materialises the entire projected table, which for that cube is four
-    string columns over 962M rows — still roughly 56 GB. Narrowing a fatal read into a
-    slightly smaller fatal read is not a fix. The iteration is what bounds it.
-
-    NOT YET BOUNDED: the map itself is one entry per distinct vector in the cube, which is
-    unmeasured for the census giants. It is far smaller than the row count, but if a cube
-    turns out to hold tens of millions of vectors this needs a cap too — see the work queue.
-    """
-    # ANSWER FROM THE FOOTER FIRST. Some cubes carry no vector ids at all, and streaming one to discover that
-    # costs its whole decode: measured 250,644 rows/s, so the six such cubes reached on 2026-09-11 burned
-    # ~50 min to return {}. Parquet keeps per-row-group min/max for series_key, so the question is answerable
-    # from metadata (R1046).
-    if _footer_proves_no_vectors(path):
-        print(f"    statcan: {path} holds no vector ids at all (proved from the parquet footer, no decode). "
-              f"The incremental vector path cannot update it and it will be booked as unchanged - see "
-              f"_footer_proves_no_vectors for which cubes this is expected for.", flush=True)
-        return {}
-
-    out = {}
-    seen = [0, 0]                      # [keys examined, keys skipped as non-vector]
-    for batch in blob.iter_batches(
-            path, columns=["series_key", "geo", "uom", "coordinate"]):
-        _fold_vectors(batch.to_pydict(), out, seen)
-    # DO NOT let "could not read this cube's keys" look like "this cube has nothing new" (failure class H).
-    if seen[0] and not out:
-        print(f"    statcan: {path} has {seen[0]:,} series_key values and NONE parse as a vector id. The "
-              f"incremental vector path cannot update this cube and it will be booked as unchanged.",
-              flush=True)
-    elif seen[1]:
-        print(f"    statcan: {path} skipped {seen[1]:,} of {seen[0]:,} series_key values that do not parse "
-              f"as vector ids", flush=True)
-    return out
-
-
-def _footer_proves_no_vectors(path) -> bool:
-    """True only when the parquet footer PROVES no series_key can be a vector id. Never guesses.
-
-    Parquet string statistics are byte-wise unsigned, so a row group whose MAXIMUM sorts below "V" cannot hold
-    any key beginning with 'V' or 'v'. The threshold is "V" (0x56) and NOT "v" (0x76), because _fold_vectors
-    accepts both cases: a cube of 'V123' keys would be silently skipped by the looser bound.
-
-    Returns False - i.e. fall through and stream - whenever the footer cannot settle it: absent statistics, a
-    missing column, an unreadable file. "Cannot look" must never read as "nothing there" (failure class H).
-
-    WHICH CUBES THIS IS EXPECTED FOR. StatCan publishes its Census Program tables in a wide layout with no
-    VECTOR column, and jobs/ingest_statcan.py:369-376 keys those rows by Coordinate on purpose. 525 of the 531
-    such cubes in the store are that layout; the vector tail endpoint structurally cannot serve them, and
-    re-pulling reproduces the same keys. The remaining six (12100147..12100152) are a different matter - a blank
-    VECTOR cell falling back to COORDINATE at ingest_statcan.py:282-288 - and are a genuine defect (R1043/R1046).
-    """
+# --------------------------------------------------------------------------- #
+# the whole-table path
+# --------------------------------------------------------------------------- #
+def _remove_quietly(p):
     try:
-        md = blob.read_metadata(path)
-    except Exception:                                              # noqa: BLE001 - cannot look != nothing there
-        return False
-    if md.num_row_groups == 0:
-        return False
-    for rg in range(md.num_row_groups):
-        g = md.row_group(rg)
-        col = None
-        for c in range(g.num_columns):
-            if g.column(c).path_in_schema == "series_key":
-                col = g.column(c)
-                break
-        if col is None or not col.is_stats_set:
-            return False
-        st = col.statistics
-        if st is None or not st.has_min_max:
-            return False
-        mx = st.max
-        if isinstance(mx, bytes):
-            mx = mx.decode("utf-8", "replace")
-        if str(mx) >= "V":
-            return False
-    return True
+        if p and os.path.exists(p):
+            os.remove(p)
+    except OSError:
+        pass
 
 
-def _fold_vectors(d, out, seen=None):
-    """Fold one batch of the four vector columns into `out` (see _disk_vector_map).
-
-    `seen` is [examined, skipped] and is counted so the caller can tell a cube with no vectors from a cube
-    whose keys it cannot read - those are the same empty dict otherwise, and one of them is a silent freeze.
-    """
-    keys = d.get("series_key", [])
-    geos = d.get("geo", [])
-    uoms = d.get("uom", [])
-    coords = d.get("coordinate", [])
-    for i, k in enumerate(keys):
-        if seen is not None:
-            seen[0] += 1
-        if not k or k[0] not in "vV":
-            if seen is not None:
-                seen[1] += 1
-            continue
+def _download(url, dest, tries=5):
+    """Stream `url` to `dest`. TransientError on timeout / network / 429 / 5xx after `tries`, and on
+    a body shorter or longer than its Content-Length (a truncated transfer must never reach the
+    parser as if it were the table). DefinitiveError on any other non-200."""
+    for a in range(tries):
         try:
-            vid = int(k[1:])
-        except ValueError:
-            if seen is not None:
-                seen[1] += 1
-            continue
-        if vid in out:
-            continue
-        out[vid] = (geos[i] if i < len(geos) else None,
-                    uoms[i] if i < len(uoms) else None,
-                    coords[i] if i < len(coords) else None)
-    return out
-
-
-def _empty_table():
-    return pa.table({n: pa.array([], type=f.type) for n, f in zip(SCHEMA.names, SCHEMA)},
-                    schema=SCHEMA)
-
-
-def _fetch_cube_tail(vmap, start_release: dt.date, end_release: dt.date):
-    """Pull datapoints released in [start_release, end_release] for all of a cube's
-    vectors, in chunks. Returns a table in the on-disk schema. Raises TransientError
-    on any chunk's transient fault (caller marks the cube transient, leaves it for
-    next run)."""
-    vids = list(vmap)
-    rows_k, rows_d, rows_v, rows_g, rows_u, rows_c, rows_s = [], [], [], [], [], [], []
-    start_s = start_release.isoformat() + "T00:00"
-    end_s = end_release.isoformat() + "T23:59"
-    for i in range(0, len(vids), VEC_CHUNK):
-        chunk = vids[i:i + VEC_CHUNK]
-        payload = {"vectorIds": [str(v) for v in chunk],
-                   "startDataPointReleaseDate": start_s,
-                   "endDataPointReleaseDate": end_s}
-        data = _post("getBulkVectorDataByRange", payload)
-        if isinstance(data, dict):
-            data = [data]
-        for item in data or []:
-            if not isinstance(item, dict) or item.get("status") != "SUCCESS":
-                # A per-vector non-SUCCESS (e.g. throttled mid-list) is a transient
-                # sub-fault: abort this cube cleanly so it retries next run rather
-                # than publishing a half-window.
-                raise TransientError("statcan getBulkVectorDataByRange: non-SUCCESS item")
-            o = item.get("object") or {}
-            vid = o.get("vectorId")
-            if vid is None:
-                continue
-            vid = int(vid)
-            geo, uom, coord_disk = vmap.get(vid, (None, None, None))
-            for dp in o.get("vectorDataPoint") or []:
-                od = _parse_refper(dp.get("refPer") or dp.get("refPerRaw"))
-                if od is None:
+            with requests.get(url, headers={"User-Agent": UA["User-Agent"]}, timeout=900,
+                              stream=True) as r:
+                if r.status_code in (429, 500, 502, 503, 504):
+                    if a == tries - 1:
+                        raise TransientError(f"statcan zip {url} HTTP {r.status_code}")
+                    time.sleep(min(2 ** a, 30))
                     continue
-                raw = dp.get("value")
-                try:
-                    val = float(raw) if raw is not None else None
-                except (TypeError, ValueError):
-                    val = None
-                # on-disk invariant: status==".." iff value is null/suppressed.
-                status = ".." if val is None else ""
-                rows_k.append(f"v{vid}")
-                rows_d.append(od)
-                rows_v.append(val)
-                rows_g.append(geo)
-                rows_u.append(uom)
-                # prefer the disk coordinate (already trimmed & verified); fall back
-                # to a trimmed endpoint coordinate for any vector not yet on disk.
-                rows_c.append(coord_disk if coord_disk is not None
-                              else _coord_trim(o.get("coordinate")))
-                rows_s.append(status)
-        time.sleep(0.2)   # polite pacing (WDS soft limit ~25 req/s/IP)
-    return pa.table({
-        "series_key": pa.array(rows_k, pa.string()),
-        "obs_date": pa.array(rows_d, pa.date32()),
-        "value": pa.array(rows_v, pa.float64()),
-        "geo": pa.array(rows_g, pa.string()),
-        "uom": pa.array(rows_u, pa.string()),
-        "coordinate": pa.array(rows_c, pa.string()),
-        "status": pa.array(rows_s, pa.string()),
-    }, schema=SCHEMA)
+                if r.status_code != 200:
+                    raise DefinitiveError(f"statcan zip {url} HTTP {r.status_code}")
+                want = r.headers.get("Content-Length")
+                got = 0
+                with open(dest, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1 << 20):
+                        if chunk:
+                            f.write(chunk)
+                            got += len(chunk)
+            if want is not None and want.isdigit() and int(want) != got:
+                if a == tries - 1:
+                    raise TransientError(f"statcan zip {url}: {got:,} of {int(want):,} bytes arrived")
+                time.sleep(min(2 ** a, 30))
+                continue
+            return got
+        except (requests.Timeout, requests.ConnectionError,
+                requests.exceptions.ChunkedEncodingError) as e:
+            if a == tries - 1:
+                raise TransientError(f"statcan zip {url}: {type(e).__name__}: {e}") from e
+            time.sleep(min(2 ** a, 30))
+    raise TransientError(f"statcan zip {url}: no attempt succeeded")      # unreachable
+
+
+def _cube_counts(pid):
+    """(nbDatapointsCube, nbSeriesCube) from StatCan's getCubeMetadata. TransientError when the
+    answer is not a SUCCESS carrying both as integers - a gate that cannot read its reference
+    must not pass (failure class H)."""
+    j = _post(CUBE_META, [{"productId": int(pid)}])
+    item = j[0] if isinstance(j, list) and j else j
+    o = item.get("object") if isinstance(item, dict) and item.get("status") == "SUCCESS" else None
+    try:
+        return int(o["nbDatapointsCube"]), int(o["nbSeriesCube"])
+    except (TypeError, KeyError, ValueError) as e:
+        raise TransientError(f"statcan {CUBE_META} {pid}: no usable counts ({str(j)[:160]})") from e
+
+
+# Parser skips that say nothing about completeness: csv.reader yields [] for a blank line, and
+# StatCan's Census CSVs end with two (98100001, 98100073).
+_HARMLESS_SKIPS = {"blank_line"}
+
+
+def _vectorless(st, want_series):
+    """True for a cube StatCan's counts do not describe: the Census wide layout, or a table whose
+    nbSeriesCube is 1 while it parses into many series (it has no vector ids - the coordinate-keyed
+    12100147..12100152)."""
+    return st.get("layout") == "census" or (want_series == 1 and int(st["n_series"]) > 1)
+
+
+def _check_complete(pid, st, want_rows, want_series):
+    """Raise DefinitiveError unless the parse is provably complete. Returns True when update() must
+    also require at least the stored rows (see below).
+
+    CUBES WITH VECTORS: the parse must reproduce StatCan's own counts exactly - nbDatapointsCube
+    rows and, while the parser counted them exactly (below its SERIES_CAP), nbSeriesCube series.
+
+    VECTORLESS CUBES: those counts do not describe the parse. nbSeriesCube is 1 for them, and the
+    datapoint count disagrees in both directions - Census 98100073 publishes 16,636,456 against
+    16,797,696 parsed cells (161,240 more, and not its 5,158,862 null cells), coordinate-keyed
+    12100147 publishes 19,940,793 against 18,225,522 rows with the parser dropping NOTHING - so
+    equality would refuse a correct table for ever (NUMBERS.md 2026-09-23). There the parse must
+    skip no row for any reason but a blank line, and must hold at least the stored rows."""
+    bad_skips = {k: v for k, v in (st.get("skipped") or {}).items() if k not in _HARMLESS_SKIPS}
+    if _vectorless(st, want_series):
+        if bad_skips:
+            raise DefinitiveError(f"statcan {pid}: the parse of a vectorless cube dropped rows {bad_skips}")
+        return True
+    got_rows, got_series = int(st["n_obs"]), int(st["n_series"])
+    bad = []
+    if got_rows != want_rows:
+        bad.append(f"{got_rows:,} rows parsed vs nbDatapointsCube {want_rows:,}")
+    if not st.get("series_capped") and got_series != want_series:
+        bad.append(f"{got_series:,} series parsed vs nbSeriesCube {want_series:,}")
+    if bad:
+        raise DefinitiveError(f"statcan {pid}: incomplete against StatCan's own counts - "
+                              f"{'; '.join(bad)}; rows skipped by the parser {st.get('skipped')}")
+    return False
+
+
+def _fetch_cube_whole(pid):
+    """Download cube `pid`'s full table, parse it with the bulk ingester's own
+    parse_zip_to_parquet into a scratch parquet, and prove it complete against StatCan's counts.
+    Returns (scratch_parquet_path, stats). The caller owns the returned file and removes it;
+    everything else this writes is removed here, success or not.
+
+    TransientError: a WDS call or the download failed, or the zip is corrupt (bad CRC, truncated
+    deflate stream) - retry next run. DefinitiveError: StatCan answered but gave no zip URL, the
+    CSV is in a layout the ingester does not recognise, or the parse does not reproduce StatCan's
+    own counts - the cube needs a human."""
+    want_rows, want_series = _cube_counts(pid)
+    j = _get(FULL_TABLE.format(pid=pid))
+    url = j.get("object") if isinstance(j, dict) and j.get("status") == "SUCCESS" else None
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise DefinitiveError(f"statcan {FULL_TABLE.format(pid=pid)} gave no zip URL: {str(j)[:200]}")
+    os.makedirs(TMP_DIR, exist_ok=True)
+    stem = os.path.join(TMP_DIR, f"{pid}.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+    zpath, out = stem + ".zip", stem + ".parquet"
+    ok = False
+    try:
+        zip_bytes = _download(url, zpath)
+        try:
+            st = _ingester().parse_zip_to_parquet(zpath, out)
+        except (zipfile.BadZipFile, zlib.error, EOFError) as e:
+            raise TransientError(f"statcan {pid}: corrupt zip ({type(e).__name__}: {e})") from e
+        except (OSError, MemoryError) as e:
+            # THIS MACHINE, not the cube: a full disk or an allocation failure while writing the
+            # scratch parquet. Transient, so it can never count toward a quarantine.
+            raise TransientError(f"statcan {pid}: parse failed on this machine "
+                                 f"({type(e).__name__}: {e})") from e
+        except (csv.Error, StopIteration, UnicodeError, ValueError) as e:
+            # THE TABLE, deterministically: an empty CSV (no header row), a malformed field, a
+            # value Arrow refuses. Escaping update() used to crash every pass at the same cube
+            # without ever quarantining it (round-3 review).
+            raise DefinitiveError(f"statcan {pid}: unparseable table "
+                                  f"({type(e).__name__}: {str(e)[:120]})") from e
+        except RuntimeError as e:
+            # the ingester's own refusals: no data CSV in the zip, or an unrecognised layout
+            raise DefinitiveError(f"statcan {pid}: {e}") from e
+        st["needs_stored_floor"] = _check_complete(pid, st, want_rows, want_series)
+        st["zip_bytes"] = zip_bytes
+        ok = True
+        return out, st
+    finally:
+        for p in (zpath, out + ".part") + (() if ok else (out,)):
+            _remove_quietly(p)
+
+
+def _key_overlap(stored_path, new_path):
+    """(stored keys, stored keys that reappear in the new table), by DuckDB over the two files."""
+    import duckdb                                                    # noqa: PLC0415
+    a = stored_path.replace("\\", "/").replace("'", "''")
+    b = new_path.replace("\\", "/").replace("'", "''")
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET memory_limit='{merge.BOUNDED_MEMORY_LIMIT}'")
+        total = con.execute(
+            f"SELECT count(DISTINCT series_key) FROM read_parquet('{a}')").fetchone()[0]
+        both = con.execute(
+            f"SELECT count(*) FROM (SELECT DISTINCT series_key FROM read_parquet('{a}') "
+            f"INTERSECT SELECT DISTINCT series_key FROM read_parquet('{b}'))").fetchone()[0]
+    finally:
+        con.close()
+    return int(total), int(both)
+
+
+def _environmental(e) -> bool:
+    """True when a merge refusal is about THIS MACHINE, not the data: merge_and_write_bounded wraps
+    a full disk, a spill-cap overflow, an allocation failure or a DuckDB I/O error as
+    DefinitiveError `from` the original (merge.py), and refuses up front when the spill disk is too
+    short. Those must be transient - counting them toward a quarantine would park an annual cube for
+    a year over a disk-space blip (round-2 review, probe D). The data refusals (shrink, zero rows,
+    a dropped or foreign column, an unsupported type) are raised with no cause."""
+    return e.__cause__ is not None or "spill disk" in str(e)
+
+
+def _read_lane(path):
+    raw = blob.read_bytes(path)
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        raise DefinitiveError(f"statcan: {path} is unreadable ({type(e).__name__}: {e}) - the lane's "
+                              f"record cannot be judged") from e
+
+
+def _hours_since(iso, now):
+    """Hours from a published stamp to `now`; None when unreadable OR more than FUTURE_SKEW_HOURS in
+    the future - a stamp from the future cannot vouch for anything (lane review round 3, P7: one 48 h
+    ahead earned amber). Small skew between the workstation's clock and CI's is tolerated."""
+    try:
+        t = dt.datetime.strptime(str(iso), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    h = (now - t).total_seconds() / 3600.0
+    return None if h < -FUTURE_SKEW_HOURS else max(h, 0.0)
+
+
+def verdict(state, progress, now):
+    """(status, message, newest_obs) for the lane's published record. Raises DefinitiveError for
+    red. Pure: `update` supplies the record and the clock, tests supply their own."""
+    if progress is None or state is None:
+        raise DefinitiveError(
+            "statcan: the lane has published no progress/state under this backend "
+            f"({LANE_PROGRESS}) - jobs/statcan_lane.py has never run here, or the store is "
+            "unreachable. Nothing refreshes statcan without it.")
+    age_h = _hours_since(progress.get("beat_utc"), now)
+    cur = progress.get("current") or None
+    if cur:
+        est = cur.get("est_min") or 0
+        allowed = max(BEAT_MIN_HOURS, float(est) * BEAT_EST_MARGIN / 60.0)
+        doing = f"cube {cur.get('pid')} ({cur.get('phase')}, est ~{est} min)"
+    else:
+        allowed, doing = IDLE_BEAT_MAX_HOURS, f"state {progress.get('state')!r}"
+    if age_h is None or age_h > allowed:
+        raise DefinitiveError(
+            f"statcan: the lane is DEAD or wedged - last beat "
+            f"{'unreadable' if age_h is None else f'{age_h:.1f} h ago'} (allowed {allowed:.1f} h) "
+            f"while on {doing}. Check the guard (logs/_guard.log) and logs/statcan_lane.progress.json.")
+    if progress.get("state") == "store_unreachable":
+        raise DefinitiveError("statcan: the lane found the store holding ZERO cubes - the store is "
+                              "unreachable from its backend (R753)")
+    owed = progress.get("owed") or {}
+    oldest = owed.get("oldest_owed_release")
+    newest = None
+    for c in (state.get("cubes") or {}).values():
+        mo = c.get("max_obs")
+        if mo and (newest is None or mo > newest):
+            newest = mo
+    tail = (f"{owed.get('merge', 0)} cube(s) owe a merge, {owed.get('serve', 0)} owe serving, "
+            f"{owed.get('new_cubes', 0)} released cube(s) not held (catalogue debt)")
+    if oldest:
+        try:
+            age_d = (now.date() - dt.date.fromisoformat(str(oldest)[:10])).days
+        except ValueError:
+            age_d = None
+        if age_d is None or age_d > OWED_AGE_MAX_DAYS:
+            # BEHIND, and then: still finishing cubes, or not? The initial backlog (releases since
+            # 2026-07-29) is past the SLA on the lane's first beat, so an age rule alone reads RED
+            # for the whole drain, and a job red for weeks stops being read (R244; lane review
+            # round 2). Progress within the allowance -> DRAINING, amber. None -> red.
+            prog_h = _hours_since(progress.get("last_progress_utc"), now)
+            drain_allowed = max(DRAIN_PROGRESS_MAX_HOURS, allowed if cur else 0.0)
+            if prog_h is not None and prog_h <= drain_allowed:
+                return ("partial", f"statcan: the lane is DRAINING - behind (oldest owed release "
+                                   f"{oldest}, {age_d} days) but it finished work {prog_h:.1f} h ago; "
+                                   f"{tail}", newest)
+            raise DefinitiveError(
+                f"statcan: the lane is alive but BEHIND and NOT PROGRESSING - the oldest owed release "
+                f"is {oldest} ({age_d} days, over {OWED_AGE_MAX_DAYS}), last finished work "
+                f"{'never' if prog_h is None else f'{prog_h:.1f} h ago'} (allowed {drain_allowed:.1f} h); "
+                f"{tail}")
+    failing = owed.get("failing") or []
+    if failing:
+        raise DefinitiveError(
+            f"statcan: {len(failing)} cube(s) keep FAILING in the lane (transient, again and again - "
+            f"e.g. a store fault R753): {'; '.join(failing[:10])}; {tail}")
+    amber = []
+    quarantined = owed.get("quarantined") or []
+    if quarantined:
+        amber.append(f"{len(quarantined)} cube(s) QUARANTINED (each failed {QUARANTINE_AFTER}x on one "
+                     f"release): {', '.join(quarantined[:20])}")
+    refused = owed.get("serve_refused") or []
+    if refused:
+        amber.append(f"{len(refused)} merged cube(s) whose served ids cannot be reproduced (split map "
+                     f"or catalogue needs a human): {'; '.join(refused[:10])}")
+    oldest_new = owed.get("oldest_new_cube")
+    if oldest_new:
+        try:
+            new_age = (now.date() - dt.date.fromisoformat(str(oldest_new)[:10])).days
+        except ValueError:
+            new_age = None
+        if new_age is None or new_age > NEW_CUBE_DEBT_AMBER_DAYS:
+            amber.append(f"{owed.get('new_cubes')} released cube(s) not held, the oldest since "
+                         f"{oldest_new} ({new_age} days) - coverage debt nobody has ingested")
+    if amber:
+        return "partial", "statcan: " + " | ".join(amber) + f"; {tail}", newest
+    return "ok", f"statcan: lane current - {tail}", newest
 
 
 def update(unit, since) -> Result:
-    os.makedirs(OUT_DIR, exist_ok=True)
-    state = _load_state()
-
-    today = dt.date.today()
-    # Release-date watermark. Prefer our own stored watermark; else the caller's
-    # last_obs_date hint (guarded against corrupt far-future sentinels); else a cold
-    # lookback. The change-feed is polled from a few days earlier to absorb skew.
-    wm = state.get("last_release_date")
-    if not wm:
-        wm = sane_since(since, max_future_days=400)
-    try:
-        wm_date = dt.date.fromisoformat(str(wm)[:10]) if wm else None
-    except ValueError:
-        wm_date = None
-    if wm_date is None:
-        wm_date = today - dt.timedelta(days=COLD_LOOKBACK_DAYS)
-
-    feed_since = wm_date - dt.timedelta(days=FEED_SLACK_DAYS)
-    # window for datapoint release-date filter (same lower bound as the feed slack so
-    # a cube flagged changed has its boundary points fetched too).
-    win_start = feed_since
-
-    # cheap change-feed (transient-safe). A flaky read raises -> partial, no advance.
-    changed = _changed_pids(feed_since)
-
-    tally = Tally()
-    series_cursors: dict = {}
-    # THE CHANGED-KEYS CHANNEL (second pilot after norgesbank; WU-5 of the 2026-08-31
-    # grain sweep). series_cursors above is keyed by PRODUCT ID (8-digit pids) — a
-    # grain no §5.7 tier can map (audit: 0/25) — while the merge's series_key grain is
-    # VECTORS ('v65201210'), which the punctuation tier bridges to the 20 curated
-    # 'statcan:V…' catalogue ids (measured: 0 _norm_id collisions). The union is
-    # honest ONLY if every merge reported: one skipped report would make the dict
-    # claim "nothing else changed" while that table's vectors went stale — so a
-    # single over-cap merge (a brand-new giant cube's first pull) drops the WHOLE
-    # run back to the legacy path (changed_keys=None) rather than lie.
-    changed_all: dict = {}
-    changed_complete = True
-    maxd = None
-    # THE STORE-ABSENT GUARD. "Skip a changed cube we do not hold" is correct for a brand-new cube,
-    # but it is silent — and if the WHOLE store is unreachable, every changed cube takes that branch,
-    # the tally stays empty and finalize() books `no_change`: a healthy status over a fetch that read
-    # nothing. That is exactly what happened here: statcan's ~8,207 cubes were deleted from R2 on
-    # 2026-08-18 (a deliberate cost action) while the local route runs with AQUEDUCT_BACKEND=r2, so
-    # from 2026-08-22 every run finished in seconds reporting "no new rows" while StatCan published
-    # 337 cube-changes in 15 days. A source must never report green over data it did not look at.
-    absent_pids: list = []
-    # advance the watermark only to the OLDEST release time that we have NOT fully
-    # processed; on full success it becomes `today`. On any transient sub-fault we
-    # leave it unchanged so the whole window is retried.
-    all_ok = True
-
-    # RESUME SET for THIS window. A window is identified by its feed_since: while that is unchanged
-    # the change-feed returns the same set, so a cube finished in an earlier pass need not be fetched
-    # again. Its value is the date that pass fetched it THROUGH, which is what bounds the watermark
-    # below - taking `today` there would jump over releases a resumed pass never looked at.
-    win = state.get(RESUME_WINDOW_KEY) or {}
-    done: dict = dict(win.get("done") or {}) if win.get("feed_since") == feed_since.isoformat() else {}
-    if done:
-        print(f"[statcan] resuming the {feed_since.isoformat()} window: {len(done)} cube(s) already "
-              f"fetched in an earlier pass are skipped", flush=True)
-    dl = Deadline(minutes=BUDGET_MIN)
-    capped = False
-    since_save = 0
-
-    def _remember(pid, through):
-        """Record a finished cube and persist the window periodically (and on the last one)."""
-        nonlocal since_save
-        done[str(pid)] = through
-        since_save += 1
-        if since_save >= SAVE_EVERY:
-            state[RESUME_WINDOW_KEY] = {"feed_since": feed_since.isoformat(), "done": done}
-            _save_state(state)
-            since_save = 0
-
-    for pid in sorted(changed):
-        if str(pid) in done:
-            continue
-        if dl.spent():
-            # Stop STARTING cubes; the rest keep their turn next pass because `done` is persisted.
-            capped = True
-            print(f"[statcan] budget of {dl.budget_min:g} min spent after "
-                  f"{len(done)} cube(s) this window; {len(changed) - len(done)} still owed", flush=True)
-            break
-        path = os.path.join(OUT_DIR, f"{pid}.parquet")
-        if not blob.exists(path):
-            # brand-new cube — out of scope for the incremental fetcher (bulk ingester
-            # owns first ingest; vector endpoint lacks the dimension metadata to build
-            # a faithful cube from scratch). Skip without counting as a sub-unit.
-            absent_pids.append(pid)
-            _remember(pid, today.isoformat())     # looked at and correctly skipped: do not re-walk it
-            continue
-        try:
-            vmap = _disk_vector_map(path)
-        except Exception as e:  # corrupt/locked file -> transient, retry next run
-            tally.transient_unit(
-                f"{os.path.basename(path)}: unreadable on disk — {type(e).__name__}")
-            all_ok = False
-            continue
-        if not vmap:
-            tally.empty_unit(f"{os.path.basename(path)}: no vectors on disk")
-            _remember(pid, today.isoformat())
-            continue
-        try:
-            tbl = _fetch_cube_tail(vmap, win_start, today)
-        except TransientError as e:
-            tally.transient_unit(f"{os.path.basename(path)}: tail fetch failed — "
-                                 f"{str(e)[:110]}")
-            all_ok = False
-            continue
-
-        if tbl.num_rows == 0:
-            # No datapoints released in the window for this cube — a legitimate quiet
-            # cube (flagged changed for a metadata-only touch, or already captured).
-            tally.empty_unit()
-            # PROJECTED (2026-07-30): _max_obs_date reads only obs_date, but this read the
-            # whole cube — ~67 GB of Arrow for the 962,150,400-row census giant. date32 at
-            # 4 B/row is ~3.8 GB for that same worst case, and a few MB for a normal cube.
-            md = merge._max_obs_date(blob.read_table(path, columns=["obs_date"]))
-            if md:
-                series_cursors[str(pid)] = md
-            _remember(pid, today.isoformat())
-            continue
-
-        before = blob.row_count(path)
-        try:
-            if tbl.num_rows <= 2_000_000:
-                n, md, _ch = merge.merge_and_write(
-                    path, tbl, mode="merge", dedup_keys=DEDUP,
-                    report_changed_keys=True)
-                changed_all.update(_ch)
-            else:
-                # over the report cap (merge.py refuses at entry): merge without the
-                # report and poison the union — honesty is binary per run. Say so
-                # (reviewer's note b): without this line the log cannot distinguish
-                # "poisoned to legacy" from "not migrated".
-                print(f"[statcan] {pid}: {tbl.num_rows:,} rows exceeds the "
-                      f"changed-keys report cap — this run falls back to the legacy "
-                      f"productId-cursor path (changed_keys=None)", flush=True)
-                n, md = merge.merge_and_write(path, tbl, mode="merge",
-                                              dedup_keys=DEDUP)
-                changed_complete = False
-        except DefinitiveError:
-            # never-shrink / column-drop guard tripped -> keep existing data, surface
-            # as a sub-unit failure rather than crashing the whole run.
-            tally.structural_unit(
-                f"{os.path.basename(path)}: merge guard refused over {before:,} stored")
-            all_ok = False
-            continue
-        delta = max(0, n - before)
-        tally.added_unit(delta)
-        if md:
-            series_cursors[str(pid)] = md
-            try:
-                md_d = dt.date.fromisoformat(md)
-                if maxd is None or md_d > maxd:
-                    maxd = md_d
-            except ValueError:
-                pass
-        _remember(pid, today.isoformat())     # merged: this cube is fetched through today
-
-    # THE STORE-ABSENT GUARD (see `absent_pids` above). Distinguish two look-alikes:
-    #   the publisher changed cubes we simply do not hold  -> coverage, the bulk ingester's job,
-    #                                                         skip silently as before;
-    #   the publisher changed cubes and we hold NOTHING AT ALL -> the store is unreachable from
-    #                                                         this backend, and reporting no_change
-    #                                                         would be green over an empty read.
-    # The listing runs only in the second case (every changed cube absent), so a normal pass pays
-    # nothing for it.
-    if changed and not tally.attempted and absent_pids:
-        try:
-            held = [f for f in blob.list_parquets(OUT_DIR)
-                    if not os.path.basename(f).startswith("_")]
-        except Exception as e:                                       # noqa: BLE001
-            raise DefinitiveError(
-                f"statcan: {len(absent_pids)} changed cube(s) are all absent from the store and the store "
-                f"could not even be listed ({type(e).__name__}: {e}) — refusing to report no_change over "
-                f"a store this run could not read (backend={config.BACKEND})") from e
-        if not held:
-            raise DefinitiveError(
-                f"statcan: the store holds ZERO cubes under {OUT_DIR} (backend={config.BACKEND}) while the "
-                f"change-feed lists {len(changed)} changed cube(s) — every one was skipped as 'not held', so "
-                f"this run read nothing. This is the store being unreachable, not a quiet publisher: the "
-                f"~8,207 cubes were removed from R2 on 2026-08-18 and the local route runs with "
-                f"AQUEDUCT_BACKEND=r2. Restore the store (or point this source's backend at the copy that "
-                f"holds it) before trusting any statcan status.")
-
-    # Advance the watermark only on a clean pass (no transient/structural sub-fault) that also
-    # FINISHED the window, and then only to the OLDEST date any of this window's cubes was fetched
-    # through. `today` would be wrong for a window spread over several passes: a cube finished on
-    # pass 1 was fetched through pass 1's date, so releases between that and pass 3's date would be
-    # jumped over. Taking the minimum re-polls that overlap next window - merge dedups it.
-    # Set containment, NOT len(done) >= len(changed): the feed can list MORE cubes for the same
-    # feed_since on a later pass, and `done` can hold cubes that pass no longer lists. Counting
-    # would then declare the window finished with a genuinely changed cube never fetched, and the
-    # watermark would jump over it - the silent skip this whole window exists to prevent.
-    everything = {str(p) for p in changed} <= set(done)
-    if all_ok and not capped and everything:
-        through = min(done.values()) if done else today.isoformat()
-        state["last_release_date"] = through
-        state[RESUME_WINDOW_KEY] = {}                       # window closed
-        _save_state(state)
-        if done and through != today.isoformat():
-            print(f"[statcan] window complete; watermark advanced to {through}, the oldest date any "
-                  f"cube in it was fetched through (not today) - a multi-pass window", flush=True)
-    else:
-        # Keep the resume set for the next pass, watermark unmoved.
-        state[RESUME_WINDOW_KEY] = {"feed_since": feed_since.isoformat(), "done": done}
-        _save_state(state)
-
-    last = maxd.isoformat() if maxd else (str(since)[:10] if since else None)
-
-    # `obs` on the Result reports new rows merged this run (added). empty_window_floor
-    # is very high: a poll where the change-feed lists few/no cubes, or every changed
-    # cube's tail is empty, is LEGITIMATE for StatCan (it does not release every cube
-    # every day) and must NOT raise a structural DefinitiveError. True structural /
-    # transport breaks already surface in _get/_post and _changed_pids.
-    res = finalize(tally, tally.added, last, source=SOURCE,
-                   series_cursors=series_cursors, empty_window_floor=10 ** 9)
-    if capped or not everything:
-        # More cubes in this window still owe work: never let the strategy stamp a vintage that
-        # says "fully current" (ons_uk's rule), or the backlog is skipped at the next tick.
-        res.new_vintage = None
-    if changed_complete:
-        # merge-measured vector-grain changed set; {} on a quiet pass is the honest
-        # "nothing changed" (coherence met). A run with any unreported merge returns
-        # None here and keeps the legacy productId-cursor behaviour exactly.
-        res.changed_keys = changed_all
-    return res
+    """Report the lane. Writes nothing (see the module docstring)."""
+    now = dt.datetime.now(dt.timezone.utc)
+    status, msg, newest = verdict(_read_lane(LANE_STATE), _read_lane(LANE_PROGRESS), now)
+    print(f"[statcan] {msg}", flush=True)
+    last = newest or (str(since)[:10] if since else None)
+    # changed_keys {}: the lane served what it merged (a real "nothing for the orchestrator to do").
+    return Result(status=status, obs=0, last_obs_date=last, error=msg if status != "ok" else None,
+                  changed_keys={})

@@ -103,18 +103,26 @@ def test_norgesbank_wires_the_channel():
     assert src.count("res.changed_keys = ") >= 2   # merge path + quiet path ({})
 
 
-def test_statcan_wires_the_channel_with_the_all_or_none_rule():
-    """WU-5 call-site pin: statcan opts in per-table under the report cap, and ONE
-    unreported merge poisons the union (changed_keys stays None) — an incomplete
-    dict would claim 'nothing else changed' while a giant table's vectors went
-    stale."""
-    src = open(os.path.join(os.path.dirname(orchestrate.__file__),
-                            "strategies", "fetchers", "statcan.py"),
-               encoding="utf-8").read()
-    assert "report_changed_keys=True" in src
-    assert "changed_complete = False" in src
-    assert "if changed_complete:" in src
-    assert "res.changed_keys = changed_all" in src
+# statcan's changed-keys pin was removed 2026-09-23: its refresh runs in jobs/statcan_lane.py,
+# which serves what it merges, and the reporter returns changed_keys {} (tests/test_statcan_lane.py
+# ::test_the_reporter_writes_nothing_and_changes_no_keys). The mapping below still stands for
+# any table-grain source.
+
+
+def test_statcan_product_id_keys_reach_the_served_table_ids(catalog, monkeypatch):
+    """The premise of the table-grain channel, driven through the SHIPPED mapper: a cube served
+    whole maps by its bare id, a split cube maps to EVERY part, a cube we do not serve maps nowhere."""
+    import sqlite3 as _sq
+    p = os.environ["ECONDL_CATALOG"]
+    con = _sq.connect(p)
+    for sid in ("statcan:10100001", "statcan:24100058#Aden", "statcan:24100058#Windsor"):
+        con.execute("INSERT INTO series VALUES (?,?)", (sid, "statcan"))
+    con.commit(); con.close()
+    from updater import config
+    monkeypatch.setattr(config, "BACKEND", "r2")
+    ids, unmapped = orchestrate._catalog_ids_for("statcan", ["10100001", "24100058", "99999999"])
+    assert sorted(ids) == ["statcan:10100001", "statcan:24100058#Aden", "statcan:24100058#Windsor"]
+    assert unmapped == ["99999999"]
 
 
 def test_statcan_vector_keys_bridge_via_punctuation(catalog, monkeypatch):

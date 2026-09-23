@@ -19,7 +19,14 @@ R2 DELETEs are free. Run:
 import os
 import sys
 
-import boto3
+# RETIRED 2026-09-23 (statcan lane design review, finding 3). Its one job ran on 2026-08-18; the
+# store was restored on 2026-09-05 (R753) and statcan is now refreshed and SERVED by
+# jobs/statcan_lane.py. Left runnable, it deletes both served prefixes in one command. Kept for
+# the record of what was deleted and why; it refuses to run.
+raise SystemExit("RETIRED: tools/_delete_statcan_r2.py would delete statcan's served store and "
+                 "CSVs; see its header. Deleting served data is the owner's decision.")
+
+import boto3  # noqa: E402
 
 # Use the repo's own loader, not python-dotenv. The dependency preflight walks every module
 # reachable from the fetchers and fails on anything imported but undeclared, because a

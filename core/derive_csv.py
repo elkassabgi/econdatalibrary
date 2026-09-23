@@ -807,6 +807,12 @@ def main() -> None:
     _ALLOW_STREAM = a.allow_stream
     global _STREAM_MAX
     _STREAM_MAX = a.stream_max_rows
+    # ONE WRITER FOR statcan (2026-09-23): jobs/statcan_lane.py owns the cubes and the served CSVs
+    # while it runs and holds logs/statcan_writer.lock; a second writer raced it (lane design
+    # review, finding 3).
+    if not getattr(a, "dry_run", False) and (not a.source or "statcan" in a.source):
+        from updater import writer_lock                            # noqa: PLC0415
+        writer_lock.hold_or_refuse("statcan_writer", "core.derive_csv with statcan in scope")
 
     # PREFLIGHT (ledger R383). This tool WRITES to R2 but READS through the econdl resolver,
     # which reads data/clean_full/ — the LOCAL mirror. Under AQUEDUCT_BACKEND=r2 that is a

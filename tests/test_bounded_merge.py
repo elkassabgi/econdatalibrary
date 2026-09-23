@@ -130,6 +130,78 @@ def test_bounded_merge_writes_exactly_what_the_in_memory_merge_writes(tmp_path, 
     assert _rows(b) == _rows(a)
 
 
+@pytest.mark.parametrize("force", [True, False], ids=["external-sort", "small-path"])
+@pytest.mark.parametrize("date_kind", ["date32", "string"])
+@pytest.mark.parametrize("seed", range(30))
+def test_new_rows_from_a_file_write_exactly_what_the_table_form_writes(tmp_path, seed, date_kind,
+                                                                       force):
+    """new_path= (statcan's whole-table refresh) is the SAME merge as new_table=: same rows, same
+    order, same return value and changed-key report, same refusals. The new file is written with
+    tiny row groups so file_row_number crosses row groups, and it is left in place afterwards."""
+    existing, new = _random_case(seed)
+    a, b = tmp_path / "a.parquet", tmp_path / "b.parquet"
+    if existing:
+        for p in (a, b):
+            pq.write_table(_tbl(existing, date_kind), p, row_group_size=5)
+    new_t = _tbl(new, date_kind)
+    newf = tmp_path / "new_rows.parquet"
+    pq.write_table(new_t, newf, row_group_size=4)
+    kw = dict(report_changed_keys=True, batch_rows=3, **(FORCE_BOUNDED if force else {}))
+    try:
+        want = merge.merge_and_write_bounded(str(a), new_t, **kw)
+    except DefinitiveError as e:
+        with pytest.raises(DefinitiveError, match=str(e).split(" ")[0]):
+            merge.merge_and_write_bounded(str(b), new_path=str(newf), **kw)
+        assert newf.exists()
+        return
+    got = merge.merge_and_write_bounded(str(b), new_path=str(newf), **kw)
+    assert got == want
+    assert _rows(b) == _rows(a)
+    assert pq.read_schema(b) == pq.read_schema(a)
+    assert newf.exists(), "the caller's new-rows file must not be consumed"
+
+
+def test_a_stored_copy_the_caller_holds_is_used_and_left_alone(tmp_path, monkeypatch):
+    """statcan already downloaded the stored cube for its key gate; the merge must not fetch it a
+    second time, must write the same rows as without it, and must not delete the caller's file."""
+    existing, new = _random_case(3)
+    a, b = tmp_path / "a.parquet", tmp_path / "b.parquet"
+    for p in (a, b):
+        pq.write_table(_tbl(existing), p, row_group_size=5)
+    held = tmp_path / "held_copy.parquet"
+    pq.write_table(_tbl(existing), held, row_group_size=5)
+    want = merge.merge_and_write_bounded(str(a), _tbl(new), report_changed_keys=True, batch_rows=3,
+                                         min_ratio=0.0, **FORCE_BOUNDED)
+    calls = []
+    real = blob.local_copy
+    monkeypatch.setattr(blob, "local_copy", lambda p: calls.append(p) or real(p))
+    got = merge.merge_and_write_bounded(str(b), _tbl(new), report_changed_keys=True, batch_rows=3,
+                                        min_ratio=0.0, stored_copy=str(held), **FORCE_BOUNDED)
+    assert got == want and _rows(b) == _rows(a)
+    assert calls == [], "the stored object was fetched again"
+    assert held.exists(), "the caller's copy was deleted"
+
+
+def test_new_table_and_new_path_are_exclusive(tmp_path):
+    p = tmp_path / "x.parquet"
+    pq.write_table(_tbl([("A", 19000, 1.0)]), p)
+    with pytest.raises(ValueError, match="exactly one"):
+        merge.merge_and_write_bounded(str(tmp_path / "o.parquet"))
+    with pytest.raises(ValueError, match="exactly one"):
+        merge.merge_and_write_bounded(str(tmp_path / "o.parquet"), _tbl([("A", 19000, 1.0)]),
+                                      new_path=str(p))
+
+
+def test_new_path_report_cap_is_judged_before_any_io(tmp_path):
+    p = tmp_path / "n.parquet"
+    pq.write_table(_tbl([("A", 19000 + i, 1.0) for i in range(5)]), p)
+    out = tmp_path / "o.parquet"
+    with pytest.raises(ValueError, match="report_changed_keys refused"):
+        merge.merge_and_write_bounded(str(out), new_path=str(p), report_changed_keys=True,
+                                      changed_keys_cap=4)
+    assert not out.exists()
+
+
 def test_a_long_duplicate_run_across_many_chunks_keeps_the_last_row(tmp_path):
     existing = [("A", 19000, float(i)) for i in range(20)] + [("B", 19000, 7.0)]
     new = [("A", 19000, 5.0), ("C", 19001, 1.0)]
