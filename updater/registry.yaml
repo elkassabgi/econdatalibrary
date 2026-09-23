@@ -9,6 +9,13 @@ sources:
   # 16 GB runner (tools/measure_merge_peak.py). Cloud is the primary mechanism; the
   # workstation is only for what genuinely cannot run there.
   live: true
+  # catalog_scope — DECLARED 2026-09-23. The store holds every series of ~1,222 dataflows (376M
+  # distinct keys measured 2026-07-30); the catalogue serves a curated 18 (headline CPI, LF, WPI,
+  # AWE, RT, ANA_AGG). A pass that moves only uncatalogued flows maps to zero and is COVERAGE, not a
+  # coherence failure (R497 note). Paired with merge-measured changed keys in the catalogue's
+  # '<FLOW>:<key>' form, so the changed set is complete and the exception can be judged. Adding this
+  # key does NOT change the source count (R347: no EXPECTED_SOURCE_COUNT bump).
+  catalog_scope: subset
   scripts:
   - jobs/ingest_abs_full.py
   strategy: sdmx_delta

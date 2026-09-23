@@ -150,6 +150,7 @@ def update(unit, since) -> Result:
     total = 0
     last_obs = None
     cursors: dict[str, str] = {}   # series_key -> max obs_date written this run
+    changed: dict[str, str | None] = {}   # '<FLOW>:<series_key>' -> newest changed date (merge-measured)
     cursors_capped = False
     dl = Deadline(minutes=BUDGET_MIN)
     deferred = 0
@@ -248,7 +249,16 @@ def update(unit, since) -> Result:
 
         # --- publish (atomic, dedup, never-shrink) ---
         try:
-            n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
+            # MERGE-MEASURED changed keys (like ssb #68). abs stores bare keys per flow file
+            # ('1.10001.10.50.Q' in CPI.parquet) while the catalogue ids carry the flow
+            # ('abs:CPI:1.10001.10.50.Q'), so the bare cursor keys could NEVER map: every run read
+            # "csv coherence unmet: 50000 changed series_keys have no catalog mapping". Reported
+            # as '<FLOW>:<key>' - the catalogue's form - and COMPLETE (the cap is this flow's own
+            # fetched table, so it never refuses), which lets the declared `catalog_scope: subset`
+            # exception judge a changed set that is not truncated (R497).
+            n, md, ch = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP,
+                                              report_changed_keys=True,
+                                              changed_keys_cap=max(tbl.num_rows, 1))
         except DefinitiveError as e:
             # never-shrink / dropped-column / 0-row guard refused this flow's write.
             # Keep the old file, surface as transient so the run is 'partial' and retries
@@ -260,6 +270,8 @@ def update(unit, since) -> Result:
             continue
 
         total += n
+        # one merge per flow per pass and the key carries the flow, so each key is reported once
+        changed.update((f"{flow}:{k}", str(d) if d is not None else None) for k, d in ch.items())
         # NET-DELTA -> ADDED: a boundary-year re-fetch that RETURNED real rows but
         # nets 0 new after dedup is still a data-bearing (successful) sub-unit, not
         # empty. Count len(keys) (rows that actually flowed for the flow), mirroring
@@ -325,5 +337,7 @@ def update(unit, since) -> Result:
     # empty_window_floor = (#subunits) - 1 per the S3 contract: a genuine wholesale
     # outage (every one of ~1222 flows empty) raises DefinitiveError, while a single
     # healthy quiet flow among many that moved does not.
-    return finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
-                    empty_window_floor=max(len(pfiles) - 1, 1))
+    res = finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
+                   empty_window_floor=max(len(pfiles) - 1, 1))
+    res.changed_keys = changed        # complete: every merge this pass reported ({} = nothing changed)
+    return res
