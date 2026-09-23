@@ -283,6 +283,22 @@ def _no_pace(monkeypatch):
     monkeypatch.setattr(K, "PACE_S", 0.0)
 
 
+@pytest.fixture
+def real_backfill():
+    """Opt out of _backfill_default: the test drives the real loader with no file present."""
+
+
+@pytest.fixture(autouse=True)
+def _backfill_default(request, monkeypatch):
+    """A missing backfill file now makes a pass ATTENTION (R1138). Tests about other behaviour run as if
+    the seed had been written (an empty map) unless the store dir holds a real file."""
+    if "real_backfill" in request.fixturenames:
+        return
+    real = K._load_backfill
+    monkeypatch.setattr(K, "_load_backfill", lambda out_dir: real(out_dir)
+                        if os.path.exists(os.path.join(out_dir, K.BACKFILL)) else {})
+
+
 def _plain(monkeypatch, tmp_path, cat):
     monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
     monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
@@ -633,7 +649,7 @@ def test_a_stored_table_the_updater_never_fetched_is_measured_from_its_backfill_
     assert not _deferral_only([{"status": res.status, "last_error": res.error}])
 
 
-def test_negative_control_no_backfill_file_measures_nothing_and_says_so(tmp_path, monkeypatch, capsys):
+def test_negative_control_no_backfill_file_measures_nothing_and_says_so(tmp_path, monkeypatch, capsys, real_backfill):
     monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
     monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
     old, now_ = _ago(K.OWED_ATTENTION_DAYS + 20), _ago(1)
@@ -642,8 +658,80 @@ def test_negative_control_no_backfill_file_measures_nothing_and_says_so(tmp_path
     _store(tmp_path, ["tur0064"])
     monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, "deadline"))
     res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
-    assert "rotation behind" not in res.error and "backfill vintages absent" in res.error, res.error
+    assert "rotation behind" not in res.error and "backfill vintages unavailable" in res.error, res.error
     assert f"{K.BACKFILL} is absent" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("state", ["absent", "unreadable"])
+def test_a_missing_backfill_file_makes_the_pass_attention_not_rotating(tmp_path, monkeypatch, state, real_backfill):
+    """R1138: without the file 739-775 served tables go unmeasured; a clause in the rotation note (which
+    health strips) left the source ROTATING."""
+    from updater.health import _deferral_only
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: _cat(3))
+    (tmp_path / K.SIDECAR).write_text(json.dumps({"gdp0001": "x|None"}))
+    if state == "unreadable":
+        real = K.blob.read_bytes
+        monkeypatch.setattr(K.blob, "read_bytes", lambda p: (_ for _ in ()).throw(OSError("R2 down"))
+                            if p.endswith(K.BACKFILL) else real(p))
+    monkeypatch.setattr(K, "MAX_PER_RUN", 1)
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, []))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert "backfill vintages unavailable" in res.error and not _deferral_only(
+        [{"status": res.status, "last_error": res.error}]), res.error
+    (tmp_path / K.BACKFILL).write_text("{}")
+    if state == "unreadable":
+        monkeypatch.setattr(K.blob, "read_bytes", real)
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert "backfill vintages unavailable" not in (res.error or ""), "negative control: a present file"
+
+
+def test_a_correctedat_change_on_a_backfill_table_is_owed(tmp_path, monkeypatch):
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    cat = [{"id": "tur0064", "updatedAt": "2025-06-01T00:00:00Z", "correctedAt": "2026-09-01T00:00:00Z"}]
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: cat)
+    _store(tmp_path, ["tur0064"])
+    (tmp_path / K.SIDECAR).write_text(json.dumps({"kkr0049": "x|None"}))
+    (tmp_path / K.BACKFILL).write_text(json.dumps({"tur0064": "2025-06-01T00:00:00Z|None"}))
+    asked = []
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: asked.append(tid) or (tid, []))
+    K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert asked == ["tur0064"], "a correction alone changes the vintage: fetched"
+
+
+def test_an_unchanged_backfill_table_without_its_theme_file_is_fetched(tmp_path, monkeypatch):
+    """R1138: the backfill 'current' skip needs the theme parquet, like the sidecar path."""
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    cat = [{"id": "tur0064", "updatedAt": "2025-06-01T00:00:00Z", "correctedAt": None}]
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: cat)
+    (tmp_path / K.SIDECAR).write_text(json.dumps({"kkr0049": "x|None"}))
+    (tmp_path / K.BACKFILL).write_text(json.dumps({"tur0064": "2025-06-01T00:00:00Z|None"}))
+    asked = []
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: asked.append(tid) or (tid, []))
+    K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert asked == ["tur0064"], asked
+    _store(tmp_path, ["tur0064"])
+    asked.clear()
+    K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert asked == [], "negative control: with its theme file it is current"
+
+
+@pytest.mark.parametrize("days,behind", [(45, False), (46, True)])
+def test_the_limit_is_strictly_past_45_days(tmp_path, monkeypatch, days, behind):
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    now = dt.datetime.now(dt.timezone.utc)
+    first = (now - dt.timedelta(days=days, hours=1)).isoformat()
+    cat = [{"id": "gdp0001", "updatedAt": first, "correctedAt": None, "updateDates": [first]}]
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: cat)
+    (tmp_path / K.SIDECAR).write_text(json.dumps({"gdp0001": "2025-01-01T00:00:00Z|None"}))
+    (tmp_path / K.BACKFILL).write_text("{}")
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, "deadline"))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert ("rotation behind" in res.error) is behind, res.error
 
 
 def test_an_overdue_table_does_not_hide_a_structural_break(tmp_path, monkeypatch):
@@ -702,7 +790,8 @@ def test_the_seed_holds_only_stored_never_fetched_tables_and_is_one_time(tmp_pat
     tool, s = _seed_env(tmp_path, monkeypatch)
     assert tool.main(["--catalog", str(tmp_path / "cat.json"), "--apply"]) == 0
     seed = json.loads((s / K.BACKFILL).read_text())
-    assert seed == {"szo0065": "2025-06-12T00:00:00Z|None", "mez0112": "2025-06-12T00:00:00Z|None"}, seed
+    # mez0112's rows are only in a side file (a retired source): its vintage is unknown, so NOT seeded (R1138)
+    assert seed == {"szo0065": "2025-06-12T00:00:00Z|None"}, seed
     assert tool.main(["--catalog", str(tmp_path / "cat.json"), "--apply"]) == 2, "one-time: refuses to replace"
 
 
@@ -710,3 +799,11 @@ def test_the_seed_refuses_when_its_plant_does_not_read(tmp_path, monkeypatch):
     tool, s = _seed_env(tmp_path, monkeypatch)
     assert tool.main(["--catalog", str(tmp_path / "cat.json"), "--plant", "zzz0001", "--apply"]) == 2
     assert not (s / K.BACKFILL).exists()
+
+
+def test_the_seed_fails_when_the_read_back_differs(tmp_path, monkeypatch):
+    tool, s = _seed_env(tmp_path, monkeypatch)
+    real = K.blob.read_bytes
+    monkeypatch.setattr(tool.blob, "read_bytes", lambda p: b'{"x": 1}' if p.endswith(K.BACKFILL)
+                        and (s / K.BACKFILL).exists() else real(p))
+    assert tool.main(["--catalog", str(tmp_path / "cat.json"), "--apply"]) == 1

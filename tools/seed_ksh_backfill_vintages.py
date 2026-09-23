@@ -6,16 +6,17 @@ store holds. For a table the updater fetched, that is the sidecar (_bulk_vintage
 it never fetched had no stored vintage, so 658 served tables - 231 of them behind a KSH release more
 than 45 days old - were invisible to the drain signal and to the 45-day ATTENTION limit.
 
-THE SOURCE, AND ITS ONE ERROR. data/clean_full/ksh_stadat/_catalog.json is the toc.json snapshot the
-desktop ingester (jobs/ingest_ksh_stadat.py load_catalog) saved and then fetched from. It is a DESKTOP
-file: the store on R2 does not hold it. It was saved BEFORE the tables were fetched, so a table KSH
-updated in between is stored newer than the snapshot says. That error makes a wait read LONGER, never
-shorter - toward ATTENTION, not toward a hidden backlog.
+THE SOURCE. data/clean_full/ksh_stadat/_catalog.json is the toc.json snapshot the desktop ingester
+(jobs/ingest_ksh_stadat.py load_catalog) saved and then fetched from. It is a DESKTOP file: the store on
+R2 does not hold it. Review R1138 checked it against the June run's own log: for 660 of the tables this
+seeds, the stored row count equals what that run logged, and no KSH release fell between the snapshot
+(05:46Z) and the end of the fetch (12:02Z). For those tables the snapshot IS the stored vintage.
 
 WHAT IS WRITTEN. {tid: "updatedAt|correctedAt"} for each snapshot table that (1) is not in the sidecar
-and (2) has at least one row 'KSH:<tid>:...' in its theme parquet or in a '_' side file on the STORE
-(R2 under AQUEDUCT_BACKEND=r2; the local copies differ). A table with no stored rows is left out, so it
-stays on the fetcher's "nothing stored" side and is fetched as new.
+and (2) has at least one row 'KSH:<tid>:...' in its THEME parquet on the STORE (R2 under
+AQUEDUCT_BACKEND=r2; the local copies differ). Rows only in a '_' side file do NOT count: they came from
+a retired source (mez0121, mez0122, sza0071 on 2026-09-23), so the snapshot says nothing about their
+vintage (R1138). A table left out stays on the fetcher's "nothing stored" side and is fetched as new.
 
 ONE-TIME. It refuses to replace an existing file (--force overrides). The sidecar wins once the updater
 fetches a table, so the file only ever shrinks in meaning.
@@ -42,20 +43,18 @@ from updater.strategies.fetchers import ksh_stadat as K  # noqa: E402
 
 
 def held_tables(out_dir, tids) -> set:
-    """The tids with at least one stored row, reading each theme parquet and each side file ONCE."""
+    """The tids with at least one row in their own THEME parquet, reading each theme file ONCE. '_' side
+    files are deliberately not read (see the module docstring)."""
     import pyarrow.compute as pc
     names = set(blob.list_parquets(out_dir))
-    side = sorted(n for n in names if n.startswith("_"))
-    want = set(tids)
     held: set = set()
     by_theme: dict = {}
-    for t in want:
+    for t in set(tids):
         by_theme.setdefault(f"{t[:3].lower()}.parquet", []).append(t)
-    for fn in sorted(set(by_theme) & names) + side:
+    for fn in sorted(set(by_theme) & names):
         keys = blob.read_table(os.path.join(out_dir, fn), columns=["series_key"]).column("series_key")
-        # a theme file can only hold its own theme's tables; a side file can hold any
-        for t in (by_theme[fn] if fn in by_theme else sorted(want - held)):
-            if t not in held and pc.any(pc.starts_with(keys, f"KSH:{t}:")).as_py():
+        for t in by_theme[fn]:
+            if pc.any(pc.starts_with(keys, f"KSH:{t}:")).as_py():
                 held.add(t)
     return held
 

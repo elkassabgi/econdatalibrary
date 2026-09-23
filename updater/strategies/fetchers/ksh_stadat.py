@@ -147,14 +147,17 @@ store holds rows of that the updater has never fetched (review R1134). Without i
 stored vintage, so the drain signal and the 45-day limit could not see them: 658 were served, 231 of them
 behind a KSH release more than 45 days old (43 by 90 days or more), and every pass read ROTATING.
 Written once by tools/seed_ksh_backfill_vintages.py from the backfill's own toc snapshot
-(data/clean_full/ksh_stadat/_catalog.json) and the store's rows; the sidecar wins once the updater
-fetches a table. The snapshot was taken before the backfill fetched, so a table KSH updated in between
-reads OLDER than it is - the error is toward ATTENTION, never toward a hidden wait."""
+(data/clean_full/ksh_stadat/_catalog.json) and the rows in each table's THEME parquet; the sidecar wins
+once the updater fetches a table. The snapshot IS the stored vintage for the 660 tables the June run's
+own log accounts for (their stored row counts equal what it logged, and no KSH release fell between the
+snapshot and the end of the fetch - review R1138). Tables whose rows sit only in a '_' side file came
+from a retired source, so their vintage is unknown and they are left out of the file."""
 
 
 def _load_backfill(out_dir):
-    """The backfill vintages, or None when the file is absent or unreadable (said loudly: the never-
-    fetched stored tables are then not measured, and the rotation note says so)."""
+    """The backfill vintages, or None when the file is absent or unreadable. None is a FAILURE for the
+    pass (review R1138): the never-fetched stored tables - 739-775 served tables - would otherwise go
+    unmeasured while the source read ROTATING."""
     try:
         raw = blob.read_bytes(os.path.join(out_dir, BACKFILL))
         d = json.loads(raw.decode("utf-8")) if raw else None
@@ -321,8 +324,9 @@ def _update(dl, budget_min, since) -> Result:
             stored_v[tid] = str(sidecar[tid])
         elif backfill and tid in backfill:
             # A STORED table the updater never fetched (review R1134): the backfill's vintage is what
-            # we hold. Unchanged since then -> current, not fetched. Changed -> owed, and measured.
-            if backfill[tid] == cur_v:
+            # we hold. Unchanged since then AND its theme file present -> current, not fetched (the
+            # same test the sidecar path makes, review R1138). Changed -> owed, and measured.
+            if backfill[tid] == cur_v and f"{tid[:3].lower()}.parquet" in present:
                 continue
             stored_v[tid] = str(backfill[tid])
         todo.append((tid, cur_v))
@@ -510,7 +514,13 @@ def _update(dl, budget_min, since) -> Result:
             f"{ROTATION_NOTE} {len(todo)} table(s) were owed at the start of this pass, "
             f"{answered} answered, {never_left} with nothing stored remain"
             + (f", longest wait {owed_days} days ({oldest[1]}, KSH release {oldest[0].date()})"
-               if oldest else "")
-            + ("" if backfill is not None else
-               f", backfill vintages absent so only tables the updater fetched are measured"))
+               if oldest else ""))
+    if backfill is None:
+        # A FAILURE SEGMENT, not a clause in the rotation note health strips (review R1138): without
+        # the file 739-775 served tables go unmeasured and the source would still read ROTATING.
+        if res.status in ("ok", "no_change"):
+            res.status = "partial"
+        res.error = (f"{res.error}; " if res.error else "") + (
+            f"backfill vintages unavailable ({BACKFILL}) - the stored tables the updater never fetched "
+            f"are not measured, run tools/seed_ksh_backfill_vintages.py")
     return res
