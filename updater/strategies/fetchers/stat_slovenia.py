@@ -569,7 +569,7 @@ def update(unit, since) -> Result:
     #
     # The offset lives beside the data, not in the state store, because it must survive the
     # interruption that state-writing does not: finalize() never runs when the unit is killed.
-    # Written after EVERY group for the same reason.
+    # Written for EVERY group, before its work (R1114), for the same reason.
     _cur = os.path.join(out_dir, _SWEEP_FILE)
     _start = 0
     try:
@@ -586,7 +586,7 @@ def update(unit, since) -> Result:
           f"({_groups[0] if _groups else '-'})", flush=True)
 
     # YIELD BEFORE THE CAP KILLS US. The rotation above already makes the tail reachable, and
-    # it survives a kill by design (the offset is written after every group, beside the data,
+    # it survives a kill by design (the offset is written as each group starts, beside the data,
     # because finalize() never runs when the unit is interrupted). What it does NOT survive is
     # the STATUS: cloud run 2026-08-01 was `transient_fail` at exactly 45.0 min — "exceeded its
     # 45-minute hard limit and was interrupted" — and a killed unit records no success, so this
@@ -629,8 +629,13 @@ def update(unit, since) -> Result:
         try:
             blob.write_bytes_atomic(
                 _cur, json.dumps({"next_group": (_start + _gi) % len(_groups)}).encode())
-        except Exception:                                      # noqa: BLE001
-            pass    # a lost offset costs one repeated sweep, never correctness
+        except Exception as _e:                                # noqa: BLE001
+            # a lost offset costs one repeated sweep, never correctness - but the orchestrator's
+            # UnitTimeout (an Exception, raised by SIGALRM anywhere) must not be swallowed (AR-133)
+            _orch = sys.modules.get("updater.orchestrate")
+            if _orch is not None and (getattr(_orch, "UNIT_TIMEOUT_FIRED", False) or
+                                      isinstance(_e, getattr(_orch, "UnitTimeout", ()))):
+                raise
         cycle.begin(grp)                     # a raise or kill inside it counts (AR-127 P5)
         fails_before = cycle.failures(tally)
         before = blob.row_count(path)

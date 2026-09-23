@@ -143,6 +143,21 @@ def test_a_group_that_raises_every_pass_does_not_freeze_the_groups_after_it(monk
     assert sum("AAA" in a for a in asked_per_pass[2:]) >= 1, f"AAA refreshed again: {asked_per_pass}"
 
 
+def test_the_orchestrators_timeout_in_the_offset_write_is_not_swallowed(monkeypatch, tmp_path):
+    """Review AR-133: the offset write's broad except swallowed a UnitTimeout landing in it."""
+    from updater import orchestrate
+    asked, unit = _wire(monkeypatch, tmp_path, allow=99)
+    real = S.blob.write_bytes_atomic
+
+    def _write(path, data):
+        if path.endswith(S._SWEEP_FILE):
+            raise orchestrate.UnitTimeout("pretend the 45-min alarm fired in the offset write")
+        return real(path, data)
+    monkeypatch.setattr(S.blob, "write_bytes_atomic", _write)
+    with pytest.raises(orchestrate.UnitTimeout):
+        S.update(unit, None)
+
+
 def test_a_group_killed_mid_work_counts_as_a_failed_attempt(monkeypatch, tmp_path):
     """AR-127 P5: a raise or kill inside a group never reached visit(); begin() marks it in flight."""
     asked, unit = _wire(monkeypatch, tmp_path, allow=99)
