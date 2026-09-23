@@ -459,6 +459,9 @@ def test_the_publish_tool_refuses_an_unreadable_catalogue_or_r2_map(tmp_path, mo
     local.write_bytes(b'{"EMP_TEMP_Q": {"col": "classif1"}}')
     fake = _FakeR2(None)
     monkeypatch.setattr(blob, "_r2_routed", lambda: fake)
+    # the tool sets AQUEDUCT_BACKEND=r2 for its process; register it with monkeypatch so it is restored
+    # (without this the whole rest of the suite ran under r2 - 17 failures in other files)
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "local")
     assert T.main(["--local", str(local), "--catalog", str(tmp_path / "nope.db"), "--apply"]) == 2
     fake2 = _FakeR2(b"not json")
     monkeypatch.setattr(blob, "_r2_routed", lambda: fake2)
