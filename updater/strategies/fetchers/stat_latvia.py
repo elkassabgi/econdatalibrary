@@ -465,6 +465,7 @@ def update(unit, since) -> Result:
             # NOT visited: a subset run fetched nothing here, so it must not close the cycle.
             total += before
             continue
+        cycle.begin(fname)                     # a raise or kill inside this group counts (AR-127 P5)
         fails_before = cycle.failures(tally)
 
         per_table_max = _per_table_max(path)
