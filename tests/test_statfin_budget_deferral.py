@@ -111,6 +111,32 @@ def test_a_subject_whose_tables_failed_is_refetched_before_the_cycle_closes(monk
         f"aaa was never fetched successfully, so the cycle cannot close: {res.status} {res.error}"
 
 
+def test_one_subject_failing_on_every_pass_does_not_freeze_the_others(monkeypatch, tmp_path, capsys):
+    """Review R1111 (found on stat_slovenia; this cycle has the same shape): a subject that fails on
+    every pass was never visited, the cycle never closed, and every other subject was skipped for
+    ever. After QUARANTINE_AFTER consecutive failures the cycle closes over it; it stays loud."""
+    asked = []
+    for _ in range(4):
+        visited = _wire(monkeypatch, tmp_path, allow=99, flaky={"kbar/11a.px"})
+        res = sf.update(None, None)
+        asked.append(sorted(_subjects(visited)))
+        assert res.status == "partial" and "kbar" in (res.error or ""), "the failure stays loud"
+    assert asked == [["aaa", "kbar", "ton"], ["kbar"], ["aaa", "kbar", "ton"], ["aaa", "kbar", "ton"]], asked
+    assert "cycle closed over 1 subject(s)" in capsys.readouterr().out
+    cyc = json.load(open(os.path.join(str(tmp_path), sf.CYCLE_FILE), encoding="utf-8"))
+    assert cyc["closed_over_quarantined"] == ["kbar"] and cyc["failing"]["kbar"] >= sf.QUARANTINE_AFTER
+
+
+def test_a_quarantined_subject_that_recovers_leaves_quarantine(monkeypatch, tmp_path):
+    for _ in range(3):
+        _wire(monkeypatch, tmp_path, allow=99, flaky={"kbar/11a.px"})
+        sf.update(None, None)
+    _wire(monkeypatch, tmp_path, allow=99)
+    assert sf.update(None, None).status == "ok"
+    cyc = json.load(open(os.path.join(str(tmp_path), sf.CYCLE_FILE), encoding="utf-8"))
+    assert cyc["failing"] == {}, cyc
+
+
 def test_the_deferral_names_only_subjects_unvisited_this_cycle(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=1)
     sf.update(None, None)                                  # visits aaa

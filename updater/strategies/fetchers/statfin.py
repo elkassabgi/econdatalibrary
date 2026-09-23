@@ -610,11 +610,19 @@ def _load_cycle(out_dir) -> dict:
         return {}
 
 
-def _save_cycle(out_dir, visited, prev: dict) -> None:
+# A subject that failed on this many CONSECUTIVE attempts is quarantined: still attempted and tallied
+# on every pass (the source stays partial and names it), but it no longer holds the cycle open.
+# Without it, one subject that breaks for good was never visited, the cycle never closed, and every
+# other subject was skipped for ever (review R1111; the shared RotationCycle has the same rule).
+QUARANTINE_AFTER = 2
+
+
+def _save_cycle(out_dir, visited, prev: dict, failing: dict | None = None) -> None:
     """Written per subject, like the rotation bookmark (R273: a save only at the end is exactly
     what the orchestrator's kill destroys). Swallows failures: losing it re-owes the cycle."""
-    d = {k: v for k, v in prev.items() if k != "visited"}
+    d = {k: v for k, v in prev.items() if k not in ("visited", "failing")}
     d["visited"] = sorted(visited)
+    d["failing"] = dict(sorted((failing or {}).items()))
     try:
         blob.write_bytes_atomic(os.path.join(out_dir, CYCLE_FILE),
                                 json.dumps(d, indent=1).encode("utf-8"))
@@ -681,6 +689,10 @@ def update(unit, since) -> Result:
     # cycle starts 25.2 days later. Worst subject age: ~28 days, not ~125.
     cycle = _load_cycle(out_dir)
     visited = set(cycle.get("visited") or []) & set(subjects)
+    fl = cycle.get("failing")
+    failing = ({s: n for s, n in fl.items() if s in set(subjects) and isinstance(n, int)}
+               if isinstance(fl, dict) else {})
+    failed_now: set = set()
 
     for subj in subjects:
         if subj in visited:
@@ -744,11 +756,11 @@ def update(unit, since) -> Result:
                 rows, outcome = _query_table(sess, tpath, since_date)
             except TransientError:
                 # One flaky table can't strand the subject; record & keep going -> partial.
-                tally.transient_unit()
+                tally.transient_unit(tpath)          # named: an unnamed failure cannot be acted on
                 continue
 
             if outcome == "structural":
-                tally.structural_unit()              # finalize() -> DefinitiveError
+                tally.structural_unit(tpath)         # finalize() -> DefinitiveError
                 continue
             if outcome == "empty":
                 tally.empty_unit()
@@ -794,21 +806,36 @@ def update(unit, since) -> Result:
         # failed counted as done, and the next pass could close the cycle as `ok` without it.
         if tally.transient + tally.structural == fails_before:
             visited.add(subj)
+            failing.pop(subj, None)
         else:
             visited.discard(subj)
-        _save_cycle(out_dir, visited, cycle)
+            if subj not in failed_now:
+                failed_now.add(subj)
+                failing[subj] = failing.get(subj, 0) + 1
+        _save_cycle(out_dir, visited, cycle, failing)
 
     # Save the bookmark even after a COMPLETE pass: it is then the last subject in order
     # and the next run wraps to the top through this same path, so there is no branch that
     # could quietly stop rotating.
     if last_subj:
         save_rotation(out_dir, last_subj)
-    if set(subjects) <= visited and not tally.transient and not tally.structural:
+    quarantined = {s for s, n in failing.items() if n >= QUARANTINE_AFTER}
+    # every failure here is booked inside a subject, so a failed non-quarantined subject is
+    # unvisited and holds the cycle open by itself
+    if not (set(subjects) - visited - quarantined):
         # every subject visited since the last complete cycle: this pass may say `ok`. NOT on a
         # pass with a failed table: that pass is `partial`/red anyway, and resetting here would
-        # start a fresh ~5-run cycle when one clean pass would have closed this one (review AR-119).
-        _save_cycle(out_dir, set(), {"completed_utc": dt.datetime.now(dt.timezone.utc)
-                                     .strftime("%Y-%m-%dT%H:%M:%SZ")})
+        # start a fresh ~5-run cycle when one clean pass would have closed this one (review AR-119)
+        # - EXCEPT a quarantined subject, which would otherwise freeze the rest for good (R1111).
+        # A non-quarantined subject that failed now is unvisited, so it holds the cycle open.
+        done = {"completed_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        if quarantined:
+            done["closed_over_quarantined"] = sorted(quarantined)
+            print(f"[{SOURCE}] cycle closed over {len(quarantined)} subject(s) that failed "
+                  f"{QUARANTINE_AFTER}+ passes in a row: {sorted(quarantined)[:5]} - still attempted "
+                  f"every pass and keeping the source partial; every other subject is refreshed again",
+                  flush=True)
+        _save_cycle(out_dir, set(), done, failing)
 
     last_obs = global_max.isoformat() if global_max else (since or None)
     # Sub-units == tables; contract floor is (#subunits - 1). Active-but-quiet tables are
