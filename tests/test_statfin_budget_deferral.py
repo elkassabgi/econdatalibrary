@@ -92,9 +92,23 @@ def test_a_failed_table_in_the_completing_pass_does_not_restart_the_cycle(monkey
     _wire(monkeypatch, tmp_path, allow=1, flaky={"ton/11a.px"})
     assert sf.update(None, None).status == "partial"                   # ton, one table failed
     cyc = json.load(open(os.path.join(str(tmp_path), sf.CYCLE_FILE), encoding="utf-8"))
-    assert cyc["visited"] == list(SUBJECTS), "the cycle is complete and must stay so, not reset"
-    _wire(monkeypatch, tmp_path, allow=1)
-    assert sf.update(None, None).status == "ok", "the next clean pass closes it"
+    assert cyc["visited"] == ["aaa", "kbar"], \
+        "ton's table failed, so ton stays OWED - neither reset nor counted as done (review R1103)"
+    visited = _wire(monkeypatch, tmp_path, allow=99)       # the rotation resumes AFTER ton, so
+    res = sf.update(None, None)                              # the pass must wrap round to reach it
+    assert "ton" in {p.split("/")[0] for p in visited} and res.status == "ok", \
+        "the next clean pass refetches ton and closes the cycle"
+
+
+def test_a_subject_whose_tables_failed_is_refetched_before_the_cycle_closes(monkeypatch, tmp_path):
+    """Review R1103, P2 (found on stat_latvia, same code shape here): marked visited at the START,
+    a subject whose tables failed counted as done and the next pass closed the cycle without it."""
+    _wire(monkeypatch, tmp_path, allow=1, flaky={"aaa/11a.px", "aaa/11b.px"})
+    sf.update(None, None)                                             # aaa: every table failed
+    _wire(monkeypatch, tmp_path, allow=2)
+    res = sf.update(None, None)                                       # kbar, ton - budget ends
+    assert res.status == "partial" and "aaa (" in (res.error or ""), \
+        f"aaa was never fetched successfully, so the cycle cannot close: {res.status} {res.error}"
 
 
 def test_the_deferral_names_only_subjects_unvisited_this_cycle(monkeypatch, tmp_path):

@@ -694,8 +694,7 @@ def update(unit, since) -> Result:
                 tally.deferred_unit(f"{rest} ({len(by_subject[rest])} tables)")
             break
         last_subj = subj
-        visited.add(subj)
-        _save_cycle(out_dir, visited, cycle)
+        fails_before = tally.transient + tally.structural
         # Written per sub-unit, not once at the end. The orchestrator's 45-minute cap
         # KILLS a source rather than breaking its loop, so an end-of-function save is
         # exactly what a kill destroys — which is why stat_estonia had never written a
@@ -784,6 +783,14 @@ def update(unit, since) -> Result:
             total_rows += n
         else:
             total_rows += before
+        # VISITED only once the subject's tables all finished without a failure (the stat_latvia
+        # review, R1103 P2, found the same flaw there): marked at the start, a subject whose tables
+        # failed counted as done, and the next pass could close the cycle as `ok` without it.
+        if tally.transient + tally.structural == fails_before:
+            visited.add(subj)
+        else:
+            visited.discard(subj)
+        _save_cycle(out_dir, visited, cycle)
 
     # Save the bookmark even after a COMPLETE pass: it is then the last subject in order
     # and the next run wraps to the top through this same path, so there is no branch that
