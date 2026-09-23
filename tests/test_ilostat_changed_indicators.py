@@ -289,8 +289,9 @@ def test_a_fence_trip_books_each_mapped_changed_id(tmp_path, catalog):
     st = StateStore(path=str(tmp_path / "state.db"))
     unit = types.SimpleNamespace(key="ilostat/_all", source_id="ilostat", unit_id="_all")
     res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"})
-    note = orchestrate._book_fence_trip(unit, res, st, 12.0)
+    note, queue = orchestrate._book_fence_trip(unit, res, st, 12.0)
     assert note.startswith("csv coverage note:") and "12-min fence" in note and "; " not in note, note
+    assert queue == []
     got = sorted(r["series_id"] for r in st.csv_desktop_owed("ilostat"))
     assert got == sorted(["ilostat:EMP_A", "ilostat:EMP:ECO_TOTAL:USA", "ilostat:EMP:ECO_TOTAL:FRA"]), got
     assert "fence" in st.csv_desktop_owed("ilostat")[0]["reason"]
@@ -300,8 +301,10 @@ def test_a_fence_trip_books_each_mapped_changed_id(tmp_path, catalog):
 def test_a_fence_trip_that_cannot_book_is_a_failure_and_other_sources_keep_their_note(tmp_path, catalog):
     unit = types.SimpleNamespace(key="ilostat/_all", source_id="ilostat", unit_id="_all")
     res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"})
-    note = orchestrate._book_fence_trip(unit, res, None, 12.0)
+    note, queue = orchestrate._book_fence_trip(unit, res, None, 12.0)
     assert "could NOT be booked" in note and not note.startswith("csv coverage note:"), note
+    assert sorted(queue) == sorted(["ilostat:EMP_A", "ilostat:EMP:ECO_TOTAL:USA", "ilostat:EMP:ECO_TOTAL:FRA"]), \
+        "a failed booking QUEUES the mapped ids - never in no home (R1149 F2)"
     other = types.SimpleNamespace(key="abs/_all", source_id="abs", unit_id="_all")
     assert orchestrate._book_fence_trip(other, res, None, 12.0) is None
 
@@ -333,6 +336,10 @@ def test_run_once_books_a_fence_trip_through_the_helper():
                and any(getattr(t, "id", None) == "csv_err" for t in a.targets)
                and getattr(a.value, "id", None) == "_fence_note"]
     assert assigns, "csv_err must BE the helper's note (R1144 RV-D), not the false 're-derives next run'"
+    queued = [a for h in handlers for a in ast.walk(h) if isinstance(a, ast.Assign)
+              and any(getattr(t, "id", None) == "csv_failed" for t in a.targets)
+              and any(isinstance(n, ast.Name) and n.id == "_fence_q" for n in ast.walk(a.value))]
+    assert queued, "ids the helper could not book must become csv_failed, so they are queued (R1149 F2)"
 
 
 # ---- review R1144 --------------------------------------------------------------------------------
@@ -496,12 +503,66 @@ def test_a_fence_trip_whose_changed_set_maps_to_nothing_is_a_failure(tmp_path, c
     st = StateStore(path=str(tmp_path / "state.db"))
     res = Result(status="partial", obs=10, changed_keys={"NOPE_A": "2025-12-31"},
                  series_cursors={"EMP_A|x": "2025-12-31"})
-    note = orchestrate._book_fence_trip(_unit(), res, st, 12.0)
-    assert "could NOT be booked" in note and "mapped to 0" in note, note
+    note, queue = orchestrate._book_fence_trip(_unit(), res, st, 12.0)
+    assert "mapped to 0" in note and not note.startswith("csv coverage note:") and queue == [], note
+    assert "NOPE_A" in st.full_rederives_owed()[0]["note"], "the unmapped keys are recorded"
     res = Result(status="partial", obs=10, changed_keys={"EMP_A": "2025-12-31"},
                  series_cursors={"NOPE|x": "2025-12-31"})
-    assert orchestrate._book_fence_trip(_unit(), res, st, 12.0).startswith("csv coverage note:"), \
+    assert orchestrate._book_fence_trip(_unit(), res, st, 12.0)[0].startswith("csv coverage note:"), \
         "the changed set, not the freshness cursors, is what gets mapped (RV-C)"
+
+
+# ---- review R1149 --------------------------------------------------------------------------------
+def test_a_dead_mapper_at_the_fence_records_every_key(tmp_path, catalog, monkeypatch):
+    """F3: a fence trip whose mapper fails left 182 ids in no home."""
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: (_ for _ in ()).throw(OSError("db")))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    keys = {f"S{i:03d}_A": "2025-12-31" for i in range(30)}
+    note, queue = orchestrate._book_fence_trip(_unit(), Result(status="partial", obs=1, changed_keys=keys), st, 12.0)
+    assert queue == [] and "could NOT be mapped" in note
+    rec = st.full_rederives_owed()[0]["note"]
+    assert all(k in rec for k in keys), "every key, not the first 20"
+
+
+def test_unmapped_keys_merge_across_two_crashes(tmp_path, catalog, monkeypatch):
+    monkeypatch.setattr(orchestrate, "_catalog_ids_for", lambda src, keys: (_ for _ in ()).throw(OSError("db")))
+    st = StateStore(path=str(tmp_path / "state.db"))
+    for batch in ({f"A{i:02d}_A": "x" for i in range(25)}, {f"B{i:02d}_A": "x" for i in range(25)}):
+        orchestrate._derive_changed_csvs(_unit(), Result(status="partial", obs=1, changed_keys=batch), object(), st)
+    rec = st.full_rederives_owed()[0]["note"]
+    assert "50 changed STORE key(s)" in rec and "A00_A" in rec and "B24_A" in rec, rec[:300]
+
+
+def test_the_remedy_line_names_the_desktop_tool_the_clear_and_the_keys(tmp_path):
+    from updater import health
+    st = StateStore(path=str(tmp_path / "state.db"))
+    orchestrate._note_unmapped_debt(st, "ilostat", ["EMP_TEMP_Q", "UNE_X_A"], "csv_derive crashed")
+    row = next(r for r in health.assess(st)["sources"] if r["source"] == "ilostat")
+    line = next(a for a in row["attention"] if "full re-derive OWED" in a)
+    assert "tools/derive_ilostat_indicators.py --only <stems>" in line and "--after-desktop-derive" in line, line
+    assert "EMP_TEMP_Q" in line and "UNE_X_A" in line, "the keys reach the health line (R4-5)"
+
+
+def _bulk(monkeypatch, *args):
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import derive_csv_bulk as B
+    monkeypatch.setattr(sys, "argv", ["derive_csv_bulk.py", *args])
+    cleared = []
+    monkeypatch.setattr(B, "_durable_clear", lambda src: cleared.append(src) or True)
+    return B.main(), cleared
+
+
+def test_the_bulk_tool_refuses_to_pay_or_clear_a_csv_misses_source(monkeypatch, capsys):
+    rc, cleared = _bulk(monkeypatch, "--source", "ilostat")
+    out = capsys.readouterr().out
+    # the refusal itself, not a later rc 2 ("no parquet for ilostat" on a machine without the store)
+    assert rc == 2 and cleared == [] and "declares csv_misses: desktop_owed" in out, out
+    rc, cleared = _bulk(monkeypatch, "--source", "ilostat", "--clear-owed-only")
+    assert rc == 2 and cleared == [], "no clear without the explicit statement"
+    rc, cleared = _bulk(monkeypatch, "--source", "ilostat", "--clear-owed-only", "--after-desktop-derive")
+    assert rc == 0 and cleared == ["ilostat"]
+    rc, cleared = _bulk(monkeypatch, "--source", "abs", "--clear-owed-only")
+    assert rc == 0 and cleared == ["abs"], "negative control: another source clears as before"
 
 
 def test_health_groups_debts_by_their_reason_prefix(tmp_path):

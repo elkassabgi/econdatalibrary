@@ -70,8 +70,9 @@ def validate(reg: dict, expected_count: int | None = None) -> list[str]:
             problems.append(f"{sid}: csv_grain must be one of {sorted(CSV_GRAINS)}, "
                             f"got {e.get('csv_grain')!r}")
         if "csv_misses" in e and e.get("csv_misses") != "desktop_owed":
-            # csv_misses: desktop_owed books a series-grain source's budget-deferred CSV ids as a
-            # csv_desktop_owed debt, and a csv-fence trip as full_rederive_owed (R1131). The only
+            # csv_misses: desktop_owed books a series-grain source's missed CSV ids (budget-deferred,
+            # failed, crash, fence trip) PER ID in csv_desktop_owed; changed keys that cannot be mapped
+            # at all go to one full_rederive_owed row listing them (R1131, R1137, R1149). The only
             # value; a typo must not silently fall back to the retry queue that cannot drain on r2.
             problems.append(f"{sid}: csv_misses must be 'desktop_owed', got {e.get('csv_misses')!r}")
         if "csv_desktop_exclude" in e:

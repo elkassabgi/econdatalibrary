@@ -254,7 +254,38 @@ def main() -> int:
                     help="run ONLY the durable full_rederive_owed clear (pull->clear->push) "
                          "for --source and exit - for finishing a campaign whose stamp was "
                          "deferred by a live heavy pass, AFTER verifying the campaign")
+    ap.add_argument("--after-desktop-derive", action="store_true",
+                    help="with --clear-owed-only, for a registry `csv_misses: desktop_owed` source: "
+                         "confirm its unmapped keys were re-derived with the source's own desktop tool")
     a = ap.parse_args()
+
+    # THIS TOOL CANNOT PAY A csv_misses SOURCE'S DEBT (R1137, R1149). For ilostat it would PUT
+    # 'ilostat:ilostat:...' objects (0 of 400 sampled store keys are catalogue ids) and a zero-error run
+    # would then CLEAR the full_rederive_owed row without paying it. A campaign is refused; the clear
+    # needs --after-desktop-derive, stated only after the source's desktop tool re-derived the keys the
+    # row lists (ilostat: tools/derive_ilostat_indicators.py --only <stems>).
+    try:
+        import yaml as _y                                              # noqa: PLC0415
+        from updater import config as _c                               # noqa: PLC0415
+        _reg = _y.safe_load(open(_c.REGISTRY, encoding="utf-8")) or []
+        if isinstance(_reg, dict):                                     # the same two forms the out_dir
+            _reg = _reg.get("sources") or list(_reg.values())         # check below accepts
+        _ent = next((e for e in _reg if e.get("source_id") == a.source), {}) or {}
+        _misses = _ent.get("csv_misses") == "desktop_owed"
+    except Exception as _re:                                           # noqa: BLE001 - refuse, never guess
+        print(f"REFUSING: cannot read the registry to check {a.source}'s csv_misses "
+              f"({type(_re).__name__}: {str(_re)[:80]})")
+        return 2
+    if _misses and not a.clear_owed_only:
+        print(f"REFUSING: {a.source} declares csv_misses: desktop_owed - this tool cannot derive its "
+              f"catalogue ids. Re-derive the keys its full_rederive_owed note lists with the source's "
+              f"desktop tool (ilostat: tools/derive_ilostat_indicators.py --only <stems>), then run "
+              f"--clear-owed-only --after-desktop-derive.")
+        return 2
+    if _misses and a.clear_owed_only and not a.after_desktop_derive:
+        print(f"REFUSING: {a.source}'s debt is paid by its desktop tool, not by this one; after that "
+              f"re-derive, add --after-desktop-derive to clear the row.")
+        return 2
 
     if a.clear_owed_only:
         # --dry-run must stay dry HERE TOO (verifier's finding, the R503 class: this

@@ -584,6 +584,36 @@ _DESKTOP_OWED_FENCE = ("csv fence tripped before this changed id was derived, on
                        "read back, clear")
 
 
+_UNMAPPED_KEYS_MARK = " keys="
+
+
+def _note_unmapped_debt(store, source_id: str, keys, why: str) -> bool:
+    """The durable record for changed keys that could not be MAPPED to catalogue ids (R1148, R1149):
+    one full_rederive_owed row whose note carries EVERY key, MERGED with the keys an earlier crash left
+    (a second crash used to replace the first's keys; the note held only 20 of up to ~864 stems). The
+    keys are STORE keys (ilostat: indicator stems), not catalogue ids. True when recorded."""
+    import json as _json                                                # noqa: PLC0415
+    if store is None:
+        return False
+    try:
+        old = next((r for r in store.full_rederives_owed() if r["source_id"] == source_id), None)
+        have: set = set()
+        if old and _UNMAPPED_KEYS_MARK in str(old.get("note") or ""):
+            try:
+                have = set(_json.loads(str(old["note"]).split(_UNMAPPED_KEYS_MARK, 1)[1]))
+            except ValueError:
+                have = set()
+        allk = sorted(have | {str(k) for k in keys if k is not None})
+        store.note_full_rederive_owed(
+            source_id, note=(f"{why}; {len(allk)} changed STORE key(s) not mapped to catalogue ids "
+                             f"(re-derive them on the desktop){_UNMAPPED_KEYS_MARK}{_json.dumps(allk)}"))
+        return True
+    except Exception as e:                                           # noqa: BLE001 - loud, never fatal
+        print(f"[orchestrator] {source_id}: could not record the unmapped keys ({type(e).__name__}: "
+              f"{str(e)[:100]})", flush=True)
+        return False
+
+
 def _book_owed_items(store, source_id: str, items) -> bool:
     """Book [(series_id, rows, reason)] in csv_desktop_owed in ONE statement batch - all or none
     (R1144). False, loudly, when there is no store or the write fails; the caller then keeps its
@@ -631,26 +661,33 @@ def _book_fence_trip(unit, res, store, fence_min: float):
     PER ID, NOT full_rederive_owed (review R1137): health's remedy for a full re-derive is
     tools/derive_csv_bulk.py, which for ilostat would PUT 'ilostat:ilostat:...' objects across
     390,875,664 store rows and clear the debt without paying it (R882's class). A mapping or booking
-    failure is a FAILURE segment, never a quiet note."""
+    failure is a FAILURE segment, never a quiet note.
+
+    RETURNS (note, ids_to_queue) - or None for another source. Every changed id ends in exactly one home
+    (R1149 F2/F3): booked; else, when the booking fails, QUEUED; else, when nothing could be mapped, the
+    durable unmapped-keys record (_note_unmapped_debt)."""
     if _csv_misses(unit.source_id) != "desktop_owed":
         return None
     ck = getattr(res, "changed_keys", None)
     changed = sorted(k for k in (ck if ck is not None else (res.series_cursors or {})) if k is not None)
     try:
         ids, _unm = _catalog_ids_for(unit.source_id, changed)
-        if store is None:
-            raise RuntimeError("no state store to book them in")
-        if changed and not ids:
-            # A non-empty changed set that maps to NOTHING is not "nothing to book" (R1144 RV-C): it is
-            # a mapping failure (e.g. store keys where stems were expected), and it must demote.
-            raise RuntimeError(f"{len(changed)} changed key(s) mapped to 0 catalogue ids")
-        if not _book_owed_items(store, unit.source_id, [(s, None, _DESKTOP_OWED_FENCE) for s in ids]):
-            raise RuntimeError("the booking failed")
-    except Exception as e:                                   # noqa: BLE001 - loud, never fatal
+    except Exception as e:                                   # noqa: BLE001 - the mapper itself failed
+        _note_unmapped_debt(store, unit.source_id, changed,
+                            f"csv fence tripped and the changed keys could not be mapped ({type(e).__name__})")
         return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
-                f"could NOT be booked as desktop debts ({type(e).__name__}: {str(e)[:100]})")
+                f"could NOT be mapped ({type(e).__name__}: {str(e)[:100]}) - recorded as unmapped keys"), []
+    if changed and not ids:
+        # A non-empty changed set that maps to NOTHING is a mapping failure (R1144 RV-C), not "nothing to
+        # book": it demotes, and the keys are recorded.
+        _note_unmapped_debt(store, unit.source_id, changed, "csv fence tripped and 0 changed keys mapped")
+        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
+                f"mapped to 0 catalogue ids - recorded as unmapped keys"), []
+    if not _book_owed_items(store, unit.source_id, [(s, None, _DESKTOP_OWED_FENCE) for s in ids]):
+        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(ids)} changed id(s) "
+                f"could NOT be booked as desktop debts - queued for retry instead"), list(ids)
     return (f"csv coverage note: csv phase exceeded its {fence_min:.0f}-min fence, {len(ids)} changed "
-            f"id(s) booked as desktop debts (csv_desktop_owed), none re-derive on their own")
+            f"id(s) booked as desktop debts (csv_desktop_owed), none re-derive on their own"), []
 
 
 def _csv_misses(source_id: str) -> str:
@@ -1100,14 +1137,9 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                     # durable record health reads, carrying the changed keys, so a quiet next run
                     # cannot erase it. Its remedy for a csv_misses source is the desktop, not the bulk
                     # tool (health.py; R1137).
-                    try:
-                        if store is not None:
-                            store.note_full_rederive_owed(
-                                unit.source_id, note=(f"csv_derive crashed and the {len(changed)} changed "
-                                                      f"key(s) could not be mapped ({type(_me).__name__}); "
-                                                      f"re-derive on the desktop: {', '.join(map(str, changed[:20]))}"))
-                    except Exception:                        # noqa: BLE001 - the note below still demotes
-                        pass
+                    _note_unmapped_debt(store, unit.source_id, changed,
+                                        f"csv_derive crashed and the changed keys could not be mapped "
+                                        f"({type(_me).__name__})")
                     _ids = []
             if _ids and _book_owed_items(store, unit.source_id,
                                          [(s, None, f"{_DESKTOP_OWED_FAILED} ({_crash[:120]})") for s in _ids]):
@@ -2257,9 +2289,11 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                                "source on its next CHANGE")
                     _csv_fence_tripped = True
                     print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
-                    _fence_note = _book_fence_trip(unit, res, store, _csv_fence)
-                    if _fence_note is not None:
+                    _fence = _book_fence_trip(unit, res, store, _csv_fence)
+                    if _fence is not None:
+                        _fence_note, _fence_q = _fence
                         csv_err = _fence_note
+                        csv_failed = list(_fence_q)      # booking failed: queued, never in no home (R1149)
                         print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
                 else:
                     _csv_fence_tripped = False
