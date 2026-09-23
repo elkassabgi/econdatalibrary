@@ -550,6 +550,10 @@ def update(unit, since) -> Result:
             for g in cycle.unvisited():
                 if g != cut_group:
                     tally.deferred_unit(f"{g}: budget {BUDGET_MIN:.0f} min spent, group deferred")
+            # Every group this pass did not reach still holds its rows: count them, as abs does,
+            # or obs (served as obs_count) drops on every budget-stopped pass (AR-124 P7).
+            for rest in pfiles[pfiles.index(fn):]:
+                total += blob.row_count(os.path.join(out_dir, rest))
             break
         # AFTER the deferral check, never before: the bookmark names the last group this run
         # actually WORKED ON. Stamped above the check it would record a deferred group and

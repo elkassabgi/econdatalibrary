@@ -123,6 +123,14 @@ def test_skipped_groups_still_count_toward_the_reported_total(monkeypatch, tmp_p
     assert ssb.update(None, None).obs == full
 
 
+def test_a_budget_stopped_pass_still_reports_the_store_total(monkeypatch, tmp_path):
+    """Review AR-124 P7: the groups a budget stop did not reach dropped out of obs (2 of 3)."""
+    _wire(monkeypatch, tmp_path, allow=2)                          # Aa done, stop at Bb's top
+    res = ssb.update(None, None)
+    stored = sum(pq.read_metadata(tmp_path / f"grp_{g}.parquet").num_rows for g in ("Aa", "Bb", "Cc"))
+    assert res.status == "partial" and res.obs == stored, (res.obs, stored)
+
+
 def test_negative_control_one_pass_that_reaches_everything_is_not_partial(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert ssb.update(None, None).status != "partial"
