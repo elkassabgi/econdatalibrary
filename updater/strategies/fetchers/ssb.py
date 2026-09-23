@@ -749,6 +749,9 @@ def update(unit, since) -> Result:
             # VISITED only once every table was attempted AND none failed: a group the budget cut
             # part-way, or whose tables failed, stays owed (AR-119 (c); stat_latvia review R1103 P2).
             cycle.visit(fn, failed=cycle.failures(tally) > fails_before)
+        else:
+            # cut by the budget part-way: no verdict - not visited, and NOT a failed attempt
+            cycle.release(fn)
 
     cycle.close_if_complete(tally)
     # last_obs: derive ONLY from sane cursor values. The merge-returned max and the
