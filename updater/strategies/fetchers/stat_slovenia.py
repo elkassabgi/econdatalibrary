@@ -61,7 +61,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Deadline, Tally, finalize, sane_since
+from ._common import Deadline, RotationCycle, Tally, finalize, sane_since
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -597,16 +597,30 @@ def update(unit, since) -> Result:
     # finalize: real status, real cursors, and the same offset write that already happens.
     budget_min = float(os.environ.get("STAT_SLOVENIA_BUDGET_MIN", "40"))
     _dl = Deadline(minutes=budget_min)
+    # `ok` = EVERY group worked since the last ok (RotationCycle, 2026-09-23). The budget stop
+    # booked nothing, so a pass that reached ~70% of the 146 groups (09-12: 75 of 146 deferred;
+    # 09-19: 102) would read ok and wait its cadence - hidden until now only because two
+    # mis-flagged tables kept the source partial (review AR-125; NUMBERS budget-stop survey).
+    cycle = RotationCycle(out_dir, _groups)
 
     for _gi, grp in enumerate(_groups, 1):
+        path = _group_path(out_dir, grp)
+        if cycle.done(grp):
+            # worked this cycle: no fetch owed; its rows still count (obs is served as obs_count)
+            total_rows += blob.row_count(path)
+            continue
         if _dl.spent():
+            n_owed = cycle.defer_unvisited(
+                tally, label=lambda g: f"{g}: budget {budget_min:.0f} min spent, group deferred")
+            # every group this pass did not reach still holds its rows (AR-124 P7)
+            for rest in _groups[_gi - 1:]:
+                total_rows += blob.row_count(_group_path(out_dir, rest))
             print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
-                  f"{_dl.elapsed_min():.1f} min — stopping cleanly after {_gi - 1} of "
-                  f"{len(_groups)} group(s); the sweep offset is already saved, so the next "
-                  f"tick resumes here instead of being killed and reported as a failure",
+                  f"{_dl.elapsed_min():.1f} min — {n_owed} group(s) not yet worked this cycle "
+                  f"booked deferred; the sweep offset is saved, so the next tick resumes here",
                   flush=True)
             break
-        path = _group_path(out_dir, grp)
+        fails_before = cycle.failures(tally)
         before = blob.row_count(path)
         total_rows += before
         tbl_max = _table_max_by_group(path)   # one read per group file
@@ -817,7 +831,10 @@ def update(unit, since) -> Result:
                 _cur, json.dumps({"next_group": (_start + _gi) % len(_groups)}).encode())
         except Exception:                                      # noqa: BLE001
             pass    # a lost offset costs one repeated sweep, never correctness
+        # VISITED only when none of its tables failed; a failed group stays owed (R1103 P2)
+        cycle.visit(grp, failed=cycle.failures(tally) > fails_before)
 
+    cycle.close_if_complete(tally)
     last_obs = overall_max.isoformat() if overall_max else (since or None)
     # empty_window_floor = (#sub-units) - 1 per the S3 contract, where #sub-units is the
     # TOTAL of all tables processed this run (added + empty[404] + structural + transient +
