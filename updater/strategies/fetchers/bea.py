@@ -315,6 +315,7 @@ def update(unit, since) -> Result:
             break
         save_rotation(out_dir, rel)
         path = os.path.join(out_dir, rel)
+        cycle.begin(rel)                     # a raise or kill inside it counts (AR-127 P5)
         fails_before = cycle.failures(tally)
         try:
             prof = _stored_profile(path)

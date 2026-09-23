@@ -494,3 +494,19 @@ def test_a_series_bea_now_sends_blank_does_not_hold_the_cycle_open(store, monkey
     nipa_asks.clear()
     bea.update(None, None)
     assert nipa_asks, "the next cycle reaches NIPA again"
+
+
+def test_a_group_killed_mid_work_counts_as_a_failed_attempt(store, monkeypatch):
+    """AR-127 P5: a raise or kill inside a group never reached visit(); begin() marks it in flight."""
+    d, calls, y = store
+
+    class _Kill(BaseException):
+        pass
+
+    def _boom(*a, **k):
+        raise _Kill()
+    monkeypatch.setattr(ig, "fetch_table_freq", _boom)
+    with pytest.raises(_Kill):
+        bea.update(None, None)
+    units = bea._group_units(str(d))
+    assert bea.RotationCycle(str(d), units).failing == {"NIPA/T10101.parquet": 1}
