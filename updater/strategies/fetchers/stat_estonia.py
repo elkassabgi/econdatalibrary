@@ -497,6 +497,14 @@ def update(unit, since) -> Result:
     total = 0
     maxd: dt.date | None = None
     cursors: dict[str, str] = {}   # table-prefix -> max obs_date (per-table freshness)
+    # THE TABLES THIS PASS CHANGED, MEASURED BY THE MERGE - the CSV phase's changed set. The cursors
+    # above are SEEDED from every stored table of every visited subject (so a frozen table cannot
+    # hide), and the orchestrator used to map all of them: under the r2 backend a runner holds only
+    # the subject files this pass WROTE, so every other table's derive failed with ResolveError
+    # ("csv_derive failed 173/911 series" on 2026-09-18; 2,089 stat_estonia ids stuck in
+    # csv_retry_queue, all ResolveError on archive and census tables). orchestrate._catalog_ids_for
+    # assumes a mapped id's file is one this run wrote; this keeps that true. {table prefix: date}.
+    changed: dict[str, str] = {}
 
     # BOUND ITSELF BELOW THE ORCHESTRATOR'S CAP, AND ROTATE. In the 2026-08-02 cloud run
     # this source was killed by the 45-minute hard timeout, as were statfin and
@@ -802,7 +810,16 @@ def update(unit, since) -> Result:
                 "obs_date":   pa.array(dates, pa.date32()),
                 "value":      pa.array(vals, pa.float64()),
             })
-            n, md = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
+            n, md, ch = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP,
+                                              report_changed_keys=True,
+                                              changed_keys_cap=max(new_tbl.num_rows, 1))
+            for k, d in ch.items():
+                low = (k or "").lower()
+                cut = low.find(".px")
+                pref = k[: cut + 3] if cut != -1 else None      # the table prefix, as _max_by_table
+                if pref and (pref not in changed or (d and str(d) > str(changed[pref]))):
+                    changed[pref] = d
+            del ch
             total += n
             if md:
                 # md is the whole-file max (may be a projection/2085 or 9999 sentinel);
@@ -860,5 +877,7 @@ def update(unit, since) -> Result:
     # empty_window_floor = (#sub-units) - 1 per the contract: a real wholesale outage
     # (every table empty/404) trips the structural floor; a healthy run where most
     # tables are simply "nothing newer" is legitimate no_change and must NOT.
-    return finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
-                    empty_window_floor=max(n_subunits - 1, 1))
+    res = finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
+                   empty_window_floor=max(n_subunits - 1, 1))
+    res.changed_keys = changed        # complete: bounded by the ~4,978 tables, never capped
+    return res
