@@ -154,12 +154,17 @@ test("primePump reports EOF-with-nothing as null and counts written bytes", asyn
 
 test("peekGzipHeader validates the header and sees a data row from the first stored chunk(s)", () => {
   const gz = new Uint8Array(gzipSync(Buffer.from(DATA)));
-  assert.deepEqual(peekGzipHeader([gz], false), { headerOk: true, hasRow: true });
-  assert.deepEqual(peekGzipHeader([gz.subarray(0, 12), gz.subarray(12)], false), { headerOk: true, hasRow: true });
+  assert.deepEqual(peekGzipHeader([gz], false), { headerOk: true, hasRow: true, headerFinal: true });
+  assert.deepEqual(peekGzipHeader([gz.subarray(0, 12), gz.subarray(12)], false),
+    { headerOk: true, hasRow: true, headerFinal: true });
   const bad = new Uint8Array(gzipSync(Buffer.from("id,date,val\n1,2,3\n")));
-  assert.equal(peekGzipHeader([bad], false).headerOk, false);
+  assert.deepEqual(peekGzipHeader([bad], false), { headerOk: false, hasRow: true, headerFinal: true },
+    "a wrong header is FINAL once its line is complete - the primer may stop reading");
   const only = new Uint8Array(gzipSync(Buffer.from(CSV_HEADER + "\n")));
-  assert.deepEqual(peekGzipHeader([only], false), { headerOk: true, hasRow: false });
+  assert.deepEqual(peekGzipHeader([only], false), { headerOk: true, hasRow: false, headerFinal: true });
+  // No newline yet: nothing is final, so the primer must keep reading.
+  const partial = new Uint8Array(gzipSync(Buffer.from("series_id,obs_da")));
+  assert.equal(peekGzipHeader([partial], false).headerFinal, false);
   assert.equal(peekGzipHeader([bytes("not gzip at all")], false).headerOk, false);
 });
 

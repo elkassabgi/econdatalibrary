@@ -56,8 +56,8 @@ import {
 } from "./util";
 import {
   CSV_HEADER, FILTER_MAX_STORED_BYTES, FILTER_MAX_TEXT_BYTES, LineFilter, MAX_RATIO, STREAM_MIN_BYTES,
-  VerifiedGunzip, completeLine, contractHeaderPrefix, identityPipe, isGzipMagic, isizeFromTrailer,
-  newStats, peekGzipHeader, prefixBytes, primePump, slices,
+  VerifiedGunzip, completeLine, identityPipe, isGzipMagic, isizeFromTrailer,
+  newStats, peekGzipHeader, peekPlainHeader, prefixBytes, primePump, slices,
 } from "./csvStream";
 import type { FilterOpts, Primed } from "./csvStream";
 import { isGated } from "./denylist";
@@ -400,16 +400,24 @@ export async function streamLarge(
     if (ctx) ctx.waitUntil(done);
   };
 
-  if (!filtered && gzipped) {
-    // Prime on THIS body: pull stored chunks until the inflated prefix shows the header and a
-    // data row (bounded: peekGzipHeader stops after 64 KB of text), then cancel it and serve a
-    // SECOND GET's body untouched - the runtime pumps a native R2 body at ~0.7 CPU-s per GB
-    // (R582), whereas re-emitting the bytes through a JS pump measured 2.8 MB/s. One extra
+  // A WIDE object is served WHOLE, never line-filtered, whatever its encoding. Filters are
+  // refused for a wide source before any object is read, so it never needs the filter path -
+  // and that path cannot serve it: LineFilter splits on newlines (a quoted field holding one
+  // would be cut) and consumes the header to prepend the canonical one. An earlier version
+  // tried to make the filter emit the wide header instead, and the primer then stopped on the
+  // header alone whenever a stored chunk ended between the header's newline and the first
+  // row's, answering 502 on a healthy object. Serving the stored bytes untouched removes both.
+  const wide = opts.allowAnyHeader === true;
+  if (!filtered && (gzipped || wide)) {
+    // Prime on THIS body: pull stored chunks until the (inflated, when gzipped) prefix shows the
+    // header and a data row (bounded: the peek stops after 64 KB of text), then cancel it and
+    // serve a SECOND GET's body untouched - the runtime pumps a native R2 body at ~0.7 CPU-s per
+    // GB (R582), whereas re-emitting the bytes through a JS pump measured 2.8 MB/s. One extra
     // class-B GET per large download.
     const held: Uint8Array[] = [];
     let heldBytes = 0;
     let magicChecked = false;
-    let peek = { headerOk: false, hasRow: false };
+    let peek = { headerOk: false, hasRow: false, headerFinal: false };
     const reader = obj.body.getReader();
     try {
       for (;;) {
@@ -422,18 +430,27 @@ export async function streamLarge(
           const first3 = new Uint8Array(3);
           let o = 0;
           for (const c of held) { for (let i = 0; i < c.length && o < 3; i++) first3[o++] = c[i]; if (o >= 3) break; }
-          if (!isGzipMagic(first3)) throw new Error("not a gzip member (flagged gzip at rest)");
+          // Both directions: gzip bytes flagged plain would go out as text/csv garbage.
+          if (gzipped && !isGzipMagic(first3)) throw new Error("not a gzip member (flagged gzip at rest)");
+          if (!gzipped && isGzipMagic(first3)) throw new Error("gzip bytes flagged plain at rest");
         }
-        peek = peekGzipHeader(held, opts.allowAnyHeader === true);
+        peek = gzipped ? peekGzipHeader(held, wide) : peekPlainHeader(held, wide);
         if (peek.headerOk && peek.hasRow) break;
-        if (held.reduce((n, c) => n + c.length, 0) > 4 * 1024 * 1024) break;   // 4 MB of gzip with no data row: give up
+        // A REFUSED header is final once its line is complete. Reading on to the 4 MB cap
+        // re-inflated everything held on every chunk; with small chunks that is quadratic
+        // (a mutation test of this path took 944 s at 64-byte chunks).
+        if (peek.headerFinal && !peek.headerOk) break;
+        if (heldBytes > 4 * 1024 * 1024) break;   // 4 MB stored with no data row: give up
       }
     } catch (e) {
       await reader.cancel(e).catch(() => undefined);
       return malformed(String((e as Error).message ?? e).slice(0, 120));
     }
     await reader.cancel().catch(() => undefined);
-    if (!peek.headerOk) return malformed("stored bytes do not inflate to the contract header");
+    if (!peek.headerOk) {
+      return malformed(gzipped ? "stored bytes do not inflate to the contract header"
+                               : "the stored object has no usable header line");
+    }
     if (!peek.hasRow) return resolverEmpty(seriesId);
     // The primed bytes are the ones served: the second GET is conditional on the same ETag; a
     // replace between the two GETs yields a bodyless result (R593 b) and an honest 502.
@@ -443,17 +460,44 @@ export async function streamLarge(
       return json({ error: "data_unavailable", source, series_id: seriesId,
         detail: "the object was replaced while the response was being prepared; retry" }, 502);
     }
-    const extra: Record<string, string> = {
+    const omitted: Record<string, string> = {
+      "x-econdl-citation-omitted": "large-object",
+      "link": `</v1/series/${encodeURIComponent(seriesId)}.metadata.json>; rel="describedby"`,
+    };
+    if (bare) omitted["etag"] = fresh.httpEtag;
+    if (!gzipped) {
+      // A plain body goes out with its EXACT stored length and `no-transform`, the string path's
+      // convention (CONTRACT.md "Completeness line"). A response with no content-length must end
+      // with `# econdl-complete`, which a byte-untouched passthrough cannot add - and every
+      // reference client refuses the shape without either, index.ts logs a download only when
+      // content-length is set, and a transfer cut on a row boundary would be undetectable. An
+      // earlier draft left the length off so the edge could compress the body; that trades the
+      // one completeness check a client has for bandwidth, so it is not offered.
+      return csvPassthrough(fresh.body, {
+        "content-length": String(fresh.size),
+        "cache-control": "public, max-age=300, no-transform",
+        ...omitted,
+      });
+    }
+    return csvPassthrough(fresh.body, {
       "content-encoding": "gzip",
       "content-length": String(fresh.size),
       // a cacheable, pre-encoded body must vary on the request's encoding, or a shared cache
       // could hand these gzip bytes to a client that did not accept gzip (review round 8)
       "vary": "Accept-Encoding",
-      "x-econdl-citation-omitted": "large-object",
-      "link": `</v1/series/${encodeURIComponent(seriesId)}.metadata.json>; rel="describedby"`,
-    };
-    if (bare) extra["etag"] = fresh.httpEtag;
-    return csvPassthrough(fresh.body, extra);
+      ...omitted,
+    });
+  }
+
+  // Unreachable for a wide object by construction: every wide request is unfiltered and so
+  // took the branch above. If a change ever routes one here, refuse it LOUDLY - the filter
+  // below would consume its header and label its rows `series_id,obs_date,value`, a 200 that
+  // misdescribes itself.
+  if (wide) {
+    await obj.body.cancel().catch(() => undefined);
+    return json({ error: "data_unavailable", source, series_id: seriesId,
+      detail: "internal: a wide-format object reached the row filter; refusing rather than " +
+              "serving it mislabelled" }, 502);
   }
 
   // Inflate path: budget first, never a 200 that dies at the CPU limit.
@@ -534,10 +578,7 @@ export async function streamLarge(
     ? `# Projection: rows for geo=${opts.geo} of grouped series ${seriesId}` +
       (requestedId !== seriesId ? ` (requested as ${requestedId})` : "") + "\n"
     : "";
-  // contractHeaderPrefix, not CSV_HEADER: a wide object's own header is emitted by LineFilter
-  // and must not be covered with the canonical one (csvStream.ts).
-  const prefix = (bare ? "" : (await citationHeader(seriesId, series, env)) + note)
-    + contractHeaderPrefix(opts.allowAnyHeader);
+  const prefix = (bare ? "" : (await citationHeader(seriesId, series, env)) + note) + CSV_HEADER + "\n";
   const { readable, writable } = identityPipe();
   const writer = writable.getWriter();
   const run = (async () => {

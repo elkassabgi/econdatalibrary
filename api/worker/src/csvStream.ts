@@ -216,20 +216,12 @@ export class LineFilter {
     const line = this.dec.decode(buf.subarray(start, end));
     if (this.first) {
       this.first = false;
-      this.stats.headerOk = line === CSV_HEADER || this.opts.allowAnyHeader === true;
-      // The canonical header is CONSUMED here because series.ts prepends its own copy. A WIDE
-      // object's first line is different: it is that object's own column list and the only
-      // description of the rows behind it, so swallowing it and letting the caller prepend
-      // `series_id,obs_date,value` answers 200 with a header that mis-labels 7-column fhfa
-      // rows - the silently-wrong body series.ts calls worse than refusing. So when the caller
-      // has declared the source wide, the stored header is EMITTED and series.ts prepends
-      // nothing (contractHeaderPrefix). It costs exactly the bytes it occupied in the input,
-      // so `out`'s size above still bounds the result.
-      if (this.stats.headerOk && this.opts.allowAnyHeader === true) {
-        out.set(buf.subarray(start, endExcl), pos);
-        pos += len;
-        out[pos++] = NL;
-      }
+      // The header is CONSUMED here; series.ts prepends CSV_HEADER in front of the rows. That
+      // is only right for the canonical header, which is why a WIDE object never reaches this
+      // filter: streamLarge serves it whole (see the passthrough branch there). `allowAnyHeader`
+      // is kept on FilterOpts so that path can say what it is, and streamLarge refuses a wide
+      // object that arrives here rather than consuming its header and mislabelling its rows.
+      this.stats.headerOk = line === CSV_HEADER;
       return pos;
     }
     if (rowPasses(line, this.opts, this.stats)) {
@@ -420,17 +412,6 @@ export function prefixBytes(prefix: string): Uint8Array {
   return new TextEncoder().encode(prefix);
 }
 
-/** The header line the streamed body needs in FRONT of the rows, if any.
- *
- *  Exactly one of the two must supply it, and which one depends on the source: LineFilter
- *  consumes a canonical header and this puts it back, but it EMITS a wide source's own
- *  header, and adding the canonical one on top of that would label fhfa's seven columns
- *  `series_id,obs_date,value`. Kept here, beside the consume/emit decision it mirrors, so the
- *  two cannot be changed apart. */
-export function contractHeaderPrefix(allowAnyHeader: boolean | undefined): string {
-  return allowAnyHeader === true ? "" : CSV_HEADER + "\n";
-}
-
 /** Peek the first CSV line of a gzipped object from its first stored chunk(s) without
  *  keeping the inflater: used to prime the passthrough (header validated, a data row seen).
  *
@@ -441,7 +422,7 @@ export function contractHeaderPrefix(allowAnyHeader: boolean | undefined): strin
  *  parameter makes `npm run typecheck` the guard: a call site that forgets it does not
  *  compile, which is a check that cannot be green while the path is broken. */
 export function peekGzipHeader(chunks: Uint8Array[], allowAnyHeader: boolean):
-    { headerOk: boolean; hasRow: boolean } {
+    { headerOk: boolean; hasRow: boolean; headerFinal: boolean } {
   let text = "";
   const dec = new TextDecoder();
   let done = false;
@@ -449,11 +430,40 @@ export function peekGzipHeader(chunks: Uint8Array[], allowAnyHeader: boolean):
   try {
     for (const c of chunks) { gz.push(c, false); if (done) break; }
   } catch {
-    return { headerOk: false, hasRow: false };
+    return { headerOk: false, hasRow: false, headerFinal: true };   // not gzip at all: final
   }
+  return judgeHead(text, allowAnyHeader);
+}
+
+/** The same peek for an object stored PLAIN. A wide source's large objects are served whole
+ *  whatever their encoding, and 2,255 of census's 2,700 large objects are stored without
+ *  gzip (measured 2026-09-23 by head_object over all of them), so the passthrough needs to
+ *  prime a plain body too. `allowAnyHeader` is required for the reason given above. */
+export function peekPlainHeader(chunks: Uint8Array[], allowAnyHeader: boolean):
+    { headerOk: boolean; hasRow: boolean; headerFinal: boolean } {
+  const dec = new TextDecoder();
+  let text = "";
+  for (const c of chunks) {
+    text += dec.decode(c, { stream: true });
+    if (text.length > 65536) break;
+  }
+  return judgeHead(text, allowAnyHeader);
+}
+
+/** The one verdict both peeks share, so the gzip and plain passthroughs cannot come to judge
+ *  a header differently: the first line is a usable header and at least one data row follows.
+ *
+ *  A wide object may carry ANY header, but not an empty one - its header is the only
+ *  description of the columns behind it, and an empty first line would serve the rows
+ *  labelled with nothing. */
+function judgeHead(text: string, allowAnyHeader: boolean):
+    { headerOk: boolean; hasRow: boolean; headerFinal: boolean } {
   const nl = text.indexOf("\n");
-  if (nl < 0) return { headerOk: text.replace(/\r$/, "") === CSV_HEADER && false, hasRow: false };
-  const headerOk = text.slice(0, nl).replace(/\r$/, "") === CSV_HEADER || allowAnyHeader;
+  if (nl < 0) return { headerOk: false, hasRow: false, headerFinal: false };
+  const first = text.slice(0, nl).replace(/\r$/, "");
+  const headerOk = first === CSV_HEADER || (allowAnyHeader && first.trim() !== "");
   const hasRow = text.slice(nl + 1).split("\n").some((l) => l.trim() !== "");
-  return { headerOk, hasRow };
+  // Once the first line is complete the header verdict cannot change, so a caller priming a
+  // body can stop as soon as it is refused instead of reading on to its byte cap.
+  return { headerOk, hasRow, headerFinal: true };
 }

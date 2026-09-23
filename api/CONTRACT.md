@@ -52,6 +52,16 @@ resolves to a file but zero rows (refuse to emit an empty series silently); **50
 header (malformed at rest: refused, never served as data). The R2 ETag is attached only to
 `?raw=1` downloads of the WHOLE object (no window, no projection).
 
+**Wide sources (fhfa, census, wikidata, treasury).** These are stored with their OWN columns
+(`econdl._resolve._NATIVE_ONLY`; a long projection of a relational table would misstate it), so
+the header rule above does not apply to them: any non-empty first line is accepted, and the object
+is served WHOLE and byte-untouched. `from`/`to`/`geo` are refused with **400** `unsupported_filter`
+before any object is read, because the date column sits at a different position per source. A
+large wide object (≥ 256 KiB) goes out through the passthrough whatever its storage encoding: a
+gzipped one exactly as below; a PLAIN one with its exact `content-length` and
+`cache-control: no-transform`, so the length is its completeness check. Encoding and bytes must
+agree at rest - gzip bytes flagged plain, or plain bytes flagged gzip, are **502**.
+
 Large objects (stored size ≥ 256 KiB — table-grain series can be hundreds of MB gzipped;
 ledger R582): the body is never materialised in the worker.
 - Unfiltered (no `from`/`to`/`geo`): the response is the **stored gzip bytes**
