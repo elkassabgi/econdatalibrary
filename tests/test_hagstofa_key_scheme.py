@@ -85,6 +85,12 @@ def test_negative_control_a_mixed_table_still_takes_its_dominant_scheme(tmp_path
     assert res.status in ("ok", "no_change"), res.error
 
 
+def test_dominance_is_by_rows_not_by_which_scheme_the_file_lists_first(tmp_path, monkeypatch):
+    stored = [NEW] + [f"{PREFIX}:Tegund={i}:Land=0:Eining=0" for i in range(5)]   # the stray row first
+    res, keys = _run(tmp_path, monkeypatch, stored, stored[1:])
+    assert res.status in ("ok", "no_change"), res.error
+
+
 def test_a_tie_between_two_stored_schemes_is_refused(tmp_path, monkeypatch):
     res, keys = _run(tmp_path, monkeypatch, [OLD, NEW], [NEW])
     assert res.status == "structural" and "RESTRUCTURED" in res.error, res.error

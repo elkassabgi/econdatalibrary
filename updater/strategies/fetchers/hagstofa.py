@@ -152,7 +152,7 @@ def _key_scheme(key: str, prefix: str) -> tuple:
     return tuple(seg.split("=", 1)[0] for seg in rest.split(":") if "=" in seg) if rest else ()
 
 
-def _per_table_profile(path: str, boundary: dict | None = None
+def _per_table_profile(path: str, boundary: dict | None = None, all_keys: dict | None = None
                        ) -> tuple[dict[str, dt.date], dict[str, dict]]:
     """For a db parquet, per TABLE prefix: max(obs_date), and the key schemes stored ({scheme: rows}).
 
@@ -189,6 +189,8 @@ def _per_table_profile(path: str, boundary: dict | None = None
         if pref is None:
             continue
         prefs[-1] = pref
+        if all_keys is not None:
+            all_keys.setdefault(pref, set()).add(k)     # every series ever stored (the R1140 re-code rule)
         sc = schemes.setdefault(pref, {})
         ks = _key_scheme(k, pref)
         sc[ks] = sc.get(ks, 0) + 1                  # rows per scheme: which one DOMINATES (R1139)
@@ -753,10 +755,12 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
     db_table_max: dict[str, dict[str, dt.date]] = {}
     db_schemes: dict[str, dict[str, dict]] = {}
     db_boundary: dict[str, dict[str, dict]] = {}
+    db_keys: dict[str, dict[str, set]] = {}
     for db in by_db:
         db_boundary[db] = {}
+        db_keys[db] = {}
         db_table_max[db], db_schemes[db] = _per_table_profile(os.path.join(out_dir, f"{db}.parquet"),
-                                                              boundary=db_boundary[db])
+                                                              boundary=db_boundary[db], all_keys=db_keys[db])
 
     sess = _session()
     wpath = os.path.join(out_dir, WITHDRAWN_FILE)
@@ -893,15 +897,25 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
             bdate, bvals = db_boundary.get(db, {}).get(prefix, (None, {}))
             fetched_schemes = {_key_scheme(k, prefix) for k, _d, _v in rows}
             bvals = {k: v for k, v in bvals.items() if _key_scheme(k, prefix) in fetched_schemes}
-            # A RE-CODE SHARES NO KEY WITH THE STORE (R1130): VIN00001's codes changed from positions
-            # ('Kyn/aldur=0') to label text ('Kyn/aldur=Alls') under the SAME dimension names, so the
-            # scheme guard passed, no stored key came back, nothing could be compared - and 60 new
-            # series merged beside 60 frozen ones. A stored table whose re-fetch shares no series with
-            # its stored boundary is refused, named.
-            if bvals and not any(k in bvals for k, _d, _v in rows):
-                shifted = (f"RE-CODED - none of the {len(bvals)} series stored at {bdate} came back "
-                           f"(e.g. stored {next(iter(bvals))[len(prefix) + 1:][:60]!r}, fetched "
-                           f"{rows[0][0][len(prefix) + 1:][:60]!r}); the value codes changed")
+            # A RE-CODE BRINGS SERIES THE TABLE NEVER HELD (R1130, R1140). VIN00001's codes changed from
+            # positions ('Kyn/aldur=0') to label text ('Kyn/aldur=Alls') under the SAME dimension names:
+            # the scheme guard passed and 60 new series merged beside 60 frozen ones. The first rule -
+            # "no stored boundary key came back" - was beaten by ONE survivor: a text total ('Alls')
+            # keeps its key through such a re-code, so 20 re-coded series merged beside 20 frozen ones
+            # (R1140 P1; 85 tables have a boundary key that would survive). The rule is a PROPORTION:
+            # at the boundary date, series never stored ANYWHERE in the table must not outnumber the
+            # stored boundary series that came back. A new member (one country added) is far below
+            # that; series re-appearing from earlier dates (SKO00000's 4) are stored, so they count
+            # for nothing; a subset of the stored series coming back is not a re-code at all.
+            fetched_b = {k for k, d, _v in rows if d == bdate} if bdate is not None else set()
+            ever = db_keys.get(db, {}).get(prefix, set())
+            never = sorted(k for k in fetched_b if k not in ever)
+            came_back = [k for k in fetched_b if k in bvals]
+            if bvals and never and len(never) > len(came_back):
+                shifted = (f"RE-CODED - {len(never)} of the {len(fetched_b)} series fetched at {bdate} were "
+                           f"never stored in this table, more than the {len(came_back)} stored series that "
+                           f"came back (e.g. stored {next(iter(bvals))[len(prefix) + 1:][:60]!r}, fetched "
+                           f"{never[0][len(prefix) + 1:][:60]!r}); the value codes changed")
             else:
                 stored_codes: dict = {}
                 for k in bvals:
@@ -924,9 +938,13 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                                   if 2 * sum(1 for c in cs if c.isdigit()) > len(cs)}
                     shifted = _neighbour_shift(rows, bvals, bdate, prefix, positional)
             if shifted:
-                why = (f"{tpath}: CODES SHIFTED - {shifted}. Not merged: 'new wins' would overwrite "
-                       f"stored series with other series' values; it stays refused until the table is "
-                       f"re-keyed deliberately")
+                # The consequence differs (R1140): a SHIFT overwrites stored series with neighbours'
+                # values; a RE-CODE adds a second code system beside the stored one.
+                harm = ("it would add a second code system beside the stored series"
+                        if shifted.startswith("RE-CODED") else
+                        "'new wins' would overwrite stored series with other series' values")
+                why = (f"{tpath}: CODES SHIFTED - {shifted}. Not merged: {harm}; it stays refused until "
+                       f"the table is re-keyed deliberately")
                 print(f"[{SOURCE}] {why}", flush=True)
                 tally.structural_unit(why)
                 continue

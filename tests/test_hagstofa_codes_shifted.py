@@ -226,6 +226,68 @@ def test_a_recode_that_shares_no_key_with_the_store_is_refused(tmp_path, monkeyp
     res, store, lm = _run(tmp_path, monkeypatch, recoded, _labels(SCHOOLS))
     assert res.status == "structural" and "RE-CODED" in res.error, res.error
     assert not any(k.startswith(f"{PREFIX}:Skóli=School") for k, _d in store) and lm == {}
+    assert "second code system" in res.error and "overwrite" not in res.error, "the RE-CODED harm (R1140)"
+
+
+# ---- review R1140: the re-code rule is a PROPORTION, so one surviving key cannot defeat it ----------
+def test_a_recode_that_keeps_one_total_key_is_still_refused(tmp_path, monkeypatch):
+    """R1140 P1: a text total ('Alls') keeps its key through a position->label re-code; 'none came back'
+    was defeated by that one survivor and 22 re-coded series merged beside the frozen ones."""
+    recoded = [(f"{PREFIX}:Skóli={SCHOOLS[s]}:Kyn={x}", B, 1.0) for s in range(1, N) for x in (1, 2)]
+    recoded += [(_k(0, 1), B, STORED[_k(0, 1)]), (_k(0, 2), B, STORED[_k(0, 2)])]   # the survivors
+    res, store, lm = _run(tmp_path, monkeypatch, recoded, _labels(SCHOOLS))
+    assert res.status == "structural" and "RE-CODED" in res.error and "22 of the 24" in res.error, res.error
+    assert not any(k.startswith(f"{PREFIX}:Skóli=School") for k, _d in store)
+
+
+def test_series_reappearing_from_earlier_dates_are_not_a_recode(tmp_path, monkeypatch):
+    """SKO00000's shape: keys absent at the boundary but stored at earlier dates come back - they are
+    stored series, so they count for nothing."""
+    import pyarrow as _pa
+    import pyarrow.parquet as _pq
+    rows = _rows(STORED, B)
+    res, store, lm = _run(tmp_path, monkeypatch, rows, _labels(SCHOOLS))
+    assert res.status in ("ok", "no_change"), res.error
+    extra = [f"{PREFIX}:Skóli={90 + i}:Kyn=1" for i in range(4)]            # stored in 2023 only
+    t = _pq.read_table(str(tmp_path / "Samfelag.parquet"))
+    add = _pa.table({"series_key": extra, "obs_date": _pa.array([dt.date(2023, 12, 31)] * 4), "value": [1.0] * 4})
+    _pq.write_table(_pa.concat_tables([t, add.cast(t.schema)]), str(tmp_path / "Samfelag.parquet"))
+    rows = _rows(STORED, B) + [(k, B, 2.0) for k in extra]
+    monkeypatch.setattr(H, "_fetch_table", lambda sess, db, path, prefix, since, **k: (rows, "data"))
+    res = H.update(types.SimpleNamespace(config={}, key="hagstofa/_all"), None)
+    assert res.status in ("ok", "no_change"), res.error
+
+
+def test_the_proportion_is_strict_an_equal_count_merges(tmp_path, monkeypatch):
+    """New series must OUTNUMBER the stored ones that came back: a table that doubles (24 + 24) merges."""
+    rows = _rows(STORED, B) + [(f"{PREFIX}:Skóli={40 + s}:Kyn={x}", B, 1.0) for s in range(N) for x in (1, 2)]
+    res, store, lm = _run(tmp_path, monkeypatch, rows, _labels(SCHOOLS))
+    assert "RE-CODED" not in (res.error or ""), res.error
+
+
+def test_a_new_member_is_far_below_the_proportion(tmp_path, monkeypatch):
+    rows = _rows(STORED, B) + [(f"{PREFIX}:Skóli=12:Kyn={x}", B, 4.0) for x in (1, 2)]
+    res, store, lm = _run(tmp_path, monkeypatch, rows, _labels(SCHOOLS + ["M"]))
+    assert res.status in ("ok", "no_change"), res.error
+    assert store.get((f"{PREFIX}:Skóli=12:Kyn=1", B)) == 4.0
+
+
+def test_a_boundary_that_brings_back_only_a_subset_is_not_a_recode(tmp_path, monkeypatch):
+    """R1140 minor: 28 tables hold a subset of their series at the newest period; the old rule read a
+    dropped subset as RE-CODED."""
+    import pyarrow as _pa
+    import pyarrow.parquet as _pq
+    res, store, lm = _run(tmp_path, monkeypatch, _rows(STORED, B), _labels(SCHOOLS))
+    extra = [f"{PREFIX}:Skóli={90 + i}:Kyn=1" for i in range(4)]            # stored in 2023 only
+    t = _pq.read_table(str(tmp_path / "Samfelag.parquet"))
+    add = _pa.table({"series_key": extra, "obs_date": _pa.array([dt.date(2023, 12, 31)] * 4), "value": [1.0] * 4})
+    _pq.write_table(_pa.concat_tables([t, add.cast(t.schema)]), str(tmp_path / "Samfelag.parquet"))
+    # the boundary brings back ONLY series stored at earlier dates: none of the boundary's came back,
+    # which the old 'none came back' rule refused as RE-CODED
+    rows = [(k, B, 2.0) for k in extra]
+    monkeypatch.setattr(H, "_fetch_table", lambda sess, db, path, prefix, since, **k: (rows, "data"))
+    res = H.update(types.SimpleNamespace(config={}, key="hagstofa/_all"), None)
+    assert "RE-CODED" not in (res.error or ""), res.error
 
 
 def _three_dim(stored_fn):
