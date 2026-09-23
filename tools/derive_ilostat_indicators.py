@@ -439,6 +439,9 @@ def main() -> int:
         with open(smap, "w", encoding="utf-8") as fh:
             json.dump(out_map, fh, indent=1, sort_keys=True)
         print(f"split map ({len(out_map):,} indicator(s)) -> {smap}")
+        # THE RUNNER READS THE STORE'S COPY (review R1131): a map left on this machine only makes
+        # every '#part' id unresolvable in the cloud CSV phase.
+        print("NEXT: py tools/publish_ilostat_split_map.py --apply --replace  (the cloud reads R2's copy)")
 
     # EVERY TERMINAL DISPOSITION GETS A KEY (R219). A summary carrying only `errors` and
     # `skipped` reads as complete while refused units are on the floor; `considered` lets a

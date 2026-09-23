@@ -144,6 +144,47 @@ def test_the_registry_declares_ilostat_csv_misses_and_validates_the_value(monkey
         assert any("csv_misses" in p for p in problems), problems
 
 
+# ---- the desktop map reaches the store ---------------------------------------------------------------
+class _FakeR2:
+    def __init__(self, have=None):
+        self.objs = {} if have is None else {"clean_full/ilostat/_split_map.json": have}
+        self.puts = 0
+
+    def get(self, key):
+        return self.objs.get(key)
+
+    def put_atomic(self, key, body):
+        self.puts += 1
+        self.objs[key] = body
+
+
+def _publish(tmp_path, monkeypatch, have, *args):
+    from updater import blob
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import publish_ilostat_split_map as T
+    local = tmp_path / "data" / "clean_full" / "ilostat" / "_split_map.json"
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b'{"EMP_TEMP_Q": {"col": "classif1"}}')
+    fake = _FakeR2(have)
+    monkeypatch.setattr(blob, "_r2_routed", lambda: fake)
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "local")
+    return T.main(["--local", str(local), *args]), fake
+
+
+def test_the_split_map_is_published_when_absent_and_read_back(tmp_path, monkeypatch):
+    rc, fake = _publish(tmp_path, monkeypatch, None)
+    assert rc == 0 and fake.puts == 0, "dry run by default"
+    rc, fake = _publish(tmp_path / "b", monkeypatch, None, "--apply")
+    assert rc == 0 and fake.puts == 1 and fake.objs["clean_full/ilostat/_split_map.json"].startswith(b'{"EMP_TEMP_Q"')
+
+
+def test_a_different_map_on_the_store_is_not_overwritten_without_replace(tmp_path, monkeypatch):
+    rc, fake = _publish(tmp_path, monkeypatch, b'{"OTHER": 1}', "--apply")
+    assert rc == 2 and fake.puts == 0
+    rc, fake = _publish(tmp_path / "b", monkeypatch, b'{"OTHER": 1}', "--apply", "--replace")
+    assert rc == 0 and fake.puts == 1
+
+
 # ---- the file-grain stream refuses a subset predicate ------------------------------------------------
 def test_the_file_grain_stream_refuses_a_resolver_that_selects_a_subset(monkeypatch):
     import pyarrow.compute as pc
