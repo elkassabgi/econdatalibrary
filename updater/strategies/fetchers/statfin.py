@@ -596,6 +596,32 @@ def _query_table(sess, path, since_date):
 # --------------------------------------------------------------------------- #
 # contract entry point
 # --------------------------------------------------------------------------- #
+CYCLE_FILE = "_cycle.json"
+
+
+def _load_cycle(out_dir) -> dict:
+    """{visited: [subjects visited since the last complete cycle]}. Unreadable or absent -> a new
+    cycle: every subject is owed again, which costs extra passes and never skips one."""
+    try:
+        raw = blob.read_bytes(os.path.join(out_dir, CYCLE_FILE))
+        d = json.loads(raw.decode("utf-8")) if raw is not None else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:                                                # noqa: BLE001
+        return {}
+
+
+def _save_cycle(out_dir, visited, prev: dict) -> None:
+    """Written per subject, like the rotation bookmark (R273: a save only at the end is exactly
+    what the orchestrator's kill destroys). Swallows failures: losing it re-owes the cycle."""
+    d = {k: v for k, v in prev.items() if k != "visited"}
+    d["visited"] = sorted(visited)
+    try:
+        blob.write_bytes_atomic(os.path.join(out_dir, CYCLE_FILE),
+                                json.dumps(d, indent=1).encode("utf-8"))
+    except Exception:                                                # noqa: BLE001
+        pass
+
+
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
@@ -640,16 +666,36 @@ def update(unit, since) -> Result:
     subjects = rotate_after(sorted(by_subject.keys()), load_rotation(out_dir))
     stopped_early = False
     last_subj = ""
+    # THE ROTATION CYCLE (R303, 2026-09-23). `ok` now means "every subject was visited since the
+    # last `ok`", not "this pass stopped somewhere". Measured: the 2026-09-05 run (33988619740)
+    # reached 28 of 134 subjects (pthi..ton) in its 30-minute budget and reported `ok`, so the
+    # next run waited the monthly cadence (0.9 x 28 = 25.2 days) and took the next 28. A full
+    # rotation took ~5 such runs, ~125 days, against an 84-day data clock. StatFin updated all 8
+    # kbar tables to 2026M08 on 2026-08-25; kbar (sorted index 35) was among the 106 skipped, and
+    # R2 still ends it at 2026-07-01.
+    # A pass that stops before the cycle is complete books every subject not yet visited IN THIS
+    # CYCLE as deferred, so it reads `partial`. SCHEDULING, as base.is_due actually does it: a
+    # `partial` never advances last_success, so once statfin is due it stays due on EVERY run
+    # (twice daily, ~35 min and ~8 GB peak each, measured on 33988619740) until a pass completes
+    # the cycle - about 5 runs, ~2.5 days. That pass is `ok`, last_success moves, and the next
+    # cycle starts 25.2 days later. Worst subject age: ~28 days, not ~125.
+    cycle = _load_cycle(out_dir)
+    visited = set(cycle.get("visited") or []) & set(subjects)
 
     for subj in subjects:
         if dl.spent():
             stopped_early = True
+            owed = [s for s in subjects if s not in visited]
             print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
-                  f"{dl.elapsed_min():.1f} min — stopped after subject {last_subj!r}, "
-                  f"{len(subjects) - subjects.index(subj)} of {len(subjects)} subject(s) "
-                  f"deferred to the next tick", flush=True)
+                  f"{dl.elapsed_min():.1f} min — stopped after subject {last_subj!r}; "
+                  f"{len(owed)} of {len(subjects)} subject(s) not yet visited this cycle",
+                  flush=True)
+            for rest in owed:
+                tally.deferred_unit(f"{rest} ({len(by_subject[rest])} tables)")
             break
         last_subj = subj
+        visited.add(subj)
+        _save_cycle(out_dir, visited, cycle)
         # Written per sub-unit, not once at the end. The orchestrator's 45-minute cap
         # KILLS a source rather than breaking its loop, so an end-of-function save is
         # exactly what a kill destroys — which is why stat_estonia had never written a
@@ -744,6 +790,12 @@ def update(unit, since) -> Result:
     # could quietly stop rotating.
     if last_subj:
         save_rotation(out_dir, last_subj)
+    if set(subjects) <= visited and not tally.transient and not tally.structural:
+        # every subject visited since the last complete cycle: this pass may say `ok`. NOT on a
+        # pass with a failed table: that pass is `partial`/red anyway, and resetting here would
+        # start a fresh ~5-run cycle when one clean pass would have closed this one (review AR-119).
+        _save_cycle(out_dir, set(), {"completed_utc": dt.datetime.now(dt.timezone.utc)
+                                     .strftime("%Y-%m-%dT%H:%M:%SZ")})
 
     last_obs = global_max.isoformat() if global_max else (since or None)
     # Sub-units == tables; contract floor is (#subunits - 1). Active-but-quiet tables are
