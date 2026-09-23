@@ -543,6 +543,7 @@ def update(unit, since) -> Result:
     # 3) Group changed matrices by owning subject parquet, fetch + parse each table.
     by_subject: dict[str, dict] = {}   # subject_key -> {"keys":[],"dates":[],"vals":[],"matrices":[]}
     pulled_ok = []                      # matrices we successfully pulled (advance cursor for these)
+    confirmed_nothing = []              # never-stored, nothing to store at this release (cursor only)
     series_cursors: dict[str, str] = {}
     cursors_capped = False
 
@@ -631,6 +632,22 @@ def update(unit, since) -> Result:
             # NO LONGER ONE SENTENCE FOR TWO OPPOSITE CAUSES. Saying "network failure after
             # retries, or a 200 that parsed 0 obs" made a permanent parser gap read as the
             # publisher's bad hour, and nine matrices sat that way holding ~6M rows (R299).
+            if outcome in ("all_null", "span_time") and held and mtr not in held:
+                # A NEVER-STORED matrix whose body the publisher left empty (all_null) or whose
+                # time axis is a multi-year window we do not date (span_time) has nothing to
+                # store, and re-pulling it every run changes nothing: 12 such matrices were
+                # booked transient on every run, keeping cso partial (2026-09-23). Its release
+                # cursor advances, so it is fetched again the moment CSO changes it; it is NOT
+                # claimed as held. Not tallied: a confirmed-nothing-to-store is neither a failure
+                # nor an empty sub-unit that could trip the wholesale-outage floor. A STORED
+                # matrix that comes back like this is still transient (the publisher blanked it).
+                why = ("CSO publishes it with every value null" if outcome == "all_null" else
+                       "its time axis holds only multi-year windows (e.g. '2019-2023'), which "
+                       "are not dated until a convention is chosen")
+                print(f"[cso] {mtr}: not stored and nothing to store - {why}; skipped until "
+                      f"CSO updates it", flush=True)
+                confirmed_nothing.append(mtr)
+                continue
             if outcome == "unparsed":
                 print(f"[cso] {mtr}: HTTP 200 with a real body that parsed 0 observations — "
                       f"this is OURS, not the publisher's, and retrying will not fix it "
@@ -678,7 +695,7 @@ def update(unit, since) -> Result:
     # 5) Advance the release-date cursor ONLY for matrices we actually pulled (a transient
     #    mid-batch failure re-pulls next tick; never stamps unfetched tables as fresh).
     new_cursor = dict(stored)
-    for mtr in pulled_ok:
+    for mtr in pulled_ok + confirmed_nothing:
         new_cursor[mtr] = cur_upd[mtr]
     _write_cursor(cur_path, new_cursor)
 
