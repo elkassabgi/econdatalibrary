@@ -182,6 +182,34 @@ def test_the_bookmark_is_saved_per_group_not_only_at_the_end(monkeypatch, tmp_pa
     assert bm == GROUPS[1], f"the bookmark must name the group in flight, got {bm!r}"
 
 
+def test_a_group_absent_on_disk_does_not_hold_the_cycle_open(monkeypatch, tmp_path):
+    """Review AR-122 P7: OSP_OD_tautassk is catalogued with no store file; skipping its visit would
+    keep every budget-cut pass partial for ever."""
+    _wire(monkeypatch, tmp_path, allow=99)
+    os.remove(tmp_path / GROUPS[1])                                   # POP: catalogued, not held
+    runs = []
+    for _ in range(3):
+        _wire(monkeypatch, tmp_path, allow=1)
+        os.remove(tmp_path / GROUPS[1]) if (tmp_path / GROUPS[1]).exists() else None
+        runs.append(sl.update(None, None).status)
+    assert "ok" in runs, f"the absent group must count as done: {runs}"
+
+
+def test_a_structural_table_keeps_stat_latvia_from_ok(monkeypatch, tmp_path):
+    seen = _wire(monkeypatch, tmp_path, allow=99)
+    real = sl._query_table_delta
+
+    def _q(sess, t, boundary):
+        if t["path"] == "EMP/T1.px":
+            seen.append("EMP")
+            return [], "structural"
+        return real(sess, t, boundary)
+    monkeypatch.setattr(sl, "_query_table_delta", _q)
+    with pytest.raises(sl.DefinitiveError):
+        sl.update(None, None)
+    assert "OSP_PUB_EMP.parquet" in C.RotationCycle(str(tmp_path), GROUPS).unvisited()
+
+
 def test_stat_latvia_negative_control_a_full_pass_is_ok(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert sl.update(None, None).status == "ok"
