@@ -68,11 +68,26 @@ def test_a_first_landing_has_no_scheme_to_disagree_with(tmp_path, monkeypatch):
     assert NEW in keys
 
 
-def test_a_table_already_holding_both_schemes_is_not_blocked_here(tmp_path, monkeypatch):
-    """Known limit, pinned: this guard stops NEW dual states; tables already mixed on R2 (SJA04903/04/05,
-    UMH51101) are cleaned by a deliberate re-key, not by refusing their updates."""
-    res, keys = _run(tmp_path, monkeypatch, [OLD, NEW], [NEW])
+def test_a_mixed_table_refuses_the_minority_scheme(tmp_path, monkeypatch):
+    """REVERSED 2026-09-23 (R1139). This used to pin "a table already holding both schemes is not blocked",
+    on the assumption that its updates come in the table's main scheme. SJA04903 disproved it: 4,226
+    Icelandic-scheme series and ONE stray English one, and dry runs 4-6 merged 4,241 English-scheme series
+    for 2025 beside them - into a table catalogued as one id. The incoming scheme must DOMINATE the store."""
+    stored = [f"{PREFIX}:Tegund={i}:Land=0:Eining=0" for i in range(5)] + [NEW]
+    res, keys = _run(tmp_path, monkeypatch, stored, [NEW, f"{PREFIX}:Species=1:Country=0:Unit=0"])
+    assert res.status == "structural" and "RESTRUCTURED" in res.error and "stray" in res.error, res.error
+    assert keys == sorted(stored), "nothing merged"
+
+
+def test_negative_control_a_mixed_table_still_takes_its_dominant_scheme(tmp_path, monkeypatch):
+    stored = [f"{PREFIX}:Tegund={i}:Land=0:Eining=0" for i in range(5)] + [NEW]
+    res, keys = _run(tmp_path, monkeypatch, stored, stored[:5])
     assert res.status in ("ok", "no_change"), res.error
+
+
+def test_a_tie_between_two_stored_schemes_is_refused(tmp_path, monkeypatch):
+    res, keys = _run(tmp_path, monkeypatch, [OLD, NEW], [NEW])
+    assert res.status == "structural" and "RESTRUCTURED" in res.error, res.error
 
 
 def test_the_key_scheme_is_the_dimension_names_after_the_prefix():

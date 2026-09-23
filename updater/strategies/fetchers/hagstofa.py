@@ -153,8 +153,8 @@ def _key_scheme(key: str, prefix: str) -> tuple:
 
 
 def _per_table_profile(path: str, boundary: dict | None = None
-                       ) -> tuple[dict[str, dt.date], dict[str, set]]:
-    """For a db parquet, per TABLE prefix: max(obs_date), and the set of key schemes stored.
+                       ) -> tuple[dict[str, dt.date], dict[str, dict]]:
+    """For a db parquet, per TABLE prefix: max(obs_date), and the key schemes stored ({scheme: rows}).
 
     A series_key is 'ICE:<db>:<path>.px:<dim>=...'. The table prefix is the substring
     through the '.px' segment. We bucket every row's max obs_date under that prefix so a
@@ -189,7 +189,9 @@ def _per_table_profile(path: str, boundary: dict | None = None
         if pref is None:
             continue
         prefs[-1] = pref
-        schemes.setdefault(pref, set()).add(_key_scheme(k, pref))
+        sc = schemes.setdefault(pref, {})
+        ks = _key_scheme(k, pref)
+        sc[ks] = sc.get(ks, 0) + 1                  # rows per scheme: which one DOMINATES (R1139)
         if o is None:
             continue
         if isinstance(o, dt.datetime):
@@ -749,7 +751,7 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
 
     # Per-db, per-table on-disk max obs_date (date-tail boundaries).
     db_table_max: dict[str, dict[str, dt.date]] = {}
-    db_schemes: dict[str, dict[str, set]] = {}
+    db_schemes: dict[str, dict[str, dict]] = {}
     db_boundary: dict[str, dict[str, dict]] = {}
     for db in by_db:
         db_boundary[db] = {}
@@ -860,15 +862,29 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
             # scheme the table has never stored is therefore refused, named, and left to a
             # deliberate re-key. (Tables that already hold two schemes are cleaned by that re-key,
             # not here.)
+            #
+            # AGAINST THE DOMINANT SCHEME, NOT ANY SCHEME STORED (R1139). SJA04903 - the example named
+            # above - holds 4,226 series under Tegund/Land/Afurdaflokkur/Eining AND ONE stray series
+            # under Species/Country/Product category/Unit. "Never stored" was tested against the SET
+            # of schemes, so that one stray row let 4,241 English-scheme series merge beside the
+            # Icelandic ones in every dry run (4, 5, 6), and the table is catalogued as ONE id: its
+            # CSV would have mixed both. The incoming scheme must be the one that holds the most
+            # stored rows; a tie is ambiguous and refused too.
             stored_schemes = db_schemes.get(db, {}).get(prefix)
             if stored_schemes:
                 incoming = {_key_scheme(k, prefix) for k, _d, _v in rows}
-                new = incoming - stored_schemes
+                top = max(stored_schemes.values())
+                dominant = {s for s, n in stored_schemes.items() if n == top}
+                new = incoming - dominant if len(dominant) == 1 else incoming
                 if new:
+                    minor = {s: n for s, n in stored_schemes.items() if s in new}
                     why = (f"{tpath}: RESTRUCTURED by the publisher - key scheme(s) "
-                           f"{sorted(new)[:2]} never stored for this table (stored: "
-                           f"{sorted(stored_schemes)[:2]}); merging would publish two id schemes "
-                           f"in one table. Not merged: re-key it deliberately")
+                           f"{sorted(new)[:2]} are not the table's stored scheme (stored rows by "
+                           f"scheme: {sorted(stored_schemes.items(), key=lambda x: -x[1])[:2]}"
+                           + (f", of which the incoming hold {sum(minor.values()):,} stray row(s)"
+                              if minor else "")
+                           + "); merging would publish two id schemes in one table. Not merged: "
+                           "re-key it deliberately")
                     print(f"[{SOURCE}] {why}", flush=True)      # the result error is clipped (R1124)
                     tally.structural_unit(why)
                     continue
