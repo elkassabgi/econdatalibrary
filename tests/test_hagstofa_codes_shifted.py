@@ -216,3 +216,137 @@ def test_a_tree_search_cut_by_the_budget_is_booked_deferred_not_red(tmp_path, mo
                         ([], "deferred") if path == PATH else ([(f"{prefix}:Skóli=0", B, 1.0)], "data"))
     res = H.update(types.SimpleNamespace(config={}, key="hagstofa/_all"), None)
     assert res.status == "partial" and "1 deferred" in res.error and "table-tree search" in res.error, res.error
+
+
+# ---- review R1130 --------------------------------------------------------------------------------
+def test_a_recode_that_shares_no_key_with_the_store_is_refused(tmp_path, monkeypatch):
+    """VIN00001: codes changed from positions ('Skóli=0') to label text under the SAME names - no stored
+    key came back, nothing could be compared, and 60 new series merged beside 60 frozen ones."""
+    recoded = [(f"{PREFIX}:Skóli={SCHOOLS[s]}:Kyn={x}", B, 1.0) for s in range(N) for x in (1, 2)]
+    res, store, lm = _run(tmp_path, monkeypatch, recoded, _labels(SCHOOLS))
+    assert res.status == "structural" and "RE-CODED" in res.error, res.error
+    assert not any(k.startswith(f"{PREFIX}:Skóli=School") for k, _d in store) and lm == {}
+
+
+def _three_dim(stored_fn):
+    """Schools 0..11 x Kyn 1,2 x Aldur 1,2 - four rows per school, values from stored_fn(s, x, a)."""
+    return {f"{PREFIX}:Skóli={s}:Kyn={x}:Aldur={a}": float(stored_fn(s, x, a))
+            for s in range(N) for x in (1, 2) for a in (1, 2)}
+
+
+def test_a_revision_confined_to_one_member_is_not_a_shift_even_with_chance_neighbour_matches():
+    """R1130: dropping only the misses at the single miss code refused a one-member revision whenever
+    3 of its rows matched a neighbour by chance (modelled 12% of one-member revisions)."""
+    stored = _three_dim(lambda s, x, a: 10 * s + 2 * x + a)
+    fetched = dict(stored)
+    k5 = [k for k in stored if ":Skóli=5:" in k]
+    for k in k5[:3]:                                                # 3 of school 5's rows now equal
+        fetched[k] = stored[k.replace(":Skóli=5:", ":Skóli=4:")]    # school 4's - by chance
+    fetched[k5[3]] = 999.0                                          # the 4th is a new number
+    assert H._neighbour_shift(_rows(fetched, B), stored, B, PREFIX, {"Skóli", "Kyn", "Aldur"}) is None
+
+
+def test_a_two_member_insert_is_a_shift_of_two():
+    stored = _three_dim(lambda s, x, a: 10 * s + 2 * x + a)
+    fetched = {k: (stored[k.replace(f"Skóli={s}:", f"Skóli={s - 2}:")] if s >= 5 else v)
+               for k, v, s in ((k, v, int(k.split("Skóli=")[1].split(":")[0])) for k, v in stored.items())}
+    why = H._neighbour_shift(_rows(fetched, B), stored, B, PREFIX, {"Skóli"})
+    assert why and "2 code(s) lower" in why, why
+
+
+def test_a_shift_with_some_revisions_elsewhere_is_still_a_shift_at_80_percent():
+    stored = _three_dim(lambda s, x, a: 10 * s + 2 * x + a)
+    fetched = {k: (stored[k.replace(f"Skóli={s}:", f"Skóli={s - 1}:")] if s >= 2 else v)
+               for k, v, s in ((k, v, int(k.split("Skóli=")[1].split(":")[0])) for k, v in stored.items())}
+    moved = [k for k in fetched if fetched[k] != stored[k]]                 # 40 changed rows
+    for k in moved[:6]:                                                     # 6 of them revised to new
+        fetched[k] = fetched[k] + 0.5                                       # numbers: 34/40 = 85%
+    assert H._neighbour_shift(_rows(fetched, B), stored, B, PREFIX, {"Skóli"})
+
+
+def test_two_neighbour_matches_are_not_enough():
+    stored = _three_dim(lambda s, x, a: 10 * s + 2 * x + a)
+    fetched = dict(stored)
+    fetched[f"{PREFIX}:Skóli=7:Kyn=1:Aldur=1"] = stored[f"{PREFIX}:Skóli=6:Kyn=1:Aldur=1"]
+    fetched[f"{PREFIX}:Skóli=9:Kyn=2:Aldur=2"] = stored[f"{PREFIX}:Skóli=8:Kyn=2:Aldur=2"]
+    assert H._neighbour_shift(_rows(fetched, B), stored, B, PREFIX, {"Skóli"}) is None
+
+
+def test_two_matches_left_after_the_insert_code_is_dropped_are_not_enough():
+    """3 changes: 2 neighbour matches plus 1 miss at a single code (dropped as an insert) - 2 is not 3."""
+    stored = _three_dim(lambda s, x, a: 10 * s + 2 * x + a)
+    fetched = dict(stored)
+    fetched[f"{PREFIX}:Skóli=7:Kyn=1:Aldur=1"] = stored[f"{PREFIX}:Skóli=6:Kyn=1:Aldur=1"]
+    fetched[f"{PREFIX}:Skóli=9:Kyn=2:Aldur=2"] = stored[f"{PREFIX}:Skóli=8:Kyn=2:Aldur=2"]
+    fetched[f"{PREFIX}:Skóli=3:Kyn=1:Aldur=2"] = 999.0
+    assert H._neighbour_shift(_rows(fetched, B), stored, B, PREFIX, {"Skóli"}) is None
+
+
+def test_update_ignores_a_label_that_moved_among_codes_the_table_does_not_store(tmp_path, monkeypatch):
+    """A 13th and 14th school exist in the metadata but not in the store; a label moving between them
+    (a new school inserted at 13) must not refuse a table whose stored schools did not move."""
+    stored_map = _labels(SCHOOLS + ["School M", "School N"])
+    now = _labels(SCHOOLS + ["Newer school", "School M", "School N"])
+    revised = {k: v + 0.5 for k, v in STORED.items()}
+    res, store, lm = _run(tmp_path, monkeypatch, _rows(revised, B), now, label_map=stored_map)
+    assert res.status in ("ok", "no_change"), getattr(res, "error", None)
+
+
+def test_the_label_check_looks_only_at_codes_the_table_stores():
+    now = _labels(SCHOOLS[:5] + ["New school"] + SCHOOLS[5:11])
+    assert H._labels_moved(_labels(SCHOOLS), now, only_codes={"Skóli": {"0", "1"}}) is None
+    assert H._labels_moved(_labels(SCHOOLS), now, only_codes={"Skóli": {"0", "7"}})
+
+
+def test_with_a_label_map_the_value_check_still_runs(tmp_path, monkeypatch):
+    """R1130: a shift released together with a relabel of every member passes the label check alone."""
+    relabelled = _labels([f"Skóli {c}" for c in "ABCDEFGHIJKL"])            # every label new: no move
+    rows = _rows(_shifted(STORED), B)
+    res, store, lm = _run(tmp_path, monkeypatch, rows, relabelled, label_map=_labels(SCHOOLS))
+    assert res.status == "structural" and "CODES SHIFTED" in res.error and "1 code(s) lower" in res.error
+
+
+def test_a_mostly_digit_dimension_with_a_total_member_is_checked(tmp_path, monkeypatch):
+    names = ["Total"] + SCHOOLS[1:]
+    labels = {"Skóli": {("Alls" if i == 0 else str(i)): n for i, n in enumerate(names)},
+              "Kyn": {"1": "Boys", "2": "Girls"}}
+    rows = _rows(_shifted(STORED), B)
+    res, store, lm = _run(tmp_path, monkeypatch, rows, labels)
+    assert res.status == "structural" and "CODES SHIFTED" in res.error, res.error
+
+
+def test_positional_dimensions_come_from_the_keys_when_there_are_no_labels(tmp_path, monkeypatch):
+    rows = _rows(_shifted(STORED), B)
+    res, store, lm = _run(tmp_path, monkeypatch, rows, None)
+    assert res.status == "structural" and "CODES SHIFTED" in res.error, res.error
+
+
+def test_labels_are_not_seeded_from_an_unchecked_merge(tmp_path, monkeypatch):
+    res, store, lm = _run(tmp_path, monkeypatch, _rows(STORED, NXT), _labels(SCHOOLS))
+    assert res.status in ("ok", "no_change") and lm == {}, (res.status, lm)
+
+
+def test_labels_are_saved_only_after_the_merge_succeeds(tmp_path, monkeypatch):
+    def _boom(*a, **k):
+        raise H.DefinitiveError("merge refused: would shrink")
+    monkeypatch.setattr(H.merge, "merge_and_write", _boom)
+    revised = {k: v + 0.5 for k, v in STORED.items()}
+    with pytest.raises(H.DefinitiveError):
+        _run_raw(tmp_path, monkeypatch, _rows(revised, B), _labels(SCHOOLS))
+    assert not (tmp_path / H.LABELS_FILE).exists()
+
+
+def _run_raw(tmp_path, monkeypatch, fetched_rows, labels):
+    """_run without the DefinitiveError catch, for a merge that raises."""
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(H.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(H, "_load_catalog", lambda: [{"db": "Samfelag", "path": PATH, "id": "SKO02102.px",
+                                                     "text": "x"}])
+    pq.write_table(pa.table({"series_key": list(STORED), "obs_date": pa.array([B] * len(STORED)),
+                             "value": list(STORED.values())}), str(tmp_path / "Samfelag.parquet"))
+
+    def _fetch(sess, db, path, prefix, since, **k):
+        sess._hagstofa_labels[prefix] = labels
+        return fetched_rows, "data"
+    monkeypatch.setattr(H, "_fetch_table", _fetch)
+    return H.update(types.SimpleNamespace(config={}, key="hagstofa/_all"), None)

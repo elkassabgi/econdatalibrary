@@ -105,8 +105,9 @@ def _load_ingester():
 _ING = _load_ingester()
 BASE = _ING.BASE                      # https://px.hagstofa.is/pxen/api/v1/en
 # The Icelandic site. Same paths; the English site has been renaming variable codes and dropping
-# tables this one still serves (reviews R1108, R1112) - used ONLY as a same-path fallback whose codes
-# must reproduce a stored key scheme, and as the second tree searched before calling a table gone.
+# tables this one still serves (reviews R1108, R1112). NEVER fetched from (its value codes are
+# positions in a different order, R1119/R1120): used only to NAME a table dropped from the English
+# site, and as the second tree searched before calling a table gone.
 BASE_IS = "https://px.hagstofa.is/pxis/api/v1/is"
 parse_jsonstat2 = _ING.parse_jsonstat2
 parse_date = _ING.parse_date
@@ -217,20 +218,26 @@ def _key_codes(key: str, prefix: str) -> dict:
     return dict(seg.split("=", 1) for seg in rest.split(":") if "=" in seg) if rest else {}
 
 
-def _labels_moved(stored: dict, now: dict) -> str | None:
+def _labels_moved(stored: dict, now: dict, only_codes: dict | None = None) -> str | None:
     """IDENTITY BY LABEL (review R1124 (a)). `stored` / `now`: {dimension: {code: label}}. Hagstofa's
     codes are positions in each release's label list (R1119), so the label is the identity: a label
     that now sits under a DIFFERENT code means the codes were renumbered, whatever the values say. A
-    label renamed in place (same code, the old label gone from the list) is not a shift."""
+    label renamed in place (same code, the old label gone from the list) is not a shift.
+
+    `only_codes` ({dimension: set of codes}) limits the check to codes the table actually STORES
+    (review R1130): 66 tables keep one code of a large dimension (UTA02801 stores 1 of 4,162 HS
+    numbers), and a description moving between codes it never stored must not refuse it for ever."""
     for dim, old in stored.items():
         cur = now.get(dim)
         if not cur:
             continue
+        keep = (only_codes or {}).get(dim)
         where = {}
         for code, label in cur.items():
             where.setdefault(label, []).append(code)
         moved = [(c, lab, where[lab]) for c, lab in old.items()
-                 if cur.get(c) != lab and lab in where and c not in where[lab]]
+                 if (keep is None or c in keep)
+                 and cur.get(c) != lab and lab in where and c not in where[lab]]
         if moved:
             c, lab, to = moved[0]
             return (f"{len(moved)} label(s) of {dim!r} moved to another code since the stored release "
@@ -239,50 +246,52 @@ def _labels_moved(stored: dict, now: dict) -> str | None:
 
 
 def _neighbour_shift(fetched, boundary: dict, bdate, prefix: str, positional: set) -> str | None:
-    """THE SHIFT SIGNATURE, for a table with no label map yet (review R1124 (b)). A renumbering moves
-    each series one or a few positions along a positional dimension, so after it most CHANGED values
-    at the newest stored period equal the stored value of the key 1-3 positions away - on ONE
-    consistent offset. SKO02102 (school codes, inserted at 61): 1,143 of 1,143 changed values equal the
-    stored value one code lower. A revision gives new numbers, which match a neighbour only by chance,
-    and never most of them on one offset. Needs at least 3 changed values: with 1-2 a revision and a
-    shift cannot be told apart, and the label map (seeded on this clean merge) takes over next time."""
+    """THE SHIFT SIGNATURE (reviews R1124, R1130). A renumbering moves each series one or a few
+    positions along a positional dimension, so after it most CHANGED values at the newest stored period
+    equal the stored value of the key 1-3 positions away - on ONE consistent offset. SKO02102 (school
+    codes, inserted at 61): 1,143 of 1,143 changed values equal the stored value one code lower. A
+    revision gives new numbers, which match a neighbour only by chance, and never most of them on one
+    offset.
+
+    The rows AT the insertion point carry the new member's values and match no neighbour. When every
+    miss sits at ONE code, ALL changes at that code - its misses and any chance hits - leave the count
+    (R1130: dropping only the misses refused a revision confined to one member whenever 3 of its other
+    rows matched a neighbour by chance - modelled 12% of one-member revisions). What is left must hold
+    at least 3 changes, and at least 80% of them must be neighbour matches: with fewer, a revision and a
+    shift cannot be told apart. Digit codes only - a non-digit member ('Alls') cannot sit at +-delta."""
     if bdate is None or not boundary or not positional:
         return None
     new = {k: v for k, d, v in fetched if d == bdate}
     diff = [k for k in new.keys() & boundary.keys() if not _same(new[k], boundary[k])]
     if len(diff) < 3:
         return None
-    best = (0, None, None, None)
+    best = None
     for dim in positional:
         for delta in (1, 2, 3, -1, -2, -3):
-            hits = 0
-            miss_codes = set()
+            rec = []                                         # (code, hit) per change on this axis
             for k in diff:
                 segs = k[len(prefix) + 1:].split(":")
                 at = next((i for i, s in enumerate(segs) if s.startswith(f"{dim}=")), None)
                 if at is None:
                     continue
                 c = segs[at][len(dim) + 1:]
-                segs[at] = f"{dim}={int(c) - delta}" if c.isdigit() and int(c) - delta >= 0 else None
-                src = f"{prefix}:" + ":".join(segs) if segs[at] else None
-                if src is not None and src in boundary and _same(new[k], boundary[src]):
-                    hits += 1
-                else:
-                    miss_codes.add(c)
-            if hits > best[0]:
-                best = (hits, dim, delta, miss_codes)
-    hits, dim, delta, miss_codes = best
-    # The rows AT the insertion point carry the new member's values and match no neighbour. When every
-    # miss sits at ONE code, those are that member's rows and the rest is judged alone; misses spread
-    # over several codes (a revision) count in full.
-    denom = hits if miss_codes is not None and len(miss_codes) <= 1 else len(diff)
-    # 80%, not half: in a count table with a tiny value alphabet (3 distinct counts) a neighbour
-    # matches by chance about a third of the time, and half of 6 revised values did in the tests. A
-    # real shift matches almost all (SKO02102: 1,143 of 1,143).
-    if hits >= 3 and 5 * hits >= 4 * denom:
-        return (f"{hits} of {len(diff)} changed values at {bdate} equal the stored value {abs(delta)} "
-                f"code(s) {'lower' if delta > 0 else 'higher'} along {dim!r} - the codes were renumbered")
-    return None
+                hit = False
+                if c.isdigit() and int(c) - delta >= 0:
+                    segs[at] = f"{dim}={int(c) - delta}"
+                    src = f"{prefix}:" + ":".join(segs)
+                    hit = src in boundary and _same(new[k], boundary[src])
+                rec.append((c, hit))
+            misses = {c for c, h in rec if not h}
+            if len(misses) == 1:
+                rec = [(c, h) for c, h in rec if c not in misses]
+            hits = sum(1 for _c, h in rec if h)
+            if hits >= 3 and 5 * hits >= 4 * len(rec) and (best is None or hits > best[0]):
+                best = (hits, len(rec), dim, delta)
+    if best is None:
+        return None
+    hits, n, dim, delta = best
+    return (f"{hits} of {n} changed values at {bdate} equal the stored value {abs(delta)} code(s) "
+            f"{'lower' if delta > 0 else 'higher'} along {dim!r} - the codes were renumbered")
 
 
 def _same(a, b) -> bool:
@@ -868,19 +877,36 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
             bdate, bvals = db_boundary.get(db, {}).get(prefix, (None, {}))
             fetched_schemes = {_key_scheme(k, prefix) for k, _d, _v in rows}
             bvals = {k: v for k, v in bvals.items() if _key_scheme(k, prefix) in fetched_schemes}
-            if label_maps.get(prefix) and labels_now:
-                shifted = _labels_moved(label_maps[prefix], labels_now)
+            # A RE-CODE SHARES NO KEY WITH THE STORE (R1130): VIN00001's codes changed from positions
+            # ('Kyn/aldur=0') to label text ('Kyn/aldur=Alls') under the SAME dimension names, so the
+            # scheme guard passed, no stored key came back, nothing could be compared - and 60 new
+            # series merged beside 60 frozen ones. A stored table whose re-fetch shares no series with
+            # its stored boundary is refused, named.
+            if bvals and not any(k in bvals for k, _d, _v in rows):
+                shifted = (f"RE-CODED - none of the {len(bvals)} series stored at {bdate} came back "
+                           f"(e.g. stored {next(iter(bvals))[len(prefix) + 1:][:60]!r}, fetched "
+                           f"{rows[0][0][len(prefix) + 1:][:60]!r}); the value codes changed")
             else:
-                positional = {d for d, m in (labels_now or {}).items()
-                              if m and all(c.isdigit() for c in m)}
-                if not labels_now:
-                    # no metadata labels to read: take the positional dimensions from the keys
+                stored_codes: dict = {}
+                for k in bvals:
+                    for dim, code in _key_codes(k, prefix).items():
+                        stored_codes.setdefault(dim, set()).add(code)
+                # LABEL AND VALUE, not label OR value (R1130): a shift released together with a relabel
+                # of every member passes the label check alone.
+                shifted = None
+                if label_maps.get(prefix) and labels_now:
+                    shifted = _labels_moved(label_maps[prefix], labels_now, only_codes=stored_codes)
+                if not shifted:
                     seen_codes: dict = {}
                     for k, _d, _v in rows:
                         for dim, code in _key_codes(k, prefix).items():
                             seen_codes.setdefault(dim, set()).add(code)
-                    positional = {d for d, cs in seen_codes.items() if all(c.isdigit() for c in cs)}
-                shifted = _neighbour_shift(rows, bvals, bdate, prefix, positional)
+                    codes_of = {d: set(m) for d, m in (labels_now or {}).items() if m} or seen_codes
+                    # positional = MOSTLY digit codes (R1130: 223 dimensions carry one non-digit member
+                    # such as a total, and all-digits skipped them); the check uses only digit codes.
+                    positional = {d for d, cs in codes_of.items()
+                                  if 2 * sum(1 for c in cs if c.isdigit()) > len(cs)}
+                    shifted = _neighbour_shift(rows, bvals, bdate, prefix, positional)
             if shifted:
                 why = (f"{tpath}: CODES SHIFTED - {shifted}. Not merged: 'new wins' would overwrite "
                        f"stored series with other series' values; it stays refused until the table is "
@@ -888,9 +914,12 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                 print(f"[{SOURCE}] {why}", flush=True)
                 tally.structural_unit(why)
                 continue
-            if bdate is not None and not any(d == bdate and k in bvals for k, d, _v in rows):
+            checked = bdate is not None and any(d == bdate and k in bvals for k, d, _v in rows)
+            if bdate is not None and not checked:
                 unchecked.append(tpath)
-            if labels_now:
+            if labels_now and (checked or not bvals):
+                # seeded only from a CHECKED merge (or a first landing, where nothing is stored to
+                # shift): an unchecked merge could bake a shifted release into the map (R1130)
                 pending_labels[prefix] = labels_now
 
             # outcome == 'data'. Seed tbl_max from the SANE boundary only: if the on-disk
