@@ -621,6 +621,7 @@ def update(unit, since) -> Result:
                   f"booked deferred; the sweep offset is saved, so the next tick resumes here",
                   flush=True)
             break
+        cycle.begin(grp)                     # a raise or kill inside it counts (AR-127 P5)
         fails_before = cycle.failures(tally)
         before = blob.row_count(path)
         total_rows += before

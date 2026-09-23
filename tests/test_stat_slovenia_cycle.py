@@ -118,3 +118,21 @@ def test_negative_control_one_pass_that_reaches_every_group_is_not_partial(monke
     asked, unit = _wire(monkeypatch, tmp_path, allow=99)
     res = S.update(unit, None)
     assert res.status != "partial" and asked == list(GROUPS), (res.status, asked)
+
+
+def test_a_group_killed_mid_work_counts_as_a_failed_attempt(monkeypatch, tmp_path):
+    """AR-127 P5: a raise or kill inside a group never reached visit(); begin() marks it in flight."""
+    asked, unit = _wire(monkeypatch, tmp_path, allow=99)
+
+    class _Kill(BaseException):
+        pass
+
+    def _meta(sess, tid):
+        if tid.startswith("BBB"):
+            raise _Kill()
+        return {"title": "t", "variables": [{"code": "X", "values": ["0"]},
+                                            {"code": "LETO", "values": ["2026"], "time": True}]}
+    monkeypatch.setattr(S, "_get_meta", _meta)
+    with pytest.raises(_Kill):
+        S.update(unit, None)
+    assert S.RotationCycle(str(tmp_path), list(GROUPS)).failing == {"BBB": 1}
