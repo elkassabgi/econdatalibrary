@@ -816,7 +816,9 @@ def update(unit, since) -> Result:
             for k, d in ch.items():
                 low = (k or "").lower()
                 cut = low.find(".px")
-                pref = k[: cut + 3] if cut != -1 else None      # the table prefix, as _max_by_table
+                # the table prefix, as _max_by_table; a key with no '.px' keeps its WHOLE key, so it
+                # lands in the orchestrator's unmapped set and is seen, never silently dropped (R1129)
+                pref = k[: cut + 3] if cut != -1 else k
                 if pref and (pref not in changed or (d and str(d) > str(changed[pref]))):
                     changed[pref] = d
             del ch

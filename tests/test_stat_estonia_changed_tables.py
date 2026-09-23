@@ -95,6 +95,39 @@ def _catalog(tmp_path, monkeypatch):
     monkeypatch.setenv("ECONDL_CATALOG", str(p))
 
 
+def test_a_pass_changing_only_an_uncatalogued_table_is_coverage_not_a_demotion(tmp_path, monkeypatch):
+    """R1129: 1,538 of PxWeb's 4,978 tables are uncatalogued (no stored rows yet). A pass that lands
+    rows only there maps to zero ids; with catalog_scope: subset that is a coverage note."""
+    _store(tmp_path)
+    res = _run(tmp_path, monkeypatch, {"rahvastik/RV01.PX"})
+    monkeypatch.setattr(orchestrate.config, "BACKEND", "r2")
+    p = tmp_path / "catalog.db"
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    con.executemany("INSERT INTO series VALUES (?,?)",           # RV01 NOT catalogued
+                    [(f"stat_estonia:{S._table_prefix(t)}", "stat_estonia") for t in TABLES[:2]])
+    con.commit()
+    con.close()
+    monkeypatch.setenv("ECONDL_CATALOG", str(p))
+    orchestrate._REG_ENTRIES = None
+    unit = types.SimpleNamespace(key="stat_estonia/_all", source_id="stat_estonia", unit_id="_all")
+    failed, note, deferred, reasons = orchestrate._derive_changed_csvs(unit, res, object(), store=None)
+    assert failed == [] and note.startswith("csv coverage note:"), note
+
+
+def test_a_key_without_a_px_leaf_is_kept_whole_not_dropped(tmp_path, monkeypatch):
+    _store(tmp_path)
+    monkeypatch.setattr(S.merge, "merge_and_write",
+                        lambda path, tbl, **kw: (1, "2025-12-31", {"EE:odd:key": "2025-12-31"}))
+    res = _run(tmp_path, monkeypatch, {"rahvastik/RV01.PX"})
+    assert res.changed_keys == {"EE:odd:key": "2025-12-31"}, res.changed_keys
+
+
+def test_the_registry_declares_stat_estonia_a_catalogue_subset():
+    orchestrate._REG_ENTRIES = None
+    assert orchestrate._catalog_scope("stat_estonia") == "subset"
+
+
 def test_the_csv_phase_derives_only_the_changed_table(tmp_path, monkeypatch):
     """Planted positive AND the negative control: with the seeded cursors (the old reading) all three
     ids would be asked for, two of them from files this pass never wrote."""
