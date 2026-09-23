@@ -796,6 +796,14 @@ class RotationCycle:
         try:
             self._blob.write_bytes_atomic(self.path, json.dumps(d, indent=1).encode("utf-8"))
         except Exception as e:                               # noqa: BLE001
+            # The orchestrator's hard limit arrives as UnitTimeout (an Exception, raised by SIGALRM
+            # wherever the fetcher is) - swallowing it here let the fetcher run on past its window
+            # (review R1114, measured on begin()). Re-raise it; only a real save failure is printed.
+            import sys as _sys
+            orch = _sys.modules.get("updater.orchestrate")
+            if orch is not None and (getattr(orch, "UNIT_TIMEOUT_FIRED", False) or
+                                     isinstance(e, getattr(orch, "UnitTimeout", ()))):
+                raise
             # Losing it re-owes the cycle (safe), but SAY so: a cycle file that never saves keeps
             # the source partial on every pass with no other trace (review R1103, P3; R393).
             print(f"[rotation-cycle] could not save {self.path} ({type(e).__name__}: {e}) - this "
