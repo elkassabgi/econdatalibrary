@@ -683,6 +683,79 @@ def rotate_after(items: list, bookmark: str, key=None) -> list:
     return items
 
 
+class RotationCycle:
+    """`ok` must mean "every sub-unit was visited since the last ok" - never "the budget stopped
+    this pass somewhere" (R303; statfin R1096, 2026-09-23).
+
+    A rotating fetcher that stops on its budget and reports `ok` waits its whole cadence before the
+    next pass: statfin reached 28 of 134 subjects per 30-minute pass, so each subject was refreshed
+    only every ~5 passes x 25.2 days = ~125 days, against an 84-day monthly data clock. With this,
+    a pass that stops before the cycle is complete books every sub-unit NOT YET VISITED THIS CYCLE
+    as deferred (-> `partial`). A partial never advances last_success, so the source stays due on
+    every run until the cycle completes; the completing, CLEAN pass resets the cycle and reads ok.
+
+    Persisted beside the rotation bookmark (blob-routed, written per sub-unit - R273: a save only at
+    the end is what the orchestrator's kill destroys). An unreadable file starts a new cycle: every
+    sub-unit is owed again, which costs passes and never skips one.
+
+        cycle = RotationCycle(out_dir, units)
+        for u in rotate_after(units, load_rotation(out_dir)):
+            if dl.spent():
+                cycle.defer_unvisited(tally, label=lambda u: f"{u} ({n[u]} tables)")
+                break
+            cycle.visit(u)
+            ...
+        cycle.close_if_complete(tally)
+    """
+    FILE = "_cycle.json"
+
+    def __init__(self, out_dir, units):
+        from ... import blob as _blob
+        self._blob, self.out_dir, self.units = _blob, out_dir, list(units)
+        self.path = os.path.join(out_dir, self.FILE)
+        prev = {}
+        try:
+            raw = _blob.read_bytes(self.path)
+            prev = json.loads(raw.decode("utf-8")) if raw is not None else {}
+        except Exception:                                    # noqa: BLE001
+            prev = {}
+        self._prev = prev if isinstance(prev, dict) else {}
+        got = self._prev.get("visited")
+        self.visited = (set(got) if isinstance(got, list) else set()) & set(self.units)
+
+    def _save(self, visited, **extra):
+        d = {k: v for k, v in self._prev.items() if k != "visited"}
+        d.update(extra)
+        d["visited"] = sorted(visited)
+        try:
+            self._blob.write_bytes_atomic(self.path, json.dumps(d, indent=1).encode("utf-8"))
+        except Exception:                                    # noqa: BLE001
+            pass                                             # losing it re-owes the cycle
+
+    def visit(self, unit) -> None:
+        self.visited.add(unit)
+        self._save(self.visited)
+
+    def unvisited(self) -> list:
+        return [u for u in self.units if u not in self.visited]
+
+    def defer_unvisited(self, tally, label=str) -> int:
+        owed = self.unvisited()
+        for u in owed:
+            tally.deferred_unit(label(u))
+        return len(owed)
+
+    def close_if_complete(self, tally) -> bool:
+        """Reset the cycle when every unit was visited AND this pass failed nothing: a pass with a
+        failed sub-unit is partial/red anyway, and resetting there would start a fresh cycle where
+        one clean pass would have closed this one (statfin review AR-119)."""
+        if self.unvisited() or tally.transient or tally.structural:
+            return False
+        self._save(set(), completed_utc=_dt.datetime.now(_dt.timezone.utc)
+                   .strftime("%Y-%m-%dT%H:%M:%SZ"))
+        return True
+
+
 CONSECUTIVE_TRANSIENT_LIMIT = 25
 
 
