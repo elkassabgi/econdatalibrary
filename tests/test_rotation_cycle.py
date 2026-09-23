@@ -331,6 +331,15 @@ def test_a_unit_that_finished_is_not_in_flight(tmp_path):
     assert C.RotationCycle(str(tmp_path), ["a"]).failing == {}
 
 
+def test_a_unit_released_without_a_verdict_is_neither_failed_nor_visited(tmp_path):
+    """A budget cut inside a unit (ssb) is not a failure: release() clears the in-flight mark."""
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+    cyc.begin("a")
+    cyc.release("a")
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+    assert cyc.failing == {} and cyc.unvisited() == ["a"]
+
+
 def test_a_pass_that_died_is_closed_at_the_next_load_once_the_rest_was_visited(tmp_path):
     cyc = C.RotationCycle(str(tmp_path), ["a", "b"])
     cyc.failing = {"b": 1}
