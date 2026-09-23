@@ -173,11 +173,14 @@ def update(unit, since) -> Result:
     owed_this_cycle = set(cycle.unvisited())
 
     for fn in pfiles:
-        if cycle.done(fn):
-            continue                 # visited this cycle: no work owed (review R1105 P1)
         path = os.path.join(out_dir, fn)
         flow = fn[:-len(".parquet")]
         before = blob.row_count(path)
+        if cycle.done(fn):
+            # Visited this cycle: no work owed (review R1105 P1). Its rows still count: `obs` is
+            # the store total and is served as obs_count (review AR-123 P5).
+            total += before
+            continue
 
         # Stop STARTING new flows once the budget is spent. Deferred flows go through
         # tally.deferred_unit(), NOT transient_unit(): nothing failed and nothing was even

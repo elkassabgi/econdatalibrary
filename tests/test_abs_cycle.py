@@ -127,6 +127,30 @@ def test_the_bookmark_is_saved_per_flow(monkeypatch, tmp_path):
     assert _json.loads((tmp_path / "_rotation.json").read_text())["after"] == "BBB.parquet"
 
 
+def test_a_refused_write_stays_owed(monkeypatch, tmp_path):
+    """Review R1105/AR-123 P3."""
+    _wire(monkeypatch, tmp_path, allow=99)
+    real = A.merge.merge_and_write
+
+    def _refuse(path, tbl, **k):
+        if path.endswith("BBB.parquet"):
+            raise A.DefinitiveError("pretend the shrink guard refused")
+        return real(path, tbl, **k)
+    monkeypatch.setattr(A.merge, "merge_and_write", _refuse)
+    assert A.update(None, None).status == "partial"
+    assert A.RotationCycle(str(tmp_path), [f"{f}.parquet" for f in FLOWS]).unvisited() == ["BBB.parquet"]
+
+
+def test_obs_is_the_store_total_on_a_pass_that_skips_visited_flows(monkeypatch, tmp_path):
+    """Review AR-123 P5: `obs` is served as obs_count; skipped flows dropped out of it."""
+    _wire(monkeypatch, tmp_path, allow=1)
+    A.update(None, None)                                   # AAA
+    _wire(monkeypatch, tmp_path, allow=99)
+    res = A.update(None, None)                             # skips AAA
+    stored = sum(pq.read_metadata(tmp_path / f"{f}.parquet").num_rows for f in FLOWS)
+    assert res.obs == stored, (res.obs, stored)
+
+
 def test_negative_control_one_pass_that_reaches_every_flow_is_not_partial(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert A.update(None, None).status != "partial"
