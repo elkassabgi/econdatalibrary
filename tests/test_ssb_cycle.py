@@ -94,6 +94,18 @@ def test_a_group_whose_table_failed_stays_owed(monkeypatch, tmp_path):
     assert cyc.unvisited() == ["grp_Bb.parquet"], cyc.visited
 
 
+def test_the_completing_pass_does_not_walk_into_visited_groups(monkeypatch, tmp_path):
+    """Review R1105 P1: with several tables per group, the pass that finished the last owed group
+    walked on into a visited one, the budget stopped INSIDE it, and table deferrals made the
+    completing pass partial - ssb almost never read ok."""
+    _wire(monkeypatch, tmp_path, allow=6, tables_per_group=3)      # Aa (1+3), Bb top + 1 table: cut
+    assert ssb.update(None, None).status == "partial"
+    asked = _wire(monkeypatch, tmp_path, allow=8, tables_per_group=3)   # exactly Bb + Cc (4 + 4)
+    res = ssb.update(None, None)
+    assert "Aa" not in set(asked), "Aa was visited on pass 1: it must be skipped"
+    assert res.status != "partial", (res.status, res.error)
+
+
 def test_negative_control_one_pass_that_reaches_everything_is_not_partial(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert ssb.update(None, None).status != "partial"

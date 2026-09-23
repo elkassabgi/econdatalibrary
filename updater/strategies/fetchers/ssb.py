@@ -535,6 +535,11 @@ def update(unit, since) -> Result:
     cut_group = None               # a group the budget stopped part-way: owed, and booked per table
 
     for fn in pfiles:
+        if cycle.done(fn):
+            # Visited this cycle: no work owed. Re-walking it spent the budget on done work, and a
+            # stop INSIDE such a group booked table deferrals on the pass that completed the cycle,
+            # so ssb almost never read ok (~15 tables per group; review R1105 P1).
+            continue
         if dl.spent():
             # Announced, never silent — and recorded as DEFERRED, not transient (R303).
             # Nothing failed and nothing was attempted, so these must not enter the failure
