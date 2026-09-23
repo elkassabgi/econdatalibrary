@@ -80,6 +80,15 @@ def test_a_group_the_budget_cut_part_way_stays_owed_and_is_booked_once(monkeypat
     assert "grp_Aa.parquet" in cyc.unvisited(), "a cut group is not visited"
 
 
+def test_a_group_the_budget_cut_is_not_counted_as_a_failure(monkeypatch, tmp_path):
+    """begin() marks a group in flight; a budget cut inside it must release the mark, or the next
+    load counts the cut as a failed attempt and two cuts quarantine a group that never failed."""
+    _wire(monkeypatch, tmp_path, allow=2, tables_per_group=2)       # cut inside Aa
+    ssb.update(None, None)
+    cyc = ssb.RotationCycle(str(tmp_path), ["grp_Aa.parquet", "grp_Bb.parquet", "grp_Cc.parquet"])
+    assert cyc.failing == {} and "grp_Aa.parquet" in cyc.unvisited(), (cyc.failing, cyc.visited)
+
+
 def test_a_group_whose_table_failed_stays_owed(monkeypatch, tmp_path):
     """stat_latvia review R1103 P2: a group whose table failed must not count as done."""
     _wire(monkeypatch, tmp_path, allow=99)
