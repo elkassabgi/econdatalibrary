@@ -81,6 +81,10 @@ MAX_CELLS = 100_000    # PxWeb per-request cell cap (same as the ingester)
 TIMEOUT = 90
 MAX_ATTEMPTS = 4
 TRAIL_YEARS = 5        # trailing-window fallback when a boundary is corrupt/far-future
+# {"db/path": {"verdict": "withdrawn" | "moved", "to": [...], "date": "YYYY-MM-DD"}}, blob-routed:
+# the whole-tree search for a stored table that answers 400/404, cached and re-verified monthly
+WITHDRAWN_FILE = "_withdrawn.json"
+WITHDRAWN_RECHECK_DAYS = 30
 
 
 # --------------------------------------------------------------------------- #
@@ -133,23 +137,31 @@ def _table_prefix(db: str, path: str) -> str:
     return f"ICE:{db}:{path.replace('/', ':')}"
 
 
-def _per_table_max(path: str) -> dict[str, dt.date]:
-    """For a db parquet, max(obs_date) per TABLE prefix.
+def _key_scheme(key: str, prefix: str) -> tuple:
+    """The dimension NAMES of a key after its table prefix: 'ICE:db:t.px:Land=1:Eining=0' ->
+    ('Land', 'Eining'). Two schemes in one table = two id systems for the same data."""
+    rest = key[len(prefix) + 1:]
+    return tuple(seg.split("=", 1)[0] for seg in rest.split(":")) if rest else ()
+
+
+def _per_table_profile(path: str) -> tuple[dict[str, dt.date], dict[str, set]]:
+    """For a db parquet, per TABLE prefix: max(obs_date), and the set of key schemes stored.
 
     A series_key is 'ICE:<db>:<path>.px:<dim>=...'. The table prefix is the substring
     through the '.px' segment. We bucket every row's max obs_date under that prefix so a
     table's date-tail boundary is its OWN latest period, not the whole db's.
     """
     out: dict[str, dt.date] = {}
+    schemes: dict[str, set] = {}
     if not blob.exists(path):
-        return out
+        return out, schemes
     t = blob.read_table(path)
     if t.num_rows == 0 or "series_key" not in t.column_names:
-        return out
+        return out, schemes
     keys = t.column("series_key").to_pylist()
     dates = t.column("obs_date").to_pylist()
     for k, o in zip(keys, dates):
-        if o is None or not k:
+        if not k:
             continue
         # table prefix = up to and including the '.px' segment
         parts = k.split(":")
@@ -160,12 +172,20 @@ def _per_table_max(path: str) -> dict[str, dt.date]:
                 break
         if pref is None:
             continue
+        schemes.setdefault(pref, set()).add(_key_scheme(k, pref))
+        if o is None:
+            continue
         if isinstance(o, dt.datetime):
             o = o.date()
         prev = out.get(pref)
         if prev is None or o > prev:
             out[pref] = o
-    return out
+    return out, schemes
+
+
+def _per_table_max(path: str) -> dict[str, dt.date]:
+    """max(obs_date) per TABLE prefix (see _per_table_profile)."""
+    return _per_table_profile(path)[0]
 
 
 def _session() -> requests.Session:
@@ -205,21 +225,65 @@ def _get_meta(sess, url):
     raise TransientError(f"hagstofa GET {url}: {last}")
 
 
-def _listed_in_folder(sess, db, path):
-    """Is the table still in its parent folder's listing? True / False when the listing was READ,
-    None when it could not be (any error, a non-200, a body that is not a non-empty list).
+def _listing(sess, url):
+    """One PxWeb folder listing, or None when it could not be READ (network, non-200, not a
+    non-empty JSON list). 429 is waited out a few times, as _get_meta does."""
+    for a in range(4):
+        try:
+            r = sess.get(url, timeout=TIMEOUT)
+        except requests.RequestException:
+            return None
+        if r.status_code == 429 and a < 3:
+            time.sleep(30)
+            continue
+        if r.status_code != 200:
+            return None
+        try:
+            items = r.json()
+        except ValueError:
+            return None
+        return items if isinstance(items, list) and items else None
+    return None
 
-    Only a listing that was read and lacks the table is evidence the publisher WITHDREW it. A 400 on
-    the table alone is not: PxWeb also answers 400 mid-republication."""
-    folder, _, leaf = path.rpartition("/")
+
+def _table_tree(sess):
+    """{table id: [db/path, ...]} over EVERY database, or None when any listing could not be read.
+
+    A table missing from its own folder may have MOVED, not been withdrawn: review R1108 found 3 of
+    the 4 stored tables answering 400 (FYR02103, FYR02104, FYR03002) live at
+    fyrirtaeki/skradfyrirtaeki/9_eldraefni/. The catalogue cache is never re-crawled, so only a
+    search of the whole tree can tell the two apart - and a PARTIAL search cannot, which is why one
+    unreadable listing voids the answer instead of shrinking it. Built at most once per run (cached
+    on the session), and only when a stored table answers 400/404."""
+    cached = getattr(sess, "_hagstofa_tree", False)
+    if cached is not False:
+        return cached
+    tree: dict = {}
+    root = _listing(sess, f"{BASE}/")
+    ok = root is not None
+    queue = [(item.get("dbid"), "") for item in (root or []) if isinstance(item, dict) and item.get("dbid")]
+    ok = ok and bool(queue)
+    while ok and queue:
+        db, folder = queue.pop()
+        items = _listing(sess, f"{BASE}/{db}/{folder}/" if folder else f"{BASE}/{db}/")
+        time.sleep(RATE)
+        if items is None:
+            ok = False
+            break
+        for it in items:
+            if not isinstance(it, dict) or not it.get("id"):
+                continue
+            child = f"{folder}/{it['id']}".lstrip("/")
+            if it.get("type") == "t":
+                tree.setdefault(it["id"], []).append(f"{db}/{child}")
+            elif it.get("type") == "l":
+                queue.append((db, child))
+    result = tree if ok else None
     try:
-        r = sess.get(f"{BASE}/{db}/{folder}/", timeout=TIMEOUT)
-        items = r.json() if r.status_code == 200 else None
-    except (requests.RequestException, ValueError):
-        return None
-    if not isinstance(items, list) or not items:
-        return None
-    return any(isinstance(x, dict) and x.get("id") == leaf for x in items)
+        sess._hagstofa_tree = result
+    except AttributeError:
+        pass
+    return result
 
 
 def _post_data(sess, url, body):
@@ -369,20 +433,54 @@ def _fetch_table(sess, db, path, prefix, since_date):
     meta = _get_meta(sess, url)
     time.sleep(RATE)
     if meta is None and since_date is not None:
-        # A table with ON-DISK history that now 404/400s lost its endpoint -> structural, UNLESS
-        # its folder listing - read, not assumed - no longer lists it: then the publisher
-        # WITHDREW it, and its stored history is kept frozen, like the archival tables below.
-        # Measured 2026-09-23: SJA04901 (export by categories and species, 1999-2024) answered
-        # 400 and was gone from sjavarutvegur/utf, whose 2026-09-15 edition of SJA04903 now
-        # carries Species x Country x Product category. It had re-fired 'structural' on every
-        # run, so hagstofa could never read ok.
-        listed = _listed_in_folder(sess, db, path)
-        time.sleep(RATE)
-        if listed is False:
-            print(f"[hagstofa] {path}: withdrawn by the publisher (HTTP 400/404 and absent from "
-                  f"its folder listing); stored data to {since_date} kept frozen", flush=True)
+        # A table with ON-DISK history that now 404/400s: search the WHOLE tree (review R1108).
+        #   found elsewhere -> MOVED. Still a break: the path is in every series key, so following
+        #                      it is a re-key, never a silent switch. Named, so it is actionable.
+        #   absent from a tree read in full -> WITHDRAWN by the publisher: its stored history is
+        #                      kept frozen, like the archival tables below (SJA04901, 2026-09-23:
+        #                      its content continues in SJA04903's 2026-09-15 edition).
+        #   tree not fully read -> cannot tell -> structural, as before.
+        # A verdict is cached for WITHDRAWN_RECHECK_DAYS: the whole-tree search costs ~6 min
+        # (395 listings, measured 2026-09-23) and these tables answer 400 on EVERY run.
+        verdicts = getattr(sess, "_hagstofa_withdrawn", None)
+        me = f"{db}/{path}"
+        seen = (verdicts or {}).get(me)
+        try:
+            fresh = (isinstance(seen, dict) and seen.get("verdict") in ("withdrawn", "moved") and
+                     (dt.date.today() - dt.date.fromisoformat(seen["date"])).days < WITHDRAWN_RECHECK_DAYS)
+        except (KeyError, TypeError, ValueError):
+            fresh = False
+        if fresh:
+            if seen["verdict"] == "moved":
+                print(f"[hagstofa] {path}: MOVED to {', '.join(seen.get('to') or [])} (verified "
+                      f"{seen['date']}) - a re-key, not followed automatically", flush=True)
+                return [], "structural"
             return [], "quiet"
-        return [], "structural"
+        tree = _table_tree(sess)
+        leaf = path.rpartition("/")[2]
+        if tree is None:
+            print(f"[hagstofa] {path}: HTTP 400/404, and the table tree could not be read in "
+                  f"full - moved or withdrawn is unknown", flush=True)
+            return [], "structural"
+        if me in tree.get(leaf, []):
+            # still listed where it was, yet its metadata answers 400/404: mid-republication or a
+            # broken endpoint - never evidence of withdrawal
+            print(f"[hagstofa] {path}: HTTP 400/404 although its folder still lists it", flush=True)
+            return [], "structural"
+        elsewhere = [p for p in tree.get(leaf, []) if p != me]
+        today = dt.date.today().isoformat()
+        if elsewhere:
+            print(f"[hagstofa] {path}: MOVED by the publisher to {', '.join(elsewhere)} - "
+                  f"following it re-keys its series (the path is in the key); not followed "
+                  f"automatically", flush=True)
+            if verdicts is not None:
+                verdicts[me] = {"verdict": "moved", "to": elsewhere, "date": today}
+            return [], "structural"
+        print(f"[hagstofa] {path}: withdrawn by the publisher (HTTP 400/404 and absent from the "
+              f"whole table tree); stored data to {since_date} kept frozen", flush=True)
+        if verdicts is not None:
+            verdicts[me] = {"verdict": "withdrawn", "date": today}
+        return [], "quiet"
     if meta is None or not isinstance(meta, dict):
         # a never-stored table that 404/400s is simply absent -> empty; a non-dict body on a
         # stored table is a break.
@@ -476,10 +574,19 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
 
     # Per-db, per-table on-disk max obs_date (date-tail boundaries).
     db_table_max: dict[str, dict[str, dt.date]] = {}
+    db_schemes: dict[str, dict[str, set]] = {}
     for db in by_db:
-        db_table_max[db] = _per_table_max(os.path.join(out_dir, f"{db}.parquet"))
+        db_table_max[db], db_schemes[db] = _per_table_profile(os.path.join(out_dir, f"{db}.parquet"))
 
     sess = _session()
+    wpath = os.path.join(out_dir, WITHDRAWN_FILE)
+    try:
+        raw = blob.read_bytes(wpath)
+        withdrawn = json.loads(raw.decode("utf-8")) if raw else {}
+    except Exception:                                        # noqa: BLE001 - unreadable: re-verify
+        withdrawn = {}
+    sess._hagstofa_withdrawn = withdrawn if isinstance(withdrawn, dict) else {}
+    withdrawn_before = dict(sess._hagstofa_withdrawn)
     tally = Tally()
     cursors: dict[str, str] = {}     # table prefix -> max obs_date (per-table freshness)
     maxd: dt.date | None = None
@@ -550,6 +657,27 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                 tally.empty_unit(tpath)
                 continue
 
+            # THE KEY SCHEME IS PART OF THE CONTRACT WITH THE STORE. Hagstofa's 2026-09-15
+            # republications renamed variable codes (SJA04903: Tegund/Land/Afurdaflokkur/Eining ->
+            # Species/Country/Product category/Unit). A renamed key never collides with its stored
+            # twin, so a merge publishes BOTH schemes in one table: the old series freeze, the new
+            # ones appear beside them, nothing 404s and never-shrink cannot see it, because the
+            # table grows (R519; measured on R2 2026-09-23 for SJA04903/04/05 and UMH51101). A
+            # scheme the table has never stored is therefore refused, named, and left to a
+            # deliberate re-key. (Tables that already hold two schemes are cleaned by that re-key,
+            # not here.)
+            stored_schemes = db_schemes.get(db, {}).get(prefix)
+            if stored_schemes:
+                incoming = {_key_scheme(k, prefix) for k, _d, _v in rows}
+                new = incoming - stored_schemes
+                if new:
+                    tally.structural_unit(
+                        f"{tpath}: RESTRUCTURED by the publisher - key scheme(s) "
+                        f"{sorted(new)[:2]} never stored for this table (stored: "
+                        f"{sorted(stored_schemes)[:2]}); merging would publish two id schemes "
+                        f"in one table. Not merged: re-key it deliberately")
+                    continue
+
             # outcome == 'data'. Seed tbl_max from the SANE boundary only: if the on-disk
             # since_date is a corrupt far-future sentinel, start from None so the real
             # fetched max (from this run's trailing-window rows) becomes the cursor instead
@@ -590,6 +718,13 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
     # branch can quietly stop the rotation.
     if last_db:
         save_rotation(out_dir, last_db)
+    if sess._hagstofa_withdrawn != withdrawn_before:
+        try:
+            blob.write_bytes_atomic(wpath, json.dumps(sess._hagstofa_withdrawn, indent=1,
+                                                      sort_keys=True).encode("utf-8"))
+        except Exception as e:                               # noqa: BLE001
+            # losing it costs one more tree search next run, never a wrong verdict - but say so
+            print(f"[{SOURCE}] could not save {wpath} ({type(e).__name__}: {e})", flush=True)
 
     last_obs = maxd.isoformat() if maxd else None
     # empty_window_floor = <#subunits> - 1 (per the S3 contract). The blunt all-empty
