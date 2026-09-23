@@ -150,7 +150,8 @@ def update(unit, since) -> Result:
     total = 0
     last_obs = None
     cursors: dict[str, str] = {}   # series_key -> max obs_date written this run
-    changed: dict[str, str | None] = {}   # '<FLOW>:<series_key>' -> newest changed date (merge-measured)
+    # '<FLOW>:<series_key>' -> changed date (merge-measured); None once the pass passed the cap
+    changed: dict[str, str | None] | None = {}
     cursors_capped = False
     dl = Deadline(minutes=BUDGET_MIN)
     deferred = 0
@@ -270,8 +271,21 @@ def update(unit, since) -> Result:
             continue
 
         total += n
-        # one merge per flow per pass and the key carries the flow, so each key is reported once
-        changed.update((f"{flow}:{k}", str(d) if d is not None else None) for k, d in ch.items())
+        # one merge per flow per pass and the key carries the flow, so each key is reported once.
+        # BOUNDED run-wide (review R1115): census flows re-fetch whole cross-tabs (C21_G09_SAL:
+        # 24,409,680 rows per visit, 148 flows >= 1M), so a pass where one changes wholesale must
+        # not grow an unbounded dict on a 16 GB runner. Over the cap the pass reports None - the
+        # cursor path - and says so, as statcan does: honesty about completeness is binary.
+        if changed is not None:
+            if len(changed) + len(ch) > merge.CHANGED_KEYS_CAP:
+                print(f"[abs] {flow}: the changed-keys report would pass {merge.CHANGED_KEYS_CAP:,} "
+                      f"keys ({len(changed):,} + {len(ch):,}) - this pass falls back to the cursor "
+                      f"path (changed_keys=None)", flush=True)
+                changed = None
+            else:
+                changed.update((f"{flow}:{k}", str(d) if d is not None else None)
+                               for k, d in ch.items())
+        del ch
         # NET-DELTA -> ADDED: a boundary-year re-fetch that RETURNED real rows but
         # nets 0 new after dedup is still a data-bearing (successful) sub-unit, not
         # empty. Count len(keys) (rows that actually flowed for the flow), mirroring
@@ -339,5 +353,6 @@ def update(unit, since) -> Result:
     # healthy quiet flow among many that moved does not.
     res = finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
                    empty_window_floor=max(len(pfiles) - 1, 1))
-    res.changed_keys = changed        # complete: every merge this pass reported ({} = nothing changed)
+    # complete: every merge this pass reported ({} = nothing changed); None = over the cap (cursors)
+    res.changed_keys = changed
     return res

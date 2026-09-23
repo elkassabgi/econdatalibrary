@@ -43,6 +43,22 @@ def test_an_identical_refetch_reports_nothing_changed(monkeypatch, tmp_path):
     assert res.changed_keys == {}, "{} is the honest 'nothing to derive', not None"
 
 
+def test_a_pass_over_the_changed_keys_cap_reports_none_and_says_so(monkeypatch, tmp_path, capsys):
+    """Review R1115: the run-wide dict was unbounded; census flows re-fetch up to 24.4M rows."""
+    monkeypatch.setattr(A.merge, "CHANGED_KEYS_CAP", 2)
+    _wire(monkeypatch, tmp_path, allow=99)
+    res = A.update(None, None)                            # 3 flows, one changed key each
+    assert res.changed_keys is None, res.changed_keys
+    assert "falls back to the cursor path" in capsys.readouterr().out
+    assert res.series_cursors, "the cursor path still has its cursors"
+
+
+def test_negative_control_at_the_cap_the_set_is_still_complete(monkeypatch, tmp_path):
+    monkeypatch.setattr(A.merge, "CHANGED_KEYS_CAP", 3)
+    _wire(monkeypatch, tmp_path, allow=99)
+    assert len(A.update(None, None).changed_keys) == 3
+
+
 def _catalog(tmp_path, monkeypatch, ids):
     # abs runs in the CLOUD: under the r2 backend _catalog_ids_for returns (exact, unmapped); the
     # local backend's derive-all-small-sources fallback never runs there.
@@ -78,6 +94,22 @@ def test_a_pass_moving_only_uncatalogued_flows_is_coverage_not_a_demotion(tmp_pa
                                 new_vintage="v", status="ok")
     failed, note, deferred, reasons = orchestrate._derive_changed_csvs(unit, res, None, store=None)
     assert failed == [] and note.startswith("csv coverage note:"), note
+
+
+def test_a_pass_moving_a_catalogued_and_uncatalogued_flows_derives_the_catalogued_id(tmp_path, monkeypatch):
+    """Review R1115 gap: catalogued and uncatalogued keys changing in one pass."""
+    _catalog(tmp_path, monkeypatch, ["abs:CPI:1.10001.10.50.Q"])
+    orchestrate._REG_ENTRIES = None
+    asked = []
+    from updater import derive
+    monkeypatch.setattr(derive, "derive_and_put", lambda ids, blob, **k: asked.extend(ids) or {})
+    unit = types.SimpleNamespace(key="abs/_all", source_id="abs", unit_id="_all")
+    res = types.SimpleNamespace(obs=10, series_cursors={}, new_vintage="v", status="ok",
+                                changed_keys={"CPI:1.10001.10.50.Q": "2026-08-01",
+                                              **{f"C21_G01:k{i}": "2026-08-01" for i in range(20)}})
+    failed, note, deferred, reasons = orchestrate._derive_changed_csvs(unit, res, object(), store=None)
+    assert asked == ["abs:CPI:1.10001.10.50.Q"] and failed == [], (asked, failed)
+    assert note is None or note.startswith("csv coverage note:"), note
 
 
 def test_negative_control_the_same_pass_demotes_without_the_declaration(tmp_path, monkeypatch):
