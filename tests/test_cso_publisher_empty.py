@@ -99,6 +99,23 @@ def test_a_stored_matrix_missing_from_held_is_still_transient(tmp_path, monkeypa
     assert "ROA41" in cursor, "a matrix the subject file does not hold is still skipped"
 
 
+def test_a_matrix_whose_code_prefixes_another_is_not_mistaken_for_it(tmp_path, monkeypatch):
+    """Review AR-131: 729 real pairs share a prefix in one subject file (e.g. VSA11 and VSA113).
+    Rows of HRD511 must not make HRD51 look stored."""
+    pq.write_table(pa.table({"series_key": ["CSO:HRD511:STATISTIC=S1"],
+                             "obs_date": pa.array([__import__("datetime").date(2024, 12, 31)]),
+                             "value": [1.0]}), str(tmp_path / "1_Sub.parquet"))
+    res, cursor, held_after, asked = _run(tmp_path, monkeypatch)
+    assert "HRD51" in cursor and "HRD51" not in (res.error or ""), res.error
+
+
+def test_a_year_named_axis_of_spans_is_span_time():
+    body = _body(["2019-2023", "2020-2024"], [1.0, 2.0], role_time=False)
+    body["id"][1] = "YEAR"
+    body["dimension"]["YEAR"] = body["dimension"].pop("TLIST(A1)")
+    assert ING._why_unparsed(body) == "span_time"
+
+
 def test_an_unreadable_subject_file_is_treated_as_stored(tmp_path, monkeypatch):
     (tmp_path / "1_Sub.parquet").write_bytes(b"not a parquet")
     res, cursor, held_after, asked = _run(tmp_path, monkeypatch)
