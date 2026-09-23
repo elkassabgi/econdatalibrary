@@ -269,6 +269,26 @@ def test_a_served_csv_that_cannot_be_merged_safely_fails_only_that_id(tmp_path, 
     assert out["put"] == 0 and out["failed"] == [EXR[0]] and now == served, out
 
 
+def test_a_derive_failure_beside_kept_dates_still_demotes(env, tmp_path, monkeypatch):
+    """R1146 RV-1: health drops everything after '; csv coverage note:', so the kept note must come
+    AFTER a failure note, never before it."""
+    from updater.health import _deferral_only
+    _file(env, "ECB__EXR__D", EXR)
+    failed, note, _d, _r = _phase(env, tmp_path, monkeypatch,
+                                  {"failed": [EXR[1]], "failed_reasons": {EXR[1]: "x"},
+                                   "served_dates_kept": {EXR[0]: 1}}, ["ECB__EXR__D"])
+    assert note.startswith("csv_derive failed") and "1 served date(s)" in note, note
+    err = "3 sub-unit(s) attempted, none failed; 2 deferred by budget and taken next tick; " + note
+    assert not _deferral_only([{"status": "partial", "last_error": err}]), err
+
+
+def test_a_non_iso_date_in_the_new_csv_is_refused(tmp_path, monkeypatch):
+    """R1146 RV-2: the ISO check must cover the DERIVED side too, not only the served one."""
+    bad_new = b"series_id,obs_date,value" + bytes([10]) + b"ecb:EXR:D.USD.EUR.SP00.A,2026-9-22,1.2" + bytes([10])
+    out, now = _derive(tmp_path, monkeypatch, _csv([("2026-09-21", "1.1")]), bad_new)
+    assert out["failed"] == [EXR[0]] and now == _csv([("2026-09-21", "1.1")]), out
+
+
 def test_a_new_csv_with_a_repeated_date_is_not_merged(tmp_path, monkeypatch):
     out, _ = _derive(tmp_path, monkeypatch, _csv([("2026-09-20", "1.0")]),
                      _csv([("2026-09-21", "1.1"), ("2026-09-21", "1.2")]))
