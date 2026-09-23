@@ -97,6 +97,36 @@ def test_a_flow_whose_fetch_failed_stays_owed(monkeypatch, tmp_path):
     assert cyc.unvisited() == ["AAA.parquet"], cyc.visited
 
 
+def test_a_visited_flow_is_not_fetched_again_this_cycle(monkeypatch, tmp_path):
+    """Review R1105 P1-P3: re-walking visited flows spent the budget, and a failure on the re-walk
+    left the flow visited."""
+    _wire(monkeypatch, tmp_path, allow=1)
+    A.update(None, None)                                   # AAA
+    asked = _wire(monkeypatch, tmp_path, allow=99)
+    res = A.update(None, None)
+    assert asked == ["BBB", "CCC"] and res.status != "partial", (asked, res.status)
+
+
+def test_the_bookmark_is_saved_per_flow(monkeypatch, tmp_path):
+    """R273: an end-of-loop save is what the 45-minute kill destroys (abs ran 43.9 min on 09-16)."""
+    _wire(monkeypatch, tmp_path, allow=99)
+
+    class _Kill(BaseException):
+        pass
+    calls = {"n": 0}
+
+    def _collect(sess, flow, key, params=None):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise _Kill()
+        return [f"{flow}.k"], [dt.date(2026, 8, 1)], [2.0]
+    monkeypatch.setattr(A.ing, "collect", _collect)
+    with pytest.raises(_Kill):
+        A.update(None, None)
+    import json as _json
+    assert _json.loads((tmp_path / "_rotation.json").read_text())["after"] == "BBB.parquet"
+
+
 def test_negative_control_one_pass_that_reaches_every_flow_is_not_partial(monkeypatch, tmp_path):
     _wire(monkeypatch, tmp_path, allow=99)
     assert A.update(None, None).status != "partial"

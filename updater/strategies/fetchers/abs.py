@@ -173,6 +173,8 @@ def update(unit, since) -> Result:
     owed_this_cycle = set(cycle.unvisited())
 
     for fn in pfiles:
+        if cycle.done(fn):
+            continue                 # visited this cycle: no work owed (review R1105 P1)
         path = os.path.join(out_dir, fn)
         flow = fn[:-len(".parquet")]
         before = blob.row_count(path)
@@ -191,6 +193,9 @@ def update(unit, since) -> Result:
             total += before
             continue
         last_attempted = fn
+        # Saved per flow, not only after the loop (R273): abs's fetch ran 43.9 min on 09-16 against
+        # the 45-minute unit cap, and an end-of-loop save is what the kill destroys (R1105).
+        save_rotation(out_dir, fn)
         fails_before = cycle.failures(tally)
 
         max_obs = _flow_max_obs(path)
@@ -214,6 +219,7 @@ def update(unit, since) -> Result:
             # flow-level frontier under a flow sentinel key for visibility.
             if mx:
                 cursors.setdefault(f"__flow__{flow}", mx)
+            cycle.visit(fn, failed=True)     # stays owed (R1105 P2)
             continue
 
         if not keys:
@@ -246,6 +252,7 @@ def update(unit, since) -> Result:
             # and with what numbers; it used to be discarded.
             tally.transient_unit(f"{flow}: write refused — {str(e)[:160]}")
             total += before
+            cycle.visit(fn, failed=True)     # stays owed (R1105 P3)
             continue
 
         total += n
@@ -305,7 +312,7 @@ def update(unit, since) -> Result:
                  "NO flow was attempted at all — the bookmark is unchanged, so the next "
                  "run retries this same point (check the budget, not the rotation)")
         print(f"[abs] BUDGET {BUDGET_MIN:.0f} min spent after {dl.elapsed_min():.1f} min — "
-              f"{deferred}/{len(pfiles)} flow(s) NOT attempted this run; {where} "
+              f"{deferred}/{len(pfiles)} flow(s) still owed this cycle; {where} "
               f"(run reports partial, vintage not advanced)", flush=True)
     if cursors_capped:
         print(f"[abs] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
