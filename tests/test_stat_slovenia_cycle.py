@@ -158,6 +158,35 @@ def test_the_orchestrators_timeout_in_the_offset_write_is_not_swallowed(monkeypa
         S.update(unit, None)
 
 
+def test_after_the_alarm_fired_an_offset_write_error_propagates(monkeypatch, tmp_path):
+    """AR-138: once UNIT_TIMEOUT_FIRED is set, any error from the offset write is the timeout."""
+    from updater import orchestrate
+    asked, unit = _wire(monkeypatch, tmp_path, allow=99)
+    real = S.blob.write_bytes_atomic
+
+    def _write(path, data):
+        if path.endswith(S._SWEEP_FILE):
+            raise OSError("interrupted write")
+        return real(path, data)
+    monkeypatch.setattr(S.blob, "write_bytes_atomic", _write)
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", True)
+    with pytest.raises(OSError):
+        S.update(unit, None)
+
+
+def test_an_ordinary_offset_write_error_is_still_ignored(monkeypatch, tmp_path):
+    """AR-138 negative control: a lost offset costs one repeated sweep, never the run."""
+    asked, unit = _wire(monkeypatch, tmp_path, allow=99)
+    real = S.blob.write_bytes_atomic
+
+    def _write(path, data):
+        if path.endswith(S._SWEEP_FILE):
+            raise OSError("disk hiccup")
+        return real(path, data)
+    monkeypatch.setattr(S.blob, "write_bytes_atomic", _write)
+    assert S.update(unit, None).status != "partial"
+
+
 def test_a_group_killed_mid_work_counts_as_a_failed_attempt(monkeypatch, tmp_path):
     """AR-127 P5: a raise or kill inside a group never reached visit(); begin() marks it in flight."""
     asked, unit = _wire(monkeypatch, tmp_path, allow=99)
