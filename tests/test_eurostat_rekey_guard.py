@@ -134,3 +134,116 @@ def _guard(fb):
          mock.patch.object(E.blob, "read_bytes", fb.read_bytes), \
          mock.patch.object(E.blob, "read_table", fb.read_table):
         E._require_rekeyed()
+
+
+# ---- the guard must not lock itself when the fetcher lands a NEW flow (2026-09-23, R1141) --------
+class GrowBlob(FakeBlob):
+    """FakeBlob that can grow: new files appear during 'the run', and the marker can be written."""
+
+    def __init__(self, n, marker, new_files=(), unstable_new=()):
+        super().__init__(n, unstable_idx=[], marker=marker)
+        self.pending = list(new_files)
+        self.unstable_new = set(unstable_new)
+        self.writes = []
+
+    def land(self):
+        self.names = sorted(self.names + self.pending)
+
+    def read_table(self, path, columns=None):
+        name = os.path.basename(path)
+        if name in self.pending:
+            key = UNSTABLE if name in self.unstable_new else STABLE
+            return pa.table({"series_key": pa.array([STABLE, key], pa.string())})
+        return super().read_table(path, columns)
+
+    def write_bytes_atomic(self, path, data):
+        self.writes.append((path, data))
+        self.marker = json.loads(data.decode())
+
+
+def _update(monkeypatch, gb, land=True):
+    monkeypatch.setattr(E.blob, "list_parquets", gb.list_parquets)
+    monkeypatch.setattr(E.blob, "read_bytes", gb.read_bytes)
+    monkeypatch.setattr(E.blob, "read_table", gb.read_table)
+    monkeypatch.setattr(E.blob, "write_bytes_atomic", gb.write_bytes_atomic)
+    monkeypatch.setattr(E, "_run", lambda unit: (gb.land() if land else None) or "ran")
+    return E.update(None, None)
+
+
+def test_a_run_that_lands_a_new_flow_grows_the_marker_so_the_next_run_is_admitted(monkeypatch):
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet", "NEW_B.parquet"])
+    assert _update(monkeypatch, gb) == "ran"
+    assert gb.marker["files_seen"] == 10 and gb.marker["grown"][0]["files"] == ["NEW_A.parquet", "NEW_B.parquet"]
+    gb.pending = []
+    assert _update(monkeypatch, gb, land=False) == "ran", "the next run passes the guard"
+
+
+def test_negative_control_without_the_growth_the_next_run_is_refused(monkeypatch):
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet"])
+    monkeypatch.setattr(E, "_grow_marker", lambda before: None)
+    _update(monkeypatch, gb)
+    gb.pending = []
+    with pytest.raises(DefinitiveError, match="has not completed"):
+        _update(monkeypatch, gb, land=False)
+
+
+def test_a_new_file_with_unstable_keys_does_not_grow_the_marker(monkeypatch):
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet"], unstable_new=["NEW_A.parquet"])
+    _update(monkeypatch, gb)
+    assert gb.writes == [] and gb.marker["files_seen"] == 8
+
+
+def test_a_marker_changed_during_the_run_is_left_alone(monkeypatch):
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet"])
+
+    def _run(unit):
+        gb.land()
+        gb.marker = {"files_seen": 9, "by": "rekey tool"}
+        return "ran"
+    monkeypatch.setattr(E.blob, "list_parquets", gb.list_parquets)
+    monkeypatch.setattr(E.blob, "read_bytes", gb.read_bytes)
+    monkeypatch.setattr(E.blob, "read_table", gb.read_table)
+    monkeypatch.setattr(E.blob, "write_bytes_atomic", gb.write_bytes_atomic)
+    monkeypatch.setattr(E, "_run", _run)
+    E.update(None, None)
+    assert gb.writes == [] and gb.marker == {"files_seen": 9, "by": "rekey tool"}
+
+
+def test_the_marker_grows_even_when_the_run_raises(monkeypatch):
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet"])
+
+    def _run(unit):
+        gb.land()
+        raise RuntimeError("killed mid-sweep")
+    monkeypatch.setattr(E.blob, "list_parquets", gb.list_parquets)
+    monkeypatch.setattr(E.blob, "read_bytes", gb.read_bytes)
+    monkeypatch.setattr(E.blob, "read_table", gb.read_table)
+    monkeypatch.setattr(E.blob, "write_bytes_atomic", gb.write_bytes_atomic)
+    monkeypatch.setattr(E, "_run", _run)
+    with pytest.raises(RuntimeError):
+        E.update(None, None)
+    assert gb.marker["files_seen"] == 9
+
+
+def test_the_one_time_tool_checks_the_count_and_every_key(monkeypatch, tmp_path):
+    import importlib
+    sys_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
+    import sys
+    sys.path.insert(0, sys_path)
+    tool = importlib.import_module("grow_eurostat_rekey_marker")
+    gb = GrowBlob(8, {"files_seen": 8}, new_files=["NEW_A.parquet", "NEW_B.parquet"])
+    gb.land()
+    for name in ("list_parquets", "read_bytes", "read_table", "write_bytes_atomic"):
+        monkeypatch.setattr(E.blob, name, getattr(gb, name))
+        monkeypatch.setattr(tool.blob, name, getattr(gb, name))
+    assert tool.main(["--files", "NEW_A.parquet"]) == 2, "count does not close: refused"
+    assert tool.main(["--files", "NEW_A.parquet,NEW_B.parquet"]) == 0 and gb.writes == [], "dry run"
+    assert tool.main(["--files", "NEW_A.parquet,NEW_B.parquet", "--apply"]) == 0
+    assert gb.marker["files_seen"] == 10 and gb.marker["grown"][-1]["by"].startswith("tools/")
+    # "F00000a" sorts to index 1, which the guard's evenly spaced sample (0, 2, 4, 6, 8) never reads
+    gb2 = GrowBlob(8, {"files_seen": 8}, new_files=["F00000a.parquet"], unstable_new=["F00000a.parquet"])
+    gb2.land()
+    for name in ("list_parquets", "read_bytes", "read_table", "write_bytes_atomic"):
+        monkeypatch.setattr(E.blob, name, getattr(gb2, name))
+        monkeypatch.setattr(tool.blob, name, getattr(gb2, name))
+    assert tool.main(["--files", "F00000a.parquet", "--apply"]) == 2 and gb2.writes == []

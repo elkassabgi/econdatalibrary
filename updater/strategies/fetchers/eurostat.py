@@ -403,7 +403,7 @@ def _require_rekeyed() -> None:
     out_dir = config.source_dir("eurostat")
     files = blob.list_parquets(out_dir)
     if not files:
-        return                                   # nothing stored yet; nothing to protect
+        return set()                             # nothing stored yet; nothing to protect
 
     marker = None
     try:
@@ -433,11 +433,74 @@ def _require_rekeyed() -> None:
                 f"eurostat: {files[i]} still uses the UNSTABLE 'LAST UPDATE=' series_key even "
                 f"though {REKEY_MARKER} claims a completed re-key — the marker does not match "
                 f"the data. Re-run tools/rekey_eurostat.py --apply. Existing data untouched.")
+    return set(files)
+
+
+def _stable_file(out_dir, name) -> bool:
+    """True when EVERY series_key of one store file is in the stable form (no 'LAST UPDATE=')."""
+    t = blob.read_table(os.path.join(out_dir, name), columns=["series_key"])
+    return not any("LAST UPDATE" in (k or "") for k in t.column("series_key").to_pylist())
+
+
+def _grow_marker(before) -> None:
+    """Record in the re-key marker every parquet THIS run created (review of 2026-09-23, R1141).
+
+    THE GUARD LOCKED ITSELF. `_require_rekeyed` demands marker files_seen == the store's parquet count,
+    so a marker from a smaller store cannot vouch for files added since. But the only thing that adds
+    files after the migration is this fetcher, landing a NEW flow - and it writes stable keys by
+    construction. The 2026-09-22 evening run created NAIO_10_FGDFEF and NAIO_10_FGDFI (23:48-23:52Z),
+    the store went to 7,656 against a marker of 7,654, and every later run was refused: eurostat
+    stopped updating in production, by its own guard.
+
+    So after a run the guard admitted, each file that was not there at the guard is checked - ALL its
+    keys, not a sample - and only when every one is stable is the marker's count raised, with the
+    names recorded under `grown`. One unstable new file -> no raise, and the next run's guard refuses,
+    loudly, as it should. A marker that moved during the run (the migration tool re-ran) is left alone.
+    Never raises: a failure here is printed and costs one refused run, never the run's own result."""
+    if not before:
+        return
+    out_dir = config.source_dir("eurostat")
+    path = os.path.join(out_dir, REKEY_MARKER)
+    try:
+        after = set(blob.list_parquets(out_dir))
+        new = sorted(after - set(before))
+        if not new:
+            return
+        if not set(before) <= after:
+            print(f"[eurostat] re-key marker NOT grown: {len(set(before) - after)} file(s) vanished "
+                  f"during the run", flush=True)
+            return
+        bad = [n for n in new if not _stable_file(out_dir, n)]
+        if bad:
+            print(f"[eurostat] re-key marker NOT grown: new file(s) with UNSTABLE keys {bad[:5]} - the "
+                  f"next run's guard will refuse", flush=True)
+            return
+        m = json.loads(blob.read_bytes(path).decode("utf-8"))
+        if m.get("files_seen") != len(before):
+            print(f"[eurostat] re-key marker NOT grown: it changed during the run "
+                  f"({m.get('files_seen')!r} vs {len(before)} at the guard)", flush=True)
+            return
+        m["files_seen"] = len(after)
+        m.setdefault("grown", []).append({"utc": _dt.datetime.now(_dt.timezone.utc).isoformat(
+            timespec="seconds"), "files": new})
+        blob.write_bytes_atomic(path, json.dumps(m, sort_keys=True).encode("utf-8"))
+        print(f"[eurostat] re-key marker grown to {len(after):,} for {len(new)} new flow file(s) "
+              f"{new[:5]} (all keys stable)", flush=True)
+    except Exception as e:                       # noqa: BLE001 - a bookkeeping failure, loud
+        print(f"[eurostat] re-key marker NOT grown ({type(e).__name__}: {str(e)[:120]}) - the next "
+              f"run's guard may refuse", flush=True)
 
 
 def update(unit, since) -> Result:
     """Entry point used by the giant_changed_units strategy / the fetcher contract."""
-    _require_rekeyed()   # gate: never run incrementally over un-re-keyed (unstable-key) data
+    before = _require_rekeyed()   # gate: never run incrementally over un-re-keyed (unstable-key) data
+    try:
+        return _run(unit)
+    finally:
+        _grow_marker(before)
+
+
+def _run(unit) -> Result:
     # report_changed_flows: eurostat is catalogued per FLOW (`eurostat:<code>`, `grouped`),
     # and its flow ids are the lower-case dataset codes the catalogue spells — so the
     # merge-measured changed-flow set maps 1:1 onto derive ids by primary key. Without it
