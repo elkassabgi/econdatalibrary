@@ -282,7 +282,9 @@ def test_a_series_the_publisher_dropped_from_an_answered_call_is_not_owed(store,
     res = bea.update(None, None)                               # IIP returns only Assets:X:A
     assert res.status != "partial", res.error
     assert ("Assets:Gone:A", D(y), 0.0) in _rows(str(d / "IIP" / "all.parquet")), "stored rows kept"
-    assert "IIP/all.parquet: 1 stored series no longer published" in capsys.readouterr().out
+    assert "IIP/all.parquet: BEA sent no value for 1 stored series" in capsys.readouterr().out
+    assert "BEA sent no value for 1 stored series" in (res.error or ""), \
+        f"the note the digest shows must carry it, not only stdout (AR-130): {res.error!r}"
 
 
 def test_the_call_unit_is_read_off_each_dataset_key():
@@ -455,10 +457,12 @@ def test_a_budget_stopped_pass_reports_the_store_total(store, monkeypatch):
 
     monkeypatch.setattr(bea, "Deadline", _DL)
     units = bea._group_units(str(d))
-    stored = sum(pq.read_metadata(str(d / u)).num_rows for u in units)
     res = bea.update(None, None)
+    after = sum(pq.read_metadata(str(d / u)).num_rows for u in units)
     assert res.status == "partial"
-    assert res.obs >= stored - 1, (res.obs, stored)   # -1: the exact duplicate the merge collapses
+    # EXACTLY the store as it stands after the pass - an overcount (a group counted twice at the
+    # stop, review AR-130 A7) fails as surely as an omission
+    assert res.obs == after, (res.obs, after)
 
 
 def test_a_series_bea_now_sends_blank_does_not_hold_the_cycle_open(store, monkeypatch):

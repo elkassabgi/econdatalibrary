@@ -24,8 +24,15 @@ PER GROUP, under a RotationCycle (ok = every group refreshed since the last ok):
   * the fetch goes through the ingester's OWN parse (fetch_* in jobs/ingest_bea_full.py) with
     strict=True: a call that exhausts its retries raises instead of reading as an empty answer, and
     an empty answer for a window that starts inside the stored data is a failure too;
-  * COVERAGE: every stored key with an observation inside the window must come back, or the
-    group stays owed (one silently-empty call cannot pass as "nothing new" - review R1106);
+  * COVERAGE, AT CALL GRAIN (reviews R1106, R1109): a stored key with an observation inside the
+    window that did not come back keeps the group owed IF ITS CALL RETURNED NOTHING - one
+    silently-empty call cannot pass as "nothing new". A key missing from a call that DID answer
+    (other keys of the same frequency / IIP type / country came back) is a series BEA sent no
+    value for: measured 2026-09-23, IIP GoldReserveAssets:ChgPosXRate:A and
+    StDebtSecAssets:ChgPosPrice:A come back with DataValue '' for every year, and the parse drops
+    blanks. Owing those held the whole cycle open for ever. DECIDED: their STORED ROWS ARE KEPT
+    (never-shrink; for these two, one row each, 2025 = 0.0) and served as last published, and the
+    run's note says how many such series there were, so the digest shows them;
   * merge.merge_and_write (keep-new, never-shrink) REPORTS THE CHANGED KEYS - revisions included -
     and those, not the fetched keys, are returned as changed_keys: a revision-only pass is a change
     and reaches the served CSVs; the group is visited only if nothing failed.
@@ -295,6 +302,7 @@ def update(unit, since) -> Result:
     cycle = RotationCycle(out_dir, units)
     cursors: dict[str, str] = {}
     changed: dict[str, str | None] = {}      # merge-measured: {series_key: newest changed date}
+    no_value: list[str] = []                 # 'group:key' BEA sent no value for in an answered call
     discontinued = 0
     total = 0
     frontier_by_ds: dict[str, str] = {}
@@ -375,8 +383,12 @@ def update(unit, since) -> Result:
         fetched_keys = set(tbl.column("series_key").to_pylist())
         missing, dropped = _uncovered(rel.split("/")[0], owed_keys - fetched_keys, fetched_keys)
         if dropped:
-            print(f"[{SOURCE}] {rel}: {len(dropped):,} stored series no longer published by BEA "
-                  f"(their calls answered; stored rows kept), e.g. {sorted(dropped)[:3]}", flush=True)
+            # BEA SENT NO VALUE for these (a blank DataValue, or no row) in a call that answered -
+            # it has not necessarily stopped publishing them (review AR-130: the two IIP series
+            # still come back, blank). Stored rows kept; counted into the run's note below.
+            no_value.extend(f"{rel}:{k}" for k in sorted(dropped))
+            print(f"[{SOURCE}] {rel}: BEA sent no value for {len(dropped):,} stored series in calls "
+                  f"that answered (stored rows kept), e.g. {sorted(dropped)[:3]}", flush=True)
         ratio = ((prof["rows"] - prof["exact_dups"]) / prof["rows"]) if prof["exact_dups"] else 0.97
         try:
             n, md, ch = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP,
@@ -426,4 +438,10 @@ def update(unit, since) -> Result:
     # and never needs the cursor cap's full re-derive (the fetched-key cursors hit 50,000 on every
     # full cycle - 63,238 keys - review R1106).
     res.changed_keys = changed
+    if no_value:
+        # In the note the digest shows, not only on stdout (review AR-130): an `ok` must not hide
+        # that some stored series got no new value from BEA.
+        note = (f"note: BEA sent no value for {len(no_value):,} stored series in calls that answered "
+                f"- stored rows kept (e.g. {no_value[:2]})")
+        res.error = f"{res.error}; {note}" if res.error else note
     return res
