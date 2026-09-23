@@ -53,6 +53,26 @@ def test_a_pass_over_the_changed_keys_cap_reports_none_and_says_so(monkeypatch, 
     assert res.series_cursors, "the cursor path still has its cursors"
 
 
+def test_an_overflowed_pass_says_its_evidence_is_truncated(monkeypatch, tmp_path):
+    """Review AR-132: the over-cap fallback's bare cursor keys can never map; flag it so the
+    orchestrator books a durable full_rederive_owed."""
+    monkeypatch.setattr(A.merge, "CHANGED_KEYS_CAP", 2)
+    _wire(monkeypatch, tmp_path, allow=99)
+    assert A.update(None, None).cursor_cap_hit is True
+
+
+def test_a_truncated_pass_never_reads_as_a_green_coverage_note(tmp_path, monkeypatch):
+    """AR-132: with bare-key cursors under the 50k cap, the subset sample 'proved' nothing served
+    changed while a catalogued series had. A fetcher-declared truncation now refuses the exception."""
+    _catalog(tmp_path, monkeypatch, ["abs:CPI:1.10001.10.50.Q"])
+    orchestrate._REG_ENTRIES = None
+    unit = types.SimpleNamespace(key="abs/_all", source_id="abs", unit_id="_all")
+    res = types.SimpleNamespace(obs=10, new_vintage="v", status="ok", changed_keys=None, cursor_cap_hit=True,
+                                series_cursors={"1.10001.10.50.Q": "2026-08-01", "9.9.9": "2026-08-01"})
+    failed, note, deferred, reasons = orchestrate._derive_changed_csvs(unit, res, None, store=None)
+    assert note.startswith("csv coherence unmet:") and "cap-saturated" in note, note
+
+
 def test_negative_control_at_the_cap_the_set_is_still_complete(monkeypatch, tmp_path):
     monkeypatch.setattr(A.merge, "CHANGED_KEYS_CAP", 3)
     _wire(monkeypatch, tmp_path, allow=99)

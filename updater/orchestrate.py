@@ -820,9 +820,13 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # vectors per changed cube) tripped the refusal on a factually false
             # "truncated evidence" note and demoted a healthy subset-scope run —
             # the WU-5 reviewer drove it end-to-end (CASE D).
+            # A fetcher that SAYS its changed-set evidence is truncated (Result.cursor_cap_hit) is
+            # saturated too, whatever the count: abs's over-cap fallback reports bare cursor keys
+            # that cannot map, and a sample of them would 'prove' nothing served changed (AR-132).
             note, demote = _classify_zero_mapped(
                 unit.source_id, scope, n_ids, sample_hits, sample_n, len(unmapped),
-                cap_saturated=(not migrated) and len(unmapped) >= _CCAP)
+                cap_saturated=((not migrated) and len(unmapped) >= _CCAP)
+                or bool(getattr(res, "cursor_cap_hit", False)))
             if not demote:
                 print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
             return [], note, [], {}

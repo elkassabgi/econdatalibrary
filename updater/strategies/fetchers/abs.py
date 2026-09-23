@@ -355,4 +355,9 @@ def update(unit, since) -> Result:
                    empty_window_floor=max(len(pfiles) - 1, 1))
     # complete: every merge this pass reported ({} = nothing changed); None = over the cap (cursors)
     res.changed_keys = changed
+    if changed is None:
+        # The fallback cursors are bare store keys, which can never map to 'abs:<FLOW>:<key>' ids:
+        # say the changed-set evidence is truncated, so the orchestrator books a durable
+        # full_rederive_owed (health: ATTENTION) instead of the change vanishing (review AR-132).
+        res.cursor_cap_hit = True
     return res
