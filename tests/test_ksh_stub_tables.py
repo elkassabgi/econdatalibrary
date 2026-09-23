@@ -52,7 +52,7 @@ def _run(tmp_path, monkeypatch, status=404, stored=("KSH:gdp0001:x",)):
 
 def test_a_never_stored_table_with_no_csv_is_skipped_until_ksh_updates_it(tmp_path, monkeypatch, capsys):
     res, side, asked = _run(tmp_path, monkeypatch)
-    assert res.status != "partial" and "gdp0049" not in (res.error or ""), res.error
+    assert res.status != "partial" and "transport/WAF" not in (res.error or ""), res.error
     assert side.get("gdp0049") == "2021-04-06T00:00:00Z|None", side
     assert "link-only table" in capsys.readouterr().out
     res, side, asked = _run(tmp_path, monkeypatch)
@@ -82,3 +82,87 @@ def test_the_ingester_records_the_final_status(monkeypatch):
         status_code, content = 404, b"<!DOCTYPE html>"
     monkeypatch.setattr(K.ig.requests, "get", lambda url, headers=None, timeout=None: _R())
     assert K.ig.get_bytes("https://x/y.csv") is None and K.ig.LAST_STATUS["https://x/y.csv"] == 404
+
+
+# ---- review R1118 -------------------------------------------------------------------------------
+def test_a_table_stored_only_in_a_side_file_is_a_break_not_a_stub(tmp_path, monkeypatch):
+    """Five served tables live only in _migrated_from_ksh_unparsed.parquet."""
+    pq.write_table(pa.table({"series_key": ["KSH:gdp0049:x"], "obs_date": pa.array([dt.date(2024, 12, 31)]),
+                             "value": [1.0]}), str(tmp_path / "_migrated_from_ksh_unparsed.parquet"))
+    res, side, asked = _run(tmp_path, monkeypatch)
+    assert res.status == "structural" and "although we store it" in res.error, res.error
+    assert "gdp0049" not in side
+
+
+@pytest.mark.parametrize("status", [403, 429, 503, 500])
+def test_a_final_throttle_or_server_error_stays_transient(tmp_path, monkeypatch, status):
+    res, side, asked = _run(tmp_path, monkeypatch, status=status)
+    assert res.status == "partial" and "gdp0049: transport/WAF failure" in (res.error or ""), res.error
+    assert "gdp0049" not in side
+
+
+def test_a_fetch_that_raises_stays_transient(tmp_path, monkeypatch):
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, None))
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: [dict(STUB)])
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert res.status == "partial" and "gdp0049" in (res.error or "")
+
+
+def test_the_skip_is_named_in_the_result_of_a_clean_pass(tmp_path, monkeypatch):
+    res, side, asked = _run(tmp_path, monkeypatch)
+    assert "not hosted - no CSV at KSH (HTTP 404) and nothing stored [gdp0049]" in (res.error or ""), res.error
+
+
+def _cat(n):
+    return [{"id": f"gdp{i:04d}", "updatedAt": "2026-09-10T00:00:00Z", "correctedAt": None} for i in range(1, n + 1)]
+
+
+def test_tables_past_the_per_run_cap_are_booked_deferred(tmp_path, monkeypatch):
+    from updater.health import _deferral_only
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: _cat(3))
+    monkeypatch.setattr(K, "MAX_PER_RUN", 1)
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, []))
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert res.status == "partial" and "2 deferred" in (res.error or ""), res.error
+    assert _deferral_only([{"status": res.status, "last_error": res.error}]), res.error
+
+
+def test_a_table_with_nothing_to_store_is_not_refetched_every_pass(tmp_path, monkeypatch):
+    """ido0001..0016 parse empty and their theme file never exists: they took 16 of 60 slots every pass."""
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: [
+        {"id": "ido0001", "updatedAt": "2026-01-01T00:00:00Z", "correctedAt": None}])
+    asked = []
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: asked.append(tid) or (tid, []))
+    K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert asked == ["ido0001"], asked
+
+
+def test_tables_past_the_budget_stop_are_booked_deferred(tmp_path, monkeypatch):
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(K.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(K, "_catalog", lambda raise_transient: _cat(3))
+    monkeypatch.setattr(K, "TABLE_WAVE", 1)
+    monkeypatch.setattr(K, "_fetch_table", lambda tid: (tid, []))
+
+    class _DL:
+        n = 0
+
+        def __init__(self, minutes=None):
+            pass
+
+        def spent(self):
+            _DL.n += 1
+            return _DL.n > 1                                  # one wave, then the budget is spent
+
+        def elapsed_min(self):
+            return 30.0
+    monkeypatch.setattr(K, "Deadline", _DL)
+    res = K.update(types.SimpleNamespace(config={}, key="ksh_stadat/_all"), None)
+    assert res.status == "partial" and "2 deferred" in (res.error or ""), res.error

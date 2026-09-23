@@ -105,17 +105,38 @@ def _save_sidecar(out_dir, data) -> None:
                             json.dumps(data, sort_keys=True).encode("utf-8"))
 
 
-def _holds_table(theme_path, tid):
-    """Does the theme parquet hold any row of table `tid` (keys 'KSH:<tid>:...')? True / False when
-    READ, None when it could not be (never read as False - 'could not look' is not 'nothing there')."""
+def _holds_table(out_dir, tid):
+    """Does the store hold any row of table `tid` (keys 'KSH:<tid>:...')? Reads the theme parquet AND
+    every '_'-prefixed side file: five served tables live only in _migrated_from_ksh_unparsed.parquet
+    (review R1118). True / False when READ, None when any file could not be (never read as False)."""
+    import pyarrow.compute as _pc
     try:
-        if not blob.exists(theme_path):
-            return False
-        import pyarrow.compute as _pc
-        keys = blob.read_table(theme_path, columns=["series_key"]).column("series_key")
-        return bool(_pc.any(_pc.starts_with(keys, f"KSH:{tid}:")).as_py())
+        names = [n for n in blob.list_parquets(out_dir)
+                 if n == f"{tid[:3].lower()}.parquet" or n.startswith("_")]
+        for n in names:
+            keys = blob.read_table(os.path.join(out_dir, n), columns=["series_key"]).column("series_key")
+            if _pc.any(_pc.starts_with(keys, f"KSH:{tid}:")).as_py():
+                return True
+        return False
     except Exception:                                        # noqa: BLE001
         return None
+
+
+NODATA = "_no_data_tables.json"   # {tid: vintage} - tables with nothing to store at that vintage
+
+
+def _load_nodata(out_dir) -> dict:
+    """Tables whose last fetch had NOTHING TO STORE (parsed empty, or a link-only 404) at a vintage.
+    Kept apart from the vintage sidecar (tools/clear_ksh_mojibake_vintages.py reads that one as
+    {tid: vintage}). Without it such a table re-entered the queue on every pass - the todo check also
+    requires the theme parquet, which an all-empty theme never gets (review R1118: ido0001..0016
+    took 16 of the 60 slots on every pass)."""
+    try:
+        raw = blob.read_bytes(os.path.join(out_dir, NODATA))
+        d = json.loads(raw.decode("utf-8")) if raw else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:                                        # noqa: BLE001
+        return {}
 
 
 def _fetch_table(tid):
@@ -155,6 +176,9 @@ def update(unit, since) -> Result:
 
     cat = _catalog(raise_transient=True)
     sidecar = _load_sidecar(out_dir)
+    nodata = _load_nodata(out_dir)
+    nodata_before = dict(nodata)
+    stubs: list[str] = []
 
     todo = []
     for e in cat:
@@ -163,7 +187,7 @@ def update(unit, since) -> Result:
             continue
         cur_v = _vintage(e)
         theme_path = os.path.join(out_dir, f"{tid[:3].lower()}.parquet")
-        if sidecar.get(tid) == cur_v and blob.exists(theme_path):
+        if sidecar.get(tid) == cur_v and (blob.exists(theme_path) or nodata.get(tid) == cur_v):
             continue
         todo.append((tid, cur_v))
     todo.sort()
@@ -171,6 +195,10 @@ def update(unit, since) -> Result:
     tally = Tally()
     capped = len(todo) > MAX_PER_RUN
     batch = todo[:MAX_PER_RUN]
+    # OWED, NOT SILENT (review R1118): tables past the per-run cap are booked deferred, so a pass
+    # that reached 60 of 849 owed tables reads partial (deferral-only: ROTATING), never ok.
+    for tid, _v in todo[MAX_PER_RUN:]:
+        tally.deferred_unit(f"{tid} (per-run cap {MAX_PER_RUN})")
 
     # fetch+parse concurrently, accumulating rows per THEME (many tables -> one parquet)
     by_theme = defaultdict(list)           # theme -> [(key, date, val), ...]
@@ -197,6 +225,8 @@ def update(unit, since) -> Result:
                           f"{dl.elapsed_min():.1f} min — {fetched}/{len(batch)} tables "
                           f"fetched, {len(batch) - fetched} left for the next tick (their "
                           f"vintages stay unbumped, so they are retried)", flush=True)
+                    for tid, _v in batch[wave_start:]:
+                        tally.deferred_unit(f"{tid} (budget {budget_min:.0f} min)")   # R1118
                     break
                 wave = batch[wave_start:wave_start + TABLE_WAVE]
                 futs = {ex.submit(_fetch_table, tid): (tid, v) for tid, v in wave}
@@ -204,8 +234,7 @@ def update(unit, since) -> Result:
                     tid, cur_v = futs[fut]
                     _t, rows = fut.result()
                     if rows == "absent":
-                        theme_path = os.path.join(out_dir, f"{tid[:3].lower()}.parquet")
-                        held = _holds_table(theme_path, tid)
+                        held = _holds_table(out_dir, tid)
                         if held is False:
                             # NEVER STORED and no CSV: a link-only table (gdp0049). Its vintage is
                             # recorded so it is fetched again only when KSH changes it; not tallied -
@@ -214,6 +243,8 @@ def update(unit, since) -> Result:
                             print(f"[{SOURCE}] {tid}: no CSV (HTTP 404) and nothing of it stored - a "
                                   f"link-only table; skipped until KSH updates it", flush=True)
                             sidecar[tid] = cur_v
+                            nodata[tid] = cur_v
+                            stubs.append(tid)
                             continue
                         # we SERVE it (or cannot tell): its CSV disappearing is a real break
                         tally.structural_unit(f"{tid}: CSV now answers HTTP 404"
@@ -231,6 +262,7 @@ def update(unit, since) -> Result:
                         # genuinely empty table: advance its vintage so we don't refetch every tick
                         tally.empty_unit()
                         sidecar[tid] = cur_v
+                        nodata[tid] = cur_v          # its theme file may never exist (ido*, R1118)
                         continue
                     by_theme[theme].extend(rows)
                     theme_tables[theme].append((tid, cur_v))
@@ -268,6 +300,9 @@ def update(unit, since) -> Result:
             sidecar[tid] = cur_v            # advance ONLY after the theme merged cleanly
 
     _save_sidecar(out_dir, sidecar)
+    if nodata != nodata_before:
+        blob.write_bytes_atomic(os.path.join(out_dir, NODATA),
+                                json.dumps(nodata, sort_keys=True).encode("utf-8"))
 
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))
@@ -277,4 +312,11 @@ def update(unit, since) -> Result:
                    series_cursors=cursors)
     if capped:
         res.new_vintage = None
+    if stubs and res.status in ("ok", "no_change"):
+        # Named in the result - but only on a pass that did not defer: health reads a partial pass
+        # as a pure deferral only if its error is exactly the deferral note (review R1116). It is
+        # recorded in last_error and the runs table; the digest prints no error for ok rows.
+        res.error = (f"{res.error}; " if res.error else "") + (
+            f"{len(stubs)} table(s) not hosted - no CSV at KSH (HTTP 404) and nothing stored "
+            f"[{', '.join(stubs[:5])}]")
     return res
