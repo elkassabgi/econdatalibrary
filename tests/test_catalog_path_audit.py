@@ -408,6 +408,61 @@ def test_a_connection_opened_while_another_is_being_made_is_guarded_too(build, t
     assert _rows(build) == ["before"]
 
 
+class _SaysTemp(str):
+    def __eq__(self, other):
+        return other == "temp" or str.__eq__(self, other)
+    __hash__ = str.__hash__
+
+
+class _TrueOnce:
+    def __init__(self):
+        self.n = 0
+
+    def __bool__(self):
+        self.n += 1
+        return self.n == 1
+
+    def __index__(self):
+        return 0
+
+
+@pytest.mark.parametrize("kw", [{"name": "_SaysTemp"}, {"readonly": "_TrueOnce"}, {"readonly": 0}])
+def test_blobopen_takes_only_plain_types_after_t0(build, kw):
+    """R1223: the guard read its arguments in Python and C read them again - a str subclass equal to "temp", or
+    a readonly true once then false, opened a writable blob on the build."""
+    make = {"_SaysTemp": lambda: _SaysTemp("main"), "_TrueOnce": _TrueOnce}
+    args = {k: (make[v]() if isinstance(v, str) else v) for k, v in kw.items()}
+    c = sqlite3.connect(str(build))
+    try:
+        with pytest.raises(TypeError, match="R1223"):
+            c.blobopen("which", "name", 1, **args)
+    finally:
+        c.close()
+    assert _rows(build) == ["before"]
+
+
+def test_vacuum_does_not_leave_an_attach_record(build, tmp_path):
+    """R1223 side effect: VACUUM's internal ATTACH '' was recorded, so every later file pragma on the connection
+    was refused - state.db's journal_mode included. After T0 (the build fixture sets the flag)."""
+    p = tmp_path / "state.db"
+    sqlite3.connect(str(p)).close()
+    c = sqlite3.connect(str(p))
+    assert type(c).__name__ == "_GuardedConnection", "precondition: a guarded connection"
+    with cp.writer_lock():
+        c.execute("VACUUM")
+    assert c._attached == [False]
+    c.execute("PRAGMA journal_mode=WAL").fetchall()              # not the build, nothing attached: allowed
+    c.close()
+
+
+def test_a_main_file_that_vanished_counts_as_the_build(build, tmp_path):
+    """R1223: a name that no longer resolves right after the open means it was changed under the connection."""
+    assert cp._is_build(str(tmp_path / "gone" / "catalog.db")) is True
+    other = tmp_path / "other.db"
+    sqlite3.connect(str(other)).close()
+    assert cp._is_build(str(other)) is False, "a control: an existing other file is not the build"
+
+
 def test_the_base_init_cannot_repoint_a_guarded_connection(build):
     """R1219 probe: sqlite3.Connection.__init__(conn, build) on a guarded connection re-opened it at the build
     with no authorizer. The hook now lets a handle through only inside the object's own guarded __init__."""

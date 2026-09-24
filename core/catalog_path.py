@@ -64,8 +64,13 @@ _held: object | None = None           # the open lock file while this process ho
 # plus writes - measured by review R1219), so a tool that VACUUMs after T0 (tools/prune_series_cursors.py)
 # must hold the lock. Not covered (no SQLite hook sees them): the backup API writing INTO a build connection,
 # a connection opened before T0, an explicit call of the BASE class (sqlite3.Connection.set_authorizer(conn,
-# None), .blobopen(conn, ...)) or of a private attribute (conn._main_build, a guarded blob's _blob) -
-# deliberate bypasses, not slips (the base class's __init__ on a guarded connection IS refused: R1219); a statement still stepping when the lock is let go; a
+# None), .blobopen(conn, ...)) or of a private attribute (conn._main_build, a guarded blob's _blob), and the
+# interpreter's own introspection (sys._getframe reaching a connection inside its __init__, gc.get_referents
+# reaching a guarded blob's raw blob) - deliberate bypasses, not slips (the base class's __init__ on a guarded
+# connection IS refused: R1219); a program that changes the FILESYSTEM under a connection while it opens (a
+# junction removed or re-pointed between the open and the identity check - R1223): the identity is read from
+# the file's name, which such a program controls, so this guard cannot see it - an OS permission on the build
+# file is the only complete guard against that; a statement still stepping when the lock is let go; a
 # file-level replace of the build; a second copy of this module loaded by path (its lock is invisible to the
 # first copy's guard, so its writes are REFUSED, not let through); and processes that never import this module
 # (the legacy list and t0_ready cover those).
@@ -87,6 +92,10 @@ def _is_build(path) -> bool:
         return os.path.samefile(path, BUILD_PATH)
     except (OSError, ValueError, TypeError):
         try:
+            if not os.path.exists(path):
+                # SQLite has just opened this file, so it existed a moment ago: gone now means the name was
+                # changed under the connection (a junction removed - R1223). Cannot tell: the build.
+                return True
             return os.path.normcase(os.path.realpath(path)) == os.path.normcase(os.path.realpath(BUILD_PATH))
         except (OSError, ValueError, TypeError):
             return True                     # cannot tell: the build (fail closed - R1215 finding 4)
@@ -134,7 +143,11 @@ def _authorizer(main_is_build: bool, attached: list):
 
     def check(action, arg1, arg2, dbname, source):
         if action == sqlite3.SQLITE_ATTACH:
-            attached[0] = True              # before the lock test: an ATTACH made under the lock outlives it
+            # before the lock test: an ATTACH made under the lock outlives it. Not VACUUM's own ATTACH of ''
+            # (a private temporary database): recording it made every later file pragma on the connection a
+            # refusal, state.db included (R1223 side effect). VACUUM's writes are refused without the lock anyway.
+            if arg1 != "":
+                attached[0] = True
             return sqlite3.SQLITE_OK
         if _held is not None:
             return sqlite3.SQLITE_OK
@@ -250,6 +263,12 @@ class _GuardedConnection(sqlite3.Connection):
         self._install_guard()
 
     def blobopen(self, table, column, row, /, *, readonly=False, name="main"):
+        if self._guarded:
+            # the arguments are checked HERE and converted again in C: a str subclass that compared equal to
+            # "temp", or a readonly that was true once and false the next time, passed the check and opened a
+            # writable blob on the build (R1223). After T0 only the plain types are taken.
+            if type(readonly) is not bool or type(name) is not str:
+                raise TypeError("after T0 blobopen takes readonly as a bool and name as a str (R1223)")
         if readonly or not self._guarded or _may_write(name, self._main_build):
             return super().blobopen(table, column, row, readonly=readonly, name=name)
         if _held is None:
