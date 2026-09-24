@@ -109,6 +109,30 @@ def _csv_ages(s3, src: str, cutoff, max_objects: int):
     return older, total, False
 
 
+def _newest_parquet_local(src: str):
+    """AFTER T0: the newest parquet write time in the live store (a UTC datetime), recursive like the R2 prefix."""
+    import datetime as dt                                              # noqa: PLC0415
+    import glob                                                        # noqa: PLC0415
+    files = [f for f in glob.glob(os.path.join(ROOT, "data", "clean_full", src, "**", "*.parquet"), recursive=True)]
+    if not files:
+        return None
+    return max(dt.datetime.fromtimestamp(os.path.getmtime(f), tz=dt.timezone.utc) for f in files)
+
+
+def _csv_ages_selfhost(store, src: str, cutoff, max_objects: int):
+    """AFTER T0: _csv_ages over the self-hosted store's stored_utc (whole seconds - a CSV stored in the parquet's
+    own second counts as older, the cautious side, as make_servable rounds)."""
+    prefix = "series/" + urllib.parse.quote(src + ":", safe="")
+    older = total = 0
+    for _k, stored in store.list_modified(prefix):
+        total += 1
+        if stored < cutoff:
+            older += 1
+        if total >= max_objects:
+            return older, total, True
+    return older, total, False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", action="append")
@@ -124,18 +148,38 @@ def main() -> int:
         targets = [t for t in targets if t in never]
     print(f"screening {len(targets)} source(s); cap {a.max_objects:,} objects each\n")
 
-    s3 = r2_util.client()
+    from core import cutover                                          # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 (plan step 6d): the parquets are the live local store and the served CSVs the self-hosted
+        # store (R2 is a frozen copy) - from the live checkout only
+        from updater import blob                                      # noqa: PLC0415
+        blob.refuse_unless_live_checkout("audit_csv_staleness (after T0 it judges the live store)")
+        _store = blob.SelfhostBlob()
+
+        def newest_of(src):
+            return _newest_parquet_local(src)
+
+        def ages_of(src, cutoff):
+            return _csv_ages_selfhost(_store, src, cutoff, a.max_objects)
+    else:
+        s3 = r2_util.client()
+
+        def newest_of(src):
+            return _newest_parquet(s3, src)
+
+        def ages_of(src, cutoff):
+            return _csv_ages(s3, src, cutoff, a.max_objects)
     stale, clean, partial_scan, nodata = [], [], [], []
     for src in targets:
         try:
-            newest = _newest_parquet(s3, src)
+            newest = newest_of(src)
         except Exception as e:                                        # noqa: BLE001
             print(f"  {src:24s} ERROR listing store: {e}")
             continue
         if newest is None:
             nodata.append(src)
             continue
-        older, total, trunc = _csv_ages(s3, src, newest, a.max_objects)
+        older, total, trunc = ages_of(src, newest)
         if total == 0:
             nodata.append(src)
             continue

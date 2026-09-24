@@ -128,16 +128,32 @@ def main() -> int:
         print("name at least one source, or pass --all")
         return 2
 
-    from core import r2_util                                   # noqa: PLC0415  (boto3 late)
-    s3 = r2_util.client()
+    from core import cutover                                   # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 (plan step 6d): the objects users get are the self-hosted store's (R2 is a frozen copy); counted
+        # from the store's index, from the live checkout only
+        from updater import blob                               # noqa: PLC0415
+        blob.refuse_unless_live_checkout("audit_r2_vs_catalog (after T0 it counts the live store)")
+        _store = blob.SelfhostBlob()
 
-    print(f"{'source':<24}{'R2 objects':>14}{'catalogue rows':>16}{'difference':>13}  verdict")
+        def counter(pre):
+            return _store.count_keys(pre), False
+        column = "store objects"
+    else:
+        from core import r2_util                               # noqa: PLC0415  (boto3 late)
+        s3 = r2_util.client()
+
+        def counter(pre):
+            return count_prefix(s3, a.bucket, pre, a.max)
+        column = "R2 objects"
+
+    print(f"{'source':<24}{column:>14}{'catalogue rows':>16}{'difference':>13}  verdict")
     agree = disagree = 0
     trunc_srcs, unchecked = [], []      # NOT MEASURED, and never silent in the total
     for src in names:
         pre = f"{a.prefix}/{urllib.parse.quote(src + ':', safe='')}"
         try:
-            n, truncated = count_prefix(s3, a.bucket, pre, a.max)
+            n, truncated = counter(pre)
         except Exception as e:                                 # noqa: BLE001
             # NEVER a silent skip. An unlistable prefix is UNCHECKED, not clean (R390).
             print(f"  {src:<22}{'UNCHECKED':>14}{counts.get(src, 0):>16,}"
@@ -165,7 +181,7 @@ def main() -> int:
         print(f"  {src:<22}{n:>14,}{cat:>16,}{d:>+13,}  {verdict}")
 
     print()
-    print(f"  {agree} source(s) where R2 and the catalogue agree; {disagree} where they do "
+    print(f"  {agree} source(s) where {'R2' if column == 'R2 objects' else 'the store'} and the catalogue agree; {disagree} where they do "
           f"not.")
     store_only = store_only_sources(counts) if a.all else []
     if store_only:

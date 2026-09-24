@@ -79,14 +79,26 @@ def main() -> int:
         (a.source, n))]
     con.close()
 
-    s3 = r2_util.client()
+    from core import cutover                                  # noqa: PLC0415
+    where = "R2"
+    if cutover.is_cut_over():
+        # AFTER T0 (plan step 6d): the CSVs users get live in the self-hosted store; R2 is a frozen copy. From the
+        # live checkout only. exists() answers from the store's index - no exception is read as "absent".
+        from updater import blob                              # noqa: PLC0415
+        blob.refuse_unless_live_checkout("sample_source_coverage (after T0 it judges the live store)")
+        store, where = blob.SelfhostBlob(), "the self-hosted store"
 
-    def present(sid: str) -> bool:
-        try:
-            s3.head_object(Bucket=a.bucket, Key=_key_for(sid, a.prefix))
-            return True
-        except Exception:                                     # noqa: BLE001
-            return False
+        def present(sid: str) -> bool:
+            return store.exists(_key_for(sid, a.prefix))
+    else:
+        s3 = r2_util.client()
+
+        def present(sid: str) -> bool:
+            try:
+                s3.head_object(Bucket=a.bucket, Key=_key_for(sid, a.prefix))
+                return True
+            except Exception:                                 # noqa: BLE001
+                return False
 
     with cf.ThreadPoolExecutor(max_workers=a.workers) as ex:
         hits = list(ex.map(present, ids))
@@ -96,7 +108,7 @@ def main() -> int:
     print(f"{a.source}")
     print(f"  catalogued        : {total:,}")
     print(f"  SAMPLED           : {len(ids):,}  (random over the whole key space, not a prefix)")
-    print(f"  present in R2     : {k:,}")
+    print((f"  present in R2     : {k:,}" if where == "R2" else f"  present in {where}: {k:,}"))
     print(f"  coverage          : {k/len(ids):.1%}   95% CI [{lo:.1%}, {hi:.1%}]")
     print(f"  implies missing   : ~{round(total*(1-hi)):,} to ~{round(total*(1-lo)):,} series")
     print()

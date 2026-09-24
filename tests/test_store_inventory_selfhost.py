@@ -51,6 +51,18 @@ def test_after_t0_the_local_store_is_the_store(live, monkeypatch, capsys):
     assert "R2 store files" not in out
 
 
+def test_after_t0_a_nested_store_is_counted_whole(live, monkeypatch, capsys):
+    """R1242: a top-level listing counted bea as 1 of 592 and edgar_13f as 0 of 371 and called it THE STORE."""
+    deep = live / "live" / "data" / "clean_full" / "zz" / "tree" / "deeper"
+    deep.mkdir(parents=True)
+    (deep / "C03.parquet").write_bytes(b"x")
+    monkeypatch.setattr(sys, "argv", ["store_inventory.py", "zz"])
+    assert S.main() == 0
+    out = capsys.readouterr().out
+    assert "local store files :       3   <- THE STORE" in out
+    assert "catalogued ids with NO store file: 0" in out, "the nested file is the catalogued C03"
+
+
 def test_after_t0_another_checkout_is_refused(live, monkeypatch, tmp_path):
     monkeypatch.setattr(blob, "_code_root", lambda: str(tmp_path / "a_worktree"))
     monkeypatch.setattr(sys, "argv", ["store_inventory.py", "zz"])

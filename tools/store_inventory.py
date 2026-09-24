@@ -51,12 +51,18 @@ def local_store_files(source: str) -> set[str]:
     return {f[: -len(".parquet")] for f in os.listdir(d) if f.endswith(".parquet")}
 
 
-def catalogue_ids(source: str) -> set[str]:
+def catalogue_ids(source: str, pk_range: bool = False) -> set[str]:
     try:
         con = catalog_path.connect()
     except FileNotFoundError:                 # no catalogue here: as before, no ids
         return set()
     try:
+        if pk_range:
+            # PRIMARY-KEY RANGE, not WHERE source_id=?: series has only its PK index, so the source_id form is a
+            # full scan that holds a shared lock while writers wait (R715/R721) - after T0 this tool reads the LIVE
+            # catalogue. ";" is the byte after ":".
+            return {r[0].split(":", 1)[1] for r in con.execute(
+                "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?", (source + ":", source + ";"))}
         return {r[0].split(":", 1)[1] for r in con.execute(
             "SELECT series_id FROM series WHERE source_id=?", (source,))}
     finally:
@@ -69,8 +75,12 @@ def main_selfhosted(a) -> int:
     is a worktree's scratch, the exact mistake this tool exists to prevent). R2 is not asked."""
     from updater import blob                                         # noqa: PLC0415
     blob.refuse_unless_live_checkout("store_inventory (after T0 it counts the live store)")
-    loc = local_store_files(a.source)
-    cat = catalogue_ids(a.source)
+    # EVERY FILE UNDER THE SOURCE, like the R2 prefix listing it replaces (basenames, recursive). The top-level
+    # os.listdir counted bea as 1 file of 592 and edgar_13f as 0 of 371, and called the result THE STORE (R1242).
+    loc = set()
+    for _dirpath, _dirs, files in os.walk(os.path.join(ROOT, "data", "clean_full", a.source)):
+        loc.update(f[: -len(".parquet")] for f in files if f.endswith(".parquet"))
+    cat = catalogue_ids(a.source, pk_range=True)
     print(f"{a.source}")
     print(f"  local store files : {len(loc):>7,}   <- THE STORE (self-hosted since T0; R2 is a frozen copy)")
     print(f"  catalogue ids     : {len(cat):>7,}")

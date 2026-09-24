@@ -73,10 +73,41 @@ def budgeted_sources() -> "set[str]":
 def main() -> int:
     from updater import registry
     from updater.strategies.base import CADENCE_DAYS
-    from core import r2_util
+    from core import cutover, r2_util
 
-    c = r2_util.client()
     now = dt.datetime.now(dt.timezone.utc)
+    if cutover.is_cut_over():
+        # AFTER T0 (plan step 6d): the live local store IS the store (R2 is a frozen copy) - its files' write
+        # times, recursive like the R2 prefix and the same files (every .parquet), from the live checkout only
+        from updater import blob, config                           # noqa: PLC0415
+        blob.refuse_unless_live_checkout("audit_rotation_progress (after T0 it reads the live store)")
+
+        def ages_for(sid):
+            out = []
+            for dirpath, _dirs, files in os.walk(config.source_dir(sid)):
+                for f in files:
+                    if f.endswith(".parquet"):
+                        p = os.path.join(dirpath, f)
+                        written = dt.datetime.fromtimestamp(os.path.getmtime(p), tz=dt.timezone.utc)
+                        out.append((now - written).total_seconds() / 86400.0)
+            return out
+    else:
+        c = r2_util.client()
+
+        def ages_for(sid):
+            out, token = [], None
+            while True:
+                kw = {"Bucket": "econ-data", "Prefix": f"clean_full/{sid}/"}
+                if token:
+                    kw["ContinuationToken"] = token
+                resp = c.list_objects_v2(**kw)
+                for o in resp.get("Contents", []):
+                    if o["Key"].endswith(".parquet") and "/_" not in o["Key"].rsplit("/", 1)[-1][:1]:
+                        out.append((now - o["LastModified"]).total_seconds() / 86400.0)
+                if not resp.get("IsTruncated"):
+                    break
+                token = resp.get("NextContinuationToken")
+            return out
     reg = {e["source_id"]: e for e in registry.load().get("sources", [])}
     budgeted = budgeted_sources()
     live = [sid for sid, e in sorted(reg.items()) if e.get("live") and sid in budgeted]
@@ -95,19 +126,7 @@ def main() -> int:
         # the horizon base so 3x lands at 270d.
         if cad_key == "irregular":
             cadence = 90.0
-        ages = []
-        token = None
-        while True:
-            kw = {"Bucket": "econ-data", "Prefix": f"clean_full/{sid}/"}
-            if token:
-                kw["ContinuationToken"] = token
-            resp = c.list_objects_v2(**kw)
-            for o in resp.get("Contents", []):
-                if o["Key"].endswith(".parquet") and "/_" not in o["Key"].rsplit("/", 1)[-1][:1]:
-                    ages.append((now - o["LastModified"]).total_seconds() / 86400.0)
-            if not resp.get("IsTruncated"):
-                break
-            token = resp.get("NextContinuationToken")
+        ages = ages_for(sid)
         if len(ages) < MIN_FILES:
             continue
         share, verdict = assess_listing(ages, float(cadence))
