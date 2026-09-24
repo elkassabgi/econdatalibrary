@@ -17,7 +17,6 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from core import derive_csv as dc  # noqa: E402
 from core import catalog_path, r2_util  # noqa: E402
 
 BUCKET = "econ-data"

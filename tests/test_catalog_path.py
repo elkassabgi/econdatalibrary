@@ -397,7 +397,8 @@ def test_the_exempt_client_opens_read_only_and_the_preflight_checks_it(tmp_path)
     con.close()
     run_src = open(os.path.join(ROOT, "updater", "run.py"), encoding="utf-8").read()
     pre = run_src[run_src.index("def _selfhost_preflight"):]
-    assert "econdl_catalog.default_db(), BUILD_PATH" in pre[:pre.index("\ndef ")]
+    body = pre[:pre.index("\ndef ")]
+    assert "econdl_db = econdl_catalog.default_db()" in body and "econdl_db, BUILD_PATH" in body
     assert EXEMPT_FILES == {"clients/python/econdl/_catalog.py"}, "a new exemption needs its own premise test"
 
 
@@ -419,11 +420,28 @@ def test_the_exempt_client_answers_only_the_build_after_t0(tmp_path, monkeypatch
     (tmp_path / "CUTOVER").write_text("")
     with pytest.raises(RuntimeError, match="refused"):
         _catalog.default_db()                                  # the override
+    spelled = os.path.join(str(tmp_path), ".", "BUILD.DB" if os.name == "nt" else "build.db")
+    monkeypatch.setenv("ECONDL_CATALOG", spelled)
+    assert _catalog.default_db() == str(build), "the build under another spelling is the build (realpath/normcase)"
     monkeypatch.delenv("ECONDL_CATALOG")
-    with pytest.raises(RuntimeError, match="refused"):
-        _catalog.default_db()                                  # a checkout whose own copy is not the build
-    monkeypatch.setattr(_catalog, "_DEFAULT_DB", str(build))
-    assert _catalog.default_db() == str(build)
+    assert _catalog.default_db() == str(build), \
+        "a checkout whose own copy is not the build gets the build - core.catalog_path's answer (R1199)"
+
+
+def test_the_exempt_clients_flag_rule_is_cores(tmp_path, monkeypatch):
+    """R1199: econdl used os.path.exists; core.cutover counts an UNREADABLE flag as cut over (fail closed)."""
+    sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
+    from econdl import _catalog
+    monkeypatch.setattr(_catalog, "_CUTOVER_FLAG", str(tmp_path / "CUTOVER"))
+    assert _catalog._cut_over() is False
+    real = os.stat
+
+    def unreadable(p, *a, **k):
+        if str(p) == str(tmp_path / "CUTOVER"):
+            raise PermissionError(13, "denied")
+        return real(p, *a, **k)
+    monkeypatch.setattr(_catalog.os, "stat", unreadable)
+    assert _catalog._cut_over() is True
 
 
 def test_the_catalogue_ratchet_can_fail():

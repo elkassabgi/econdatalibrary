@@ -28,18 +28,31 @@ _CUTOVER_FLAG = r"C:\ProgramData\econ\CUTOVER"
 _BUILD_DB = r"E:\research\econfindatalibrary\data\catalog.db"
 
 
+def _cut_over() -> bool:
+    """core.cutover.is_cut_over's rule: the flag exists, OR its state cannot be read (fail closed)."""
+    try:
+        os.stat(_CUTOVER_FLAG)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except Exception:  # noqa: BLE001 - cannot tell = cut over
+        return True
+    return True
+
+
 def default_db() -> str:
     """Path to the bundled local registry, overridable via $ECONDL_CATALOG.
 
-    On the econ workstation after its cutover the default is the build and nothing else: an
-    $ECONDL_CATALOG override, or a checkout whose own data/catalog.db is not the build, is refused
-    (review R1194 - in-repo users such as core/derive_csv.py read through this default)."""
-    path = os.environ.get("ECONDL_CATALOG", _DEFAULT_DB)
-    if os.path.exists(_CUTOVER_FLAG) and \
-            os.path.normcase(os.path.realpath(path)) != os.path.normcase(os.path.realpath(_BUILD_DB)):
-        raise RuntimeError(f"refused: after the econ cutover the catalogue is {_BUILD_DB}, not {path} "
-                           "($ECONDL_CATALOG or another checkout's copy)")
-    return path
+    On the econ workstation after its cutover the catalogue is the build and nothing else - the same
+    answer core.catalog_path gives (R1199: the two resolvers disagreed from a worktree): the default is
+    the build, and an $ECONDL_CATALOG override naming any other file is refused (review R1194 - in-repo
+    users such as core/derive_csv.py read through this default)."""
+    override = os.environ.get("ECONDL_CATALOG")
+    if not _cut_over():
+        return override or _DEFAULT_DB
+    if override and os.path.normcase(os.path.realpath(override)) != os.path.normcase(os.path.realpath(_BUILD_DB)):
+        raise RuntimeError(f"refused: after the econ cutover the catalogue is {_BUILD_DB}, not {override} "
+                           "($ECONDL_CATALOG)")
+    return _BUILD_DB
 
 
 def connect(db: str | None = None) -> sqlite3.Connection:

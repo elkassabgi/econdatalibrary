@@ -387,8 +387,12 @@ def _selfhost_preflight(a) -> bool:
     # run imports it - core.derive_csv puts this checkout's clients/python first on sys.path.
     import core.derive_csv  # noqa: F401, PLC0415
     from econdl import _catalog as econdl_catalog, _resolve as econdl_resolve  # noqa: PLC0415
+    try:
+        econdl_db = econdl_catalog.default_db()
+    except RuntimeError as e:                 # econdl's own refusal (an $ECONDL_CATALOG override): listed, not raised
+        econdl_db = f"<refused by econdl: {e}>"
     places += [
-        (f"econdl's catalogue ({econdl_catalog.__file__} default_db())", econdl_catalog.default_db(), BUILD_PATH),
+        (f"econdl's catalogue ({econdl_catalog.__file__} default_db())", econdl_db, BUILD_PATH),
         (f"econdl's data root ({econdl_resolve.__file__} default_data_root())", econdl_resolve.default_data_root(),
          data),
     ]

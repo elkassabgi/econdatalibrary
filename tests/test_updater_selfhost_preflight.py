@@ -30,6 +30,10 @@ def live(tmp_path, monkeypatch):
     for v in ("ECONDL_CATALOG", "ECONDL_DATA"):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("AQUEDUCT_BACKEND", "selfhost")
+    # econdl carries its OWN copies of the flag and build paths (it cannot import core): a real T0 sets both
+    # (R1199 - no fixture modelled that, so econdl's post-T0 answer was never under test)
+    monkeypatch.setattr(_econdl_catalog(), "_CUTOVER_FLAG", str(tmp_path / "CUTOVER"))
+    monkeypatch.setattr(_econdl_catalog(), "_BUILD_DB", os.path.join(REPO, "data", "catalog.db"))
     return tmp_path
 
 
@@ -72,9 +76,11 @@ def test_the_correct_configuration_passes(live):
     (lambda mp, t: mp.setattr(config, "REGISTRY", str(t / "registry.yaml")), "REGISTRY"),
     (lambda mp, t: mp.setenv("ECONDL_CATALOG", str(t / "catalog.db")), "ECONDL_CATALOG"),
     (lambda mp, t: mp.setenv("ECONDL_DATA", str(t / "clean_full")), "ECONDL_DATA"),
-    # AR-153: what econdl itself resolves - an econdl imported from somewhere else names its own folder
-    (lambda mp, t: mp.setattr(_econdl_catalog(), "_DEFAULT_DB", str(t / "site" / "data" / "catalog.db")),
+    # AR-153: what econdl itself resolves - an econdl built for another layout names its own build
+    (lambda mp, t: mp.setattr(_econdl_catalog(), "_BUILD_DB", str(t / "site" / "data" / "catalog.db")),
      "econdl's catalogue"),
+    # R1199: econdl's own refusal of an $ECONDL_CATALOG override is LISTED, not an uncaught RuntimeError
+    (lambda mp, t: mp.setenv("ECONDL_CATALOG", str(t / "x" / "catalog.db")), "refused by econdl"),
     (lambda mp, t: mp.setattr(_econdl_resolve(), "_DEFAULT_DATA", str(t / "site" / "data" / "clean_full")),
      "econdl's data root"),
     # the code runs from a worktree while every setting names production (econdl follows the code)

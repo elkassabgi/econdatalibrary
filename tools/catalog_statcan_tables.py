@@ -344,7 +344,7 @@ def backup_sqlite(src_path: str, dst_path: str, pages: int = 4096, sleep: float 
                                          f"writer restarts the copy before it can advance")
 
     src = catalog_path.connect_path(src_path, write=False, timeout=180.0)     # the catalogue, read-only
-    dst = sqlite3.connect(tmp_path)
+    dst = sqlite3.connect(tmp_path)   # plain-open: the backup's NEW temporary file, never the catalogue
     try:
         src.backup(dst, pages=pages, sleep=sleep, progress=progress)
         qc = dst.execute("PRAGMA quick_check").fetchone()[0]

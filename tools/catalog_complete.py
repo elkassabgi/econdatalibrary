@@ -207,7 +207,7 @@ def main(sources):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("usage: python tools/catalog_complete.py <source> [...]"); raise SystemExit(2)
     with catalog_path.write_session():   # after T0: the single-writer lock
+        if len(sys.argv) < 2:
+            print("usage: python tools/catalog_complete.py <source> [...]"); raise SystemExit(2)
         main(sys.argv[1:])

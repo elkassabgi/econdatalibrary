@@ -111,11 +111,78 @@ def _run_main_block(rel, path, block, argv, monkeypatch):
     return seen
 
 
-def test_the_discovery_finds_the_writers():
+# THE COMMITTED SET (R1199): a floor of ">= 49" stopped protecting the moment a 50th writer arrived, and a
+# writer whose open turned read-only - or became a from-import - left discovery silently. Now the set is
+# exact: a file that leaves it or joins it is a deliberate edit here.
+EXPECTED_WRITERS = {
+    "core/apply_title_wave.py", "core/broaden_catalog.py", "core/build_series_metadata.py",
+    "tools/_cat_bea.py", "tools/_cat_biotrademerch.py", "tools/_cat_critmin.py", "tools/_cat_efw.py",
+    "tools/_cat_nonplastic.py", "tools/_cat_tradefoodcatbyproc.py", "tools/_cat_tradefoodprocbycat.py",
+    "tools/_cat_tradeservcatbypartner.py", "tools/apply_license_class.py", "tools/catalog_census_tables.py",
+    "tools/catalog_cepii_baci.py", "tools/catalog_complete.py", "tools/catalog_dip_tables.py",
+    "tools/catalog_eia_tables.py", "tools/catalog_fdic.py", "tools/catalog_fed_board.py", "tools/catalog_fhfa.py",
+    "tools/catalog_ilostat_indicators.py", "tools/catalog_imf_direct.py", "tools/catalog_imts_tables.py",
+    "tools/catalog_istat_flows.py", "tools/catalog_mfs_tables.py", "tools/catalog_noaa.py",
+    "tools/catalog_penn_world_table.py", "tools/catalog_pip_tables.py", "tools/catalog_pxweb_flowgrain.py",
+    "tools/catalog_statcan_tables.py", "tools/catalog_table_grain.py", "tools/catalog_unsdg_flows.py",
+    "tools/catalog_usda_tables.py", "tools/catalog_whr.py", "tools/catalog_who_api.py",
+    "tools/catalog_worldbank_esg_gaps.py", "tools/rekey_fao_series.py", "tools/title_bea_from_api.py",
+    "tools/title_damodaran_margins.py", "tools/title_eia_eba_all.py", "tools/title_eia_nuclear_status.py",
+    "tools/title_idb_from_ckan.py", "tools/title_noaa_from_siblings.py", "tools/title_rba_from_csv.py",
+    "tools/title_riksbank_fx.py", "tools/title_unctad_span_variants.py", "tools/title_unesco_dem_wb_codes.py",
+    "tools/title_unhcr_from_siblings.py", "tools/title_vdem_from_codebook.py",
+}
+
+
+def test_the_discovery_finds_exactly_the_committed_writers():
     names = {r for r, _p, _b in WRITERS}
-    assert {"core/apply_title_wave.py", "tools/catalog_statcan_tables.py", "tools/_cat_bea.py"} <= names
-    assert len(WRITERS) >= 49, f"{len(WRITERS)} writers found - the discovery lost some"
+    assert names == EXPECTED_WRITERS, (f"left the writer set: {sorted(EXPECTED_WRITERS - names)}; "
+                                       f"joined it: {sorted(names - EXPECTED_WRITERS)} - a writer that stopped "
+                                       "opening for write (or moved to a from-import) is suspect; a new one is added here")
     assert set(ARGS) <= names, f"ARGS names a file that is no longer a writer: {set(ARGS) - names}"
+
+
+def test_a_writer_with_no_dry_mode_locks_its_whole_entry():
+    """Structure, so the lock cannot depend on argv (R1199 M5: the runtime run used no arguments, and a lock
+    taken only when no argument was given survived): the __main__ block's first statement is
+    `with catalog_path.write_session():` and every call of main() is inside it."""
+    bad = []
+    for rel, _p, block in WRITERS:
+        if block is None or "dry" in ARGS.get(rel, {}):
+            continue
+        first = block.body[0]
+        ok = (isinstance(first, ast.With) and len(first.items) == 1
+              and ast.unparse(first.items[0].context_expr) == "catalog_path.write_session()")
+        outside = [n for s in block.body[1:] for n in ast.walk(s)
+                   if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "main"]
+        if not ok or outside:
+            bad.append(rel)
+    assert not bad, f"these __main__ blocks do not start with the lock around main(): {bad}"
+
+
+def test_a_script_takes_the_lock_unconditionally_at_top_level():
+    """R1199 M1/M2: a lock on a branch never taken, or inside a function never called, passed the order check."""
+    bad = []
+    for rel, path, block in WRITERS:
+        if block is not None:
+            continue
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        calls = [s for s in tree.body if isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
+                 and ast.unparse(s.value.func) == "catalog_path.write_session_for_process"]
+        if len(calls) != 1:
+            bad.append(rel)
+    assert not bad, f"these scripts do not call catalog_path.write_session_for_process() at top level: {bad}"
+
+
+def test_a_writer_opens_nothing_with_plain_sqlite3_unless_it_says_why():
+    """R1199 M7: `sqlite3.connect(variable)` in a writer's locked path escaped the plain-open ratchet (which
+    only sees a resolver expression as the argument). In a writer file every plain open carries a reason."""
+    bad = []
+    for rel, path, _b in WRITERS:
+        for i, line in enumerate(open(path, encoding="utf-8").read().splitlines(), 1):
+            if "sqlite3.connect(" in line and "plain-open:" not in line and not line.lstrip().startswith("#"):
+                bad.append(f"{rel}:{i}")
+    assert not bad, f"plain sqlite3 opens in writers without a '# plain-open: <reason>': {bad}"
 
 
 @pytest.mark.parametrize("rel,path,block", [w for w in WRITERS if w[2] is not None], ids=lambda v: v if isinstance(v, str) and "/" in v and not os.path.isabs(v) else "")
