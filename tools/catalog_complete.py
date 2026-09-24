@@ -25,8 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # for 22 consecutive pushes. config.source_dir() does not read BACKEND and blob reads the
 # env per call, so deferring it changes nothing for the script itself.
 from updater import config, blob
-
-CAT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "catalog.db")
+from core import catalog_path  # the one catalogue resolver (plan step 1)
 # DETECTION ORDER — the parquet's series-identity column.
 #
 # `series_id` IS DELIBERATELY ABSENT, and this note exists because it looked like an oversight
@@ -197,7 +196,7 @@ def complete(con, source):
 
 def main(sources):
     os.environ.setdefault("AQUEDUCT_BACKEND", "r2")   # see the note beside the import
-    con = sqlite3.connect(CAT)
+    con = catalog_path.connect(write=True)
     total = 0
     for s in sources:
         total += complete(con, s)
@@ -210,4 +209,5 @@ def main(sources):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("usage: python tools/catalog_complete.py <source> [...]"); raise SystemExit(2)
-    main(sys.argv[1:])
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        main(sys.argv[1:])

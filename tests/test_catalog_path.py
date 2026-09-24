@@ -256,6 +256,42 @@ def test_write_session_after_t0_holds_the_lock_and_is_reentrant(paths):
         cp.connect(write=True)                           # released again
 
 
+SCRIPT = r"""
+import sys, time
+sys.path.insert(0, {root!r})
+from core import catalog_path as cp, cutover
+cp.LOCK_PATH, cp.BUILD_PATH, cutover.FLAG_PATH = {lock!r}, {build!r}, {flag!r}
+cp.write_session_for_process()
+c = cp.connect(write=True)
+c.execute("INSERT INTO which VALUES ('script')")
+c.commit()
+print("HELD", flush=True)
+time.sleep(float(sys.argv[1]))
+"""
+
+
+def test_a_top_level_script_holds_the_lock_until_it_exits(paths):
+    """write_session_for_process: a cataloguing script with no main() holds the lock for its whole life, and
+    its exit - clean or killed - releases it."""
+    (paths / "CUTOVER").write_text("")
+    code = SCRIPT.format(root=ROOT, lock=cp.LOCK_PATH, build=cp.BUILD_PATH, flag=str(paths / "CUTOVER"))
+    for how in ("exit", "kill"):
+        p = subprocess.Popen([sys.executable, "-B", "-c", code, "2" if how == "exit" else "60"],
+                             stdout=subprocess.PIPE, text=True)
+        assert p.stdout.readline().strip() == "HELD"
+        with pytest.raises(cutover.CutoverRefused, match="another process"):
+            with cp.writer_lock():
+                pass
+        if how == "kill":
+            p.kill()
+        p.wait(30)
+        with cp.writer_lock():                               # free again
+            pass
+    c = sqlite3.connect(cp.BUILD_PATH)
+    assert [r[0] for r in c.execute("SELECT name FROM which WHERE name='script'")] == ["script", "script"]
+    c.close()
+
+
 def test_under_names_the_checkout_s_catalogue():
     """The real (unpatched) constants: a tool's own ROOT names the checkout's file, production's the build."""
     assert cp.under(cp.ROOT) == cp.CHECKOUT_PATH
@@ -315,6 +351,14 @@ LEGACY = os.path.join(ROOT, "tests", "catalog_db_legacy.txt")
 NAMES_CATALOGUE = re.compile(r"catalog\.db|ECONDL_CATALOG|\bCATALOG_DB\b|[\"']catalog[\"']\s*[+,]\s*[\"']\.db[\"']")
 # A narrow exemption: only the named function of the named file is left out of the scan.
 EXEMPT_FUNCTIONS = {"updater/run.py": frozenset({"_selfhost_preflight"})}   # names ECONDL_CATALOG to REFUSE it
+# Whole files outside the resolver BY DESIGN, each with the premise that makes it safe pinned below.
+EXEMPT_FILES = {
+    # The PUBLISHED client (pip install econdl): standalone, so it cannot import core.catalog_path, and its
+    # users point it at their own copy. It opens mode=ro only (pinned by the test below), and in-repo the
+    # updater's post-T0 preflight refuses to run unless econdl's default_db() IS the build
+    # (updater/run.py _selfhost_preflight).
+    "clients/python/econdl/_catalog.py",
+}
 
 
 def _code_only(src: str, ext: str, rel: str = "") -> str:
@@ -335,7 +379,26 @@ def _naming_files():
             if NAMES_CATALOGUE.search(_code_only(fh.read(), os.path.splitext(p)[1], rel)):
                 found.add(rel)
     found.discard("core/catalog_path.py")
-    return found
+    return found - EXEMPT_FILES
+
+
+def test_the_exempt_client_opens_read_only_and_the_preflight_checks_it(tmp_path):
+    """The premises of EXEMPT_FILES: econdl's catalogue open cannot write, and updater/run.py's preflight
+    compares econdl's default_db() with the build."""
+    sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
+    from econdl import _catalog
+    db = tmp_path / "c.db"
+    with sqlite3.connect(db) as c:
+        c.execute("CREATE TABLE series (series_id TEXT)")
+    c.close()
+    con = _catalog.connect(str(db))
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        con.execute("INSERT INTO series VALUES ('x')")
+    con.close()
+    run_src = open(os.path.join(ROOT, "updater", "run.py"), encoding="utf-8").read()
+    pre = run_src[run_src.index("def _selfhost_preflight"):]
+    assert "econdl_catalog.default_db(), BUILD_PATH" in pre[:pre.index("\ndef ")]
+    assert EXEMPT_FILES == {"clients/python/econdl/_catalog.py"}, "a new exemption needs its own premise test"
 
 
 def test_the_catalogue_ratchet_can_fail():

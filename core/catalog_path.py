@@ -97,6 +97,15 @@ def write_session():
         yield
 
 
+def write_session_for_process() -> None:
+    """write_session() for a top-level cataloguing SCRIPT (module code, no main() to wrap): entered now,
+    left at interpreter exit (atexit). The lock is an OS file lock, so even a killed script releases it."""
+    import atexit                                                           # noqa: PLC0415
+    session = write_session()
+    session.__enter__()
+    atexit.register(session.__exit__, None, None, None)
+
+
 @contextlib.contextmanager
 def writer_lock():
     """Hold the machine-wide single-writer lock for the duration. Fails at once (never waits) when another

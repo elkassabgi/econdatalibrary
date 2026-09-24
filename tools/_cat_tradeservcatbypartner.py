@@ -22,17 +22,19 @@ a separate step via the pipeline/title_unctad_*.py family — not a reason to ho
 """
 import collections
 import os
-import sqlite3
 import sys
 
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 SRC = "unctad_tradeservcatbypartner"
 DS = "US.TradeServCatByPartner"
 
-con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=7200)
+catalog_path.write_session_for_process()   # after T0: the single-writer lock until exit
+con = catalog_path.connect(write=True, timeout=7200)
 con.execute("PRAGMA busy_timeout=7200000")  # local heavy runs hold long write txns (R400)
 con.execute(
     "INSERT OR IGNORE INTO source (source_id, name, homepage, license_id, attribution, terms_url) "

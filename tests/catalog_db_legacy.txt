@@ -3,7 +3,6 @@
 # ignored). This list may only SHRINK: move each file to core.catalog_path.connect and delete its line.
 api/test_conformance.py
 catalog/gen_site.py
-clients/python/econdl/_catalog.py
 core/backfill_coverage.py
 core/catalog.py
 core/derive_csv.py
@@ -18,27 +17,12 @@ core/sync_catalog_d1.py
 core/sync_state_d1.py
 jobs/process_sec_edgar.py
 pipeline/title_bea.py
-tools/_cat_bea.py
-tools/_cat_biotrademerch.py
-tools/_cat_critmin.py
-tools/_cat_efw.py
-tools/_cat_nonplastic.py
-tools/_cat_tradefoodcatbyproc.py
-tools/_cat_tradefoodprocbycat.py
-tools/_cat_tradeservcatbypartner.py
 tools/apply_series_names.py
 tools/audit_catalogue_impossible_dates.py
 tools/audit_schedule_coverage.py
 tools/audit_serving_coherence.py
 tools/audit_site.py
 tools/audit_store_vs_catalog.py
-tools/catalog_complete.py
-tools/catalog_fdic.py
-tools/catalog_penn_world_table.py
-tools/catalog_pxweb_flowgrain.py
-tools/catalog_statcan_tables.py
-tools/catalog_unsdg_flows.py
-tools/catalog_who_api.py
 tools/cost/idb_baseline.py
 tools/delist_timeless_tables.py
 tools/derive_csv_bulk.py

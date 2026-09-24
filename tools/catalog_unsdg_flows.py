@@ -26,6 +26,8 @@ import urllib.request
 import duckdb
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 STORE = os.path.join(ROOT, "data", "clean_full", "unsdg", "unsdg.parquet")
 # CANONICAL id, read from configs/sources.yaml — do NOT re-type it here. This tool first
 # invented 'undata-terms' while sources.yaml declares 'un-data-terms', creating two licence
@@ -87,7 +89,7 @@ def main() -> int:
         print("(dry run — pass --apply to write)")
         return 0
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180)
+    con = catalog_path.connect(write=True, timeout=180)
     con.execute("PRAGMA busy_timeout=180000")
     con.execute(
         "INSERT OR REPLACE INTO license"
@@ -119,4 +121,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

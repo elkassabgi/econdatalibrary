@@ -28,7 +28,9 @@ import pyarrow.parquet as pq
 # is the convention the ingest jobs already state for exactly this reason.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "data", "clean_full")
-CATALOG = os.environ.get("ECONDL_CATALOG") or os.path.join(ROOT, "data", "catalog.db")
+import sys  # noqa: E402
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (no ECONDL_CATALOG override: plan 4a)
 def _require_store():
     """Fail loudly rather than catalogue nothing. Called from main(), NOT at import: an
     import-time SystemExit makes the module untestable wherever the store is absent (CI ignores
@@ -163,7 +165,7 @@ def main():
     srcs = a.source or SOURCES
     _require_store()
 
-    conn = sqlite3.connect(CATALOG, timeout=180)
+    conn = catalog_path.connect(write=not a.dry_run, timeout=180)   # a dry run only reads
     # The crawlers write to this file. Without a busy timeout a concurrent writer turns into an
     # immediate "database is locked", which the FTS branch below used to swallow.
     conn.execute("PRAGMA busy_timeout=180000")
@@ -248,4 +250,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--dry-run" in sys.argv[1:]:
+        main()                               # reads only: no lock
+    else:
+        with catalog_path.write_session():   # after T0: the single-writer lock
+            main()
