@@ -63,6 +63,35 @@ def test_after_t0_a_nested_store_is_counted_whole(live, monkeypatch, capsys):
     assert "catalogued ids with NO store file: 0" in out, "the nested file is the catalogued C03"
 
 
+def test_after_t0_partitions_that_repeat_a_name_are_counted_as_files(live, monkeypatch, capsys):
+    """R1243: counting distinct names printed edgar_pointers as 1 file of 256 and called it THE STORE."""
+    for part in ("p=1", "p=2", "p=3"):
+        d = live / "live" / "data" / "clean_full" / "zz" / part
+        d.mkdir(parents=True)
+        (d / "part.parquet").write_bytes(b"x")
+    monkeypatch.setattr(sys, "argv", ["store_inventory.py", "zz"])
+    assert S.main() == 0
+    out = capsys.readouterr().out
+    assert "local store files :       5   <- THE STORE (self-hosted" in out, out
+    assert "distinct file names:      3" in out, out
+
+
+def test_after_t0_the_catalogue_is_read_by_primary_key_range(live, monkeypatch, capsys):
+    """R1243 F2: WHERE source_id=? is a full scan holding a shared lock on the LIVE build while writers wait."""
+    real = catalog_path.connect
+    sql = []
+
+    def traced(*a, **k):
+        con = real(*a, **k)
+        con.set_trace_callback(sql.append)
+        return con
+    monkeypatch.setattr(catalog_path, "connect", traced)
+    monkeypatch.setattr(sys, "argv", ["store_inventory.py", "zz"])
+    assert S.main() == 0
+    reads = [s for s in sql if "FROM series" in s]
+    assert reads and all("series_id >=" in s and "source_id" not in s for s in reads), reads
+
+
 def test_after_t0_another_checkout_is_refused(live, monkeypatch, tmp_path):
     monkeypatch.setattr(blob, "_code_root", lambda: str(tmp_path / "a_worktree"))
     monkeypatch.setattr(sys, "argv", ["store_inventory.py", "zz"])

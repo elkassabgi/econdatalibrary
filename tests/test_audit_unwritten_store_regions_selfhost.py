@@ -20,7 +20,9 @@ def live(tmp_path, monkeypatch):
     root = tmp_path / "live"
     full = root / "data" / "clean_full"
     (full / "zz" / "tree").mkdir(parents=True)
-    now = dt.datetime.now(dt.timezone.utc).timestamp()
+    # an hour back, on a whole even second: exFAT (D:\temp here) rounds a time UP to the next even second, which
+    # put the "fresh" file in the future and read -1d (R1243)
+    now = (int(dt.datetime.now(dt.timezone.utc).timestamp()) - 3600) // 2 * 2
     for rel, days in (("a.parquet", 0), ("tree/b.parquet", 120)):
         p = full / "zz" / rel
         p.write_bytes(b"x")

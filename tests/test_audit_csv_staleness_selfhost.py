@@ -63,6 +63,31 @@ def test_after_t0_a_csv_older_than_the_newest_parquet_is_counted(live, monkeypat
     assert "zz" in out and "1 of        2 CSVs predate the newest parquet (2030-01-01)" in out, out
 
 
+def _stamp(key, when):
+    store = blob.SelfhostBlob()
+    with catalog_path.writer_lock():
+        store.put_atomic(key, b"series_id,obs_date,value\n")
+    store.store._w.execute("UPDATE blobs SET stored_utc=? WHERE key=?", (when, key))
+    store.store._w.commit()
+
+
+def test_after_t0_a_sibling_sources_csvs_are_not_this_sources(live, monkeypatch, capsys):
+    """R1243 C2: the prefix is anchored on the ENCODED colon, so zz does not also read zzz (R129)."""
+    _stamp("series/zzz%3Ax.csv", "2000-01-01T00:00:00+00:00")
+    monkeypatch.setattr(sys, "argv", ["audit_csv_staleness.py", "--source", "zz"])
+    S.main()
+    assert "1 of        2 CSVs predate" in capsys.readouterr().out
+
+
+def test_after_t0_a_csv_stored_in_the_parquets_own_second_is_not_stale(live, monkeypatch, capsys):
+    """R1243 C4: stored_utc is floored to the second, so a CSV whose stamp EQUALS the parquet's whole-second
+    time was written at or after it - not stale. `<=` would count it."""
+    _stamp("series/zz%3Ab.csv", "2030-01-01T00:00:00+00:00")         # the parquet's time exactly
+    monkeypatch.setattr(sys, "argv", ["audit_csv_staleness.py", "--source", "zz"])
+    S.main()
+    assert "1 of        2 CSVs predate" in capsys.readouterr().out
+
+
 def test_after_t0_another_checkout_is_refused(live, monkeypatch, tmp_path):
     monkeypatch.setattr(blob, "_code_root", lambda: str(tmp_path / "a_worktree"))
     monkeypatch.setattr(sys, "argv", ["audit_csv_staleness.py", "--source", "zz"])
