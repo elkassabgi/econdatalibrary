@@ -138,20 +138,14 @@ LEGACY_REMOTE_D1 = {
 REMOTE = re.compile(r"--remote\b|/d1/database/")
 
 
-SKIP_DIRS = {".git", "node_modules", "data", "dist", "tests", "docs", "scratchpad", ".wrangler", "__pycache__",
-             ".claude", "logs", "state"}
 CODE = (".py", ".ps1", ".sh", ".yml", ".yaml", ".mjs", ".js", ".cjs", ".bat", ".cmd")
 
 
 def _code_files():
     """Every script and workflow in the repo (a fixed folder list missed files before - the plan itself
     first named one that lives under tools/)."""
-    for dirpath, dirs, files in os.walk(ROOT):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-        for f in files:
-            if f.endswith(CODE):
-                p = os.path.join(dirpath, f)
-                yield os.path.relpath(p, ROOT).replace(os.sep, "/"), p
+    import _repo_walk                                  # the one shared walk (R1178)
+    yield from _repo_walk.code_files(CODE, ROOT)
 
 
 def test_no_new_file_calls_d1_remotely_outside_the_chokepoint():

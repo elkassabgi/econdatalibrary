@@ -25,7 +25,7 @@
 // the first hit if the flip came before the migration (a missing table must not drop every page view
 // silently, R1172). The one-time merge of the old rows is in that migration file's header.
 import type { Env } from "./types";
-import { edgeStateInUsers } from "./edge";
+import { edgeStateInUsers } from "./edge.ts";
 
 const CORS = { "Access-Control-Allow-Origin": "*" };
 

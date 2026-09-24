@@ -21,9 +21,13 @@ Rule 1 also refuses harmless commands that only MENTION the folder (a grep for i
 on the command line). That friction is deliberate: text naming the path goes through a file instead
 (`git commit -F`, a script), where the rule does not look.
 
-What it is NOT: it stops mistakes, not intent. The hook and settings are editable by the same user, and it
-cannot see writes made inside scripts - those are stopped by core/r2_util's guard, core/d1_remote.py and
-the revoked write key; the daily off-machine check (tools/selfhost/watch_edge.py) is the proof.
+What it is NOT: it stops mistakes, not intent. The hook and settings are editable by the same user; it
+cannot see writes made inside scripts (those are stopped by core/r2_util's guard, core/d1_remote.py and
+the revoked write key; the daily off-machine check, tools/selfhost/watch_edge.py, is the proof); and it
+cannot resolve a database name or id held in a shell VARIABLE. For the whole-database and whole-bucket
+commands (d1 delete / time-travel, r2 bucket ...) the off-machine check is blind, so on this desktop -
+where wrangler's OAuth login is account-wide - this hook is the one preventive layer: step 6a narrows the
+login's token, which is the real fix (R1178).
 
 FAILS OPEN on unreadable input, like the D1 cost hook: a guard that blocks all work when it breaks is a
 guard that gets disabled.
@@ -41,19 +45,34 @@ ECON_D1 = ("econ-catalog", "econ-catalog-climate",
            "1a6d0755-ecef-46d0-a478-46cad1cf064c", "e34114f2-c0be-43d9-bcb5-798a3952414c")
 
 # The flag folder in any spelling a shell accepts: C:\ProgramData\econ, $env:ProgramData\econ,
-# %ProgramData%\econ, /c/ProgramData/econ, with either slash and any case.
-_FLAG_NAME = re.compile(r"programdata%?\)?[\\/]+econ(?![\w-])", re.I)
+# %ProgramData%\econ, /c/ProgramData/econ, the 8.3 name PROGRA~3, %ALLUSERSPROFILE%\econ, and the .NET
+# CommonApplicationData folder - with either slash and any case (R1178: the last three got through).
+_FLAG_NAME = re.compile(r"(programdata|progra~\d|allusersprofile)%?\)?[\\/]+econ(?![\w-])"
+                        r"|commonapplicationdata", re.I)
 _D1_NAME = "|".join(re.escape(n) for n in ECON_D1)
+_B = re.escape(ECON_BUCKET)
+# wrangler in every spelling a shell reaches it by: wrangler, wrangler@4, wrangler.cmd, .../wrangler.js, ...
+_W = r"wrangler(?:@[\w.\-]+)?(?:\.cmd|\.js|\.mjs|\.ps1|\.exe)?"
 _WRITE_ROADS = [
-    re.compile(rf"wrangler\s+r2\s+object\s+(put|delete)\b[^\n]*\b{re.escape(ECON_BUCKET)}(?![\w-])", re.I),
-    re.compile(rf"wrangler\s+d1\s+(execute|migrations\s+apply)\b(?=[^\n]*--remote)[^\n]*\b({_D1_NAME})(?![\w-])", re.I),
-    re.compile(rf"wrangler\s+d1\s+(execute|migrations\s+apply)\b[^\n]*\b({_D1_NAME})(?![\w-])(?=[^\n]*--remote)", re.I),
+    re.compile(rf"{_W}\s+r2\s+object\s+(put|delete)\b.*?\b{_B}(?![\w-])", re.I),
+    # whole-bucket changes the off-machine check cannot see (R1178)
+    re.compile(rf"{_W}\s+r2\s+bucket\s+(delete|lifecycle|cors|notification|sippy|domain|dev-url|lock|update|catalog)"
+               rf"\b.*?\b{_B}(?![\w-])", re.I),
+    re.compile(rf"{_W}\s+d1\s+(execute|migrations\s+apply)\b(?=.*--remote).*?\b({_D1_NAME})(?![\w-])", re.I),
+    # deleting or rewinding a whole database - also invisible to the off-machine check (R1178)
+    re.compile(rf"{_W}\s+d1\s+(delete|time-travel)\b.*?\b({_D1_NAME})(?![\w-])", re.I),
     re.compile(rf"/d1/database/({_D1_NAME})\b", re.I),
-    re.compile(rf"\baws\s+s3(api)?\s+(cp|mv|rm|sync|put-object|delete-object|delete-objects)\b[^\n]*"
-               rf"{re.escape(ECON_BUCKET)}(?![\w-])", re.I),
-    re.compile(rf"\brclone\s+(copy|copyto|move|moveto|sync|delete|deletefile|purge|rcat)\b[^\n]*"
-               rf"{re.escape(ECON_BUCKET)}(?![\w-])", re.I),
+    re.compile(rf"\baws\s+s3(api)?\s+(cp|mv|rm|sync|put-object|delete-object|delete-objects|delete-bucket|rb)\b.*?"
+               rf"{_B}(?![\w-])", re.I),
+    re.compile(rf"\brclone\s+(copy|copyto|move|moveto|sync|delete|deletefile|purge|rcat)\b.*?{_B}(?![\w-])", re.I),
 ]
+
+
+def _one_line(command: str) -> str:
+    """The command as ONE line: line continuations (PowerShell backtick, POSIX backslash, cmd caret) joined and
+    every newline turned into a space, so `wrangler d1 execute` and the database name on the next line are
+    still one command to the patterns (R1178)."""
+    return re.sub(r"[`\\^]?\r?\n", " ", command)
 
 
 def cut_over(flag_path: str = FLAG_PATH) -> bool:
@@ -73,8 +92,9 @@ def decide(command: str, flag_path: str = FLAG_PATH) -> str | None:
         return ("REFUSED: this command names the econ CUTOVER flag folder (C:\\ProgramData\\econ). Only Ahmed "
                 "creates or changes it, elevated, at T0 (docs/ECON_SELF_HOSTING_PLAN.md step 6a).")
     if cut_over(flag_path):
+        line = _one_line(command)
         for road in _WRITE_ROADS:
-            m = road.search(command)
+            m = road.search(line)
             if m:
                 return (f"REFUSED after T0: '{m.group(0)[:80]}' writes to the retired econ cloud copy. econ is "
                         "self-hosted; read D1 through core/d1_remote.py (read-only token), write locally.")

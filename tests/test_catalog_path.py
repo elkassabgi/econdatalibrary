@@ -165,8 +165,6 @@ def test_the_resolver_has_no_override():
 # ---- the ratchet: files that name catalog.db outside the resolver may only become fewer ---------------
 LEGACY = os.path.join(ROOT, "tests", "catalog_db_legacy.txt")
 # clients/ IS scanned (R1176: the updater's own catalogue open lives in clients/python/econdl/_catalog.py).
-SKIP_DIRS = {".git", "node_modules", "data", "dist", "tests", "docs", "scratchpad", ".wrangler", "__pycache__",
-             ".claude", "logs", "state"}
 # Code that names the catalogue: the literal, the variable that overrides it, or the name split in two.
 NAMES_CATALOGUE = re.compile(r"catalog\.db|ECONDL_CATALOG|[\"']catalog[\"']\s*[+,]\s*[\"']\.db[\"']")
 
@@ -181,15 +179,11 @@ def _code_only(src: str, ext: str) -> str:
 
 def _naming_files():
     found = set()
-    for dirpath, dirs, files in os.walk(ROOT):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-        for f in files:
-            ext = os.path.splitext(f)[1]
-            if ext in (".py", ".ps1", ".sh"):
-                p = os.path.join(dirpath, f)
-                with open(p, encoding="utf-8", errors="replace") as fh:
-                    if NAMES_CATALOGUE.search(_code_only(fh.read(), ext)):
-                        found.add(os.path.relpath(p, ROOT).replace(os.sep, "/"))
+    import _repo_walk                                  # the one shared walk (R1178)
+    for rel, p in _repo_walk.code_files((".py", ".ps1", ".sh"), ROOT):
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            if NAMES_CATALOGUE.search(_code_only(fh.read(), os.path.splitext(p)[1])):
+                found.add(rel)
     found.discard("core/catalog_path.py")
     found.discard("updater/run.py")      # names ECONDL_CATALOG only to REFUSE an override (plan change 4)
     return found

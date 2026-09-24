@@ -285,7 +285,7 @@ test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-
   t.after(() => { origin.server.close(); evil.server.close(); });
   const persist = await seeded();
   const w = await start(edgeOnlyConfig(), {
-    FORWARD: "on", ORIGIN_URL: `http://${origin.host}`, ORIGIN_SECRET: "edge-test-secret", ORIGIN_TIMEOUT_MS: "1000", SOURCE_NAMES_MAX_AGE_S: "0",
+    FORWARD: "on", ORIGIN_URL: `http://${origin.host}`, ORIGIN_SECRET: "edge-test-secret", ORIGIN_TIMEOUT_MS: "1000", SOURCE_NAMES_MAX_AGE_S: "0", SOURCE_NAMES_BACKOFF_S: "1",
   }, persist);
   t.after(() => w.stop());
   const calls = () => origin.seen.length;
@@ -400,6 +400,10 @@ test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-
     assert.equal(again.status, 200);
     assert.equal(calls(), asked, "during the 60 s back-off the origin is not asked again (AR-151 finding 8)");
     assert.deepEqual(topNames(again.text), [["zz", "ZZ"]]);
+    await new Promise((r) => setTimeout(r, 1500));               // past the 1 s back-off (SOURCE_NAMES_BACKOFF_S)
+    const beforeRetry = calls();
+    await get(w, "/v1/public-stats");
+    assert.ok(calls() > beforeRetry, "once the back-off ends the origin is asked again (a longer back-off would not)");
     origin.setSourcesDown(false);
     const pv = await get(w, "/v1/pv?p=%2Fabout");
     assert.equal(pv.status, 200);

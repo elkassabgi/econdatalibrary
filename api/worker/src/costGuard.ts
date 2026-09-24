@@ -24,8 +24,8 @@
 // serves an unauthenticated API.
 // ---------------------------------------------------------------------------
 
-import { edgeStateInUsers } from "./edge";
-import { record } from "./costRecord";
+import { edgeStateInUsers } from "./edge.ts";
+import { record } from "./costRecord.ts";
 
 export interface CostGuardEnv {
   SERIES_BUCKET: R2Bucket;

@@ -446,7 +446,9 @@ async function originSourceNames(request: Request, env: Env, ctx: ExecutionConte
     // full origin timeout. The kept names - or none - are re-stamped to look fresh for one more minute.
     const names = kept ? kept.names : {};
     const ageMs = (Number.isFinite(maxAge) ? maxAge : 3600) * 1000;
-    ctx.waitUntil(caches.default.put(keptKey, new Response(JSON.stringify({ at: Date.now() - ageMs + 60_000, names }), {
+    const backoff = Number(env.SOURCE_NAMES_BACKOFF_S ?? 60);
+    const backoffMs = (Number.isFinite(backoff) && backoff >= 0 ? backoff : 60) * 1000;
+    ctx.waitUntil(caches.default.put(keptKey, new Response(JSON.stringify({ at: Date.now() - ageMs + backoffMs, names }), {
       headers: { "content-type": "application/json", "cache-control": "public, s-maxage=2592000" },
     })));
     return names;

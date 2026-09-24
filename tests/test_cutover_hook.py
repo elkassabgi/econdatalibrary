@@ -18,6 +18,10 @@ FLAG_NAMES = [
     "rm -f /c/ProgramData/econ/CUTOVER",
     r"Remove-Item $env:ProgramData\econ -Recurse",
     r"type %ProgramData%\econ\CUTOVER",
+    # R1178: the 8.3 name, ALLUSERSPROFILE and the .NET special folder
+    r"del C:\PROGRA~3\econ\CUTOVER",
+    r"Remove-Item $env:ALLUSERSPROFILE\econ\CUTOVER",
+    r"[Environment]::GetFolderPath('CommonApplicationData')",
 ]
 WRITES = [
     "npx wrangler r2 object put econ-data/series/x.csv --file x.csv",
@@ -30,6 +34,19 @@ WRITES = [
     "aws s3 cp x.csv s3://econ-data/series/x.csv --endpoint-url https://r2",
     "aws s3api delete-object --bucket econ-data --key x",
     "rclone sync ./blobs r2:econ-data",
+    # R1178: whole-database / whole-bucket commands the off-machine check cannot see
+    "npx wrangler d1 delete econ-catalog -y",
+    "wrangler d1 time-travel restore econ-catalog-climate --timestamp 2026-10-01",
+    "wrangler r2 bucket delete econ-data",
+    "wrangler r2 bucket lifecycle add econ-data rule --expire-days 1",
+    # R1178: every spelling of wrangler
+    "npx wrangler@4 r2 object put econ-data/x --file x",
+    "wrangler.cmd d1 execute econ-catalog --remote --command \"DELETE FROM series\"",
+    "node node_modules/wrangler/bin/wrangler.js d1 execute econ-catalog --remote --file f.sql",
+    # R1178: continued onto the next line (PowerShell backtick, POSIX backslash)
+    "npx wrangler d1 execute `\n  econ-catalog --remote --command \"DELETE FROM series\"",
+    "npx wrangler d1 execute \\\n  econ-catalog --remote --file f.sql",
+    "aws s3 rb s3://econ-data --force",
 ]
 FINE = [
     "npx wrangler r2 object get econ-data/series/x.csv --file x.csv",
@@ -40,6 +57,9 @@ FINE = [
     "git log -1",
     "python -m pytest tests/test_cutover.py",
     r"Get-ChildItem C:\ProgramData\econometrics",
+    "npx wrangler d1 list",
+    "npx wrangler r2 bucket list",
+    "npx wrangler d1 time-travel info hfdatalibrary-db",
 ]
 
 

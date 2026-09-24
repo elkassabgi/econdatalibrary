@@ -104,13 +104,9 @@ def test_only_the_named_final_sync_readers_use_the_cloud_client():
     """Plan step 6b's readers. A new caller is a new way to read stale data after T0."""
     import re as _r
     callers = set()
-    for dirpath, dirs, files in _os.walk(_ROOT):
-        dirs[:] = [d for d in dirs if d not in _SKIP]
-        for f in files:
-            if f.endswith(".py"):
-                p = _os.path.join(dirpath, f)
-                if _r.search(r"\bcloud_client\(", open(p, encoding="utf-8", errors="replace").read()):
-                    callers.add(_os.path.relpath(p, _ROOT).replace(_os.sep, "/"))
+    for rel, p in _walk.code_files((".py",)):
+        if _r.search(r"\bcloud_client\(", open(p, encoding="utf-8", errors="replace").read()):
+            callers.add(rel)
     callers.discard("core/r2_util.py")
     assert callers == {"tools/footer_diff.py", "tools/mirror_sync.py", "tools/selfhost/import_from_r2.py"}
 
@@ -161,13 +157,13 @@ def test_list_buckets_is_a_read(cloud, cut_over):
 
 
 # ---- the ratchet: no raw boto3 client may skip the guard (AR-151 finding 1) ---------------------------
-import os as _os
 import re as _re
 
-_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-_SKIP = {".git", "node_modules", "data", "dist", "tests", "docs", "scratchpad", ".wrangler", "__pycache__",
-         ".claude", "logs", "state"}
-_RAW = _re.compile(r"boto3\.(client|resource)\(|boto3\.session\.Session\(|\bSession\([^)]*\)\.(client|resource)\(")
+import _repo_walk as _walk                              # the one shared walk (R1178)
+
+# every way to get an S3 client without r2_util (R1178 measured the last five getting through)
+_RAW = _re.compile(r"boto3\.(client|resource)\s*\(|boto3\.session\.Session\s*\(|\bSession\([^)]*\)\s*\.\s*(client|resource)\s*\("
+                   r"|\bboto3\.Session\s*\(|from\s+boto3\s+import|import\s+boto3\s+as|\.create_client\s*\(|\bs3fs\b")
 _GUARDED = _re.compile(r"guard_client\(\s*boto3\.client\(")
 
 
@@ -175,24 +171,23 @@ def test_every_boto3_client_in_the_repo_is_guarded():
     """Every raw S3 client must be built INSIDE guard_client(...), or come from r2_util.client(). A new
     unguarded client would be a write road to the retired copy that nothing refuses after T0."""
     bad = []
-    for dirpath, dirs, files in _os.walk(_ROOT):
-        dirs[:] = [d for d in dirs if d not in _SKIP]
-        for f in files:
-            if not f.endswith(".py"):
-                continue
-            p = _os.path.join(dirpath, f)
-            rel = _os.path.relpath(p, _ROOT).replace(_os.sep, "/")
-            src = open(p, encoding="utf-8", errors="replace").read()
-            raw = len(_RAW.findall(src))
-            guarded = len(_GUARDED.findall(src))
-            if rel == "core/r2_util.py":
-                guarded += 1                         # client() builds, then guard_client(s3) on the next line
-            if raw > guarded:
-                bad.append(f"{rel}: {raw} raw client(s), {guarded} guarded")
+    for rel, p in _walk.code_files((".py",)):
+        src = open(p, encoding="utf-8", errors="replace").read()
+        raw = len(_RAW.findall(src))
+        guarded = len(_GUARDED.findall(src))
+        if rel == "core/r2_util.py":
+            guarded += 1                             # client() builds, then guard_client(s3) on the next line
+        if raw > guarded:
+            bad.append(f"{rel}: {raw} raw client(s), {guarded} guarded")
     assert not bad, "wrap these in core.r2_util.guard_client(...): " + "; ".join(bad)
 
 
 def test_the_client_ratchet_can_fail():
     assert _RAW.search('s3 = boto3.client("s3", endpoint_url=e)')
+    for form in ('boto3.client ("s3")', "boto3.Session().client('s3')", "from boto3 import client",
+                 "import boto3 as b3", "botocore.session.get_session().create_client('s3')",
+                 "fs = s3fs.S3FileSystem()", "boto3.session.Session() . client('s3')"):
+        assert _RAW.search(form), form                       # R1178: each of these got through before
+    assert not _RAW.search("import boto3") and not _RAW.search("r2_util.client(write=True)")
     assert _GUARDED.search('s3 = guard_client(boto3.client("s3", endpoint_url=e))')
     assert not _GUARDED.search('s3 = boto3.client("s3", endpoint_url=e)')

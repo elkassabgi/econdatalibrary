@@ -71,6 +71,7 @@ export interface Env {
   EDGE_STATE?: string;
   GIT_COMMIT?: string;
   SOURCE_NAMES_MAX_AGE_S?: string;   // how long /v1/public-stats trusts its kept source names (default 3600)
+  SOURCE_NAMES_BACKOFF_S?: string;   // after an origin failure, how long the kept names are used before asking again (default 60)
 }
 
 // --- D1 row shapes (one per SELECT column list in sql.ts) ------------------
