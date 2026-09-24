@@ -141,10 +141,11 @@ test("the edge's own writers touch econ storage in exactly ONE place each (AR-15
 });
 
 test("the client never sees the internal headers", () => {
-  const o = new Response("x", { headers: { "x-econ-count": "1", "x-econ-origin": "1", "content-type": "text/csv" } });
+  const o = new Response("x", { headers: { "x-econ-count": "1", "x-econ-origin": "1", "x-econ-instance": "g1", "content-type": "text/csv" } });
   const c = edge.clientResponse(o, o.body);
   assert.equal(c.headers.get("x-econ-count"), null);
   assert.equal(c.headers.get("x-econ-origin"), null);
+  assert.equal(c.headers.get("x-econ-instance"), null, "the origin generation id stays on the workstation");
   assert.equal(c.headers.get("content-type"), "text/csv");
 });
 

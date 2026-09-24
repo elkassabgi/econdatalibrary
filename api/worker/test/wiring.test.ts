@@ -85,7 +85,7 @@ test("origin: the gate, the skipped auth, the edge-only routes, no-store, and th
   t.after(() => blobs.server.close());
   const persist = newPersist("econ-wiring-");
   await withBindings(ORIGIN_CONFIG, persist, (env) => execSql(env.CATALOG, CATALOG_SEED));
-  const w = await start(ORIGIN_CONFIG, { ORIGIN_SECRET: "wiring-test-secret", BLOB_SIDECAR_URL: blobs.base }, persist);
+  const w = await start(ORIGIN_CONFIG, { ORIGIN_SECRET: "wiring-test-secret", BLOB_SIDECAR_URL: blobs.base, INSTANCE_ID: "gen-test-1" }, persist);
   t.after(() => w.stop());
   const secret = { headers: { "x-econ-origin-secret": "wiring-test-secret" } };
 
@@ -105,6 +105,7 @@ test("origin: the gate, the skipped auth, the edge-only routes, no-store, and th
   assert.equal(index.status, 200);
   assert.equal(index.headers.get("x-econ-count"), null, "a JSON 200 is never marked for counting (AR-150)");
   assert.equal(index.headers.get("x-econ-origin"), "1");
+  assert.equal(index.headers.get("x-econ-instance"), "gen-test-1", "the instance names itself (R1180: the swap refuses any other answer)");
   assert.equal(index.headers.get("cache-control"), "private, no-store");
   await index.arrayBuffer();
 

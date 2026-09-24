@@ -1,15 +1,17 @@
 """tools/selfhost/swap.py - the blue/green catalogue swap. The instances are tests/_fake_origin.py (real
-processes serving the placed slot files), the router is the real one."""
+processes serving the placed slot files, marked with their instance id), the router is the real one."""
 import contextlib
 import http.client
 import json
 import os
+import shutil
 import socket
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
+import types
 
 import pytest
 
@@ -31,26 +33,11 @@ def _port():
 
 
 def _alive(pid):
-    if os.name == "nt":
-        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
-        return str(pid) in out
-    # POSIX: a killed CHILD of this test process stays a zombie (and answers kill(pid, 0)) until it is
-    # reaped - CI measured exactly that (PR #85). Reap it first; a pid that is not our child raises.
+    import psutil
     try:
-        done, _status = os.waitpid(pid, os.WNOHANG)
-        if done == pid:
-            return False
-    except ChildProcessError:
-        pass
-    try:
-        os.kill(pid, 0)
-    except OSError:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
         return False
-    try:                                                   # an orphan zombie not yet reaped by init
-        with open(f"/proc/{pid}/stat") as fh:
-            return fh.read().split(")")[-1].split()[0] != "Z"
-    except OSError:
-        return True
 
 
 def _eventually(pred, timeout=20.0):
@@ -72,10 +59,22 @@ def _get(port, path, secret=SECRET, timeout=30):
         c.close()
 
 
+def _fake_cmd(extra=()):
+    def build(port, persist, instance):
+        return [sys.executable, "-B", FAKE, str(port), persist, json.dumps(SLOTS), "--instance", instance, *extra]
+    return build
+
+
+def _copy_freeze(worker_dir, dest):
+    """The tests' stand-in for freeze_worker (which needs a git checkout; it has its own test below)."""
+    shutil.copytree(worker_dir, dest)
+    return dest, "test-sha"
+
+
 @pytest.fixture
 def rig(tmp_path):
     """A catalogue, a worker dir with .dev.vars, a router with blue ACTIVE (a fake instance already running
-    on a placed copy, recorded in instances.json) and green idle."""
+    on a placed generation, recorded in instances.json) and green idle."""
     cat = tmp_path / "catalog.db"
     _catalogue(cat)
     worker = tmp_path / "worker"
@@ -86,101 +85,151 @@ def rig(tmp_path):
     ports = {"blue": _port(), "green": _port()}
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"active": "blue", "targets": {n: f"http://127.0.0.1:{p}" for n, p in ports.items()}}))
-    procs = []
-
-    def command(extra=()):
-        def build(port, persist):
-            return [sys.executable, "-B", FAKE, str(port), persist, json.dumps(SLOTS), *extra]
-        return build
-
-    # blue: placed and started the way a previous swap would have
-    copies = tmp_path / "copies0"
-    swap.origin_copies.build(str(cat), str(copies))
-    blue_persist = str(work / "persist-blue-20260101T000000Z")
-    swap.place(str(copies), blue_persist, SLOTS)
-    blue = swap.start(command()(ports["blue"], blue_persist), str(worker), str(work / "blue.log"))
-    procs.append(blue)
-    swap.save_instances(str(work), {"blue": {"pid": blue.pid, "persist": os.path.abspath(blue_persist),
-                                             "port": ports["blue"], "state": "active"}})
-    stale = work / "persist-green-20250101T000000Z"          # an older generation nothing uses
+    gen = work / "gen-blue-20260101T000000Z"
+    gen.mkdir()
+    swap.origin_copies.build(str(cat), str(gen / "copies"))
+    swap.place(str(gen / "copies"), str(gen / "persist"), SLOTS)
+    blue = swap.start(_fake_cmd()(ports["blue"], str(gen / "persist"), "blue-instance"), str(worker),
+                      str(gen / "instance.log"))
+    swap.save_instances(str(work), {"blue": {"pid": blue.pid, "created": swap.created(blue.pid), "gen": str(gen),
+                                             "port": ports["blue"], "instance": "blue-instance", "state": "active"}})
+    stale = work / "gen-green-20250101T000000Z"          # an older generation nothing uses
     stale.mkdir()
     rt = router.serve(str(state), 0)
     threading.Thread(target=rt.serve_forever, daemon=True).start()
     assert _eventually(lambda: swap.port_in_use(ports["blue"]))
-    r = dict(cat=str(cat), worker=str(worker), work=str(work), state=str(state), ports=ports, command=command,
+    r = dict(cat=str(cat), worker=str(worker), work=str(work), state=str(state), ports=ports, gen=str(gen),
              router_port=rt.server_address[1], router_url=f"http://127.0.0.1:{rt.server_address[1]}",
-             blue=blue, stale=str(stale), procs=procs)
+             blue=blue, stale=str(stale))
     yield r
     rt.shutdown()
     rt.server_close()
     for inst in swap.load_instances(str(work)).values():
-        swap.stop(inst["pid"])
-    for p in procs:
-        swap.stop(p.pid)
+        swap.stop(inst["pid"], inst.get("created"))
+    swap.stop(blue.pid, swap.created(blue.pid))
 
 
 def _swap(rig, **kw):
     args = dict(catalogue=rig["cat"], state_path=rig["state"], router_url=rig["router_url"], work=rig["work"],
-                worker_dir=rig["worker"], command=rig["command"](), slots=SLOTS, health_timeout=30,
-                drain_timeout=10, log=lambda *_: None)
+                worker_dir=rig["worker"], command=_fake_cmd(), freeze=_copy_freeze, slots=SLOTS, health_timeout=30,
+                drain_timeout=10, space_check=False, log=lambda *_: None)
     args.update(kw)
     return swap.swap(**args)
 
 
+def _no_green_gen(rig):
+    return not any(d.startswith("gen-green-2026") for d in os.listdir(rig["work"]))
+
+
+# ---- the happy path ------------------------------------------------------------------------------------------
 def test_a_swap_flips_to_the_new_copy_and_stops_the_old(rig):
     status, body = _get(rig["router_port"], "/v1/sources")
     assert status == 200 and body["port"] == rig["ports"]["blue"]
     out = _swap(rig)
     assert out["active"] == "green" and out["retired"] == "blue" and out["old_stopped"] is True
+    assert out["commit"] == "test-sha"
     assert out["counts"]["primary"]["series"] + out["counts"]["climate"]["series"] == out["counts"]["catalogue_series"]
-    assert set(out["health"]) == {"sources", "primary", "climate"}, "both copies were asked for by id"
+    assert set(out["health"]) == {"sources", "primary", "climate"} and out["health"]["climate"].startswith("noaa:")
     assert json.load(open(rig["state"]))["active"] == "green"
     status, body = _get(rig["router_port"], "/v1/series/noaa:a.metadata.json")
     assert status == 200 and body["port"] == rig["ports"]["green"], "the router now answers from green"
     assert _eventually(lambda: not _alive(rig["blue"].pid)), "blue was stopped after the drain"
     inst = swap.load_instances(rig["work"])
     assert inst["green"]["state"] == "active" and inst["blue"]["state"] == "stopped"
-    assert os.path.isdir(inst["blue"]["persist"]), "the retired persist dir is kept for a rollback"
-    assert not os.path.exists(rig["stale"]) and out["pruned"] == [rig["stale"]], "older generations go"
-    assert not any(d.startswith("copies-") for d in os.listdir(rig["work"])), "the copies folder is cleaned"
-    placed = os.listdir(os.path.join(inst["green"]["persist"], swap.SLOT_DIR))
+    assert inst["green"]["commit"] == "test-sha" and len(inst["green"]["instance"]) == 32
+    assert os.path.isdir(inst["blue"]["gen"]), "the retired generation is kept for a rollback"
+    assert not os.path.exists(rig["stale"]) and out["pruned"] == [rig["stale"]] and out["prune_errors"] == []
+    placed = os.listdir(os.path.join(inst["green"]["gen"], "persist", swap.SLOT_DIR))
     assert sorted(placed) == sorted(SLOTS.values()), "rollback-journal mode: no -wal / -shm beside the slots"
+    assert not os.path.exists(os.path.join(inst["green"]["gen"], "copies")), "the copies folder is cleaned"
 
 
-def test_swapped_slots_fail_the_health_check_and_leave_the_router_alone(rig):
-    wrong = {"CATALOG": SLOTS["CATALOG_CLIMATE"], "CATALOG_CLIMATE": SLOTS["CATALOG"]}
-    with pytest.raises(swap.SwapRefused, match="not behind the binding|unproven"):
-        _swap(rig, slots=wrong)
+# ---- refusals before the flip: the router is never touched, the new generation is removed --------------------
+def _refused_cleanly(rig):
     assert json.load(open(rig["state"]))["active"] == "blue"
     assert _alive(rig["blue"].pid), "the active instance never stops because of a bad build"
     assert set(swap.load_instances(rig["work"])) == {"blue"}
-    assert not any(d.startswith("persist-green-2026") for d in os.listdir(rig["work"])), "the failed dir is removed"
-    assert not swap.port_in_use(rig["ports"]["green"]), "the failed instance is stopped"
+    assert _no_green_gen(rig), "the failed generation is removed"
+    assert _eventually(lambda: not swap.port_in_use(rig["ports"]["green"])), "the failed instance is stopped"
+
+
+def test_swapped_slots_are_refused_by_the_title_check(rig):
+    wrong = {"CATALOG": SLOTS["CATALOG_CLIMATE"], "CATALOG_CLIMATE": SLOTS["CATALOG"]}
+    with pytest.raises(swap.SwapRefused, match="unproven|not behind the binding"):
+        _swap(rig, slots=wrong)
+    _refused_cleanly(rig)
+
+
+def test_a_404_on_a_listed_series_is_refused_with_its_own_message(rig, monkeypatch):
+    """R1180 finding 6: the 'not behind the binding' refusal had no test of its own."""
+    real = swap.samples
+    monkeypatch.setattr(swap, "samples", lambda p, c: {"primary": [("ecb:nosuch", "ecb", "t")] + real(p, c)["primary"],
+                                                       "climate": []})
+    with pytest.raises(swap.SwapRefused, match=r"primary sample 'ecb:nosuch': metadata answered 404 - the primary "
+                                               r"copy is not behind the binding that serves it"):
+        _swap(rig)
+    _refused_cleanly(rig)
+
+
+def test_the_title_not_the_echoed_id_is_compared(rig, monkeypatch):
+    """The real worker echoes the requested id (metadata.ts), so only a stored field proves the lookup."""
+    real = swap.samples
+
+    def wrong_title(p, c):
+        s = real(p, c)
+        s["primary"] = [(i, src, "a title the copy does not have") for i, src, _t in s["primary"]]
+        return s
+    monkeypatch.setattr(swap, "samples", wrong_title)
+    with pytest.raises(swap.SwapRefused, match="metadata has title"):
+        _swap(rig)
+    _refused_cleanly(rig)
 
 
 @pytest.mark.parametrize("extra,match", [(("--unmarked",), "origin mark"), (("--die",), "exited")])
 def test_an_unmarked_or_dead_instance_is_refused(rig, extra, match):
     with pytest.raises(swap.SwapRefused, match=match):
-        _swap(rig, command=rig["command"](extra))
-    assert json.load(open(rig["state"]))["active"] == "blue"
+        _swap(rig, command=_fake_cmd(extra))
+    _refused_cleanly(rig)
 
 
-@pytest.mark.parametrize("gate,primary,climate", [
-    ("ecb", "noaa_direct:c", "noaa:"),                 # a gated SOURCE is skipped (not listed)
-    ("ecb:x,ecb:y", "noaa_direct:c", "noaa:"),         # gated SERIES of a listed source: 451, next one
-    ("noaa", "ecb:", None),                            # the climate copy wholly gated: primary alone proves it
-])
-def test_gated_samples_are_skipped_not_failed(rig, gate, primary, climate):
-    out = _swap(rig, command=rig["command"](("--gate", gate)))
-    assert out["active"] == "green"
-    assert out["health"]["primary"].startswith(primary)
-    assert (out["health"]["climate"] is None) if climate is None else out["health"]["climate"].startswith(climate)
+def test_any_other_error_after_the_start_also_stops_the_instance(rig):
+    """R1180 finding 6 (M05): cleanup must not depend on the error being a SwapRefused."""
+    with pytest.raises(ValueError):                                  # json.loads on a garbage body
+        _swap(rig, command=_fake_cmd(("--garbage",)))
+    _refused_cleanly(rig)
 
 
-def test_a_wholly_gated_primary_is_refused(rig):
-    with pytest.raises(swap.SwapRefused, match="unproven"):
-        _swap(rig, command=rig["command"](("--gate", "ecb,noaa_direct")))
-    assert json.load(open(rig["state"]))["active"] == "blue"
+def test_an_answer_from_another_instance_is_refused(rig, monkeypatch):
+    """R1180 finding 1: a process that took the idle port answers, and the swap's own instance does not."""
+    hijacker = swap.start(_fake_cmd()(rig["ports"]["green"], os.path.join(rig["gen"], "persist"), "someone-else"),
+                          rig["worker"], os.path.join(rig["work"], "hijack.log"))
+    try:
+        assert _eventually(lambda: swap.port_in_use(rig["ports"]["green"]))
+        monkeypatch.setattr(swap, "port_in_use", lambda p: False)      # both port checks fooled
+        sleeper = lambda port, persist, instance: [sys.executable, "-c", "import time; time.sleep(120)"]  # noqa: E731
+        with pytest.raises(swap.SwapRefused, match="another process answers that port"):
+            _swap(rig, command=sleeper)
+    finally:
+        swap.stop(hijacker.pid, swap.created(hijacker.pid))
+    assert json.load(open(rig["state"]))["active"] == "blue" and _no_green_gen(rig)
+
+
+def test_a_port_taken_during_the_build_is_refused_before_the_start(rig, monkeypatch):
+    real = swap.build_copies
+    holder = socket.socket()
+
+    def build_then_take(cat, out, **kw):
+        r = real(cat, out, **kw)
+        holder.bind(("127.0.0.1", rig["ports"]["green"]))
+        holder.listen()
+        return r
+    monkeypatch.setattr(swap, "build_copies", build_then_take)
+    try:
+        with pytest.raises(swap.SwapRefused, match="taken while the copies were built"):
+            _swap(rig)
+    finally:
+        holder.close()
+    assert json.load(open(rig["state"]))["active"] == "blue" and _no_green_gen(rig)
 
 
 def test_an_answering_idle_port_is_refused(rig):
@@ -194,18 +243,87 @@ def test_an_answering_idle_port_is_refused(rig):
         s.close()
 
 
+def test_a_router_of_another_state_file_is_refused(rig, tmp_path):
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps({"active": "green", "targets": json.load(open(rig["state"]))["targets"]}))
+    rt2 = router.serve(str(other), 0)
+    threading.Thread(target=rt2.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(swap.SwapRefused, match="not the router of this state file"):
+            _swap(rig, router_url=f"http://127.0.0.1:{rt2.server_address[1]}")
+    finally:
+        rt2.shutdown()
+        rt2.server_close()
+
+
+def test_two_swaps_at_once_are_refused(rig):
+    with swap.swap_lock(rig["work"]):
+        with pytest.raises(swap.SwapRefused, match="another swap"):
+            _swap(rig)
+
+
+@pytest.mark.parametrize("gate,primary,climate", [
+    ("ecb", "noaa_direct:c", "noaa:"),                 # a gated SOURCE is skipped (not listed)
+    ("ecb:x,ecb:y", "noaa_direct:c", "noaa:"),         # gated SERIES of a listed source: 451, next one
+    ("noaa", "ecb:", None),                            # the climate copy wholly gated: primary alone proves it
+])
+def test_gated_samples_are_skipped_not_failed(rig, gate, primary, climate):
+    out = _swap(rig, command=_fake_cmd(("--gate", gate)))
+    assert out["active"] == "green"
+    assert out["health"]["primary"].startswith(primary)
+    assert (out["health"]["climate"] is None) if climate is None else out["health"]["climate"].startswith(climate)
+
+
+def test_a_wholly_gated_primary_is_refused(rig):
+    with pytest.raises(swap.SwapRefused, match="unproven"):
+        _swap(rig, command=_fake_cmd(("--gate", "ecb,noaa_direct")))
+    _refused_cleanly(rig)
+
+
+# ---- after the flip ------------------------------------------------------------------------------------------
 def test_a_drain_that_does_not_finish_leaves_the_old_instance_running(rig):
     t = threading.Thread(target=lambda: _get(rig["router_port"], "/slow?s=8"), daemon=True)
     t.start()
-    assert _eventually(lambda: _get(rig["router_port"], router.STATUS_PATH)[1]["inflight"].get("blue") == 1, 10)
+    assert _eventually(lambda: router_inflight(rig).get("blue") == 1, 10)
     out = _swap(rig, drain_timeout=1)
     assert out["active"] == "green" and out["old_stopped"] is False
     assert _alive(rig["blue"].pid), "a long request is never cut off to keep a schedule"
-    assert swap.load_instances(rig["work"])["blue"]["state"] == "draining"
-    assert os.path.isdir(swap.load_instances(rig["work"])["blue"]["persist"])
+    inst = swap.load_instances(rig["work"])
+    assert inst["blue"]["state"] == "draining" and os.path.isdir(inst["blue"]["gen"])
     t.join(15)
 
 
+def router_inflight(rig):
+    return swap.router_status(rig["router_url"])["inflight"]
+
+
+def test_the_drain_needs_two_zero_readings(monkeypatch):
+    readings = iter([{"active": "g", "inflight": {}}, {"active": "g", "inflight": {"b": 1}},
+                     {"active": "g", "inflight": {}}, {"active": "g", "inflight": {}}, {"active": "g", "inflight": {}}])
+    seen = []
+    monkeypatch.setattr(swap, "router_status", lambda u: seen.append(1) or next(readings))
+    assert swap.drain("http://r", "b", "g", timeout=30, poll=0.01, settle=0.02) is True
+    assert len(seen) >= 4, "a single 0 followed by a request in flight did not end the drain"
+
+
+def test_the_drain_refuses_a_router_that_did_not_flip(monkeypatch):
+    monkeypatch.setattr(swap, "router_status", lambda u: {"active": "b", "inflight": {}})
+    with pytest.raises(swap.SwapRefused, match="not the router this swap flipped"):
+        swap.drain("http://r", "b", "g", timeout=5, poll=0.01)
+
+
+def test_prune_compares_folders_not_spellings(tmp_path):
+    work = tmp_path / "Work"
+    (work / "gen-blue-1").mkdir(parents=True)
+    (work / "gen-green-0").mkdir()
+    keep = [str(tmp_path / "work" / "gen-blue-1").upper() if os.name == "nt" else str(work / "gen-blue-1"),
+            str(work / "." / "gen-blue-1")]
+    removed, errors = swap.prune(str(work), keep)
+    assert (work / "gen-blue-1").is_dir(), "a recorded generation spelled differently is kept"
+    assert removed == [str(work / "gen-green-0")] and errors == []
+
+
+# ---- stop ----------------------------------------------------------------------------------------------------
 def test_stop_ends_the_whole_process_tree(tmp_path):
     (tmp_path / ".dev.vars").write_text(f"ORIGIN_SECRET={SECRET}\n")
     cat = tmp_path / "c.db"
@@ -214,14 +332,76 @@ def test_stop_ends_the_whole_process_tree(tmp_path):
     persist = str(tmp_path / "persist-x")
     swap.place(str(tmp_path / "cp"), persist, SLOTS)
     pidfile = tmp_path / "child.pid"
-    port = _port()
-    p = swap.start([sys.executable, "-B", FAKE, str(port), persist, json.dumps(SLOTS), "--child", str(pidfile)],
-                   str(tmp_path), str(tmp_path / "log"))
+    p = swap.start(_fake_cmd(("--child", str(pidfile)))(_port(), persist, "x"), str(tmp_path), str(tmp_path / "log"))
     assert _eventually(lambda: pidfile.exists() and pidfile.read_text().strip() != "")
     child = int(pidfile.read_text())
     assert _alive(child) and _alive(p.pid), "positive control: both are running"
-    swap.stop(p.pid)
+    assert swap.stop(p.pid, swap.created(p.pid)).startswith(f"stopped pid {p.pid} and 1 child")
+    p.wait(15)
     assert _eventually(lambda: not _alive(p.pid) and not _alive(child)), "the child (workerd) went too"
+
+
+def test_stop_never_kills_a_reused_pid(tmp_path):
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        what = swap.stop(p.pid, swap.created(p.pid) - 100.0)          # recorded for an older process
+        assert "NOT killed" in what and _alive(p.pid)
+        assert "gone" in swap.stop(2 ** 22 + 12345, 1.0)
+    finally:
+        p.kill()
+        p.wait()
+
+
+def test_the_stop_command(rig, capsys):
+    base = ["--work", rig["work"], "--state", rig["state"], "--router", rig["router_url"]]
+    assert swap.main(base + ["--stop", "blue"]) == 2 and "ACTIVE" in capsys.readouterr().err
+    assert swap.main(base + ["--stop", "nobody"]) == 2
+    out = _swap(rig, drain_timeout=0.01)                              # blue now retired (maybe still running)
+    assert out["active"] == "green"
+    assert swap.main(base + ["--stop", "blue", "--drain-timeout", "10"]) == 0
+    assert swap.load_instances(rig["work"])["blue"]["state"] == "stopped"
+    assert _eventually(lambda: not _alive(rig["blue"].pid))
+    with pytest.raises(SystemExit):
+        swap.main(["--work", rig["work"], "--stop", "blue"])            # --state is required
+
+
+def test_stop_waits_for_the_drain_unless_forced(rig, capsys):
+    """R1180 finding 5: --stop used to kill at once, cutting off the downloads the drain protects."""
+    base = ["--work", rig["work"], "--state", rig["state"], "--router", rig["router_url"]]
+    t = threading.Thread(target=lambda: _get(rig["router_port"], "/slow?s=6"), daemon=True)
+    t.start()
+    assert _eventually(lambda: router_inflight(rig).get("blue") == 1, 10)
+    _swap(rig, drain_timeout=0.5)                                     # blue retired, still serving
+    assert swap.main(base + ["--stop", "blue", "--drain-timeout", "1"]) == 2
+    assert "in flight" in capsys.readouterr().err and _alive(rig["blue"].pid)
+    assert swap.main(base + ["--stop", "blue", "--force"]) == 0
+    assert _eventually(lambda: not _alive(rig["blue"].pid))
+    t.join(15)
+
+
+# ---- the pieces ----------------------------------------------------------------------------------------------
+def test_freeze_worker_takes_the_committed_head_only(tmp_path):
+    repo = tmp_path / "repo"
+    w = repo / "api" / "worker"
+    (w / "src").mkdir(parents=True)
+    (w / "node_modules" / "pkg").mkdir(parents=True)
+    (w / "node_modules" / "pkg" / "index.js").write_text("module.exports = 1\n")
+    (w / "src" / "index.ts").write_text("export default 1\n")
+    (w / ".dev.vars").write_text("ORIGIN_SECRET=x\n")
+    (repo / ".gitignore").write_text("node_modules/\n.dev.vars\n")
+    git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)  # noqa: E731
+    git("init", "-q")
+    git("add", "-A")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "c")
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    (w / "src" / "index.ts").write_text("export default 2  // UNCOMMITTED\n")
+    frozen, got = swap.freeze_worker(str(w), str(tmp_path / "gen" / "code"))
+    assert got == sha
+    assert open(os.path.join(frozen, "src", "index.ts")).read() == "export default 1\n", "HEAD, not the edit"
+    assert os.path.isfile(os.path.join(frozen, "node_modules", "pkg", "index.js"))
+    assert open(os.path.join(frozen, ".dev.vars")).read() == "ORIGIN_SECRET=x\n"
+    shutil.rmtree(tmp_path / "gen")
+    assert (w / "node_modules" / "pkg" / "index.js").is_file(), "removing a generation never touches the checkout"
 
 
 def test_place_refuses_an_existing_persist_dir_and_leaves_no_wal(tmp_path):
@@ -256,7 +436,18 @@ def test_a_target_that_is_not_local_is_refused():
             swap.port_of(bad)
 
 
-def test_after_t0_the_copies_are_made_under_the_writer_lock(tmp_path, monkeypatch):
+def test_too_little_space_is_refused(tmp_path, monkeypatch):
+    cat = tmp_path / "c.db"
+    cat.write_bytes(b"x" * 1000)
+    (tmp_path / "w" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(swap.shutil, "disk_usage", lambda p: types.SimpleNamespace(free=1 << 30))
+    with pytest.raises(swap.SwapRefused, match="GB free"):
+        swap.check_space(str(tmp_path), str(cat), str(tmp_path / "w"))
+    monkeypatch.setattr(swap.shutil, "disk_usage", lambda p: types.SimpleNamespace(free=10 << 30))
+    swap.check_space(str(tmp_path), str(cat), str(tmp_path / "w"))
+
+
+def test_after_t0_only_the_build_is_copied_under_the_writer_lock(tmp_path, monkeypatch):
     from core import catalog_path, cutover
     seen = []
 
@@ -265,15 +456,42 @@ def test_after_t0_the_copies_are_made_under_the_writer_lock(tmp_path, monkeypatc
         seen.append("held")
         yield
 
+    build = tmp_path / "catalog.db"
+    build.write_bytes(b"")
     monkeypatch.setattr(catalog_path, "writer_lock", lock)
+    monkeypatch.setattr(catalog_path, "catalog_path", lambda: str(build))
     monkeypatch.setattr(swap.origin_copies, "build", lambda c, o: seen.append("build") or {"ok": 1})
     monkeypatch.setattr(cutover, "is_cut_over", lambda: False)
-    swap.build_copies("c", "o")
+    swap.build_copies("anything", "o")
     assert seen == ["build"], "before T0 no lock (CI's writer runs elsewhere)"
     seen.clear()
     monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
-    swap.build_copies("c", "o")
+    with pytest.raises(swap.SwapRefused, match="copies only the build"):
+        swap.build_copies(str(tmp_path / "elsewhere.db"), "o")
+    swap.build_copies(str(tmp_path / "." / "catalog.db"), "o")
     assert seen == ["held", "build"]
+
+
+def test_after_t0_a_held_lock_is_waited_for_then_refused(tmp_path, monkeypatch):
+    from core import catalog_path, cutover
+    build = tmp_path / "catalog.db"
+    build.write_bytes(b"")
+    tries = []
+
+    @contextlib.contextmanager
+    def held():
+        tries.append(1)
+        raise cutover.CutoverRefused("held by the updater")
+        yield  # noqa: unreachable
+    monkeypatch.setattr(catalog_path, "writer_lock", held)
+    monkeypatch.setattr(catalog_path, "catalog_path", lambda: str(build))
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
+    monkeypatch.setattr(swap.time, "sleep", lambda s: None)
+    clock = iter(range(0, 10_000, 10))
+    monkeypatch.setattr(swap.time, "monotonic", lambda: next(clock))
+    with pytest.raises(swap.SwapRefused, match="stayed held"):
+        swap.build_copies(str(build), "o", lock_wait=60)
+    assert len(tries) > 1, "it waited and tried again before refusing"
 
 
 def test_the_slot_dir_is_the_one_wrangler_uses():
@@ -281,3 +499,8 @@ def test_the_slot_dir_is_the_one_wrangler_uses():
     src = open(os.path.join(ROOT, "tools", "selfhost", "d1_slots.mjs"), encoding="utf-8").read()
     assert '"v3", "d1", "miniflare-D1DatabaseObject"' in src
     assert swap.SLOT_DIR == os.path.join("v3", "d1", "miniflare-D1DatabaseObject")
+
+
+def test_the_real_command_tags_the_instance():
+    cmd = swap.wrangler_command(8801, "P", "abc")
+    assert cmd[-2:] == ["--var", "INSTANCE_ID:abc"] and "--persist-to" in cmd and "127.0.0.1" in cmd

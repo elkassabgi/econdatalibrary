@@ -1,37 +1,40 @@
 """The blue/green catalogue swap (docs/ECON_SELF_HOSTING_PLAN.md, section 2: "swap = build N+1, start the idle
 instance on its copy, health-check, flip the router, stop the old one").
 
-    python tools/selfhost/swap.py --catalogue <build> --state <router state.json> --router http://127.0.0.1:8787
-                                  --work <folder for the instances' persist dirs>
+    python tools/selfhost/swap.py --work <folder> --catalogue <build> --state <router state.json>
+                                  [--router http://127.0.0.1:8787]
+    python tools/selfhost/swap.py --work <folder> --state <state.json> --stop <target> [--force]
 
-Steps, each one refusing rather than guessing:
-  1. The router state names the ACTIVE instance; the other one is IDLE. The idle port must be free - an
-     answering idle port is an instance nobody accounted for, and the swap stops.
+Each swap is ONE GENERATION: <work>/gen-<target>-<UTC stamp>/ holding the catalogue copies (persist/), a
+FROZEN copy of the worker (code/: `git archive` of the committed HEAD plus its node_modules - wrangler dev
+hot-reloads whatever it runs from, so it never runs from a checkout someone edits; review R1180 finding 3)
+and the instance's log. Steps, each one refusing rather than guessing:
+  0. One swap at a time: an exclusive lock on <work>/swap.lock. The router at --router must report the
+     same active target as the state file (it is the router this swap flips).
+  1. The router state names the ACTIVE instance; the other one is IDLE. Free disk is checked first.
   2. SLOTS: which local D1 file backs CATALOG and which backs CATALOG_CLIMATE is DISCOVERED by
-     tools/selfhost/d1_slots.mjs with the pinned wrangler, never assumed (a wrangler upgrade that changes
-     the hashing is found here, not by serving the wrong catalogue from the wrong binding).
-  3. COPIES: tools/selfhost/origin_copies.py builds the primary and climate copies with the SQLite backup
-     API and checks them. After T0 this runs under the catalogue writer lock, whose holder rolls a hot
-     journal back first (AR-153) - so the updater must have released the lock before it calls the swap.
-     Each copy is switched to rollback-journal mode and moved into a FRESH persist dir for the idle
-     instance (fresh, so the Cache API cannot serve the previous catalogue - plan: "a swap is never hidden
-     for 6 h").
-  4. START the idle instance (wrangler dev on wrangler.origin.toml, 127.0.0.1 only) and HEALTH-CHECK it
-     directly on its own port: /v1/sources answers 200 with the origin mark and at least one source, and a
-     series of the primary copy answers its metadata by id - which proves CATALOG holds the primary copy
-     (swapped slots would 404 it). The climate copy is asked too when it has a servable series. Samples come
-     from LISTED sources and a 451 moves on to the next: a gated id is refused before any lookup.
-  5. FLIP the router (one atomic state-file replace), then DRAIN: the old instance is stopped only when the
-     router reports 0 requests in flight on it. A drain that does not reach 0 in --drain-timeout leaves the
-     old instance RUNNING and says so: a long download is not cut off to keep a schedule.
-  6. STOP the old instance with its whole process tree (wrangler dev starts workerd children; on Windows
-     `taskkill /T`), and remove persist dirs older than the one just retired - the retired one is kept, so a
-     rollback is `router.py --flip <old>` after restarting it on the same dir.
-
-A failed health check stops the idle instance, removes its persist dir and leaves the router untouched: the
-active instance never stops serving because of a bad build.
-
-The instances' pid, persist dir and ports are recorded in <work>/instances.json (atomic replace).
+     tools/selfhost/d1_slots.mjs with the pinned wrangler, never assumed.
+  3. COPIES: tools/selfhost/origin_copies.py builds and checks the primary and climate copies with the
+     SQLite backup API. After T0 the catalogue must be THE build (core.catalog_path) and the copy runs
+     under the writer lock (which rolls a hot journal back first); a lock held by the updater is waited
+     for, up to --lock-wait. The copies go into rollback-journal mode, into the generation's persist dir.
+  4. START the idle instance from the frozen code with a per-swap INSTANCE_ID (wrangler dev --var), after
+     checking again that its port is free. HEALTH-CHECK it on its own port: every answer must carry
+     x-econ-instance = that id (so an answer from any other process on the port is refused - R1180
+     finding 1), /v1/sources lists sources, and a series of the primary copy answers its metadata with
+     the TITLE stored in the copy (the id is echoed by the worker and proves nothing); the climate copy is
+     asked too when it has a servable series. Samples come from listed sources; a 451 moves on to the
+     next candidate (a gated id is refused before any lookup); a 404 is a refusal.
+  5. FLIP the router (one atomic state-file replace) and check the router reports the new target. DRAIN:
+     the old instance is stopped only after two readings of 0 in flight, 2 s apart; a drain that does not
+     finish in --drain-timeout leaves it RUNNING and says so.
+  6. STOP the old instance and its whole process tree - only if the pid still belongs to the process that
+     was started (its creation time is recorded; a reused pid is never killed). Generations older than
+     the retired one are pruned; the retired one is kept, so a rollback is: start it again from its own
+     gen dir, then `router.py --flip <old>`.
+Anything that fails before the flip stops the idle instance, removes its generation and leaves the router
+alone: the active instance never stops serving because of a bad build.
+Recorded in <work>/instances.json (atomic replace): pid, creation time, generation, commit, instance id.
 """
 from __future__ import annotations
 
@@ -41,6 +44,7 @@ import datetime as _dt
 import http.client
 import json
 import os
+import secrets as _secrets
 import shutil
 import socket
 import sqlite3
@@ -48,6 +52,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -62,6 +67,7 @@ CONFIG = "wrangler.origin.toml"
 SLOT_DIR = os.path.join("v3", "d1", "miniflare-D1DatabaseObject")
 SECRET_HEADER = "x-econ-origin-secret"
 MARK_HEADER = "x-econ-origin"
+INSTANCE_HEADER = "x-econ-instance"
 
 
 class SwapRefused(RuntimeError):
@@ -72,7 +78,12 @@ def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-# ---- the instances file -----------------------------------------------------------------------------------
+def _same(a: str, b: str) -> bool:
+    """One folder however it is spelled (case, slashes, a relative path) - R1180 finding 2."""
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+# ---- the instances file and the swap lock -------------------------------------------------------------------
 def load_instances(work: str) -> dict:
     p = os.path.join(work, "instances.json")
     if not os.path.exists(p):
@@ -89,6 +100,38 @@ def save_instances(work: str, d: dict) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, p)
+
+
+@contextlib.contextmanager
+def swap_lock(work: str):
+    """One swap (or stop) at a time in a work folder. Fails at once when held: two swaps are refused, not
+    queued."""
+    os.makedirs(work, exist_ok=True)
+    fh = open(os.path.join(work, "swap.lock"), "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        raise SwapRefused(f"another swap holds {os.path.join(work, 'swap.lock')}") from None
+    try:
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
 
 
 # ---- pieces -----------------------------------------------------------------------------------------------
@@ -132,30 +175,57 @@ def discover_slots(worker_dir: str = WORKER_DIR, config: str = CONFIG) -> dict:
     return slots
 
 
-def build_copies(catalogue: str, out_dir: str) -> dict:
-    """origin_copies.build, under the writer lock after T0 (AR-153)."""
+def check_space(work: str, catalogue: str, worker_dir: str) -> None:
+    """A generation needs about the catalogue's size again (the primary copy is not vacuumed), the climate
+    copy, and the frozen worker; refuse unless 1.5 x the catalogue + the worker + 2 GB is free."""
+    need = int(os.path.getsize(catalogue) * 1.5) + _tree_size(os.path.join(worker_dir, "node_modules")) + (2 << 30)
+    free = shutil.disk_usage(work).free
+    if free < need:
+        raise SwapRefused(f"{free / 2**30:.1f} GB free in {work}, a generation needs about {need / 2**30:.1f} GB")
+
+
+def _tree_size(path: str) -> int:
+    total = 0
+    for dirpath, _dirs, files in os.walk(path):
+        for f in files:
+            with contextlib.suppress(OSError):
+                total += os.path.getsize(os.path.join(dirpath, f))
+    return total
+
+
+def build_copies(catalogue: str, out_dir: str, *, lock_wait: float = 1800.0) -> dict:
+    """origin_copies.build. After T0 the catalogue must be THE build, and the copy runs under the writer lock
+    (AR-153); the updater holding it is waited for, up to lock_wait seconds (R1180 finding 7)."""
     from core import cutover
-    lock = contextlib.nullcontext()
-    if cutover.is_cut_over():
-        from core import catalog_path
-        lock = catalog_path.writer_lock()
-    with lock:
+    if not cutover.is_cut_over():
         return origin_copies.build(catalogue, out_dir)
+    from core import catalog_path
+    if not _same(catalogue, catalog_path.catalog_path()):
+        raise SwapRefused(f"after T0 the swap copies only the build {catalog_path.catalog_path()}, not {catalogue}")
+    deadline = time.monotonic() + lock_wait
+    while True:
+        try:
+            with catalog_path.writer_lock():
+                return origin_copies.build(catalogue, out_dir)
+        except cutover.CutoverRefused:
+            if time.monotonic() > deadline:
+                raise SwapRefused(f"the catalogue writer lock stayed held for {lock_wait:.0f} s") from None
+            time.sleep(30)
 
 
 def samples(primary: str, climate: str) -> dict:
-    """Candidates for the health check: one (series_id, source_id) per source present in each copy (an index
-    seek per source). The check tries them in order, because a sample from a GATED source answers 451 before
-    any catalogue lookup and so proves nothing about which file is behind which binding."""
+    """Candidates for the health check: one (series_id, source_id, title) per source present in each copy
+    (an index seek per source). The check tries them in order, because a sample from a GATED source answers
+    451 before any catalogue lookup and so proves nothing about which file is behind which binding."""
     out = {}
     for label, path in (("primary", primary), ("climate", climate)):
         con = sqlite3.connect(f"file:{os.path.abspath(path)}?mode=ro", uri=True)
         try:
             found = []
             for (src,) in con.execute("SELECT source_id FROM source ORDER BY source_id").fetchall():
-                row = con.execute("SELECT series_id FROM series WHERE source_id=? LIMIT 1", (src,)).fetchone()
+                row = con.execute("SELECT series_id, title FROM series WHERE source_id=? LIMIT 1", (src,)).fetchone()
                 if row:
-                    found.append((row[0], src))
+                    found.append((row[0], src, row[1]))
         finally:
             con.close()
         out[label] = found
@@ -181,12 +251,35 @@ def place(copies_dir: str, persist: str, slots: dict) -> None:
         for suffix in ("-wal", "-shm", "-journal"):
             if os.path.exists(src + suffix):
                 raise SwapRefused(f"{name}{suffix} is still there after the mode change")
-        os.replace(src, os.path.join(dest, slots[binding]))
+        shutil.move(src, os.path.join(dest, slots[binding]))       # move, not replace: may cross drives
 
 
-def wrangler_command(port: int, persist: str, config: str = CONFIG) -> list[str]:
+def freeze_worker(worker_dir: str, dest: str) -> tuple[str, str]:
+    """A frozen, COMMITTED copy of the worker for one generation (R1180 finding 3): `git archive` of HEAD's
+    api/worker (uncommitted edits are left out, on purpose), plus the checkout's node_modules (copied, so a
+    later npm install cannot change a running generation either) and .dev.vars (the secret; not in git).
+    Returns (the frozen worker folder, the commit)."""
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=worker_dir, capture_output=True, text=True,
+                         check=True).stdout.strip()
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worker_dir, capture_output=True, text=True,
+                         check=True).stdout.strip()
+    rel = os.path.relpath(worker_dir, top).replace(os.sep, "/")
+    zpath = dest + ".zip"
+    os.makedirs(dest)
+    subprocess.run(["git", "archive", "--format=zip", "-o", zpath, sha, rel], cwd=top, check=True,
+                   capture_output=True)
+    with zipfile.ZipFile(zpath) as z:
+        z.extractall(dest)
+    os.remove(zpath)
+    frozen = os.path.join(dest, *rel.split("/"))
+    shutil.copytree(os.path.join(worker_dir, "node_modules"), os.path.join(frozen, "node_modules"), symlinks=True)
+    shutil.copy2(os.path.join(worker_dir, ".dev.vars"), os.path.join(frozen, ".dev.vars"))
+    return frozen, sha
+
+
+def wrangler_command(port: int, persist: str, instance: str, config: str = CONFIG) -> list[str]:
     return ["node", os.path.join("node_modules", "wrangler", "bin", "wrangler.js"), "dev", "-c", config, "--local",
-            "--ip", "127.0.0.1", "--port", str(port), "--persist-to", persist]
+            "--ip", "127.0.0.1", "--port", str(port), "--persist-to", persist, "--var", f"INSTANCE_ID:{instance}"]
 
 
 def start(command: list[str], cwd: str, log_path: str) -> subprocess.Popen:
@@ -202,14 +295,32 @@ def start(command: list[str], cwd: str, log_path: str) -> subprocess.Popen:
         log.close()                                      # the child holds its own handle
 
 
-def stop(pid: int) -> None:
-    """The process AND its children (wrangler dev -> workerd). Idempotent: a gone pid is fine."""
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
-    else:
-        import signal
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pid, signal.SIGTERM)
+def created(pid: int) -> float | None:
+    """The process's creation time, or None when there is no such process."""
+    import psutil
+    try:
+        return psutil.Process(pid).create_time()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+
+
+def stop(pid: int, created_at: float | None) -> str:
+    """Stop the process AND its children (wrangler dev -> workerd) - only when `pid` still belongs to the
+    process started at `created_at` (R1180 finding 5: a reused pid is never killed). Returns what it did."""
+    import psutil
+    try:
+        p = psutil.Process(pid)
+        if created_at is None or abs(p.create_time() - created_at) > 1.0:
+            return f"pid {pid} is now another process (created {p.create_time()}): NOT killed"
+        tree = p.children(recursive=True) + [p]
+    except psutil.NoSuchProcess:
+        return f"pid {pid} is gone already"
+    for proc in tree:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            proc.kill()
+    _gone, alive = psutil.wait_procs(tree, timeout=15)
+    return f"stopped pid {pid} and {len(tree) - 1} child(ren)" + (f"; still alive: {[a.pid for a in alive]}"
+                                                                     if alive else "")
 
 
 def _get(base: str, path: str, secret: str, timeout: float = 30.0) -> tuple[int, dict, bytes]:
@@ -223,7 +334,16 @@ def _get(base: str, path: str, secret: str, timeout: float = 30.0) -> tuple[int,
         c.close()
 
 
-def health(base: str, secret: str, candidates: dict, proc: subprocess.Popen | None, timeout: float) -> dict:
+def _ours(headers: dict, instance: str, what: str) -> None:
+    if headers.get(MARK_HEADER) != "1":
+        raise SwapRefused(f"{what} came back without the origin mark: something else answers that port")
+    if headers.get(INSTANCE_HEADER) != instance:
+        raise SwapRefused(f"{what} came from instance {headers.get(INSTANCE_HEADER)!r}, not the one this swap "
+                          f"started ({instance!r}): another process answers that port")
+
+
+def health(base: str, secret: str, candidates: dict, proc: subprocess.Popen | None, timeout: float,
+           instance: str) -> dict:
     """Wait for the instance to answer, then check it. Returns what was checked; raises SwapRefused."""
     deadline = time.monotonic() + timeout
     last = "no answer"
@@ -240,27 +360,27 @@ def health(base: str, secret: str, candidates: dict, proc: subprocess.Popen | No
         if time.monotonic() > deadline:
             raise SwapRefused(f"the idle instance did not answer within {timeout:.0f} s ({last})")
         time.sleep(1)
-    if headers.get(MARK_HEADER) != "1":
-        raise SwapRefused("/v1/sources came back without the origin mark: something else answers that port")
+    _ours(headers, instance, "/v1/sources")
     sources = json.loads(body).get("sources") or []
     if not sources:
         raise SwapRefused("/v1/sources lists no source")
     listed = {s.get("source") for s in sources}
     out: dict = {"sources": len(sources)}
     for label in ("primary", "climate"):
-        for sid, src in candidates.get(label, []):
+        for sid, src, title in candidates.get(label, []):
             if src not in listed:
                 continue                                  # a gated source: /v1/sources hides it
             status, headers, body = _get(
                 base, "/v1/series/" + urllib.parse.quote(sid, safe=":") + ".metadata.json", secret)
             if status == 451:
                 continue                                  # a gated series (a carve-out): proves nothing
-            if status != 200 or headers.get(MARK_HEADER) != "1":
+            if status != 200:
                 raise SwapRefused(f"{label} sample {sid!r}: metadata answered {status} - the {label} copy is "
                                   "not behind the binding that serves it")
-            got = json.loads(body).get("series_id")
-            if got != sid:
-                raise SwapRefused(f"{label} sample {sid!r}: metadata names {got!r}")
+            _ours(headers, instance, f"{label} sample {sid!r}")
+            got = json.loads(body).get("title")
+            if got != title:
+                raise SwapRefused(f"{label} sample {sid!r}: metadata has title {got!r}, the copy {title!r}")
             out[label] = sid
             break
         else:
@@ -272,39 +392,71 @@ def health(base: str, secret: str, candidates: dict, proc: subprocess.Popen | No
     return out
 
 
-def drain(router_url: str, name: str, timeout: float, poll: float = 1.0) -> bool:
-    """True once the router reports 0 requests in flight on `name`."""
+def router_status(router_url: str) -> dict:
     u = urllib.parse.urlsplit(router_url)
+    c = http.client.HTTPConnection(u.hostname, u.port, timeout=30)
+    try:
+        c.request("GET", router.STATUS_PATH)
+        return json.loads(c.getresponse().read())
+    finally:
+        c.close()
+
+
+def drain(router_url: str, name: str, now_active: str, timeout: float, poll: float = 1.0,
+          settle: float = 2.0) -> bool:
+    """True once the router - the one that now reports `now_active` - shows 0 in flight on `name` twice,
+    `settle` seconds apart (a request can sit between the router's target read and its count; R1180
+    finding 8). A router that reports a different active target is refused (finding 4)."""
     deadline = time.monotonic() + timeout
+    zero_since = None
     while True:
-        c = http.client.HTTPConnection(u.hostname, u.port, timeout=30)
-        try:
-            c.request("GET", router.STATUS_PATH)
-            d = json.loads(c.getresponse().read())
-        finally:
-            c.close()
+        d = router_status(router_url)
+        if d.get("active") != now_active:
+            raise SwapRefused(f"the router at {router_url} reports active {d.get('active')!r}, not {now_active!r}: "
+                              "it is not the router this swap flipped")
         if not d.get("inflight", {}).get(name):
-            return True
+            if zero_since is None:
+                zero_since = time.monotonic()
+            elif time.monotonic() - zero_since >= settle:
+                return True
+        else:
+            zero_since = None
         if time.monotonic() > deadline:
             return False
         time.sleep(poll)
 
 
-def prune(work: str, keep: set[str]) -> list[str]:
-    """Remove persist dirs under work/ that no instance uses and that are not in `keep`."""
-    removed = []
+def _remove_tree(path: str) -> str | None:
+    try:
+        shutil.rmtree(path)
+        return None
+    except OSError as e:
+        return f"{path}: {e}"
+
+
+def prune(work: str, keep: list[str]) -> tuple[list[str], list[str]]:
+    """Remove generation folders under work/ that are not in `keep` (compared as folders, whatever the
+    spelling). Returns (removed, errors) - never raises after a flip."""
+    removed, errors = [], []
     for d in sorted(os.listdir(work)):
         p = os.path.join(work, d)
-        if d.startswith("persist-") and os.path.isdir(p) and os.path.abspath(p) not in keep:
-            shutil.rmtree(p)
-            removed.append(p)
-    return removed
+        if d.startswith("gen-") and os.path.isdir(p) and not any(_same(p, k) for k in keep):
+            err = _remove_tree(p)
+            (errors.append(err) if err else removed.append(p))
+    return removed, errors
 
 
 # ---- the swap ---------------------------------------------------------------------------------------------
 def swap(*, catalogue: str, state_path: str, router_url: str, work: str, worker_dir: str = WORKER_DIR,
-         command=wrangler_command, slots: dict | None = None, health_timeout: float = 300.0,
-         drain_timeout: float = 3600.0, log=print) -> dict:
+         command=wrangler_command, freeze=freeze_worker, slots: dict | None = None, health_timeout: float = 300.0,
+         drain_timeout: float = 3600.0, lock_wait: float = 1800.0, space_check: bool = True, log=print) -> dict:
+    with swap_lock(work):
+        return _swap(catalogue, state_path, router_url, work, worker_dir, command, freeze, slots, health_timeout,
+                     drain_timeout, lock_wait, space_check, log)
+
+
+def _swap(catalogue, state_path, router_url, work, worker_dir, command, freeze, slots, health_timeout,
+          drain_timeout, lock_wait, space_check, log) -> dict:
     with open(state_path, encoding="utf-8") as fh:
         st = json.load(fh)
     active = st["active"]
@@ -314,46 +466,57 @@ def swap(*, catalogue: str, state_path: str, router_url: str, work: str, worker_
     idle = others[0]
     idle_url = st["targets"][idle]
     idle_port = port_of(idle_url)
+    rs = router_status(router_url)
+    if rs.get("active") != active:
+        raise SwapRefused(f"the router at {router_url} reports active {rs.get('active')!r} but {state_path} says "
+                          f"{active!r}: it is not the router of this state file")
     if port_in_use(idle_port):
         raise SwapRefused(f"the idle port {idle_port} ({idle}) already answers: an instance nobody accounted "
                           "for - stop it first")
-    os.makedirs(work, exist_ok=True)
+    if space_check:
+        check_space(work, catalogue, worker_dir)
     secret = read_secret(worker_dir)
     slots = slots or discover_slots(worker_dir)
     log(f"active={active} idle={idle} slots={slots}")
 
     stamp = _now()
-    copies_dir = os.path.join(work, f"copies-{stamp}")
-    persist = os.path.abspath(os.path.join(work, f"persist-{idle}-{stamp}"))
-    counts = build_copies(catalogue, copies_dir)
-    log(f"copies checked: {json.dumps(counts)}")
-    ids = samples(os.path.join(copies_dir, "primary.sqlite"), os.path.join(copies_dir, "climate.sqlite"))
-    if not ids["primary"]:
-        shutil.rmtree(copies_dir, ignore_errors=True)
-        raise SwapRefused("the primary copy holds no series")
-    try:
-        place(copies_dir, persist, slots)
-    finally:
-        shutil.rmtree(copies_dir, ignore_errors=True)
-
-    proc = start(command(idle_port, persist), worker_dir, os.path.join(work, f"{idle}-{stamp}.log"))
+    gen = os.path.abspath(os.path.join(work, f"gen-{idle}-{stamp}"))
+    copies_dir, persist = os.path.join(gen, "copies"), os.path.join(gen, "persist")
+    instance = _secrets.token_hex(16)
     instances = load_instances(work)
-    instances[idle] = {"pid": proc.pid, "persist": persist, "port": idle_port, "started_utc": stamp,
-                       "catalogue": os.path.abspath(catalogue), "counts": counts, "state": "starting"}
-    save_instances(work, instances)
+    proc = None
     try:
-        checked = health(idle_url, secret, ids, proc, health_timeout)
+        os.makedirs(gen)
+        counts = build_copies(catalogue, copies_dir, lock_wait=lock_wait)
+        log(f"copies checked: {json.dumps(counts)}")
+        ids = samples(os.path.join(copies_dir, "primary.sqlite"), os.path.join(copies_dir, "climate.sqlite"))
+        if not ids["primary"]:
+            raise SwapRefused("the primary copy holds no series")
+        place(copies_dir, persist, slots)
+        shutil.rmtree(copies_dir, ignore_errors=True)
+        code, sha = freeze(worker_dir, os.path.join(gen, "code"))
+        if port_in_use(idle_port):                        # checked again: the build took minutes (R1180 f1)
+            raise SwapRefused(f"the idle port {idle_port} was taken while the copies were built")
+        proc = start(command(idle_port, persist, instance), code, os.path.join(gen, "instance.log"))
+        instances[idle] = {"pid": proc.pid, "created": created(proc.pid), "gen": gen, "port": idle_port,
+                           "started_utc": stamp, "commit": sha, "instance": instance,
+                           "catalogue": os.path.abspath(catalogue), "counts": counts, "state": "starting"}
+        save_instances(work, instances)
+        checked = health(idle_url, secret, ids, proc, health_timeout, instance)
+        log(f"{idle} healthy: {json.dumps(checked)}")
+        router.flip(state_path, idle)
     except BaseException:
-        stop(proc.pid)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=30)
-        shutil.rmtree(persist, ignore_errors=True)
+        if proc is not None:
+            log(stop(proc.pid, created(proc.pid)))
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=30)
+        err = _remove_tree(gen) if os.path.exists(gen) else None
+        if err:
+            log(f"could not remove the failed generation: {err}")
         instances.pop(idle, None)
         save_instances(work, instances)
         raise
-    log(f"{idle} healthy: {json.dumps(checked)}")
 
-    router.flip(state_path, idle)
     instances[idle]["state"] = "active"
     old = instances.get(active)
     if old:
@@ -361,50 +524,68 @@ def swap(*, catalogue: str, state_path: str, router_url: str, work: str, worker_
     save_instances(work, instances)
     log(f"flipped the router to {idle}")
 
-    result = {"active": idle, "retired": active, "counts": counts, "health": checked, "old_stopped": False}
+    result = {"active": idle, "retired": active, "commit": sha, "counts": counts, "health": checked,
+              "old_stopped": False}
     if old:
-        if drain(router_url, active, drain_timeout):
-            stop(old["pid"])
+        if drain(router_url, active, idle, drain_timeout):
+            result["stop"] = stop(old["pid"], old.get("created"))
             old["state"] = "stopped"
             result["old_stopped"] = True
-            log(f"{active} drained and stopped (pid {old['pid']})")
+            log(f"{active} drained: {result['stop']}")
         else:
             log(f"{active} still has requests in flight after {drain_timeout:.0f} s: LEFT RUNNING (pid "
-                f"{old['pid']}); stop it with: python tools/selfhost/swap.py --stop {active} --work {work}")
+                f"{old['pid']}); stop it with: python tools/selfhost/swap.py --work {work} --state {state_path} "
+                f"--router {router_url} --stop {active}")
         save_instances(work, instances)
-    keep = {i["persist"] for i in instances.values()}
-    result["pruned"] = prune(work, keep)
+    keep = [i["gen"] for i in instances.values() if i.get("gen")]
+    result["pruned"], result["prune_errors"] = prune(work, keep)
     return result
 
 
-def main() -> int:
+def stop_recorded(work: str, state_path: str, target: str, router_url: str, *, force: bool = False,
+                  drain_timeout: float = 3600.0) -> str:
+    """--stop: the recorded instance `target`, never the active one; drained first unless force."""
+    with swap_lock(work):
+        instances = load_instances(work)
+        if target not in instances:
+            raise SwapRefused(f"no recorded instance {target!r}")
+        with open(state_path, encoding="utf-8") as fh:
+            active = json.load(fh)["active"]
+        if active == target:
+            raise SwapRefused(f"{target} is the ACTIVE instance; flip the router first")
+        if not force and not drain(router_url, target, active, drain_timeout):
+            raise SwapRefused(f"{target} still has requests in flight; wait, or pass --force to cut them off")
+        what = stop(instances[target]["pid"], instances[target].get("created"))
+        instances[target]["state"] = "stopped"
+        save_instances(work, instances)
+        return what
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--work", required=True, help="folder for persist dirs, logs and instances.json")
-    ap.add_argument("--catalogue")
-    ap.add_argument("--state")
+    ap.add_argument("--work", required=True, help="folder for the generations, the lock and instances.json")
+    ap.add_argument("--state", required=True, help="the router's state file")
     ap.add_argument("--router", default="http://127.0.0.1:8787")
+    ap.add_argument("--catalogue")
     ap.add_argument("--health-timeout", type=float, default=300.0)
     ap.add_argument("--drain-timeout", type=float, default=3600.0)
-    ap.add_argument("--stop", metavar="TARGET", help="stop a recorded instance (after a drain that timed out)")
-    a = ap.parse_args()
-    if a.stop:
-        instances = load_instances(a.work)
-        if a.stop not in instances:
-            raise SystemExit(f"no recorded instance {a.stop!r}")
-        if not a.state:
-            ap.error("--stop needs --state, so the ACTIVE instance can never be the one stopped")
-        with open(a.state, encoding="utf-8") as fh:
-            if json.load(fh)["active"] == a.stop:
-                raise SystemExit(f"{a.stop} is the ACTIVE instance; flip the router first")
-        stop(instances[a.stop]["pid"])
-        instances[a.stop]["state"] = "stopped"
-        save_instances(a.work, instances)
+    ap.add_argument("--lock-wait", type=float, default=1800.0, help="after T0: how long to wait for the writer lock")
+    ap.add_argument("--stop", metavar="TARGET", help="stop a recorded, non-active instance (drained first)")
+    ap.add_argument("--force", action="store_true", help="with --stop: do not wait for the drain")
+    a = ap.parse_args(argv)
+    try:
+        if a.stop:
+            print(stop_recorded(a.work, a.state, a.stop, a.router, force=a.force, drain_timeout=a.drain_timeout))
+            return 0
+        if not a.catalogue:
+            ap.error("--catalogue is required for a swap")
+        print(json.dumps(swap(catalogue=a.catalogue, state_path=a.state, router_url=a.router, work=a.work,
+                              health_timeout=a.health_timeout, drain_timeout=a.drain_timeout,
+                              lock_wait=a.lock_wait), indent=1))
         return 0
-    if not (a.catalogue and a.state):
-        ap.error("--catalogue and --state are required for a swap")
-    print(json.dumps(swap(catalogue=a.catalogue, state_path=a.state, router_url=a.router, work=a.work,
-                          health_timeout=a.health_timeout, drain_timeout=a.drain_timeout), indent=1))
-    return 0
+    except SwapRefused as e:
+        print(f"REFUSED: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

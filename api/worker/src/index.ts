@@ -28,7 +28,7 @@ import { requireDownloadAuth, logDownload } from "./auth.ts";
 import { isGated } from "./denylist.ts";
 import { handlePublicStats } from "./publicStats.ts";
 import { json, reqLang } from "./util.ts";
-import { isLocal, originGate, finalizeLocal, isDownloadPath } from "./localMode.ts";
+import { isLocal, originGate, finalizeLocal, isDownloadPath, INSTANCE_HEADER } from "./localMode.ts";
 import { LocalBucket } from "./localBucket.ts";
 import { sourceNamesBackoffMs, sourceNamesMaxAgeMs, edgeStatus, isForward, isForwardable, cacheSeconds, cacheKey, originRequest, fetchOrigin, countingBody,
   clientResponse, notConfigured, refusedPath } from "./edge.ts";
@@ -66,7 +66,9 @@ export default {
       // SERIES_BUCKET becomes the blob sidecar (src/localBucket.ts); the route code is unchanged.
       const lenv: Env = { ...env, SERIES_BUCKET: new LocalBucket(env.BLOB_SIDECAR_URL) as unknown as R2Bucket };
       const download = isDownloadPath(new URL(request.url).pathname);
-      return finalizeLocal(await route(request, lenv, ctx, true), { download });
+      const out = finalizeLocal(await route(request, lenv, ctx, true), { download });
+      if (env.INSTANCE_ID) out.headers.set(INSTANCE_HEADER, env.INSTANCE_ID);
+      return out;
     }
     return route(request, env, ctx, false);
   },

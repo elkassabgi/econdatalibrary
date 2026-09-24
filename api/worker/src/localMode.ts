@@ -24,6 +24,9 @@ export const COUNT_HEADER = "x-econ-count";
 // Set on EVERY answer the origin gives: the edge refuses (502) any answer without it, so a tunnel error
 // page or an Access login page can never be served, cached or logged as data (R1169).
 export const ORIGIN_MARK_HEADER = "x-econ-origin";
+// The instance that answered (INSTANCE_ID, set per swap by tools/selfhost/swap.py with `wrangler dev --var`):
+// the swap's health check refuses an answer from any other process on the idle port (R1180 finding 1).
+export const INSTANCE_HEADER = "x-econ-instance";
 
 /** Routes the origin never answers: the edge owns them (they read or write USERS). */
 export const EDGE_ONLY_PATHS: ReadonlySet<string> = new Set(["/v1/pv", "/v1/pv/report", "/v1/public-stats",

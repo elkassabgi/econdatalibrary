@@ -186,6 +186,7 @@ export function clientResponse(originResp: Response, body: ReadableStream<Uint8A
   const out = new Response(body, originResp);
   out.headers.delete(COUNT_HEADER);
   out.headers.delete(ORIGIN_MARK_HEADER);
+  out.headers.delete("x-econ-instance");        // the origin's generation id is the workstation's business
   return out;
 }
 

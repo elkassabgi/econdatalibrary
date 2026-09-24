@@ -56,6 +56,7 @@ export interface Env {
   // refuses every request when ORIGIN_SECRET is unset. The production worker never sets either.
   LOCAL?: string;
   ORIGIN_SECRET?: string;
+  INSTANCE_ID?: string;          // local origin only: which swap generation this is (tools/selfhost/swap.py)
   // Base URL of the blob sidecar (tools/selfhost/blob_sidecar.py) that stands in for R2 on the origin.
   BLOB_SIDECAR_URL?: string;
 
