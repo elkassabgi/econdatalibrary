@@ -4003,13 +4003,19 @@ sources:
       from PxWeb time codes; value float64. Per-subject in-run dedup via ''seen'' set on (key,date). Plus _catalog.json (crawl
       cache) and _scb_log.txt. MAX_CELLS=100000 caps each table query; oversized tables fall back to selecting only the first/aggregate
       value of non-time dims (partial coverage).'
-- source_id: sec_edgar
+- source_id: sec_edgar_13f
   # live: true 2026-08-01. Never run once. Gate PROVEN in both directions: current_vintage
   # returns cat:7282cd16224c0ba9, a matching stored vintage skips, a stale one re-fetches.
+  # RENAMED 2026-09-24 from `sec_edgar` to `sec_edgar_13f` (R275, R1193): under the shared id its
+  # state rows - source_state('sec_edgar') and unit_state('sec_edgar','_all') - were pushed to D1 as
+  # the freshness of the SERVED XBRL product, catalogue id `sec_edgar`. out_dir stays edgar_13f; the
+  # R2 done-markers file keeps its name (_sec_edgar_incr_state.json). A rename is not an add:
+  # EXPECTED_SOURCE_COUNT is unchanged (R347).
   live: true
   id_collision_warning: >-
-    2026-07-29 — THIS ENTRY IS NOT THE COMPANY FUNDAMENTALS. `sec_edgar` means two
-    different things depending on which store you read:
+    2026-07-29 — THIS ENTRY IS NOT THE COMPANY FUNDAMENTALS. It was registered as `sec_edgar`
+    until 2026-09-24, and `sec_edgar` meant two different things depending on which store
+    you read:
 
       REGISTRY (here)  -> the relational Form 13F + insider products under
                           clean_full/edgar_13f and clean_full/edgar_insider
@@ -4026,7 +4032,7 @@ sources:
     statements are current: they are, and they update nightly. Running this entry would
     fetch 13F/insider zips and touch none of the fundamentals.
   scripts:
-  - updater/strategies/fetchers/sec_edgar.py
+  - updater/strategies/fetchers/sec_edgar_13f.py
   - jobs/ingest_edgar_13f.py
   - _backfill_edgar_insider.py
   strategy: giant_changed_units
@@ -4035,7 +4041,7 @@ sources:
     to many per-table relational parquets). There is NO server-side row-level date filter (so S2 extend_by_date is out), and
     it is not one monolithic bulk file (so S5 bulk_snapshot is out) — it is the giant change-feed shape: scrape the data-sets
     PAGE (the catalogue), diff published dataset keys vs the on-disk partition inventory, and fetch ONLY the NEW keys. Per-period
-    partitioning makes a new quarter a pure addition; existing partitions are never rewritten. The fetcher (updater/strategies/fetchers/sec_edgar.py)
+    partitioning makes a new quarter a pure addition; existing partitions are never rewritten. The fetcher (updater/strategies/fetchers/sec_edgar_13f.py)
     implements the S4 current_vintage()+update() contract directly because the payload is RELATIONAL tables (composite/surrogate
     keys, no series_key/obs_date), not the long-format the generic _giant.run_giant driver assumes.'
   cadence: quarterly
@@ -4083,7 +4089,7 @@ sources:
       --from 2013q1` ; for insider: `python.exe _backfill_edgar_insider.py 2006q1 2026q1`. The incremental fetcher itself only
       ever ADDS new dataset keys (per-period partitions), never rewrites existing partitions.'
     incremental_path:
-    - 'Implemented in updater/strategies/fetchers/sec_edgar.py: scrape the data-sets page, diff published keys vs the on-disk
+    - 'Implemented in updater/strategies/fetchers/sec_edgar_13f.py: scrape the data-sets page, diff published keys vs the on-disk
       partition inventory, download only the NEW keys'' zips, parse each TSV table to its existing schema, and merge per-period
       under dedup+never-shrink. New quarter = new partition = pure addition.'
     keys_or_blockers:
@@ -4113,10 +4119,10 @@ sources:
     returns a company's COMPLETE facts in ~0.3s, so a day costs ~200 requests.
 
     NAME COLLISION, read carefully: the CATALOG's source_id `sec_edgar` is THIS product
-    (17,276 companies of XBRL fundamentals). The REGISTRY's `sec_edgar` entry is a
-    different thing entirely — the relational Form 13F + insider data under
-    clean_full/edgar_13f. Same id, two meanings, depending on which store you are
-    looking at.
+    (17,276 companies of XBRL fundamentals). The registry entry for the relational Form
+    13F + insider data under clean_full/edgar_13f was ALSO named `sec_edgar` until
+    2026-09-24; it is `sec_edgar_13f` now, so its state rows no longer share this
+    product's key.
   scripts:
   - .github/workflows/sec-edgar-daily.yml
   - tools/refresh_sec_edgar.py

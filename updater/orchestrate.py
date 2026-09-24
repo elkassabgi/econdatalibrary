@@ -1230,7 +1230,7 @@ def _store_dir_name(unit) -> "str | None":
 
     TWO LIMITS, both deliberate and both worth knowing before trusting it:
       * It covers only the DECLARED directory. `registry.py:123-125` puts one path in
-        `out_paths`, but `fetchers/sec_edgar.py:339,476` writes edgar_13f AND edgar_insider from
+        `out_paths`, but `fetchers/sec_edgar_13f.py:339,476` writes edgar_13f AND edgar_insider from
         its own PRODUCTS table, and the registry declares only the first. Both probe 0 today so
         the answer is unaffected, but a fetcher that writes an undeclared store is not fully
         measured here.

@@ -1191,6 +1191,11 @@ def load_wiring():
         if wired and e.get("strategy") in _FETCHER_BACKED:
             wired = os.path.exists(os.path.join(fdir, f"{sid}.py"))
         out[sid] = wired
+    # The CATALOGUE id `sec_edgar` (XBRL fundamentals, registry entry sec_edgar_xbrl) is refreshed by
+    # sec-edgar-daily.yml. Until 2026-09-24 it read as wired only because the 13F entry carried the same id;
+    # that entry is sec_edgar_13f now (R275), so the page states the real reason.
+    if "sec_edgar" in scheduled:
+        out["sec_edgar"] = True
     return out
 
 
