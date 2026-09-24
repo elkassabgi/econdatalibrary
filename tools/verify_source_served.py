@@ -224,9 +224,11 @@ def main() -> int:
         print(f"D1             : {d1_n:,} row(s)"
               + (f"  — {gap:,} CATALOGUED BUT NOT IN D1: those ids 404 at the API"
                  if gap > 0 else "  — matches the catalogue"))
-    print(f"LIVE /v1/sources : {'listed — discoverable on the deployed API'
-                                if in_sup else 'NOT LISTED — invisible to anyone browsing'
-                                if in_sup is False else 'unchecked (probe failed)'}")
+    # one expression per f-string field, on one line: a field spanning lines is Python 3.12+ (PEP 701) and CI
+    # runs 3.11, where this file did not parse (R1232)
+    listed = ("listed — discoverable on the deployed API" if in_sup
+              else "NOT LISTED — invisible to anyone browsing" if in_sup is False else "unchecked (probe failed)")
+    print(f"LIVE /v1/sources : {listed}")
 
     coherent = not missing and not junk and not bad
     reachable = (d1_err is None and d1_n >= len(cat)) and in_sup is not False
