@@ -342,3 +342,75 @@ def test_a_change_just_after_the_merge_read_is_caught(world, monkeypatch, capsys
     assert _run(monkeypatch, "--apply") == 1
     assert pq.read_table(grouped / "XOM.parquet").num_rows == 4, "the other writer's file was kept"
     assert "SKIPPED XOM" in capsys.readouterr().out
+
+
+def _twenty(monkeypatch, fail=(), answer=None):
+    """A day of 20 filers: XOM (catalogued, stored) and 19 new ones. `fail` = CIKs whose fetch raises; `answer`
+    = a payload for every CIK instead of the world's (e.g. one the parser reads as no facts)."""
+    ciks = [CIK] + [900000 + i for i in range(19)]
+    monkeypatch.setattr(R, "ticker_map", lambda: {c: ["XOM" if c == CIK else f"T{c}"] for c in ciks})
+
+    def get(url, timeout=180, binary=False):
+        cik = int(url.rsplit("CIK", 1)[1].split(".")[0])
+        if cik in fail:
+            raise OSError("SEC down for this one")
+        return answer if answer is not None else _facts(NEW)
+    monkeypatch.setattr(R, "_get", get)
+    monkeypatch.setattr(sys, "argv", ["refresh_sec_edgar.py", "--ciks", ",".join(map(str, ciks)), "--apply"])
+    return ciks
+
+
+def test_an_all_empty_day_is_a_structural_failure(world, monkeypatch, capsys):
+    """R1236: 20 of 20 answers that parse to no facts were stamped ok (the econ-updater rule: more than 10 units
+    all empty is a definitive failure, not a quiet day)."""
+    tmp, *_ = world
+    _twenty(monkeypatch, answer=json.dumps({"entityName": "E", "facts": {}}))
+    assert R.main() == 1
+    assert "STRUCTURAL" in capsys.readouterr().out
+    row = _freshness(tmp)
+    assert row["status"] == "partial" and row["last_success_utc"] is None
+
+
+@pytest.mark.parametrize("n_fail,ok", [(1, True), (2, False)])
+def test_the_five_percent_fetch_tolerance_boundary(world, monkeypatch, n_fail, ok):
+    """1 transient fetch failure in 20 is still an ok day (the pre-T0 rule, 95% fetched); 2 are not (R1236 S19)."""
+    tmp, *_ = world
+    ciks = _twenty(monkeypatch, fail=set())
+    _twenty(monkeypatch, fail=set(ciks[1:1 + n_fail]))
+    assert R.main() == (0 if ok else 1)
+    row = _freshness(tmp)
+    assert (row["status"], row["last_success_utc"] is not None) == (("ok", True) if ok else ("partial", False))
+
+
+@pytest.mark.parametrize("how", ["unreadable store file", "a merge that would shrink"])
+def test_one_store_refusal_in_twenty_is_not_ok(world, monkeypatch, how):
+    """A refusal is not a transient fetch failure: ONE in 20 makes the day partial, where one fetch failure in
+    20 would not (R1236 S23/S24: a refusal counted as a failure survived)."""
+    tmp, live, grouped, build, _p = world
+    _twenty(monkeypatch)
+    if how == "unreadable store file":
+        (grouped / "XOM.parquet").write_bytes(b"not a parquet file")
+    else:
+        real = R.merge_facts
+        monkeypatch.setattr(R, "merge_facts", lambda prior, new: (_ for _ in ()).throw(AssertionError("shrink"))
+                            if prior else real(prior, new))
+    assert R.main() == 1
+    row = _freshness(tmp)
+    assert row["status"] == "partial" and row["last_success_utc"] is None
+
+
+def test_a_reader_briefly_holding_the_parquet_does_not_fail_the_commit(world, monkeypatch):
+    """R1236 S21: the move retries a PermissionError (a reader holds the file on Windows), as core.atomic does."""
+    tmp, live, grouped, build, _p = world
+    real, seen = os.replace, []
+
+    def held_once(a, b):
+        if str(b).endswith("XOM.parquet") and not seen:
+            seen.append(1)
+            raise PermissionError(5, "held by a reader")
+        return real(a, b)
+    monkeypatch.setattr(R.os, "replace", held_once)
+    import core.atomic as atomic
+    monkeypatch.setattr(atomic, "BACKOFF_S", (0.01,))
+    assert _run(monkeypatch, "--apply") == 0
+    assert seen == [1] and pq.read_table(grouped / "XOM.parquet").num_rows == 3

@@ -243,6 +243,17 @@ HEARTBEAT_STEP_IF = "${{ always() && vars.GUARD_HEARTBEAT_URL != '' }}"
 HEARTBEAT_STEP_RUN = 'python -B tools/guard_heartbeat.py --check --from-url "${{ vars.GUARD_HEARTBEAT_URL }}"'
 
 
+def _same_workflow(main_text: str, local_path: str) -> bool:
+    """origin/main's workflow parses to the same document as the reviewed copy in this checkout."""
+    import yaml
+    try:
+        with open(local_path, encoding="utf-8-sig") as f:
+            local = yaml.safe_load(f)
+        return local is not None and yaml.safe_load(main_text) == local
+    except (OSError, yaml.YAMLError):
+        return False
+
+
 def _runs_the_heartbeat_check(workflow_text: str) -> bool:
     """The workflow RUNS the check on its schedule: parsed as YAML, it has a cron schedule and no `defaults`;
     one job without `if`, `needs` or `continue-on-error` has a step whose `if` is exactly HEARTBEAT_STEP_IF, whose
@@ -253,15 +264,19 @@ def _runs_the_heartbeat_check(workflow_text: str) -> bool:
         doc = yaml.safe_load(workflow_text) or {}
     except yaml.YAMLError:
         return False
-    if not isinstance(doc, dict) or "defaults" in doc:
+    if not isinstance(doc, dict) or "defaults" in doc or "env" in doc:
         return False
     on = doc.get("on", doc.get(True))                   # YAML 1.1 reads a bare `on:` key as True
     schedule = on.get("schedule") if isinstance(on, dict) else None
-    if not (isinstance(schedule, list) and any(isinstance(s, dict) and s.get("cron") for s in schedule)):
-        return False
+    if not (isinstance(schedule, list) and schedule and all(
+            isinstance(s, dict) and len(str(s.get("cron") or "").split()) == 5 for s in schedule)):
+        return False                                    # a cron of five fields each (R1236: '' and 'never' passed)
     squash = lambda v: " ".join(str(v).split())         # noqa: E731 - spacing inside the expression is free
     for job in (doc.get("jobs") or {}).values():
-        if not isinstance(job, dict) or any(k in job for k in ("if", "needs", "continue-on-error")):
+        # the job carries only what the reviewed one does: no if / needs / continue-on-error / defaults / env /
+        # container / strategy, and GitHub's own runner (R1236: job-level defaults and a dead label passed)
+        if not isinstance(job, dict) or set(job) - {"runs-on", "timeout-minutes", "steps"} \
+                or job.get("runs-on") != "ubuntu-latest":
             continue
         for step in job.get("steps") or []:
             if not isinstance(step, dict) or any(k in step for k in ("continue-on-error", "shell")):
@@ -300,6 +315,14 @@ def heartbeat_reader(run=subprocess.run, check=None) -> tuple[bool, str]:
              capture_output=True, text=True)
     if wf.returncode != 0 or not _runs_the_heartbeat_check(wf.stdout or ""):
         return False, "origin/main's selfhost-watch.yml does not run guard_heartbeat.py --check --from-url"
+    # AND IT IS THE REVIEWED WORKFLOW, WHOLE (R1236): the step check cannot see the job around it - a job-level
+    # `defaults: run: shell`, an earlier step that rewrites the script or $GITHUB_ENV, a job `env`, a runner
+    # label no runner serves, a cron that never fires all passed it. So main's file must PARSE to the same
+    # document as this checkout's copy, which the tests hold to the one reviewed shape. Any other change fails
+    # closed until it is reviewed here too (comments and spacing are free).
+    if not _same_workflow(wf.stdout or "", os.path.join(ROOT, ".github", "workflows", "selfhost-watch.yml")):
+        return False, ("origin/main's selfhost-watch.yml does not run guard_heartbeat.py as reviewed: it differs "
+                       "from this checkout's copy - review the change, then update this checkout")
     if check is None:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
         import guard_heartbeat

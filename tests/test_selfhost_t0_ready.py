@@ -342,7 +342,37 @@ BAD_WORKFLOWS = {
               "          echo skipped"),
     "a shell that swallows it": WF_WITH.replace(IF_, IF_ + "\n        shell: bash {0} || true"),
     "defaults": WF_WITH.replace("jobs:\n", "defaults:\n  run:\n    shell: bash {0}\njobs:\n", 1),
+    # R1236 - each passed the step allowlist; the whole-document comparison refuses them
+    "job-level defaults": WF_WITH.replace(JOB_, JOB_ + "    defaults:\n      run:\n        shell: 'true {0}'\n"),
+    "a cron that never fires": WF_WITH.replace("'41 6 * * *'", "'0 0 31 2 *'"),
+    "a cron that is not a cron": WF_WITH.replace("'41 6 * * *'", "'never'"),
+    "an empty cron": WF_WITH.replace("'41 6 * * *'", "''"),
+    "an earlier step rewrites the script": WF_WITH.replace(
+        "      - name: Check the edge\n",
+        "      - run: echo 'raise SystemExit(0)' > tools/guard_heartbeat.py\n      - name: Check the edge\n"),
+    "an earlier step writes GITHUB_ENV": WF_WITH.replace(
+        "      - name: Check the edge\n",
+        "      - run: echo 'PYTHONSTARTUP=x' >> $GITHUB_ENV\n      - name: Check the edge\n"),
+    "a job env": WF_WITH.replace(JOB_, JOB_ + "    env:\n      PYTHONPATH: planted\n"),
+    "a runner no one serves": WF_WITH.replace("runs-on: ubuntu-latest", "runs-on: no-such-runner"),
+    "job continue-on-error": WF_WITH.replace(JOB_, JOB_ + "    continue-on-error: true\n"),
 }
+
+
+@pytest.mark.parametrize("name", ["an empty cron", "a cron that is not a cron", "job continue-on-error",
+                                  "job-level defaults", "a job env", "a runner no one serves"])
+def test_the_step_check_itself_refuses_the_job_shapes(name):
+    """Pinned on the structural check alone, not only through the whole-document comparison (R1236 mutants A8
+    and A10 survived because only the comparison refused them)."""
+    assert not T._runs_the_heartbeat_check(BAD_WORKFLOWS[name])
+
+
+def test_main_must_equal_the_reviewed_copy(tmp_path):
+    local = tmp_path / "w.yml"
+    local.write_text(WF_WITH, encoding="utf-8")
+    assert T._same_workflow(WF_WITH.replace("\n", "\r\n") + "\n# a comment\n", str(local)), "spacing and comments free"
+    assert not T._same_workflow(BAD_WORKFLOWS["a cron that never fires"], str(local))
+    assert not T._same_workflow(WF_WITH, str(tmp_path / "absent.yml")), "no reviewed copy = cannot tell"
 
 
 @pytest.mark.parametrize("name", sorted(BAD_WORKFLOWS))

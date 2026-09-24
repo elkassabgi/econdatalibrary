@@ -1238,6 +1238,7 @@ def _refresh_local(a, todo, t2c) -> int:
     # never transient, so any one of them makes the day partial (R1235: they were counted as fetch failures,
     # and a company refused every day was stamped ok every day)
     staged, failed, refused, errors, n_with_baseline = [], 0, 0, [], 0
+    empty = 0                       # answered, but the parser found no facts (R1236: an all-empty day was "ok")
     cat = catalog_path.connect()                                     # read-only: spans, and "is it catalogued"
     try:
         for i, cik in enumerate(todo, 1):
@@ -1251,6 +1252,7 @@ def _refresh_local(a, todo, t2c) -> int:
                 continue
             metric, odate, vals, vint = parse_companyfacts(data)
             if not metric:
+                empty += 1
                 continue
             ticks = t2c.get(cik) or []
             ident = ticks[0] if ticks else f"CIK{cik:010d}"
@@ -1301,8 +1303,13 @@ def _refresh_local(a, todo, t2c) -> int:
 
         print(f"\ncompanies probed : {len(todo):,}\ncompanies CHANGED: {len(staged):,}  "
               f"({n_with_baseline:,} had a store baseline)" + ("" if a.apply else "  - dry run, nothing written"))
-        print(f"fetch failures   : {failed:,}\nstore refusals   : {refused:,}"
+        print(f"fetch failures   : {failed:,}\nstore refusals   : {refused:,}\nparsed no facts  : {empty:,}"
               f"{('  e.g. ' + str(errors[:4])) if errors else ''}")
+        # more than 10 answers and EVERY one parsed to nothing is a schema break, not a quiet day (the econ-updater
+        # rule for an all-empty window; R1236 measured 20 of 20 empty stamped ok)
+        all_empty = (len(todo) - failed) > 10 and empty == len(todo) - failed
+        if all_empty:
+            print(f"STRUCTURAL: all {empty:,} answers parsed to no facts - the companyfacts shape changed?", flush=True)
         if not a.apply:
             return 0
         when = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
@@ -1335,7 +1342,7 @@ def _refresh_local(a, todo, t2c) -> int:
             # OK only when the day is whole: <=5% transient fetch failures (as before T0), and nothing refused,
             # skipped or missing from the catalogue. Anything else is partial, which NEVER sets last_success (the
             # econ rule; R1235 found skipped and refused days stamped ok).
-            ok_day = failed * 20 <= len(todo) and not refused and not skipped and not missing
+            ok_day = failed * 20 <= len(todo) and not refused and not skipped and not missing and not all_empty
             from updater.state import StateStore                     # noqa: PLC0415
             st = StateStore()
             try:
