@@ -92,6 +92,7 @@ test("origin: the gate, the skipped auth, the edge-only routes, no-store, and th
   for (const h of [undefined, { headers: { "x-econ-origin-secret": "not-it" } }]) {
     const r = await w.fetch(CSV, h);
     assert.equal(r.status, 403);
+    assert.equal(r.headers.get("x-econ-origin"), "1", "the gate's answer is marked, so the edge passes an honest 403");
     await r.arrayBuffer();
   }
   for (const p of ["/v1/pv?p=/", "/v1/edge-status"]) {
