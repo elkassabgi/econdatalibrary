@@ -29,6 +29,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKOUT_PATH = os.path.join(ROOT, "data", "catalog.db")
 BUILD_PATH = r"E:\econ_live\catalog\catalog.db"
 LOCK_PATH = r"E:\econ_live\state\writer.lock"
+# The other fixed machine-wide places a post-T0 writer must use (plan change 4; updater/run.py refuses a
+# run whose configuration points anywhere else, so a worktree can never become a second writer).
+LIVE_STATE_DIR = r"E:\econ_live\state"
+LIVE_STORE_ROOT = r"E:\research\econfindatalibrary"
 
 _held: object | None = None           # the open lock file while this process holds the writer lock
 
