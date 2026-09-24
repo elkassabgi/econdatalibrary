@@ -98,6 +98,23 @@ def test_put_with_retry_passes_plain_only_when_set():
     assert calls == ["old", True]
 
 
+@pytest.mark.parametrize("kind", ["ValueError", "CutoverRefused"])
+def test_put_with_retry_does_not_retry_a_refusal(monkeypatch, kind):
+    """R1222: updater.derive._put_with_retry - behind make_servable, the daily updater and 13 derive tools -
+    retried a refusal 7 times (63 s per key). One try, reported as a failure."""
+    from core import cutover
+    from updater import derive
+    calls = []
+
+    class Refusing:
+        def put_atomic(self, key, data, plain=False):
+            calls.append(key)
+            raise ValueError("not gzip") if kind == "ValueError" else cutover.CutoverRefused("another writer")
+    monkeypatch.setattr(derive.time, "sleep", lambda s: pytest.fail("a refusal is not retried"))
+    assert derive._put_with_retry(Refusing(), KEY, CSV) is False
+    assert calls == [KEY]
+
+
 def test_a_plain_put_over_a_gzip_object_with_csvmd5_is_still_sent():
     """R1213: the csvmd5 of a gzip object says nothing about PLAIN bytes at rest - trusting it would leave the
     object gzipped. The held object here is what a real writer leaves: gzip, marked, with csvmd5."""

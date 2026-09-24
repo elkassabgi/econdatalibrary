@@ -55,11 +55,16 @@ def _put_with_retry(blob, key: str, body: bytes, plain: bool = False) -> bool:
     2**attempt seconds between them, then report failure — the caller records
     the series id (csv_retry_queue), never crashes the data publish.
     """
+    from core.cutover import CutoverRefused                                # noqa: PLC0415
     for attempt in range(PUT_TRIES):
         try:
             # plain=True keeps a CSV uncompressed at rest (blob._refuse_plain_gzip); passed only when set
             blob.put_atomic(key, body, plain=True) if plain else blob.put_atomic(key, body)
             return True
+        except (ValueError, CutoverRefused) as e:
+            # a REFUSAL answers the same on every try: one try, reported as failed (R1222: 63 s per key)
+            print(f"  CSV PUT REFUSED {key}: {type(e).__name__}: {str(e)[:100]}", flush=True)
+            return False
         except Exception as e:
             if attempt == PUT_TRIES - 1:
                 print(f"  CSV PUT FAILED after {PUT_TRIES} tries {key}: {str(e)[:100]}",

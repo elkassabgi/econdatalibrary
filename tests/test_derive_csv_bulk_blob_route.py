@@ -117,3 +117,33 @@ def test_a_failed_upload_fails_the_run_and_clears_nothing(run, monkeypatch):
     monkeypatch.setattr(dcb, "_retry", lambda fn, what, tries=8: fn())      # one try, no waits
     assert run(Refusing()) == 1
     assert run.cleared == [], "a campaign with failed puts must not clear its debt"
+
+
+def test_one_failed_put_among_good_ones_keeps_the_debt(run, monkeypatch):
+    """R1218: with EVERY put failing, put == 0 blocked the clear on its own, so a mutant that ignored the error
+    count survived. One good put and one failed one: put > 0, and the debt must still stand."""
+    class Partial(Store):
+        def put_atomic(self, key, data, **kw):
+            if self.put:
+                raise OSError("the store refused the second")
+            self.put[key] = data
+    monkeypatch.setattr(dcb, "_retry", lambda fn, what, tries=8: fn())
+    store = Partial()
+    assert run(store) == 1
+    assert len(store.put) == 1 and run.cleared == [], "one put, one error: the debt stands"
+
+
+@pytest.mark.parametrize("kind", ["ValueError", "CutoverRefused"])
+def test_a_refusal_is_not_retried(monkeypatch, kind):
+    """R1220 finding 4: _retry slept 7 times (~2 min) per key on a refusal that answers the same every time."""
+    from core import cutover
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda s: pytest.fail("a refusal is not retried"))
+    calls = []
+
+    def refuse():
+        calls.append(1)
+        raise (ValueError("not gzip") if kind == "ValueError" else cutover.CutoverRefused("another writer"))
+    with pytest.raises((ValueError, cutover.CutoverRefused)):
+        dcb._retry(refuse, "PUT")
+    assert calls == [1]

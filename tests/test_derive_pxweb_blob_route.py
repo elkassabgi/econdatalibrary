@@ -88,6 +88,26 @@ def test_a_store_that_refuses_fails_the_run(tool, monkeypatch):
     assert len(tries) == 6, f"its own 7 tries: 6 waits, got {tries}"
 
 
+@pytest.mark.parametrize("kind", ["ValueError", "CutoverRefused"])
+def test_a_refusal_is_not_retried(tool, monkeypatch, kind):
+    """R1222: this loop caught every exception, so a refusal cost 7 tries and 63 s per key."""
+    import types
+    from core import cutover
+    calls = []
+
+    class Refusing(Store):
+        def put_atomic(self, key, data, plain=False):
+            calls.append(key)
+            raise ValueError("not gzip") if kind == "ValueError" else cutover.CutoverRefused("another writer")
+    import time as _time
+    monkeypatch.setattr(tool.module, "time", types.SimpleNamespace(
+        sleep=lambda s: pytest.fail("a refusal is not retried"), time=_time.time,
+        perf_counter=_time.perf_counter, monotonic=_time.monotonic))
+    with pytest.raises((ValueError, cutover.CutoverRefused)):
+        tool(Refusing())
+    assert len(calls) == 1
+
+
 def test_skip_existing_lists_the_csv_store(tool):
     store = Store(have={"series/ssb%3AT1.csv"})
     tool(store, "--skip-existing")

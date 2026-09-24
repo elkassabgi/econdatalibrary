@@ -67,10 +67,15 @@ def _retry(fn, what, tries=8):
     that dies on a throttle is worse than no resume: it forces a re-run that throttles harder.
     """
     import time as _t
+    from core.cutover import CutoverRefused                  # noqa: PLC0415
     last = None
     for attempt in range(tries):
         try:
             return fn()
+        except (ValueError, CutoverRefused):
+            # a REFUSAL (not gzip, a bad endpoint, the post-T0 single-writer rule) gives the same answer on
+            # every try: 7 sleeps (~2 min) per key were spent on it (R1220 finding 4)
+            raise
         except Exception as e:                               # noqa: BLE001
             last = e
             if attempt == tries - 1:

@@ -153,11 +153,14 @@ def main():
         # PLAIN at rest, as this tool always stored it (R1206: gzip would change what the worker serves -
         # blob._refuse_plain_gzip); bytes the store already holds are not written again
         key = r2_key(series_id)
+        from core.cutover import CutoverRefused                            # noqa: PLC0415
         for attempt in range(7):
             try:
                 store.put_atomic(key, body, plain=True)
                 return
-            except Exception as e:
+            except (ValueError, CutoverRefused):
+                raise                        # a refusal answers the same on every try (R1222)
+            except Exception:                # noqa: BLE001
                 if attempt == 6:
                     raise
                 time.sleep(2 ** attempt)

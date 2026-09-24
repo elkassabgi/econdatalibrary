@@ -116,6 +116,11 @@ class BlobStore:
         return row is not None
 
     # -- writes ---------------------------------------------------------------------------------------
+    def count(self, prefix: str = "") -> int:
+        """How many keys start with `prefix` (the same index range as list(), without building the list)."""
+        return self._r().execute("SELECT COUNT(*) FROM blobs WHERE key >= ? AND key < ?",
+                                 (prefix, prefix + chr(0x10FFFF))).fetchone()[0]
+
     def list_stored(self, prefix: str = "") -> list[tuple[str, str]]:
         """(key, stored_utc) for keys starting with `prefix`, in key order - what an R2 listing's
         LastModified answered (a resume that skips what its own campaign already wrote needs it)."""

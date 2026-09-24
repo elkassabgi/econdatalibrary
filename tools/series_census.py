@@ -204,6 +204,9 @@ def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[
 
     Identical size -> read the local copy; the bytes are the same and local is faster.
     """
+    from core import cutover                                          # noqa: PLC0415
+    if cutover.is_cut_over():
+        return _keep_served_after_t0(srcs)
     on_r2 = served_keys()
     resolvable = resolvable_sources()
     kept: dict[str, list[str]] = {}
@@ -254,6 +257,42 @@ def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[
     return kept, dropped
 
 
+def _keep_served_after_t0(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[str, int]]:
+    """keep_served() after T0. The worker serves no parquet: a user downloads a source's SERIES CSVs, which
+    live in the self-hosted blob store. So a source counts when the worker resolves it AND the served store
+    holds CSVs for it; one with none is not downloadable and is dropped (R1221 finding 1: counting every
+    local parquet would admit what the 2026-08-26 census dropped as local-only - 10,883 files, 2,676 of them
+    outside statcan). The judgement is per
+    SOURCE - which parquet file a CSV came from is not recorded - so a partly served source counts whole; the
+    CSV count printed beside it is the evidence. Every file is read LOCALLY: nothing is sent to R2, whatever
+    the sizes say (R1221 finding 2: a file rewritten mid-run sent DuckDB to s3:// with the write key)."""
+    from updater import blob                                          # noqa: PLC0415
+    from core.licence_targets import csv_prefix                       # noqa: PLC0415
+    resolvable = resolvable_sources()
+    store = blob.SelfhostBlob()
+    kept: dict[str, list[str]] = {}
+    dropped: dict[str, int] = {}
+    unresolvable: dict[str, int] = {}
+    for src, files in srcs.items():
+        if src not in resolvable:
+            unresolvable[src] = len(files)
+            continue
+        n_csv = store.count_keys(csv_prefix(src))
+        if not n_csv:
+            dropped[src] = len(files)                     # no CSV in the served store: not downloadable
+            continue
+        kept[src] = list(files)
+        print(f"  {src}: {len(files):,} local parquet file(s), {n_csv:,} served CSV(s)", flush=True)
+    if dropped:
+        print("  NOT counted - the worker resolves them, but the served store holds no CSV for them: "
+              + ", ".join(f"{k} ({v:,} files)" for k, v in sorted(dropped.items())), flush=True)
+    if unresolvable:
+        worst = sorted(unresolvable.items(), key=lambda kv: -kv[1])[:8]
+        print("  in the local store but NOT resolvable by the worker (gated, mid-backfill or retired), so not "
+              "counted: " + ", ".join(f"{k} {v:,}" for k, v in worst), flush=True)
+    return kept, dropped
+
+
 def source_files() -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for root in ROOTS:
@@ -281,7 +320,13 @@ def source_files() -> dict[str, list[str]]:
 
 
 def _wire_r2(con) -> None:
-    """Point DuckDB at the bucket so read_parquet can take s3:// keys."""
+    """Point DuckDB at the bucket so read_parquet can take s3:// keys. Refused after T0: it hands the R2 key to
+    DuckDB, whose httpfs makes its own S3 calls outside r2_util's guard, and R2 is then a frozen copy that
+    must not be counted as current (R1221 finding 2)."""
+    from core import cutover                                          # noqa: PLC0415
+    if cutover.is_cut_over():
+        raise cutover.CutoverRefused("refused: after T0 the census reads the local store only - no R2 "
+                                     "credentials go to DuckDB (R1221)")
     from updater.blob import R2Blob                                   # noqa: PLC0415
     r2 = R2Blob()
     creds = r2.client._request_signer._credentials
@@ -499,15 +544,42 @@ def one_observation_sources(obs_by_src: dict, ser_by_src: dict, ratio: float = O
     return sorted(out, key=lambda t: -t[2])
 
 
+def _publish_store():
+    """Where stats.json is published: R2 before T0, the self-hosted blob store after (csv_store decides). Opened
+    BEFORE the counting, so a store that is missing fails in seconds, not after hours (R1221 finding 5)."""
+    from updater import blob                                         # noqa: PLC0415
+    return blob.csv_store(BUCKET)
+
+
+def _own_the_store_waiting(max_wait_s: float = 1800.0, step_s: float = 30.0) -> None:
+    """After T0 the publish needs the single-writer lock. The updater may hold it for a while; a refusal after
+    hours of counting would throw the count away (R1221 advisory), so wait for it - bounded - as the swap does."""
+    import time as _time                                             # noqa: PLC0415
+    from core import cutover                                         # noqa: PLC0415
+    from updater import blob                                         # noqa: PLC0415
+    end = _time.monotonic() + max_wait_s
+    while True:
+        try:
+            blob._refuse_or_own_store_write("series_census --publish")
+            return
+        except cutover.CutoverRefused as e:
+            if "another process holds" not in str(e) or _time.monotonic() >= end:
+                raise
+            print(f"  the writer lock is held by another process; waiting {step_s:.0f}s", flush=True)
+            _time.sleep(step_s)
+
+
 def main() -> int:
     from core import cutover                                         # noqa: PLC0415
-    if cutover.is_cut_over():
+    selfhosted = cutover.is_cut_over()
+    if selfhosted:
         # after T0 the store measured is THIS checkout's (ROOTS), and only the live checkout may publish: say
         # which, and refuse a publish before hours of counting rather than after (updater.blob's rule)
         print(f"measuring the local store under {', '.join(ROOTS)}", flush=True)
         if "--publish" in sys.argv:
             from updater.blob import refuse_unless_live_checkout     # noqa: PLC0415
             refuse_unless_live_checkout("series_census --publish")
+    store = _publish_store() if "--publish" in sys.argv else None
     srcs = source_files()
     _local_n = sum(len(v) for v in srcs.values())
     if "--include-unserved" in sys.argv:
@@ -516,9 +588,11 @@ def main() -> int:
     else:
         srcs, dropped = keep_served(srcs)
         n_drop = sum(dropped.values())
+        why = ("their source has no CSV in the served store" if selfhosted
+               else "absent from R2 or a different size")
         print(f"{sum(len(v) for v in srcs.values()):,} SERVED parquet files across "
               f"{len(srcs)} sources "
-              f"({n_drop:,} local file(s) skipped - absent from R2 or a different size)",
+              f"({n_drop:,} local file(s) skipped - {why})",
               flush=True)
         if dropped:
             worst = sorted(dropped.items(), key=lambda kv: -kv[1])[:8]
@@ -620,8 +694,9 @@ def main() -> int:
 
     if "--publish" not in sys.argv:
         print("NOT PUBLISHED (measurement-only run; pass --publish to upload). "
-              "Totals cover the SERVED store: objects present on R2 that the worker "
-              "will resolve.")
+              + ("Totals cover the SERVED store: sources the worker resolves whose CSVs the self-hosted store "
+                 "holds, read from the local parquet store." if selfhosted else
+                 "Totals cover the SERVED store: objects present on R2 that the worker will resolve."))
         return 1 if impossible else 0
 
     # IMPOSSIBILITY GATE, and --force-publish does NOT lift it. R420 below asks whether the number moved;
@@ -636,7 +711,8 @@ def main() -> int:
     # R420 publish gate: refuse a silent step-change against the live object. The object lives where /v1/stats
     # reads it: R2 before T0, the self-hosted blob store after (csv_store decides, from the cutover flag).
     from updater import blob                                 # noqa: PLC0415
-    store = blob.csv_store(BUCKET)
+    if selfhosted:
+        _own_the_store_waiting()                             # the lock, before reading the object it compares with
     try:
         raw = store.get(KEY)
         cur = json.loads(raw) if raw else None

@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSING: {src} is a publisher-direct SUCCESSOR, never a retirement target")
         return 1
 
-    t = Targets()
+    t = Targets(apply=a.apply)
     if t.selfhosted and a.apply:                    # a dry run only reads, so it takes no lock (AR-153)
         from core.catalog_path import writer_lock                           # noqa: PLC0415
         lock = writer_lock()
@@ -79,6 +79,11 @@ def _retire(src: str, apply: bool, t: Targets) -> int:
     if not apply:
         print("(dry run — pass --apply to retire)")
         return 0
+
+    # 0. LOG FIRST, then change (R1222 finding 3): logged after the deletes, a retirement that stopped half way
+    # left no record, and import_from_r2 --restore-missing put its deleted CSVs back. A logged removal that
+    # then fails is the safe way round: nothing is restored under it until the log is looked at.
+    t.record_removal("retire_source", src, "retired: catalogue rows, series CSVs and store objects")
 
     # 1. archive primary parquets
     for k, _ in parquets:
@@ -115,7 +120,6 @@ def _retire(src: str, apply: bool, t: Targets) -> int:
     n = t.delete([k for k, _ in store_objs], (cp, sp))
     print(f"  {where}: deleted {n:,} store object(s)")
 
-    t.record_removal("retire_source", src, "retired: catalogue rows, series CSVs and store objects")
     print(f"{src}: RETIRED (data plane). Now: util.ts removal + registry retire/count bump "
           f"+ deploy + live absence check + refresh_r2_catalog.")
     return 0

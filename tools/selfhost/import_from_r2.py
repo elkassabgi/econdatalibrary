@@ -58,17 +58,29 @@ def etag_matches(data: bytes, etag: str) -> bool:
     return False
 
 
-def copy_one(s3, store: BlobStore, key: str, overwrite: bool = False) -> tuple[bool, str]:
-    # AFTER T0 the store is what users are served and R2 is a frozen copy of the past: the store's write rule
-    # applies (the live checkout and the single-writer lock - R1217 finding 3: this wrote the served store
-    # beside a lock holder), and an object the store already holds is NEWER than R2's, so it is kept unless
-    # the run says --overwrite (a deliberate repair).
+def copy_one(s3, store: BlobStore, key: str, overwrite: bool = False,
+             restore_missing: bool = False) -> tuple[bool, str]:
+    # AFTER T0 the store is what users are served and R2 is a frozen copy of the past:
+    #   * the store's write rule applies (the live checkout and the single-writer lock - R1217 finding 3);
+    #   * an object the store holds is NEWER than R2's: kept unless --overwrite (a deliberate repair);
+    #   * an object the store does NOT hold may be missing on purpose - a licence removal deletes it, and
+    #     importing it again put a retired source's CSVs back on sale (R1220 finding 1): refused unless
+    #     --restore-missing, and a key under a logged licence removal is refused whatever the flags say.
     from core import cutover                                        # noqa: PLC0415
     if cutover.is_cut_over():
         from updater.blob import _refuse_or_own_store_write         # noqa: PLC0415
+        from core.licence_targets import removed_csv_prefixes       # noqa: PLC0415
         _refuse_or_own_store_write(f"import {key} from the frozen R2 copy")
-        if not overwrite and store.head(key) is not None:
+        gone = [p for p in removed_csv_prefixes() if key.startswith(p)]
+        if gone:
+            raise cutover.CutoverRefused(f"refused: {key} is under {gone[0]}, which a licence removal took out "
+                                         f"of the store after T0 - it is never restored from R2 (R1220)")
+        held = store.head(key) is not None
+        if held and not overwrite:
             return True, f"{key} kept: the store already holds it, and after T0 it is newer than R2"
+        if not held and not restore_missing:
+            return False, (f"{key} NOT imported: the store does not hold it, and after T0 an absent object may "
+                           f"have been removed on purpose - pass --restore-missing to put it back")
     r = s3.get_object(Bucket=BUCKET, Key=key)
     data = r["Body"].read()
     etag = r["ETag"].strip('"')
@@ -89,6 +101,8 @@ def main() -> int:
     ap.add_argument("--create", action="store_true", help="create the blob store if it does not exist")
     ap.add_argument("--overwrite", action="store_true",
                     help="after T0, replace an object the store already holds (a repair; before T0 always)")
+    ap.add_argument("--restore-missing", action="store_true",
+                    help="after T0, import an object the store does not hold (never one a licence removal took)")
     a = ap.parse_args()
     from core import r2_util  # noqa: PLC0415
     s3 = r2_util.cloud_client()     # a named final-sync reader: keeps reading the cloud after T0
@@ -107,7 +121,7 @@ def main() -> int:
             tok = resp["NextContinuationToken"]
     bad = 0
     for k in keys:
-        ok, msg = copy_one(s3, store, k, overwrite=a.overwrite)
+        ok, msg = copy_one(s3, store, k, overwrite=a.overwrite, restore_missing=a.restore_missing)
         bad += not ok
         print(("OK   " if ok else "FAIL ") + msg, flush=True)
     print(f"copied {len(keys) - bad} of {len(keys)}; failures {bad}")

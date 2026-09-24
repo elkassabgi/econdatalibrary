@@ -107,6 +107,72 @@ def test_after_t0_a_retirement_from_another_checkout_changes_nothing(live, monke
     assert catalog_path._held is None
 
 
+def test_after_t0_a_dry_run_from_another_checkout_is_allowed_and_reads_only(live, monkeypatch, tmp_path):
+    """R1220: the up-front refusal also refused a dry run, which only reads. It applies to --apply only."""
+    tmp, store, sb = live
+    monkeypatch.setattr(blob, "_code_root", lambda: str(tmp_path / "a_worktree"))
+    before = _rows(tmp / "live" / "catalog.db")
+    assert retire_source.main(["foo"]) == 0
+    assert delist_source_rows.main(["foo"]) == 0
+    assert _rows(tmp / "live" / "catalog.db") == before and len(sb.list_keys("series/")) == 3
+    with pytest.raises(cutover.CutoverRefused):
+        delist_source_rows.main(["foo", "--apply"])
+
+
+def test_after_t0_a_retired_source_is_not_restored_from_r2(live):
+    """R1220 finding 1, end to end: retire, then try to import the retired CSVs from the frozen R2 copy."""
+    import hashlib
+    import io
+    import import_from_r2
+    tmp, store, sb = live
+    assert retire_source.main(["foo", "--apply"]) == 0
+
+    class S3:
+        def get_object(self, **kw):
+            return {"Body": io.BytesIO(CSV), "ETag": '"%s"' % hashlib.md5(CSV).hexdigest()}  # noqa: S324
+    for key in ("series/foo%3Aa.csv", "series/foo%3Ab.csv"):
+        with pytest.raises(cutover.CutoverRefused, match="licence removal"):
+            import_from_r2.copy_one(S3(), sb.store, key, overwrite=True, restore_missing=True)
+    assert sb.list_keys("series/") == ["series/foo_direct%3Aa.csv"]
+
+
+def test_after_t0_an_interrupted_retirement_still_blocks_the_restore(live, monkeypatch):
+    """R1222 finding 3: the removal was logged only after both deletes; a retirement that stopped half way left
+    no record, and --restore-missing put the deleted CSV back. The log line now comes first."""
+    import hashlib
+    import io
+    import import_from_r2
+    tmp, store, sb = live
+    real_delete, n = blob.SelfhostBlob.delete, []
+
+    def second_fails(self, key):
+        n.append(key)
+        if len(n) == 2:
+            raise OSError("the disk went away")
+        return real_delete(self, key)
+    monkeypatch.setattr(blob.SelfhostBlob, "delete", second_fails)
+    with pytest.raises(OSError):
+        retire_source.main(["foo", "--apply"])
+    monkeypatch.setattr(blob.SelfhostBlob, "delete", real_delete)
+    gone = [k for k in ("series/foo%3Aa.csv", "series/foo%3Ab.csv") if not sb.exists(k)]
+    assert gone, "precondition: the first delete happened"
+
+    class S3:
+        def get_object(self, **kw):
+            return {"Body": io.BytesIO(CSV), "ETag": '"%s"' % hashlib.md5(CSV).hexdigest()}  # noqa: S324
+    with pytest.raises(cutover.CutoverRefused, match="licence removal"):
+        import_from_r2.copy_one(S3(), sb.store, gone[0], restore_missing=True)
+    assert not sb.exists(gone[0])
+
+
+def test_after_t0_an_unfinished_csv_purge_still_blocks_the_restore(live, monkeypatch):
+    tmp, store, sb = live
+    monkeypatch.setattr(blob.SelfhostBlob, "delete", lambda self, key: None)      # deletes nothing
+    assert delist_source_rows.main(["foo", "--apply", "--purge-csv-prefix", ""]) == 1
+    from core.licence_targets import removed_csv_prefixes
+    assert "series/foo%3A" in removed_csv_prefixes()
+
+
 def test_after_t0_a_retirement_acts_only_on_the_self_hosted_places(live, capsys):
     tmp, store, sb = live
     assert retire_source.main(["foo", "--apply"]) == 0
@@ -324,4 +390,7 @@ def test_residual_rows_fail_the_delisting(live, monkeypatch):
 def test_residual_objects_fail_the_csv_purge(live, monkeypatch):
     monkeypatch.setattr(lt.Targets, "delete", lambda self, keys, allowed: 0)        # nothing really removed
     assert delist_source_rows.main(["foo", "--purge-csv-prefix", "a", "--apply"]) == 1
-    assert _log(live[0]) == [], "a failed purge is not logged as a removal"
+    # CHANGED BY R1222 finding 3: the removal is logged BEFORE the deletes, so a purge that fails half way is
+    # still on record - import_from_r2 then refuses to restore under it, and a rollback denies it at the edge.
+    # Both readers err toward "removed", which is the safe direction for a licence removal.
+    assert [r["what"] for r in _log(live[0])] == ["series CSVs under series/foo%3Aa"]

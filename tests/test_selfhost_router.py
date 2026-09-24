@@ -202,23 +202,46 @@ def test_a_request_body_is_refused_and_never_forwarded(pair, request_bytes):
 def test_flips_under_load_never_fail_a_request(pair):
     """AR-152: a read of the state file during a flip's replace raised and answered 503 (1.4 per flip)."""
     port, state = pair[0], pair[1]
-    bad, stop = [], threading.Event()
+    bad, stop, served = [], threading.Event(), []
+    # BOUNDED, AND OVER ONE KEEP-ALIVE CONNECTION PER CLIENT (R1218 finding 5): a new connection per request
+    # in 8 tight loops left 7,453 sockets in TIME_WAIT from this one test, and overlapping suites exhausted the
+    # ephemeral ports (WinError 10048) - on the machine that hosts the live router after T0. The router still
+    # opens one origin connection per request, so the cap bounds that side too.
+    cap = 200
 
     def client():
-        while not stop.is_set():
-            status = _get(port, "/v1/x")[0]
-            if status != 200:
-                bad.append(status)
+        c, n = None, 0
+        while not stop.is_set() and n < cap:
+            try:
+                if c is None:
+                    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+                c.request("GET", "/v1/x")
+                r = c.getresponse()
+                r.read()
+                if r.status != 200:
+                    bad.append(r.status)
+                if r.getheader("connection", "").lower() == "close":
+                    c.close()
+                    c = None
+            except (OSError, http.client.HTTPException) as e:
+                bad.append(type(e).__name__)
+                c = None
+            n += 1
+        served.append(n)
+        if c is not None:
+            c.close()
 
     threads = [threading.Thread(target=client) for _ in range(8)]
     for th in threads:
         th.start()
     for i in range(100):
         router.flip(str(state), "green" if i % 2 == 0 else "blue")
+        time.sleep(0.002)                      # spread the flips over the requests instead of racing past them
     stop.set()
     for th in threads:
         th.join()
-    assert bad == [], f"{len(bad)} failed request(s) during 100 flips: {sorted(set(bad))}"
+    assert bad == [], f"{len(bad)} failed request(s) during 100 flips: {sorted(set(map(str, bad)))}"
+    assert sum(served) >= 200, f"only {sum(served)} requests ran during the flips: the test measured nothing"
 
 
 def test_the_status_route_reports_in_flight_requests(pair):

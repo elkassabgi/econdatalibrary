@@ -869,6 +869,50 @@ def test_a_port_is_held_if_it_answers_or_is_listed_or_cannot_be_read(monkeypatch
     assert swap.port_held(12345) is held
 
 
+def _conn(ip, port, status, pid=4242):
+    import collections
+    import psutil
+    addr = collections.namedtuple("addr", "ip port")
+    return collections.namedtuple("sconn", "laddr status pid")(addr(ip, port), getattr(psutil, status), pid)
+
+
+@pytest.mark.parametrize("table,expected", [
+    ([("127.0.0.1", 8801, "CONN_LISTEN")], True),
+    ([("0.0.0.0", 8801, "CONN_LISTEN")], True),                  # a wildcard takes 127.0.0.1's traffic
+    ([("::", 8801, "CONN_LISTEN")], True),
+    ([("127.0.0.1", 8801, "CONN_ESTABLISHED")], False),          # R1218: any socket state was counted
+    ([("127.0.0.1", 8801, "CONN_TIME_WAIT")], False),
+    ([("::1", 8801, "CONN_LISTEN")], False),                     # R1218 finding 4: another address
+    ([("100.121.170.18", 8801, "CONN_LISTEN")], False),
+    ([("127.0.0.1", 8802, "CONN_LISTEN")], False),
+])
+def test_listening_counts_only_a_listener_that_127_0_0_1_reaches(monkeypatch, table, expected):
+    import psutil
+    monkeypatch.setattr(psutil, "net_connections", lambda kind="inet": [_conn(*r) for r in table])
+    assert swap.listening(8801) is expected
+
+
+def test_an_unreadable_listener_table_is_unknown_not_free(monkeypatch):
+    """R1218: listening() answering False on psutil.Error survived - port_held then read a held port as free."""
+    import psutil
+
+    def denied(kind="inet"):
+        raise psutil.AccessDenied()
+    monkeypatch.setattr(psutil, "net_connections", denied)
+    assert swap.listening(8801) is None
+    monkeypatch.setattr(swap, "port_in_use", lambda p: False)
+    assert swap.port_held(8801) is True
+    assert swap.port_holder(8801).startswith("unknown")
+
+
+def test_the_holder_named_is_the_loopback_listener(monkeypatch):
+    import psutil
+    monkeypatch.setattr(psutil, "net_connections", lambda kind="inet": [
+        _conn("::1", 8801, "CONN_LISTEN", pid=1), _conn("127.0.0.1", 8801, "CONN_LISTEN", pid=2)])
+    monkeypatch.setattr(psutil, "Process", lambda pid: (_ for _ in ()).throw(psutil.NoSuchProcess(pid)))
+    assert swap.port_holder(8801) == "pid 2 on 127.0.0.1:8801"
+
+
 def test_an_unrecorded_old_instance_that_misses_the_connect_is_still_not_a_clean_swap(rig, monkeypatch):
     """The loaded-suite case: the old instance still LISTENS but does not answer the 1 s connect."""
     swap.save_instances(rig["work"], {})

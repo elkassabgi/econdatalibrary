@@ -24,12 +24,14 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "selfhost"))
 import series_census  # noqa: E402
 from blobstore import BlobStore  # noqa: E402
 
+_REAL_WIRE_R2 = series_census._wire_r2          # the fixture replaces it with a tripwire
+
 
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     live = tmp_path / "live"
     full = live / "data" / "clean_full"
-    for src, keys in (("eurostat", ["a", "a", "b"]), ("oecd", ["x"])):
+    for src, keys in (("eurostat", ["a", "a", "b"]), ("oecd", ["x"]), ("bls", ["z"])):
         (full / src).mkdir(parents=True)
         pq.write_table(pa.table({"series_key": keys, "value": list(range(len(keys)))}), full / src / "t.parquet")
     (full / "gated_thing").mkdir()
@@ -53,6 +55,10 @@ def world(tmp_path, monkeypatch):
     monkeypatch.delenv("ECONDL_CATALOG", raising=False)
     BlobStore(str(tmp_path / "blobs"), create=True)
     monkeypatch.setattr(blob, "SELFHOST_BLOB_ROOT", str(tmp_path / "blobs"))
+    sb = blob.SelfhostBlob()
+    for key in ("series/eurostat%3Aa.csv", "series/oecd%3Ax.csv"):     # served CSVs; bls has none (R1221)
+        sb.put_atomic(key, b"series_id,obs_date,value\n")
+    monkeypatch.setattr(catalog_path, "LIVE_STATE_DIR", str(tmp_path / "live_state"))
 
     def no_r2(*a, **k):
         raise AssertionError("after T0 the census must not touch R2")
@@ -69,14 +75,94 @@ def test_after_t0_the_served_keys_are_the_local_store(world):
     _tmp, _live, full = world
     keys = series_census.served_keys()
     assert keys == {f"clean_full/{s}/t.parquet": os.path.getsize(full / s / "t.parquet")
-                    for s in ("eurostat", "gated_thing", "oecd")}
+                    for s in ("bls", "eurostat", "gated_thing", "oecd")}
 
 
-def test_after_t0_every_kept_file_is_read_locally(world):
+def test_after_t0_a_source_counts_only_with_csvs_in_the_served_store(world, capsys):
+    """R1221 finding 1: after T0 "served" had become "on local disk". A resolvable source whose CSVs the served
+    store does not hold (bls here) is not downloadable, so it is not counted."""
     kept, dropped = series_census.keep_served(series_census.source_files())
-    assert set(kept) == {"eurostat", "oecd"}, "the worker's unresolvable source is not counted"
+    assert set(kept) == {"eurostat", "oecd"}, "unresolvable and CSV-less sources are not counted"
+    assert dropped == {"bls": 1}
     assert all(not f.startswith("s3://") for files in kept.values() for f in files)
-    assert dropped == {}
+    out = capsys.readouterr().out
+    assert "eurostat: 1 local parquet file(s), 1 served CSV(s)" in out and "bls (1 files)" in out
+
+
+def test_after_t0_nothing_goes_to_r2_even_when_sizes_differ(world, monkeypatch):
+    """R1221 finding 2: a file rewritten after served_keys() read a different size, and keep_served sent DuckDB
+    to s3:// with the write key. After T0 sizes are not compared, and _wire_r2 itself is refused."""
+    monkeypatch.setattr(series_census, "served_keys", lambda: {"clean_full/eurostat/t.parquet": 1})
+    kept, _dropped = series_census.keep_served(series_census.source_files())
+    assert all(not f.startswith("s3://") for files in kept.values() for f in files)
+    with pytest.raises(cutover.CutoverRefused, match="R1221"):
+        _REAL_WIRE_R2(object())                               # the real one, not the fixture's stand-in
+
+
+def test_before_t0_the_served_store_is_r2s_listing(world, monkeypatch, tmp_path):
+    """The pre-T0 half (a mutant that always listed local files survived R1221): a local file R2 does not hold
+    is dropped, and one R2 holds at another size is read from R2."""
+    import pathlib
+    (tmp_path / "CUTOVER").unlink()
+    _tmp, _live, full = world
+    listed = [{"Key": "clean_full/eurostat/t.parquet", "Size": os.path.getsize(full / "eurostat" / "t.parquet")},
+              {"Key": "clean_full/oecd/t.parquet", "Size": 1}]
+
+    class Pag:
+        def paginate(self, Bucket, Prefix):
+            return [{"Contents": [o for o in listed if o["Key"].startswith(Prefix)]}]
+
+    class FakeR2:
+        bucket = "econ-data"
+        client = type("C", (), {"get_paginator": lambda self, op: Pag()})()
+    monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: FakeR2())
+    kept, dropped = series_census.keep_served(series_census.source_files())
+    assert kept["eurostat"] == [str(full / "eurostat" / "t.parquet")], "same size: read locally"
+    assert kept["oecd"] == ["s3://econ-data/clean_full/oecd/t.parquet"], "different size: R2 wins"
+    assert dropped == {"bls": 1}, "absent from R2: not downloadable"
+    assert pathlib.Path(full / "bls" / "t.parquet").exists()
+
+
+def test_after_t0_the_r420_gate_compares_with_the_served_object(world, monkeypatch, capsys):
+    """A mutant that never read the current object survived R1221: a >20% move must be refused."""
+    sb = blob.SelfhostBlob()
+    (world[0] / "CUTOVER").unlink()
+    sb.put_atomic(series_census.KEY, json.dumps({"observations": 100, "individual_series": 3}).encode())
+    (world[0] / "CUTOVER").write_text("")
+    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish"])
+    assert series_census.main() == 1
+    assert "REFUSING to publish: observations moves 100 -> 4" in capsys.readouterr().out
+    assert json.loads(sb.get(series_census.KEY))["observations"] == 100, "the served object is unchanged"
+
+
+def test_the_publish_waits_for_the_lock_then_takes_it(monkeypatch):
+    calls = []
+
+    def refuse_twice(what):
+        calls.append(what)
+        if len(calls) < 3:
+            raise cutover.CutoverRefused("refused: another process holds the catalogue writer lock X")
+    monkeypatch.setattr(blob, "_refuse_or_own_store_write", refuse_twice)
+    monkeypatch.setattr(series_census, "_own_the_store_waiting", series_census._own_the_store_waiting)
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    series_census._own_the_store_waiting(max_wait_s=60, step_s=0)
+    assert len(calls) == 3
+    monkeypatch.setattr(blob, "_refuse_or_own_store_write",
+                        lambda what: (_ for _ in ()).throw(cutover.CutoverRefused("refused: the code's own checkout")))
+    with pytest.raises(cutover.CutoverRefused, match="own checkout"):     # not a lock wait: at once
+        series_census._own_the_store_waiting(max_wait_s=60, step_s=0)
+
+
+def test_a_missing_publish_store_fails_before_the_counting(world, monkeypatch, tmp_path):
+    """R1221 finding 5: the store was opened only after the multi-hour count."""
+    monkeypatch.setattr(blob, "SELFHOST_BLOB_ROOT", str(tmp_path / "no_store_here"))
+    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish"])
+    counted = []
+    monkeypatch.setattr(series_census, "_rows_and_key_batch", lambda *a: counted.append(a) or (0, [], 0))
+    with pytest.raises(Exception):
+        series_census.main()
+    assert counted == []
 
 
 def test_after_t0_a_publish_lands_in_the_self_hosted_store(world, monkeypatch):

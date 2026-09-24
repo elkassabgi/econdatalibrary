@@ -120,8 +120,55 @@ def test_a_prefix_other_than_series_is_refused(core_run):
 
 def test_put_with_backoff_refuses_a_key_it_would_store_plain():
     """It always gzipped; put_atomic gzips only series/*.csv - any other key is refused, not stored plain."""
-    with pytest.raises(ValueError, match="series CSVs"):
+    with pytest.raises(dc._PutFailed, match="series CSVs"):
         dc._put_with_backoff(Store(), "other/x.csv", BODY)
+
+
+def _refusal(kind):
+    from core import cutover
+    return {"ValueError": ValueError("Invalid endpoint: r2.example"),
+            "CutoverRefused": cutover.CutoverRefused("refused: another process holds the lock")}[kind]
+
+
+@pytest.mark.parametrize("workers", ["1", "4"])
+@pytest.mark.parametrize("kind", ["ValueError", "CutoverRefused"])
+def test_a_refusing_store_fails_the_run_at_once(core_run, capsys, monkeypatch, kind, workers):
+    """R1218 finding 1 / R1220 finding 4: a ValueError was counted "unresolvable" (exit 0), and a
+    CutoverRefused was retried 7 times per key (~2 min) for the same answer. Both are refusals: one try, a
+    PUT FAILED, a failed run - on the serial path and on the worker pool."""
+    calls = []
+
+    class Refusing(Store):
+        def put_atomic(self, key, data, plain=False):
+            calls.append(key)
+            raise _refusal(kind)
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda s: pytest.fail("a refusal is not retried"))
+    with pytest.raises(SystemExit, match="could not be written"):
+        core_run(Refusing(), "--workers", workers)
+    out = capsys.readouterr().out
+    assert "0 unresolvable" in out and "2 PUT FAILED" in out, out
+    assert sorted(calls) == ["series/zz%3Aa.csv", "series/zz%3Ab.csv"], "one try per key"
+
+
+@pytest.mark.parametrize("error,tries", [(OSError("reset"), 7), (_refusal("ValueError"), 1),
+                                         (_refusal("CutoverRefused"), 1)])
+def test_the_streamed_put_raises_put_failed(tmp_path, monkeypatch, error, tries):
+    """The streamed path (put_gzip_file) ends in _PutFailed too - raising the raw error survived as a mutant
+    (R1218) - after 7 tries for a transient error and 1 for a refusal."""
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    calls = []
+
+    class S:
+        def put_gzip_file(self, key, path, metadata=None):
+            calls.append(key)
+            raise error
+    p = tmp_path / "x.csv.gz"
+    p.write_bytes(b"\x1f\x8b")
+    with pytest.raises(dc._PutFailed):
+        dc._put_gzip_file_with_backoff(S(), "series/x.csv", str(p), {}, skip_identical=False)
+    assert len(calls) == tries
 
 
 def test_the_mirror_check_stops_at_t0(tmp_path, monkeypatch, capsys):

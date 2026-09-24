@@ -38,6 +38,29 @@ def csv_prefix(source: str) -> str:
     return "series/" + urllib.parse.quote(f"{source}:", safe="")
 
 
+def removed_csv_prefixes() -> list[str]:
+    """Every series-CSV prefix a post-T0 licence removal took out of the store, from the durable removal log
+    (record_removal): each logged source's prefix, and any prefix a delisting named. A tool that could put an
+    object back (tools/selfhost/import_from_r2.py) refuses these - R1220 finding 1: it restored a retired
+    source's CSVs from the frozen R2 copy. No log = nothing removed; a log that cannot be read is an error."""
+    import json                                                                    # noqa: PLC0415
+    from core.catalog_path import LIVE_STATE_DIR                                   # noqa: PLC0415
+    path = os.path.join(LIVE_STATE_DIR, REMOVAL_LOG)
+    if not os.path.exists(path):
+        return []
+    out = set()
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            rec = json.loads(line)                    # a torn line raises: never read as "nothing removed"
+            out.add(csv_prefix(rec["source"]))
+            for word in str(rec.get("what", "")).split():
+                if word.startswith("series/"):
+                    out.add(word)
+    return sorted(out)
+
+
 def store_prefix(source: str) -> str:
     """The TERMINATED store prefix of a source: 'clean_full/<source>/'."""
     return f"clean_full/{source}/"
@@ -53,10 +76,10 @@ class Targets:
     """The places a licence removal acts on. Build ONE per run, before any change: the T0 answer is taken
     once, so a run never mixes the two backends."""
 
-    def __init__(self):
+    def __init__(self, apply: bool = True):
         self.selfhosted = is_cut_over()
         self._r2_read = self._r2_write = self._blob = None
-        if self.selfhosted:
+        if self.selfhosted and apply:                   # a dry run only reads, from any checkout (R1220)
             # up front, before the run changes anything: a removal from a worktree deleted catalogue rows and
             # archived parquets, then had its CSV delete refused - the source gone from the catalogue while
             # its CSVs stayed served (R1217 finding 2). The lock is the caller's (catalogue writes need it).

@@ -216,6 +216,14 @@ class _PutFailed(Exception):
     (R1211: the two were counted together as 'unresolvable' and the run exited 0)."""
 
 
+# what the store RAISES TO REFUSE, as opposed to failing for now: a ValueError (not gzip, an invalid endpoint)
+# and core.cutover.CutoverRefused (after T0: another checkout, another writer holding the lock). Retrying one
+# spent ~2 minutes per key for the same answer (R1220 finding 4).
+from core.cutover import CutoverRefused as _CutoverRefused   # noqa: E402
+
+_REFUSALS = (ValueError, _CutoverRefused)
+
+
 class _ResolveZero(Exception):
     """Streamed a series and found no rows — same meaning as read_native's zero-row error."""
 
@@ -436,8 +444,10 @@ def _put_gzip_file_with_backoff(store, key, path, metadata=None,
         try:
             store.put_gzip_file(key, path, metadata=metadata)       # reopens the file every attempt
             return
-        except ValueError:
-            raise                                            # a refusal (not gzip), never transient: no retries
+        except _REFUSALS as e:
+            # a refusal (not gzip, a bad endpoint, the post-T0 single-writer rule) is never transient: no
+            # retries, and a PUT FAILED - counted as "unresolvable" it left the run at exit 0 (R1218, R1220)
+            raise _PutFailed(f"{key}: refused: {type(e).__name__}: {str(e)[:160]}") from e
         except Exception as e:                               # noqa: BLE001
             if attempt == 6:
                 raise _PutFailed(f"{key}: {type(e).__name__}: {str(e)[:120]}") from e
@@ -469,13 +479,14 @@ def _put_with_backoff(store, key, body) -> None:
     # It gzips ONLY series/*.csv keys, and this always gzipped, so any other key is refused rather than
     # silently stored plain.
     if not (key.startswith("series/") and key.endswith(".csv")):
-        raise ValueError(f"{key}: _put_with_backoff stores series CSVs (series/<id>.csv) only")
+        raise _PutFailed(f"{key}: _put_with_backoff stores series CSVs (series/<id>.csv) only")
     for attempt in range(7):
         try:
             store.put_atomic(key, body)
             return
-        except ValueError:
-            raise                                            # a refusal (e.g. plain=True with gzip), never transient
+        except _REFUSALS as e:
+            # a refusal is never transient: no retries, and a PUT FAILED, not "unresolvable" (R1218, R1220)
+            raise _PutFailed(f"{key}: refused: {type(e).__name__}: {str(e)[:160]}") from e
         except Exception as e:                               # noqa: BLE001
             if attempt == 6:
                 raise _PutFailed(f"{key}: {type(e).__name__}: {str(e)[:120]}") from e

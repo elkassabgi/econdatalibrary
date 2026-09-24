@@ -29,7 +29,10 @@ def world(tmp_path, monkeypatch):
     # the "live checkout" is THIS checkout, with its own data root: the positive case
     monkeypatch.setattr(catalog_path, "LIVE_STORE_ROOT", ROOT)
     monkeypatch.setattr(config, "DATA_ROOT", os.path.join(ROOT, "data", "clean_full"))
+    monkeypatch.setattr(config, "ROOT", ROOT)
+    monkeypatch.setattr(catalog_path, "LIVE_STATE_DIR", str(tmp_path / "live_state"))   # the removal log
     monkeypatch.delenv("ECONDL_DATA", raising=False)
+    monkeypatch.delenv("ECONDL_CATALOG", raising=False)                                  # R1220: a shell's
     assert catalog_path._held is None
     yield tmp_path, blob.SelfhostBlob(root=str(tmp_path / "blobs"))
     if blob._process_session is not None:                      # let go of a lock a write took
@@ -85,6 +88,28 @@ def test_after_t0_a_root_elsewhere_is_refused(world, monkeypatch, override):
     with pytest.raises(cutover.CutoverRefused, match=override.replace(".", r"\.")):
         sb.put_atomic(KEY, CSV)
     assert not sb.exists(KEY) and catalog_path._held is None
+
+
+def test_the_checkout_verdict_is_kept_for_the_same_inputs_only(world, monkeypatch):
+    """R1220 finding 3: ~10 ms of realpath per write. A pass is kept for the same inputs; a change is checked."""
+    tmp_path, sb = world
+    _cut_over(tmp_path)
+    blob._live_checkout_ok.clear()
+    calls = []
+    real = os.path.realpath
+    monkeypatch.setattr(blob.os.path, "realpath", lambda p, *a, **k: calls.append(p) or real(p, *a, **k))
+    blob.refuse_unless_live_checkout("t")
+    first = len(calls)
+    blob.refuse_unless_live_checkout("t")
+    assert first > 0 and len(calls) == first, "the second identical check resolved nothing"
+    monkeypatch.setattr(blob, "_LIVE_CHECK_TTL", 0.0)          # R1222: a kept verdict expires (a junction moves)
+    blob.refuse_unless_live_checkout("t")
+    assert len(calls) == 2 * first, "an expired verdict is checked afresh"
+    monkeypatch.setattr(config, "DATA_ROOT", str(tmp_path / "elsewhere"))
+    with pytest.raises(cutover.CutoverRefused, match="DATA_ROOT"):
+        blob.refuse_unless_live_checkout("t")
+    with pytest.raises(cutover.CutoverRefused):                  # a refusal is not kept as a pass either
+        blob.refuse_unless_live_checkout("t")
 
 
 def test_a_copy_goes_through_the_rule(world, monkeypatch):
@@ -157,6 +182,40 @@ def test_after_t0_import_from_r2_keeps_the_newer_store_and_obeys_the_lock(world,
     monkeypatch.setattr(blob, "_code_root", lambda: ROOT)
     ok, _msg = import_from_r2.copy_one(S3(), sb.store, KEY, overwrite=True)   # a deliberate repair
     assert ok and sb.get(KEY) == frozen and catalog_path._held is not None
+
+
+def test_after_t0_import_from_r2_never_restores_what_was_removed(world):
+    """R1220 finding 1: a key the store does not hold may be absent ON PURPOSE - a licence removal after T0
+    deleted it, and importing it again put the retired source's CSVs back. Absent keys need --restore-missing,
+    and a key under a logged removal is refused whatever the flags."""
+    import hashlib
+    import json
+    import import_from_r2
+    tmp_path, sb = world
+    body = b"series_id,obs_date,value\n"
+
+    class S3:
+        def get_object(self, **kw):
+            import io
+            return {"Body": io.BytesIO(body), "ETag": '"%s"' % hashlib.md5(body).hexdigest()}  # noqa: S324
+    _cut_over(tmp_path)
+    ok, msg = import_from_r2.copy_one(S3(), sb.store, "series/new%3A1.csv")
+    assert not ok and "restore-missing" in msg and not sb.exists("series/new%3A1.csv")
+    ok, _msg = import_from_r2.copy_one(S3(), sb.store, "series/new%3A1.csv", restore_missing=True)
+    assert ok and sb.exists("series/new%3A1.csv")
+    os.makedirs(catalog_path.LIVE_STATE_DIR, exist_ok=True)
+    with open(os.path.join(catalog_path.LIVE_STATE_DIR, "licence_removals.jsonl"), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"tool": "retire_source", "source": "foo", "what": "retired"}) + "\n")
+        fh.write(json.dumps({"tool": "delist_source_rows", "source": "bar",
+                             "what": "series CSVs under series/bar_extra%3A"}) + "\n")
+    for key in ("series/foo%3Aa.csv", "series/bar_extra%3Ax.csv"):
+        with pytest.raises(cutover.CutoverRefused, match="licence removal"):
+            import_from_r2.copy_one(S3(), sb.store, key, overwrite=True, restore_missing=True)
+        assert not sb.exists(key)
+    with open(os.path.join(catalog_path.LIVE_STATE_DIR, "licence_removals.jsonl"), "a", encoding="utf-8") as fh:
+        fh.write("{torn")
+    with pytest.raises(ValueError):                          # an unreadable log is never "nothing removed"
+        import_from_r2.copy_one(S3(), sb.store, "series/new%3A2.csv", restore_missing=True)
 
 
 _HOLDER = """

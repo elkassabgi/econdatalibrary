@@ -168,7 +168,9 @@ def test_a_file_that_is_not_gzip_is_refused(tmp_path):
     """Marked gzip, plain bytes would be served as garbage (the R560 class)."""
     p = _file(tmp_path, body=b"series_id,obs_date,value" + bytes([10]))
     s3 = FakeS3(raises=True)
-    with pytest.raises(ValueError, match="not gzip"):
+    # a refusal: not retried, and a PUT FAILED for the run to count (R1218/R1220), naming the ValueError
+    from core.derive_csv import _PutFailed
+    with pytest.raises(_PutFailed, match="refused: ValueError.*not gzip"):
         _put_gzip_file_with_backoff(_store(s3), "series/x%3A1.csv", p, skip_identical=False)
     assert s3.puts == []
 

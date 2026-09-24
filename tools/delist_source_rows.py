@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
                          "with this prefix (terminated at the encoded delimiter); catalogue/D1 "
                          "untouched. Empty string = every CSV of the source.")
     a = ap.parse_args(argv)
-    t = Targets()
+    t = Targets(apply=a.apply)
     if t.selfhosted and a.apply:                    # a dry run only reads, so it takes no lock (AR-153)
         from core.catalog_path import writer_lock                           # noqa: PLC0415
         lock = writer_lock()
@@ -67,11 +67,10 @@ def _purge_csvs(src: str, native_prefix: str, apply: bool, t: Targets) -> int:
     if not apply:
         print("(dry run - pass --apply to purge)")
         return 0
+    t.record_removal("delist_source_rows", src, f"series CSVs under {pfx}")   # before the deletes (R1222)
     t.delete(keys, (pfx,))
     left = t.list(pfx)
     print(f"  purged; residual objects: {len(left)} (must be 0)")
-    if not left:
-        t.record_removal("delist_source_rows", src, f"series CSVs under {pfx}")
     return 0 if not left else 1
 
 
@@ -85,6 +84,7 @@ def _delist(src: str, apply: bool, t: Targets) -> int:
         print("(dry run - pass --apply to delist)")
         return 0
 
+    t.record_removal("delist_source_rows", src, "delisted: catalogue rows")   # before the change (R1222)
     left = t.remove_source_rows(con, src)
     print(f"  catalogue: deleted; residual rows={left} (must be 0)")
     if left:
@@ -95,7 +95,6 @@ def _delist(src: str, apply: bool, t: Targets) -> int:
     # 15 such ids were live, 11 of them gated).
     if not t.skip_d1() and not t.d1_execute(src):
         return 1
-    t.record_removal("delist_source_rows", src, "delisted: catalogue rows")
 
     print(f"{src}: DELISTED (catalogue{'' if t.selfhosted else ' + D1'}). Now: util.ts removal + deploy + "
           f"live absence check + refresh_r2_catalog --allow-shrink {src}.")

@@ -37,6 +37,19 @@ def test_os_system_is_guarded_too():
         os.system(f'"{sys.executable}" -m updater.run --pull-state')
 
 
+def test_the_default_env_file_is_not_the_checkout_s(monkeypatch):
+    """R1218: a conftest without the core.config._DEFAULT patch survived. load_env() with no path reads
+    _DEFAULT - the checkout's .env, which holds the write keys on the production checkout. Under the guard it
+    names a file that does not exist, and a no-argument load_env() sets nothing - even for a key the guard
+    did not empty, which the checkout's .env would have supplied."""
+    import os
+    from core import config as core_config
+    assert not os.path.exists(core_config._DEFAULT)
+    monkeypatch.delenv("R2_WRITE_ENDPOINT")
+    core_config.load_env()
+    assert "R2_WRITE_ENDPOINT" not in os.environ
+
+
 def test_load_env_cannot_bring_the_keys_back(tmp_path):
     """R1213: core.config.load_env() setdefault()s from a .env; deleted keys came back from it. With a .env of
     this test's own: the R2 keys stay empty and r2_util still has no credentials."""

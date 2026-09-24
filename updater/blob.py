@@ -754,6 +754,8 @@ def _blobstore_module():
 
 _own_store_guard = threading.Lock()
 _process_session = None          # the write session a store write entered for this process (see below)
+_live_checkout_ok: dict = {}     # input tuple -> monotonic time refuse_unless_live_checkout passed it
+_LIVE_CHECK_TTL = 60.0
 
 
 def _code_root() -> str:
@@ -774,17 +776,25 @@ def refuse_unless_live_checkout(what: str) -> None:
     from . import config                                                  # noqa: PLC0415
     live = catalog_path.LIVE_STORE_ROOT
     data = os.path.join(live, "data", "clean_full")
-    same = lambda x, y: os.path.normcase(os.path.realpath(x)) == os.path.normcase(os.path.realpath(y))  # noqa: E731
-    places = [("the code's own checkout", _code_root(), live),
+    places = (("the code's own checkout", _code_root(), live),
               ("config.ROOT (ECONDL_ROOT)", config.ROOT, live),
               ("config.DATA_ROOT (AQUEDUCT_DATA_ROOT)", config.DATA_ROOT, data),
               ("ECONDL_DATA", os.environ.get("ECONDL_DATA") or data, data),
               ("ECONDL_CATALOG", os.environ.get("ECONDL_CATALOG") or catalog_path.BUILD_PATH,
-               catalog_path.BUILD_PATH)]
+               catalog_path.BUILD_PATH))
+    # 10 realpath calls took ~10 ms per write (R1220 finding 3: a 16-thread derive fell from ~245 to ~150
+    # writes/s). A PASSED verdict is kept for exactly these inputs, for at most _LIVE_CHECK_TTL seconds - the
+    # strings can stay the same while a junction under them is retargeted (R1222) - and a refusal is never kept.
+    import time as _time                                                  # noqa: PLC0415
+    passed_at = _live_checkout_ok.get(places)
+    if passed_at is not None and _time.monotonic() - passed_at < _LIVE_CHECK_TTL:
+        return
+    same = lambda x, y: os.path.normcase(os.path.realpath(x)) == os.path.normcase(os.path.realpath(y))  # noqa: E731
     wrong = [f"{name} is {actual}, must be {want}" for name, actual, want in places if not same(actual, want)]
     if wrong:
         raise cutover.CutoverRefused(f"refused: {what} changes what users are served, and after T0 only the "
                                      f"live checkout may: " + "; ".join(wrong) + " (R1203)")
+    _live_checkout_ok[places] = _time.monotonic()
 
 
 def _refuse_or_own_store_write(what: str) -> None:
@@ -925,6 +935,9 @@ class SelfhostBlob:
 
     def list_keys(self, prefix: str) -> list[str]:
         return self.store.list(prefix)
+
+    def count_keys(self, prefix: str) -> int:
+        return self.store.count(prefix)
 
     def list_modified(self, prefix: str) -> list[tuple]:
         """R2Blob.list_modified's twin: the store's stored_utc (R2's LastModified for an imported object,

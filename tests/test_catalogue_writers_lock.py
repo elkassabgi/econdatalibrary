@@ -138,8 +138,15 @@ LOCKERS = {"write_session", "writer_lock", "write_session_for_process"}
 _MODULE = "core.catalog_path"
 
 
+def _names_the_module(node, mods) -> bool:
+    """`catalog_path`, an alias of it, or any `<something>.catalog_path` (`import core as c` then
+    `c.catalog_path`, `self.catalog_path` - R1220 finding 2: the rebuilt rule missed these)."""
+    return ast.unparse(node) in mods or (isinstance(node, ast.Attribute) and node.attr == "catalog_path")
+
+
 def _catalog_bindings(tree) -> tuple[set, dict]:
-    """(names bound to the module, {local name: original name} for names imported from it)."""
+    """(names bound to the module, {local name: original name} for names imported from it). A plain
+    assignment of the module to a name (`_cp = catalog_path`) makes an alias too (R1220)."""
     mods, names = {"catalog_path", _MODULE}, {}
     for n in ast.walk(tree):
         if isinstance(n, ast.ImportFrom) and n.module == "core":
@@ -148,13 +155,22 @@ def _catalog_bindings(tree) -> tuple[set, dict]:
             names.update({a.asname or a.name: a.name for a in n.names})
         elif isinstance(n, ast.Import):
             mods |= {a.asname for a in n.names if a.name == _MODULE and a.asname}
+    grew = True
+    while grew:
+        grew = False
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Assign) and _names_the_module(n.value, mods):
+                new = {t.id for t in n.targets if isinstance(t, ast.Name)} - mods
+                if new:
+                    mods |= new
+                    grew = True
     return mods, names
 
 
 def _is_source(node, bindings, ignore=frozenset()) -> bool:
     mods, names = bindings
     for x in ast.walk(node):
-        if isinstance(x, ast.Attribute) and ast.unparse(x.value) in mods and x.attr not in ignore:
+        if isinstance(x, ast.Attribute) and _names_the_module(x.value, mods) and x.attr not in ignore:
             return True
         if isinstance(x, ast.Name) and x.id in names and names[x.id] not in ignore:
             return True
@@ -246,16 +262,27 @@ def _imports_catalog_path(tree) -> bool:
 def _sqlite_opens(tree):
     """Every call that opens a database with plain sqlite3: `<alias>.connect(...)` for any alias of the sqlite3
     module, and `<name>(...)` for any name imported as `from sqlite3 import connect [as name]`."""
-    mods = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
-            for a in n.names if a.name == "sqlite3"}
-    funcs = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "sqlite3"
-             for a in n.names if a.name == "connect"}
+    mods = set()                          # names whose .connect opens a database
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                if a.name in ("sqlite3", "sqlite3.dbapi2"):
+                    # `import sqlite3.dbapi2` binds sqlite3; `import sqlite3.dbapi2 as d` binds d (d.connect)
+                    mods.add(a.asname or "sqlite3")
+        elif isinstance(n, ast.ImportFrom) and n.module == "sqlite3":
+            mods |= {a.asname or a.name for a in n.names if a.name == "dbapi2"}   # from sqlite3 import dbapi2
+    funcs = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+             and n.module in ("sqlite3", "sqlite3.dbapi2") for a in n.names if a.name == "connect"}
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
             continue
         f = n.func
-        if isinstance(f, ast.Attribute) and f.attr == "connect" and isinstance(f.value, ast.Name) and f.value.id in mods:
-            yield n
+        if isinstance(f, ast.Attribute) and f.attr == "connect":
+            v = f.value
+            if isinstance(v, ast.Name) and v.id in mods:
+                yield n
+            elif isinstance(v, ast.Attribute) and v.attr == "dbapi2" and ast.unparse(v.value) in mods:
+                yield n                                                        # sqlite3.dbapi2.connect (R1220)
         elif isinstance(f, ast.Name) and f.id in funcs:
             yield n
 
@@ -316,6 +343,28 @@ def _exempt(rel, tree, n) -> bool:
         return False
     if not any(k.arg == "uri" and isinstance(k.value, ast.Constant) and k.value.value is True for k in n.keywords):
         return False
+    # every assignment that FEEDS the open - through any chain of names (R1222: `q = <..>; p = q` was read one
+    # step deep) - must not climb out of the state folder ('..' or os.pardir), and one that takes LIVE_STATE_DIR
+    # must name state.db (R1220: `os.path.join(catalog_path.LIVE_STATE_DIR, '..', 'catalog.db')`)
+    assigns = [(set(t.id for t in a.targets if isinstance(t, ast.Name)), a.value)
+               for a in ast.walk(tree) if isinstance(a, ast.Assign)]
+    feeding = {x.id for x in ast.walk(arg) if isinstance(x, ast.Name)}
+    grew = True
+    while grew:
+        grew = False
+        for targets, value in assigns:
+            if targets & feeding:
+                new = {x.id for x in ast.walk(value) if isinstance(x, ast.Name)} - feeding
+                if new:
+                    feeding |= new
+                    grew = True
+    for targets, value in assigns:
+        if targets & feeding:
+            text = ast.unparse(value)
+            if ".." in text or "pardir" in text:
+                return False
+            if "LIVE_STATE_DIR" in text and "state.db" not in text:
+                return False
     return all(m.lineno != n.lineno for m in _tainted_opens(tree, ignore=_STATE_ONLY))
 
 
@@ -401,6 +450,16 @@ def test_the_r1203_rules_can_fail():
     "from core.catalog_path import BUILD_PATH as B\nq = f'file:{B}'\nc = sqlite3.connect(q, uri=True)\n",
     "import core.catalog_path as cp\nc = sqlite3.connect(cp.BUILD_PATH)\n",
     "from core import catalog_path as cp\nc = sqlite3.connect(cp.CHECKOUT_PATH)\n",
+    # R1220 finding 2: spellings the rebuilt rule missed
+    "import core as c\nx = sqlite3.connect(os.path.join(c.catalog_path.ROOT, 'data', 'catalog.db'))\n",
+    "x = sqlite3.connect(self.catalog_path.BUILD_PATH)\n",
+    "x = sqlite3.connect(econ.core.catalog_path.BUILD_PATH)\n",
+    "_cp = catalog_path\nx = sqlite3.connect(os.path.join(_cp.ROOT, 'data', 'catalog.db'))\n",
+    "_cp = catalog_path\n_cq = _cp\nx = sqlite3.connect(_cq.BUILD_PATH)\n",
+    "x = sqlite3.dbapi2.connect(catalog_path.BUILD_PATH)\n",
+    "import sqlite3.dbapi2 as d\nx = d.connect(catalog_path.BUILD_PATH)\n",
+    "from sqlite3 import dbapi2\nx = dbapi2.connect(catalog_path.BUILD_PATH)\n",
+    "from sqlite3.dbapi2 import connect as op\nx = op(catalog_path.BUILD_PATH)\n",
 ])
 def test_the_r1216_taint_rule_can_fail(src):
     src = "import os\nimport sqlite3\nfrom core import catalog_path\n" + src
@@ -421,3 +480,13 @@ def test_the_state_db_exemption_is_exact():
     assert len(_violations("tools/selfhost/t0_ready.py", ast.parse(no_uri))[0]) == 1, "mode=ro needs uri=True"
     also = ok + "p = catalog_path.BUILD_PATH\n"
     assert len(_violations("tools/selfhost/t0_ready.py", ast.parse(also))[0]) == 1, "p tainted elsewhere too"
+    up = ok.replace("catalog_path.LIVE_STATE_DIR, 'state.db'", "catalog_path.LIVE_STATE_DIR, '..', 'catalog.db'")
+    assert len(_violations("tools/selfhost/t0_ready.py", ast.parse(up))[0]) == 1, "R1220: '..' out of the state dir"
+    up2 = ok.replace("'state.db'", "'..', 'state.db'")
+    assert len(_violations("tools/selfhost/t0_ready.py", ast.parse(up2))[0]) == 1, "'..' even beside state.db"
+    # R1222: through a second name, and os.pardir
+    chain = ok.replace("p = os.path.join(catalog_path.LIVE_STATE_DIR, 'state.db')\n",
+                       "q = os.path.join(catalog_path.LIVE_STATE_DIR, '..', 'catalog.db')\np = q\n")
+    assert len(_violations("tools/selfhost/t0_ready.py", ast.parse(chain))[0]) == 1, "'..' one name back"
+    pardir = ok.replace("'state.db')", "os.pardir, 'x', 'state.db')")
+    assert len(_violations("tools/selfhost/t0_ready.py", ast.parse(pardir))[0]) == 1, "os.pardir"

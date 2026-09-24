@@ -169,16 +169,29 @@ def port_of(url: str) -> int:
     return u.port
 
 
+# the listening addresses a connect to 127.0.0.1 reaches: the instances bind 127.0.0.1 (start(): --ip), and a
+# wildcard listener would take the same traffic. A listener on ::1 or another interface does not - R1218
+# finding 4: one on [::1] with the old port number was named as the old instance, "stop that process by hand".
+_REACHES_LOOPBACK = {"127.0.0.1", "0.0.0.0", "::", "::ffff:127.0.0.1"}
+
+
+def _loopback_listeners(port: int) -> list:
+    """The OS table's LISTEN entries on 127.0.0.1:port (or a wildcard). Raises psutil.Error when unreadable."""
+    import psutil
+    return [c for c in psutil.net_connections(kind="inet")
+            if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port
+            and c.laddr.ip in _REACHES_LOOPBACK]
+
+
 def port_holder(port: int) -> str:
     """Which process listens on 127.0.0.1:port - named in a refusal, so a race can be traced (R1186)."""
     import psutil
     try:
-        for c in psutil.net_connections(kind="inet"):
-            if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port:
-                try:
-                    return f"pid {c.pid} ({' '.join(psutil.Process(c.pid).cmdline())[:120]})"
-                except (psutil.Error, TypeError):
-                    return f"pid {c.pid}"
+        for c in _loopback_listeners(port):
+            try:
+                return f"pid {c.pid} on {c.laddr.ip}:{port} ({' '.join(psutil.Process(c.pid).cmdline())[:120]})"
+            except (psutil.Error, TypeError):
+                return f"pid {c.pid} on {c.laddr.ip}:{port}"
     except psutil.Error as e:
         return f"unknown ({type(e).__name__})"
     return "no listener found"
@@ -194,11 +207,11 @@ def port_in_use(port: int) -> bool:
 
 
 def listening(port: int) -> bool | None:
-    """Whether the OS listener table has a listener on the port; None when the table cannot be read."""
+    """Whether the OS listener table has a LISTEN entry that 127.0.0.1:port reaches (not an ESTABLISHED or
+    TIME_WAIT socket, not another address); None when the table cannot be read."""
     import psutil
     try:
-        return any(c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port
-                   for c in psutil.net_connections(kind="inet"))
+        return bool(_loopback_listeners(port))
     except psutil.Error:
         return None
 
