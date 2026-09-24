@@ -69,3 +69,12 @@ def test_skip_existing_lists_the_blob_store(run):
 def test_a_bucket_other_than_the_stores_is_refused(run):
     with pytest.raises(SystemExit, match="not the CSV store's bucket"):
         run(Store(), "--bucket", "some-other-bucket")
+
+
+def test_a_failed_upload_fails_the_run(run, monkeypatch):
+    """R1213: statcan ignoring _put_with_retry's False (or exiting 0 on errors) survived every test."""
+    from updater import derive
+    monkeypatch.setattr(derive, "_put_with_retry", lambda *a, **k: False)
+    store = Store()
+    assert run(store) == 1
+    assert store.put == {}

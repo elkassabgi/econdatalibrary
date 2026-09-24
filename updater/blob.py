@@ -772,11 +772,14 @@ class SelfhostBlob:
     def __init__(self, root: str | None = None):
         self.root = root or SELFHOST_BLOB_ROOT
         self._store = None
+        self._store_lock = threading.Lock()
 
     @property
     def store(self):
         if self._store is None:
-            self._store = _blobstore_module().BlobStore(self.root)
+            with self._store_lock:          # one BlobStore however many threads touch a cold store (R1213)
+                if self._store is None:
+                    self._store = _blobstore_module().BlobStore(self.root)
         return self._store
 
     def get(self, key: str) -> bytes | None:

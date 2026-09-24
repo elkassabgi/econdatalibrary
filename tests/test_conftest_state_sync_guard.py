@@ -1,4 +1,5 @@
 """tests/conftest.py's guard can fail (R1204): a test that starts a state sync is refused, in every spelling."""
+import os
 import subprocess
 import sys
 
@@ -22,11 +23,46 @@ def test_no_test_holds_cloud_credentials(monkeypatch):
     """The in-process half: a real client cannot be built, even when the variables were set outside."""
     import os
     from core import r2_util
-    assert not any(k.startswith(("R2_READ_", "R2_WRITE_")) for k in os.environ)
+    assert not any(v for k, v in os.environ.items() if k.startswith(("R2_READ_", "R2_WRITE_")))   # present, EMPTY
     assert not os.path.exists(r2_util.ENV)
     assert r2_util.creds(write=True) is None and r2_util.creds(write=False) is None
     with pytest.raises(RuntimeError, match="credentials are not set"):
         r2_util.client(write=True)
+
+
+@pytest.mark.state_sync_refusal_expected
+def test_os_system_is_guarded_too():
+    import os
+    with pytest.raises(RuntimeError, match="state sync"):
+        os.system(f'"{sys.executable}" -m updater.run --pull-state')
+
+
+def test_load_env_cannot_bring_the_keys_back(tmp_path):
+    """R1213: core.config.load_env() setdefault()s from a .env; deleted keys came back from it. With a .env of
+    this test's own: the R2 keys stay empty and r2_util still has no credentials."""
+    import os
+    from core import config as core_config, r2_util
+    env = tmp_path / ".env"
+    env.write_text("R2_WRITE_ENDPOINT=https://leak.invalid\nR2_WRITE_ACCESS_KEY_ID=k\n"
+                   "R2_WRITE_SECRET_ACCESS_KEY=s\n", encoding="utf-8")
+    core_config.load_env(str(env))
+    assert os.environ["R2_WRITE_ENDPOINT"] == ""
+    assert r2_util.creds(write=True) is None
+
+
+def test_the_teardown_check_catches_a_swallowed_refusal(pytester):
+    """R1213: the 'fails even if the tool swallows the refusal' claim, run for real in an isolated pytest."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    pytester.makeconftest(open(os.path.join(here, "conftest.py"), encoding="utf-8").read())
+    pytester.makepyfile(
+        "import subprocess, sys\n"
+        "def test_swallows():\n"
+        "    try:\n"
+        "        subprocess.run([sys.executable, '-m', 'updater.run', '--pull-state'])\n"
+        "    except RuntimeError:\n"
+        "        pass\n")
+    r = pytester.runpytest("-p", "no:cacheprovider")
+    r.assert_outcomes(passed=1, errors=1)
 
 
 def test_an_ordinary_process_still_runs():

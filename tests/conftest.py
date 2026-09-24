@@ -16,6 +16,8 @@ import pytest
 
 _FORBIDDEN = ("--pull-state", "--push-state")
 
+pytest_plugins = ["pytester"]          # the guard's own can-fail test runs an isolated pytest
+
 
 # BOTH GUARDS USE THEIR OWN MonkeyPatch, never the shared `monkeypatch` fixture: an autouse fixture that
 # requests it creates it FIRST, so it is torn down LAST - after the test's other fixtures. A test that patched
@@ -29,16 +31,30 @@ def _no_cloud_credentials_in_a_test(tmp_path_factory):
     does not exist: a real R2 client fails with "credentials are not set" instead of reaching the bucket.
     A test that needs a client fakes it (monkeypatch r2_util.client / creds), as they already do."""
     import os
+    missing = str(tmp_path_factory.getbasetemp() / "no-such-dir" / ".env")
     with pytest.MonkeyPatch.context() as mp:
         for k in list(os.environ):
             if k.startswith(("R2_READ_", "R2_WRITE_", "CLOUDFLARE_API_TOKEN", "CF_API_TOKEN")):
                 mp.delenv(k)
+        # EMPTY, not absent (R1213): core.config.load_env() - which every connector's require() calls - does
+        # os.environ.setdefault from the checkout's .env, so a deleted key came back. An empty one stays empty,
+        # and core.r2_util ignores empty values.
+        for side in ("READ", "WRITE"):
+            for part in ("ENDPOINT", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY"):
+                mp.setenv(f"R2_{side}_{part}", "")
+        mp.setenv("CLOUDFLARE_API_TOKEN", "")
         try:
             from core import r2_util
         except Exception:                                # noqa: BLE001 - a test tree without core/
             r2_util = None
         if r2_util is not None:
-            mp.setattr(r2_util, "ENV", str(tmp_path_factory.getbasetemp() / "no-such-dir" / ".env"))
+            mp.setattr(r2_util, "ENV", missing)
+        try:
+            from core import config as core_config
+        except Exception:                                # noqa: BLE001
+            core_config = None
+        if core_config is not None and hasattr(core_config, "_DEFAULT"):
+            mp.setattr(core_config, "_DEFAULT", missing)
         yield
 
 
@@ -59,8 +75,17 @@ def _no_state_sync_from_a_test(request):
                 started.append(flat)
                 raise RuntimeError(f"a test started a state sync: {flat[:160]} (tests/conftest.py, R1204)")
             super().__init__(args, *a, **k)
+    import os
+    real_system = os.system
+
+    def _system(cmd):
+        if any(f in str(cmd) for f in _FORBIDDEN):          # R1213: os.system bypassed the Popen guard
+            started.append(str(cmd))
+            raise RuntimeError(f"a test started a state sync: {str(cmd)[:160]} (tests/conftest.py, R1204)")
+        return real_system(cmd)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(subprocess, "Popen", _Guarded)
+        mp.setattr(os, "system", _system)
         yield
     if request.node.get_closest_marker("state_sync_refusal_expected"):
         return

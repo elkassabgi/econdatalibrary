@@ -244,3 +244,21 @@ def test_it_writes_nothing():
     for verb in ("open(p, \"w\"", "write_text", ".write(", "os.remove", "shutil", "execute_wrangler",
                  "workflow disable", "workflow enable"):
         assert verb not in src, verb
+
+
+def test_thirteen_f_refuses_a_registry_that_still_names_sec_edgar_too(tmp_path, fake_move):
+    """R1211: the "no sec_edgar entry" half was untested - the only case with sec_edgar lacked sec_edgar_13f,
+    so the other half refused it. Both present is still the collision."""
+    left, db = fake_move
+    ok, detail = T.thirteen_f(_registry(tmp_path, ["sec_edgar", "sec_edgar_13f"]), db)
+    assert not ok and "sec_edgar=True" in detail
+
+
+def test_thirteen_f_never_creates_a_missing_state_db(tmp_path, fake_move):
+    """R1211: opened read-write, a missing state.db was created empty and read as "moved" - a false pass."""
+    root = _registry(tmp_path, ["sec_edgar_13f"])
+    missing = tmp_path / "no" / "state.db"
+    missing.parent.mkdir()
+    with pytest.raises(Exception):
+        T.thirteen_f(root, str(missing))
+    assert not missing.exists(), "the check created the file it reads"

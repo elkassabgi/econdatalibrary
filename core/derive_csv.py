@@ -211,6 +211,11 @@ def _series_csv_to_file(series_id: str, out_path: str) -> int:
     return os.path.getsize(out_path)
 
 
+class _PutFailed(Exception):
+    """The store refused a derived CSV after every try - an UPLOAD failure, not a store-coverage gap
+    (R1211: the two were counted together as 'unresolvable' and the run exited 0)."""
+
+
 class _ResolveZero(Exception):
     """Streamed a series and found no rows — same meaning as read_native's zero-row error."""
 
@@ -431,9 +436,11 @@ def _put_gzip_file_with_backoff(store, key, path, metadata=None,
         try:
             store.put_gzip_file(key, path, metadata=metadata)       # reopens the file every attempt
             return
+        except ValueError:
+            raise                                            # a refusal (not gzip), never transient: no retries
         except Exception as e:                               # noqa: BLE001
             if attempt == 6:
-                raise
+                raise _PutFailed(f"{key}: {type(e).__name__}: {str(e)[:120]}") from e
             wait = 2 ** attempt
             print(f"  PUT(stream) retry {attempt+1}/7 in {wait}s ({str(e)[:70]})", flush=True)
             _time.sleep(wait)
@@ -467,9 +474,11 @@ def _put_with_backoff(store, key, body) -> None:
         try:
             store.put_atomic(key, body)
             return
+        except ValueError:
+            raise                                            # a refusal (e.g. plain=True with gzip), never transient
         except Exception as e:                               # noqa: BLE001
             if attempt == 6:
-                raise
+                raise _PutFailed(f"{key}: {type(e).__name__}: {str(e)[:120]}") from e
             wait = 2 ** attempt                              # 1..64s
             print(f"  PUT retry {attempt+1}/7 in {wait}s ({str(e)[:70]})", flush=True)
             _time.sleep(wait)
@@ -908,6 +917,10 @@ def main() -> None:
 
     if not a.bucket:
         ap.error("--bucket is required for a real run")
+    if a.prefix != DEFAULT_PREFIX:
+        # _put_with_backoff stores series CSVs only (series/<id>.csv, gzip through the shared helper); any other
+        # prefix made every series read "unresolvable" (R1211) - refused here, before any work
+        ap.error(f"--prefix must be {DEFAULT_PREFIX!r} for a real run (the CSV store's served key space)")
     # PLAN STEP 1: the CSV store - R2 before T0, the self-hosted blob store after it (never LocalBlob,
     # R1200). Its R2 client's pool is sized to the workers: botocore's default of 10 caps any worker count
     # at ~10 concurrent PUTs (tools/_derive_bea_bulk.py measured it).
@@ -985,7 +998,7 @@ def main() -> None:
         todo.append((sid, src, key))
     print(f"to derive: {len(todo):,}  (already present: {skip:,})", flush=True)
 
-    up, miss = 0, 0
+    up, miss, put_failed = 0, 0, 0
     if a.workers > 1:
         import threading
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -995,6 +1008,8 @@ def main() -> None:
             sid, src, key = item
             try:
                 _derive_and_put(store, key, sid)
+            except _PutFailed as e:
+                return ("put_failed", sid, str(e)[:160])
             except Exception as e:                           # noqa: BLE001
                 return ("miss", sid, str(e)[:80])
             return ("put", sid, None)
@@ -1010,6 +1025,9 @@ def main() -> None:
                     with lock:
                         if kind == "put":
                             up += 1
+                        elif kind == "put_failed":
+                            put_failed += 1
+                            print(f"  PUT FAILED {sid}: {err}", flush=True)
                         else:
                             miss += 1
                             print(f"  unresolvable {sid}: {err}", flush=True)
@@ -1026,6 +1044,10 @@ def main() -> None:
                 cur_src = src
             try:
                 _derive_and_put(store, key, sid)
+            except _PutFailed as e:
+                put_failed += 1
+                print(f"  PUT FAILED {sid}: {str(e)[:160]}")
+                continue
             except Exception as e:                           # noqa: BLE001
                 miss += 1
                 print(f"  unresolvable {sid}: {str(e)[:80]}")
@@ -1040,10 +1062,13 @@ def main() -> None:
     # days - so this number is the one that says whether that line is coming down.
     ident = _SKIPPED_IDENTICAL[0]
     print(f"done: put {up:,} series CSVs, skipped {skip:,} existing, "
-          f"{miss:,} unresolvable (store-coverage gaps)")
+          f"{miss:,} unresolvable (store-coverage gaps), {put_failed:,} PUT FAILED")
     if ident:
         print(f"      {ident:,} upload(s) avoided - R2 already held those exact bytes "
               f"(~${ident / 1e6 * 4.50:.2f} of class-A operations not spent)")
+    if put_failed:
+        # an upload failure fails the run: the store did not take what was derived (R1211)
+        raise SystemExit(f"{put_failed:,} derived CSV(s) could not be written to the store - re-run them")
 
 
 if __name__ == "__main__":

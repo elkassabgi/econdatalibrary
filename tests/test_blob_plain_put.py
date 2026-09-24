@@ -96,3 +96,75 @@ def test_put_with_retry_passes_plain_only_when_set():
             calls.append(plain)
     assert derive._put_with_retry(Old(), KEY, CSV) and derive._put_with_retry(New(), KEY, CSV, plain=True)
     assert calls == ["old", True]
+
+
+def test_a_plain_put_over_a_gzip_object_with_csvmd5_is_still_sent():
+    """R1213: the csvmd5 of a gzip object says nothing about PLAIN bytes at rest - trusting it would leave the
+    object gzipped. The held object here is what a real writer leaves: gzip, marked, with csvmd5."""
+    held_gz = gzip.compress(CSV, mtime=0)
+
+    class S3(_S3):
+        def head_object(self, **kw):
+            return {"ETag": f'"{hashlib.md5(held_gz).hexdigest()}"', "ContentEncoding": "gzip",
+                    "Metadata": {"csvmd5": hashlib.md5(CSV).hexdigest()}}
+    r2 = blob.R2Blob()
+    r2._client = S3()
+    r2.put_atomic(KEY, CSV, plain=True)
+    assert r2._client.puts and r2._client.puts[0]["Body"] == CSV and "ContentEncoding" not in r2._client.puts[0]
+
+
+def test_head_meta_raises_on_anything_but_not_found():
+    """R1211: derive_one fails closed on a head error; a head_meta that read a 403/503 as None ("absent") would
+    make that fail open. 404 -> None; 403 -> raises."""
+    from botocore.exceptions import ClientError
+
+    class S3:
+        def __init__(self, code):
+            self.code = code
+
+        def head_object(self, **kw):
+            raise ClientError({"Error": {"Code": self.code}, "ResponseMetadata": {"HTTPStatusCode": int(self.code)}},
+                              "HeadObject")
+    r2 = blob.R2Blob()
+    r2._client = S3("404")
+    assert r2.head_meta(KEY) is None
+    for code in ("403", "503"):
+        r2._client = S3(code)
+        with pytest.raises(ClientError):
+            r2.head_meta(KEY)
+
+
+def test_the_pool_goes_from_client_to_botocore(monkeypatch):
+    """R1213: the pool test stopped at _boto3_client; r2_util.client(write, pool) dropping it survived."""
+    from core import r2_util
+    seen = []
+    monkeypatch.setattr(r2_util, "creds", lambda write=False: {"endpoint": "e", "key": "k", "secret": "s"})
+    monkeypatch.setattr(r2_util, "_boto3_client", lambda c, pool=None: seen.append(pool) or object())
+    monkeypatch.setattr(r2_util, "guard_client", lambda s3, **k: s3)
+    r2_util.client(write=True, pool=96)
+    r2_util.client(write=True)
+    assert seen == [96, None]
+
+
+def test_a_cold_self_hosted_store_is_opened_once_by_many_threads(tmp_path, monkeypatch):
+    """R1213: 8 threads on an unopened SelfhostBlob built 8 BlobStore instances (derive_and_put shares one)."""
+    import threading
+    BlobStore(str(tmp_path / "blobs"), create=True)
+    built = []
+    real = blob._blobstore_module
+
+    class Counting:
+        def BlobStore(self, root):
+            built.append(root)
+            return real().BlobStore(root)
+    monkeypatch.setattr(blob, "_blobstore_module", lambda: Counting())
+    sb = blob.SelfhostBlob(root=str(tmp_path / "blobs"))
+    go = threading.Barrier(8)
+
+    def touch():
+        go.wait()
+        sb.put_atomic(f"series/t{threading.get_ident()}.csv", CSV)
+    ts = [threading.Thread(target=touch) for _ in range(8)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert len(built) == 1, built

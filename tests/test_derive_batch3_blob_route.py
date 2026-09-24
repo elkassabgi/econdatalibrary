@@ -412,6 +412,23 @@ def test_the_local_store_reader_stays_inside_the_store(tmp_path):
             r.list_keys(bad)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="an NTFS junction")
+def test_a_junction_out_of_the_store_is_refused(tmp_path):
+    """R1213: the realpath containment had no test - a key whose folder is a junction to outside the store."""
+    import subprocess
+    root = tmp_path / "clean_full"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.parquet").write_bytes(b"x")
+    r = subprocess.run(["cmd", "/c", "mklink", "/J", str(root / "ons_uk"), str(outside)], capture_output=True, text=True)
+    if r.returncode != 0:
+        pytest.skip(f"could not make a junction: {r.stderr.strip()[:80]}")
+    reader = blob.LocalStoreReader(str(root))
+    with pytest.raises(ValueError, match="outside the store"):
+        reader.get("clean_full/ons_uk/secret.parquet")
+
+
 def test_store_reader_reads_r2_with_the_read_key(tmp_path, monkeypatch):
     """R1206: before T0 the reader used the WRITE key, so a --dry-run needed write credentials."""
     from core import cutover

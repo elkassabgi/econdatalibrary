@@ -101,3 +101,19 @@ def test_skip_newer_than_uses_the_store_listing_times(run):
 def test_a_bucket_other_than_the_stores_is_refused(run):
     with pytest.raises(SystemExit, match="not the CSV store's bucket"):
         run(Store(), "--bucket", "other")
+
+
+def test_a_clean_campaign_clears_its_debt(run):
+    """R1213: go.cleared was recorded and never asserted - a tool that stopped clearing survived."""
+    run(Store())
+    assert run.cleared == ["zzsrc"]
+
+
+def test_a_failed_upload_fails_the_run_and_clears_nothing(run, monkeypatch):
+    """R1213: csv_bulk exiting 0 on errors, or counting a failed PUT as put, survived every test."""
+    class Refusing(Store):
+        def put_atomic(self, key, data, **kw):
+            raise OSError("the store refused")
+    monkeypatch.setattr(dcb, "_retry", lambda fn, what, tries=8: fn())      # one try, no waits
+    assert run(Refusing()) == 1
+    assert run.cleared == [], "a campaign with failed puts must not clear its debt"

@@ -106,9 +106,16 @@ def test_a_failed_put_is_counted_not_hidden(core_run, capsys, monkeypatch):
             raise OSError("refused")
     import time as _t
     monkeypatch.setattr(_t, "sleep", lambda s: None)          # the helper's 7 tries, without the waits
-    core_run(Refusing())
+    with pytest.raises(SystemExit, match="could not be written"):
+        core_run(Refusing())
     out = capsys.readouterr().out
-    assert "put 0 series CSVs" in out and "2 unresolvable" in out, out
+    # R1211: an upload failure is its own count and fails the run - not a "store-coverage gap"
+    assert "put 0 series CSVs" in out and "0 unresolvable" in out and "2 PUT FAILED" in out, out
+
+
+def test_a_prefix_other_than_series_is_refused(core_run):
+    with pytest.raises(SystemExit):
+        core_run(Store(), "--prefix", "other")
 
 
 def test_put_with_backoff_refuses_a_key_it_would_store_plain():
@@ -162,3 +169,24 @@ def test_usda_bulk_writes_through_the_csv_store(pre_t0, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["x", "--bucket", "econ-data", "--verify", "0"])
     assert m.main() == 0
     assert list(store.put) == ["series/usda%3ACENSUS%7CSTATE%7CHOGS.csv"]
+
+
+@pytest.mark.parametrize("name", ["derive_eia_tables", "derive_usda_bulk"])
+def test_the_bulk_tools_take_their_store_from_csv_store(pre_t0, monkeypatch, name):
+    """R1211: building R2Blob() directly survived the route tests (which fake R2Blob itself). csv_store is the
+    only door: it is recorded, and an R2Blob built any other way fails the test."""
+    m = _bulk(name, pre_t0, monkeypatch)
+    if name == "derive_eia_tables":
+        monkeypatch.setattr(m, "_dataset_files", lambda: [("AEO.2025", "unused.parquet", 1)])
+        monkeypatch.setattr(m, "_catalogued", lambda: {"eia:AEO"})
+        monkeypatch.setattr(m, "_stream", lambda q, path, depth: iter([("eia:AEO", [("AEO.x", "2024-01-01", 1.0)])]))
+    else:
+        monkeypatch.setattr(m, "_files", lambda: ["unused.parquet"])
+        monkeypatch.setattr(m, "_catalogued", lambda: {"usda:A|B|C"})
+        monkeypatch.setattr(m, "_stream", lambda q, files: iter([("usda:A|B|C", [("k", "2024-01-01", 1.0)])]))
+    store, calls = Store(), []
+    monkeypatch.setattr(blob, "csv_store", lambda bucket=None, **k: calls.append(bucket) or store)
+    monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: pytest.fail("an R2Blob built outside csv_store"))
+    monkeypatch.setattr(sys, "argv", ["x", "--bucket", "econ-data", "--verify", "0"])
+    assert m.main() == 0
+    assert calls == ["econ-data"] and len(store.put) == 1
