@@ -1,4 +1,5 @@
-# Econ self-hosting plan (draft 10, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167, R1169, R1171, R1172
+# Econ self-hosting plan (draft 11, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167, R1169, R1171,
+# R1172, R1174, R1176-R1178, AR-151-AR-153
 
 Build status (branch feat/econ-selfhost-origin):
 - Code change 2 (local mode + wrangler.origin.toml, effc6784f) and code change 3 (blob store, sidecar, R2
@@ -14,12 +15,22 @@ Build status (branch feat/econ-selfhost-origin):
   7e950c02b): EDGE_STATE and /v1/edge-status; the report cache; the off-machine check and its workflow
   (change 6); tools/selfhost/deploy_edge.sh; core/cutover.py (4b); the R2 write guard on every client
   in the repo, with a ratchet (5); core/d1_remote.py with a ratchet (4c, 5); core/catalog_path.py, the
-  one resolver and the single-writer lock, with a ratchet of 154 files still to move (4a); SelfhostBlob
+  one resolver and the single-writer lock, with a ratchet of files still to move (4a; 137 today - see
+  below); SelfhostBlob
   (AQUEDUCT_BACKEND=selfhost, 4); the updater's post-T0 preflight (4); tools/selfhost/cutover_hook.py
   (5, written and tested, NOT installed - Ahmed approves it first).
 - Built after that: core/licence_targets.py with retire_source.py and delist_source_rows.py on it
   (licence enforcement has its local backend before anything else moves); the R1176 fixes (one
   catalogue, every override refused, hot-journal recovery).
+- Built on 2026-09-24, each with a parallel review: the R1178 fixes (88384b74b: a behaviour pin that the
+  edge-state paths never touch a catalogue binding, a 60 s back-off after a failed source-names refresh,
+  more hook spellings, one shared ratchet walk); the blue/green swap, tools/selfhost/swap.py (a089e76be);
+  PERSIST-mode journals are not hot and the preflight checks what econdl itself resolves (9d8d91bcb); the
+  T0 readiness check, tools/selfhost/t0_ready.py (48d03d264). The swap ran twice for real on the full
+  probe catalogue (13,952,906 series; the copies and checks take about 5.5 min per swap).
+- COUNTS: the file lists in the tests are the numbers to use - tests/catalog_db_legacy.txt (137 on
+  2026-09-24) and LEGACY_REMOTE_D1 in tests/test_d1_remote.py (25). The other counts in this plan (144 and
+  154 catalogue files, 24 remote-D1 files) were taken earlier with other rules and are superseded.
 - Still to do in step 1: move the 137 catalogue callers and the 25 remote-D1 callers onto the
   chokepoints (the ratchets list them and may only shrink); the direct put_series_csv writers onto
   SelfhostBlob; delist_timeless_tables.py onto licence_targets (purge_unpermitted_r2.py stays defused
@@ -121,8 +132,15 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
                 key -> hash, R2 etag, size, content-encoding, custom metadata; get / range with full size /
                 onlyIf returning a bodyless object; stored gzip sent WITHOUT Content-Encoding on the hop)
             swap = build N+1, start the idle instance on its copy, health-check, flip the router, stop
-            the old one (a Windows service stop must kill its workerd children - tested in the soak)
-          writers: local, one lock, chokepoints in section 3.5
+            the old one (a Windows service stop must kill its workerd children - tested in the soak).
+            Built as tools/selfhost/swap.py: the D1 slot files are discovered (d1_slots.mjs), the copies
+            are made under the writer lock after T0 and placed in a fresh persist dir, the health check
+            asks for a primary and a climate series by id, the old instance is stopped with its process
+            tree only when the router reports 0 in flight, and a failed check leaves the router alone
+          writers: local, one lock (core.catalog_path.writer_lock), chokepoints in section 3.5. The lock
+            binds only code that goes through core.catalog_path: the legacy openers still in
+            tests/catalog_db_legacy.txt do not take it, so tools/selfhost/t0_ready.py refuses T0 while
+            that list is not empty
 ```
 
 ## 3. Code changes
@@ -156,8 +174,13 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
    4c. D1 READ VERSUS WRITE (R1167 C): step 6b reads both D1 databases after the flag. After the flag,
        every D1 access goes over the REST API with a D1 READ-ONLY token, so the server refuses writes;
        d1_remote() also allows only ONE statement that is SELECT or WITH ... SELECT, with no semicolon,
-       no RETURNING, no PRAGMA or ATTACH, and no --file - anything else is refused (fail closed). run_local_heavy.ps1:253; the freshness / source_counts / data_through writers
-   target the local build; FTS rebuilt locally from `series`.
+       no RETURNING, no PRAGMA or ATTACH, and no --file - anything else is refused (fail closed).
+   4d. LOCAL WRITERS: tools/run_local_heavy.ps1 (line 253 sets AQUEDUCT_BACKEND=r2 today, and it runs
+       --pull-state / --push-state) moves to AQUEDUCT_BACKEND=selfhost with neither; the freshness /
+       source_counts / data_through writers target the local build. FTS: the writers keep series_fts in
+       step with series as they do today; a full local rebuild from `series` runs once in step 6b (the
+       reconcile does not page FTS) and whenever origin_copies' check finds COUNT(series_fts) !=
+       COUNT(series) - that check refuses the swap, so a drifted index is never served.
 5. Chokepoints on the OPERATION, not on a flag a caller may forget:
    - The flag is ONE machine-wide file (`C:\ProgramData\econ\CUTOVER`), not per checkout. It is checked
      with os.stat (never os.path.exists, which turns a PermissionError into "absent"):
@@ -174,6 +197,9 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
      (GetObject, HeadObject, ListObjects, ListObjectsV2, HeadBucket) and refuses every other operation
      (PutObject, CopyObject, UploadPart, UploadPartCopy, DeleteObject(s), multipart, bucket lifecycle,
      DeleteBucket, ...) once the flag is set - measured: the hook sees s3transfer's multipart calls too.
+     NOT covered by the hook: tools/series_census.py hands R2Blob's credentials - the WRITE key - to
+     DuckDB httpfs, which makes its own S3 calls. It only reads today; it moves to local files in step 1,
+     and the write key is revoked at T0 in any case.
      So the bare-client() writers
      (refresh_sec_edgar, probe_csv_freshness, sec_edgar_union_repair, _upload_clean_full_parquet,
      upload_statcan_store, _upload_biotrademerch_store and any other) are refused by the hook, not by
@@ -242,7 +268,10 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
       insights needs more than D1 Read, its D1 check moves to the GraphQL analytics under
       CF_ANALYTICS_TOKEN first (any workflow file pushed on any branch can use the repo's token); remove their schedules on main; delete the econ repo's R2_WRITE_* secrets
       except the endpoint/account id billing-guard needs - Ahmed; stop EconGuard and the crawlers; create
-      the machine-wide CUTOVER flag; REVOKE the econ R2 write key (not rotate - a new key with no home is a
+      the machine-wide CUTOVER flag ONLY after `python tools/selfhost/t0_ready.py`, run from the
+      production checkout, prints READY (legacy lists empty, ratchets pass, the launcher self-hosted, the
+      updater preflight passes, the three CI writers disabled, the edge on EDGE_STATE users); REVOKE the
+      econ R2 write key (not rotate - a new key with no home is a
       live write path) - Ahmed. Prove the freeze with R2 and D1 GraphQL analytics by bucket/database and
       action type (deletes included): zero writes for one hour, and then checked daily until step 7 by the
       off-machine Action of code change 6, which emails on any write - a write fails the fallback and is
@@ -290,7 +319,11 @@ local disk only.
 
 Windows services at boot (router, workerd pair, blob sidecar, cloudflared, updater schedule); a UPS;
 Windows Update restarts in a fixed night window; the off-machine check; nightly versioned backups of
-store, catalogue build, blob store and state to F: and off the machine. Services run as a low-privilege
+store, catalogue build, blob store and state to F: and off the machine. The SQLite files among them (the
+catalogue build, state.db, the blob store's index) are backed up with the SQLite backup API under the
+writer lock, never as a plain file copy (a hot journal makes a plain copy torn - R1176); the blob store's
+content files are immutable (content-addressed) and are copied as files. The blob store lives at
+E:\econ_live\blobs (updater/blob.py SELFHOST_BLOB_ROOT). Services run as a low-privilege
 user: read-only on the store, the build and the blob store; write only on its disposable catalogue copies
 and its own logs. When the workstation is down the edge answers "temporarily unavailable" and serves its
 cached public answers.
