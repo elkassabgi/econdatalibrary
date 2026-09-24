@@ -259,7 +259,7 @@ def test_the_move_takes_the_write_lock_first(tmp_path):
     assert begins == ["BEGIN IMMEDIATE"], begins
     under_lock = seen[seen.index("BEGIN IMMEDIATE") + 1:]
     first_write = next(i for i, s in enumerate(under_lock) if s.lstrip().upper().startswith(("UPDATE", "DELETE")))
-    assert any("lower(trim(strategy)) <>" in s for s in under_lock[:first_write]), \
+    assert any("lower(trim(strategy," in s and "<>" in s for s in under_lock[:first_write]), \
         "the ownership is re-read under the lock, before the first write"
 
 
@@ -466,3 +466,19 @@ def test_a_failure_rolls_the_whole_move_back(tmp_path, monkeypatch):
     c.close()
     assert _count(p, "source_state", "sec_edgar") == 1 and _count(p, "source_state", "sec_edgar_13f") == 0, \
         "rolled back"
+
+
+@pytest.mark.parametrize("ws", ["\t", "\n", "\r", " \t "])
+def test_whitespace_around_the_13f_strategy_is_trimmed_the_same_on_both_sides(tmp_path, ws):
+    """R1211: SQLite trim() removed spaces only; Python strip() all whitespace. A 13F row with a tab was never
+    moved, refused the XBRL write for ever, and read "moved" to t0_ready. Now it moves, like a space would."""
+    p = str(tmp_path / "state.db")
+    _seed(p, [("INSERT INTO source_state(source_id, strategy, status) VALUES ('sec_edgar', ?, 'ok')",
+               (ws + "giant_changed_units" + ws,))])
+    s = StateStore(p)
+    try:
+        assert s.get_source("sec_edgar") is None and s.get_source("sec_edgar_13f") is not None, "moved on open"
+        s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+    finally:
+        s.close()
+    assert M.is_thirteen_f_strategy(ws + "GIANT_CHANGED_UNITS" + ws) and M.is_thirteen_f_strategy(ws)

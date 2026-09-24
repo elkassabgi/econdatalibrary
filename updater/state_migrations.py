@@ -34,12 +34,15 @@ import sqlite3
 OLD, NEW = "sec_edgar", "sec_edgar_13f"
 THIRTEEN_F_STRATEGY = "giant_changed_units"     # the 13F entry's strategy (updater/registry.yaml)
 THIRTEEN_F_UNIT = "_all"                        # the 13F entry's only unit
+# the characters BOTH sides trim: SQLite trim() removes only spaces unless told which, and Python strip()
+# removes every whitespace - a tab in a strategy made the guard and the migration disagree (R1211)
+WS = " \t\n\r\x0b\x0c"
 
 # table -> the WHERE clause (and its arguments) that selects the 13F product's rows under OLD.
 # ALWAYS: unambiguous (the 13F strategy) - moved whoever owns the id.
 _SELECT_ALWAYS = {
-    "source_state": ("source_id=? AND lower(trim(strategy))=?", (OLD, THIRTEEN_F_STRATEGY)),
-    "unit_state": ("source_id=? AND lower(trim(strategy))=?", (OLD, THIRTEEN_F_STRATEGY)),
+    "source_state": ("source_id=? AND lower(trim(strategy, ?))=?", (OLD, WS, THIRTEEN_F_STRATEGY)),
+    "unit_state": ("source_id=? AND lower(trim(strategy, ?))=?", (OLD, WS, THIRTEEN_F_STRATEGY)),
 }
 # BEFORE OWNERSHIP ONLY: no strategy column, so only the ownership gate says whose they are.
 _SELECT_GATED = {
@@ -55,7 +58,8 @@ def _tables(db: sqlite3.Connection) -> set[str]:
 
 def is_thirteen_f_strategy(strategy) -> bool:
     """The 13F strategy, or no strategy at all - neither may name a row the XBRL product owns."""
-    return not strategy or str(strategy).strip().lower() == THIRTEEN_F_STRATEGY
+    s = str(strategy or "").strip(WS).lower()
+    return s == "" or s == THIRTEEN_F_STRATEGY
 
 
 def xbrl_owns(db: sqlite3.Connection) -> bool:
@@ -64,8 +68,8 @@ def xbrl_owns(db: sqlite3.Connection) -> bool:
     if "source_state" not in _tables(db):
         return False
     return db.execute("SELECT 1 FROM source_state WHERE source_id=? "
-                      "AND (strategy IS NULL OR lower(trim(strategy)) <> ?)",
-                      (OLD, THIRTEEN_F_STRATEGY)).fetchone() is not None
+                      "AND (strategy IS NULL OR lower(trim(strategy, ?)) <> ?)",
+                      (OLD, WS, THIRTEEN_F_STRATEGY)).fetchone() is not None
 
 
 def _selects(db: sqlite3.Connection) -> dict:
