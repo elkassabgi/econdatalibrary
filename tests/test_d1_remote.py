@@ -125,8 +125,7 @@ def test_only_the_two_econ_databases(sent, before_t0, monkeypatch):
 # The files that reach D1 remotely by another road TODAY (2026-09-24). They move into d1_remote in plan
 # step 1; this list may only SHRINK. A new file on it is a new unguarded write path after T0.
 LEGACY_REMOTE_D1 = {
-    ".github/workflows/sec-edgar-daily.yml", "core/export_d1.py",
-    "tools/delist_timeless_tables.py", "tools/enrich_sec_edgar_tickers.py", "tools/migrate_noaa_shard.py",
+    "tools/enrich_sec_edgar_tickers.py", "tools/migrate_noaa_shard.py",
     "tools/rebuild_series_fts.py", "tools/refresh_flowgrain_dates.py", "tools/refresh_sec_edgar.py",
     "tools/sync_titles_to_d1.py",
 }
@@ -134,6 +133,11 @@ LEGACY_REMOTE_D1 = {
 # named `--remote` only in a docstring, a comment or a tool's own --remote-truth option; then
 # core/sync_state_d1.py, whose execute_remote (the daily sync's and sync_catalog_d1's bulk writer) now runs
 # d1_remote.execute_file.
+# CI workflows that write econ D1 and are DISABLED at T0 (plan 6a: `gh workflow disable`, proven with
+# `gh workflow list --all`). They run on GitHub, never on the workstation, so no desktop guard applies to
+# them; tools/selfhost/t0_ready.py's ci-writers check refuses READY while any of them is enabled (pinned
+# below: every file here is in t0_ready.CI_WRITERS).
+CI_DISABLED_AT_T0 = {".github/workflows/sec-edgar-daily.yml"}
 # Files whose remote-D1 calls read ONLY hf's login database (hfdatalibrary-db), which stays in D1 after T0.
 # Not econ roads, so not d1_remote's (it takes the two econ databases only); checked, not trusted:
 # test_the_hf_only_files_really_are - every `--remote` line in them names hfdatalibrary-db and no econ db.
@@ -166,11 +170,21 @@ def test_no_new_file_calls_d1_remotely_outside_the_chokepoint():
             if REMOTE.search(src):
                 found.add(rel)
     found.discard("core/d1_remote.py")
-    found -= set(HF_ONLY_REMOTE_D1)
+    found -= set(HF_ONLY_REMOTE_D1) | CI_DISABLED_AT_T0
     found.discard("tools/selfhost/cutover_hook.py")   # names the roads in order to REFUSE them (plan change 5)
     assert found - LEGACY_REMOTE_D1 == set(), "new remote-D1 callers: route them through core/d1_remote.query"
     gone = LEGACY_REMOTE_D1 - found
     assert not gone, f"these no longer call D1 remotely - remove them from LEGACY_REMOTE_D1: {sorted(gone)}"
+
+
+def test_the_workflows_disabled_at_t0_are_the_ones_t0_ready_checks():
+    import sys
+    sys.path.insert(0, os.path.join(ROOT, "tools", "selfhost"))
+    import t0_ready
+    names = {os.path.splitext(os.path.basename(p))[0] for p in CI_DISABLED_AT_T0}
+    assert names <= set(t0_ready.CI_WRITERS), names - set(t0_ready.CI_WRITERS)
+    for p in CI_DISABLED_AT_T0:
+        assert os.path.isfile(os.path.join(ROOT, p)), f"{p} is gone - remove it from CI_DISABLED_AT_T0"
 
 
 def test_the_hf_only_files_really_are():

@@ -33,13 +33,11 @@ Version 2, after adversarial review (seven MUST-FIX items, all in):
   python tools/delist_timeless_tables.py --apply
 """
 from __future__ import annotations
-import argparse, datetime as dt, io, json, os, re, shutil, sqlite3, subprocess, sys, time, urllib.parse, urllib.request
+import argparse, datetime as dt, io, os, re, shutil, sqlite3, subprocess, sys, time, urllib.parse, urllib.request
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CATALOG = os.path.join(ROOT, "data", "catalog.db")
 STORE = os.path.join(ROOT, "data", "clean_full")
-WRANGLER = next((p for p in (os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler.cmd"),
-                             os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler")) if os.path.exists(p)), "wrangler")
 D1 = "econ-catalog"
 BUCKET, CSV_PREFIX = "econ-data", "series"
 LIVE = "https://econdl-api.elkassabgi.workers.dev"
@@ -59,16 +57,13 @@ def sq(s: str) -> str:
 
 
 def d1(sql: str) -> dict:
-    r = subprocess.run([WRANGLER, "d1", "execute", D1, "--remote", "--json", "--command", sql],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=ROOT)
-    out = r.stdout.strip()
-    try:
-        j = json.loads(out)
-    except Exception:
-        raise RuntimeError("wrangler did not return JSON: %s %s" % (out[:300], r.stderr[:300]))
-    if isinstance(j, dict) and j.get("error"):
-        raise RuntimeError("D1 error: %s" % j)
-    return j[0] if isinstance(j, list) else j
+    """One statement on econ-catalog, its result {results, meta, ...}; RuntimeError on any failure. The road
+    is core.d1_remote (plan step 1): the pinned wrangler from api/worker before T0; after T0 this tool's
+    deletes are refused (its removals go through core.licence_targets then)."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import d1_remote                                           # noqa: PLC0415
+    return d1_remote.run_json(D1, sql)[0]
 
 
 def fts_pred(rows: list[dict]) -> str:
