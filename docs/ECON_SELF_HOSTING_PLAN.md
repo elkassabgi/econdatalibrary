@@ -158,7 +158,12 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
      get their local backend FIRST, so licence enforcement never has a gap.
 6. Health gate and digest local; an off-machine scheduled GitHub Action checks freshness/uptime through the
    edge AND, from T0 until step 7, reads R2 and D1 write analytics (billing-guard's analytics token) for
-   econ-data, econ-catalog and econ-catalog-climate every day and emails on any write.
+   econ-data, econ-catalog and econ-catalog-climate every day and emails on any write. It also checks that
+   the DEPLOYED edge version is the expected one (the edge answers its commit id and FORWARD state on a
+   status route) and emails otherwise: old copies of the config (D:\research\econfindatalibrary_OLD, the
+   E:\research\econ_wt_* worktrees and every git worktree with api/worker) still say `econdl-api` with
+   no FORWARD, and a routine `wrangler deploy` from any of them would silently put back a worker that
+   serves the frozen R2/D1 copy (R1165 late finding). At T0 those stale configs are renamed or removed.
 
 ## 4. Steps (each reviewed before it runs)
 
