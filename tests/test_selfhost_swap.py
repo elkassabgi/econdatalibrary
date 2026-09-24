@@ -4,6 +4,7 @@ import contextlib
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -118,12 +119,29 @@ def rig(tmp_path):
     swap.stop(blue.pid, swap.created(blue.pid))
 
 
-def _swap(rig, **kw):
+STOLEN_PORT = re.compile(r"the idle port \d+ (?:was taken while the copies were built|\(.*?\) already answers)")
+
+
+def _swap(rig, port_retry=True, **kw):
+    """One swap. A random idle port can be taken by ANOTHER process on the machine between the rig's pick and
+    the swap's check (a concurrent suite or mutant run did it twice, 2026-09-24): swap.py refuses that, as it
+    must, and the test then moves green to a fresh port and swaps again. A test that holds the port ON
+    PURPOSE passes port_retry=False."""
     args = dict(catalogue=rig["cat"], state_path=rig["state"], router_url=rig["router_url"], work=rig["work"],
                 worker_dir=rig["worker"], command=_fake_cmd(), freeze=_copy_freeze, slots=SLOTS, health_timeout=30,
                 drain_timeout=10, space_check=False, log=lambda *_: None)
     args.update(kw)
-    return swap.swap(**args)
+    for attempt in range(3):
+        try:
+            return swap.swap(**args)
+        except swap.SwapRefused as e:
+            if not port_retry or attempt == 2 or not STOLEN_PORT.search(str(e)):
+                raise
+        rig["ports"]["green"] = _port()
+        st = json.load(open(rig["state"]))
+        st["targets"]["green"] = f"http://127.0.0.1:{rig['ports']['green']}"
+        with open(rig["state"], "w") as f:
+            json.dump(st, f)
 
 
 def _no_green_gen(rig):
@@ -224,7 +242,7 @@ def test_an_answer_from_another_instance_is_refused(rig, monkeypatch):
         monkeypatch.setattr(swap, "port_in_use", lambda p: False)      # both port checks fooled
         sleeper = lambda port, persist, instance: [sys.executable, "-c", "import time; time.sleep(120)"]  # noqa: E731
         with pytest.raises(swap.SwapRefused, match="another process answers that port"):
-            _swap(rig, command=sleeper)
+            _swap(rig, port_retry=False, command=sleeper)
     finally:
         swap.stop(hijacker.pid, swap.created(hijacker.pid))
     assert json.load(open(rig["state"]))["active"] == "blue" and _no_green_gen(rig)
@@ -242,7 +260,7 @@ def test_a_port_taken_during_the_build_is_refused_before_the_start(rig, monkeypa
     monkeypatch.setattr(swap, "build_copies", build_then_take)
     try:
         with pytest.raises(swap.SwapRefused, match="taken while the copies were built"):
-            _swap(rig)
+            _swap(rig, port_retry=False)
     finally:
         holder.close()
     assert json.load(open(rig["state"]))["active"] == "blue" and _no_green_gen(rig)
@@ -254,9 +272,22 @@ def test_an_answering_idle_port_is_refused(rig):
     s.listen()
     try:
         with pytest.raises(swap.SwapRefused, match="already answers"):
-            _swap(rig)
+            _swap(rig, port_retry=False)
     finally:
         s.close()
+
+
+def test_the_rig_moves_off_a_port_another_process_took(rig):
+    """The test helper's own retry: swap.py refuses the stolen port, the helper moves green and succeeds."""
+    s = socket.socket()
+    taken = rig["ports"]["green"]
+    s.bind(("127.0.0.1", taken))
+    s.listen()
+    try:
+        out = _swap(rig)
+    finally:
+        s.close()
+    assert rig["ports"]["green"] != taken and json.load(open(rig["state"]))["active"] == "green", out
 
 
 def test_a_router_of_another_state_file_is_refused(rig, tmp_path):
