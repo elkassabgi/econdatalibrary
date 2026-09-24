@@ -12,8 +12,16 @@ SAFETY:
     pass --force only after confirming no run is active.
   * asserts the removed rows are ALL year>2075 and the survivors are ALL year<=2075.
   * backs the current R2 object up to a dated .bak key before overwriting.
+
+DEFUSED 2026-09-24 (self-hosting plan step 1). A completed 2026-07-24 one-off that ran AT IMPORT, with no
+dry run - and the first SAFETY line above was never code: nothing checks for an in-flight bfs run. It
+rewrites R2's copy of the store outside the merge path, and the local store is the primary. If the tail
+ever comes back, fix the local store through the updater's own path. The file stays as the record.
 """
-import io, os, sys
+raise SystemExit("tools/trim_bfs_corrupt_tail.py is DEFUSED: a completed 2026-07-24 one-off that ran at "
+                 "import. See its docstring.")
+
+import io, os, sys  # noqa: E401,E402 - unreachable by design (defused above)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import r2_util
 import pyarrow as pa

@@ -25,6 +25,20 @@ WRITE_CALLS = {"put_object", "upload_file", "upload_fileobj", "put_series_csv", 
 _WRITE_TEXT = re.compile(r"r2\s+object\s+(put|delete)|COPY\b.*\bTO\s+'s3://", re.I | re.S)
 CHOKEPOINTS = {"updater/blob.py", "core/r2_util.py", "core/licence_targets.py"}
 
+# What each remaining writer becomes at T0 (classified 2026-09-24 from each file's writes and callers; every
+# one of them fails closed after T0, because core.r2_util's clients refuse). The set is what the tests check;
+# the groups are the work list:
+#   MOVE - served objects the self-hosted store must hold: refresh_sec_edgar (its series CSVs; its parquet is
+#     already written locally), series_census (_aqueduct/stats.json, read by /v1/stats), guard_heartbeat
+#     (the watchdog beat another machine reads);
+#   LOCAL - a store file or state that is a local file after T0: cso_repull_matrix, cso_repull_subject,
+#     repull_file (backup + retire a store file), rebuild_cso_retired_from_csv (its local write exists),
+#     sec_edgar_union_repair, probe_csv_freshness (its bookmark);
+#   LICENCE - through core.licence_targets: delist_timeless_tables, purge_unpermitted_r2 (defused);
+#   RETIRE AT T0 - they only copy to or delete from R2, which is frozen then: core/upload_r2,
+#     _upload_biotrademerch_store, _upload_clean_full_parquet, upload_statcan_store, refresh_r2_catalog
+#     (the catalogue copy CI's updater reads - no CI updater after T0), and the two DEFUSED one-shots
+#     _delete_statcan_r2 and trim_bfs_corrupt_tail (tests/test_defused_one_shots.py).
 LEGACY_OBJECT_WRITERS = {
     "core/upload_r2.py",
     "tools/_delete_statcan_r2.py", "tools/_upload_biotrademerch_store.py",
