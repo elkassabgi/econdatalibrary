@@ -86,6 +86,24 @@ def _d1_count(source: str):
         return 0, f"{type(e).__name__}: {str(e)[:50]}"
 
 
+def _served_count(source: str):
+    """AFTER T0 the third leg (step 6d): D1 is frozen, and the origin answers from copies of the catalogue build
+    made at the last swap - so ask the EDGE what it serves for this source: /v1/catalog?source=X's `total`, read the
+    way tools/audit_serving_coherence.py reads it. (count, None) or (0, reason); a 451 is a gate, not a count."""
+    import json                                                          # noqa: PLC0415
+    import urllib.error                                                  # noqa: PLC0415
+    import urllib.request                                                # noqa: PLC0415
+    url = f"{API_BASE}/v1/catalog?source={urllib.parse.quote(source, safe='')}&limit=1"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "econdl-verify/1.0"}),
+                                    timeout=90) as f:
+            return int(json.load(f).get("total", 0)), None
+    except urllib.error.HTTPError as e:
+        return 0, ("GATED (451 non-redistributable)" if e.code == 451 else f"HTTP {e.code}")
+    except Exception as e:                                               # noqa: BLE001
+        return 0, f"{type(e).__name__}: {str(e)[:50]}"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True)
@@ -107,23 +125,44 @@ def main() -> int:
         (a.source + ":", a.source + ";"))}
     print(f"catalogue rows : {len(cat):,}")
 
-    from core import r2_util
-    s3 = r2_util.client()
+    # THE STORE USERS ARE SERVED FROM: R2 before T0; after T0 the self-hosted blob store the origin serves (step
+    # 6d - R2 is a frozen copy then, and every answer about it would be about a system nobody reaches). Only the
+    # live checkout may answer after T0: anywhere else the catalogue and the resolver's store are a worktree's.
+    from core import cutover                                         # noqa: PLC0415
+    selfhosted = cutover.is_cut_over()
     pref = f"{a.prefix}/{urllib.parse.quote(a.source + ':', safe='')}"
-    keys, tok = set(), None
-    while True:
-        kw = {"Bucket": a.bucket, "Prefix": pref, "MaxKeys": 1000}
-        if tok:
-            kw["ContinuationToken"] = tok
-        r = s3.list_objects_v2(**kw)
-        for o in r.get("Contents", []):
-            k = o["Key"]
+    keys = set()
+    if selfhosted:
+        from updater import blob as _blob                            # noqa: PLC0415
+        _blob.refuse_unless_live_checkout("verify_source_served (after T0 it judges the live store)")
+        store = _blob.SelfhostBlob()
+        for k in store.list_keys(pref):
             if k.endswith(".csv"):
                 keys.add(urllib.parse.unquote(k[len(a.prefix) + 1:-4]))
-        if not r.get("IsTruncated"):
-            break
-        tok = r["NextContinuationToken"]
-    print(f"R2 objects     : {len(keys):,}")
+
+        def object_bytes(key):
+            return store.get(key)
+        print(f"store objects  : {len(keys):,}   (the self-hosted store; R2 is a frozen copy since T0)")
+    else:
+        from core import r2_util
+        s3 = r2_util.client()
+        tok = None
+        while True:
+            kw = {"Bucket": a.bucket, "Prefix": pref, "MaxKeys": 1000}
+            if tok:
+                kw["ContinuationToken"] = tok
+            r = s3.list_objects_v2(**kw)
+            for o in r.get("Contents", []):
+                k = o["Key"]
+                if k.endswith(".csv"):
+                    keys.add(urllib.parse.unquote(k[len(a.prefix) + 1:-4]))
+            if not r.get("IsTruncated"):
+                break
+            tok = r["NextContinuationToken"]
+
+        def object_bytes(key):
+            return s3.get_object(Bucket=a.bucket, Key=key)["Body"].read()
+        print(f"R2 objects     : {len(keys):,}")
 
     missing = sorted(cat - keys)
     orphan = sorted(keys - cat)
@@ -162,7 +201,7 @@ def main() -> int:
     #
     # So check the mirror FIRST and withhold the byte verdict when it is behind. A withheld
     # verdict is useful; a false "identical" is worse than no check at all.
-    if a.sample:
+    if a.sample and not selfhosted:              # after T0 there is no mirror: the local store IS the store
         try:
             from core.derive_csv import _mirror_behind_store
             stale = _mirror_behind_store([a.source])
@@ -186,7 +225,11 @@ def main() -> int:
         rnd = random.Random(20260801)
         for sid in rnd.sample(both, min(a.sample, len(both))):
             key = f"{a.prefix}/{urllib.parse.quote(sid, safe='')}.csv"
-            got = s3.get_object(Bucket=a.bucket, Key=key)["Body"].read()
+            got = object_bytes(key)
+            if got is None:                      # listed a moment ago, gone now: not served
+                bad += 1
+                print(f"   VANISHED {sid}: listed, then absent from the store")
+                continue
             # Objects may be stored gzip-at-rest (cost plan 2026-08-18). The
             # serving contract is the DECOMPRESSED text (the worker inflates
             # before its processing), so equality is judged on inflated bytes.
@@ -214,16 +257,19 @@ def main() -> int:
     # catalogue rows and 3,135,873 objects while D1 held TEN — every other series would have
     # 404'd (R224). Local artefacts agreeing with each other is not evidence that a request
     # succeeds.
-    d1_n, d1_err = _d1_count(a.source)
+    # after T0 the served catalogue is the edge's (the origin's copies of the build, as of the last swap)
+    d1_n, d1_err = _served_count(a.source) if selfhosted else _d1_count(a.source)
+    leg = "SERVED (edge)" if selfhosted else "D1            "
+    behind = ("CATALOGUED BUT NOT SERVED: those ids wait for the next swap" if selfhosted
+              else "CATALOGUED BUT NOT IN D1: those ids 404 at the API")
     # Probe the DEPLOYED worker with a real id from this source, not the local util.ts.
     in_sup = _listed_live(a.source)
     if d1_err:
-        print(f"D1             : UNCHECKED ({d1_err})")
+        print(f"{leg} : UNCHECKED ({d1_err})")
     else:
         gap = len(cat) - d1_n
-        print(f"D1             : {d1_n:,} row(s)"
-              + (f"  — {gap:,} CATALOGUED BUT NOT IN D1: those ids 404 at the API"
-                 if gap > 0 else "  — matches the catalogue"))
+        print(f"{leg} : {d1_n:,} row(s)"
+              + (f"  — {gap:,} {behind}" if gap > 0 else "  — matches the catalogue"))
     # one expression per f-string field, on one line: a field spanning lines is Python 3.12+ (PEP 701) and CI
     # runs 3.11, where this file did not parse (R1232)
     listed = ("listed — discoverable on the deployed API" if in_sup
@@ -237,7 +283,7 @@ def main() -> int:
         # retained legacy objects — and a summary line that overstates is how a check stops
         # being worth reading.
         note = ("SERVED — MISSING 0, 0 unreachable objects, sample byte-identical, "
-                "D1 in step, source supported"
+                + ("the served catalogue in step" if selfhosted else "D1 in step") + ", source supported"
                 + (f"; {len(retained):,} retained legacy id(s)" if retained else ""))
     elif coherent:
         # SEPARATE "BROKEN" FROM "COULD NOT CHECK". When the D1 probe itself fails — a wrangler
@@ -249,7 +295,7 @@ def main() -> int:
         # connection is worse than one that says nothing.
         why = []
         if d1_err is None and d1_n < len(cat):
-            why.append("D1 is behind")
+            why.append("the served catalogue is behind (the next swap publishes it)" if selfhosted else "D1 is behind")
         if in_sup is False:
             why.append("the source is absent from SUPPORTED_SOURCES")
         if why:
@@ -258,7 +304,7 @@ def main() -> int:
         else:
             unknown = []
             if d1_err is not None:
-                unknown.append(f"the D1 probe failed ({d1_err})")
+                unknown.append(f"the {'served-count' if selfhosted else 'D1'} probe failed ({d1_err})")
             if in_sup is None:
                 unknown.append("the live /v1/sources probe failed")
             note = ("STORE COHERENT, REACHABILITY NOT VERIFIED — catalogue and R2 agree and the "

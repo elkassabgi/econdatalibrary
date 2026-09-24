@@ -15,6 +15,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from core import r2_util   # noqa: E402
+from core import cutover   # noqa: E402
+# STEP 6d: this question has no meaning after T0 - refused before anything runs (tests/test_verifiers_6d.py)
+cutover.refuse_if_cut_over('verify_statcan_store_bytes - it byte-checks the statcan UPLOAD to R2, and after T0 nothing is uploaded')
 
 BUCKET = "econ-data"
 PREFIX = "clean_full/statcan/"

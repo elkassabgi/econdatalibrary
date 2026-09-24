@@ -29,13 +29,10 @@ HANDLES_T0 = re.compile(r"is_cut_over|refuse_if_cut_over|refuse_unless_live_chec
 # Judges "served" / store health FROM the cloud copy: after T0 every answer is about the frozen copy. Step 6d
 # re-points each to the edge or the local store, or makes it refuse.
 VERIFIERS_6D = {
-    "tools/audit_csv_staleness.py", "tools/audit_d1_source_counts.py", "tools/audit_d1_vs_catalog.py",
-    "tools/audit_licence_disclosure.py", "tools/audit_r2_vs_catalog.py", "tools/audit_rotation_progress.py",
-    "tools/audit_serving_coherence.py", "tools/audit_site.py", "tools/audit_untouched_files.py",
-    "tools/audit_unwritten_store_regions.py", "tools/footer_diff.py", "tools/sample_source_coverage.py",
-    "tools/store_inventory.py", "tools/verify_derive_parity.py", "tools/verify_source_served.py",
-    "tools/verify_statcan_store_bytes.py",
-}
+    "tools/audit_csv_staleness.py", "tools/audit_licence_disclosure.py", "tools/audit_r2_vs_catalog.py", "tools/audit_rotation_progress.py",
+    "tools/audit_site.py", "tools/audit_untouched_files.py",
+    "tools/audit_unwritten_store_regions.py", "tools/sample_source_coverage.py",
+    "tools/verify_derive_parity.py", }
 # Measures the cloud copy ITSELF (its size, cost, reads, public answers): still true after T0, until the copy is
 # decommissioned - that is exactly what these are for (plan: R2/D1 analytics until step 7).
 CLOUD_COST = {
@@ -149,3 +146,39 @@ def test_after_t0_a_tool_that_pulls_the_cloud_into_local_data_refuses_first(tmp_
     monkeypatch.setattr(sys, "argv", [name, *argv])
     with pytest.raises(cutover.CutoverRefused, match="self-hosted since T0"):
         mod.main()
+
+
+# Step 6d: verifiers whose question has no meaning after T0 (one store; D1 and R2 frozen copies) refuse then.
+REFUSED_6D_MAIN = ["footer_diff", "audit_d1_vs_catalog", "audit_d1_source_counts"]
+REFUSED_6D_MODULE = ["verify_statcan_store_bytes", "audit_serving_coherence"]
+
+
+@pytest.mark.parametrize("name", REFUSED_6D_MAIN)
+def test_after_t0_a_meaningless_verifier_refuses_first(tmp_path, monkeypatch, name):
+    import argparse
+    import importlib
+    from core import cutover, r2_util, d1_remote
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    mod = importlib.import_module(name)
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "CUTOVER"))
+    (tmp_path / "CUTOVER").write_text("")
+    monkeypatch.setattr(r2_util, "client", lambda *a, **k: pytest.fail("R2 reached"))
+    monkeypatch.setattr(d1_remote, "rows", lambda *a, **k: pytest.fail("D1 reached"))
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", lambda *a, **k: pytest.fail("arguments parsed first"))
+    monkeypatch.setattr(sys, "argv", [name])
+    with pytest.raises(cutover.CutoverRefused, match="self-hosted since T0"):
+        mod.main()
+
+
+@pytest.mark.parametrize("name", REFUSED_6D_MODULE)
+def test_after_t0_a_meaningless_verifier_script_refuses_at_import(tmp_path, monkeypatch, name):
+    """No main(): the refusal is the first thing the script does after its imports."""
+    import importlib.util
+    from core import cutover, r2_util
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "CUTOVER"))
+    (tmp_path / "CUTOVER").write_text("")
+    monkeypatch.setattr(r2_util, "client", lambda *a, **k: pytest.fail("R2 reached"))
+    monkeypatch.setattr(sys, "argv", [name])
+    spec = importlib.util.spec_from_file_location(f"_t0_{name}", os.path.join(ROOT, "tools", f"{name}.py"))
+    with pytest.raises(cutover.CutoverRefused, match="self-hosted since T0"):
+        spec.loader.exec_module(importlib.util.module_from_spec(spec))
