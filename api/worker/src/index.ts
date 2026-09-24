@@ -29,6 +29,7 @@ import { isGated } from "./denylist";
 import { handlePublicStats } from "./publicStats";
 import { json, reqLang } from "./util";
 import { isLocal, originGate, finalizeLocal } from "./localMode";
+import { LocalBucket } from "./localBucket";
 
 const CORS_PREFLIGHT: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -56,7 +57,13 @@ export default {
     if (local) {
       const refused = await originGate(request, env);
       if (refused) return refused;
-      return finalizeLocal(await route(request, env, ctx, true));
+      if (!env.BLOB_SIDECAR_URL) {
+        return finalizeLocal(json({ error: "origin_not_configured",
+          detail: "BLOB_SIDECAR_URL is unset, so this origin has no store to serve from" }, 503));
+      }
+      // SERIES_BUCKET becomes the blob sidecar (src/localBucket.ts); the route code is unchanged.
+      const lenv: Env = { ...env, SERIES_BUCKET: new LocalBucket(env.BLOB_SIDECAR_URL) as unknown as R2Bucket };
+      return finalizeLocal(await route(request, lenv, ctx, true));
     }
     return route(request, env, ctx, false);
   },

@@ -56,6 +56,8 @@ export interface Env {
   // refuses every request when ORIGIN_SECRET is unset. The production worker never sets either.
   LOCAL?: string;
   ORIGIN_SECRET?: string;
+  // Base URL of the blob sidecar (tools/selfhost/blob_sidecar.py) that stands in for R2 on the origin.
+  BLOB_SIDECAR_URL?: string;
 }
 
 // --- D1 row shapes (one per SELECT column list in sql.ts) ------------------

@@ -25,6 +25,7 @@ cpu_ms = 300000
 
 [vars]
 LOCAL = "1"
+BLOB_SIDECAR_URL = "http://127.0.0.1:8798"
 
 [[d1_databases]]
 binding = "CATALOG"
