@@ -221,6 +221,112 @@ def merged_refused(summary_path: str, key: str, examined, refused, full_run: boo
     except (OSError, ValueError, TypeError, AttributeError):
         return mine, "partial"
 
+# What pinned_split returns for a cube that has NO public ids yet (not in the map, not catalogued):
+# there is nothing to keep, so the caller decides its split with choose_split as a first derive does.
+CHOOSE = "choose"
+
+
+def pinned_split(pid: str, n_rows: int, pinned: dict, max_rows: int, served_whole: bool,
+                 served_parts: bool = False):
+    """The split a refreshed cube is SERVED under - what --pin-split reports against.
+
+    Why this exists (2026-09-23). A cube's part ids are its split's VALUES (`statcan:<pid>#<value>`)
+    and choose_split() decides the split from the data. Re-deciding it on a refreshed cube can pick
+    another column - or split a cube that was served whole - and rename EVERY public id at once.
+
+    `served_whole` / `served_parts`: whether the catalogue holds `statcan:<pid>` itself / any
+    `statcan:<pid>#...` - the facts, read from the catalogue, never inferred from the map's silence.
+
+    A map entry's `parts` is the count choose_split measured - DISTINCT split values when the split
+    was chosen - not the parts a derive emits: a value whose rows are all NULL emits no part, so
+    35100172 records 13 and is catalogued with 12 (round-4 review measured 8 such cubes, each gap
+    exactly its all-NULL groups). Never use it as a completeness count.
+
+    Returns choose_split's shape: (dim, n) for a recorded split; (None, 1) for a cube served whole
+    that still fits the cap; ("", 0) - refused by name - for a whole cube that has outgrown the cap
+    (catalog_statcan_tables.py refuses the WHOLE catalogue when an over-cap cube has no split: one
+    rule, both tools) and for a cube served as PARTS whose split is not recorded (choosing one now
+    would rename every served id - round-2 review); (CHOOSE, 0) only for a cube with no ids at all.
+    """
+    entry = pinned.get(pid)
+    if entry and entry.get("dim"):
+        return entry["dim"], int(entry.get("parts") or 0)
+    if served_parts:
+        return "", 0
+    if served_whole:
+        return (None, 1) if n_rows <= max_rows else ("", 0)
+    return CHOOSE, 0
+
+
+def pinned_columns_present(dim: str, schema_names) -> bool:
+    """A recorded split must still name columns the refreshed cube has."""
+    if dim.startswith("coordinate:"):
+        cols = ["coordinate"]
+    elif "+" in dim:
+        cols = dim.split("+", 1)
+    else:
+        cols = [dim]
+    return all(c in set(schema_names) for c in cols)
+
+
+def part_diff(emitted: set, catalogued: set) -> dict:
+    """{new: ids emitted but not catalogued, vanished: catalogued ids no longer emitted}.
+
+    A NEW id has an object and no catalogue row, so users cannot reach it until the catalogue is
+    synced. A VANISHED id (its dimension value was relabelled or dropped) keeps its old object and
+    its catalogue row, so users get STALE data until the catalogue retires it. Neither is fixed
+    here: this tool writes objects, the catalogue is tools/catalog_statcan_tables.py plus the D1
+    sync. It reports them so the catalogue step knows exactly what to do."""
+    return {"new": sorted(emitted - catalogued), "vanished": sorted(catalogued - emitted)}
+
+
+def write_map_atomic(path: str, obj: dict) -> None:
+    """Write the split map to a temp file and os.replace it in (round-4 review, probe P1).
+
+    Opening the map itself with "w" EMPTIES it first, so a kill between the truncate and the last
+    byte left invalid JSON on disk - and while the map is unreadable the resolver raises for every
+    `#` part id in the catalogue. os.replace is atomic on one volume: a reader sees the old map or
+    the new one, never half of either. A reader holding the file open makes Windows refuse the
+    replace (a sharing violation, PermissionError), so the replace is retried for ~25 s before it
+    gives up - and on giving up the temp file is removed and the old map is untouched."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh, indent=1, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        for attempt in range(10):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.5 * (attempt + 1))
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def catalogued_ids(catalog_db: str, pid: str) -> set:
+    """Every catalogued id of one cube, by a PRIMARY-KEY RANGE read of the local catalogue (no scan;
+    DECIDE LOCALLY). 'statcan:<pid>' and 'statcan:<pid>#...' both sort inside the range because the
+    product id is a fixed 8 digits."""
+    import sqlite3                                              # noqa: PLC0415
+    lo = unit_id(pid)
+    hi = lo + "$"          # '$' (0x24) sorts just after '#' (0x23): the cube and its parts only
+    # timeout=180: the catalogue is rollback-journal, so a concurrent writer blocks readers (R715)
+    con = sqlite3.connect(f"file:{catalog_db}?mode=ro", uri=True, timeout=180)
+    try:
+        return {r[0] for r in con.execute(
+            "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?", (lo, hi))}
+    finally:
+        con.close()
+
+
 def run_scope(a) -> str:
     """Was this run evidence about the WHOLE store, or only part of it?
 
@@ -239,6 +345,8 @@ def run_scope(a) -> str:
     """
     if getattr(a, "dry_run", False):
         return "dry_run"
+    # (--pin-split sets dry_run, so a pinned report is scoped "dry_run" above: never evidence of
+    # the store's cap - R832/R833.)
     if getattr(a, "only", None):
         return "only"
     if getattr(a, "limit", None):
@@ -258,11 +366,95 @@ def main() -> int:
                     help="process the biggest tables first — use with --dry-run to validate the "
                          "splitter where it actually has to work")
     ap.add_argument("--memory-limit", default="8GB")
-    ap.add_argument("--max-rows", type=int, default=MAX_ROWS_DEFAULT)
+    ap.add_argument("--max-rows", type=int, default=None,
+                    help=f"row cap per served object (default {MAX_ROWS_DEFAULT:,}; REQUIRED with "
+                         f"--pin-split unless the derive summary records the store's cap)")
     ap.add_argument("--only", default="")
+    ap.add_argument("--pin-split", action="store_true",
+                    help="REPORT ONLY (implies --dry-run): which served ids a refreshed cube keeps, "
+                         "adds and strands, under the split it is already served with")
+    ap.add_argument("--parts-report", metavar="PATH",
+                    help="write {pid: {new, vanished}} part ids against the local catalogue")
+    ap.add_argument("--catalog-db", default=os.path.join(ROOT, "data", "catalog.db"))
+    ap.add_argument("--rekey", action="store_true",
+                    help="RE-CHOOSE every split from the data, as the first derive did. This renames "
+                         "served part ids, so it is a decision and not a refresh; without it a "
+                         "writing run keeps every catalogued cube's recorded split")
     a = ap.parse_args()
+    # --pin-split WRITES NOTHING (round-2 review). The orchestrator already re-derives a refreshed
+    # cube's CATALOGUED parts, under the recorded split by construction, byte-identical to this tool
+    # (the reviewer's 12/12 on 14100026 and 10100001). What it cannot do is name the parts a refresh
+    # CREATES or STRANDS - which is this mode's whole job. Writing objects here only raced the
+    # orchestrator, could skip-existing its way to a green "refresh" that changed nothing, and put
+    # objects under ids no catalogue row reaches.
+    if a.pin_split:
+        a.dry_run = True
     if not a.dry_run and not a.bucket:
         ap.error("--bucket is required unless --dry-run")
+    if a.pin_split and a.rekey:
+        ap.error("--pin-split reports against the recorded splits; --rekey discards them")
+    # A WRITING RUN KEEPS SERVED IDS (round-4 review, probe P2). Pinning used to protect only the
+    # report: a real `--only` run re-chose the split of a cube already served as parts, wrote a
+    # whole-cube object, dropped its map entry and exited 0. Now every writing run pins, and only an
+    # explicit --rekey re-chooses (a full re-derive campaign; the retired RELAUNCH_GUARD argv needs
+    # it added if it is ever relaunched).
+    pin_writes = not a.dry_run and not a.rekey
+    _smap_path = os.path.join(STORE, "_split_map.json")
+    # THE MAP AS IT WAS WHEN THIS RUN STARTED, kept whole by every map write (see there). A pinned
+    # report and EVERY writing run fail closed on an unreadable map (round-4 review, probe P5: a
+    # full run started from {} and dropped a refused cube's entry). Only a --rekey run may start
+    # without a map at all (a first derive), and only a plain --dry-run tolerates a corrupt one.
+    try:
+        base_map = json.load(open(_smap_path, encoding="utf-8"))
+    except FileNotFoundError as e:
+        if a.pin_split or pin_writes:
+            raise SystemExit(f"REFUSING{' --pin-split' if a.pin_split else ''}: {_smap_path} does not "
+                             f"exist; pinning needs the recorded splits (--rekey to choose them "
+                             f"afresh)") from e
+        base_map = {}
+    except (OSError, ValueError) as e:
+        if a.pin_split or not a.dry_run:
+            raise SystemExit(f"REFUSING{' --pin-split' if a.pin_split else ''}: {_smap_path} is "
+                             f"unreadable ({e!r}); a run that writes or pins cannot keep the other "
+                             f"cubes' splits without it") from e
+        base_map = {}
+    if (a.pin_split or pin_writes) and (not isinstance(base_map, dict) or not base_map):
+        # FAIL CLOSED: pinning against an empty map would silently re-decide every split - exactly
+        # the id churn pinning exists to prevent.
+        raise SystemExit(f"REFUSING{' --pin-split' if a.pin_split else ''}: {_smap_path} holds no "
+                         f"split decisions")
+    pinned = base_map if (a.pin_split or pin_writes) else {}
+    if a.pin_split or not a.dry_run:
+        # THE CAP MUST BE THE STORE'S, in the report AND in every mode that writes (round-4 review,
+        # probe P3: a real --only run without --max-rows split at the 500,000 default while the store
+        # was built at 3,000,000). The production derive ran at 3,000,000 (the smallest split cube
+        # has 3,003,000 rows). A cap is evidence only from a FULL run (R833; catalog_statcan_tables.py
+        # applies the same rule): a dry or scoped run stamps its own max_rows (round-2 review, P2).
+        try:
+            _sum = json.load(open(os.path.join(ROOT, "logs", "statcan_tables_summary.json"),
+                                  encoding="utf-8"))
+            _recorded = _sum.get("max_rows") if _sum.get("scope") == "full" else None
+        except (OSError, ValueError, AttributeError):
+            _recorded = None
+        _mode = "--pin-split" if a.pin_split else "a writing run"
+        if _recorded is not None and a.max_rows is not None and int(_recorded) != a.max_rows:
+            raise SystemExit(f"REFUSING {_mode}: --max-rows {a.max_rows:,} disagrees with the "
+                             f"store's recorded cap {int(_recorded):,}")
+        if a.max_rows is None:
+            if _recorded is None:
+                raise SystemExit(f"REFUSING {_mode} without --max-rows: the derive summary does "
+                                 "not record the cap the store was built at, and a guessed cap "
+                                 "refuses cubes that fit (the production derive ran at 3,000,000)")
+            a.max_rows = int(_recorded)
+    if a.max_rows is None:
+        a.max_rows = MAX_ROWS_DEFAULT
+    if (a.parts_report or a.pin_split or pin_writes) and not os.path.exists(a.catalog_db):
+        raise SystemExit(f"REFUSING: no catalogue at {a.catalog_db} (needed to know which cubes are "
+                         f"served whole or as parts - by --pin-split, by --parts-report, and by any "
+                         f"writing run without --rekey)")
+    parts_report: dict = {}
+    if not isinstance(base_map, dict):
+        base_map = {}
 
     files = sorted(f.replace("\\", "/") for f in
                    glob.glob(os.path.join(STORE, "**", "*.parquet"), recursive=True)
@@ -290,6 +482,19 @@ def main() -> int:
         files = [f for _n, f in sorted(((os.path.getsize(f), f) for f in files), reverse=True)]
     print(f"{len(files):,} table(s); splitting any over {a.max_rows:,} rows"
           f"{' — LARGEST FIRST' if a.largest_first else ''}", flush=True)
+
+    # THE CATALOGUE'S IDS FOR EVERY CUBE IN SCOPE, read BEFORE anything is written (round-1
+    # review): read inside the loop, a locked catalogue raised with PUTs already queued to daemon
+    # workers, and those were lost with no summary. Fails closed here instead.
+    cat_ids: dict = {}
+    if a.pin_split or a.parts_report or pin_writes:
+        try:
+            for f in files:
+                stem = os.path.splitext(os.path.basename(f))[0]
+                cat_ids[stem] = catalogued_ids(a.catalog_db, stem)
+        except Exception as e:                                  # noqa: BLE001
+            raise SystemExit(f"REFUSING: the catalogue at {a.catalog_db} could not be read "
+                             f"({type(e).__name__}: {e}); nothing was written") from e
 
     # PER-PROCESS SPILL DIRECTORY. Every tool here used a shared logs/_duckspill, which is fine
     # until two of them spill at the same moment — then one deletes the other's temp storage and
@@ -328,6 +533,10 @@ def main() -> int:
     counts = {"put": 0, "skip": 0, "err": 0}
     lock = threading.Lock()
     STOP = object()
+    written: set = set()          # keys whose PUT SUCCEEDED - what the parts report may call written
+    emitted: dict = {}            # pid -> ids this run produced a body for
+    status: dict = {}             # pid -> ok | refused | scan_failed
+    pin_refused: set = set()      # refused because its SERVED ids cannot be reproduced
 
     def worker():
         while True:
@@ -348,6 +557,7 @@ def main() -> int:
                 s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv",
                               ContentEncoding="gzip")
                 with lock:
+                    written.add(key)
                     counts["put"] += 1
                     if counts["put"] % 500 == 0:
                         print(f"  put {counts['put']:,}", flush=True)
@@ -385,7 +595,29 @@ def main() -> int:
         con.execute("SET preserve_insertion_order=false")
         con.execute("SET enable_progress_bar=false")
         n_rows = pq.ParquetFile(f).metadata.num_rows
-        dim, n_parts = choose_split(con, f, n_rows, a.max_rows)
+        pin_refusal = None
+        if a.pin_split or pin_writes:
+            _parts = any("#" in s for s in cat_ids.get(pid, set()))
+            dim, n_parts = pinned_split(pid, n_rows, pinned, a.max_rows,
+                                        served_whole=unit_id(pid) in cat_ids.get(pid, set()),
+                                        served_parts=_parts)
+            if dim == CHOOSE:
+                # no public ids yet: nothing to keep, so decide it as a first derive does
+                dim, n_parts = choose_split(con, f, n_rows, a.max_rows)
+            elif dim == "" and _parts:
+                pin_refusal = ("served as parts but no split is recorded in the map - choosing one "
+                               "now would rename every served part (--rekey is that decision)")
+            elif dim == "":
+                pin_refusal = (f"served whole and now {n_rows:,} rows, over the {a.max_rows:,} cap - "
+                               f"splitting it re-keys its public id, a decision and not a derive")
+            elif dim and not pinned_columns_present(dim, pq.read_schema(f).names):
+                pin_refusal = (f"its recorded split {dim!r} names a column the refreshed cube "
+                               f"no longer has")
+                dim, n_parts = "", 0
+        else:
+            dim, n_parts = choose_split(con, f, n_rows, a.max_rows)
+        emitted_ids: set = emitted.setdefault(pid, set())
+        status[pid] = "ok"
         if dim:
             split_map[pid] = {"dim": dim, "parts": n_parts, "rows": n_rows}
             # PERSIST THE DECISION IMMEDIATELY, not at the end of an 8,207-table run. Choosing a
@@ -394,19 +626,40 @@ def main() -> int:
             # multi-day job is the likely case, not the unlikely one. Same reasoning as
             # stat_slovenia's sweep offset: state that exists to survive a kill must be written
             # before the kill. --skip-existing then makes a restart cheap in BOTH halves.
+            #
+            # A SCOPED RUN WRITES THE WHOLE MAP (2026-09-23). This used to dump `split_map` - THIS
+            # run's entries only - over the file, so an `--only` run truncated the 593-cube map to
+            # its own cubes mid-run, and the end-of-run merge below then re-read that truncated file
+            # and wrote it back: every other split flow lost its entry, and the resolver raises
+            # "never split" for each of their catalogued part ids. `base_map` is the map as it was
+            # when this run started (read fail-closed above for scoped runs).
             if not a.dry_run:
                 try:
-                    with open(os.path.join(STORE, "_split_map.json"), "w",
-                              encoding="utf-8") as fh:
-                        json.dump(split_map, fh, indent=1, sort_keys=True)
+                    # a REFUSED cube keeps its previous entry: nothing new was written for it,
+                    # and its catalogued parts still resolve through that entry
+                    seen = set(_examined_stems) - {st for st, _n in refused}
+                    write_map_atomic(os.path.join(STORE, "_split_map.json"),
+                                     {**{k: v for k, v in base_map.items() if k not in seen},
+                                      **split_map})
                 except OSError:
-                    pass    # a lost map costs re-deciding, never correctness
+                    pass    # the old map is intact (atomic write); the end-of-run write retries
         if dim == "":
             refused.append((pid, n_rows))
-            print(f"  [{i}/{len(files)}] {pid}: REFUSED — {n_rows:,} rows and no column pair "
-                  f"divides it below {a.max_rows:,}; NOT emitted", flush=True)
+            status[pid] = "refused"
+            if pin_refusal:
+                pin_refused.add(pid)
+            why = pin_refusal or f"{n_rows:,} rows and no column pair divides it below {a.max_rows:,}"
+            print(f"  [{i}/{len(files)}] {pid}: REFUSED — {why}; NOT emitted", flush=True)
             con.close()
             continue
+        if a.dry_run and a.parts_report:
+            # what a real run WOULD emit, from the same predicate and the same part expression
+            expr = part_expr(dim) if dim else "''"
+            for (p,) in con.execute(f"SELECT DISTINCT {expr} FROM read_parquet('{f}') "
+                                    f"WHERE value IS NOT NULL AND obs_date IS NOT NULL").fetchall():
+                if dim and p in (None, ""):
+                    continue                      # a NULL split value has no part id (see flush)
+                emitted_ids.add(unit_id(pid, p or None))
         if a.dry_run:
             if dim or i <= 5 or i % 500 == 0:
                 print(f"  [{i}/{len(files)}] {pid}: {n_rows:>12,} rows -> "
@@ -433,6 +686,7 @@ def main() -> int:
         except Exception as e:                                  # noqa: BLE001
             print(f"  [{i}/{len(files)}] {pid}: SCAN FAILED {type(e).__name__} "
                   f"{str(e)[:70]}", flush=True)
+            status[pid] = "scan_failed"
             con.close()
             continue
 
@@ -442,8 +696,18 @@ def main() -> int:
             nonlocal n_units
             if not rows:
                 return
+            if dim and part in (None, ""):
+                # A NULL value of the split column has NO part id: `unit_id(pid, None)` is the
+                # WHOLE-cube id, so these rows were written as `statcan:<pid>` holding only the
+                # NULL slice, while the resolver serves that id as the entire cube - two different
+                # bodies for one id (round-2 review, probe P6). The cataloguer skips NULL parts, so
+                # the object was an orphan; it is simply not written.
+                with lock:
+                    counts["null_part_rows"] = counts.get("null_part_rows", 0) + len(rows)
+                return
             sid = unit_id(pid, part or None)
             n_units += 1
+            emitted_ids.add(sid)
             key = csv_key(a.prefix, sid)
             if key in existing:
                 with lock:
@@ -502,7 +766,13 @@ def main() -> int:
         print(f"(dry run: split map NOT written; this run chose {len(split_map)} split(s))")
     else:
         out_map = split_map
-        if a.only:
+        # MERGE ON EVERY SCOPED RUN, not only --only (round-1 review): a --limit or --pin-split
+        # run examined part of the store too, and replacing the map with its entries dropped 592
+        # of 593 in the reviewer's probe.
+        # A PINNED full run merges too (round-5 review, minor 1): it keeps every split, so a map
+        # entry for a cube with no store file this run is still the truth, not a stale decision to
+        # drop. Only a --rekey full run rebuilds the map from its own decisions.
+        if run_scope(a) != "full" or pin_writes:
             try:
                 out_map = json.load(open(smap, encoding="utf-8"))
             except (OSError, ValueError) as _e:
@@ -517,11 +787,23 @@ def main() -> int:
                     f"impossible, and writing a fresh map would orphan every other "
                     f"split flow. Restore the map (a .20260907.bak sits beside it) "
                     f"and re-run.") from _e
-            for st in {os.path.splitext(os.path.basename(x))[0] for x in files}:
+            # the cubes this run EXAMINED, not every file in scope: `--limit` breaks the loop
+            # without narrowing `files`, so popping `files` erased the whole map on a limited run
+            # ...and a REFUSED cube keeps its previous entry: this run wrote nothing for it, so its
+            # catalogued parts still resolve through that entry (round-2 review, probe P1)
+            for st in set(_examined_stems) - {st for st, _n in refused}:
                 out_map.pop(st, None)
             out_map.update(split_map)
-        with open(smap, "w", encoding="utf-8") as fh:
-            json.dump(out_map, fh, indent=1, sort_keys=True)
+        else:
+            # A FULL run rebuilds the map from its own decisions - but a cube it REFUSED wrote
+            # nothing, so its served parts still resolve through the entry it had. Dropping it
+            # here left every such part id "never split" (round-3 review, probe P9); the mid-run
+            # write already kept it, so the two writes disagreed.
+            out_map = dict(split_map)
+            for st, _n in refused:
+                if st in base_map and st not in out_map:
+                    out_map[st] = base_map[st]
+        write_map_atomic(smap, out_map)
         print(f"split map ({len(out_map):,} table(s)) -> {smap}")
 
     # Every terminal disposition gets a key (R219).
@@ -532,11 +814,18 @@ def main() -> int:
     # `--limit` does NOT - it breaks the loop - so using `files` here would drop
     # every stem in the store from the previous record while having examined five.
     _examined = _examined_stems
-    _ref_list, _ref_scope = merged_refused(
-        os.path.join(ROOT, "logs", "statcan_tables_summary.json"), "table", _examined, refused,
-        run_scope(a) == "full")
     summary = os.path.join(ROOT, "logs", "statcan_tables_summary.json")
-    json.dump({"considered": len(files), "units": n_units, "put": counts["put"],
+    # A PINNED REPORT LEAVES THE SUMMARY ALONE (round-3 review, probe P7). The summary is the only
+    # structured record of the last FULL run - its cap (which the cataloguer adopts) and its refused
+    # giants - and a routine refresh report overwrote it with scope=dry_run, erasing both. A report
+    # decides no split and writes no object, so it has nothing to record there.
+    if a.pin_split:
+        _ref_list = None
+    else:
+        _ref_list, _ref_scope = merged_refused(summary, "table", _examined, refused,
+                                               run_scope(a) == "full")
+    if _ref_list is not None:
+        json.dump({"considered": len(files), "units": n_units, "put": counts["put"],
                "skipped": counts["skip"], "errors": counts["err"],
                "refused": _ref_list,
                "refused_scope": _ref_scope,
@@ -560,7 +849,51 @@ def main() -> int:
                # trailing refusals never reached the index assignment.
                "processed": len(_examined_stems),
                "dry_run": bool(a.dry_run)}, open(summary, "w"), indent=1)
-    print(f"summary -> {summary}")
+        print(f"summary -> {summary}")
+    else:
+        print(f"summary NOT touched (a pinned report records no run): {summary}")
+    if a.parts_report:
+        # BUILT AFTER q.join(), so "new" means WRITTEN (a successful PUT - or, in a dry run, what a
+        # real run would write), never merely queued; every EXAMINED cube gets an entry with its
+        # status, so a refused or failed cube is listed rather than silently absent (round-1 review).
+        for pid in dict.fromkeys(_examined_stems):
+            ids = emitted.get(pid, set())
+            ok = ids if a.dry_run else {s for s in ids
+                                        if csv_key(a.prefix, s) in written
+                                        or csv_key(a.prefix, s) in existing}
+            # a cube not judged ok emits nothing to compare: listing all its catalogued ids as
+            # "vanished" would invite retiring every served id it has (round-3 review)
+            entry = (part_diff(ok, cat_ids.get(pid, set())) if status.get(pid) == "ok"
+                     else {"new": [], "vanished": []})
+            entry["status"] = status.get(pid, "not_reached")
+            entry["unwritten"] = sorted(ids - ok)
+            parts_report[pid] = entry
+        n_new = sum(len(v["new"]) for v in parts_report.values())
+        n_gone = sum(len(v["vanished"]) for v in parts_report.values())
+        with open(a.parts_report, "w", encoding="utf-8") as fh:
+            json.dump({"dry_run": bool(a.dry_run), "pin_split": bool(a.pin_split),
+                       "catalog_db": a.catalog_db, "cubes": parts_report}, fh, indent=1)
+        print(f"parts vs the catalogue: {n_new:,} new id(s) (objects with no catalogue row), "
+              f"{n_gone:,} vanished id(s) (catalogued, now STALE) -> {a.parts_report}")
+    if counts.get("null_part_rows"):
+        print(f"rows under a NULL split value, not written (no part id): {counts['null_part_rows']:,}")
+    # SAY FAILURE IN THE EXIT CODE (round-2 review, probe P5): every PUT failing used to exit 0.
+    # A pinned report also fails when any cube could not be judged, since that is its whole job.
+    # WHAT FAILS THE RUN (round-4 review, probe P4). Exit 1 means something that should have been
+    # written was not: a PUT error, a scan that failed, a cube whose SERVED ids could not be
+    # reproduced (pin_refused) - and, in a report, any cube it could not judge, since judging is
+    # its whole job. A cube choose_split REFUSES on a --rekey or first derive (no column divides it
+    # under the cap) is a known structural limit: the live summary names five that every full run
+    # refuses (37100234, 37100277, 98100023, 98100174, 98100206). It is printed and recorded in the
+    # summary, and does NOT fail the run - or a guarded job would never earn its done-sentinel
+    # (tools/run_guarded_job.ps1 writes it only on exit 0) and would relaunch a ~7.8-day derive
+    # for ever.
+    bad = [p for p, s in status.items()
+           if s not in ("ok", "refused") or p in pin_refused or (a.pin_split and s == "refused")]
+    if counts["err"] or bad:
+        print(f"EXIT 1: {counts['err']:,} PUT error(s)"
+              + (f"; {len(bad)} cube(s) not ok: {', '.join(bad[:10])}" if bad else ""))
+        return 1
     return 0
 
 
