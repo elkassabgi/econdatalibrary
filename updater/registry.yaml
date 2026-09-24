@@ -4383,14 +4383,18 @@ sources:
   scripts:
   - jobs/ingest_statcan.py
   strategy: extend_by_date
-  strategy_reason: 'Genuine server-side date-tail (S2), not a whole-cube re-download. getFullTableDownloadCSV (the bulk path)
-    is full-table only, BUT WDS exposes a true delta keyed on the SAME vector ids already on disk: getAllCubesListLite
-    carries every cube''s releaseTime so "changed since the watermark" is a filter over one request (NOT getChangedCubeList,
-    which is a SINGLE-DAY feed and was read as a since-feed until 2026-09-17), and getBulkVectorDataByRange(vectorIds, startDataPointReleaseDate, end)
-    returns only the datapoints (new periods AND revisions) released in the window per vector. The fetcher reads each changed
-    cube''s on-disk vectors + (geo,uom,coordinate) constants, pulls the release-dated tail, and merges (dedup (series_key,obs_date),
-    new value wins, never-shrink). Emitted series_key = lowercase ''v''+vectorId — byte-identical to the bulk parquet — so
-    merges EXTEND existing cubes, never duplicate. Implemented at updater/strategies/fetchers/statcan.py.'
+  strategy_reason: 'A REPORTER for jobs/statcan_lane.py (2026-09-23). The lane is a guard job (RELAUNCH_GUARD.ps1)
+    that runs to empty every tick: it enumerates getAllCubesListLite (NOT getChangedCubeList, a SINGLE-DAY feed), refreshes
+    each released cube WHOLE (getFullTableDownloadCSV, parsed by jobs/ingest_statcan.parse_zip_to_parquet, proved complete
+    against getCubeMetadata, proved keyed like the stored cube, merged with merge_and_write_bounded), records the merge, then
+    serves the cube''s CATALOGUED parts under its recorded split in one scan. No time budget: inside a local pass statcan got
+    a 20-76 min slot while 108 backlog cubes need more and 12100152 ~380 min (NUMBERS.md 2026-09-23). This unit reads the
+    lane''s _lane_progress.json / _lane_state.json and reports: red if the lane is dead or the oldest owed release is over
+    14 days old, partial for named quarantined cubes, ok otherwise. Implemented at updater/strategies/fetchers/statcan.py.'
+  # The lane serves statcan's CSVs and holds logs/statcan_writer.lock; the orchestrator's CSV phase and
+  # retry drain must not write them too (lane design review 2026-09-23, finding 3). Adding this key
+  # does NOT change the source count (R347: no EXPECTED_SOURCE_COUNT bump).
+  served_by: lane
   cadence: weekly
   refresh_cost: giant
   out_dir: statcan
@@ -4409,8 +4413,8 @@ sources:
       "changed since" a filter rather than arithmetic that can skip a day.
     since_param: >-
       releaseTime >= watermark, applied to the getAllCubesListLite enumeration, to choose whole
-      cubes to re-pull; the intra-cube delta is then getBulkVectorDataByRange with
-      startDataPointReleaseDate over that same window.
+      cubes to re-pull; each is then re-downloaded in full (getFullTableDownloadCSV) - there is no
+      intra-cube delta any more (2026-09-22).
     out_paths_note: per-cube files data/clean_full/statcan/<productId>.parquet (~8,207 cubes) plus _manifest.jsonl, _errors.log,
       _sizecache.json, _tmp/ staging and .done/.fail markers — one file per cube; S4 clears the .done marker for each changed
       cube only.
@@ -4432,15 +4436,22 @@ sources:
       To refresh ONE cube delete just {pid}.done/.fail/.parquet. Flags: --workers N (1-6, default 6), --budget SECONDS, --presize,
       --dry N.'
     incremental_path:
-    - 'IMPLEMENTED (S2 extend_by_date) at updater/strategies/fetchers/statcan.py. getFullTableDownloadCSV is full-table only,
-      so the delta uses the WDS vector endpoints instead: (1) getChangedCubeList(<watermark>) is the cheap change-feed of
-      changed productIds; (2) for each changed cube WITH an on-disk parquet, read its distinct vectors + per-vector (geo,uom,coordinate)
-      from disk and pull getBulkVectorDataByRange(vectorIds, startDataPointReleaseDate=<watermark>, end=today) — release-dated,
-      so it returns both new periods and revisions; (3) build rows in the exact 7-col on-disk schema (series_key=''v''+vectorId,
-      status=''..'' iff value null) and merge.merge_and_write (dedup (series_key,obs_date), new value wins, never-shrink). A
-      release-date watermark + per-cube cursors live in _incr_state.json; the watermark advances only on a clean pass. Brand-new
-      cubes (no on-disk parquet) stay the bulk ingester''s job — the vector endpoint lacks the dimension metadata to build
-      one faithfully from scratch.'
+    - 'IMPLEMENTED at jobs/statcan_lane.py (2026-09-23), a guard job; updater/strategies/fetchers/statcan.py is its
+      REPORTER and writes nothing. Each iteration (every 5 min; StatCan is asked at most hourly when idle), holding
+      logs/statcan_writer.lock only while it works: (1) getAllCubesListLite, releaseTime on or after 2026-07-29, gives every
+      cube''s latest release; (2) cubes owing a merge or a serve, OLDEST release first, size breaking ties; (3) a held cube is
+      re-downloaded whole (getFullTableDownloadCSV), parsed by jobs/ingest_statcan.parse_zip_to_parquet, held to getCubeMetadata
+      exactly when it has vectors (a vectorless cube must drop no row and hold the rows of its last accepted parse), 90% of its
+      stored keys must reappear, then merge.merge_and_write_bounded; the merge is recorded as in flight BEFORE it can publish;
+      (4) the merged cube''s CATALOGUED parts are re-derived under the split _split_map.json records (read-only) in one sorted
+      scan, byte-identical to tools/derive_statcan_tables.py, and PUT gzip to series/; ids a refresh creates or strands go to
+      _catalogue_debt.json, never written or retired (the D1 sync is frozen). A cube is served on its first visit and after an
+      interrupted merge whatever the merge reports. State (_lane_state.json: release / merged / served per cube, quarantine after
+      3 deterministic failures on one release, backoff 10 min doubling to 12 h for transient ones) and progress
+      (_lane_progress.json, written from the work path) are blob-routed. Released cubes we do not hold are booked as coverage
+      debt, not ingested. The reporter is red when the lane''s beat is older than max(2 h, the current cube''s estimate x 1.5),
+      when the oldest owed release passes 14 days, or when a cube fails transiently 6 times running; amber for quarantined or
+      serve-refused cubes and new-cube debt older than 30 days. tools/guard_heartbeat.py --check applies the same rule daily in CI.'
     keys_or_blockers:
     - 'No API key. Polite UA. StatCan WDS soft limit ~25 req/s/IP; self-limits via SizeAwareGate (4 concurrent small downloads,
       1 large exclusive) + a global heavy-parse semaphore. Code notes a SANDBOX HAZARD: concurrent large (>8MB) streaming

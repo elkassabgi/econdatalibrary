@@ -270,7 +270,17 @@ def write_bytes_atomic(path: str, data: bytes) -> None:
     try:
         with open(tmp, "wb") as fh:
             fh.write(data)
-        os.replace(tmp, path)
+        # Retried for the Windows transient-handle race exactly as commit_local_file retries it: a
+        # reader holding the sidecar open makes os.replace raise PermissionError, and the statcan
+        # lane's state write sits between a published merge and the record of it (lane review P1).
+        for attempt in range(6):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.2 * (2 ** attempt))
     finally:
         if os.path.exists(tmp):
             try:

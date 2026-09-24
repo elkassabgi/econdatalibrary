@@ -51,12 +51,8 @@ NO_ROTATION_REVIEWED = {
 # exemption, which keeps this allowlist meaning one specific thing: "budgeted, no rotation of
 # any kind, safe ONLY because a per-sub-unit sidecar drops finished work from the next run".
 
-# statcan is deliberately ABSENT too, for the same reason and by a different mechanism: it records
-# the cubes FINISHED in the current change window under `RESUME_WINDOW_KEY`, keyed to that window's
-# feed_since, so the next pass skips them and starts at the first cube that still owes work. It does
-# not rotate a start offset because it does not need one - the resume set is exact rather than
-# positional, so a kill mid-pass costs only the cube in flight, and a resume set can never be
-# applied to a different window. Added 2026-09-17 with the 45-minute budget.
+# statcan is ABSENT because it no longer carries a budget: since 2026-09-23 its refresh runs in
+# jobs/statcan_lane.py with no time limit, and its fetcher is a reporter that does seconds of work.
 
 # Rotation need not come from _common; a fetcher may implement it itself. A named, exact resume set
 # counts as well as a positional bookmark - what the rule requires is that the next run starts

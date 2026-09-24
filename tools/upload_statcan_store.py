@@ -63,6 +63,12 @@ def main() -> int:
     ap.add_argument("--sample", type=int, default=12)
     ap.add_argument("--limit", type=int, default=None)
     a = ap.parse_args()
+    # ONE WRITER FOR statcan (2026-09-23): jobs/statcan_lane.py owns the cubes and the served CSVs
+    # while it runs and holds logs/statcan_writer.lock; a second writer raced it (lane design
+    # review, finding 3).
+    if not a.dry_run:
+        from updater import writer_lock                            # noqa: PLC0415
+        writer_lock.hold_or_refuse("statcan_writer", "tools/upload_statcan_store.py")
 
     files = sorted(f for f in glob.glob(os.path.join(LOCAL, "*.parquet"))
                    if not os.path.basename(f).startswith("_"))

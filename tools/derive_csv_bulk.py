@@ -255,6 +255,11 @@ def main() -> int:
                          "for --source and exit - for finishing a campaign whose stamp was "
                          "deferred by a live heavy pass, AFTER verifying the campaign")
     a = ap.parse_args()
+    # ONE WRITER FOR statcan (2026-09-23): jobs/statcan_lane.py serves its CSVs while it works and
+    # holds logs/statcan_writer.lock (lane review item 7: this tool wrote them unasked).
+    if a.source == "statcan" and not a.dry_run:
+        from updater import writer_lock                             # noqa: PLC0415
+        writer_lock.hold_or_refuse("statcan_writer", "tools/derive_csv_bulk.py --source statcan")
 
     if a.clear_owed_only:
         # --dry-run must stay dry HERE TOO (verifier's finding, the R503 class: this

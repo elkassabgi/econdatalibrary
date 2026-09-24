@@ -60,12 +60,13 @@ def test_quiet_publisher_is_not_a_defect():
     assert _guard(changed=[], attempted=0, absent=[], held=[]) == "no_change"
 
 
-def test_the_fetcher_module_carries_the_guard():
-    """A source-level pin: the guard must exist at the call site, not only in this test's model."""
+def test_the_lane_carries_the_guard():
+    """A source-level pin: the guard must exist at the call site, not only in this test's model.
+    Since 2026-09-23 the refresh runs in jobs/statcan_lane.py; the fetcher is its reporter."""
     import inspect
-    src = inspect.getsource(sc)
-    assert "absent_pids" in src, "the fetcher must record which changed cubes it skipped as not held"
-    assert "holds ZERO cubes" in src, "the fetcher must refuse to report no_change over an empty store"
-    assert "if changed and not tally.attempted and absent_pids:" in src, (
-        "the guard must fire only when the feed listed changes, nothing was attempted, and every "
-        "changed cube was skipped as not held")
+    import jobs.statcan_lane as lane
+    src = inspect.getsource(lane)
+    assert "holds ZERO cubes" in src, "the lane must refuse to read an empty store as a quiet publisher"
+    # KEYED ON `held` (owed cubes this launch found in the store), NOT on how many sub-units were
+    # booked: a quarantine report once silenced this guard (round-2 review of the whole-table refresh).
+    assert "if absent and not held:" in src

@@ -32,6 +32,10 @@ def load(path: str | None = None) -> dict:
 
 
 CSV_GRAINS = {"series", "flow"}
+# Who writes a source's served CSVs. Absent = the orchestrator's CSV phase (every source but one).
+# "lane" = a continuous job of the source's own (jobs/statcan_lane.py), which holds the region's
+# writer lock; the orchestrator then derives nothing for it (orchestrate._served_by_lane).
+SERVED_BY = {"lane"}
 """`csv_grain` (optional registry field; default `series`). `flow` declares that one catalogue
 id serves a WHOLE store file (the resolver reads the file, not a keyed slice), as eurostat's
 `eurostat:<dataset>` ids do. Two things key on it: the health gate's remedy text for a
@@ -77,6 +81,12 @@ def validate(reg: dict, expected_count: int | None = None) -> list[str]:
                                                    for x in ex):
                 problems.append(f"{sid}: csv_desktop_exclude must be a list of '{sid}:<id>' "
                                 f"strings, got {ex!r}")
+        if "served_by" in e and e.get("served_by") not in SERVED_BY:
+            # `served_by: lane` takes the orchestrator's CSV phase and retry drain OFF a source whose
+            # own continuous job serves it (statcan, 2026-09-23). A typo must not silently put a
+            # second writer back on the served objects.
+            problems.append(f"{sid}: served_by must be one of {sorted(SERVED_BY)}, "
+                            f"got {e.get('served_by')!r}")
     if expected_count is not None and len(sources) != expected_count:
         problems.append(f"expected {expected_count} sources, found {len(sources)}")
     return problems

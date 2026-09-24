@@ -565,4 +565,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # ONE WRITER FOR statcan (2026-09-23): jobs/statcan_lane.py serves the CSVs while it runs and
+    # holds logs/statcan_writer.lock. Checked here, outside main(), so a report-only run is free.
+    if not {"--dry-run", "--pin-split"} & set(sys.argv[1:]):
+        from updater import writer_lock
+        writer_lock.hold_or_refuse("statcan_writer", "tools/derive_statcan_tables.py (a writing run)")
     sys.exit(main())

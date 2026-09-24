@@ -57,7 +57,7 @@ DEFAULT_MAX_AGE_MIN = 45.0
 
 # Jobs the guard is responsible for keeping alive. Reported so a beat distinguishes "the
 # watchdog is running" from "the watchdog is running AND its crawlers are up".
-TRACKED = ("ingest_cbs_nl.py", "ingest_gus_dbw.py", "ingest_istat_sliced.py")
+TRACKED = ("ingest_cbs_nl.py", "ingest_gus_dbw.py", "ingest_istat_sliced.py", "statcan_lane.py")
 
 
 # A tracked process younger than this was (re)started within the last guard tick, which is a FACT
@@ -278,6 +278,52 @@ def _emptiness_verdict() -> dict:
         return {"ran": False, "error": f"{type(e).__name__}: {e}"[:200]}
 
 
+LANE_PROGRESS_LOCAL = os.path.join(ROOT, "logs", "statcan_lane.progress.json")
+
+
+def _lane_beat():
+    """jobs/statcan_lane.py's progress, as it last wrote it on THIS machine (the lane writes it from
+    its work path - every phase boundary and every 500 parts - never from a timer). None when the
+    file does not exist; an unreadable file is reported as such, never as absent."""
+    try:
+        with open(LANE_PROGRESS_LOCAL, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return None
+    except Exception as e:                                   # noqa: BLE001
+        return {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+
+
+def _lane_expected() -> bool:
+    """The registry says statcan is served by its lane - so a missing beat is a fault."""
+    try:
+        from updater import registry                         # noqa: PLC0415
+        return any(e.get("source_id") == "statcan" and e.get("served_by") == "lane"
+                   for e in registry.load().get("sources", []))
+    except Exception:                                        # noqa: BLE001
+        return True                  # cannot tell: expect it, so a missing beat is not waved through
+
+
+def _lane_problem(beat, now) -> "str | None":
+    """Why the statcan lane's beat is NOT healthy, or None. The rule is the reporter's own
+    (statcan.verdict: dead/wedged past max(2 h, the current cube's estimate x 1.5), or the oldest
+    owed release past its SLA) - one predicate, read here because statcan is run_location: local
+    and the cloud health gate does not judge it (statcan lane design review, finding 8). A
+    quarantine is `partial` there and is NOT a failure here: it needs a human, not a red run."""
+    if beat is None:
+        return ("no progress file on the workstation - jobs/statcan_lane.py has never run there, "
+                "while the registry says it serves statcan") if _lane_expected() else None
+    if "unreadable" in beat:
+        return f"its progress file is unreadable ({beat['unreadable']})"
+    from updater.errors import DefinitiveError               # noqa: PLC0415
+    from updater.strategies.fetchers import statcan as sc    # noqa: PLC0415
+    try:
+        sc.verdict({"cubes": {}}, beat, now)
+    except DefinitiveError as e:
+        return str(e)
+    return None
+
+
 def publish() -> int:
     # `jobs_alive` keeps its meaning - the tracked ingesters PRESENT - so every existing reader
     # is unchanged. What was missing is why `3/3` could be published while istat_sliced was
@@ -295,6 +341,7 @@ def publish() -> int:
         "relaunch_window_s": RELAUNCH_WINDOW_S,
         "tracked": list(TRACKED),
         "emptiness": _emptiness_verdict(),
+        "statcan_lane": _lane_beat(),
     }
     c = r2_util.client(write=True)
     c.put_object(Bucket=BUCKET, Key=KEY,
@@ -350,6 +397,21 @@ def check(max_age_min: float) -> int:
     if emp and not emp.get("ran"):
         print(f"  NOTE: crawl-emptiness audit did NOT run on the workstation "
               f"({emp.get('error')}) — emptiness is UNKNOWN this tick, not clean.")
+
+    # A beat WITHOUT the key comes from a publisher older than the lane (the workstation's checkout
+    # has not been updated): it cannot report the lane either way, so it is named, not failed. A
+    # beat WITH the key and a null value is a new publisher saying the lane never ran - a fault.
+    lane_bad = (_lane_problem(body["statcan_lane"], dt.datetime.now(dt.timezone.utc))
+                if "statcan_lane" in body else None)
+    if "statcan_lane" not in body:
+        print("  NOTE: this beat predates the statcan lane (no `statcan_lane` field) - the "
+              "workstation's checkout of tools/guard_heartbeat.py is older than the lane, so the "
+              "lane is UNMONITORED from CI until it is updated.")
+    if lane_bad:
+        print(f"STATCAN LANE: {lane_bad}")
+        print("  statcan is refreshed and served ONLY by jobs/statcan_lane.py (a guard job); nothing "
+              "else in CI judges a run_location=local source.")
+        return 1
 
     print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) — {where}"
           + (f", emptiness clean ({emp.get('fetch_without_write', 0)} defect units)"
