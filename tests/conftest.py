@@ -59,22 +59,46 @@ def _no_cloud_credentials_in_a_test(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def _no_production_writer_lock(tmp_path_factory):
-    """AND NO TEST TAKES THE PRODUCTION WRITER LOCK. core.catalog_path.LOCK_PATH is E:\\econ_live\\state\\
-    writer.lock - the machine's single-writer lock after T0. A test that forgot to point it elsewhere took it
-    (2026-09-24, tests/test_probe_csv_freshness_selfhost.py; it existed and was not changed, but a test must
-    never hold what the live updater holds). Every test starts with a path of its own that does not exist yet
-    (a folder is not made: tests assert that no lock folder is created before T0); a test that sets its own
-    path wins, since its setattr comes after this one."""
+def _no_production_paths(tmp_path_factory):
+    """AND NO TEST REACHES THE MACHINE'S OWN SELF-HOSTING PATHS. core.catalog_path.LOCK_PATH is E:\\econ_live\\
+    state\\writer.lock - the machine's single-writer lock after T0. A test that forgot to point it elsewhere
+    took it (R1227, tests/test_probe_csv_freshness_selfhost.py; it existed and was not changed, but a test must
+    never hold what the live updater holds). The lock was one of five (R1230): the T0 flag (a test that forgot
+    it runs pre-T0 or post-T0 by what the MACHINE is, not what the test says), the served blob store, the live
+    catalogue build, and the checkout's catalogue - which in the production checkout, where tools/pretest.py
+    runs this suite, IS the live build. Every test starts with paths of its own that do not exist yet (no
+    folder is made: tests assert that no lock folder is created before T0); a test that sets its own path
+    wins, since its setattr comes after this one."""
     import uuid
     try:
-        from core import catalog_path
+        from core import catalog_path, cutover
     except Exception:                                    # noqa: BLE001 - a test tree without core/
         yield
         return
+    try:
+        from updater import blob
+    except Exception:                                    # noqa: BLE001
+        blob = None
+    try:
+        # econdl keeps its OWN copies of the flag and the build (it cannot import core), plus the checkout's
+        # catalogue; imported the way core.derive_csv makes the updater import it (the checkout's copy first)
+        import core.derive_csv  # noqa: F401
+        from econdl import _catalog as econdl_catalog
+    except Exception:                                    # noqa: BLE001 - a test tree without the client
+        econdl_catalog = None
+    own = tmp_path_factory.getbasetemp() / "machine-paths" / uuid.uuid4().hex
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(catalog_path, "LOCK_PATH",
-                   str(tmp_path_factory.getbasetemp() / "writer-locks" / uuid.uuid4().hex / "writer.lock"))
+        mp.setattr(catalog_path, "LOCK_PATH", str(own / "state" / "writer.lock"))
+        mp.setattr(cutover, "FLAG_PATH", str(own / "CUTOVER"))
+        mp.setattr(catalog_path, "BUILD_PATH", str(own / "live" / "data" / "catalog.db"))
+        mp.setattr(catalog_path, "CHECKOUT_PATH", str(own / "checkout" / "data" / "catalog.db"))
+        if blob is not None and hasattr(blob, "SELFHOST_BLOB_ROOT"):
+            mp.setattr(blob, "SELFHOST_BLOB_ROOT", str(own / "blobs"))
+        if econdl_catalog is not None:
+            for name, value in (("_CUTOVER_FLAG", cutover.FLAG_PATH), ("_BUILD_DB", catalog_path.BUILD_PATH),
+                                ("_DEFAULT_DB", catalog_path.CHECKOUT_PATH)):
+                if hasattr(econdl_catalog, name):
+                    mp.setattr(econdl_catalog, name, value)
         yield
 
 

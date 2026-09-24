@@ -43,10 +43,14 @@ def test_any_other_failure_is_cut_over(monkeypatch, exc):
 
 
 def test_the_real_path_is_the_constant_and_absent_on_this_machine_or_ci():
-    assert cutover.FLAG_PATH == r"C:\ProgramData\econ\CUTOVER"
+    # the DEFAULT, from the source: tests/conftest.py gives every test a flag path of its own (R1230)
+    real = r"C:\ProgramData\econ\CUTOVER"
+    assert f'FLAG_PATH = r"{real}"' in open(cutover.__file__, encoding="utf-8").read()
+    assert cutover.FLAG_PATH != real, "and this test's own path is not the machine's"
     # Planted control for the whole suite: if the real flag exists, every other test that writes to the
-    # cloud copy is running against a retired system - stop here, loudly.
-    assert cutover.is_cut_over() is False, "the real CUTOVER flag exists: this machine is past T0"
+    # cloud copy is running against a retired system - stop here, loudly. (A stat of the real path, not
+    # is_cut_over(), which now reads this test's own path.)
+    assert not os.path.exists(real), "the real CUTOVER flag exists: this machine is past T0"
 
 
 def test_the_flag_module_has_no_override():

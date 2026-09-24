@@ -59,6 +59,53 @@ def test_after_t0_repull_backs_up_locally_then_deletes_under_the_lock(live, monk
     assert catalog_path._held is None, "and let it go"
 
 
+def test_after_t0_repull_refuses_another_checkout_before_the_lock_and_the_backup(live, monkeypatch, tmp_path):
+    """R1230: the up-front check was removable, because the backup helper refused later anyway. The refusal
+    must come first: no write session is opened and no helper is reached."""
+    monkeypatch.setattr(blob, "_code_root", lambda: str(tmp_path / "a_worktree"))
+    monkeypatch.setattr(catalog_path, "write_session", lambda: pytest.fail("the write session opened first"))
+    monkeypatch.setattr(blob, "backup_store_object", lambda *a: pytest.fail("the backup was reached first"))
+    monkeypatch.setattr(sys, "argv", ["repull_file.py", "cso", "X.parquet", "--apply", "--cursor-cleared"])
+    with pytest.raises(cutover.CutoverRefused, match="R1203"):
+        repull_file.main()
+
+
+class _FakeR2:
+    """Before T0 the retire is a server-side R2 copy and delete. The delete also removes the local mirror's
+    file, so the tool's own "still present" check (a local exists, backend local) sees what R2 would."""
+    bucket = "econ-data"
+
+    def __init__(self, local, calls):
+        outer = self
+
+        class C:
+            def copy_object(self, **kw):
+                calls.append(("copy", kw["Key"], kw["CopySource"]["Key"]))
+
+            def delete_object(self, **kw):
+                calls.append(("delete", kw["Key"]))
+                if os.path.exists(outer.local):
+                    os.remove(outer.local)
+        self.local, self.client = local, C()
+
+    def exists(self, key):
+        return True
+
+
+def test_before_t0_repull_reports_the_r2_key_it_deleted(live, monkeypatch, tmp_path, capsys):
+    """R1230: the pre-T0 success line named the local path as "deleted" when the R2 key was deleted."""
+    root, full = live
+    (tmp_path / "CUTOVER").unlink()
+    calls = []
+    local = str(full / "cso" / "X.parquet")
+    monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: _FakeR2(local, calls))
+    monkeypatch.setattr(sys, "argv", ["repull_file.py", "cso", "X.parquet", "--apply", "--cursor-cleared"])
+    assert repull_file.main() == 0
+    out = capsys.readouterr().out
+    assert "deleted r2://clean_full/cso/X.parquet" in out, out[-600:]
+    assert [c[0] for c in calls] == ["copy", "delete"]
+
+
 def test_after_t0_repull_from_another_checkout_changes_nothing(live, monkeypatch, tmp_path):
     root, full = live
     monkeypatch.setattr(blob, "_code_root", lambda: str(tmp_path / "a_worktree"))

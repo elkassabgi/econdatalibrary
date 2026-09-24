@@ -206,4 +206,6 @@ def test_the_hook_protocol():
 
 def test_the_real_flag_path_is_the_one_core_uses():
     from core import cutover
-    assert H.FLAG_PATH == cutover.FLAG_PATH
+    # core's DEFAULT, from its source: tests/conftest.py gives every test a flag path of its own (R1230)
+    assert f'FLAG_PATH = r"{H.FLAG_PATH}"' in open(cutover.__file__, encoding="utf-8").read()
+    assert H.FLAG_PATH == r"C:\ProgramData\econ\CUTOVER"

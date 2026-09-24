@@ -88,8 +88,8 @@ def test_after_t0_a_write_needs_the_lock(paths):
 HOLDER = r"""
 import sys, time
 sys.path.insert(0, sys.argv[1])
-from core import catalog_path as cp
-cp.LOCK_PATH = sys.argv[2]
+from core import catalog_path as cp, cutover
+cp.LOCK_PATH, cutover.FLAG_PATH, cp.BUILD_PATH, cp.CHECKOUT_PATH = sys.argv[2:6]   # never the machine's (R1230)
 with cp.writer_lock():
     print("held", flush=True)
     time.sleep(30)
@@ -98,7 +98,8 @@ with cp.writer_lock():
 
 def test_a_second_process_is_refused_not_queued(paths):
     lock = str(paths / "live" / "state" / "writer.lock")
-    p = subprocess.Popen([sys.executable, "-B", "-c", HOLDER, ROOT, lock], stdout=subprocess.PIPE, text=True)
+    p = subprocess.Popen([sys.executable, "-B", "-c", HOLDER, ROOT, lock, cutover.FLAG_PATH, cp.BUILD_PATH,
+                          cp.CHECKOUT_PATH], stdout=subprocess.PIPE, text=True)
     try:
         assert p.stdout.readline().strip() == "held"
         t0 = time.monotonic()
@@ -294,9 +295,14 @@ def test_a_top_level_script_holds_the_lock_until_it_exits(paths):
 
 
 def test_under_names_the_checkout_s_catalogue():
-    """The real (unpatched) constants: a tool's own ROOT names the checkout's file, production's the build."""
-    assert cp.under(cp.ROOT) == cp.CHECKOUT_PATH
-    assert cp.under(cp.LIVE_STORE_ROOT) == cp.BUILD_PATH, "production's own ROOT names the build"
+    """The real constants: a tool's own ROOT names the checkout's file, production's the build. CHECKOUT_PATH
+    and BUILD_PATH are what the source builds from those roots (tests/conftest.py moves the attributes)."""
+    src = open(cp.__file__, encoding="utf-8").read()
+    assert 'CHECKOUT_PATH = os.path.join(ROOT, "data", "catalog.db")' in src
+    assert 'BUILD_PATH = os.path.join(LIVE_STORE_ROOT, "data", "catalog.db")' in src
+    assert cp.under(cp.ROOT) == os.path.join(cp.ROOT, "data", "catalog.db")
+    assert cp.under(cp.LIVE_STORE_ROOT) == os.path.join(cp.LIVE_STORE_ROOT, "data", "catalog.db"), \
+        "production's own ROOT names the build"
 
 
 def test_connect_path_passes_sqlite_options(paths, tmp_path):
@@ -339,12 +345,12 @@ def test_the_resolver_has_no_override():
     code = "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("#"))
     for banned in ("environ", "getenv", "argv"):
         assert banned not in code, f"core/catalog_path.py reads {banned!r}: the paths must not be overridable"
-    # the DEFAULTS, read from the source: tests/conftest.py points LOCK_PATH at a temporary path for every
-    # test (a test once took the production lock path), so the live attribute is not the default here
+    # the DEFAULTS, read from the source: tests/conftest.py points LOCK_PATH, BUILD_PATH and CHECKOUT_PATH at
+    # temporary paths for every test (R1227/R1230), so the live attributes are not the defaults here
     assert 'LIVE_STORE_ROOT = r"E:\\research\\econfindatalibrary"' in src
     assert 'LOCK_PATH = r"E:\\econ_live\\state\\writer.lock"' in src
     assert cp.LIVE_STORE_ROOT == r"E:\research\econfindatalibrary"
-    assert cp.BUILD_PATH == os.path.join(cp.LIVE_STORE_ROOT, "data", "catalog.db"), "the production checkout IS the build"
+    assert 'BUILD_PATH = os.path.join(LIVE_STORE_ROOT, "data", "catalog.db")' in src, "the production checkout IS the build"
     assert cp.LIVE_STATE_DIR == os.path.join(cp.LIVE_STORE_ROOT, "data", "_aqueduct")
 
 
@@ -413,8 +419,16 @@ def test_the_exempt_client_answers_only_the_build_after_t0(tmp_path, monkeypatch
     users read through econdl's default_db(). After the cutover it answers the build or refuses."""
     sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
     from econdl import _catalog
+    # the DEFAULTS, from the sources (tests/conftest.py moves the attributes of both, R1230)
+    client = open(_catalog.__file__, encoding="utf-8").read()
+    core_src = open(cutover.__file__, encoding="utf-8").read() + open(cp.__file__, encoding="utf-8").read()
+    assert '_CUTOVER_FLAG = r"C:\\ProgramData\\econ\\CUTOVER"' in client and \
+        'FLAG_PATH = r"C:\\ProgramData\\econ\\CUTOVER"' in core_src, "the client's copy of the flag drifted from core"
+    assert '_BUILD_DB = r"E:\\research\\econfindatalibrary\\data\\catalog.db"' in client and \
+        'LIVE_STORE_ROOT = r"E:\\research\\econfindatalibrary"' in core_src, \
+        "the client's copy of the build drifted from core"
     assert _catalog._CUTOVER_FLAG == cutover.FLAG_PATH and _catalog._BUILD_DB == cp.BUILD_PATH, \
-        "the client's copies of the two paths drifted from core"
+        "and the guard moved both copies together"
     build, other = tmp_path / "build.db", tmp_path / "other.db"
     for p in (build, other):
         p.write_bytes(b"")

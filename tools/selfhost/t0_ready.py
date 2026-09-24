@@ -235,6 +235,31 @@ def d1_only_sources() -> tuple[bool, str]:
         "every D1-stamped source has a local writer that imports"
 
 
+def _runs_the_heartbeat_check(workflow_text: str) -> bool:
+    """A step of the workflow RUNS the check (R1230: a text search passed a commented-out step, `if: false` and
+    an `echo` of the command): parsed as YAML, a step whose `run` starts with python and calls
+    guard_heartbeat.py --check --from-url, whose `if` - when present - is not false and names
+    GUARD_HEARTBEAT_URL, in a job that is not switched off."""
+    import yaml
+    try:
+        doc = yaml.safe_load(workflow_text) or {}
+    except yaml.YAMLError:
+        return False
+    for job in (doc.get("jobs") or {}).values():
+        if not isinstance(job, dict) or str(job.get("if", "true")).strip().lower() in ("false", "${{ false }}"):
+            continue
+        for step in job.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            cmd = str(step.get("run", "")).strip()
+            cond = step.get("if")
+            if not (cmd.startswith("python") and "guard_heartbeat.py --check --from-url" in cmd):
+                continue
+            if cond is None or ("GUARD_HEARTBEAT_URL" in str(cond) and "false" not in str(cond).lower()):
+                return True
+    return False
+
+
 def heartbeat_reader(run=subprocess.run, check=None) -> tuple[bool, str]:
     """The watchdog's beat has a reader OFF the machine before T0 switches off the old one (R1210, R1226): the
     repository variable GUARD_HEARTBEAT_URL is set, selfhost-watch (which runs the check) is active, and the
@@ -255,10 +280,12 @@ def heartbeat_reader(run=subprocess.run, check=None) -> tuple[bool, str]:
         return False, f"selfhost-watch is {state.get('selfhost-watch', 'MISSING')} - nothing runs the check"
     # the DEFAULT BRANCH's workflow is what the schedule runs: it must hold the step (R1228: other branches have
     # a selfhost-watch.yml without it, and "active" alone would pass while nothing reads the beat)
-    run(["git", "-C", ROOT, "fetch", "-q", "origin", "main"], capture_output=True, text=True)
+    f = run(["git", "-C", ROOT, "fetch", "-q", "origin", "main"], capture_output=True, text=True)
+    if f.returncode != 0:                             # R1230: a stale local origin/main must not decide
+        return False, f"git fetch origin main failed ({(f.stderr or '').strip()[:160]}) - cannot tell"
     wf = run(["git", "-C", ROOT, "show", "origin/main:.github/workflows/selfhost-watch.yml"],
              capture_output=True, text=True)
-    if wf.returncode != 0 or "guard_heartbeat.py --check --from-url" not in (wf.stdout or ""):
+    if wf.returncode != 0 or not _runs_the_heartbeat_check(wf.stdout or ""):
         return False, "origin/main's selfhost-watch.yml does not run guard_heartbeat.py --check --from-url"
     if check is None:
         sys.path.insert(0, os.path.join(ROOT, "tools"))

@@ -264,18 +264,24 @@ def test_thirteen_f_never_creates_a_missing_state_db(tmp_path, fake_move):
     assert not missing.exists(), "the check created the file it reads"
 
 
-WF_WITH = "steps:\n  - run: python -B tools/guard_heartbeat.py --check --from-url \"$U\"\n"
+WF_STEP = ("      - name: Check the workstation watchdog's heartbeat\n"
+           "        if: ${{ always() && vars.GUARD_HEARTBEAT_URL != '' }}\n"
+           "        run: python -B tools/guard_heartbeat.py --check --from-url \"${{ vars.GUARD_HEARTBEAT_URL }}\"\n")
+WF_WITH = "name: w\non: push\njobs:\n  watch:\n    runs-on: x\n    steps:\n      - run: echo hi\n" + WF_STEP
 
 
-def _gh_hb(var, watch_state, main_wf=WF_WITH, var_rc=None):
+def _gh_hb(var, watch_state, main_wf=WF_WITH, var_rc=None, fetch_rc=0, main_only=True):
     def run(cmd, **kw):
         if cmd[:3] == ["gh", "variable", "get"]:
             rc = var_rc if var_rc is not None else (0 if var else 1)
             return types.SimpleNamespace(returncode=rc, stdout=(var or "") + "\n", stderr="HTTP 401" if rc else "")
         if cmd[:2] == ["git", "-C"] and "fetch" in cmd:
-            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            assert cmd[-2:] == ["origin", "main"]
+            return types.SimpleNamespace(returncode=fetch_rc, stdout="", stderr="offline" if fetch_rc else "")
         if cmd[:2] == ["git", "-C"] and "show" in cmd:
-            return types.SimpleNamespace(returncode=0 if main_wf is not None else 128, stdout=main_wf or "", stderr="")
+            ref_ok = cmd[-1] == "origin/main:.github/workflows/selfhost-watch.yml" or not main_only
+            return types.SimpleNamespace(returncode=0 if (main_wf is not None and ref_ok) else 128,
+                                         stdout=main_wf or "", stderr="")
         return _gh({"selfhost-watch": watch_state})(cmd, **kw)
     return run
 
@@ -304,6 +310,16 @@ def test_the_heartbeat_needs_a_reader_before_t0():
     ages = []
     T.heartbeat_reader(_gh_hb(url, "active"), check=lambda u, a: ages.append(a) or 0)
     assert ages == [45.0]
+    # R1230: a failed fetch is "cannot tell", and the step must really run the check
+    ok, detail = T.heartbeat_reader(_gh_hb(url, "active", fetch_rc=128), check=lambda u, a: 0)
+    assert not ok and "fetch origin main failed" in detail
+    base = WF_WITH.replace(WF_STEP, "")
+    for bad in (base + "".join("#" + ln + "\n" for ln in WF_STEP.splitlines()),          # commented out
+                WF_WITH.replace("if: ${{ always() && vars.GUARD_HEARTBEAT_URL != '' }}", "if: false"),
+                WF_WITH.replace("run: python -B tools/", "run: echo python -B tools/"),
+                WF_WITH.replace("  watch:\n    runs-on: x\n", "  watch:\n    if: false\n    runs-on: x\n")):
+        ok, detail = T.heartbeat_reader(_gh_hb(url, "active", main_wf=bad), check=lambda u, a: 0)
+        assert not ok and "does not run guard_heartbeat.py" in detail, bad
 
 
 def test_the_stats_object_must_be_in_the_served_store():

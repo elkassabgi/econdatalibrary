@@ -183,6 +183,8 @@ def test_a_missing_self_hosted_store_fails_at_once(tmp_path, monkeypatch):
 
 def test_the_backend_is_selected_by_name():
     assert isinstance(blob.from_env("selfhost"), blob.SelfhostBlob)
-    assert blob.SelfhostBlob().root == r"E:\econ_live\blobs"
+    # the DEFAULT, from the source; the instance takes the module attribute, which tests/conftest.py moves (R1230)
+    assert 'SELFHOST_BLOB_ROOT = r"E:\\econ_live\\blobs"' in open(blob.__file__, encoding="utf-8").read()
+    assert blob.SelfhostBlob().root == blob.SELFHOST_BLOB_ROOT != r"E:\econ_live\blobs"
     with pytest.raises(ValueError, match="selfhost"):
         blob.from_env("nope")

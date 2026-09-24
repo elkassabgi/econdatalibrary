@@ -21,7 +21,9 @@ def live(tmp_path, monkeypatch):
     monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "CUTOVER"))
     monkeypatch.setattr(catalog_path, "LIVE_STORE_ROOT", REPO)
     monkeypatch.setattr(catalog_path, "LIVE_STATE_DIR", os.path.join(REPO, "data", "_aqueduct"))
-    monkeypatch.setattr(catalog_path, "BUILD_PATH", os.path.join(REPO, "data", "catalog.db"))
+    # the catalogue is a temporary path, never this checkout's (R1230: in the production checkout, where
+    # tools/pretest.py runs this suite, REPO/data/catalog.db IS the live build)
+    monkeypatch.setattr(catalog_path, "BUILD_PATH", str(tmp_path / "live" / "data" / "catalog.db"))
     monkeypatch.setattr(catalog_path, "LOCK_PATH", str(tmp_path / "writer.lock"))
     monkeypatch.setattr(config, "ROOT", REPO)
     monkeypatch.setattr(config, "STATE_DIR", os.path.join(REPO, "data", "_aqueduct"))
@@ -33,7 +35,7 @@ def live(tmp_path, monkeypatch):
     # econdl carries its OWN copies of the flag and build paths (it cannot import core): a real T0 sets both
     # (R1199 - no fixture modelled that, so econdl's post-T0 answer was never under test)
     monkeypatch.setattr(_econdl_catalog(), "_CUTOVER_FLAG", str(tmp_path / "CUTOVER"))
-    monkeypatch.setattr(_econdl_catalog(), "_BUILD_DB", os.path.join(REPO, "data", "catalog.db"))
+    monkeypatch.setattr(_econdl_catalog(), "_BUILD_DB", str(tmp_path / "live" / "data" / "catalog.db"))
     return tmp_path
 
 

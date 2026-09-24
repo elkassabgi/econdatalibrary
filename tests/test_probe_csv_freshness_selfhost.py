@@ -80,6 +80,29 @@ def test_after_t0_the_mirror_gate_has_nothing_to_compare(t0):
     assert P._mirror_matches_store("zz") is True
 
 
-def test_gzip_at_rest_is_inflated_before_the_comparison(t0):
-    stored = blob.SelfhostBlob().get("series/zz%3Aa.csv")
-    assert stored[:2] == b"\x1f\x8b" and gzip.decompress(stored) == CSV, "precondition: served gzipped"
+def test_gzip_at_rest_is_inflated_before_the_comparison(t0, monkeypatch, capsys):
+    """R1230: this test once checked only its own fixture. It runs the probe: both objects are stored gzipped,
+    both inflate to what the store derives, so both are identical - compared as bytes they would all differ."""
+    sb = blob.SelfhostBlob()
+    with catalog_path.writer_lock():
+        sb.put_atomic("series/zz%3Ab.csv", CSV)
+    for key in ("series/zz%3Aa.csv", "series/zz%3Ab.csv"):
+        stored = sb.get(key)
+        assert stored[:2] == b"\x1f\x8b" and stored != CSV and gzip.decompress(stored) == CSV, \
+            "precondition: served gzipped"
+    monkeypatch.setattr(sys, "argv", ["probe_csv_freshness.py", "--source", "zz", "--sample", "5"])
+    assert P.main() == 0
+    out = capsys.readouterr().out
+    assert "ok     zz" in out and "2 identical" in out and "compared 2 object(s)" in out
+
+
+def test_after_t0_an_absent_served_object_is_skipped_not_a_crash(t0, monkeypatch, capsys):
+    """R1230: the self-hosted store answers None for a missing key (R2 raised). The probe turns it into the
+    MISSING class - skipped, not compared - instead of indexing None."""
+    real_get = blob.SelfhostBlob.get
+    monkeypatch.setattr(blob.SelfhostBlob, "get",
+                        lambda self, key: None if key == "series/zz%3Ab.csv" else real_get(self, key))
+    monkeypatch.setattr(sys, "argv", ["probe_csv_freshness.py", "--source", "zz", "--sample", "5"])
+    assert P.main() == 0, "zz:b (the stale one) is absent, so only zz:a is compared - and it matches"
+    out = capsys.readouterr().out
+    assert "ok     zz" in out and "1 identical" in out and "compared 1 object(s)" in out

@@ -43,6 +43,41 @@ def test_no_test_holds_the_production_writer_lock():
     assert "econ_live" not in catalog_path.LOCK_PATH and not os.path.exists(catalog_path.LOCK_PATH)
 
 
+def test_no_test_reaches_the_machine_s_self_hosting_paths():
+    """R1230: the lock was one of five. The T0 flag, the served blob store, the live build and the checkout's
+    catalogue are each a path of this test's own, none of them present, all under one folder of its own. The
+    defaults are read from the SOURCE, since the attributes are what the guard changed."""
+    import re
+    from core import catalog_path, cutover
+    from updater import blob
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    defaults = {}
+    for mod, name in (("core/cutover.py", "FLAG_PATH"), ("updater/blob.py", "SELFHOST_BLOB_ROOT")):
+        src = open(os.path.join(here, mod), encoding="utf-8").read()
+        defaults[name] = re.search(rf'^{name} = r"([^"]+)"', src, re.M).group(1)
+    live = {"FLAG_PATH": cutover.FLAG_PATH, "SELFHOST_BLOB_ROOT": blob.SELFHOST_BLOB_ROOT,
+            "BUILD_PATH": catalog_path.BUILD_PATH, "CHECKOUT_PATH": catalog_path.CHECKOUT_PATH,
+            "LOCK_PATH": catalog_path.LOCK_PATH}
+    assert defaults == {"FLAG_PATH": r"C:\ProgramData\econ\CUTOVER", "SELFHOST_BLOB_ROOT": r"E:\econ_live\blobs"}
+    same = lambda x, y: os.path.normcase(os.path.abspath(x)) == os.path.normcase(os.path.abspath(y))  # noqa: E731
+    for name, default in defaults.items():
+        assert not same(live[name], default), f"{name} is the machine's own"
+    for name in ("BUILD_PATH", "CHECKOUT_PATH"):
+        for default in (os.path.join(here, "data", "catalog.db"),
+                        os.path.join(catalog_path.LIVE_STORE_ROOT, "data", "catalog.db")):
+            assert not same(live[name], default), f"{name} is a real catalogue"
+    assert not any(os.path.exists(v) for v in live.values()), live
+    tops = {os.path.dirname(live["FLAG_PATH"]), os.path.dirname(live["SELFHOST_BLOB_ROOT"]),
+            os.path.dirname(os.path.dirname(live["LOCK_PATH"]))}
+    assert len(tops) == 1, tops
+    assert not cutover.is_cut_over(), "a test that sets no flag of its own runs before T0, whatever the machine is"
+    import core.derive_csv  # noqa: F401 - econdl's own copies, imported as the updater imports them
+    from econdl import _catalog
+    assert (_catalog._CUTOVER_FLAG, _catalog._BUILD_DB, _catalog._DEFAULT_DB) == \
+        (live["FLAG_PATH"], live["BUILD_PATH"], live["CHECKOUT_PATH"])
+    assert not _catalog._cut_over()
+
+
 def test_the_default_env_file_is_not_the_checkout_s(monkeypatch):
     """R1218: a conftest without the core.config._DEFAULT patch survived. load_env() with no path reads
     _DEFAULT - the checkout's .env, which holds the write keys on the production checkout. Under the guard it

@@ -91,6 +91,32 @@ def test_matrix_after_t0_runs_under_the_lock_with_a_local_backup(live, monkeypat
     assert seen == [True] and catalog_path._held is None
 
 
+def test_before_t0_subject_reports_the_r2_key_it_deleted(live, monkeypatch, tmp_path, capsys):
+    """R1230: the pre-T0 success line named the local path as "deleted" when the R2 key was deleted."""
+    (tmp_path / "CUTOVER").unlink()
+    calls = []
+
+    class C:
+        def copy_object(self, **kw):
+            calls.append(("copy", kw["Key"], kw["CopySource"]["Key"]))
+
+        def delete_object(self, **kw):
+            calls.append(("delete", kw["Key"]))
+
+    class R2:
+        bucket = "econ-data"
+        client = C()
+
+        def exists(self, key):
+            return True
+    monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: R2())
+    monkeypatch.setattr(sys, "argv", ["cso_repull_subject.py", "S1", "--apply"])
+    assert SUB.main() == 0
+    out = capsys.readouterr().out
+    assert "deleted r2://clean_full/cso/S1.parquet" in out, out[-600:]
+    assert [c[0] for c in calls] == ["copy", "delete"] and calls[1][1] == "clean_full/cso/S1.parquet"
+
+
 @pytest.mark.parametrize("tool,argv", [(SUB, ["S1", "--apply"]), (MAT, ["--apply"])])
 def test_after_t0_another_checkout_touches_nothing(live, monkeypatch, tmp_path, tool, argv):
     """R1228: the cursor was emptied and a _collupd.backup file written in the live store before the parquet
