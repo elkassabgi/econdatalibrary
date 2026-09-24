@@ -1,7 +1,17 @@
 # Econ self-hosting plan (draft 14, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167, R1169, R1171,
 # R1172, R1174, R1176-R1193, AR-151-AR-153
 
-Build status (branch feat/econ-selfhost-origin):
+MERGED 2026-09-24 (Ahmed: "do all you need from me yourself"): #86 (the 13F own key, e7d262cb7 - this is
+RENAME for the 13F D1 clean-up below) at 20:47Z, then #85 (this origin branch, 4c1863f0a) at 20:47Z, both
+squash, after review AR-156 (GO). main's tree equals the reviewed merge simulation; main's CI on 4c1863f0a:
+3864 passed, 32 skipped (3.11), worker 133/133. The production checkout E: was fast-forwarded to 4c1863f0a
+at 20:55Z; is_cut_over() is False there and C:\ProgramData\econ does not exist; the next guard tick (21:00Z)
+ran clean. Still to do: the edge deploy of 4c1863f0a (review AR-157 GO-WITH-CONDITIONS; bundle sha256
+6cd10d66...; rollback version ee1d266d-f5e3-463b-b0bb-b6d10ae3395e) - it needs Ahmed's permission in the
+session, because the harness refuses a production deploy without it; then GUARD_HEARTBEAT_URL. Step 6d
+continues on feat/econ-selfhost-6d (PR #87).
+
+Build status (branch feat/econ-selfhost-origin, now merged - see above):
 - Code change 2 (local mode + wrangler.origin.toml, effc6784f) and code change 3 (blob store, sidecar, R2
   import tool, LocalBucket adapter, d18698a2d, f4b338dbc) are built. They were verified locally: NUMBERS
   rows 1103 and 1105 show a real series served byte-identical to its R2 object.
