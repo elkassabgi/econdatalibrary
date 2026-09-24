@@ -314,8 +314,10 @@ def heartbeat_reader(run=subprocess.run, check=None) -> tuple[bool, str]:
     f = run(["git", "-C", ROOT, "fetch", "-q", "origin", "main"], capture_output=True, text=True)
     if f.returncode != 0:                             # R1230: a stale local origin/main must not decide
         return False, f"git fetch origin main failed ({(f.stderr or '').strip()[:160]}) - cannot tell"
+    # UTF-8, never the locale codec (R1241: cp1252 on this machine - a non-ASCII byte could never match its own pin,
+    # or crashed the reader and named the wrong cause); a byte that does not decode changes the digest: refused
     wf = run(["git", "-C", ROOT, "show", "origin/main:.github/workflows/selfhost-watch.yml"],
-             capture_output=True, text=True)
+             capture_output=True, text=True, encoding="utf-8", errors="replace")
     if wf.returncode != 0 or not _runs_the_heartbeat_check(wf.stdout or ""):
         return False, "origin/main's selfhost-watch.yml does not run guard_heartbeat.py --check --from-url"
     # AND IT IS THE REVIEWED WORKFLOW, BYTE FOR BYTE (R1236, R1238): the step check cannot see the job around it

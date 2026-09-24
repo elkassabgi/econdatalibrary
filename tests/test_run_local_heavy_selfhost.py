@@ -87,6 +87,20 @@ def test_the_script_is_ascii_after_its_bom():
     assert all(b < 128 for b in body), "PowerShell 5.1 mis-decodes non-ASCII in this file (its header, R-note)"
 
 
+def test_an_answer_other_than_0_or_1_stops_the_pass_and_t0_stamps_the_cadence():
+    """R1241 mutants H2 (the 'not 0 or 1' abort removed) and H3 (after T0 the pass never counts as committed, so
+    the cadence is never stamped and every guard tick starts another pass) survived."""
+    src = open(SCRIPT, encoding="utf-8-sig").read().replace("\r\n", "\n")
+    guard = "if ($cutRc -ne 0 -or ($cutOut -ne '0' -and $cutOut -ne '1')) {\n"
+    assert guard in src
+    body = src.split(guard, 1)[1].split("\n}\n", 1)[0]
+    assert "exit 2" in body, "a T0 answer that is not 0 or 1 stops the pass"
+    push = src.split("if ($selfHosted) {\n    # the updater wrote the local state.db itself", 1)
+    assert len(push) == 2 and "$pushRc = 0" in push[1].split("} else {", 1)[0], \
+        "after T0 the state is committed as the run goes: pushRc 0, so the cadence can be stamped"
+    assert "Test-CadenceShouldStamp -PushRc $pushRc" in src
+
+
 def test_the_t0_probe_the_script_runs_answers_0_or_1():
     """The exact command the script runs (read from it), executed: before T0 on this machine or on CI it prints 0,
     after T0 1 - never anything else, which the script would treat as 'cannot tell' and stop."""

@@ -281,6 +281,7 @@ def _gh_hb(var, watch_state, main_wf=WF_WITH, var_rc=None, fetch_rc=0, main_only
             assert cmd[-2:] == ["origin", "main"]
             return types.SimpleNamespace(returncode=fetch_rc, stdout="", stderr="offline" if fetch_rc else "")
         if cmd[:2] == ["git", "-C"] and "show" in cmd:
+            assert kw.get("encoding") == "utf-8", "the pinned file is read as UTF-8, never the locale codec (R1241)"
             ref_ok = cmd[-1] == "origin/main:.github/workflows/selfhost-watch.yml" or not main_only
             return types.SimpleNamespace(returncode=0 if (main_wf is not None and ref_ok) else 128,
                                          stdout=main_wf or "", stderr="")
@@ -371,6 +372,8 @@ def test_the_committed_workflow_is_the_pinned_one():
     """Editing selfhost-watch.yml without the pin in t0_ready.py fails here (R1238): the gate's constant is the
     visible edit a review of the change sees. Line ends do not matter; any other byte does."""
     assert T._is_reviewed_workflow(WF_WITH), "the committed workflow changed - review it, then update the pin"
+    raw = open(os.path.join(ROOT, ".github", "workflows", "selfhost-watch.yml"), "rb").read()
+    assert all(b < 128 for b in raw), "keep the workflow ASCII: the pin is a digest of its decoded text (R1241)"
     assert T._is_reviewed_workflow(WF_WITH.replace("\n", "\r\n"))
     assert not T._is_reviewed_workflow(WF_WITH + "\n# a comment\n")
 

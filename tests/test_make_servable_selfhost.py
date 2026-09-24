@@ -143,6 +143,73 @@ def test_importing_the_tool_changes_nothing_in_this_process():
     assert r.stdout.split()[-3:] == ["True", "False", "False"], r.stdout
 
 
+def _set_stored(key, when):
+    s = blob.SelfhostBlob().store
+    s._w.execute("UPDATE blobs SET stored_utc=? WHERE key=?", (when.isoformat(timespec="seconds"), key))
+    s._w.commit()
+
+
+def test_a_rewritten_identical_parquet_verifies_ok(live, capsys):
+    """R1241: the second run re-derives (the parquet is newer), every write is skipped as identical, and the
+    skipped objects keep their old stored_utc - VERIFY said MISSING 3. What this run derived is current."""
+    root, build, full, held = live
+    assert M.main(["zz"]) == 0
+    capsys.readouterr()
+    p = full / "zz" / "zz.parquet"
+    later = dt.datetime.now(dt.timezone.utc).timestamp() + 5
+    os.utime(p, (later, later))                                   # rewritten, same rows
+    assert M.main(["zz"]) == 0
+    out = capsys.readouterr().out
+    assert "already current, not re-written: 3" in out and "MISSING 0  ORPHANED 0  OK" in out, out
+
+
+def test_a_csv_older_than_the_parquet_by_less_than_a_second_is_stale(live, capsys):
+    """R1241: the parquet time was floored to the second, so a CSV stored 0.5 s before it counted as current."""
+    root, build, full, held = live
+    assert M.main(["zz"]) == 0
+    capsys.readouterr()
+    t = dt.datetime(2030, 1, 1, 12, 0, 0, tzinfo=dt.timezone.utc)
+    os.utime(full / "zz" / "zz.parquet", (t.timestamp() + 0.5, t.timestamp() + 0.5))
+    for k in ("series/zz%3Aa.csv", "series/zz%3Ab.csv", "series/zz%3Ac.csv"):
+        _set_stored(k, t)                                         # the same whole second, before the write
+    M.main(["zz"])
+    assert "to derive 3 (3 of them present but OLDER than the parquet)" in capsys.readouterr().out
+
+
+def test_the_newest_of_several_parquets_decides(live, capsys):
+    """R1241 mutant S8 (the oldest file's time) survived with a one-file fixture."""
+    root, build, full, held = live
+    old = full / "zz" / "part_old.parquet"
+    pq.write_table(pa.table({"series_key": ["a"], "obs_date": [dt.date(2020, 1, 1)], "value": [0.0]}), old)
+    assert M.main(["zz"]) == 0
+    capsys.readouterr()
+    t = dt.datetime(2030, 1, 1, tzinfo=dt.timezone.utc)
+    os.utime(old, (t.timestamp() - 86400, t.timestamp() - 86400))
+    os.utime(full / "zz" / "zz.parquet", (t.timestamp() + 60, t.timestamp() + 60))
+    for k in ("series/zz%3Aa.csv", "series/zz%3Ab.csv", "series/zz%3Ac.csv"):
+        _set_stored(k, t)                          # after the OLD file, before the NEW one: stale
+    M.main(["zz"])
+    assert "to derive 3 (3 of them present but OLDER than the parquet)" in capsys.readouterr().out
+
+
+def test_one_bad_source_does_not_stop_the_batch(live, capsys):
+    """R1241: the cataloguer runs in-process now; a corrupt parquet in the first source raised and the second
+    was never served. It is reported, the rest are served, and the run exits 1."""
+    root, build, full, held = live
+    (full / "broken").mkdir()
+    (full / "broken" / "broken.parquet").write_bytes(b"not a parquet file")
+    with catalog_path.writer_lock():                     # a licence, so the cataloguer goes on to READ the file
+        c = sqlite3.connect(str(build))
+        c.execute("INSERT INTO source VALUES ('broken', 'us-public-domain')")
+        c.commit()
+        c.close()
+    assert M.main(["broken", "zz"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL broken:" in out and "NOT SERVED CLEANLY: ['broken']" in out
+    assert _catalogued(build) == ["zz:a", "zz:b", "zz:c"], "zz was still served"
+    assert catalog_path._held is None
+
+
 def test_before_t0_it_still_goes_to_r2(live, monkeypatch, tmp_path):
     root, build, full, held = live
     (tmp_path / "CUTOVER").unlink()

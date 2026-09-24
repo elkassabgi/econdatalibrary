@@ -164,9 +164,10 @@ def sync_parquet(client, source):
     return pub
 
 
-def _verify_line(ids, stamps_after, pmt):
-    """The VERIFY line and its two lists, shared by both stores (see the notes in main)."""
-    after = {k for k, m in stamps_after.items() if pmt is None or m >= pmt}
+def _verify_line(ids, stamps_after, pmt, derived_now=frozenset()):
+    """The VERIFY lists: missing (catalogued, no current CSV) and orphaned (a CSV the catalogue does not list). A
+    CSV is current when stored at or after the newest parquet, or derived by this run and present in the store."""
+    after = {k for k, m in stamps_after.items() if pmt is None or m >= pmt or k in derived_now}
     missing = [i for i in ids if i not in after]
     orphans = sorted(set(stamps_after) - set(ids))
     return missing, orphans
@@ -185,53 +186,76 @@ def main_selfhosted(sources):
     bm.refuse_unless_live_checkout("make_servable (it writes the served store and the catalogue)")
     os.environ["AQUEDUCT_BACKEND"] = "selfhost"                  # the cataloguer's store reads: the local store
     store = bm.SelfhostBlob()
+    failed_sources = []
     with catalog_path.write_session():
         for src in sources:
             print(f"\n=== {src} ===", flush=True)
-            files = [f for f in glob.glob(os.path.join(ROOT, "data", "clean_full", src, "**", "*.parquet"),
-                                          recursive=True) if not os.path.basename(f).startswith("_")]
-            if not files:
-                print("  NO parquet in the store - nothing to serve.", flush=True)
-                continue
-            print(f"  store: {len(files):,} parquet file(s); after T0 the local store IS the served store "
-                  f"(no sync)", flush=True)
-            catalog_complete.main([src])
-            con = catalog_path.connect()
-            ids = [x[0] for x in con.execute("SELECT series_id FROM series WHERE source_id=?", (src,))]
-            con.close()
-            # at the STORE's resolution: stored_utc is whole seconds, a file time is not - a CSV written in the
-            # same second as the parquet compared as older and was counted missing (found by this tool's test)
-            pmt = max(dt.datetime.fromtimestamp(os.path.getmtime(f), tz=dt.timezone.utc) for f in files) \
-                .replace(microsecond=0)
-            prefix = "series/" + urllib.parse.quote(f"{src}:", safe="")        # anchored on the colon
-            stamps = {urllib.parse.unquote(k[len("series/"):-4]): m
-                      for k, m in store.list_modified(prefix) if k.endswith(".csv")}
-            have = {k for k, m in stamps.items() if m >= pmt}
-            todo = [i for i in ids if i not in have]
-            n_stale = sum(1 for i in ids if i in stamps and i not in have)
-            print(f"  catalog {len(ids):,} | to derive {len(todo):,}"
-                  + (f" ({n_stale:,} of them present but OLDER than the parquet)" if n_stale else ""), flush=True)
-            if todo:
-                t0 = time.time()
-                res = derive.derive_and_put(todo, store)
-                el = time.time() - t0
-                print(f"  derived put={res['put']:,} (already current, not re-written: "
-                      f"{res.get('skipped_identical', 0):,}) failed={len(res['failed']):,} in {el / 60:.1f} min",
-                      flush=True)
-                for f in res["failed"][:5]:
-                    print(f"     FAIL {f}", flush=True)
-            stamps_after = {urllib.parse.unquote(k[len("series/"):-4]): m
-                            for k, m in store.list_modified(prefix) if k.endswith(".csv")}
-            missing, orphans = _verify_line(ids, stamps_after, pmt)
-            print(f"  VERIFY: catalog {len(ids):,}  csv_in_store {len(ids) - len(missing):,}"
-                  f"  MISSING {len(missing):,}  ORPHANED {len(orphans):,}"
-                  + ("  <-- still not downloadable" if missing else
-                     "  <-- serving ids the catalog does not list" if orphans else "  OK"), flush=True)
-            if missing:
-                print("     missing e.g. " + ", ".join(missing[:3]), flush=True)
-            if orphans:
-                print("     orphaned e.g. " + ", ".join(orphans[:3]), flush=True)
-            print("  " + cutover.next_steps(f"NEXT: python core/sync_catalog_d1.py --source {src}"), flush=True)
+            try:
+                if not _serve_one_selfhosted(src, store, catalog_path, catalog_complete, dt):
+                    failed_sources.append(src)
+            except cutover.CutoverRefused:
+                raise                                # a refusal is never one source's problem
+            except Exception as e:                   # noqa: BLE001 - one bad source must not stop the batch
+                # (R1241: in-process, a corrupt parquet in the first source raised and the rest were never served)
+                print(f"  FAIL {src}: {type(e).__name__}: {e}", flush=True)
+                failed_sources.append(src)
+    if failed_sources:
+        print(f"\nNOT SERVED CLEANLY: {failed_sources}", flush=True)
+        return 1
+    return 0
+
+
+def _serve_one_selfhosted(src, store, catalog_path, catalog_complete, dt) -> bool:
+    """One source after T0. True when it verifies with nothing missing."""
+    files = [f for f in glob.glob(os.path.join(ROOT, "data", "clean_full", src, "**", "*.parquet"),
+                                  recursive=True) if not os.path.basename(f).startswith("_")]
+    if not files:
+        print("  NO parquet in the store - nothing to serve.", flush=True)
+        return True
+    print(f"  store: {len(files):,} parquet file(s); after T0 the local store IS the served store (no sync)",
+          flush=True)
+    catalog_complete.main([src])
+    con = catalog_path.connect()
+    ids = [x[0] for x in con.execute("SELECT series_id FROM series WHERE source_id=?", (src,))]
+    con.close()
+    # The NEWEST parquet, ROUNDED UP to the store's whole seconds (stored_utc has no fraction): a CSV stored in
+    # the same second as the parquet's last write, or earlier, counts as stale - R1241 found the floor let a CSV
+    # half a second older pass as current. What THIS run writes is current by construction (below).
+    newest = max(dt.datetime.fromtimestamp(os.path.getmtime(f), tz=dt.timezone.utc) for f in files)
+    pmt = newest.replace(microsecond=0) + (dt.timedelta(seconds=1) if newest.microsecond else dt.timedelta(0))
+    prefix = "series/" + urllib.parse.quote(f"{src}:", safe="")                # anchored on the colon
+    stamps = {urllib.parse.unquote(k[len("series/"):-4]): m
+              for k, m in store.list_modified(prefix) if k.endswith(".csv")}
+    have = {k for k, m in stamps.items() if m >= pmt}
+    todo = [i for i in ids if i not in have]
+    n_stale = sum(1 for i in ids if i in stamps and i not in have)
+    print(f"  catalog {len(ids):,} | to derive {len(todo):,}"
+          + (f" ({n_stale:,} of them present but OLDER than the parquet)" if n_stale else ""), flush=True)
+    derived_now = set()
+    if todo:
+        t0 = time.time()
+        res = derive.derive_and_put(todo, store)
+        el = time.time() - t0
+        print(f"  derived put={res['put']:,} (already current, not re-written: "
+              f"{res.get('skipped_identical', 0):,}) failed={len(res['failed']):,} in {el / 60:.1f} min", flush=True)
+        for f in res["failed"][:5]:
+            print(f"     FAIL {f}", flush=True)
+        # derived THIS run and in the store: current, whether written or found identical (R1241: a skipped
+        # identical write keeps its old stored_utc, and the time rule alone then called it MISSING)
+        derived_now = set(todo) - set(res["failed"])
+    stamps_after = {urllib.parse.unquote(k[len("series/"):-4]): m
+                    for k, m in store.list_modified(prefix) if k.endswith(".csv")}
+    missing, orphans = _verify_line(ids, stamps_after, pmt, derived_now)
+    print(f"  VERIFY: catalog {len(ids):,}  csv_in_store {len(ids) - len(missing):,}"
+          f"  MISSING {len(missing):,}  ORPHANED {len(orphans):,}"
+          + ("  <-- still not downloadable" if missing else
+             "  <-- serving ids the catalog does not list" if orphans else "  OK"), flush=True)
+    if missing:
+        print("     missing e.g. " + ", ".join(missing[:3]), flush=True)
+    if orphans:
+        print("     orphaned e.g. " + ", ".join(orphans[:3]), flush=True)
+    print("  " + cutover.next_steps(f"NEXT: python core/sync_catalog_d1.py --source {src}"), flush=True)
+    return not missing
 
 
 def main(sources):
@@ -323,4 +347,4 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(__doc__)
         raise SystemExit(2)
-    main(sys.argv[1:])
+    raise SystemExit(main(sys.argv[1:]) or 0)      # after T0 a source that did not serve cleanly exits 1
