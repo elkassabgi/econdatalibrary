@@ -236,7 +236,13 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
    d. Commit FORWARD on, together with the verifier re-pointing and the docs change; deploy the edge
       (Ahmed); start the local writers.
    Fallback: the frozen R2/D1 copy for at most 14 days. A rollback re-serves T0 data; anything purged
-   locally after T0 goes on the edge denylist before any rollback.
+   locally after T0 goes on the edge denylist before any rollback. A rollback turns FORWARD off and KEEPS
+   EDGE_STATE = "users": a config from before step 5 would send page views and the */30 cost-guard write
+   back to econ D1/R2 and break the freeze (R1174 B3); the soak worker of step 4 keeps it too if it
+   outlives T0. Every flip of FORWARD or EDGE_STATE is recorded with its UTC time and the page-view merge
+   marker key it used (R1174 B8), so a later merge exports exactly the days after the first flip.
+   T0 for the off-machine check is that recorded MOMENT (repository variable SELFHOST_NO_WRITES_SINCE,
+   e.g. 2026-10-05T14:00:00Z), not a date.
 7. Decommission (Ahmed confirms): redeploy the edge without CATALOG, CLIMATE and R2 bindings, then delete
    econ R2 objects and econ D1 databases - only after an off-machine, versioned backup and a restore test.
    The write key is revoked and the hook refuses deletes, so the deletion runs from the Cloudflare
@@ -267,6 +273,25 @@ store, catalogue build, blob store and state to F: and off the machine. Services
 user: read-only on the store, the build and the blob store; write only on its disposable catalogue copies
 and its own logs. When the workstation is down the edge answers "temporarily unavailable" and serves its
 cached public answers.
+
+The off-machine check (tools/selfhost/watch_edge.py, workflow selfhost-watch.yml), what it can and
+cannot do (review R1174):
+- It runs only from the default branch, so it starts working when this branch is merged, and it compares
+  the deployed edge with MAIN's wrangler.toml. Deploys go through tools/selfhost/deploy_edge.sh, which
+  sets the commit id the check reads.
+- GitHub disables a public repository's scheduled workflows after 60 days without a commit. If the
+  self-hosted updater stops committing to this repository, a monthly commit (or a re-enable) keeps it
+  alive.
+- Scheduled runs here arrive 4 to 6.5 h late but are not dropped (15 of 15 measured); the write window is
+  cumulative, so a late run still sees every write. The alert goes to DIGEST_TO, which is not set, so it
+  goes to admin@hfdatalibrary.com (the same as billing-guard).
+- It cannot see a deleted database or bucket, a D1 time-travel restore, or an R2 lifecycle expiry; those
+  are covered only by the write key being revoked and the D1 token narrowed at T0.
+
+Risks still open, to measure in the soak (step 4): a hop that drops content-length on a gzip passthrough
+makes the edge inflate and re-compress it (CPU per GB, and the logged bytes are the inflated size);
+cache-busting query parameters on browse routes reach the origin, and browse routes have no rate limit
+(R1169 m1); /v1/bundle must send its headers within the edge's 30 s wait.
 
 ## 8. Decisions and actions for Ahmed
 
