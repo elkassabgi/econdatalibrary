@@ -95,13 +95,24 @@ Build status (branch feat/econ-selfhost-origin):
     open until source_state('sec_edgar') carries another strategy, then never again; upsert_source
     refuses a sec_edgar row without the XBRL product's own strategy, so the refresher's FIRST write must
     be that row (R1201).
-  * THE 13F D1 CLEAN-UP (R1201 finding 5). The local move does not heal D1: sync_state_d1 upserts and never
-    deletes, so unit_state('sec_edgar','_all') and source_state('sec_edgar') stay in D1 until removed, and
-    any run of OLD code re-creates them locally and the next sync re-upserts them. So the clean-up (two
-    PK DELETEs - costed first with the same statements as SELECTs) runs only when ALL hold: (1) no
-    workflow run created before the merge is queued or in progress (gh run list, read at the time);
-    (2) the E: checkout that runs the desktop passes is at or after the merge commit; (3) one sync from
-    new code has pushed the sec_edgar_13f rows. Then re-read the two keys from D1 to prove them gone.
+  * THE 13F D1 CLEAN-UP (R1201 finding 5, corrected by R1202). The local move does not heal D1:
+    sync_state_d1 upserts and never deletes, so unit_state('sec_edgar','_all') stays in D1 until removed,
+    and any run of OLD code re-creates it locally and the next sync re-upserts it.
+    ONE key only: DELETE FROM unit_state WHERE source_id='sec_edgar' AND unit_id='_all' AND
+    strategy='giant_changed_units' - a PK delete, costed first as the same statement's SELECT.
+    NOT source_state('sec_edgar'): in D1 that row has two owners. refresh_sec_edgar's stamp_freshness_d1
+    writes it every day (sec-edgar-daily.yml, 08:00 UTC) and /v1/sources reads it (sql.ts SELECT_SOURCES,
+    LEFT JOIN source_state), so deleting it would blank the XBRL product's status, cadence and
+    last_updated until the next fully-ok stamp. After the move the sync stops pushing it and the stamp
+    overwrites every served column; only `strategy` stays stale, and the worker does not read it.
+    It runs only when ALL hold, each read at the time:
+      (1) OLD CODE CANNOT RUN: every queued or in-progress run of updater-daily.yml and updater-heavy.yml
+          (gh run list --json headSha,status) has a head SHA that contains the rename commit (git
+          merge-base --is-ancestor) - by SHA, not by creation time: workflow_dispatch runs any branch;
+      (2) the E: checkout that runs the desktop passes is at or after the rename commit;
+      (3) one sync from new code has pushed the sec_edgar_13f rows.
+    Then re-read the key from D1 twice: right after the delete, and again after the NEXT state sync -
+    that is when an old-code writer would show (R1201 rule 4).
     Expected after the rename: /v1/last-updates lists the 13F unit as sec_edgar_13f/_all - the same row
     it listed as sec_edgar/_all before, under its own id.
   * data_through: computed by the origin copy from the catalogue with this source's rule, MAX(end_date)
