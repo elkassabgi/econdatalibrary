@@ -28,6 +28,22 @@ import type { Env, LicenseRow, LicenseBlock } from "./types";
 // clients/python/econdl/_resolve.py::_RESOLVERS (regenerate via supported_sources()).
 // Regenerated 2026-07-02 from supported_sources() (was a stale 33-entry list, which
 // made ~158 genuinely-migrated sources return 501 instead of the honest 502).
+// SOURCES STORED WIDE, NOT AS series_id,obs_date,value. Mirrors `_NATIVE_ONLY` in
+// clients/python/econdl/_resolve.py:1491, which is the authority; tests/test_worker_native_only.py
+// fails CI if the two drift. Their at-rest CSV carries the source's own columns (fhfa:
+// `dataset,series_key,obs_date,hpi,...`), which is CORRECT - the resolver marks them
+// tidy_ok=False because a long series_id,obs_date,value projection of a relational table
+// would be a lie. The CSV_HEADER guard in series.ts did not know that and refused all
+// of them: 92,963 catalogued series answered 502 `the at-rest object is malformed` from
+// 2026-09-02 until this fix.
+export const NATIVE_ONLY_SOURCES: readonly string[] = [
+  "census", "fhfa", "hf_equities", "treasury", "wikidata",
+];
+
+export function isNativeOnly(source: string): boolean {
+  return NATIVE_ONLY_SOURCES.includes(source);
+}
+
 export const SUPPORTED_SOURCES: readonly string[] = [
   // zillow REMOVED 2026-08-01. Unlike the ids removed above, this one WAS being served: 52
   // catalogue rows, 52 derived CSVs in R2, and this listing. Zillow's Terms of Use (updated
