@@ -38,6 +38,8 @@ keeps the incremental run cheap and never invents geo/uom we cannot verify.
 
 Honest-status contract (Tally + finalize):
   - Each changed cube is one sub-unit. A successful merge -> added_unit(n_new); a
+    merge that adds no row but whose changed-keys report is non-empty (revised
+    values only) -> revised_unit() (status ok, so the CSV phase runs - R1125); a
     cube whose tail genuinely has 0 new datapoints -> empty_unit().
   - A timeout / 5xx / 429 / network drop -> transient_unit() (status 'partial'; the
     orchestrator does NOT advance last_success and the watermark is NOT advanced, so
@@ -618,6 +620,7 @@ def update(unit, since) -> Result:
                     path, tbl, mode="merge", dedup_keys=DEDUP,
                     report_changed_keys=True)
                 changed_all.update(_ch)
+                revised = bool(_ch)
             else:
                 # over the report cap (merge.py refuses at entry): merge without the
                 # report and poison the union — honesty is binary per run. Say so
@@ -629,6 +632,7 @@ def update(unit, since) -> Result:
                 n, md = merge.merge_and_write(path, tbl, mode="merge",
                                               dedup_keys=DEDUP)
                 changed_complete = False
+                revised = False       # no report: a revision here is not measured (see below)
         except DefinitiveError:
             # never-shrink / column-drop guard tripped -> keep existing data, surface
             # as a sub-unit failure rather than crashing the whole run.
@@ -637,7 +641,16 @@ def update(unit, since) -> Result:
             all_ok = False
             continue
         delta = max(0, n - before)
-        tally.added_unit(delta)
+        if delta == 0 and revised:
+            # REVISED, NOT EMPTY (review R1125): StatCan's tail carries revisions to old periods, and
+            # a merge that only revises adds no row. Booked as added_unit(0) the pass read `no_change`,
+            # orchestrate._should_derive_csvs skipped the CSV phase, and `done` / the watermark moved
+            # on - the served CSV kept the old value under a green unit. The merge's own report is the
+            # evidence (an identical re-fetch reports {}), so only a measured revision counts here.
+            # An over-cap merge has no report and stays added_unit(0): unmeasured, as before.
+            tally.revised_unit(pid)
+        else:
+            tally.added_unit(delta)
         if md:
             series_cursors[str(pid)] = md
             try:
