@@ -238,6 +238,14 @@ Build status (branch feat/econ-selfhost-origin):
   AHMED'S STEPS, before T0: merge the branch to main; deploy the worker (the route); set the repository
   variable GUARD_HEARTBEAT_URL to the public /v1/guard-heartbeat URL. A failure shows as a red
   selfhost-watch run; GitHub's failed-run notification is the only email for it.
+  THE REST OF THE LOCAL GROUP (origin, 2026-09-24, under review): repull_file, cso_repull_matrix and
+  cso_repull_subject retire store files locally after T0, under the writer lock (updater.blob
+  backup_store_object / delete_store_object). probe_csv_freshness reads the self-hosted store after T0,
+  keeps its bookmark locally and refuses outside the live checkout. rebuild_cso_retired_from_csv and
+  sec_edgar_union_repair refuse to run after T0 (their work has no meaning there).
+  AHMED'S STEP for the probe: it ran only in updater-daily.yml, which T0 switches off. Something on the
+  workstation must run `python tools/probe_csv_freshness.py` daily after T0 (a scheduled task, or a line
+  in the guard loop). That is a change to the machine's configuration, so it is his to approve.
   THE HOST RUNS THE TESTS TOO (R1218 finding 5): one run of the router load test left 7,453 sockets in
   TIME_WAIT, and overlapping suites reached 12,289 of 16,384 ephemeral ports; tests then failed with
   WinError 10048. After T0 the live router opens a new connection to the origin for every request on this
