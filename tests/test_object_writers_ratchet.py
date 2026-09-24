@@ -20,10 +20,9 @@ CHOKEPOINTS = {"updater/blob.py", "core/r2_util.py", "core/licence_targets.py"}
 
 LEGACY_OBJECT_WRITERS = {
     "core/derive_csv.py", "core/upload_r2.py",
-    "tools/_delete_statcan_r2.py", "tools/_derive_bea_bulk.py", "tools/_upload_biotrademerch_store.py",
+    "tools/_delete_statcan_r2.py", "tools/_upload_biotrademerch_store.py",
     "tools/_upload_clean_full_parquet.py", "tools/cso_repull_matrix.py", "tools/cso_repull_subject.py",
-    "tools/delist_timeless_tables.py", "tools/derive_noaa_missing.py", "tools/derive_unsdg_flows.py",
-    "tools/flowgrain_insee_melodi.py", "tools/flowgrain_ons_uk.py", "tools/guard_heartbeat.py",
+    "tools/delist_timeless_tables.py", "tools/guard_heartbeat.py",
     "tools/probe_csv_freshness.py", "tools/purge_unpermitted_r2.py", "tools/rebuild_cso_retired_from_csv.py",
     "tools/refresh_r2_catalog.py", "tools/refresh_sec_edgar.py", "tools/repull_file.py",
     "tools/sec_edgar_union_repair.py", "tools/series_census.py", "tools/trim_bfs_corrupt_tail.py",

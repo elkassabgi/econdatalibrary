@@ -103,7 +103,7 @@ def creds(write: bool = False) -> dict | None:
     return None
 
 
-def client(write: bool = False):
+def client(write: bool = False, pool: int | None = None):
     """Build a boto3 S3 client for R2, or raise a clear error if creds are missing."""
     c = creds(write=write)
     if c is None:
@@ -115,7 +115,7 @@ def client(write: bool = False):
     # the frozen cloud copy is stale data presented as current, and a refusal is loud. Tools move to their
     # self-hosted backend (SelfhostBlob, core.licence_targets) or to cloud_client() if they are one of the
     # named final-sync readers.
-    return guard_client(_boto3_client(c), reads_after_t0=False)
+    return guard_client(_boto3_client(c, pool), reads_after_t0=False)
 
 
 def cloud_client():
@@ -128,13 +128,16 @@ def cloud_client():
     return guard_client(_boto3_client(c), reads_after_t0=True)
 
 
-def _boto3_client(c: dict):
+def _boto3_client(c: dict, pool: int | None = None):
     import boto3
     from botocore.config import Config
+    # `pool`: botocore's max_pool_connections (default 10), which caps concurrent requests whatever the
+    # caller's thread count - bea's 64-thread upload measured ~22 PUTs/s on it, an 11-hour run (_derive_bea_bulk)
+    extra = {"max_pool_connections": pool} if pool else {}
     return boto3.client(
         "s3", endpoint_url=c["endpoint"], aws_access_key_id=c["key"],
         aws_secret_access_key=c["secret"], region_name="auto",
-        config=Config(signature_version="s3v4", retries={"max_attempts": 5, "mode": "standard"}))
+        config=Config(signature_version="s3v4", retries={"max_attempts": 5, "mode": "standard"}, **extra))
 
 
 # ---------------------------------------------------------------------------

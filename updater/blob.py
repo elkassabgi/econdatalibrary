@@ -522,15 +522,20 @@ class R2Blob:
     boto3 or credentials, only actually touching R2 does.
     """
 
-    def __init__(self, bucket: str = R2_BUCKET):
+    def __init__(self, bucket: str = R2_BUCKET, pool: int | None = None):
         self.bucket = bucket
+        self.pool = pool            # botocore max_pool_connections for a many-threaded caller; None = default
         self._client = None
+        self._client_lock = threading.Lock()
 
     @property
     def client(self):
         if self._client is None:
-            from core import r2_util  # lazy — only R2 runs need boto3 + creds
-            self._client = r2_util.client(write=True)
+            with self._client_lock:     # many threads may touch a new store at once: build ONE client
+                if self._client is None:
+                    from core import r2_util  # lazy — only R2 runs need boto3 + creds
+                    self._client = (r2_util.client(write=True, pool=self.pool) if self.pool
+                                    else r2_util.client(write=True))
         return self._client
 
     def get(self, key: str) -> bytes | None:
@@ -791,7 +796,7 @@ class SelfhostBlob:
         self.store.delete(key)
 
 
-def csv_store(bucket: str | None = None) -> R2Blob | SelfhostBlob:
+def csv_store(bucket: str | None = None, pool: int | None = None) -> R2Blob | SelfhostBlob:
     """The object store the SERVED series CSVs live in - for the tools that write or list them.
 
     Series CSVs are never local files: the worker serves them from the object store. So this is the
@@ -804,7 +809,7 @@ def csv_store(bucket: str | None = None) -> R2Blob | SelfhostBlob:
     # THE CUTOVER FLAG decides, not only the environment (review R1200): after T0 the self-hosted store,
     # whatever a shell forgot to set. AQUEDUCT_BACKEND=selfhost before T0 is a deliberate probe of that store.
     selfhost = cutover.is_cut_over() or b == "selfhost"
-    store = SelfhostBlob() if selfhost else R2Blob()
+    store = SelfhostBlob() if selfhost else (R2Blob(pool=pool) if pool else R2Blob())
     if bucket is not None and bucket != store.bucket:
         raise SystemExit(f"--bucket {bucket} is not the CSV store's bucket {store.bucket}")
     if selfhost:
@@ -812,6 +817,60 @@ def csv_store(bucket: str | None = None) -> R2Blob | SelfhostBlob:
     print(f"[csv-store] {'the self-hosted blob store ' + store.root if selfhost else 'R2 ' + store.bucket}",
           flush=True)
     return store
+
+
+class LocalStoreReader:
+    """The parquet stores on this machine, read by their OBJECT KEY (clean_full/<src>/x.parquet) - so a tool
+    that listed and read them from R2 reads the same keys after T0. Read-only: it has no put."""
+    PREFIX = "clean_full/"
+
+    def __init__(self, data_root: str | None = None):
+        from . import config                                              # noqa: PLC0415
+        self.data_root = os.path.abspath(data_root or config.DATA_ROOT)   # the clean_full directory
+
+    def _path(self, key: str) -> str:
+        if not key.startswith(self.PREFIX) or ".." in key.split("/"):
+            raise ValueError(f"{key!r} is not a parquet-store key ({self.PREFIX}<source>/...)")
+        return os.path.join(self.data_root, *key[len(self.PREFIX):].split("/"))
+
+    def list_keys(self, prefix: str) -> list[str]:
+        """Every file key under the prefix, sorted. A missing source directory lists nothing - the caller
+        decides whether an empty store is an error (the tools here refuse it)."""
+        if not prefix.startswith(self.PREFIX) or ".." in prefix.split("/"):
+            raise ValueError(f"{prefix!r} is not a parquet-store prefix ({self.PREFIX}<source>/...)")
+        # the directory is everything up to the prefix's last '/'; the rest filters names
+        top = os.path.join(self.data_root, *prefix[len(self.PREFIX):].split("/")[:-1])
+        if not os.path.isdir(top):
+            return []
+        out = []
+        for root, _dirs, files in os.walk(top):
+            for f in files:
+                rel = os.path.relpath(os.path.join(root, f), self.data_root).replace(os.sep, "/")
+                key = self.PREFIX + rel
+                if key.startswith(prefix):
+                    out.append(key)
+        return sorted(out)
+
+    def get(self, key: str) -> bytes | None:
+        p = self._path(key)
+        if not os.path.isfile(p):
+            return None
+        with open(p, "rb") as fh:
+            return fh.read()
+
+
+def store_reader() -> R2Blob | LocalStoreReader:
+    """Where a tool READS the published parquet stores (clean_full/<src>/...): R2 before T0 - the full set,
+    where these tools have always read - and the LOCAL store after it (plan: after T0 the parquet store is
+    local, and the self-hosted blob store holds only series/ CSVs, so csv_store() would list NOTHING here
+    and a publish would silently cover zero tables). AQUEDUCT_BACKEND=selfhost before T0 probes the local
+    side, as it does for csv_store."""
+    from core import cutover                                              # noqa: PLC0415
+    b = os.environ.get("AQUEDUCT_BACKEND", "").strip().lower()
+    reader = LocalStoreReader() if (cutover.is_cut_over() or b == "selfhost") else R2Blob()
+    where = f"the local store {reader.data_root}" if isinstance(reader, LocalStoreReader) else f"R2 {reader.bucket}"
+    print(f"[store-reader] {where}", flush=True)
+    return reader
 
 
 def from_env(backend: str | None = None) -> LocalBlob | R2Blob | SelfhostBlob:

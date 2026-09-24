@@ -45,8 +45,8 @@ import pyarrow as pa                   # noqa: E402
 import pyarrow.compute as pc           # noqa: E402
 import pyarrow.dataset as ds           # noqa: E402
 
-from core import r2_util               # noqa: E402
-from tools.derive_csv_bulk import _csv_bytes, _retry, csv_key, csv_key_prefix  # noqa: E402
+from tools.derive_csv_bulk import _csv_bytes, csv_key, csv_key_prefix  # noqa: E402
+from updater import blob as _blob, derive as _derive  # noqa: E402
 
 ROOT = _REPO
 SRC = "bea"
@@ -140,32 +140,15 @@ def main() -> int:
         return 1
 
     # ---- skip-existing + PUT workers -------------------------------------------
+    # plan step 1: the CSV store - R2 before T0, the self-hosted blob store after it.
     # r2_util.client() leaves botocore's max_pool_connections at its default of 10,
     # which silently caps ANY worker count at ~10 concurrent PUTs (measured ~22/s on
-    # the first launch — an 11-hour upload). Build the client here with a pool wider
-    # than the worker fleet; creds still come from the one place they live.
-    import boto3
-    from botocore.config import Config
-    _c = r2_util.creds(write=True)
-    s3 = r2_util.guard_client(boto3.client(                  # the cutover guard: read-only after T0
-        "s3", endpoint_url=_c["endpoint"], aws_access_key_id=_c["key"],
-        aws_secret_access_key=_c["secret"], region_name="auto",
-        config=Config(signature_version="s3v4", max_pool_connections=96,
-                      retries={"max_attempts": 5, "mode": "standard"})))
-    existing: set[str] = set()
+    # the first launch — an 11-hour upload). So the store's R2 client gets a pool
+    # wider than the worker fleet (pool=96).
+    store = _blob.csv_store(BUCKET, pool=96)
     lp = csv_key_prefix(PREFIX, SRC)
-    tok = None
-    while True:
-        kw = {"Bucket": BUCKET, "Prefix": lp, "MaxKeys": 1000}
-        if tok:
-            kw["ContinuationToken"] = tok
-        r = _retry(lambda: s3.list_objects_v2(**kw), "LIST")
-        for o in r.get("Contents", []):
-            existing.add(o["Key"])
-        if not r.get("IsTruncated"):
-            break
-        tok = r.get("NextContinuationToken")
-    print(f"skip-existing: {len(existing):,} already in R2", flush=True)
+    existing: set[str] = set(store.list_keys(lp))
+    print(f"skip-existing: {len(existing):,} already in the CSV store", flush=True)
 
     q: queue.Queue = queue.Queue(maxsize=4000)
     counts = {"put": 0, "skip": 0, "err": 0}
@@ -179,8 +162,8 @@ def main() -> int:
                 q.task_done(); return
             key, body = item
             try:
-                _retry(lambda: s3.put_object(Bucket=BUCKET, Key=key, Body=body,
-                                             ContentType="text/csv"), "PUT")
+                if not _derive._put_with_retry(store, key, body):
+                    raise RuntimeError(f"gave up after {_derive.PUT_TRIES} tries")
                 with lock:
                     counts["put"] += 1
                     if counts["put"] % 25_000 == 0:

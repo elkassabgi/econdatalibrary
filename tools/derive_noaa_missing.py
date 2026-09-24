@@ -44,7 +44,7 @@ sys.path.insert(0, ROOT)
 import duckdb                                                   # noqa: E402
 import pyarrow.parquet as pq                                    # noqa: E402
 
-from core import r2_util                                        # noqa: E402
+from updater import blob as _blob, derive as _derive           # noqa: E402
 
 SOURCE = "noaa"
 BUCKET = "econ-data"
@@ -97,17 +97,15 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=16)
     a = ap.parse_args()
 
-    s3 = r2_util.client(write=True) if a.apply else r2_util.client()
+    # plan step 1: the CSV store - R2 before T0, the self-hosted blob store after it
+    store = _blob.csv_store(BUCKET)
 
     keys = store_keys()
     print(f"store series (sidecars): {len(keys):,}")
 
     def absent(k):
-        try:
-            s3.head_object(Bucket=BUCKET, Key=_r2_key(k))
-            return False
-        except Exception:                                        # noqa: BLE001
-            return True
+        # an error other than not-found now raises instead of reading as "absent" (which re-wrote the object)
+        return not store.exists(_r2_key(k))
 
     todo = sorted(keys - catalogued())
     print(f"uncatalogued: {len(todo):,}  — checking which of those also lack a CSV")
@@ -151,8 +149,8 @@ def main() -> int:
         for k, rr in grouped.items():
             body = _csv_bytes(k, rr)
             if a.apply:
-                s3.put_object(Bucket=BUCKET, Key=_r2_key(k), Body=body,
-                              ContentType="text/csv")
+                if not _derive._put_with_retry(store, _r2_key(k), body):
+                    raise SystemExit(f"{_r2_key(k)}: gave up after {_derive.PUT_TRIES} tries")
             written += 1
         print(f"  {shard:<24} {len(grouped):>5} series {'written' if a.apply else 'ready'}",
               flush=True)
