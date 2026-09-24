@@ -34,7 +34,6 @@ import csv
 import glob
 import io
 import os
-import sqlite3
 import sys
 import urllib.parse
 
@@ -50,7 +49,6 @@ SOURCE = "noaa"
 BUCKET = "econ-data"
 HEADER = ["series_id", "obs_date", "value"]
 STORE = os.path.join(ROOT, "data", "clean_full", SOURCE)
-CAT = os.path.join(ROOT, "data", "catalog.db")
 
 
 def _csv_bytes(short_id: str, rows) -> bytes:
@@ -76,7 +74,8 @@ def store_keys() -> set[str]:
 
 
 def catalogued() -> set[str]:
-    con = sqlite3.connect(f"file:{CAT}?mode=ro", uri=True, timeout=300)
+    from core import catalog_path                                     # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect(timeout=300)
     try:
         return {r[0][len(SOURCE) + 1:] for r in
                 con.execute("SELECT series_id FROM series WHERE source_id=?", (SOURCE,))}

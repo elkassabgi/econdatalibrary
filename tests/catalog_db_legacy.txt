@@ -29,11 +29,9 @@ tools/_cat_nonplastic.py
 tools/_cat_tradefoodcatbyproc.py
 tools/_cat_tradefoodprocbycat.py
 tools/_cat_tradeservcatbypartner.py
-tools/_derive_bea_bulk.py
 tools/apply_license_class.py
 tools/apply_series_names.py
 tools/audit_catalogue_impossible_dates.py
-tools/audit_csv_staleness.py
 tools/audit_d1_source_counts.py
 tools/audit_r2_vs_catalog.py
 tools/audit_schedule_coverage.py
@@ -67,7 +65,6 @@ tools/catalog_worldbank_esg_gaps.py
 tools/cost/idb_baseline.py
 tools/delist_timeless_tables.py
 tools/derive_csv_bulk.py
-tools/derive_noaa_missing.py
 tools/derive_unsdg_flows.py
 tools/enrich_sec_edgar_tickers.py
 tools/flowgrain_insee_melodi.py

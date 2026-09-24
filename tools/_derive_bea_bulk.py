@@ -31,7 +31,6 @@ import datetime as dt
 import os
 import queue
 import random
-import sqlite3
 import sys
 import threading
 
@@ -127,7 +126,8 @@ def main() -> int:
         return 1
 
     # ---- only-catalogued (must be EXACT for bea: cataloguer proved ids == keys) -
-    con = sqlite3.connect(f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True)
+    from core import catalog_path                                     # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect()
     con.execute("PRAGMA busy_timeout = 180000")
     catalogued = {r[0] for r in con.execute(
         "select series_id from series where source_id=?", (SRC,))}
