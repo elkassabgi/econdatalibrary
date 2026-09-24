@@ -44,6 +44,27 @@ export function isForward(env: { FORWARD?: string }): boolean {
   return env.FORWARD === "on";
 }
 
+/** Where the edge keeps its OWN state (page views, the cost-guard status): the users db once EDGE_STATE
+ *  is "users" - set at plan step 5, before T0, so the step-6a freeze proof sees no write from the edge -
+ *  or once FORWARD is on. A rollback that turns FORWARD off must keep EDGE_STATE = "users". */
+export function edgeStateInUsers(env: { FORWARD?: string; EDGE_STATE?: string }): boolean {
+  return isForward(env) || env.EDGE_STATE === "users";
+}
+
+/** /v1/edge-status: what the off-machine check (tools/selfhost/watch_edge.py) compares with the committed
+ *  wrangler.toml. Public and harmless: two booleans, two raw config values and a public commit id. It
+ *  touches no storage, so it can never become a cost path, and never names the origin's address. */
+export function edgeStatus(env: EdgeEnv & { EDGE_STATE?: string; GIT_COMMIT?: string }): Response {
+  return new Response(JSON.stringify({
+    commit: env.GIT_COMMIT || null,
+    forward: isForward(env),
+    edge_state: edgeStateInUsers(env) ? "users" : "econ",
+    forward_raw: env.FORWARD ?? "",
+    edge_state_raw: env.EDGE_STATE ?? "",
+    origin_configured: Boolean(env.ORIGIN_URL && env.ORIGIN_SECRET),
+  }), { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+}
+
 /** Routes the origin answers. Everything else gets the edge's own 404 and is never forwarded. */
 const FORWARDED_PATHS: ReadonlySet<string> = new Set([
   "/", "/v1", "/v1/", "/v1/catalog", "/v1/sources", "/v1/last-updates", "/v1/stats", "/v1/bundle",
@@ -115,11 +136,16 @@ export function originRequest(request: Request, env: EdgeEnv): Request | null {
  *  carries the origin's mark and is not a 3xx; otherwise a JSON 502/504 that is never cached or logged. */
 export async function fetchOrigin(req: Request, env: EdgeEnv): Promise<Response> {
   const ms = Number(env.ORIGIN_TIMEOUT_MS) > 0 ? Number(env.ORIGIN_TIMEOUT_MS) : 30000;
+  // On timeout the pending fetch is ABORTED, so a late answer is never read or left open (R1175). The
+  // timer is cleared once the headers arrive, so a long download's body is never cut by it.
+  const ctl = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const timeout = new Promise<"timeout">((ok) => { timer = setTimeout(() => ok("timeout"), ms); });
+  const timeout = new Promise<"timeout">((ok) => {
+    timer = setTimeout(() => { ctl.abort(); ok("timeout"); }, ms);
+  });
   let resp: Response | "timeout";
   try {
-    resp = await Promise.race([fetch(req, { redirect: "manual" }), timeout]);
+    resp = await Promise.race([fetch(req, { redirect: "manual", signal: ctl.signal }), timeout]);
   } catch {
     return gatewayError(502, "origin_unreachable", "the data origin did not answer");
   } finally {

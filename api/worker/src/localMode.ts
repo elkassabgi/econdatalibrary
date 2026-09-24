@@ -26,7 +26,8 @@ export const COUNT_HEADER = "x-econ-count";
 export const ORIGIN_MARK_HEADER = "x-econ-origin";
 
 /** Routes the origin never answers: the edge owns them (they read or write USERS). */
-export const EDGE_ONLY_PATHS: ReadonlySet<string> = new Set(["/v1/pv", "/v1/pv/report", "/v1/public-stats"]);
+export const EDGE_ONLY_PATHS: ReadonlySet<string> = new Set(["/v1/pv", "/v1/pv/report", "/v1/public-stats",
+  "/v1/edge-status"]);
 
 export function isLocal(env: { LOCAL?: string }): boolean {
   return env.LOCAL === "1";

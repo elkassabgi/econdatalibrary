@@ -94,9 +94,11 @@ test("origin: the gate, the skipped auth, the edge-only routes, no-store, and th
     assert.equal(r.status, 403);
     await r.arrayBuffer();
   }
-  const pv = await w.fetch("/v1/pv?p=/", secret);
-  assert.equal(pv.status, 404, "edge-only route");
-  await pv.arrayBuffer();
+  for (const p of ["/v1/pv?p=/", "/v1/edge-status"]) {
+    const r = await w.fetch(p, secret);
+    assert.equal(r.status, 404, `edge-only route ${p}`);
+    await r.arrayBuffer();
+  }
 
   const index = await w.fetch("/", secret);
   assert.equal(index.status, 200);

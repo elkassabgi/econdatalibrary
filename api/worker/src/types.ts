@@ -66,6 +66,11 @@ export interface Env {
   ORIGIN_ACCESS_ID?: string;
   ORIGIN_ACCESS_SECRET?: string;
   ORIGIN_TIMEOUT_MS?: string;        // how long the edge waits for the origin's response headers (default 30000)
+  // EDGE_STATE = "users" moves the edge's own state (page views, cost-guard status) to USERS before T0
+  // (plan step 5); GIT_COMMIT is set by tools/selfhost/deploy_edge.sh and answered on /v1/edge-status.
+  EDGE_STATE?: string;
+  GIT_COMMIT?: string;
+  SOURCE_NAMES_MAX_AGE_S?: string;   // how long /v1/public-stats trusts its kept source names (default 3600)
 }
 
 // --- D1 row shapes (one per SELECT column list in sql.ts) ------------------

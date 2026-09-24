@@ -62,7 +62,10 @@ test("no client path can move the request off ORIGIN_URL's host", () => {
   for (const p of ["//evil.example/v1/sources", "/\\evil.example/v1/sources", "//evil.example:8443/x",
                    "/%2F%2Fevil.example/x", "/v1/series/..%2F..%2F@evil.example.csv"]) {
     const r = edge.originRequest(new Request("https://edge.example" + p), CONFIGURED);
-    if (r) assert.equal(new URL(r.url).origin, "https://o.example", p);
+    // NOT `if (r)`: that passed vacuously on null (R1175). The path is SET on ORIGIN_URL, so the request
+    // exists and stays on the origin's host; the origin check behind it is a second, separate layer.
+    assert.ok(r, p);
+    assert.equal(new URL(r.url).origin, "https://o.example", p);
   }
 });
 
@@ -157,6 +160,7 @@ async function collector() {
 async function standInOrigin(collectorHost: string) {
   const seen: Seen[] = [];
   let sourcesDown = false;
+  let slowAborted = 0;
   const mark = { "x-econ-origin": "1", "cache-control": "private, no-store" };
   const server = createServer((req, res) => {
     const url = req.url ?? "";
@@ -169,7 +173,12 @@ async function standInOrigin(collectorHost: string) {
     if (mode === "unmarked") {                                    // a tunnel error page, an Access login page
       res.writeHead(200, { "content-type": "text/html" }); res.end("<html>login</html>"); return;
     }
-    if (mode === "slow") { setTimeout(() => { res.writeHead(200, mark); res.end("{}"); }, 8000); return; }
+    if (mode === "slow") {
+      let answered = false;
+      res.on("close", () => { if (!answered) slowAborted++; });   // the edge gave up and closed it
+      setTimeout(() => { if (!res.destroyed) { answered = true; res.writeHead(200, mark); res.end("{}"); } }, 8000);
+      return;
+    }
     if (u.pathname === "/v1/series/zz%3Alen.csv") {
       res.writeHead(200, { ...mark, "content-type": "text/csv", "content-length": String(Buffer.byteLength(CSV)) });
       res.end(CSV); return;
@@ -187,7 +196,8 @@ async function standInOrigin(collectorHost: string) {
     res.writeHead(200, { ...mark, "content-type": "application/json" });
     res.end(JSON.stringify({ total: 1, sources: [{ source: "zz", name: "ZZ" }] }));
   });
-  return { server, seen, host: await listen(server), setSourcesDown: (v: boolean) => { sourcesDown = v; } };
+  return { server, seen, host: await listen(server), setSourcesDown: (v: boolean) => { sourcesDown = v; },
+           slowAborted: () => slowAborted };
 }
 
 function raw(w: Dev, path: string): Promise<number> {
@@ -217,10 +227,23 @@ async function eventually<T>(read: () => Promise<T>, done: (v: T) => boolean): P
   return v;
 }
 
-test("the edge-only config really has no econ D1 / R2 (planted positive)", { timeout: 120_000 }, async (t) => {
-  const w = await start(edgeOnlyConfig(), { FORWARD: "" }, await seeded());
-  t.after(() => w.stop());
-  assert.equal((await get(w, "/v1/sources")).status, 500, "FORWARD unset needs econ D1, and it is gone");
+test("the edge-only config really has no econ D1 (planted positive that can fail)", { timeout: 180_000 }, async () => {
+  // With FORWARD and EDGE_STATE unset the beacon and its report use econ D1's `pageview` table, which
+  // seeded() creates. So the FULL config answers 200 / counted, and a config WITHOUT the binding must
+  // answer 500 / failed. If edgeOnlyConfig() ever kept the binding, the second half would pass as 200
+  // and this test would fail (R1175: the old planted positive got 500 from both configs).
+  const off = { FORWARD: "", EDGE_STATE: "", ORIGIN_URL: "", ORIGIN_SECRET: "" };
+  const outcome = async (config: string) => {
+    const w = await start(config, off, await seeded());
+    try {
+      const pv = await get(w, "/v1/pv?p=%2Fabout");
+      return { report: (await get(w, "/v1/pv/report?days=3")).status, pv: pv.headers.get("x-econ-pv") };
+    } finally {
+      await w.stop();
+    }
+  };
+  assert.deepEqual(await outcome(EDGE_CONFIG), { report: 200, pv: "counted" }, "control: the full config has econ D1");
+  assert.deepEqual(await outcome(edgeOnlyConfig()), { report: 500, pv: "failed" }, "the edge-only config does not");
 });
 
 test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-in origin",
@@ -230,7 +253,7 @@ test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-
   t.after(() => { origin.server.close(); evil.server.close(); });
   const persist = await seeded();
   const w = await start(edgeOnlyConfig(), {
-    FORWARD: "on", ORIGIN_URL: `http://${origin.host}`, ORIGIN_SECRET: "edge-test-secret", ORIGIN_TIMEOUT_MS: "1000",
+    FORWARD: "on", ORIGIN_URL: `http://${origin.host}`, ORIGIN_SECRET: "edge-test-secret", ORIGIN_TIMEOUT_MS: "1000", SOURCE_NAMES_MAX_AGE_S: "0",
   }, persist);
   t.after(() => w.stop());
   const calls = () => origin.seen.length;
@@ -309,6 +332,8 @@ test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-
     const t0 = Date.now();
     assert.equal((await get(w, "/v1/last-updates?mode=slow")).status, 504);
     assert.ok(Date.now() - t0 < 6000, "answered well before the origin would have (8 s)");
+    const aborted = await eventually(async () => origin.slowAborted(), (n) => n >= 1);
+    assert.equal(aborted, 1, "the pending request to the origin was aborted, not left open (R1175)");
   });
 
   await t.test("public answers are cached without api_key in the key; bundle never", async () => {
@@ -324,11 +349,23 @@ test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-
   });
 
   await t.test("public-stats, the beacon and its report work with no econ D1", async () => {
+    // SOURCE_NAMES_MAX_AGE_S = 0 (vars above): the origin is asked every time, so the second call REALLY
+    // falls back to the kept copy (R1175 item 4). Downloads of zz:* were logged by the subtests above.
+    const topNames = (text: string) =>
+      (JSON.parse(text).top_sources as { source_id: string; name: string }[]).map((s) => [s.source_id, s.name]);
+    const up = await get(w, "/v1/public-stats");
+    assert.equal(up.status, 200, up.text.slice(0, 200));
+    assert.deepEqual(topNames(up.text), [["zz", "ZZ"]], "names from the origin");
     origin.setSourcesDown(true);
-    const r = await get(w, "/v1/public-stats");
-    assert.equal(r.status, 200, r.text.slice(0, 200));
+    const before = calls();
+    const down = await get(w, "/v1/public-stats");
+    assert.equal(down.status, 200, down.text.slice(0, 200));
+    assert.ok(calls() > before, "the origin was asked (and failed), so this is the fallback, not a cache hit");
+    assert.deepEqual(topNames(down.text), [["zz", "ZZ"]], "names from the kept copy while the origin is down");
     origin.setSourcesDown(false);
-    assert.equal((await get(w, "/v1/pv?p=%2Fabout")).status, 200);
+    const pv = await get(w, "/v1/pv?p=%2Fabout");
+    assert.equal(pv.status, 200);
+    assert.equal(pv.headers.get("x-econ-pv"), "counted", "counted with no econ D1 binding at all (R1175)");
     const rep = await get(w, "/v1/pv/report?days=3");
     assert.equal(rep.status, 200, rep.text.slice(0, 200));
     assert.deepEqual(JSON.parse(rep.text).by_path.map((x: { path: string; hits: number }) => [x.path, x.hits]),
@@ -342,6 +379,7 @@ test("FORWARD on, cold, origin unreachable: public-stats still answers", { timeo
   t.after(() => w.stop());
   const r = await get(w, "/v1/public-stats");
   assert.equal(r.status, 200, r.text.slice(0, 200));
+  assert.deepEqual(JSON.parse(r.text).top_sources, [], "no kept names: no top-sources list, never a 500");
   assert.equal((await get(w, "/v1/sources")).status, 502, "and a data route says the origin is unreachable");
 });
 
@@ -362,26 +400,54 @@ test("FORWARD on without an origin configured answers 503 and forwards nothing",
 });
 
 // ---- the edge's own writes: users db with FORWARD on, econ D1 / R2 unchanged without ------------------
-for (const forward of [true, false]) {
-  test(`page views and the cost-guard status: FORWARD ${forward ? "on -> users db only" : "unset -> econ D1 / R2 only"}`,
-       { timeout: 300_000 }, async (t) => {
+const MODES = [
+  { name: "FORWARD on -> users db only", forward: true,
+    vars: { FORWARD: "on", EDGE_STATE: "", ORIGIN_URL: "http://127.0.0.1:9", ORIGIN_SECRET: "s", GIT_COMMIT: "c0ffee" },
+    status: { commit: "c0ffee", forward: true, edge_state: "users", forward_raw: "on", edge_state_raw: "", origin_configured: true } },
+  { name: "EDGE_STATE users, FORWARD off (plan step 5) -> users db only", forward: true,
+    vars: { FORWARD: "", EDGE_STATE: "users", ORIGIN_URL: "", ORIGIN_SECRET: "" },
+    status: { commit: null, forward: false, edge_state: "users", forward_raw: "", edge_state_raw: "users", origin_configured: false } },
+  { name: "neither -> econ D1 / R2 only (as before)", forward: false,
+    vars: { FORWARD: "", EDGE_STATE: "", ORIGIN_URL: "", ORIGIN_SECRET: "" },
+    status: { commit: null, forward: false, edge_state: "econ", forward_raw: "", edge_state_raw: "", origin_configured: false } },
+];
+
+for (const mode of MODES) {
+  const forward = mode.forward;                                   // "the edge's own state is in USERS"
+  test(`page views, the cost-guard status and /v1/edge-status: ${mode.name}`, { timeout: 300_000 }, async (t) => {
     const persist = await seeded();
     // the FULL config here, on purpose: econ D1 and R2 exist, so "nowhere else" is measured, not assumed
-    const w = await start(EDGE_CONFIG, forward ? { FORWARD: "on", ORIGIN_URL: "http://127.0.0.1:9", ORIGIN_SECRET: "s" }
-                                               : { FORWARD: "" }, persist, true);
+    const w = await start(EDGE_CONFIG, mode.vars, persist, true);
     t.after(() => w.stop());
 
-    for (const p of ["/about", "/about", "/not-a-tracked-path"]) assert.equal((await get(w, `/v1/pv?p=${encodeURIComponent(p)}`)).status, 200);
-    const rep = await get(w, "/v1/pv/report?days=3");
+    const st = await get(w, "/v1/edge-status");
+    assert.equal(st.status, 200);
+    assert.equal(st.headers.get("cache-control"), "no-store");
+    assert.deepEqual(JSON.parse(st.text), mode.status);
+
+    for (const [p, want] of [["/about", "counted"], ["/about", "counted"], ["/not-a-tracked-path", "ignored"]]) {
+      const r = await get(w, `/v1/pv?p=${encodeURIComponent(p)}`);
+      assert.equal(r.status, 200);
+      assert.equal(r.headers.get("x-econ-pv"), want, p);
+    }
+    const rep = await get(w, "/v1/pv/report?days=3&junk=1");
     assert.equal(rep.status, 200);
     assert.deepEqual(JSON.parse(rep.text).by_path.map((x: { path: string; hits: number }) => [x.path, x.hits]),
                      [["/about", 2]], "the report reads the same db");
+    // cached 5 min, keyed only on days: a new hit and a different junk parameter still read the cached copy
+    assert.equal((await get(w, "/v1/pv?p=%2Fabout")).status, 200);
+    const again = await get(w, "/v1/pv/report?days=3&junk=2");
+    assert.deepEqual(JSON.parse(again.text).by_path.map((x: { path: string; hits: number }) => [x.path, x.hits]),
+                     [["/about", 2]], "served from the edge cache (the key ignores other parameters)");
+    const odd = await get(w, "/v1/pv/report?days=abc");
+    assert.equal(odd.status, 200, "days=abc is the default window, not a 500");
+    assert.equal(JSON.parse(odd.text).window_days, 90);
     await get(w, "/__scheduled?cron=*/30+*+*+*+*");               // no analytics token: a BLIND record, then throw
 
     await withBindings(EDGE_CONFIG, persist, async (env) => {
       const users = await all(env.USERS, "SELECT path, hits FROM econ_pageview ORDER BY path");
       const econ = await all(env.CATALOG, "SELECT path, hits FROM pageview ORDER BY path");
-      assert.deepEqual(forward ? users : econ, [{ path: "/about", hits: 2 }], "counted in the right db");
+      assert.deepEqual(forward ? users : econ, [{ path: "/about", hits: 3 }], "counted in the right db (3: the report above was the cached one)");
       assert.deepEqual(forward ? econ : users, [], "and nothing in the other");
       const status = await all(env.USERS, "SELECT key, body FROM econ_ops_status");
       const r2 = await env.SERIES_BUCKET.get("_aqueduct/cost_status.json");
@@ -405,7 +471,12 @@ test("FORWARD on before the migration: the tables heal themselves, same columns 
   const w = await start(edgeOnlyConfig(), { FORWARD: "on", ORIGIN_URL: "http://127.0.0.1:9", ORIGIN_SECRET: "s" },
                         persist, true);
   t.after(() => w.stop());
-  assert.equal((await get(w, "/v1/pv/report?days=3")).status, 200, "the report does not 500 on a missing table");
+  const rep = await get(w, "/v1/pv/report?days=3");
+  assert.equal(rep.status, 200, "the report does not 500 on a missing table");
+  assert.deepEqual(JSON.parse(rep.text).by_path, []);
+  const created = await withBindings(EDGE_CONFIG, persist, (env) =>
+    all(env.USERS, "SELECT name FROM sqlite_master WHERE name = 'econ_pageview'"));
+  assert.deepEqual(created, [], "an unauthenticated GET of the report never creates a table (R1174 B7)");
   await get(w, "/v1/pv?p=%2Fabout");
   await get(w, "/__scheduled?cron=*/30+*+*+*+*");
   const healed = await withBindings(EDGE_CONFIG, persist, async (env) => ({
@@ -429,14 +500,16 @@ test("the one-time page-view merge in the migration header is safe to run twice"
       CREATE TABLE econ_pageview_import (path TEXT NOT NULL, day TEXT NOT NULL, hits INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (path, day));
       INSERT INTO econ_pageview_import VALUES ('/about', '2026-09-01', 5), ('/', '2026-09-02', 3);
       INSERT INTO econ_pageview VALUES ('/about', '2026-09-01', 2)`);
-    const merge = () => env.USERS.batch([
-      env.USERS.prepare(
-        "INSERT INTO econ_pageview (path, day, hits) SELECT path, day, hits FROM econ_pageview_import " +
-        "WHERE NOT EXISTS (SELECT 1 FROM econ_ops_status WHERE key = 'pageview_import_merged') " +
-        "ON CONFLICT(path, day) DO UPDATE SET hits = hits + excluded.hits"),
-      env.USERS.prepare("INSERT INTO econ_ops_status (key, body, updated_at) " +
-                        "VALUES ('pageview_import_merged', '{}', datetime('now'))"),
-    ]);
+    // The statements are taken FROM THE MIGRATION HEADER'S step 2, so the recipe Ahmed runs and the test
+    // cannot drift apart (R1175 item 10).
+    const lines = MIGRATION.split(/\r?\n/);
+    const from = lines.findIndex((l) => /^--\s+2\. /.test(l));
+    const to = lines.findIndex((l) => /^--\s+3\. /.test(l));
+    assert.ok(from > 0 && to > from, "the migration header still has its numbered merge recipe");
+    const recipe = lines.slice(from + 1, to).map((l) => l.replace(/^--/, "").replace(/\s--\s.*$/, "")).join(" ");
+    const stmts = recipe.split(";").map((s) => s.trim()).filter(Boolean);
+    assert.equal(stmts.length, 2, recipe);
+    const merge = () => env.USERS.batch(stmts.map((s) => env.USERS.prepare(s)));
     await merge();
     await assert.rejects(merge(), "a second run is refused");
     assert.deepEqual(await all(env.USERS, "SELECT path, day, hits FROM econ_pageview ORDER BY path"),

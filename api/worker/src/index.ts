@@ -17,7 +17,7 @@
 
 import type { Env } from "./types";
 import { runCostGuard, type CostGuardEnv } from "./costGuard";
-import { handlePageview, handlePageviewReport } from "./pageview";
+import { handlePageview, handlePageviewReport, reportDays } from "./pageview";
 import { handleCatalog } from "./catalog";
 import { handleSources } from "./sources";
 import { handleLastUpdates } from "./lastUpdates";
@@ -30,7 +30,7 @@ import { handlePublicStats } from "./publicStats";
 import { json, reqLang } from "./util";
 import { isLocal, originGate, finalizeLocal, isDownloadPath } from "./localMode";
 import { LocalBucket } from "./localBucket";
-import { isForward, isForwardable, cacheSeconds, cacheKey, originRequest, fetchOrigin, countingBody,
+import { edgeStatus, isForward, isForwardable, cacheSeconds, cacheKey, originRequest, fetchOrigin, countingBody,
   clientResponse, notConfigured, refusedPath } from "./edge";
 
 const CORS_PREFLIGHT: Record<string, string> = {
@@ -58,7 +58,7 @@ export default {
     const local = isLocal(env);
     if (local) {
       const refused = await originGate(request, env);
-      if (refused) return refused;
+      if (refused) return finalizeLocal(refused);         // marked too: a wrong secret is an honest 403 at the edge
       if (!env.BLOB_SIDECAR_URL) {
         return finalizeLocal(json({ error: "origin_not_configured",
           detail: "BLOB_SIDECAR_URL is unset, so this origin has no store to serve from" }, 503));
@@ -89,7 +89,10 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
       // fired by a static site with no credentials — which is why the write surface
       // is an allowlist of known paths and the row holds no personal data at all.
       if (path === "/v1/pv") return await handlePageview(url, env);
-      if (path === "/v1/pv/report") return await handlePageviewReport(url, env);
+      // Cached 5 minutes, keyed ONLY on its clamped window (R1174 B7: any other parameter used to bypass the
+      // cache and reach the users db). The origin never answers it (edge-only, src/localMode.ts).
+      if (path === "/v1/pv/report") return await cachedPageviewReport(url, env, ctx);
+      if (path === "/v1/edge-status") return edgeStatus(env);
 
       // THE FORWARDING EDGE (src/edge.ts, plan code change 1): every other route is answered by the
       // workstation's origin; public-stats stays here (it reads USERS) with its source names taken from
@@ -408,26 +411,50 @@ async function forwardRoute(request: Request, env: Env, ctx: ExecutionContext, p
 }
 
 /** Source names for /v1/public-stats from the origin's /v1/sources, so the route needs no econ D1 once
- *  the catalogue lives on the workstation. Each good answer is also kept for 30 days under an edge-only
- *  key; when the origin is down the last good names are used, and with none at all the route still
- *  answers - with no top-sources list (the whitelist then admits nothing), never a 500 (R1169 M4). */
+ *  the catalogue lives on the workstation. The names are KEPT at the edge (30 days, with their own time)
+ *  and re-read from the origin when the kept copy is older than SOURCE_NAMES_MAX_AGE_S (default 1 h) -
+ *  straight from the origin, not through the 5-minute route cache, so a failure really reaches the
+ *  fallback (R1175: the cache answered instead and the fallback was never exercised). When the origin
+ *  fails, the kept copy is used whatever its age; with none at all the route still answers, with no
+ *  top-sources list (the whitelist then admits nothing), never a 500 (R1169 M4). The Cache API is per
+ *  data centre, so a data centre that never kept a copy has none. */
 async function originSourceNames(request: Request, env: Env, ctx: ExecutionContext): Promise<Record<string, string>> {
   const u = new URL(request.url);
-  const staleKey = new Request(new URL("/__edge/source-names", u).toString(), { method: "GET" });
+  const keptKey = new Request(new URL("/__edge/source-names", u).toString(), { method: "GET" });
+  const keptResp = await caches.default.match(keptKey);
+  const kept = keptResp ? await keptResp.json() as { at: number; names: Record<string, string> } : null;
+  const maxAge = Number(env.SOURCE_NAMES_MAX_AGE_S ?? 3600);
+  if (kept && Date.now() - kept.at < (Number.isFinite(maxAge) ? maxAge : 3600) * 1000) return kept.names;
   try {
-    const resp = await forwardRoute(new Request(new URL("/v1/sources", u).toString(), { method: "GET" }),
-                                    env, ctx, "/v1/sources");
-    if (resp.status !== 200) throw new Error(`origin /v1/sources answered ${resp.status}`);
+    const oreq = originRequest(new Request(new URL("/v1/sources", u).toString(), { method: "GET" }), env);
+    if (!oreq) throw new Error("origin not configured");
+    const resp = await fetchOrigin(oreq, env);
+    if (resp.status !== 200) {
+      await resp.body?.cancel().catch(() => undefined);
+      throw new Error(`origin /v1/sources answered ${resp.status}`);
+    }
     const body = await resp.json() as { sources?: { source?: string; name?: string | null }[] };
-    const out: Record<string, string> = {};
-    for (const s of body.sources ?? []) if (s.source) out[s.source] = s.name || s.source;
-    ctx.waitUntil(caches.default.put(staleKey, new Response(JSON.stringify(out), {
+    const names: Record<string, string> = {};
+    for (const s of body.sources ?? []) if (s.source) names[s.source] = s.name || s.source;
+    ctx.waitUntil(caches.default.put(keptKey, new Response(JSON.stringify({ at: Date.now(), names }), {
       headers: { "content-type": "application/json", "cache-control": "public, s-maxage=2592000" },
     })));
-    return out;
+    return names;
   } catch (e) {
-    console.log("public-stats: origin source names unavailable, using the last good copy:", String(e));
-    const stale = await caches.default.match(staleKey);
-    return stale ? await stale.json() as Record<string, string> : {};
+    console.log("public-stats: origin source names unavailable, using the kept copy:", String(e));
+    return kept ? kept.names : {};
   }
+}
+
+/** /v1/pv/report through the edge cache for 5 minutes. The key keeps only the clamped `days`. */
+async function cachedPageviewReport(url: URL, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const key = new Request(`${url.origin}/v1/pv/report?days=${reportDays(url)}`, { method: "GET" });
+  const hit = await caches.default.match(key);
+  if (hit) return hit;
+  const fresh = await handlePageviewReport(url, env);
+  if (fresh.status !== 200) return fresh;
+  const out = new Response(fresh.body, fresh);
+  out.headers.set("cache-control", "public, max-age=300, s-maxage=300");
+  ctx.waitUntil(caches.default.put(key, out.clone()));
+  return out;
 }

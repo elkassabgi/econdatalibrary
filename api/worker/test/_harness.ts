@@ -61,12 +61,14 @@ export async function all(db: Bindings[string], sql: string): Promise<Record<str
  *  edge as it must work after T0. Any code path that still touches them throws (the binding is undefined)
  *  instead of quietly reading an empty local simulation. `main` is made absolute because the file is
  *  written outside the worker folder. */
+const ECON_BINDING = /^\s*binding\s*=\s*["'](CATALOG|CATALOG_CLIMATE|SERIES_BUCKET)["']\s*(#.*)?$/;
+const ANY_ECON_NAME = /["'](CATALOG|CATALOG_CLIMATE|SERIES_BUCKET)["']/;
+
 export function edgeOnlyConfig(): string {
-  const dropped = new Set(['binding = "CATALOG"', 'binding = "CATALOG_CLIMATE"', 'binding = "SERIES_BUCKET"']);
   const out: string[] = [];
   let block: string[] = [];
   const flush = () => {
-    if (!block.some((l) => dropped.has(l.trim()))) out.push(...block);
+    if (!block.some((l) => ECON_BINDING.test(l))) out.push(...block);
     block = [];
   };
   for (const line of readFileSync(EDGE_CONFIG, "utf8").split(/\r?\n/)) {
@@ -75,8 +77,11 @@ export function edgeOnlyConfig(): string {
   }
   flush();
   const text = out.join("\n");
-  for (const d of dropped) if (text.includes(d)) throw new Error(`edgeOnlyConfig kept ${d}`);
-  if (!text.includes('binding = "USERS"')) throw new Error("edgeOnlyConfig dropped USERS");
+  // Any econ binding name left ANYWHERE (an inline table, another spelling) is a refusal, not a pass; the
+  // planted positive in edge.test.ts then proves the worker really lacks them.
+  const left = text.split("\n").filter((l) => !l.trim().startsWith("#") && ANY_ECON_NAME.test(l));
+  if (left.length) throw new Error(`edgeOnlyConfig kept an econ binding: ${left.join(" | ")}`);
+  if (!/^\s*binding\s*=\s*["']USERS["']/m.test(text)) throw new Error("edgeOnlyConfig dropped USERS");
   const file = join(newPersist("econ-edgecfg-"), "wrangler.edge-only.toml");
   writeFileSync(file, text);
   return file;

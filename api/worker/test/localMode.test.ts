@@ -45,7 +45,7 @@ test("a missing or wrong secret header is refused; the right one passes (control
 
 test("the edge-only routes are never answered by the origin, even with the right secret", async () => {
   const env = { ORIGIN_SECRET: "k" };
-  assert.deepEqual([...EDGE_ONLY_PATHS].sort(), ["/v1/public-stats", "/v1/pv", "/v1/pv/report"]);
+  assert.deepEqual([...EDGE_ONLY_PATHS].sort(), ["/v1/edge-status", "/v1/public-stats", "/v1/pv", "/v1/pv/report"]);
   for (const p of EDGE_ONLY_PATHS) {
     const r = await originGate(req(`http://127.0.0.1:8799${p}`, "k"), env);
     assert.equal(r?.status, 404, p);

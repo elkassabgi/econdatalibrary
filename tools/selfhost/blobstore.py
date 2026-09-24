@@ -101,6 +101,7 @@ class BlobStore:
         path = self._path(sha)
         with self._wlock:
             self._w.execute("BEGIN IMMEDIATE")           # held from the file write to the index row
+            self._w.execute("SAVEPOINT put_start")
             created = False
             try:
                 if not os.path.exists(path):
@@ -125,14 +126,24 @@ class BlobStore:
                     self._w.execute("INSERT INTO retired(sha256, retired_utc) VALUES (?,?)", (old[0], _now()))
                 self._w.execute("COMMIT")
             except BaseException:
-                self._w.execute("ROLLBACK")
-                # A file this put created and no committed row names is an orphan gc would never find
-                # (it has no retired row): remove it (R1171 minor 5). The write lock is still held, so
-                # no other put can have started using it.
-                if created and not self._w.execute("SELECT 1 FROM blobs WHERE sha256=?", (sha,)).fetchone():
+                # A file this put created and no committed row names is an orphan gc would never find (it
+                # has no retired row): remove it (R1171 minor 5). This put's own rows are undone with the
+                # savepoint FIRST, while the write lock is still held, so no other writer - thread or
+                # process - can index the file between the check and the removal (R1175). Only then is
+                # the transaction ended. If the savepoint cannot be rolled back, the file is left alone.
+                try:
+                    self._w.execute("ROLLBACK TO put_start")
+                    if created and not self._w.execute("SELECT 1 FROM blobs WHERE sha256=?", (sha,)).fetchone():
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
+                except sqlite3.Error:
+                    pass
+                finally:
                     try:
-                        os.remove(path)
-                    except OSError:
+                        self._w.execute("ROLLBACK")
+                    except sqlite3.Error:
                         pass
                 raise
         return sha
