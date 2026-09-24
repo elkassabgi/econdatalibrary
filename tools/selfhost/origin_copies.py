@@ -122,7 +122,9 @@ def build(catalogue: str, out_dir: str, lock=None, state_db: str | None = None) 
         dt_rows = None
         if fresh_sql:
             from core import sync_state_d1
-            dt_rows = sync_state_d1.data_through_rows(dst, sync_state_d1._gated_ids())
+            gated = sync_state_d1._gated_ids()
+            dt_rows = (sync_state_d1.data_through_rows(dst, gated)
+                       + sync_state_d1.local_writer_rows(dst, gated))       # D1-only sources: their writer
         for s in SHARD_SOURCES:
             dst.execute("DELETE FROM series WHERE source_id=?", (s,))
         _recount(dst)
@@ -186,6 +188,28 @@ def check(primary: str, climate: str, total: int, freshness: bool = False) -> di
             raise RuntimeError(f"primary: the freshness table(s) {missing} are missing")
         if not have["unit_state"] or not have["source_state"]:
             raise RuntimeError(f"primary: an empty freshness projection {have} - /v1/last-updates would be empty")
+        # EVERY served source with a dated series has a data_through row - checked on the RESULT, not on a
+        # registry of writers (R1195: one dict entry made T0 READY while the copy carried none for sec_edgar)
+        from core import sync_state_d1                                     # noqa: PLC0415
+        gated = sync_state_d1._gated_ids()
+        dated: set[str] = set()
+        for path in (primary, climate):
+            c = _ro(path)
+            try:
+                if "end_date" in {r[1] for r in c.execute("PRAGMA table_info(series)")}:
+                    dated |= {r[0] for r in c.execute(
+                        "SELECT DISTINCT source_id FROM series WHERE end_date IS NOT NULL AND end_date < '2900-01-01'")}
+            finally:
+                c.close()
+        c = _ro(primary)
+        try:
+            stamped = {r[0] for r in c.execute("SELECT source_id FROM source_data_through WHERE data_through IS NOT NULL")}
+        finally:
+            c.close()
+        unstamped = sorted(s for s in dated - stamped if str(s).lower() not in gated)
+        if unstamped:
+            raise RuntimeError(f"primary: no data_through for {unstamped} - /v1/sources would serve null "
+                               "(a D1-only source needs its local writer: sync_state_d1.LOCAL_FRESHNESS_WRITERS)")
         out["freshness"] = have
     for label, path in (("primary", primary), ("climate", climate)):
         con = _ro(path)

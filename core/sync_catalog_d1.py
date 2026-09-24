@@ -326,9 +326,34 @@ def execute_plans(plans) -> None:
     finding 2). If that one fails, re-run the whole command: its first FTS file repeats the range DELETE,
     so the source comes out clean."""
     for db, _, files in plans:
-        for p in files:
+        i, restarted = 0, False
+        while i < len(files):
+            p = files[i]
             safe = reapplicable(p)
-            execute_remote([p], database=db, idempotent=safe, tries=4 if safe else 1)
+            try:
+                execute_remote([p], database=db, idempotent=safe, tries=4 if safe else 1)
+            except SystemExit:
+                if safe:
+                    raise
+                # a bare-INSERT file after the range DELETE failed: the source's search index is PARTLY
+                # rebuilt. Go back ONCE to the file that holds the DELETE (re-deleting, then re-inserting)
+                # - the auth error the retries exist for fails before the server takes a file (R1195)
+                back = next((k for k in range(i - 1, -1, -1) if _has_fts_delete(files[k])), None)
+                if restarted or back is None:
+                    print(f"FATAL: {os.path.basename(p)} failed after the whole-source DELETE: the source's "
+                          "search index is PARTLY rebuilt. Re-run the same command - it starts again with "
+                          "the DELETE and leaves the index whole.", file=sys.stderr, flush=True)
+                    raise
+                print(f"  {os.path.basename(p)} failed after the whole-source DELETE - starting once more "
+                      f"from {os.path.basename(files[back])}", flush=True)
+                restarted, i = True, back
+                continue
+            i += 1
+
+
+def _has_fts_delete(path: str) -> bool:
+    with open(path, encoding="utf-8") as fh:
+        return any(m.group(1) == "DELETE FROM" for m in _FTS_WRITE.finditer(fh.read()))
 
 
 def verify_replay(cols: list[str], rows: list[dict], files: list[str]) -> None:

@@ -111,6 +111,41 @@ def test_a_file_that_does_not_reapply_is_sent_once(tmp_path, monkeypatch):
     assert any(kw["tries"] == 1 for _, _, kw in sent) and any(kw["tries"] == 4 for _, _, kw in sent)
 
 
+def test_a_failed_file_after_the_range_delete_restarts_once_from_the_delete(tmp_path, monkeypatch, capsys):
+    """R1195 finding 1: a bare-INSERT file after the whole-source DELETE ran once and, on failure, left the
+    index partly rebuilt with no word on how to recover. Now it goes back ONCE to the DELETE file."""
+    rows = _rows("idb", 1300)
+    files = _emit(tmp_path, rows, 40_000, monkeypatch, fts_range_source="idb")
+    unsafe = [p for p in files if not sc.reapplicable(p)]
+    delete_file = next(p for p in files if sc._has_fts_delete(p))
+    sent, fail_on = [], {unsafe[0]: 1}
+
+    def execute_remote(fs, database=None, **kw):
+        sent.append(fs[0])
+        if fail_on.get(fs[0]):
+            fail_on[fs[0]] -= 1
+            raise SystemExit("FATAL: wrangler failed")
+    monkeypatch.setattr(sc, "execute_remote", execute_remote)
+    sc.execute_plans([("econ-catalog", rows, files)])
+    first = sent.index(unsafe[0])
+    assert sent[first + 1] == delete_file and sent[-1] == files[-1], "back to the DELETE file, then to the end"
+    # a replay of exactly what was sent leaves one index row per id
+    import sqlite3 as _sq
+    db = _sq.connect(":memory:")
+    db.executescript(SCHEMA)
+    for k, p in enumerate(sent):
+        if k == first:
+            continue                                            # the failed send applied nothing
+        _apply(db, p)
+    assert _fts_rows(db) == (1300, 1300)
+    fail_on = {unsafe[0]: 2}
+    sent.clear()
+    monkeypatch.setattr(sc, "execute_remote", execute_remote)
+    with pytest.raises(SystemExit):
+        sc.execute_plans([("econ-catalog", rows, files)])
+    assert "Re-run the same command" in capsys.readouterr().err
+
+
 def test_main_sends_through_execute_plans():
     src = open(sc.__file__, encoding="utf-8").read()
     body = src[src.index("def main("):]

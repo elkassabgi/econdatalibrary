@@ -146,7 +146,15 @@ def test_a_d1_only_source_without_a_local_writer_is_not_ready(monkeypatch):
     from core import sync_state_d1
     ok, detail = T.d1_only_sources()
     assert ok is False and "sec_edgar" in detail, "the real state today: no local sec_edgar writer yet"
-    monkeypatch.setattr(sync_state_d1, "LOCAL_FRESHNESS_WRITERS", {"sec_edgar": "jobs.sec_edgar_local"})
+    monkeypatch.setattr(sync_state_d1, "LOCAL_FRESHNESS_WRITERS", {"sec_edgar": "no.such.module"})
+    ok, detail = T.d1_only_sources()
+    assert ok is False and "ModuleNotFoundError" in detail, "R1195: a name alone passed"
+    monkeypatch.setattr(sync_state_d1, "LOCAL_FRESHNESS_WRITERS", {"sec_edgar": "json"})
+    assert T.d1_only_sources() == (False, "writers that cannot run: sec_edgar=json (no data_through)")
+    fake = types.ModuleType("fake_sec_writer")
+    fake.data_through = lambda conn: "2026-09-04"
+    monkeypatch.setitem(sys.modules, "fake_sec_writer", fake)
+    monkeypatch.setattr(sync_state_d1, "LOCAL_FRESHNESS_WRITERS", {"sec_edgar": "fake_sec_writer"})
     assert T.d1_only_sources()[0] is True
     monkeypatch.setattr(sync_state_d1, "DATA_THROUGH_FROM_D1", frozenset({"sec_edgar", "other"}))
     ok, detail = T.d1_only_sources()

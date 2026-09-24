@@ -170,10 +170,23 @@ def state_db(path: str | None = None) -> tuple[bool, str]:
 
 
 def d1_only_sources() -> tuple[bool, str]:
+    """Every D1-only source names a local writer that IMPORTS and has data_through(conn). The copy's own
+    check (origin_copies.check: every dated source has a data_through row) is the proof on the result;
+    this refuses early on a name that cannot work (R1195: a placeholder name passed)."""
+    import importlib
     from core import sync_state_d1
     missing = sorted(set(sync_state_d1.DATA_THROUGH_FROM_D1) - set(sync_state_d1.LOCAL_FRESHNESS_WRITERS))
-    return not missing, (("no local freshness writer yet for: " + ", ".join(missing)) if missing
-                         else "every D1-stamped source has a local writer")
+    if missing:
+        return False, "no local freshness writer yet for: " + ", ".join(missing)
+    broken = []
+    for sid, mod in sorted(sync_state_d1.LOCAL_FRESHNESS_WRITERS.items()):
+        try:
+            if not callable(getattr(importlib.import_module(mod), "data_through", None)):
+                broken.append(f"{sid}={mod} (no data_through)")
+        except Exception as e:                                  # noqa: BLE001
+            broken.append(f"{sid}={mod} ({type(e).__name__})")
+    return not broken, ("writers that cannot run: " + ", ".join(broken)) if broken else \
+        "every D1-stamped source has a local writer that imports"
 
 
 def flag() -> tuple[bool, str]:

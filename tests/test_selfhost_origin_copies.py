@@ -194,6 +194,87 @@ def test_the_freshness_check_can_fail(tmp_path):
                  freshness=True)
 
 
+def _with_sec_edgar(path):
+    c = sqlite3.connect(path)
+    c.execute("INSERT INTO source VALUES ('sec_edgar', 'SEC', 'pd')")
+    c.execute("INSERT INTO series VALUES ('sec_edgar:AAPL', 'sec_edgar', 't', 'g', 'pd', '2026-06-30')")
+    c.execute("INSERT INTO series_fts VALUES ('sec_edgar:AAPL', 't', 'g')")
+    c.commit()
+    c.close()
+
+
+def test_a_d1_only_source_without_its_local_writer_fails_the_copy(tmp_path):
+    """R1195: the gate read a dict; the copy then served no data_through for sec_edgar. Now the RESULT is
+    checked: a served source with a dated series and no data_through row fails the build."""
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _dated_catalogue(cat)
+    _with_sec_edgar(cat)
+    _state_db(st, ["ecb", "noaa", "sec_edgar"])
+    with pytest.raises(RuntimeError, match=r"no data_through for \['sec_edgar'\]"):
+        oc.build(str(cat), str(tmp_path / "out"), state_db=str(st))
+
+
+def test_a_registered_local_writer_supplies_the_value(tmp_path, monkeypatch):
+    from core import sync_state_d1
+    (tmp_path / "fake_sec_writer.py").write_text("def data_through(conn):\n    return '2026-09-04'\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(sync_state_d1, "LOCAL_FRESHNESS_WRITERS", {"sec_edgar": "fake_sec_writer"})
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _dated_catalogue(cat)
+    _with_sec_edgar(cat)
+    _state_db(st, ["ecb", "noaa", "sec_edgar"])
+    oc.build(str(cat), str(tmp_path / "out"), state_db=str(st))
+    con = sqlite3.connect(tmp_path / "out" / "primary.sqlite")
+    try:
+        got = dict(con.execute("SELECT source_id, data_through FROM source_data_through").fetchall())
+    finally:
+        con.close()
+    assert got["sec_edgar"] == "2026-09-04", "the writer's value, not a statistic over the copy (R737)"
+
+
+def test_a_writer_name_that_does_not_import_fails_the_build(tmp_path, monkeypatch):
+    from core import sync_state_d1
+    monkeypatch.setattr(sync_state_d1, "LOCAL_FRESHNESS_WRITERS", {"sec_edgar": "no.such.module"})
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _dated_catalogue(cat)
+    _with_sec_edgar(cat)
+    _state_db(st, ["ecb", "noaa", "sec_edgar"])
+    with pytest.raises(ModuleNotFoundError):
+        oc.build(str(cat), str(tmp_path / "out"), state_db=str(st))
+
+
+def test_a_gated_source_gets_no_data_through_and_is_not_demanded(tmp_path, monkeypatch):
+    """R1195 mutant V17: the licence gate dropped from the copy's data_through survived every test."""
+    from core import sync_state_d1
+    monkeypatch.setattr(sync_state_d1, "_gated_ids", lambda: {"ecb"})
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _dated_catalogue(cat)
+    _state_db(st, ["ecb", "noaa"])
+    oc.build(str(cat), str(tmp_path / "out"), state_db=str(st))
+    con = sqlite3.connect(tmp_path / "out" / "primary.sqlite")
+    try:
+        got = {r[0] for r in con.execute("SELECT source_id FROM source_data_through")}
+    finally:
+        con.close()
+    assert "ecb" not in got and "noaa" in got
+
+
+def test_emit_sql_honours_data_through_false_with_a_catalogue_present(tmp_path):
+    """R1195 mutant V26: the tests had no catalogue, so emit_sql skipped data_through anyway; in production
+    that flag alone keeps the 1,833 s GROUP BY out of the writer lock."""
+    from core import sync_state_d1
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _dated_catalogue(cat)
+    _state_db(st, ["ecb"])
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _files, counts = sync_state_d1.emit_sql(str(st), str(tmp_path / "a"), gated=set(), catalogue=str(cat))
+    assert counts.get("source_data_through", 0) >= 1, "positive control: a catalogue IS read by default"
+    _files, counts = sync_state_d1.emit_sql(str(st), str(tmp_path / "b"), gated=set(), catalogue=str(cat),
+                                            data_through=False)
+    assert "source_data_through" not in counts
+
+
 def test_the_check_refuses_an_empty_projection(tmp_path):
     """R1191 mutant N4: check()'s empty-projection branch had no test - the tables present, with no rows."""
     cat = tmp_path / "catalog.db"

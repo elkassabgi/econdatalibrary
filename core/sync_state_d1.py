@@ -176,6 +176,24 @@ def data_through_rows(cconn: sqlite3.Connection, gated: set[str]) -> list[tuple[
             if sid not in DATA_THROUGH_FROM_D1 and str(sid).lower() not in gated]
 
 
+def local_writer_rows(cconn: sqlite3.Connection, gated: set[str]) -> list[tuple[str, str]]:
+    """(source_id, data_through) for the DATA_THROUGH_FROM_D1 sources that have a registered LOCAL writer:
+    the value comes from that writer's own module - `data_through(conn) -> str | None` - never from a
+    statistic over the catalogue (R737). A registered name that does not import, or has no such function,
+    fails here: a name alone must not make a source look covered (R1195). The self-hosted origin uses this;
+    the D1 sync does not (before T0, D1's own stamp is the truth)."""
+    import importlib                                                      # noqa: PLC0415
+    out = []
+    for sid in sorted(DATA_THROUGH_FROM_D1):
+        writer = LOCAL_FRESHNESS_WRITERS.get(sid)
+        if writer is None or str(sid).lower() in gated:
+            continue
+        value = importlib.import_module(writer).data_through(cconn)
+        if value is not None:
+            out.append((sid, value))
+    return out
+
+
 def data_through_stmts(dt_rows: list[tuple[str, str]]) -> list[str]:
     stmts = ["CREATE TABLE IF NOT EXISTS source_data_through (source_id TEXT PRIMARY KEY, data_through TEXT);"]
     for i in range(0, len(dt_rows), ROWS_PER_STMT):
