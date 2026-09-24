@@ -24,8 +24,15 @@
 // serves an unauthenticated API.
 // ---------------------------------------------------------------------------
 
+import { isForward } from "./edge";
+
 export interface CostGuardEnv {
   SERIES_BUCKET: R2Bucket;
+  // Self-hosting (docs/ECON_SELF_HOSTING_PLAN.md): with FORWARD = "on" the econ bucket is on its way
+  // out, so the status record goes to the one-row table econ_ops_status in the shared users db
+  // (migrations/users_selfhost.sql) instead of R2. Unset = R2, exactly as before.
+  FORWARD?: string;
+  USERS: D1Database;
   // A read-only "Account Analytics: Read" token. Same value as CF_ANALYTICS_TOKEN in the
   // repo .env; set with: npx wrangler secret put CF_ANALYTICS_TOKEN
   CF_ANALYTICS_TOKEN?: string;
@@ -44,6 +51,21 @@ export const LIMITS = {
 
 const GQL = "https://api.cloudflare.com/client/v4/graphql";
 const STATUS_KEY = "_aqueduct/cost_status.json";
+
+/** The durable status record: R2 today; with FORWARD = "on", the econ_ops_status row keyed by STATUS_KEY
+ *  in the users db. A failed write throws either way - a record that silently was not written is a
+ *  blind meter. */
+async function writeStatus(env: CostGuardEnv, body: object): Promise<void> {
+  const text = JSON.stringify(body, null, 2);
+  if (isForward(env)) {
+    await env.USERS.prepare(
+      "INSERT INTO econ_ops_status (key, body, updated_at) VALUES (?1, ?2, datetime('now')) " +
+      "ON CONFLICT(key) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+    ).bind(STATUS_KEY, text).run();
+    return;
+  }
+  await env.SERIES_BUCKET.put(STATUS_KEY, text, { httpMetadata: { contentType: "application/json" } });
+}
 
 interface DayTotals { d1Reads: number; d1Writes: number; r2ClassA: number; }
 
@@ -119,8 +141,7 @@ export async function runCostGuard(env: CostGuardEnv): Promise<void> {
   if (!token || !acct) {
     const body = { at, ok: false, blind: true,
                    note: "CF_ANALYTICS_TOKEN / CF_ACCOUNT_ID not bound; nothing was measured" };
-    await env.SERIES_BUCKET.put(STATUS_KEY, JSON.stringify(body, null, 2),
-                                { httpMetadata: { contentType: "application/json" } });
+    await writeStatus(env, body);
     throw new Error("cost guard is BLIND: CF_ANALYTICS_TOKEN / CF_ACCOUNT_ID not bound");
   }
 
@@ -129,15 +150,13 @@ export async function runCostGuard(env: CostGuardEnv): Promise<void> {
     totals = await measureToday(token, acct);
   } catch (e) {
     const body = { at, ok: false, blind: true, note: `measurement failed: ${String(e).slice(0, 200)}` };
-    await env.SERIES_BUCKET.put(STATUS_KEY, JSON.stringify(body, null, 2),
-                                { httpMetadata: { contentType: "application/json" } });
+    await writeStatus(env, body);
     throw e;
   }
 
   const breaches = breachesOf(totals);
   const body = { at, ok: breaches.length === 0, blind: false, totals, limits: LIMITS, breaches };
-  await env.SERIES_BUCKET.put(STATUS_KEY, JSON.stringify(body, null, 2),
-                              { httpMetadata: { contentType: "application/json" } });
+  await writeStatus(env, body);
   if (breaches.length) {
     throw new Error("COST BREACH: " + breaches.join(" | "));
   }

@@ -2,7 +2,7 @@
 // (unstable_dev) forwarding to a stand-in origin that records what it receives.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,12 +95,16 @@ async function standInOrigin() {
 const WRANGLER = join("node_modules", "wrangler", "bin", "wrangler.js");
 let sqlFiles = 0;
 
-function d1Local(persist: string, sql: string, json = false): string {
+function d1Local(persist: string, sql: string, json = false, db = "hfdatalibrary-db"): string {
   const file = join(persist, `q${sqlFiles++}.sql`);
   writeFileSync(file, sql);
   return execFileSync(process.execPath,
-    [WRANGLER, "d1", "execute", "hfdatalibrary-db", "--local", "--persist-to", persist, "--file", file,
+    [WRANGLER, "d1", "execute", db, "--local", "--persist-to", persist, "--file", file,
      ...(json ? ["--json"] : [])], { encoding: "utf8" });
+}
+
+function rows(out: string): Record<string, unknown>[] {
+  return JSON.parse(out)[0].results;
 }
 
 function seedUsers(persist: string) {
@@ -160,6 +164,62 @@ test("FORWARD on: the edge gates, strips, forwards, caches public answers and lo
   }
   assert.equal(origin.seen.length - before, 1, "the second /v1/sources came from the edge cache");
 });
+
+// ---- the edge's own writes leave econ D1 and econ R2 once FORWARD is on (users db, migration file) -----
+const MIGRATION = readFileSync(join("migrations", "users_selfhost.sql"), "utf8");
+const OLD_PAGEVIEW = "CREATE TABLE pageview (path TEXT NOT NULL, day TEXT NOT NULL, " +
+                     "hits INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (path, day));";
+
+async function beacon(w: Awaited<ReturnType<typeof unstable_dev>>, p: string) {
+  const r = await w.fetch(`/v1/pv?p=${encodeURIComponent(p)}`);
+  assert.equal(r.status, 200);
+  await r.arrayBuffer();
+}
+
+for (const forward of [true, false]) {
+  test(`page views and the cost-guard status: FORWARD ${forward ? "on -> users db" : "unset -> econ D1 / R2 (unchanged)"}`,
+       { timeout: 300_000 }, async (t) => {
+    const persist = mkdtempSync(join(tmpdir(), "econ-edge-"));
+    d1Local(persist, MIGRATION);                                   // the migration file itself, as shipped
+    d1Local(persist, OLD_PAGEVIEW, false, "econ-catalog");         // today's table in econ D1
+    const w = await unstable_dev("src/index.ts", {
+      config: "wrangler.toml", local: true, persistTo: persist, logLevel: "none",
+      vars: forward ? { FORWARD: "on", ORIGIN_URL: "http://127.0.0.1:9", ORIGIN_SECRET: "s" } : {},
+      experimental: { disableExperimentalWarning: true, disableDevRegistry: true, testScheduled: true },
+    });
+    t.after(() => w.stop());
+
+    await beacon(w, "/about");
+    await beacon(w, "/about");
+    await beacon(w, "/not-a-tracked-path");                       // the allowlist still holds
+    const users = rows(d1Local(persist, "SELECT path, hits FROM econ_pageview ORDER BY path;", true));
+    const econ = rows(d1Local(persist, "SELECT path, hits FROM pageview ORDER BY path;", true, "econ-catalog"));
+    const counted = [{ path: "/about", hits: 2 }];
+    assert.deepEqual(forward ? users : econ, counted, "counted in the right db");
+    assert.deepEqual(forward ? econ : users, [], "and nothing in the other");
+
+    const rep = await w.fetch("/v1/pv/report?days=3");
+    assert.equal(rep.status, 200);
+    const body = await rep.json() as { by_path: { path: string; hits: number }[] };
+    assert.deepEqual(body.by_path.map((r) => [r.path, r.hits]), [["/about", 2]], "the report reads the same db");
+
+    // The scheduled cost guard with no analytics token: it must write a BLIND record, then throw.
+    const s = await w.fetch("/__scheduled?cron=*/30+*+*+*+*");
+    await s.arrayBuffer();
+    const status = rows(d1Local(persist, "SELECT key, body FROM econ_ops_status;", true));
+    if (forward) {
+      assert.equal(status.length, 1, "the status record is in the users db");
+      assert.equal(status[0].key, "_aqueduct/cost_status.json");
+      assert.equal(JSON.parse(String(status[0].body)).blind, true);
+    } else {
+      assert.deepEqual(status, [], "unset: the users db is untouched");
+      const out = join(persist, "status.json");
+      execFileSync(process.execPath, [WRANGLER, "r2", "object", "get", "econ-data/_aqueduct/cost_status.json",
+        "--local", "--persist-to", persist, "--file", out], { encoding: "utf8" });
+      assert.equal(JSON.parse(readFileSync(out, "utf8")).blind, true, "the record went to R2, as before");
+    }
+  });
+}
 
 test("FORWARD on without an origin configured answers 503 and forwards nothing", { timeout: 120_000 }, async (t) => {
   const w = await unstable_dev("src/index.ts", {
