@@ -1,7 +1,8 @@
 # Econ self-hosting plan (draft 9, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167
 
-Build status: code change 2 (local mode + wrangler.origin.toml) is on branch feat/econ-selfhost-origin
-(effc6784f), verified locally (NUMBERS row 1103). Changes 1, 3 and 6 may be built now; changes 4 and 5
+Build status: code change 2 (local mode + wrangler.origin.toml, effc6784f) and code change 3 (blob store,
+sidecar, R2 import tool, LocalBucket adapter, d18698a2d) are on branch feat/econ-selfhost-origin, verified
+locally (NUMBERS rows 1103, 1105: a real series served byte-identical to its R2 object). Changes 1, 3 and 6 may be built now; changes 4 and 5
 follow the rules in section 3.4a-c (R1167 A-C).
 
 Owner decision (Ahmed, 2026-09-23 ~22:00Z): host ALL of econ on his UCA workstation; UCA approved and
@@ -132,8 +133,10 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
      (refresh_sec_edgar, probe_csv_freshness, sec_edgar_union_repair, _upload_clean_full_parquet,
      upload_statcan_store, _upload_biotrademerch_store and any other) are refused by the hook, not by
      their callers; the 4 direct boto3.client users are routed through r2_util.
-   - Ahmed confirms the R2_READ_* key is Object-Read-only, or rotates it to a read-only token (6b then
-     uses it).
+   - THE DESKTOP HAS NO REAL READ KEY (NUMBERS row 1104): the R2_READ_* entries in the E: .env are
+     placeholders, so every desktop R2 read uses the WRITE key today. Before T0 Ahmed creates an
+     Object-Read-only R2 token scoped to econ-data; it goes into R2_READ_*, and step 6b's final sync uses
+     it - revoking the write key at T0 would otherwise stop every desktop R2 read too.
    - D1: a shared `d1_remote()` helper refuses the same way; the 24 `wrangler d1 ... --remote` callers,
      core/load_d1_rest.py and core/load_d1_chunked.py move into it; a CI test fails on any `--remote` or
      `/d1/database/` call outside it.
@@ -239,7 +242,8 @@ cached public answers.
 - Fallback period (proposed 14 days).
 - His actions: creating C:\ProgramData\econ elevated with its ACL and owner; creating the flag file,
   elevated, at T0; the Workers VPC service or Access
-  setup; the edge `wrangler deploy`s (steps 5, 6d, 7); confirming the R2 READ key is read-only;
+  setup; the edge `wrangler deploy`s (steps 5, 6d, 7); creating an Object-Read-only R2 token for the
+  desktop before T0 (today's read-key entries are placeholders);
   approving the user-global deny hook; at T0 deleting the econ repo's R2_WRITE_* secrets, REVOKING the
   econ R2 write key and replacing CLOUDFLARE_API_TOKEN with a narrower one; a bucket-scoped token for an
   R2 backup if he chooses R2; approving the 6c diff; the step-7 deletion.
