@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # env per call, so deferring it changes nothing for the script itself.
 from updater import config, blob
 from core import catalog_path  # the one catalogue resolver (plan step 1)
+from core import cutover  # noqa: E402 - next_steps: the closing NEXT line after T0
 # DETECTION ORDER — the parquet's series-identity column.
 #
 # `series_id` IS DELIBERATELY ABSENT, and this note exists because it looked like an oversight
@@ -203,7 +204,8 @@ def main(sources):
     con.close()
     print(f"\n  total rows added: {total:,}")
     if total:
-        print("  NEXT: python tools/refresh_r2_catalog.py <stamp>   (push the updated catalog to R2)")
+        print("  " + cutover.next_steps(
+            "NEXT: python tools/refresh_r2_catalog.py <stamp>   (push the updated catalog to R2)"))
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ import pyarrow.parquet as pq
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core import cutover  # noqa: E402 - next_steps: the closing NEXT line after T0
 
 STORE = os.path.join(ROOT, "data", "clean_full", "eia")
 
@@ -131,8 +132,8 @@ def main() -> int:
     if a.apply:
         n = con.execute("SELECT COUNT(*) FROM series WHERE source_id='eia'").fetchone()[0]
         print(f"eia catalog rows now: {n:,}")
-        print("NEXT: derive table CSVs (one-sorted-pass), sync_catalog_d1 --source eia, "
-              "refresh_r2_catalog, verify_source_served --source eia")
+        print(cutover.next_steps("NEXT: derive table CSVs (one-sorted-pass), sync_catalog_d1 --source eia, "
+                                      "refresh_r2_catalog, verify_source_served --source eia"))
     else:
         print("--dry-run: nothing written.")
     return 0

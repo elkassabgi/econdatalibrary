@@ -146,7 +146,8 @@ def main() -> int:
             if done % 50 == 0 or done == len(groups):
                 print(f"  {done}/{len(groups)} CSVs uploaded", flush=True)
     print(f"DONE: {done} CSVs / {total_bytes:,} plain bytes to the CSV store ({a.bucket}) series/")
-    print("NEXT: refresh_r2_catalog, sync_catalog_d1, un-gate, util.ts, deploy, verify.")
+    from core import cutover                                           # noqa: PLC0415
+    print(cutover.next_steps("NEXT: refresh_r2_catalog, sync_catalog_d1, un-gate, util.ts, deploy, verify."))
     return 0
 
 

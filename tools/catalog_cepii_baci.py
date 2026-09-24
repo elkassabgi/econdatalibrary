@@ -28,6 +28,7 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core import cutover  # noqa: E402 - next_steps: the closing NEXT line after T0
 
 SOURCE = "cepii_baci"
 LIC = "etalab-2.0"
@@ -158,9 +159,10 @@ def main() -> int:
         print("series_fts rebuilt")
     except sqlite3.Error as e:
         print(f"series_fts rebuild skipped: {e}")
-    print("\nNEXT (per the skill's serving pipeline): derive CSVs (tools/derive_csv_bulk.py "
-          "--source cepii_baci --verify 300), verify_source_served, refresh_r2_catalog, "
-          "sync_catalog_d1 --source cepii_baci, util.ts, wrangler deploy, live /v1/sources.")
+    print("\n" + cutover.next_steps(
+        "NEXT (per the skill's serving pipeline): derive CSVs (tools/derive_csv_bulk.py "
+        "--source cepii_baci --verify 300), verify_source_served, refresh_r2_catalog, "
+        "sync_catalog_d1 --source cepii_baci, util.ts, wrangler deploy, live /v1/sources."))
     return 0
 
 

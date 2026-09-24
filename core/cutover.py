@@ -47,3 +47,15 @@ def refuse_if_cut_over(what: str) -> None:
         raise CutoverRefused(
             f"refused: {what} - econ is self-hosted since T0 ({FLAG_PATH} exists or cannot be read); "
             "the cloud copy is frozen and nothing may write to it")
+
+
+def next_steps(pre_t0: str) -> str:
+    """A catalogue tool's closing "NEXT:" line. Before T0 it is `pre_t0`, unchanged. After T0 the steps it
+    names (refresh_r2_catalog, sync_catalog_d1, wrangler deploy of the cloud worker) write a frozen cloud copy
+    or are refused, so the line says what publishes a catalogue change instead - the blue/green swap - and
+    shows the old steps only as ones NOT to run (R1234: seven tools still pointed at refresh_r2_catalog)."""
+    if not is_cut_over():
+        return pre_t0
+    return ("NEXT (after T0 - the cloud copy is frozen): the catalogue change reaches users through the blue/green "
+            "swap, tools/selfhost/swap.py (docs/ECON_SELF_HOSTING_PLAN.md, section 2), run on this machine. Do "
+            "NOT run the pre-T0 steps this tool used to name: " + " ".join(pre_t0.split()))

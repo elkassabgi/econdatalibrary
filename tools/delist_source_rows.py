@@ -96,8 +96,9 @@ def _delist(src: str, apply: bool, t: Targets) -> int:
     if not t.skip_d1() and not t.d1_execute(src):
         return 1
 
-    print(f"{src}: DELISTED (catalogue{'' if t.selfhosted else ' + D1'}). Now: util.ts removal + deploy + "
-          f"live absence check + refresh_r2_catalog --allow-shrink {src}.")
+    from core import cutover                                           # noqa: PLC0415
+    print(f"{src}: DELISTED (catalogue{'' if t.selfhosted else ' + D1'}). " + cutover.next_steps(
+        f"Now: util.ts removal + deploy + live absence check + refresh_r2_catalog --allow-shrink {src}."))
     return 0
 
 

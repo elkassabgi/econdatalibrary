@@ -120,8 +120,9 @@ def _retire(src: str, apply: bool, t: Targets) -> int:
     n = t.delete([k for k, _ in store_objs], (cp, sp))
     print(f"  {where}: deleted {n:,} store object(s)")
 
-    print(f"{src}: RETIRED (data plane). Now: util.ts removal + registry retire/count bump "
-          f"+ deploy + live absence check + refresh_r2_catalog.")
+    from core import cutover                                           # noqa: PLC0415
+    print(f"{src}: RETIRED (data plane). " + cutover.next_steps(
+        "Now: util.ts removal + registry retire/count bump + deploy + live absence check + refresh_r2_catalog."))
     return 0
 
 
