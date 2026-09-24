@@ -60,13 +60,16 @@ def _load_cursor(blob) -> str:
     reached anything past 'b' — a rotating monitor that does not rotate, which is precisely the
     R190 shape it was written to avoid. The warning printed each time and said so; nothing read
     it. This is operational bookkeeping, not store data, so it goes to a plain R2 key.
+    After T0 the probe runs on this machine only, so the LOCAL file is the bookmark (R2 is frozen).
     """
-    try:
-        from core import r2_util
-        raw = r2_util.client().get_object(Bucket=BUCKET, Key=BOOKMARK)["Body"].read()
-        return (json.loads(raw.decode("utf-8")) or {}).get("after", "") or ""
-    except Exception:                                                 # noqa: BLE001
-        pass
+    from core import cutover                                          # noqa: PLC0415
+    if not cutover.is_cut_over():
+        try:
+            from core import r2_util
+            raw = r2_util.client().get_object(Bucket=BUCKET, Key=BOOKMARK)["Body"].read()
+            return (json.loads(raw.decode("utf-8")) or {}).get("after", "") or ""
+        except Exception:                                             # noqa: BLE001
+            pass
     try:
         with open(_cursor_local(), encoding="utf-8") as fh:
             return (json.load(fh) or {}).get("after", "") or ""
@@ -77,13 +80,15 @@ def _load_cursor(blob) -> str:
 def _save_cursor(blob, after: str) -> None:
     body = json.dumps({"after": after}, separators=(",", ":")).encode("utf-8")
     wrote = []
-    try:
-        from core import r2_util
-        r2_util.client().put_object(Bucket=BUCKET, Key=BOOKMARK, Body=body,
-                                    ContentType="application/json")
-        wrote.append("r2")
-    except Exception as e:                                            # noqa: BLE001
-        print(f"  (bookmark: R2 write failed, {type(e).__name__}) ", flush=True)
+    from core import cutover                                          # noqa: PLC0415
+    if not cutover.is_cut_over():                     # after T0: the local file below only (R2 is frozen)
+        try:
+            from core import r2_util
+            r2_util.client().put_object(Bucket=BUCKET, Key=BOOKMARK, Body=body,
+                                        ContentType="application/json")
+            wrote.append("r2")
+        except Exception as e:                                        # noqa: BLE001
+            print(f"  (bookmark: R2 write failed, {type(e).__name__}) ", flush=True)
     try:
         os.makedirs(os.path.dirname(_cursor_local()), exist_ok=True)
         with open(_cursor_local(), "wb") as fh:
@@ -119,6 +124,12 @@ def _mirror_matches_store(src: str, sample: int = 4) -> bool:
     import os
     import random
     import tempfile
+
+    from core import cutover                                          # noqa: PLC0415
+    if cutover.is_cut_over():
+        # after T0 there is ONE store, the local one the served CSVs are derived from: the mirror is the
+        # store, so it cannot be behind it (main() refuses to run outside the live checkout)
+        return True
 
     import duckdb
     from core import r2_util
@@ -226,6 +237,14 @@ def main() -> int:
     from core.derive_csv import _series_csv_bytes
     from updater import blob
 
+    from core import cutover                                         # noqa: PLC0415
+    selfhosted = cutover.is_cut_over()
+    if selfhosted:
+        # AFTER T0 the served CSVs are the self-hosted store's and the store they are compared with is this
+        # checkout's: from anywhere but the live checkout the verdict would compare a worktree's parquet with
+        # what users download, and call the difference stale
+        blob.refuse_unless_live_checkout("probe_csv_freshness (it judges served bytes against this store)")
+
     from core import catalog_path                                    # noqa: PLC0415 - plan step 1
     cat = catalog_path.connect()                                     # read-only
     by_src: dict[str, int] = {r[0]: r[1] for r in cat.execute(
@@ -239,7 +258,19 @@ def main() -> int:
         targets = _rotate_after(order, cursor)[: a.sources]
         print(f"rotating after {cursor!r}: probing {targets}")
 
-    s3 = r2_util.client()
+    if selfhosted:
+        store = blob.SelfhostBlob()
+
+        def served_bytes(key: str) -> bytes:
+            data = store.get(key)
+            if data is None:
+                raise FileNotFoundError(key)
+            return data
+    else:
+        s3 = r2_util.client()
+
+        def served_bytes(key: str) -> bytes:
+            return s3.get_object(Bucket=BUCKET, Key=key)["Body"].read()
     rnd = random.Random(a.seed or (hash(cursor or "start") & 0xFFFF))
     bad_sources: list[tuple[str, int, int, str]] = []
     skipped: list[str] = []
@@ -266,7 +297,7 @@ def main() -> int:
         for sid in pick:
             key = "series/" + urllib.parse.quote(sid, safe="") + ".csv"
             try:
-                served = s3.get_object(Bucket=BUCKET, Key=key)["Body"].read()
+                served = served_bytes(key)
             except Exception:                                         # noqa: BLE001
                 continue          # absent object is the MISSING class, not staleness
             # INFLATE FIRST. Objects are stored gzip-at-rest since 2026-08-18, and the serving

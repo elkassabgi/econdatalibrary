@@ -33,10 +33,12 @@ CHOKEPOINTS = {"updater/blob.py", "core/r2_util.py", "core/licence_targets.py"}
 #   MOVE + A NEW READER - guard_heartbeat: its beat's only reader is updater-daily.yml's --check, and T0
 #     disables that workflow (t0_ready ci-writers), so the move must also name an off-machine reader
 #     (R1210);
-#   LOCAL - a store file or state that is a local file after T0: rebuild_cso_retired_from_csv (its local
-#     write exists), sec_edgar_union_repair; and probe_csv_freshness (its bookmark) - which ALSO needs a
-#     scheduler: it runs only in updater-daily.yml today (R1210). (cso_repull_matrix, cso_repull_subject and
-#     repull_file moved 2026-09-24: updater.blob.backup_store_object / delete_store_object, under the lock.)
+#   LOCAL - probe_csv_freshness: after T0 it reads the self-hosted store, keeps its bookmark locally and
+#     refuses outside the live checkout (moved 2026-09-24); it still needs a SCHEDULER on the machine - it ran
+#     only in updater-daily.yml (R1210) - which is Ahmed's step (plan). (cso_repull_matrix, cso_repull_subject
+#     and repull_file moved 2026-09-24: updater.blob.backup_store_object / delete_store_object, under the lock.)
+#   RETIRE AT T0 by refusal (2026-09-24): rebuild_cso_retired_from_csv (a completed one-shot whose output is
+#     in the local store) and sec_edgar_union_repair (reunites the mirror with R2; after T0 there is one store).
 #   (guard_heartbeat stays listed: its R2 write is the pre-T0 branch; after T0 it writes the self-hosted
 #     store, and its new reader is the /v1/guard-heartbeat route - moved 2026-09-24.)
 #   LICENCE - through core.licence_targets: purge_unpermitted_r2 (defused);
