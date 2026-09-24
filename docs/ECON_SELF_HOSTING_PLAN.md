@@ -1,5 +1,5 @@
-# Econ self-hosting plan (draft 12, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167, R1169, R1171,
-# R1172, R1174, R1176-R1182, AR-151-AR-153
+# Econ self-hosting plan (draft 13, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167, R1169, R1171,
+# R1172, R1174, R1176-R1186, AR-151-AR-153
 
 Build status (branch feat/econ-selfhost-origin):
 - Code change 2 (local mode + wrangler.origin.toml, effc6784f) and code change 3 (blob store, sidecar, R2
@@ -27,16 +27,29 @@ Build status (branch feat/econ-selfhost-origin):
   more hook spellings, one shared ratchet walk); the blue/green swap, tools/selfhost/swap.py (a089e76be);
   PERSIST-mode journals are not hot and the preflight checks what econdl itself resolves (9d8d91bcb); the
   T0 readiness check, tools/selfhost/t0_ready.py (48d03d264). The swap ran twice for real on the full
-  probe catalogue (13,952,906 series; the copies and checks take about 5.5 min per swap).
+  probe catalogue (13,952,906 series): the copies and checks took 5 min 34 s; since the copies REBUILD
+  their search index (R1183) the copy step took 10 min 11 s (an upper bound - measured with the whole test
+  suite running alongside; NUMBERS). The writer lock is held only while the catalogue is READ (R1185).
 - Step 1 has started (ab04a41e0): core/d1_remote.py gained the wrangler roads (run_json / rows /
   execute_file - wrangler as today before T0; after T0 one plain read over REST with the read-only token,
   writes refused) and six D1 readers moved onto them; the ratchets now read Python through the parser
   (comments, docstrings and bare strings dropped, implicit concatenation joined).
 - COUNTS: the file lists in the tests are the numbers to use - tests/catalog_db_legacy.txt (137 on
-  2026-09-24) and LEGACY_REMOTE_D1 in tests/test_d1_remote.py (25, then 14 after ab04a41e0). The other counts in this plan (144 and
+  2026-09-24; 110 on branch feat/econ-selfhost-catpath, not yet merged) and LEGACY_REMOTE_D1 in
+  tests/test_d1_remote.py (25, then 14 after ab04a41e0, then 13 after b7e768dd2). The other counts in this plan (144 and
   154 catalogue files, 24 remote-D1 files) were taken earlier with other rules and are superseded.
-- Still to do in step 1: move the 137 catalogue callers and the 25 remote-D1 callers onto the
-  chokepoints (the ratchets list them and may only shrink); the direct put_series_csv writers onto
+- THE FRESHNESS PROJECTION (R1186, measured on the production file): E:\...\data\catalog.db holds only
+  license, series, series_fts and source. unit_state, source_state and source_data_through - what
+  /v1/last-updates and the freshness blocks read - existed only in D1, built by core/sync_state_d1.py
+  from state.db and the catalogue. So tools/selfhost/origin_copies.py builds them into the primary copy
+  with that same emitter (the same licence gate), from the live state.db, inside the locked read; a copy
+  without them fails its check, and t0_ready checks the live state.db has rows (282 unit_state and 256
+  source_state on 2026-09-24). OPEN: sec_edgar's data_through is stamped from D1 only
+  (tools/stamp_source_data_through.py, DATA_THROUGH_FROM_D1); after T0 it needs a local stamper, or the
+  source serves no data_through.
+- Still to do in step 1: move the remaining catalogue callers and remote-D1 callers onto the
+  chokepoints (the ratchets list them and may only shrink; the catalogue callers go through
+  core.catalog_path.connect / connect_path, which keeps a tool's --db argument before T0); the direct put_series_csv writers onto
   SelfhostBlob; delist_timeless_tables.py onto licence_targets (purge_unpermitted_r2.py stays defused
   until re-armed, then on licence_targets); a self-hosted path for tools/run_local_heavy.ps1 and
   make_servable.py (after T0 both fail closed today: the heavy run asks for --pull-state and the R2
