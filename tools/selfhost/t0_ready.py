@@ -240,9 +240,12 @@ def heartbeat_reader(run=subprocess.run, check=None) -> tuple[bool, str]:
     repository variable GUARD_HEARTBEAT_URL is set, selfhost-watch (which runs the check) is active, and the
     route answers with a fresh beat now."""
     r = run(["gh", "variable", "get", "GUARD_HEARTBEAT_URL"], cwd=ROOT, capture_output=True, text=True)
-    url = (r.stdout or "").strip() if r.returncode == 0 else ""
+    if r.returncode != 0:
+        return False, (f"gh variable get GUARD_HEARTBEAT_URL failed ({(r.stderr or '').strip()[:160]}) - it is "
+                       f"not set, or gh cannot tell (R1228: a gh failure is not the same as 'not set')")
+    url = (r.stdout or "").strip()
     if not url:
-        return False, "repository variable GUARD_HEARTBEAT_URL is not set - the beat would have no reader after T0"
+        return False, "repository variable GUARD_HEARTBEAT_URL is empty - the beat would have no reader after T0"
     w = run(["gh", "workflow", "list", "--all", "--json", "name,path,state"], cwd=ROOT, capture_output=True,
             text=True)
     if w.returncode != 0:
@@ -250,11 +253,36 @@ def heartbeat_reader(run=subprocess.run, check=None) -> tuple[bool, str]:
     state = {os.path.splitext(os.path.basename(x["path"]))[0]: x["state"] for x in json.loads(w.stdout)}
     if state.get("selfhost-watch") != "active":
         return False, f"selfhost-watch is {state.get('selfhost-watch', 'MISSING')} - nothing runs the check"
+    # the DEFAULT BRANCH's workflow is what the schedule runs: it must hold the step (R1228: other branches have
+    # a selfhost-watch.yml without it, and "active" alone would pass while nothing reads the beat)
+    run(["git", "-C", ROOT, "fetch", "-q", "origin", "main"], capture_output=True, text=True)
+    wf = run(["git", "-C", ROOT, "show", "origin/main:.github/workflows/selfhost-watch.yml"],
+             capture_output=True, text=True)
+    if wf.returncode != 0 or "guard_heartbeat.py --check --from-url" not in (wf.stdout or ""):
+        return False, "origin/main's selfhost-watch.yml does not run guard_heartbeat.py --check --from-url"
     if check is None:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
         import guard_heartbeat
         check = guard_heartbeat.check_url
     return (check(url, 45.0) == 0), f"{url} checked (see the line above)"
+
+
+def served_stats(store=None) -> tuple[bool, str]:
+    """/v1/stats after T0 reads _aqueduct/stats.json from the self-hosted store (plan step 2 imports it): it must
+    be there and readable, or the census's first post-T0 publish has nothing to compare its rule with (R1228)
+    and the route answers 503."""
+    if store is None:
+        sys.path.insert(0, ROOT)
+        from updater.blob import SelfhostBlob
+        store = SelfhostBlob()
+    raw = store.get("_aqueduct/stats.json")
+    if raw is None:
+        return False, "_aqueduct/stats.json is not in the self-hosted store - import it (plan step 2)"
+    try:
+        body = json.loads(raw)
+    except ValueError as e:
+        return False, f"_aqueduct/stats.json in the self-hosted store is unreadable ({e})"
+    return True, f"present (as_of {body.get('as_of')})"
 
 
 def flag() -> tuple[bool, str]:
@@ -266,7 +294,7 @@ CHECKS = [("legacy-catalogue", legacy_catalogue), ("legacy-remote-d1", legacy_re
           ("launcher", launcher), ("preflight", preflight), ("ci-writers", ci_writers),
           ("ci-drained", ci_drained), ("thirteen-f", thirteen_f),
           ("edge-state", edge_state), ("state-db", state_db), ("d1-only-sources", d1_only_sources),
-          ("heartbeat-reader", heartbeat_reader), ("flag", flag)]
+          ("heartbeat-reader", heartbeat_reader), ("served-stats", served_stats), ("flag", flag)]
 
 
 def main() -> int:

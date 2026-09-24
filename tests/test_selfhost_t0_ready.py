@@ -264,10 +264,18 @@ def test_thirteen_f_never_creates_a_missing_state_db(tmp_path, fake_move):
     assert not missing.exists(), "the check created the file it reads"
 
 
-def _gh_hb(var, watch_state):
+WF_WITH = "steps:\n  - run: python -B tools/guard_heartbeat.py --check --from-url \"$U\"\n"
+
+
+def _gh_hb(var, watch_state, main_wf=WF_WITH, var_rc=None):
     def run(cmd, **kw):
         if cmd[:3] == ["gh", "variable", "get"]:
-            return types.SimpleNamespace(returncode=0 if var else 1, stdout=(var or "") + "\n", stderr="")
+            rc = var_rc if var_rc is not None else (0 if var else 1)
+            return types.SimpleNamespace(returncode=rc, stdout=(var or "") + "\n", stderr="HTTP 401" if rc else "")
+        if cmd[:2] == ["git", "-C"] and "fetch" in cmd:
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["git", "-C"] and "show" in cmd:
+            return types.SimpleNamespace(returncode=0 if main_wf is not None else 128, stdout=main_wf or "", stderr="")
         return _gh({"selfhost-watch": watch_state})(cmd, **kw)
     return run
 
@@ -276,7 +284,9 @@ def test_the_heartbeat_needs_a_reader_before_t0():
     """R1226: T0 switches off the beat's only reader; nothing required the new one."""
     url = "https://edge.example/v1/guard-heartbeat"
     ok, detail = T.heartbeat_reader(_gh_hb(None, "active"), check=lambda u, a: 0)
-    assert not ok and "GUARD_HEARTBEAT_URL is not set" in detail
+    assert not ok and "not set, or gh cannot tell" in detail
+    ok, detail = T.heartbeat_reader(_gh_hb("", "active", var_rc=0), check=lambda u, a: 0)
+    assert not ok and "is empty" in detail
     ok, detail = T.heartbeat_reader(_gh_hb(url, "disabled_manually"), check=lambda u, a: 0)
     assert not ok and "selfhost-watch is disabled_manually" in detail
     assert T.heartbeat_reader(_gh_hb(url, "active"), check=lambda u, a: 1)[0] is False, "a stale beat fails"
@@ -284,3 +294,28 @@ def test_the_heartbeat_needs_a_reader_before_t0():
     assert T.heartbeat_reader(_gh_hb(url, "active"), check=lambda u, a: seen.append(u) or 0)[0] is True
     assert seen == [url]
     assert ("heartbeat-reader", T.heartbeat_reader) in T.CHECKS
+    # R1228: main's workflow must hold the step; a gh failure is reported as one; the age limit is 45 minutes
+    ok, detail = T.heartbeat_reader(_gh_hb(url, "active", main_wf="steps: []\n"), check=lambda u, a: 0)
+    assert not ok and "does not run guard_heartbeat.py" in detail
+    ok, detail = T.heartbeat_reader(_gh_hb(url, "active", main_wf=None), check=lambda u, a: 0)
+    assert not ok
+    ok, detail = T.heartbeat_reader(_gh_hb(url, "active", var_rc=1), check=lambda u, a: 0)
+    assert not ok and "failed (HTTP 401)" in detail, "a gh failure with a URL on stdout is still a failure"
+    ages = []
+    T.heartbeat_reader(_gh_hb(url, "active"), check=lambda u, a: ages.append(a) or 0)
+    assert ages == [45.0]
+
+
+def test_the_stats_object_must_be_in_the_served_store():
+    class S:
+        def __init__(self, raw):
+            self.raw = raw
+
+        def get(self, key):
+            assert key == "_aqueduct/stats.json"
+            return self.raw
+    assert T.served_stats(S(None))[0] is False
+    assert T.served_stats(S(b'{"as_of": "2026-09'))[0] is False
+    ok, detail = T.served_stats(S(b'{"as_of": "2026-09-24"}'))
+    assert ok and "2026-09-24" in detail
+    assert ("served-stats", T.served_stats) in T.CHECKS

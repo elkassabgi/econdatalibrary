@@ -149,6 +149,7 @@ def main() -> int:
     # bytes); after T0 the store is local, the copy is local beside it, and the change holds the writer lock
     # (the updater writes the same file) - updater.blob.backup_store_object / delete_store_object.
     from core import catalog_path, cutover                              # noqa: PLC0415
+    blob.refuse_unless_live_checkout("repull_file --apply")           # before the lock and any change
     with catalog_path.write_session():
         try:
             where = blob.backup_store_object(path, backup)
@@ -163,7 +164,7 @@ def main() -> int:
         if still:
             print("  ABORT: object still present after delete — investigate before re-running.")
             return 1
-    print(f"  deleted {path}")
+    print(f"  deleted {path if cutover.is_cut_over() else 'r2://' + blob._path_to_key(path)}")
     if cutover.is_cut_over():
         print(f"\n  NEXT: run the updater for it on this machine, e.g.\n"
               f"    python -m updater.run --source {a.source} --force\n"

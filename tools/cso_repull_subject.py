@@ -144,6 +144,9 @@ def main() -> int:
     # after T0 the cursor and the parquet are the local store the updater writes: the whole change holds the
     # writer lock (refused at once while the updater runs); before T0 write_session changes nothing
     from core import catalog_path                                       # noqa: PLC0415
+    # the checkout FIRST, before the lock and before the cursor is touched (R1228: the refusal came at the
+    # parquet backup, after the live cursor had been emptied from another checkout)
+    blob.refuse_unless_live_checkout("cso_repull_subject --apply")
     with catalog_path.write_session():
         return _apply(a, out_dir, cur_path, stored, matrices, parquet, runs_needed)
 
@@ -178,7 +181,7 @@ def _apply(a, out_dir, cur_path, stored, matrices, parquet, runs_needed) -> int:
         print(f"  ABORT: backup not proved ({e}) — refusing to delete the original.")
         return 1
     blob.delete_store_object(parquet)
-    print(f"  backed up -> {where}, deleted {parquet}")
+    print(f"  backed up -> {where}, deleted {parquet if cutover.is_cut_over() else 'r2://' + blob._path_to_key(parquet)}")
     print(f"\n  NEXT: let the daily run proceed (~{runs_needed} run(s)), then re-check with\n"
           f"    python tools/audit_impossible_dates.py {'' if cutover.is_cut_over() else '--r2 '}--source cso")
     return 0

@@ -138,6 +138,8 @@ def main() -> int:
     # after T0 the cursor and the parquets are the local store the updater writes: the whole change holds the
     # writer lock (refused at once while the updater runs); before T0 write_session changes nothing
     from core import catalog_path                                       # noqa: PLC0415
+    # the checkout FIRST, before the lock and before the cursor is touched (R1228)
+    blob.refuse_unless_live_checkout("cso_repull_matrix --apply")
     with catalog_path.write_session():
         return _apply(out_dir, found, all_bad)
 

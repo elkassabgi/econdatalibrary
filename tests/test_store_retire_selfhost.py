@@ -91,6 +91,40 @@ def test_a_backup_is_never_overwritten_and_keys_stay_in_the_backup_tree(live):
                 blob.backup_store_object(p, bad)
 
 
+def test_after_t0_a_delete_that_did_nothing_is_an_abort(live, monkeypatch, capsys):
+    """R1228: repull_file's check after the delete was removable."""
+    root, full = live
+    monkeypatch.setattr(blob, "delete_store_object", lambda p: None)
+    monkeypatch.setattr(sys, "argv", ["repull_file.py", "cso", "X.parquet", "--apply", "--cursor-cleared"])
+    assert repull_file.main() == 1
+    assert "still present after delete" in capsys.readouterr().out
+
+
+def test_a_copy_that_differs_is_not_a_backup(live, monkeypatch):
+    """R1228: the byte check of the local backup was removable."""
+    root, full = live
+    import shutil
+    monkeypatch.setattr(shutil, "copy2", lambda s, d: open(d, "wb").write(b"not the same bytes"))
+    with catalog_path.writer_lock():
+        with pytest.raises(RuntimeError, match="does not match"):
+            blob.backup_store_object(str(full / "cso" / "X.parquet"), "_backup/t/X.parquet")
+
+
+def test_before_t0_an_unreadable_r2_backup_is_not_a_backup(tmp_path, monkeypatch):
+    """R1228: the pre-T0 exists check was removable."""
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "no_flag"))
+
+    class R2:
+        bucket = "econ-data"
+        client = type("C", (), {"copy_object": lambda self, **kw: None})()
+
+        def exists(self, key):
+            return False
+    monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: R2())
+    with pytest.raises(RuntimeError, match="not readable"):
+        blob.backup_store_object(os.path.join("x", "data", "clean_full", "cso", "X.parquet"), "_backup/r/X.parquet")
+
+
 def test_before_t0_the_helpers_use_r2_as_the_tools_did(tmp_path, monkeypatch):
     monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "no_flag"))
     calls = []

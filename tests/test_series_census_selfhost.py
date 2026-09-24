@@ -234,7 +234,7 @@ def test_after_t0_the_publish_takes_the_lock_through_the_wait(world, monkeypatch
     import urllib.request
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=60: io.BytesIO(
         json.dumps({"as_of": __import__("datetime").date.today().isoformat()}).encode()))
-    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish"])
+    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish", "--force-publish"])
     assert series_census.main() == 0
     assert waited == [1]
 
@@ -275,7 +275,7 @@ def test_after_t0_a_publish_lands_in_the_self_hosted_store(world, monkeypatch):
     today = dt.date.today().isoformat()
     monkeypatch.setattr(urllib.request, "urlopen",            # the live check; no network in a test
                         lambda req, timeout=60: io.BytesIO(json.dumps({"as_of": today}).encode()))
-    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish"])
+    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish", "--force-publish"])
     assert series_census.main() == 0
     sb = blob.SelfhostBlob()
     stats = json.loads(sb.get(series_census.KEY))
@@ -295,3 +295,49 @@ def test_after_t0_a_publish_from_another_checkout_is_refused(world, monkeypatch)
         series_census.main()
     assert counted == [], "refused before the counting starts, not after it"
     assert blob.SelfhostBlob().get(series_census.KEY) is None
+
+
+@pytest.mark.parametrize("case", ["absent", "truncated", "get raises"])
+def test_after_t0_a_live_object_it_cannot_read_refuses_the_publish(world, monkeypatch, capsys, case):
+    """R1228: an absent, truncated or unreadable live object skipped BOTH gates and the new rule went public
+    with rc 0. After T0 that is refused until --force-publish."""
+    sb = blob.SelfhostBlob()
+    if case == "truncated":
+        (world[0] / "CUTOVER").unlink()
+        sb.put_atomic(series_census.KEY, b'{"observations": 4, "individual')
+        (world[0] / "CUTOVER").write_text("")
+    elif case == "get raises":
+        real_get = blob.SelfhostBlob.get
+        monkeypatch.setattr(blob.SelfhostBlob, "get", lambda self, k: (_ for _ in ()).throw(OSError("disk"))
+                            if k == series_census.KEY else real_get(self, k))
+    before = sb.store.head(series_census.KEY)
+    _fresh_verify(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish"])
+    assert series_census.main() == 1
+    out = capsys.readouterr().out
+    assert "REFUSING to publish: the live _aqueduct/stats.json is" in out
+    assert sb.store.head(series_census.KEY) == before, "nothing was published"
+
+
+def test_before_t0_the_published_object_carries_no_rule(world, monkeypatch):
+    """R1228: a mutant that wrote served_rule before T0 too passed every test - and then the first post-T0
+    publish would compare equal and the gate would never fire."""
+    (world[0] / "CUTOVER").unlink()
+    monkeypatch.setattr(catalog_path, "CHECKOUT_PATH", catalog_path.BUILD_PATH)   # before T0 the checkout's
+    sent = {}
+
+    class R2:
+        bucket = "econ-data"
+
+        def get(self, key):
+            return json.dumps({"observations": 4, "individual_series": 3}).encode()
+
+        def put_atomic(self, key, data, plain=False):
+            sent[key] = json.loads(data)
+    monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: R2())
+    monkeypatch.setattr(series_census, "keep_served", lambda srcs: ({"eurostat": srcs["eurostat"],
+                                                                     "oecd": srcs["oecd"]}, {}))
+    _fresh_verify(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish"])
+    assert series_census.main() == 0
+    assert "served_rule" not in sent[series_census.KEY]

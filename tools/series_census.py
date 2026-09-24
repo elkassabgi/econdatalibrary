@@ -732,11 +732,19 @@ def main() -> int:
     from updater import blob                                 # noqa: PLC0415
     if selfhosted:
         _own_the_store_waiting()                             # the lock, before reading the object it compares with
+    unreadable = None
     try:
         raw = store.get(KEY)
         cur = json.loads(raw) if raw else None
-    except Exception:                                        # noqa: BLE001
-        cur = None
+    except Exception as e:                                   # noqa: BLE001
+        cur, unreadable = None, f"{type(e).__name__}: {str(e)[:120]}"
+    if selfhosted and cur is None and "--force-publish" not in sys.argv:
+        # AFTER T0 FAIL CLOSED (R1228): a live object that is absent or cannot be read skipped BOTH gates, and
+        # the new served rule went public with no decision. (Before T0 this stays as it always was.)
+        print(f"REFUSING to publish: the live {KEY} is "
+              + (f"unreadable ({unreadable})" if unreadable else "absent from the self-hosted store")
+              + " - the rule and step gates cannot compare with it. Decide, then re-run with --force-publish.")
+        return 1
     # THE RULE GATE (R1226): the live object records which "served" rule it was counted under; a publish under
     # another rule is a change to the public number's DEFINITION - whatever its size - and is Ahmed's decision.
     if cur is not None and cur.get("served_rule") != stats.get("served_rule") and "--force-publish" not in sys.argv:
