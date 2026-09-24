@@ -171,6 +171,18 @@ Build status (branch feat/econ-selfhost-origin):
   ilostat, istat); batch 3 moved unsdg, noaa_missing, insee_melodi, ons_uk and bea (19 left, plus the
   three that write through core.derive_csv's PUT helpers - derive_one, derive_eia_tables,
   derive_usda_bulk - which the ratchet now sees and which move with core/derive_csv.py).
+  Batch 4 moved core/derive_csv.py and its three callers (derive_one, derive_eia_tables,
+  derive_usda_bulk): 18 direct writers left, classified 2026-09-24 (tests/test_object_writers_ratchet.py
+  carries the groups): MOVE refresh_sec_edgar's CSVs, series_census's _aqueduct/stats.json (read by
+  /v1/stats), guard_heartbeat's beat; LOCAL the repull/repair tools (cso_repull_matrix, cso_repull_subject,
+  repull_file, rebuild_cso_retired_from_csv, sec_edgar_union_repair) and probe_csv_freshness's bookmark;
+  LICENCE delist_timeless_tables and purge_unpermitted_r2 (defused); RETIRE AT T0 the R2-copy tools
+  (core/upload_r2, _upload_biotrademerch_store, _upload_clean_full_parquet, upload_statcan_store,
+  refresh_r2_catalog). Two one-shots that deleted or rewrote R2 AT IMPORT were DEFUSED on 2026-09-24:
+  _delete_statcan_r2 (statcan is restored and served again) and trim_bfs_corrupt_tail.
+  AT T0, EXPECT: guard_heartbeat --publish (the guard loop, every ~5 min) throws on every tick and
+  updater-daily's --check reads it as stale; probe_csv_freshness's bookmark write fails silently
+  (continue-on-error) - both must move or be switched off at T0, not discovered after it.
   ENCODING IS KEPT (R1206): the 12 moved tools that always stored their CSVs plain keep doing so
   (put_atomic(plain=True)). Gzip is not neutral for them - the worker refuses a filter on a gzipped object
   above its decompression-ratio limit (4 flow-grain CSVs measured at 45-66x) and serves it without the
