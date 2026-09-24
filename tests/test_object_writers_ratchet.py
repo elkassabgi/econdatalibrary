@@ -29,7 +29,7 @@ CHOKEPOINTS = {"updater/blob.py", "core/r2_util.py", "core/licence_targets.py"}
 # one of them fails closed after T0, because core.r2_util's clients refuse). The set is what the tests check;
 # the groups are the work list:
 #   MOVE - served objects the self-hosted store must hold: refresh_sec_edgar (its series CSVs; its parquet is
-#     already written locally), series_census (_aqueduct/stats.json, read by /v1/stats);
+#     already written locally). series_census moved 2026-09-24: stats.json through updater.blob.csv_store;
 #   MOVE + A NEW READER - guard_heartbeat: its beat's only reader is updater-daily.yml's --check, and T0
 #     disables that workflow (t0_ready ci-writers), so the move must also name an off-machine reader
 #     (R1210);
@@ -50,7 +50,7 @@ LEGACY_OBJECT_WRITERS = {
     "tools/delist_timeless_tables.py", "tools/guard_heartbeat.py",
     "tools/probe_csv_freshness.py", "tools/purge_unpermitted_r2.py", "tools/rebuild_cso_retired_from_csv.py",
     "tools/refresh_r2_catalog.py", "tools/refresh_sec_edgar.py", "tools/repull_file.py",
-    "tools/sec_edgar_union_repair.py", "tools/series_census.py", "tools/trim_bfs_corrupt_tail.py",
+    "tools/sec_edgar_union_repair.py", "tools/trim_bfs_corrupt_tail.py",
     "tools/upload_statcan_store.py",
 }
 
