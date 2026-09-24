@@ -66,7 +66,10 @@ def t0(tmp_path, monkeypatch):
 
 
 def _read(env, sql):
-    c = env.real(env.db)
+    # READ-ONLY: after the simulated T0 core.catalog_path's audit hook refuses a plain read-write open of the
+    # build without the lock (R1209) - and a check of a result has no reason to open it for writing
+    import pathlib
+    c = env.real(pathlib.Path(env.db).resolve().as_uri() + "?mode=ro", uri=True)
     try:
         return c.execute(sql).fetchone()[0]
     finally:
@@ -147,10 +150,7 @@ def _python_files():
     for rel, p in _repo_walk.code_files((".py",)):
         if rel == "core/catalog_path.py":
             continue
-        try:
-            yield rel, ast.parse(open(p, encoding="utf-8").read())
-        except SyntaxError:
-            continue
+        yield rel, _repo_walk.parse_code(p)          # utf-8-sig; a file that does not parse fails (R1209)
 
 
 def test_every_resolver_writer_takes_the_lock():
@@ -279,11 +279,8 @@ def _code_files_with_source():
     for rel, p in _repo_walk.code_files((".py",)):
         if rel == "core/catalog_path.py" or rel.startswith("tests/"):
             continue
-        src = open(p, encoding="utf-8").read()
-        try:
-            yield rel, ast.parse(src), src
-        except SyntaxError:
-            continue
+        src = _repo_walk.read_code(p)                # utf-8-sig; a file that does not parse fails (R1209)
+        yield rel, ast.parse(src, filename=p), src
 
 
 def test_no_plain_open_of_a_path_that_came_from_catalog_path():

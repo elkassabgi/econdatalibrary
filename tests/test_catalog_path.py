@@ -147,13 +147,13 @@ def test_taking_the_lock_recovers_a_writer_killed_mid_transaction(paths):
 def test_a_persist_mode_journal_is_not_hot(paths):
     """AR-153: journal_mode=PERSIST keeps the journal after a commit with a zeroed header - not hot. The lock
     refused every such catalogue when it tested only "exists and is not empty"."""
-    (paths / "CUTOVER").write_text("")
     build = cp.BUILD_PATH
-    c = sqlite3.connect(build)
+    c = sqlite3.connect(build)                      # the setup is a writer: before the flag (R1209's hook)
     c.execute("PRAGMA journal_mode=PERSIST")
     c.execute("INSERT INTO which VALUES ('committed')")
     c.commit()
     c.close()
+    (paths / "CUTOVER").write_text("")
     j = build + "-journal"
     assert os.path.getsize(j) > 0 and not cp.journal_is_hot(j), "precondition: a kept, zeroed journal"
     with cp.writer_lock():
@@ -287,7 +287,8 @@ def test_a_top_level_script_holds_the_lock_until_it_exits(paths):
         p.wait(30)
         with cp.writer_lock():                               # free again
             pass
-    c = sqlite3.connect(cp.BUILD_PATH)
+    import pathlib
+    c = sqlite3.connect(pathlib.Path(cp.BUILD_PATH).resolve().as_uri() + "?mode=ro", uri=True)   # a check reads
     assert [r[0] for r in c.execute("SELECT name FROM which WHERE name='script'")] == ["script", "script"]
     c.close()
 

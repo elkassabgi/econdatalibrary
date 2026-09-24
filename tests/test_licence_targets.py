@@ -34,22 +34,30 @@ def _catalogue(path):
             c.executemany(f"INSERT INTO {table} VALUES (?, 1)", [("foo",), ("foo_direct",)])
 
 
+def _ro(path):
+    """A check reads the build READ-ONLY: after T0 core.catalog_path's runtime guard refuses a plain read-write
+    open of the build without the lock (R1209)."""
+    import pathlib
+    return sqlite3.connect(pathlib.Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+
+
 def _extras(path):
-    with sqlite3.connect(path) as c:
+    with _ro(path) as c:
         return {t: sorted(r[0] for r in c.execute(f"SELECT source_id FROM {t}"))
                 for t in ("source_counts", "unit_state", "source_state", "source_data_through")}
 
 
 def _rows(path):
-    with sqlite3.connect(path) as c:
+    with _ro(path) as c:
         return (sorted(r[0] for r in c.execute("SELECT series_id FROM series")),
                 sorted(r[0] for r in c.execute("SELECT source_id FROM source")))
 
 
 @pytest.fixture
 def live(tmp_path, monkeypatch):
-    """A cut-over machine: flag, blob store, store files, catalogue build and lock all in tmp_path."""
-    (tmp_path / "CUTOVER").write_text("")
+    """A cut-over machine: flag, blob store, store files, catalogue build and lock all in tmp_path. The build is
+    made BEFORE the flag: making it is a write, and after T0 core.catalog_path's runtime guard refuses a
+    plain read-write open of the build without the lock (R1209)."""
     monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "CUTOVER"))
     store_root = tmp_path / "store"
     for rel in ("clean_full/foo/x.parquet", "clean_full/foo/sub/y.parquet", "clean_full/foo_direct/z.parquet"):
@@ -61,6 +69,7 @@ def live(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog_path, "LOCK_PATH", str(tmp_path / "live" / "writer.lock"))
     monkeypatch.setattr(catalog_path, "LIVE_STATE_DIR", str(tmp_path / "live" / "state"))
     _catalogue(tmp_path / "live" / "catalog.db")
+    (tmp_path / "CUTOVER").write_text("")                    # T0, now that the build exists
     BlobStore(str(tmp_path / "blobs"), create=True)
     monkeypatch.setattr(blob, "SELFHOST_BLOB_ROOT", str(tmp_path / "blobs"))
     sb = blob.SelfhostBlob()
@@ -214,7 +223,7 @@ import json as _json  # noqa: E402
 
 
 def _fts(path):
-    with sqlite3.connect(path) as c:
+    with _ro(path) as c:
         return sorted(r[0] for r in c.execute("SELECT series_id FROM series_fts"))
 
 

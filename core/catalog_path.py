@@ -22,6 +22,7 @@ import contextlib
 import os
 import pathlib
 import sqlite3
+import sys
 
 from core.cutover import CutoverRefused, is_cut_over
 
@@ -37,6 +38,58 @@ LIVE_STATE_DIR = os.path.join(LIVE_STORE_ROOT, "data", "_aqueduct")
 LOCK_PATH = r"E:\econ_live\state\writer.lock"
 
 _held: object | None = None           # the open lock file while this process holds the writer lock
+
+
+# ---- THE RUNTIME GUARD (review R1209) ------------------------------------------------------------------------
+# The static rules (tests/test_catalogue_writers_*) see only the spellings they were written for: an alias of
+# this module, `from core.catalog_path import BUILD_PATH`, a helper in another module, sqlite3.dbapi2.connect
+# or a file with a byte-order mark all passed them, and after T0 wrote the build with no lock. Python's audit
+# hook on the sqlite3.connect event fires for EVERY spelling, so the rule lives here: after T0, an open of the
+# build that is not read-only needs this process to hold the writer lock - whoever makes the open. It is
+# installed once, when this module is imported (every tool that learns the build's path imports it).
+def _open_target(database) -> tuple[str, bool] | None:
+    """(normalised path, read_only) of a sqlite3.connect target; None for :memory: or anything not a path."""
+    import urllib.parse                                                     # noqa: PLC0415
+    if isinstance(database, bytes):
+        database = database.decode(errors="replace")
+    if not isinstance(database, (str, os.PathLike)):
+        return None
+    s = os.fspath(database)
+    if s in ("", ":memory:"):
+        return None
+    read_only = False
+    if s.startswith("file:"):
+        path, _, query = s[len("file:"):].partition("?")
+        q = urllib.parse.parse_qs(query)
+        read_only = q.get("mode", [""])[0] == "ro" or q.get("immutable", ["0"])[0] == "1"
+        path = urllib.parse.unquote(path)
+        if path.startswith("//"):                                           # file://host/path or file:///C:/x
+            path = path[2:]
+            path = path[path.find("/"):] if not path.startswith("/") else path
+        if len(path) >= 3 and path[0] == "/" and path[2] == ":":           # /C:/x -> C:/x
+            path = path[1:]
+        s = path
+    return os.path.normcase(os.path.realpath(s)), read_only
+
+
+def _audit(event: str, args) -> None:
+    if event != "sqlite3.connect" or not args:
+        return
+    target = _open_target(args[0])
+    if target is None or target[1]:
+        return
+    if target[0] != os.path.normcase(os.path.realpath(BUILD_PATH)) or _held is not None or not is_cut_over():
+        return
+    raise CutoverRefused(f"refused: a read-write sqlite3 open of the catalogue build {BUILD_PATH} without the "
+                         f"single-writer lock ({LOCK_PATH}) - open it with core.catalog_path.connect(write=True) "
+                         "inside write_session() (R1209: the runtime guard behind the static rules)")
+
+
+# once per process: a hook cannot be removed, and a second copy of this module (a test that loads it by path)
+# must not add a second one - the first reads this module's globals, which the tests monkeypatch
+if not getattr(sys, "_econ_catalog_audit_installed", False):
+    sys.addaudithook(_audit)
+    sys._econ_catalog_audit_installed = True
 
 
 def catalog_path() -> str:

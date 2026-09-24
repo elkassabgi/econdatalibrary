@@ -57,10 +57,7 @@ def _writers():
     for rel, p in _repo_walk.code_files((".py",), ROOT):
         if rel == "core/catalog_path.py":
             continue
-        try:
-            tree = ast.parse(open(p, encoding="utf-8").read())
-        except SyntaxError:
-            continue
+        tree = _repo_walk.parse_code(p)              # utf-8-sig; a file that does not parse fails (R1209)
         if any(_is_write_open(n) for n in ast.walk(tree)):
             mains = [n for n in tree.body if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)]
             out.append((rel, p, mains[0] if mains else None))
@@ -171,7 +168,7 @@ def test_a_script_takes_the_lock_unconditionally_at_top_level():
     for rel, path, block in WRITERS:
         if block is not None:
             continue
-        tree = ast.parse(open(path, encoding="utf-8").read())
+        tree = _repo_walk.parse_code(path)
         calls = [s for s in tree.body if isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
                  and ast.unparse(s.value.func) == "catalog_path.write_session_for_process"]
         if len(calls) != 1:
@@ -184,7 +181,7 @@ def test_a_writer_never_rebinds_catalog_path():
     name (an assignment, a loop or with target, a def, or an attribute set on it) could make the lock a no-op."""
     bad = []
     for rel, path, _b in WRITERS:
-        tree = ast.parse(open(path, encoding="utf-8").read())
+        tree = _repo_walk.parse_code(path)
         for n in ast.walk(tree):
             targets = []
             if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
@@ -229,7 +226,7 @@ def test_a_dry_mode_writer_reads_its_flags_exactly():
     accepts a prefix ("--app"); the two disagree unless the parser refuses prefixes."""
     bad = []
     for rel in (r for r, a in ARGS.items() if "dry" in a):
-        tree = ast.parse(open(os.path.join(ROOT, rel), encoding="utf-8").read())
+        tree = _repo_walk.parse_code(os.path.join(ROOT, rel))
         parsers = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func).endswith("ArgumentParser")]
         if not parsers or not all(any(k.arg == "allow_abbrev" and isinstance(k.value, ast.Constant)
                                       and k.value.value is False for k in p.keywords) for p in parsers):
@@ -242,7 +239,7 @@ def test_a_writer_opens_nothing_with_plain_sqlite3_unless_it_says_why():
     only sees a resolver expression as the argument). In a writer file every plain open carries a reason."""
     bad = []
     for rel, path, _b in WRITERS:
-        for i, line in enumerate(open(path, encoding="utf-8").read().splitlines(), 1):
+        for i, line in enumerate(_repo_walk.read_code(path).splitlines(), 1):
             if "sqlite3.connect(" in line and "plain-open:" not in line and not line.lstrip().startswith("#"):
                 bad.append(f"{rel}:{i}")
     assert not bad, f"plain sqlite3 opens in writers without a '# plain-open: <reason>': {bad}"
@@ -346,6 +343,9 @@ def test_a_script_holds_the_lock_at_its_open(t0, monkeypatch, rel, path, block):
     monkeypatch.setattr(cp, "connect_path", probe)
     monkeypatch.setattr(sys, "argv", [path])
     stopped_early = None
+    # R1209 S4: a script that rebinds these modules' functions through an alias (is_cut_over, say) must not
+    # leak that into later tests - where it broke four other scripts' runs and hid its own
+    snapshot = {m: dict(vars(m)) for m in (cp, cutover)}
     try:
         runpy.run_path(path, run_name="__main__")
     except _Stop:
@@ -355,6 +355,16 @@ def test_a_script_holds_the_lock_at_its_open(t0, monkeypatch, rel, path, block):
     finally:
         for fn, a, k in at_exit:                              # what interpreter exit would run
             fn(*a, **k)
+        changed = []
+        for mod, before in snapshot.items():
+            for k in set(vars(mod)) - set(before):
+                changed.append(f"{mod.__name__}.{k} added")
+                delattr(mod, k)
+            for k, v in before.items():
+                if vars(mod).get(k) is not v:
+                    changed.append(f"{mod.__name__}.{k} replaced")
+                    setattr(mod, k, v)
+    assert not changed, f"{rel}: the script rebound the lock modules - {changed}"
     assert cp._held is None, f"{rel}: its exit handler did not release the lock"
     if stopped_early is None:
         assert seen == [(True, True)], f"{rel}: its catalogue open saw (write, lock held) = {seen}"
@@ -364,7 +374,7 @@ def test_a_script_holds_the_lock_at_its_open(t0, monkeypatch, rel, path, block):
     # catalogue for write (R1194: a script that locked after its open survived every test).
     assert seen == [], f"{rel}: stopped early ({stopped_early!r}) yet reached an open: {seen}"
     assert lock_calls == [1], f"{rel}: stopped early without calling the real write_session_for_process once"
-    tree = ast.parse(open(path, encoding="utf-8").read())
+    tree = _repo_walk.parse_code(path)
     lock_at = next((i for i, s in enumerate(tree.body) if "write_session_for_process" in ast.unparse(s)), None)
     open_at = next((i for i, s in enumerate(tree.body) if any(_is_write_open(n) for n in ast.walk(s))), None)
     assert lock_at is not None and open_at is not None and lock_at < open_at, \
