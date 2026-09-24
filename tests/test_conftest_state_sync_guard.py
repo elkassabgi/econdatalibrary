@@ -119,6 +119,27 @@ def test_the_teardown_check_catches_a_swallowed_refusal(pytester):
     r.assert_outcomes(passed=1, errors=1)
 
 
+def test_a_test_that_leaves_the_process_changed_fails_and_the_next_does_not_inherit_it(pytester, monkeypatch):
+    """R1239 and its repeat: an import-time backend setting turned later tests onto R2. The leaking test errors
+    at teardown; the one after it sees the process as it was; a test that changes the backend through
+    monkeypatch (and so undoes it) is fine."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    pytester.makeconftest(open(os.path.join(here, "conftest.py"), encoding="utf-8").read())
+    pytester.makepyfile(
+        "import os\n"
+        "def test_a_leaks():\n"
+        "    os.environ['AQUEDUCT_BACKEND'] = 'r2'\n"
+        "def test_b_after():\n"
+        "    assert os.environ.get('AQUEDUCT_BACKEND') != 'r2'\n"
+        "def test_c_monkeypatched(monkeypatch):\n"
+        "    monkeypatch.setenv('AQUEDUCT_BACKEND', 'selfhost')\n"
+        "    monkeypatch.chdir(os.path.dirname(os.getcwd()))\n")
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    r = pytester.runpytest("-p", "no:cacheprovider")
+    r.assert_outcomes(passed=3, errors=1)
+    assert "test_a_leaks left the process changed" in r.stdout.str()
+
+
 def test_an_ordinary_process_still_runs():
     r = subprocess.run([sys.executable, "-c", "print('ok')"], capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout.strip() == "ok"

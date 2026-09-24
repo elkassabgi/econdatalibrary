@@ -339,7 +339,9 @@ def main() -> int:
         print(f"SKIPPED — local mirror behind R2, verdict WITHHELD (not 'clean'): {skipped}")
     if bad_sources:
         print("SERVED BYTES DISAGREE WITH THE STORE — users are downloading superseded data.")
-        print("Repair: python tools/repair_stale_csvs.py --source <sid> --apply")
+        # after T0 repair_stale_csvs refuses (it judges by the frozen R2): make_servable re-derives from the store
+        print("Repair: python tools/make_servable.py <sid>" if selfhosted
+              else "Repair: python tools/repair_stale_csvs.py --source <sid> --apply")
         print("Then ask WHY it went stale: something merged without re-deriving (R380).")
         return 1
     return 0

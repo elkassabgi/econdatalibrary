@@ -102,6 +102,32 @@ def _no_production_paths(tmp_path_factory):
         yield
 
 
+_PROCESS_KEYS = ("AQUEDUCT_BACKEND", "AQUEDUCT_DERIVE_WORKERS", "AQUEDUCT_DATA_ROOT", "AQUEDUCT_STATE_DIR")
+
+
+@pytest.fixture(autouse=True)
+def _no_process_leak(request):
+    """AND NO TEST LEAVES THE PROCESS CHANGED. A tool that sets the store backend or changes directory when it is
+    IMPORTED moved every later test onto R2 - 42 failures far from their cause (R1239), then one more from
+    tools/rekey_ons_uk.py's import-time setdefault. The test that leaks now fails itself, and the values are put
+    back so nothing after it inherits them. (This fixture requests nothing, so it is torn down after the test's
+    own monkeypatch has undone its deliberate changes.)"""
+    import os
+    before = (os.getcwd(), {k: os.environ.get(k) for k in _PROCESS_KEYS})
+    yield
+    after = (os.getcwd(), {k: os.environ.get(k) for k in _PROCESS_KEYS})
+    if after == before:
+        return
+    os.chdir(before[0])
+    for k, v in before[1].items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    pytest.fail(f"{request.node.nodeid} left the process changed (cwd / store settings): {before} -> {after}",
+                pytrace=False)
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "state_sync_refusal_expected: the guard's own can-fail test")
 

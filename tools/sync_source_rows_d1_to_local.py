@@ -62,6 +62,12 @@ def local_ids(source: str) -> set:
 
 
 def main() -> int:
+    # AFTER T0 this tool reads the FROZEN cloud copy and writes the live local data: refused first, before
+    # its arguments (neither the R2 guard nor d1_remote stops a READ; tests/test_verifiers_6d.py lists why).
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('sync_source_rows_d1_to_local - it copies FROZEN D1 rows into the live catalogue (and would bring back rows removed after T0)')
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--source", required=True)
     ap.add_argument("--apply", action="store_true")

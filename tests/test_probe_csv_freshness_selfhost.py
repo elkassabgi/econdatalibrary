@@ -58,6 +58,7 @@ def test_after_t0_served_bytes_come_from_the_self_hosted_store(t0, monkeypatch, 
     assert P.main() == 1, "zz:b is served with a different value: stale"
     out = capsys.readouterr().out
     assert "STALE  zz" in out and "1/2 differ" in out
+    assert "Repair: python tools/make_servable.py" in out, "after T0 the repair is make_servable, not the R2 tool"
 
 
 def test_after_t0_a_matching_store_is_clean_and_the_bookmark_is_local(t0, monkeypatch):

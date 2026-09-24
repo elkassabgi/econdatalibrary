@@ -121,6 +121,12 @@ def published_names() -> dict[str, str]:
 
 
 def main() -> int:
+    # AFTER T0 this tool reads the FROZEN cloud copy and writes the live local data: refused first, before
+    # its arguments (neither the R2 guard nor d1_remote stops a READ; tests/test_verifiers_6d.py lists why).
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('catalog_worldbank_esg_gaps - it reads R2 to decide what to catalogue, and R2 is frozen after T0')
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true",
                     help="write the rows; without it this is a dry run")
