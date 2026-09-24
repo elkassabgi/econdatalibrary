@@ -196,6 +196,12 @@ def complete(con, source):
 
 
 def main(sources):
+    from core import cutover                                         # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 it writes the LIVE build from THIS checkout's store, which is the store only in the live
+        # checkout - a worktree's is scratch (R1249: a worktree run replaced live catalogue rows)
+        from updater import blob                                     # noqa: PLC0415
+        blob.refuse_unless_live_checkout("catalog_complete (after T0 it writes the live catalogue from this checkout's store)")
     os.environ.setdefault("AQUEDUCT_BACKEND", "r2")   # see the note beside the import
     con = catalog_path.connect(write=True)
     total = 0

@@ -305,7 +305,17 @@ def test_main_opens_in_the_right_mode(t0, monkeypatch, rel, argv, want, prepare)
     assert _open_mode(rel, argv, monkeypatch, prepare) == [want]
 
 
-def test_catalog_complete_opens_read_write(t0, monkeypatch):
+def test_catalog_complete_opens_read_write(t0, monkeypatch, tmp_path):
+    # after T0 catalog_complete writes the live build only from the LIVE checkout (R1249) - be that checkout here
+    from updater import blob
+    from updater import config as ucfg
+    live = str(tmp_path / "live")
+    monkeypatch.setattr(cp, "LIVE_STORE_ROOT", live)
+    monkeypatch.setattr(blob, "_code_root", lambda: live)
+    monkeypatch.setattr(ucfg, "ROOT", live)
+    monkeypatch.setattr(ucfg, "DATA_ROOT", os.path.join(live, "data", "clean_full"))
+    monkeypatch.delenv("ECONDL_DATA", raising=False)
+    monkeypatch.delenv("ECONDL_CATALOG", raising=False)
     assert _open_mode("tools/catalog_complete.py", [], monkeypatch, call=lambda m: m.main(["x"])) == [True]
 
 

@@ -68,24 +68,39 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=12)
     a = ap.parse_args()
 
+    from core import cutover                                  # noqa: PLC0415
+    selfhosted = cutover.is_cut_over()
+    if selfhosted:
+        # AFTER T0 the catalogue is the LIVE build: refuse outside the live checkout BEFORE reading it (R1249)
+        from updater import blob                              # noqa: PLC0415
+        blob.refuse_unless_live_checkout("sample_source_coverage (after T0 it judges the live store)")
+
     con = catalog_path.connect(timeout=300)
-    total = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?", (a.source,)).fetchone()[0]
+    if selfhosted:
+        # PRIMARY-KEY RANGE, not `source_id=?` (no index: a full scan holding the live build's read lock, R1249).
+        # ";" is the byte after ":".
+        rng = (a.source + ":", a.source + ";")
+        total = con.execute("SELECT COUNT(*) FROM series WHERE series_id >= ? AND series_id < ?", rng).fetchone()[0]
+    else:
+        total = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?", (a.source,)).fetchone()[0]
     if total == 0:
         print(f"{a.source}: 0 catalogued series — nothing to sample.")
         return 0
     n = min(a.sample, total)
-    ids = [r[0] for r in con.execute(
-        "SELECT series_id FROM series WHERE source_id=? ORDER BY RANDOM() LIMIT ?",
-        (a.source, n))]
+    if selfhosted:
+        ids = [r[0] for r in con.execute(
+            "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ? ORDER BY RANDOM() LIMIT ?",
+            (*rng, n))]
+    else:
+        ids = [r[0] for r in con.execute(
+            "SELECT series_id FROM series WHERE source_id=? ORDER BY RANDOM() LIMIT ?",
+            (a.source, n))]
     con.close()
 
-    from core import cutover                                  # noqa: PLC0415
     where = "R2"
-    if cutover.is_cut_over():
-        # AFTER T0 (plan step 6d): the CSVs users get live in the self-hosted store; R2 is a frozen copy. From the
-        # live checkout only. exists() answers from the store's index - no exception is read as "absent".
-        from updater import blob                              # noqa: PLC0415
-        blob.refuse_unless_live_checkout("sample_source_coverage (after T0 it judges the live store)")
+    if selfhosted:
+        # AFTER T0 (plan step 6d): the CSVs users get live in the self-hosted store; R2 is a frozen copy.
+        # exists() answers from the store's index - no exception is read as "absent".
         store, where = blob.SelfhostBlob(), "the self-hosted store"
 
         def present(sid: str) -> bool:

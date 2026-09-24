@@ -122,18 +122,30 @@ def main() -> int:
                          "reporting a truncated figure as a total")
     a = ap.parse_args()
 
-    counts = catalogue_counts()
+    from core import cutover                                   # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 the catalogue is the LIVE build: refuse outside the live checkout BEFORE reading it, and count it
+        # in short primary-key chunks - one GROUP BY holds the build's read lock and the writer waits (R1249)
+        from updater import blob                               # noqa: PLC0415
+        blob.refuse_unless_live_checkout("audit_r2_vs_catalog (after T0 it counts the live store)")
+        from core import catalog_path                          # noqa: PLC0415
+        import collections                                     # noqa: PLC0415
+        _con = catalog_path.connect()
+        try:
+            counts = dict(collections.Counter(s for (s,) in catalog_path.iter_series(_con, ("source_id",))))
+        finally:
+            _con.close()
+    else:
+        counts = catalogue_counts()
     names = a.sources or (sorted(counts) if a.all else [])
     if not names:
         print("name at least one source, or pass --all")
         return 2
 
-    from core import cutover                                   # noqa: PLC0415
     if cutover.is_cut_over():
         # AFTER T0 (plan step 6d): the objects users get are the self-hosted store's (R2 is a frozen copy); counted
-        # from the store's index, from the live checkout only
+        # from the store's index (the live-checkout refusal ran above, before the catalogue was read)
         from updater import blob                               # noqa: PLC0415
-        blob.refuse_unless_live_checkout("audit_r2_vs_catalog (after T0 it counts the live store)")
         _store = blob.SelfhostBlob()
 
         def counter(pre):

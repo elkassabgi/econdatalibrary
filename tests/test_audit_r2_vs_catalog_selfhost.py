@@ -67,3 +67,44 @@ def test_after_t0_another_checkout_is_refused(live, monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["audit_r2_vs_catalog.py", "zz"])
     with pytest.raises(cutover.CutoverRefused, match="R1203"):
         A.main()
+
+
+def test_after_t0_a_catalogue_row_with_no_object_names_the_swap_not_d1(live, monkeypatch, capsys):
+    """R1249 A9: the post-T0 'rows with no object' verdict had no pin; putting back the D1 wording passed."""
+    with catalog_path.writer_lock():
+        blob.SelfhostBlob().delete("series/zz%3Ab.csv")
+    monkeypatch.setattr(sys, "argv", ["audit_r2_vs_catalog.py", "zz"])
+    A.main()
+    out = capsys.readouterr().out
+    zz = next(ln for ln in out.splitlines() if ln.strip().startswith("zz "))
+    assert zz.split()[1:4] == ["1", "2", "-1"], zz
+    assert "CATALOGUE ROWS WITH NO OBJECT — once swapped, a user gets 502" in zz and "D1" not in out, out
+
+
+def _trace_series_reads(monkeypatch):
+    """Every SQL statement the tool sends through the catalogue resolver (both roads)."""
+    import re as _re
+    sql = []
+    for name in ("connect", "connect_path"):
+        real = getattr(catalog_path, name)
+
+        def traced(*a, _real=real, **k):
+            con = _real(*a, **k)
+            con.set_trace_callback(sql.append)
+            return con
+        monkeypatch.setattr(catalog_path, name, traced)
+
+    def whole_table_reads():
+        reads = [q for q in sql if "FROM series" in q or "from series" in q]
+        return reads, [q for q in reads if "GROUP BY" in q.upper() or _re.search(r"source_id\s*=\s*", q)]
+    return whole_table_reads
+
+
+def test_after_t0_the_live_build_is_never_read_whole(live, monkeypatch, capsys):
+    """R1249 G6: after T0 the catalogue counts come from short primary-key chunks - one GROUP BY holds the live
+    build's read lock while the writer waits."""
+    check = _trace_series_reads(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["audit_r2_vs_catalog.py", "zz", "zzz"])
+    A.main()
+    reads, bad = check()
+    assert reads and not bad, bad

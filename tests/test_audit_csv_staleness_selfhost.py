@@ -93,3 +93,31 @@ def test_after_t0_another_checkout_is_refused(live, monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["audit_csv_staleness.py", "--source", "zz"])
     with pytest.raises(cutover.CutoverRefused, match="R1203"):
         S.main()
+
+
+def _trace_series_reads(monkeypatch):
+    """Every SQL statement the tool sends through the catalogue resolver (both roads)."""
+    import re as _re
+    sql = []
+    for name in ("connect", "connect_path"):
+        real = getattr(catalog_path, name)
+
+        def traced(*a, _real=real, **k):
+            con = _real(*a, **k)
+            con.set_trace_callback(sql.append)
+            return con
+        monkeypatch.setattr(catalog_path, name, traced)
+
+    def whole_table_reads():
+        reads = [q for q in sql if "FROM series" in q or "from series" in q]
+        return reads, [q for q in reads if "GROUP BY" in q.upper() or _re.search(r"source_id\s*=\s*", q)]
+    return whole_table_reads
+
+
+def test_after_t0_the_live_build_is_never_read_whole(live, monkeypatch, capsys):
+    """R1249 G7: after T0 the served-source counts come from short primary-key chunks, not one GROUP BY."""
+    check = _trace_series_reads(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["audit_csv_staleness.py", "--source", "zz"])
+    S.main()
+    reads, bad = check()
+    assert reads and not bad, bad

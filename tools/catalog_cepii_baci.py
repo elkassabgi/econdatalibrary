@@ -47,6 +47,12 @@ def country_names(zip_path: str) -> dict[str, str]:
 
 
 def main() -> int:
+    from core import cutover                                         # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 it writes the LIVE build from THIS checkout's store, which is the store only in the live
+        # checkout - a worktree's is scratch (R1249: a worktree run replaced live catalogue rows)
+        from updater import blob                                     # noqa: PLC0415
+        blob.refuse_unless_live_checkout("catalog_cepii_baci (after T0 it writes the live catalogue from this checkout's store)")
     ap = argparse.ArgumentParser()
     ap.add_argument("--vintage", required=True, help="publisher V-string, e.g. V202601")
     ap.add_argument("--lastmod", default=None,

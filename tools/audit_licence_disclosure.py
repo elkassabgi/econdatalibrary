@@ -173,16 +173,8 @@ def served_from_build(chunk: int = 200_000):
     try:
         lic = {r[0]: r[1:] for r in con.execute(
             "SELECT license_id, commercial_ok, no_modify, reservable FROM license")}
-        counts: collections.Counter = collections.Counter()
-        last = ""
-        while True:
-            rows = con.execute("SELECT series_id, source_id, license_id FROM series WHERE series_id > ? "
-                               "ORDER BY series_id LIMIT ?", (last, chunk)).fetchall()
-            if not rows:
-                break
-            for _sid, src, lid in rows:
-                counts[(src, lid)] += 1
-            last = rows[-1][0]
+        counts: collections.Counter = collections.Counter(
+            catalog_path.iter_series(con, ("source_id", "license_id"), chunk=chunk))
     finally:
         con.close()
     out = []
