@@ -60,10 +60,24 @@ def test_after_t0_the_r2_copy_tools_refuse_first(tmp_path, monkeypatch, mod, arg
                                  ["tools/refresh_r2_catalog.py", "--help"],
                                  ["tools/delist_timeless_tables.py", "--help"],
                                  ["tools/_upload_clean_full_parquet.py"]])
-def test_as_a_script_the_refusal_imports_resolve(cmd):
+def test_as_a_script_the_refusal_imports_resolve(cmd, tmp_path):
     """Run the way people run them: the refusal's import of core must resolve from a script's own path. Only
-    --help or a usage error (nothing is touched); on a machine past T0 the refusal itself is the answer."""
-    r = subprocess.run([sys.executable, "-B", *cmd], cwd=ROOT, capture_output=True, text=True, timeout=120)
+    --help or a usage error; on a machine past T0 the refusal itself is the answer.
+    A COPY of the tool and of core/ in tmp_path, never the checkout's files (R1234, as R1210 for the defused
+    one-shots): the checkout's .env holds the write keys in the production checkout, where tools/pretest.py runs
+    this suite, and only the arguments stood between a regressed tool and R2. The copy's root has no .env, and
+    every R2 and Cloudflare variable is a dead endpoint (an environment value wins over any .env)."""
+    import shutil
+    from test_defused_one_shots import _dead_env
+    shutil.copytree(os.path.join(ROOT, "core"), tmp_path / "core", ignore=shutil.ignore_patterns("__pycache__"))
+    if cmd[0].startswith("tools/"):
+        (tmp_path / "tools").mkdir()
+        shutil.copy(os.path.join(ROOT, cmd[0]), tmp_path / cmd[0])
+    assert not (tmp_path / ".env").exists()
+    env = _dead_env()
+    env.pop("PYTHONPATH", None)
+    r = subprocess.run([sys.executable, "-B", *cmd], cwd=str(tmp_path), env=env, capture_output=True, text=True,
+                       timeout=120)
     out = r.stdout + r.stderr
     assert "ModuleNotFoundError" not in out and "ImportError" not in out, out[-800:]
     assert ("usage" in out.lower() and r.returncode in (0, 2)) or "self-hosted since T0" in out, out[-800:]
