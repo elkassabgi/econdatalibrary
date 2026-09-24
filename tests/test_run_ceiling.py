@@ -157,6 +157,23 @@ def test_the_csv_phase_arms_its_fence_from_the_helper():
         assert not _bindings(run_once, name), (name, [ast.unparse(b)[:120] for b in _bindings(run_once, name)])
 
 
+def test_every_alarm_site_in_run_once_takes_its_minutes_from_its_helper():
+    """R1248: the two unit-window sites had no pin - putting either back to main's inline formula (0.0 past the
+    ceiling, so no alarm), the raw timeout, or `max(0, window - 1)` passed every test. run_once arms exactly three
+    alarms: the probe and the update take _unit_window_min() DIRECTLY, the csv phase the pinned _csv_fence. It
+    also never reaches module state by name (R1248 N4/N5: a globals() write or setattr rebinding a helper)."""
+    import ast
+    run_once = _run_once_ast()
+    sites = {ast.unparse(n.args[0]): ast.unparse(n.args[1]) for n in ast.walk(run_once)
+             if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_unit_deadline"}
+    assert sites == {"unit.key + ' (detect_change)'": "_unit_window_min()",
+                     "unit.key": "_unit_window_min()",
+                     "unit.key + ' (csv phase)'": "_csv_fence"}, sites
+    reach = [ast.unparse(n)[:80] for n in ast.walk(run_once) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", None) in ("globals", "setattr", "vars", "exec", "eval")]
+    assert not reach, reach
+
+
 def test_the_binding_scan_can_fail():
     """The four rebindings that fooled the first pin (R1245 RV1-RV4), plus the others, are each seen."""
     import ast

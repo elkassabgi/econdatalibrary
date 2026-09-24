@@ -332,6 +332,10 @@ def _csv_fence_min() -> float:
     the ceiling got the full 60-minute fence - more than the 15 minutes between updater-daily's
     290-minute run budget and its 305-minute step timeout, and a kill there loses the state push
     and the digest, which this fence exists to prevent (review R1144, "Outside this branch").
+
+    WHAT IT CAN BOUND is main-thread work only - see _unit_window_min and the comment at the fence
+    in run_once: derive_and_put's pooled work is not cut, so the fence narrows the step-kill risk,
+    it does not remove it (R1248).
     """
     rem = _remaining_run_min()
     if rem is None:
@@ -2117,9 +2121,14 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # post-merge phase ran 115 silent minutes past every soft budget
                 # (run 32054925848) until the 285-min step kill destroyed the
                 # run's state push, D1 syncs and digest. The soft budget inside
-                # derive_and_put only binds when ids complete; the id-mapping
-                # walk and a wedged resolve are outside it. SIGALRM binds them
-                # all. Sized to the run's remaining minutes (+2 grace) capped at
+                # derive_and_put only binds when ids complete. SIGALRM binds
+                # MAIN-THREAD work only - the id-mapping walk, and a resolve on the
+                # serial path until derive's own `except Exception` catches it
+                # (that path books the id failed and carries on). Work on derive's
+                # thread pool is NOT cut: the pool waits for its running workers,
+                # so a wedged resolve or PUT there holds the phase until its socket
+                # timeout (review R1246/R1248; making derive fence-aware is its own
+                # change). Sized to the run's remaining minutes (+2 grace) capped at
                 # 60 — on trip, the phase is abandoned as a budget note (the
                 # next run re-derives; cursors are already recorded) rather than
                 # the run being executed at the step ceiling. Past the ceiling
