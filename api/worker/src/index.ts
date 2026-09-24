@@ -28,8 +28,9 @@ import { requireDownloadAuth, logDownload } from "./auth";
 import { isGated } from "./denylist";
 import { handlePublicStats } from "./publicStats";
 import { json, reqLang } from "./util";
-import { isLocal, originGate, finalizeLocal, isDownloadPath } from "./localMode";
+import { isLocal, originGate, finalizeLocal, isDownloadPath, COUNT_HEADER } from "./localMode";
 import { LocalBucket } from "./localBucket";
+import { isForward, isCacheable, originRequest, countingBody, clientResponse, notConfigured } from "./edge";
 
 const CORS_PREFLIGHT: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -88,6 +89,16 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
       // is an allowlist of known paths and the row holds no personal data at all.
       if (path === "/v1/pv") return await handlePageview(url, env);
       if (path === "/v1/pv/report") return await handlePageviewReport(url, env);
+
+      // THE FORWARDING EDGE (src/edge.ts, plan code change 1): every other route is answered by the
+      // workstation's origin; public-stats stays here (it reads USERS) with its source names taken from
+      // the origin, not econ D1. Off unless FORWARD = "on"; the origin itself never forwards.
+      if (!local && isForward(env)) {
+        if (path === "/v1/public-stats") {
+          return await handlePublicStats(env, () => originSourceNames(request, env, ctx));
+        }
+        return await forwardRoute(request, env, ctx, path);
+      }
 
       // /v1/catalog is edge-cached (2026-08-15 cost incident): a crawler paging
       // one source drove 130B D1 rows read in a day. The catalog changes only at
@@ -333,4 +344,71 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
       const detail = err instanceof Error ? err.message : "unknown error";
       return json({ error: "internal_error", detail }, 500);
     }
+}
+
+const NOT_REDISTRIBUTABLE_DATA = "This source's licence does not permit third-party redistribution of the data. " +
+  "Please obtain it directly from the original provider.";
+
+/** The forwarding edge's answer for every route the origin serves (src/edge.ts). The licence gate and
+ *  download auth run HERE, before anything is forwarded; the download log is written here from the
+ *  origin's content-length, or from the counted body when the origin marked it x-econ-count. */
+async function forwardRoute(request: Request, env: Env, ctx: ExecutionContext, path: string): Promise<Response> {
+  const seriesPrefix = "/v1/series/";
+  if (path.startsWith(seriesPrefix) && (path.endsWith(".csv") || path.endsWith(".metadata.json"))) {
+    const csv = path.endsWith(".csv");
+    const enc = path.slice(seriesPrefix.length, -(csv ? ".csv" : ".metadata.json").length);
+    const id = decodeURIComponent(enc);
+    if (!id) return json({ error: "bad_request", detail: "empty series id" }, 400);
+    if (isGated(id)) {
+      return json({ error: "not_redistributable", series_id: id, detail: NOT_REDISTRIBUTABLE_DATA }, 451);
+    }
+    if (csv) {
+      const auth = await requireDownloadAuth(request, env);
+      if (auth instanceof Response) return auth;
+      const oreq = originRequest(request, env);
+      if (!oreq) return notConfigured();
+      const oresp = await fetch(oreq);
+      const userId = auth.user.id;
+      if (oresp.status === 200 && oresp.headers.get(COUNT_HEADER) === "1" && oresp.body) {
+        const body = countingBody(oresp.body, async (bytes) => {
+          if (bytes > 0) await logDownload(env, userId, id, request, bytes);
+        }, ctx);
+        return clientResponse(oresp, body);
+      }
+      if (oresp.status === 200 && oresp.headers.has("content-length")) {
+        await logDownload(env, userId, id, request, Number(oresp.headers.get("content-length")) || 0);
+      }
+      return clientResponse(oresp, oresp.body);                 // body never read: gzip stays gzip
+    }
+  }
+  const cacheable = isCacheable(path);
+  const key = new Request(new URL(request.url).toString(), { method: "GET" });
+  if (cacheable) {
+    const hit = await caches.default.match(key);
+    if (hit) return hit;
+  }
+  const oreq = originRequest(request, env);
+  if (!oreq) return notConfigured();
+  const oresp = await fetch(oreq);
+  const out = clientResponse(oresp, oresp.body);
+  if (cacheable && oresp.status === 200) {
+    const toCache = new Response(out.body, out);
+    toCache.headers.set("cache-control", "public, max-age=300, s-maxage=21600");
+    ctx.waitUntil(caches.default.put(key, toCache.clone()));
+    return toCache;
+  }
+  return out;
+}
+
+/** Source names for /v1/public-stats from the origin's /v1/sources (edge-cached like any public
+ *  answer), so the route needs no econ D1 once the catalogue lives on the workstation. */
+async function originSourceNames(request: Request, env: Env, ctx: ExecutionContext): Promise<Record<string, string>> {
+  const u = new URL(request.url);
+  const sourcesReq = new Request(new URL("/v1/sources", u).toString(), { method: "GET", headers: request.headers });
+  const resp = await forwardRoute(sourcesReq, env, ctx, "/v1/sources");
+  if (resp.status !== 200) throw new Error(`origin /v1/sources answered ${resp.status}`);
+  const body = await resp.json() as { sources?: { source?: string; name?: string | null }[] };
+  const out: Record<string, string> = {};
+  for (const s of body.sources ?? []) if (s.source) out[s.source] = s.name || s.source;
+  return out;
 }

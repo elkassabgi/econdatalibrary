@@ -58,6 +58,13 @@ export interface Env {
   ORIGIN_SECRET?: string;
   // Base URL of the blob sidecar (tools/selfhost/blob_sidecar.py) that stands in for R2 on the origin.
   BLOB_SIDECAR_URL?: string;
+
+  // EDGE forwarding (src/edge.ts; plan code change 1). FORWARD = "on" sends data work to the origin at
+  // ORIGIN_URL with ORIGIN_SECRET (and an Access service token when set). Unset = today's behaviour.
+  FORWARD?: string;
+  ORIGIN_URL?: string;
+  ORIGIN_ACCESS_ID?: string;
+  ORIGIN_ACCESS_SECRET?: string;
 }
 
 // --- D1 row shapes (one per SELECT column list in sql.ts) ------------------

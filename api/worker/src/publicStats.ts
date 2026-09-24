@@ -189,7 +189,12 @@ const INSTITUTION_ALIASES: Record<string, string> = {
   'fordham': 'Fordham University',
 };
 
-export async function handlePublicStats(env: Env): Promise<Response> {
+// `sourceNames`, when given, replaces the CATALOG `source` read below: the forwarding edge
+// (src/edge.ts) supplies the names from the origin's /v1/sources, so this route needs no econ D1 once
+// the catalogue lives on the workstation (plan code change 1, review R1161 finding 2).
+export async function handlePublicStats(
+  env: Env, sourceNames?: () => Promise<Record<string, string>>,
+): Promise<Response> {
   const U = env.USERS;
 
   // Shared identity: total registered accounts (all rows) — matches admin count.
@@ -265,10 +270,14 @@ export async function handlePublicStats(env: Env): Promise<Response> {
     "COUNT(*) AS downloads FROM econ_download_log WHERE instr(series_id, ':') > 0 " +
     "GROUP BY source ORDER BY downloads DESC LIMIT 200",
   ).all<{ source: string; downloads: number }>();
-  const catRows = await env.CATALOG.prepare("SELECT source_id, name FROM source")
-    .all<{ source_id: string; name: string }>();
-  const catName: Record<string, string> = {};
-  for (const r of catRows.results ?? []) catName[r.source_id] = r.name || r.source_id;
+  let catName: Record<string, string> = {};
+  if (sourceNames) {
+    catName = await sourceNames();
+  } else {
+    const catRows = await env.CATALOG.prepare("SELECT source_id, name FROM source")
+      .all<{ source_id: string; name: string }>();
+    for (const r of catRows.results ?? []) catName[r.source_id] = r.name || r.source_id;
+  }
   // AND the redistribution gate, added 2026-09-17 by a whole-surface sweep. The catalogue
   // whitelist above is not enough: a GATED source can still hold a `source` row in D1 — the
   // catalogue sync is frozen, so rows persist — and the download log carries its historical
