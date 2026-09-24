@@ -166,7 +166,17 @@ Build status (branch feat/econ-selfhost-origin):
   series_csv_put_args in both stores). Progress is the shrink-only list
   tests/test_object_writers_ratchet.py LEGACY_OBJECT_WRITERS (added with batch 2): 24 left after
   batches 1 (statcan, csv_bulk) and 2 (pxweb_flowgrain, the four IMF table tools, usda, census,
-  ilostat, istat);
+  ilostat, istat); batch 3 moved unsdg, noaa_missing, insee_melodi, ons_uk and bea (19 left, plus the
+  three that write through core.derive_csv's PUT helpers - derive_one, derive_eia_tables,
+  derive_usda_bulk - which the ratchet now sees and which move with core/derive_csv.py).
+  ENCODING IS KEPT (R1206): the 12 moved tools that always stored their CSVs plain keep doing so
+  (put_atomic(plain=True)). Gzip is not neutral for them - the worker refuses a filter on a gzipped object
+  above its decompression-ratio limit (4 flow-grain CSVs measured at 45-66x) and serves it without the
+  citation in its body. Whether to gzip them is a separate decision, with its own measurement.
+  THE BLOB STORE NEEDS THE CATALOGUE'S SINGLE-WRITER RULE (R1203 finding 2): after T0 SelfhostBlob writes
+  the served store with no lock and from any checkout, so a worktree's derive can publish CSVs built from
+  the worktree's parquets. After catpath merges into origin: a SelfhostBlob write requires the writer lock
+  (core.catalog_path) and the live checkout, as a catalogue write does.
   delist_timeless_tables.py onto licence_targets (purge_unpermitted_r2.py stays defused
   until re-armed, then on licence_targets); a self-hosted path for tools/run_local_heavy.ps1 and
   make_servable.py (after T0 both fail closed today: the heavy run asks for --pull-state and the R2
