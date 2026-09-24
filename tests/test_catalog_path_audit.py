@@ -333,6 +333,113 @@ def test_an_unreadable_main_counts_as_the_build(build, monkeypatch):
     assert cp._is_build("anything") is True
 
 
+# ---- R1219: an ATTACH made under the lock, a blob kept past it, a connection opened inside a connect ---------
+
+def _journal(b):
+    c = sqlite3.connect(_uri(b, "?mode=ro"), uri=True)
+    try:
+        return c.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize("then", ["nothing", "set_authorizer(None)"])
+def test_an_attach_made_under_the_lock_is_remembered_after_it(build, tmp_path, then):
+    """R1219 finding 1: the ATTACH was recorded after the lock short-circuit (so never, under the lock), and a
+    set_authorizer() made a fresh record - an unqualified journal_mode then reached the attached build."""
+    c = sqlite3.connect(str(tmp_path / "staging.db"))
+    try:
+        with cp.write_session():
+            c.execute("ATTACH ? AS cat", (str(build),))
+        if then != "nothing":
+            c.set_authorizer(None)
+        with pytest.raises(NOT_AUTHORIZED, match="not authorized"):
+            c.execute("PRAGMA journal_mode=WAL").fetchall()
+    finally:
+        c.close()
+    assert _journal(build) == "delete"
+
+
+def test_a_blob_opened_under_the_lock_cannot_write_after_it(build):
+    """R1219 finding 2: the lock was checked only when the blob was opened."""
+    c = sqlite3.connect(str(build))
+    try:
+        with cp.write_session():
+            b = c.blobopen("which", "name", 1)
+            b.write(b"UNDER-")
+        b.seek(0)
+        assert b.read(6) == b"UNDER-", "reading goes on"
+        b.seek(0)
+        with pytest.raises(cutover.CutoverRefused, match="R1219"):
+            b.write(b"AFTER!")
+        with pytest.raises(cutover.CutoverRefused, match="R1219"):
+            b[0:1] = b"X"
+        b.close()
+    finally:
+        c.close()
+    assert _rows(build) == ["UNDER-"]
+
+
+class _SneakyPath:
+    """A path whose conversion opens the build while a connect is being made (R1219 finding 3)."""
+    def __init__(self, build, target, how):
+        self.build, self.target, self.how = build, target, how
+
+    def __fspath__(self):
+        if self.how == "direct Connection":
+            c = sqlite3.Connection(str(self.build))
+        else:
+            c = sqlite3.connect(str(self.build))
+        try:
+            c.execute("INSERT INTO which VALUES ('sneaky')")
+            c.commit()
+        finally:
+            c.close()
+        return str(self.target)
+
+
+@pytest.mark.parametrize("how,error", [("direct Connection", cutover.CutoverRefused),
+                                       ("guarded connect", sqlite3.DatabaseError)])
+def test_a_connection_opened_while_another_is_being_made_is_guarded_too(build, tmp_path, how, error):
+    """R1219 finding 3: a thread-local "inside the wrapper" flag let every connection made during a connect
+    through - a path's __fspath__ (or a timeout's __float__) wrote the build. The hook now asks the TYPE."""
+    with pytest.raises(error):
+        sqlite3.connect(_SneakyPath(build, tmp_path / "other.db", how))
+    assert _rows(build) == ["before"]
+
+
+def test_the_base_init_cannot_repoint_a_guarded_connection(build):
+    """R1219 probe: sqlite3.Connection.__init__(conn, build) on a guarded connection re-opened it at the build
+    with no authorizer. The hook now lets a handle through only inside the object's own guarded __init__."""
+    c = sqlite3.connect(":memory:")
+    with pytest.raises(cutover.CutoverRefused, match="R1219"):
+        sqlite3.Connection.__init__(c, str(build))
+    with pytest.raises(sqlite3.ProgrammingError):                # left unusable: nothing can run on it
+        _write(c)
+    c = sqlite3.connect(":memory:")
+    c.__init__(str(build))                                       # the guarded __init__ re-guards it
+    with pytest.raises(NOT_AUTHORIZED, match="not authorized"):
+        _write(c)
+    c.close()
+    assert _rows(build) == ["before"]
+
+
+def test_vacuum_after_t0_needs_the_lock(build, tmp_path):
+    """Measured by R1219: SQLite authorizes VACUUM as an internal ATTACH plus writes, so it is refused after T0
+    without the lock - on every database (tools/prune_series_cursors.py must hold the lock after T0)."""
+    other = tmp_path / "state.db"
+    sqlite3.connect(str(other)).close()
+    for p in (other, build):
+        c = sqlite3.connect(str(p))
+        with pytest.raises(NOT_AUTHORIZED):
+            c.execute("VACUUM")
+        c.close()
+    with cp.writer_lock():
+        c = sqlite3.connect(str(build))
+        c.execute("VACUUM")
+        c.close()
+
+
 def test_the_guard_is_installed_once():
     import sys
     assert getattr(sys, "_econ_catalog_audit_installed", False) is True
