@@ -4,10 +4,7 @@
 api/test_conformance.py
 catalog/gen_site.py
 clients/python/econdl/_catalog.py
-core/apply_title_wave.py
 core/backfill_coverage.py
-core/broaden_catalog.py
-core/build_series_metadata.py
 core/catalog.py
 core/derive_csv.py
 core/export_d1.py

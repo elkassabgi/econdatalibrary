@@ -16,14 +16,16 @@ core/build_series_metadata.py.
   python core/broaden_catalog.py               # catalog (modifies data/catalog.db)
 """
 from __future__ import annotations
-import argparse, glob, json, os, sqlite3, time
+import argparse, glob, json, os, sqlite3, sys, time
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 STORE = os.path.join(ROOT, "data", "clean_full")
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 OUTDIR = os.path.join(ROOT, "dist", "broaden")
 PROTECTED = {"cbs_nl", "gus_dbw"}
 
@@ -153,7 +155,7 @@ def main():
         SERIES_CAP = a.series_cap
     os.makedirs(OUTDIR, exist_ok=True)
 
-    conn = sqlite3.connect(CATALOG)
+    conn = catalog_path.connect(write=not a.dry_run)   # a dry run only reads
     conn.row_factory = sqlite3.Row
     cataloged = {r[0] for r in conn.execute("SELECT DISTINCT source_id FROM series")}
     src_license = {r["source_id"]: r["license_id"] for r in conn.execute("SELECT source_id, license_id FROM source")}
@@ -274,4 +276,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--dry-run" in sys.argv[1:]:
+        main()                               # reads only: no lock (a write would be refused after T0 anyway)
+    else:
+        with catalog_path.write_session():   # after T0: the single-writer lock
+            main()
