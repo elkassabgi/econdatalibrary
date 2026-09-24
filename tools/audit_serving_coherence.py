@@ -13,10 +13,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-os.chdir(r'E:\research\econfindatalibrary')
 # this checkout's code (it named the production checkout, so a worktree ran production's modules)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import catalog_path, r2_util
+from core import cutover   # noqa: E402
+# STEP 6d: this question has no meaning after T0 - refused before ANYTHING runs, the chdir below included
+# (tests/test_verifiers_6d.py; the process-leak guard caught the chdir running first)
+cutover.refuse_if_cut_over('audit_serving_coherence - its three legs (local, D1, R2) are one store and two frozen copies after T0')
+os.chdir(r'E:\research\econfindatalibrary')
+from core import catalog_path, r2_util   # noqa: E402
 
 API = 'https://econdl-api.elkassabgi.workers.dev/v1/catalog?source=%s&limit=1'
 

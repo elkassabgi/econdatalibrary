@@ -268,6 +268,11 @@ def one_source(s3, src, workers, json_path=None, quiet=False):
 
 
 def main() -> int:
+    # STEP 6d: this question has no meaning after T0 - refused first (tests/test_verifiers_6d.py)
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('footer_diff - it compares the local store with R2, and after T0 there is one store (R2 is a frozen copy)')
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", action="append", default=[])
     ap.add_argument("--all", action="store_true",

@@ -164,6 +164,11 @@ def diff_counts(cache: dict, truth: dict, homes: dict, remote: bool) -> list:
 
 
 def main(argv=None) -> int:
+    # STEP 6d: this question has no meaning after T0 - refused first (tests/test_verifiers_6d.py)
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over("audit_d1_source_counts - D1's source_counts are frozen after T0; the origin serves the local catalogue's copies")
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--remote-truth", action="store_true",

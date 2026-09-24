@@ -63,11 +63,39 @@ def catalogue_ids(source: str) -> set[str]:
         con.close()
 
 
+def main_selfhosted(a) -> int:
+    """AFTER T0 (plan step 6d): the local store of the LIVE checkout is the store users are served from, and R2 is
+    a frozen copy - so the answer is the local tree, and only from the live checkout (anywhere else the local tree
+    is a worktree's scratch, the exact mistake this tool exists to prevent). R2 is not asked."""
+    from updater import blob                                         # noqa: PLC0415
+    blob.refuse_unless_live_checkout("store_inventory (after T0 it counts the live store)")
+    loc = local_store_files(a.source)
+    cat = catalogue_ids(a.source)
+    print(f"{a.source}")
+    print(f"  local store files : {len(loc):>7,}   <- THE STORE (self-hosted since T0; R2 is a frozen copy)")
+    print(f"  catalogue ids     : {len(cat):>7,}")
+    if cat:
+        if cat & loc:
+            missing = cat - loc
+            print(f"  catalogued ids with NO store file: {len(missing):,}"
+                  + (f"  {sorted(missing)[:8]}" if missing else ""))
+        else:
+            print(f"  (catalogue ids are not file stems for this source — {len(cat):,} ids "
+                  f"live INSIDE the files; use the source's own resolver to check coverage, "
+                  f"not a filename set difference)")
+    if a.names:
+        print(f"\n  store stems ({len(loc)}): {sorted(loc)}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("source")
     ap.add_argument("--names", action="store_true", help="list the stems, not just counts")
     a = ap.parse_args()
+    from core import cutover                                         # noqa: PLC0415
+    if cutover.is_cut_over():
+        return main_selfhosted(a)
 
     try:
         r2 = r2_store_files(a.source)
