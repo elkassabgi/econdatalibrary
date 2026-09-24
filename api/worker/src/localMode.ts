@@ -72,14 +72,24 @@ export async function originGate(request: Request, env: { ORIGIN_SECRET?: string
   return null;
 }
 
-/** Applied to every answer the origin gives. Returns a response with mutable headers. */
-export function finalizeLocal(resp: Response): Response {
+/** Applied to every answer the origin gives. Returns a response with mutable headers.
+ *  `download` is true only for the .csv data route: only a download is counted by the edge (a JSON
+ *  answer has no content-length in-process, and marking it would log browse calls as downloads, AR-150).
+ *  `no-transform` survives when the answer carried it: the string-path CSV sends it so the declared
+ *  content-length reaches the client and the download log (R613/R614). */
+export function finalizeLocal(resp: Response, opts: { download: boolean } = { download: false }): Response {
   const out = new Response(resp.body, resp);
-  out.headers.set("cache-control", "private, no-store");
-  if (out.status === 200 && !out.headers.has("content-length")) {
+  const noTransform = /(^|,)\s*no-transform\s*(,|$)/i.test(resp.headers.get("cache-control") ?? "");
+  out.headers.set("cache-control", noTransform ? "private, no-store, no-transform" : "private, no-store");
+  if (opts.download && out.status === 200 && !out.headers.has("content-length")) {
     out.headers.set(COUNT_HEADER, "1");
   } else {
     out.headers.delete(COUNT_HEADER);
   }
   return out;
+}
+
+/** The data-download route: /v1/series/{id}.csv (and nothing else). */
+export function isDownloadPath(path: string): boolean {
+  return path.startsWith("/v1/series/") && path.endsWith(".csv");
 }

@@ -28,7 +28,7 @@ import { requireDownloadAuth, logDownload } from "./auth";
 import { isGated } from "./denylist";
 import { handlePublicStats } from "./publicStats";
 import { json, reqLang } from "./util";
-import { isLocal, originGate, finalizeLocal } from "./localMode";
+import { isLocal, originGate, finalizeLocal, isDownloadPath } from "./localMode";
 import { LocalBucket } from "./localBucket";
 
 const CORS_PREFLIGHT: Record<string, string> = {
@@ -63,7 +63,8 @@ export default {
       }
       // SERIES_BUCKET becomes the blob sidecar (src/localBucket.ts); the route code is unchanged.
       const lenv: Env = { ...env, SERIES_BUCKET: new LocalBucket(env.BLOB_SIDECAR_URL) as unknown as R2Bucket };
-      return finalizeLocal(await route(request, lenv, ctx, true));
+      const download = isDownloadPath(new URL(request.url).pathname);
+      return finalizeLocal(await route(request, lenv, ctx, true), { download });
     }
     return route(request, env, ctx, false);
   },

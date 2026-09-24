@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  COUNT_HEADER, EDGE_ONLY_PATHS, ORIGIN_SECRET_HEADER, finalizeLocal, isLocal, originGate, secretsEqual,
+  COUNT_HEADER, EDGE_ONLY_PATHS, ORIGIN_SECRET_HEADER, finalizeLocal, isDownloadPath, isLocal, originGate,
+  secretsEqual,
 } from "../src/localMode.ts";
 
 const URL_OK = "http://127.0.0.1:8799/v1/sources";
@@ -59,13 +60,33 @@ test("every answer leaves private, no-store - including one that said public", (
   }
 });
 
-test("only a 200 without content-length is marked for the edge to count", () => {
-  const streamed = finalizeLocal(new Response(new ReadableStream({ start(c) { c.enqueue(new Uint8Array([1])); c.close(); } }), { status: 200 }));
-  assert.equal(streamed.headers.get(COUNT_HEADER), "1");
-  const sized = finalizeLocal(new Response("abc", { status: 200, headers: { "content-length": "3" } }));
+test("only a DOWNLOAD 200 without content-length is marked for the edge to count", () => {
+  const stream = () => new ReadableStream({ start(c) { c.enqueue(new Uint8Array([1])); c.close(); } });
+  const dl = { download: true };
+  assert.equal(finalizeLocal(new Response(stream(), { status: 200 }), dl).headers.get(COUNT_HEADER), "1");
+  const sized = finalizeLocal(new Response("abc", { status: 200, headers: { "content-length": "3" } }), dl);
   assert.equal(sized.headers.get(COUNT_HEADER), null);
-  const refused = finalizeLocal(new Response("no", { status: 451, headers: { [COUNT_HEADER]: "1" } }));
+  const refused = finalizeLocal(new Response("no", { status: 451, headers: { [COUNT_HEADER]: "1" } }), dl);
   assert.equal(refused.headers.get(COUNT_HEADER), null, "a stray marker on a non-200 is removed");
+  // AR-150: a JSON answer has no content-length in-process; it must NOT be counted as a download
+  const browse = finalizeLocal(new Response(stream(), { status: 200 }), { download: false });
+  assert.equal(browse.headers.get(COUNT_HEADER), null);
+  assert.equal(finalizeLocal(new Response(stream(), { status: 200 })).headers.get(COUNT_HEADER), null,
+               "the default is not a download");
+});
+
+test("no-transform survives when the answer carried it (R613/R614); never added otherwise", () => {
+  const withNt = finalizeLocal(new Response("x", { headers: { "cache-control": "public, max-age=300, no-transform" } }));
+  assert.equal(withNt.headers.get("cache-control"), "private, no-store, no-transform");
+  const without = finalizeLocal(new Response("x", { headers: { "cache-control": "public, max-age=300" } }));
+  assert.equal(without.headers.get("cache-control"), "private, no-store");
+});
+
+test("only the .csv route is a download path", () => {
+  assert.equal(isDownloadPath("/v1/series/ecb%3AX.csv"), true);
+  for (const p of ["/v1/series/ecb%3AX.metadata.json", "/v1/catalog", "/v1/sources", "/v1/stats", "/v1/bundle"]) {
+    assert.equal(isDownloadPath(p), false, p);
+  }
 });
 
 test("secretsEqual is equality, whatever the lengths", async () => {

@@ -23,7 +23,9 @@ def test_the_origin_config_cannot_replace_or_become_a_public_worker():
     assert c["name"] != "econdl-api", "the origin must never share the edge worker's name"
     assert c.get("workers_dev") is False, "TOP-LEVEL workers_dev = false"
     assert c.get("preview_urls") is False, "TOP-LEVEL preview_urls = false (defaults to true)"
-    for key in ("route", "routes", "triggers", "account_id"):
+    for key in ("route", "routes", "triggers", "account_id", "env"):
+        # "env": an [env.x] block would be used by `wrangler deploy --env x` with its own workers_dev and
+        # routes, bypassing every top-level key checked here (AR-150)
         assert key not in c, f"{key} must not appear in the origin config"
     assert "workers_dev" not in (c.get("limits") or {}), "workers_dev inside [limits] has no effect"
 

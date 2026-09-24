@@ -99,8 +99,17 @@ def make_handler(store: BlobStore):
                     return
                 status = 206
             length = max(0, end - start + 1) if size else 0
-            self._headers(meta, status, length)
-            with open(meta["path"], "rb") as fh:
+            # OPEN THE FILE BEFORE ANY STATUS LINE (R1168 (d)): a 200 with a content-length followed by a
+            # missing file reached the client as a 200 and then a broken read. A missing file is a 500.
+            try:
+                fh = open(meta["path"], "rb")
+            except OSError:
+                self.send_response(500)
+                self.send_header("content-length", "0")
+                self.end_headers()
+                return
+            with fh:
+                self._headers(meta, status, length)
                 fh.seek(start)
                 left = length
                 while left > 0:

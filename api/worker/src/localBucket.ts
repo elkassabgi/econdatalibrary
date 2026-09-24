@@ -54,6 +54,32 @@ export class LocalBucket {
   }
 
   async get(key: string, options?: LocalGetOptions): Promise<LocalObject | LocalObjectBody | null> {
+    // REFUSE WHAT IS NOT IMPLEMENTED (R1168 (e)): an unknown option silently ignored returned the whole
+    // object for `range: {suffix}`. Only range {offset, length} and onlyIf {etagMatches} are supported.
+    const raw = options as Record<string, unknown> | undefined;
+    if (raw) {
+      for (const k of Object.keys(raw)) {
+        if (k !== "range" && k !== "onlyIf") throw new Error(`LocalBucket.get: unsupported option '${k}'`);
+      }
+      const rng = raw.range as unknown;
+      if (rng !== undefined) {
+        if (rng instanceof Headers || typeof rng !== "object" || rng === null) {
+          throw new Error("LocalBucket.get: range must be {offset, length}");
+        }
+        for (const k of Object.keys(rng)) {
+          if (k !== "offset" && k !== "length") throw new Error(`LocalBucket.get: unsupported range field '${k}'`);
+        }
+      }
+      const oi = raw.onlyIf as unknown;
+      if (oi !== undefined) {
+        if (oi instanceof Headers || typeof oi !== "object" || oi === null) {
+          throw new Error("LocalBucket.get: onlyIf must be {etagMatches}");
+        }
+        for (const k of Object.keys(oi)) {
+          if (k !== "etagMatches") throw new Error(`LocalBucket.get: unsupported onlyIf field '${k}'`);
+        }
+      }
+    }
     const headers: Record<string, string> = {};
     const want = options?.onlyIf?.etagMatches;
     if (want !== undefined) headers["If-Match"] = `"${want.replace(/^"|"$/g, "")}"`;

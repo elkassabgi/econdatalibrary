@@ -79,6 +79,26 @@ test("LocalBucket mirrors the R2 behaviours series.ts relies on", async (t) => {
   assert.equal("body" in changed, false, "a failed onlyIf is a bodyless object");
 });
 
+test("a sidecar error is thrown, never read as an object (R1168 M12)", async (t) => {
+  const server = createServer((_req, res) => { res.writeHead(500, { "content-length": "0" }); res.end(); });
+  await new Promise<void>((ok) => server.listen(0, "127.0.0.1", () => ok()));
+  t.after(() => server.close());
+  const addr = server.address();
+  const b = new LocalBucket(`http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`);
+  await assert.rejects(() => b.get("series/a.csv"), /answered 500/);
+});
+
+test("options the adapter does not implement are refused, not ignored (R1168 (e))", async () => {
+  const b = new LocalBucket("http://127.0.0.1:1");
+  // deno-lint-ignore no-explicit-any
+  const get = (o: unknown) => b.get("k", o as any);
+  await assert.rejects(() => get({ range: { suffix: 4 } }), /unsupported range field/);
+  await assert.rejects(() => get({ range: new Headers({ range: "bytes=0-1" }) }), /range must be/);
+  await assert.rejects(() => get({ onlyIf: { etagDoesNotMatch: "x" } }), /unsupported onlyIf field/);
+  await assert.rejects(() => get({ onlyIf: new Headers({ "if-match": "x" }) }), /onlyIf must be/);
+  await assert.rejects(() => get({ ssecKey: "k" }), /unsupported option/);
+});
+
 test("the origin's bucket refuses every write", async () => {
   const b = new LocalBucket("http://127.0.0.1:1");
   await assert.rejects(() => b.put());
