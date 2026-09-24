@@ -118,6 +118,12 @@ def live_status(sid: str) -> int | None:
 
 
 def main() -> int:
+    # RETIRE AT T0 (docs/ECON_SELF_HOSTING_PLAN.md; tests/test_object_writers_ratchet.py): R2 and D1 are
+    # frozen then. Refused FIRST - before arguments, credentials or any read (tests/test_retired_at_t0_tools.py).
+    if ROOT not in sys.path:                                          # run as a script, tools/ is on the path
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('delist_timeless_tables (a completed 2026-09-05 one-shot on D1 and R2)')
     ap = argparse.ArgumentParser(); ap.add_argument("--apply", action="store_true"); a = ap.parse_args()
     stamp = dt.datetime.now().strftime("%Y%m%d")
     inlist = ",".join(sq(s) for s in IDS)
