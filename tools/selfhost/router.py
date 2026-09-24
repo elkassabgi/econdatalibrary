@@ -132,7 +132,52 @@ class Inflight:
             return dict(self._n)
 
 
-def make_handler(state: State, inflight: Inflight):
+class OriginPool:
+    """Idle keep-alive connections to the origin instances, per target (R1218 finding 5: one new connection per
+    request left thousands of sockets in TIME_WAIT on the machine that hosts the router). A connection goes back
+    only after its response was read to the end and the origin did not ask to close; anything else is closed.
+    Bounded per target, and an idle connection older than IDLE_S is closed rather than reused (the origin may
+    have dropped it) - a reused one that turns out dead is retried ONCE on a fresh connection, which is safe
+    because the router forwards only GET, HEAD and OPTIONS."""
+    MAX_IDLE = 32
+    IDLE_S = 30.0
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._idle: dict = {}                               # (host, port) -> [(conn, returned_at)]
+
+    def get(self, host: str, port: int):
+        """(connection, reused?)."""
+        now = time.monotonic()
+        stale = []
+        with self._lock:
+            idle = self._idle.get((host, port), [])
+            while idle:
+                conn, at = idle.pop()
+                if now - at <= self.IDLE_S:
+                    for s in stale:
+                        s.close()
+                    return conn, True
+                stale.append(conn)
+        for s in stale:
+            s.close()
+        return http.client.HTTPConnection(host, port, timeout=130), False
+
+    def put(self, host: str, port: int, conn) -> None:
+        with self._lock:
+            idle = self._idle.setdefault((host, port), [])
+            if len(idle) < self.MAX_IDLE:
+                idle.append((conn, time.monotonic()))
+                return
+        conn.close()
+
+    def idle_count(self, host: str, port: int) -> int:
+        with self._lock:
+            return len(self._idle.get((host, port), []))
+
+
+def make_handler(state: State, inflight: Inflight, pool: "OriginPool | None" = None):
+    pool = pool if pool is not None else OriginPool()
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         timeout = 75                                       # an idle keep-alive connection frees its thread
@@ -184,19 +229,24 @@ def make_handler(state: State, inflight: Inflight):
                 inflight.add(name, -1)
 
         def _proxy(self, t):
-            conn = http.client.HTTPConnection(t.hostname, t.port, timeout=130)
             drop = _dropped(self.headers) | {"host", "content-length"}
-            try:
-                conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
-                conn.putheader("host", t.netloc)
-                for k, v in self.headers.items():               # duplicates kept (AR-152)
-                    if k.lower() not in drop:
-                        conn.putheader(k, v)
-                conn.endheaders()
-                resp = conn.getresponse()
-            except OSError:
-                conn.close()
-                return self._refuse(502, "origin_instance_unreachable")
+            for attempt in (0, 1):
+                conn, reused = pool.get(t.hostname, t.port)
+                try:
+                    conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
+                    conn.putheader("host", t.netloc)
+                    for k, v in self.headers.items():           # duplicates kept (AR-152)
+                        if k.lower() not in drop:
+                            conn.putheader(k, v)
+                    conn.endheaders()
+                    resp = conn.getresponse()
+                    break
+                except (OSError, http.client.HTTPException):
+                    conn.close()
+                    if reused and attempt == 0:
+                        continue                  # a pooled connection the origin had dropped: once more, fresh
+                    return self._refuse(502, "origin_instance_unreachable")
+            finished = False
             try:
                 # send_response_only: the origin's own Date and Server go through, not a second pair
                 self.send_response_only(resp.status, resp.reason)
@@ -214,6 +264,8 @@ def make_handler(state: State, inflight: Inflight):
                     self.close_connection = True
                 self.end_headers()
                 if bodyless:
+                    resp.read()                                 # b"": lets the connection be reused
+                    finished = True
                     return
                 while True:
                     buf = resp.read1(CHUNK)                     # what has arrived, not a full buffer (AR-152)
@@ -226,10 +278,16 @@ def make_handler(state: State, inflight: Inflight):
                     self.wfile.flush()
                 if chunked:
                     self.wfile.write(b"0\r\n\r\n")
+                finished = True
             except OSError:
                 self.close_connection = True                   # the client went away mid-body
             finally:
-                conn.close()                                   # the origin stops work on a closed connection
+                # back to the pool only a response read to the end that the origin did not ask to close;
+                # anything else is closed - the origin stops work on a closed connection
+                if finished and resp.isclosed() and not resp.will_close:
+                    pool.put(t.hostname, t.port, conn)
+                else:
+                    conn.close()
 
         def do_GET(self):
             self._forward()
@@ -254,7 +312,10 @@ class _Server(http.server.ThreadingHTTPServer):
 
 
 def serve(state_path: str, port: int) -> _Server:
-    return _Server(("127.0.0.1", port), make_handler(State(state_path), Inflight()))
+    pool = OriginPool()
+    srv = _Server(("127.0.0.1", port), make_handler(State(state_path), Inflight(), pool))
+    srv.pool = pool
+    return srv
 
 
 def main() -> int:

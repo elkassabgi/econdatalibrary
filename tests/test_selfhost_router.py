@@ -316,3 +316,129 @@ def test_the_router_binds_localhost_only(pair):
         assert srv.server_address[0] == "127.0.0.1"
     finally:
         srv.server_close()
+
+
+# ---- the origin connection pool (R1218 finding 5) -------------------------------------------------------------
+def _counting_instance():
+    """An origin that records every TCP connection it accepts, and can drop idle keep-alive connections."""
+    conns = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def setup(self):
+            super().setup()
+            conns.append(self.client_address)
+
+        def do_GET(self):
+            if self.path == "/drop-after":
+                self.send_response(200)
+                self.send_header("content-length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+                self.wfile.flush()
+                self.close_connection = True                   # the origin drops the kept-alive connection
+                return
+            if self.path == "/slow":
+                self.send_response(200)
+                self.send_header("transfer-encoding", "chunked")
+                self.end_headers()
+                for _ in range(8):
+                    self.wfile.write(b"a" + CRLF + b"0123456789" + CRLF)
+                    self.wfile.flush()
+                    time.sleep(0.2)
+                self.wfile.write(b"0" + CRLF + CRLF)
+                return
+            if self.path == "/close":
+                self.send_response(200)
+                self.send_header("content-length", "2")
+                self.send_header("connection", "close")
+                self.end_headers()
+                self.wfile.write(b"ok")
+                return
+            body = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("content-length", "123")
+            self.end_headers()
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, conns
+
+
+CRLF = bytes([13, 10])
+
+
+@pytest.fixture
+def pooled(tmp_path):
+    origin, conns = _counting_instance()
+    state = tmp_path / "router.json"
+    state.write_text(json.dumps({"active": "blue", "targets": {
+        "blue": f"http://127.0.0.1:{origin.server_address[1]}", "green": f"http://127.0.0.1:{origin.server_address[1]}"}}))
+    srv = router.serve(str(state), 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield srv.server_address[1], conns, origin, srv
+    srv.shutdown()
+    origin.shutdown()
+
+
+def test_sequential_requests_reuse_one_origin_connection(pooled):
+    port, conns, _o, _srv = pooled
+    for _ in range(20):
+        assert _get(port, "/v1/x")[0] == 200            # a NEW client connection each time
+    assert len(conns) == 1, f"{len(conns)} origin connections for 20 requests: the pool is not reused"
+
+
+def test_head_responses_go_back_to_the_pool(pooled):
+    port, conns, _o, _srv = pooled
+    for _ in range(5):
+        assert _get(port, "/v1/x", method="HEAD")[0] == 200
+    assert len(conns) == 1
+
+
+def test_a_connection_the_origin_asked_to_close_is_not_reused(pooled):
+    port, conns, origin, srv = pooled
+    for _ in range(3):
+        assert _get(port, "/close")[0] == 200
+    assert len(conns) == 3
+    assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 0, "a closed connection is not kept"
+
+
+def test_an_idle_connection_past_its_age_is_not_reused(pooled):
+    port, conns, origin, srv = pooled
+    assert _get(port, "/v1/x")[0] == 200
+    srv.pool.IDLE_S = 0.0                                     # every idle connection is now too old
+    time.sleep(0.05)
+    assert _get(port, "/v1/x")[0] == 200
+    assert len(conns) == 2, "the aged connection was closed, a fresh one made"
+
+
+def test_a_pooled_connection_the_origin_dropped_is_retried_once_fresh(pooled):
+    port, conns, _o, _srv = pooled
+    assert _get(port, "/drop-after")[0] == 200          # the origin closes after answering, without saying so
+    time.sleep(0.2)
+    assert _get(port, "/v1/x")[0] == 200, "the dead pooled connection was retried, not answered 502"
+    assert len(conns) == 2
+
+
+def test_a_client_that_leaves_mid_body_does_not_return_the_connection(pooled):
+    """The origin must see a closed connection to stop work (the pre-pool rule): an unfinished response is never
+    pooled."""
+    port, conns, origin, srv = pooled
+    s = socket.create_connection(("127.0.0.1", port))
+    s.sendall(b"GET /slow HTTP/1.1" + CRLF + b"Host: x" + CRLF + CRLF)
+    s.recv(64)
+    s.close()
+    time.sleep(2.5)
+    assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 0
+    assert _get(port, "/v1/x")[0] == 200
+    assert len(conns) == 2, "the abandoned connection was not reused"
