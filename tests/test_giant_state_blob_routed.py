@@ -80,7 +80,7 @@ def test_all_giant_sidecar_consumers_route_through_the_fix():
 
     # The two formerly-private states, now blob-routed. A plain open() here means the
     # per-runner disease is back: sec_edgar would re-do completed windows on every CI run.
-    for mod, marker in (("sec_edgar.py", "_state_path()"), ("statcan.py", "STATE")):
+    for mod, marker in (("sec_edgar_13f.py", "_state_path()"), ("statcan.py", "STATE")):
         m = src(mod)
         assert f"blob.read_bytes({marker})" in m, (
             f"{mod} no longer READS its incremental state through blob")

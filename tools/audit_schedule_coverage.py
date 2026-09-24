@@ -99,7 +99,8 @@ SCRIPT_REFRESH_EVIDENCE = {
 # genuinely unadjudicated and should be investigated; an id WITH one has been.
 UNSERVED_REASONS = {
     "gleif": "CLEARED (CC0) but blocked on SHAPE, not licence - it is an ENTITY REGISTRY (LEI, LegalName, jurisdiction, status), carrying no series_key/obs_date/value, so it cannot be catalogued in the series model at any grain. Serving it needs an entity-lookup surface, which is a product decision rather than a compliance one. See DATABASE_LICENSES_VERBATIM.md.",
-    "sec_edgar_xbrl": "RESERVED FOR AHMED - one id, two products. The registry entry named sec_edgar is the UNSERVED 13F/insider giant; the SERVED XBRL product is catalogued under sec_edgar but registry-named sec_edgar_xbrl, kept fresh by .github/workflows/sec-edgar-daily.yml. Repairing the crossing changes PUBLIC ids, so it is Ahmed's call (R275/R276, and the econ-updater landmines table).",
+    "sec_edgar_xbrl": "Registry name of the SERVED XBRL product, which is catalogued and served as `sec_edgar` and kept fresh by .github/workflows/sec-edgar-daily.yml (R275/R276). The public id `sec_edgar` is unchanged; only the 13F entry moved to its own id, sec_edgar_13f (2026-09-24).",
+    "sec_edgar_13f": "The relational Form 13F + insider tables (clean_full/edgar_13f, edgar_insider): wide tables with no series_key/obs_date/value, so nothing is catalogued or served as a series. Refreshed for the store only. Registered as `sec_edgar` until 2026-09-24 (R275).",
     # Adjudicated 2026-09-07. Unserved BY DESIGN and it must stay that way until Ahmed says
     # otherwise: the licence verdict is DISPUTED, and un-gating a DISPUTED licence is on the
     # reserved list. Measured the same day: 0 catalogue rows (PK range), and the id is on the

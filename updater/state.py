@@ -6,6 +6,7 @@ is the architectural fix for the 79 sources that froze existing series on re-run
 """
 from __future__ import annotations
 import sqlite3
+import sys
 from datetime import datetime, timezone, timedelta
 
 from . import config
@@ -25,7 +26,7 @@ CREATE TABLE IF NOT EXISTS source_state(
 -- It is whatever the fetcher passed finalize() as `total_rows`, and the parameter is named
 -- that for a reason: MOST FETCHERS PASS THE STORE'S TOTAL ROW COUNT, not rows merged this run.
 -- Measured 2026-09-03: of ~123 finalize() call sites, THREE pass a genuine added count
--- (gleif.py:187, sec_edgar.py:634, and one tally.added); the rest pass `before`, which is
+-- (gleif.py:187, sec_edgar_13f.py:634, and one tally.added); the rest pass `before`, which is
 -- `blob.row_count(path)` - the whole store.
 --
 -- This comment used to say "Most pass ROWS MERGED THIS RUN", which is the opposite, and that
@@ -109,6 +110,12 @@ class StateStore:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(DDL)
         self.db.commit()
+        # idempotent, order-proof data migrations (updater/state_migrations.py - the 13F rename, R1197)
+        from . import state_migrations                                     # noqa: PLC0415
+        moved = state_migrations.apply_all(self.db)
+        if moved:
+            # stderr: a read-purpose caller (health --json) prints JSON on stdout (R1201 finding 6)
+            print(f"[state] migrated {self.path}: {moved}", file=sys.stderr, flush=True)
 
     def close(self):
         self.db.close()
@@ -132,9 +139,62 @@ class StateStore:
         r = self.db.execute("SELECT * FROM source_state WHERE source_id=?", (sid,)).fetchone()
         return dict(r) if r else None
 
+    # ---- the old 13F id (updater/state_migrations.py, reviews R1201/R1202) ----
+    # `sec_edgar` is the SERVED XBRL product's id; the 13F entry is sec_edgar_13f. A row under `sec_edgar`
+    # is the XBRL product's only when that product's own strategy says so, so every write under it is
+    # checked here - mechanically, not by a rule its future writer must remember:
+    #   - a source or unit row must carry a strategy that is not the 13F one (a write without one would
+    #     merge into a leftover 13F row, keep its strategy, and the migration would move it away);
+    #   - rows with no strategy column (runs, cursors, owed) only once the XBRL product owns the id, so its
+    #     writer's FIRST write is its source_state row.
+    def _guard_old_id(self, source_id, what, strategy=None, check_strategy=False, current=None, unit_id=None):
+        from . import state_migrations as _m                               # noqa: PLC0415
+        if source_id != _m.OLD:
+            return
+        if check_strategy and _m.is_thirteen_f_strategy(strategy):
+            raise ValueError(f"{what}({_m.OLD!r}) must carry the XBRL product's own strategy "
+                             f"(got {strategy!r}); the 13F entry is {_m.NEW!r}")
+        if check_strategy and current and _m.holds_thirteen_f_row(self.db, what, unit_id):
+            # R1205 probe D: the row being written over is still the 13F one (old code wrote it after this
+            # store was opened) - merging the XBRL write into it would keep 13F's cadence and dates
+            raise ValueError(f"{what}({_m.OLD!r}) still holds the 13F row: reopen the state store so the "
+                             f"migration moves it to {_m.NEW!r}, then write")
+        if not check_strategy and not _m.xbrl_owns(self.db):
+            raise ValueError(f"{what} under {_m.OLD!r} before the XBRL product owns the id: write its "
+                             f"source_state row first (the 13F entry is {_m.NEW!r})")
+
+    def _old_id_transaction(self, source_id):
+        """For the old 13F id, the read of the current row, the guard and the write in ONE write transaction
+        (R1237): the guard read the stored row again after `current` was read, so a row moved between the two
+        reads let the XBRL write merge the 13F row's cadence and dates. BEGIN IMMEDIATE takes the write lock
+        before the read, so no other connection can move or rewrite the row until the write commits. Other
+        ids are unchanged."""
+        import contextlib                                                  # noqa: PLC0415
+        from . import state_migrations as _m                               # noqa: PLC0415
+
+        @contextlib.contextmanager
+        def txn():
+            if source_id != _m.OLD or self.db.in_transaction:
+                yield
+                return
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                yield                               # the write inside commits (_upsert)
+            except BaseException:
+                if self.db.in_transaction:
+                    self.db.rollback()
+                raise
+            if self.db.in_transaction:              # a path that wrote nothing: release the lock
+                self.db.commit()
+        return txn()
+
     def upsert_source(self, source_id, **kw):
-        self._upsert("source_state", _SRC_COLS, ["source_id"],
-                     self.get_source(source_id), {"source_id": source_id, **kw})
+        with self._old_id_transaction(source_id):
+            current = self.get_source(source_id)
+            self._guard_old_id(source_id, "source_state", kw.get("strategy", (current or {}).get("strategy")),
+                               check_strategy=True, current=current)
+            self._upsert("source_state", _SRC_COLS, ["source_id"],
+                         current, {"source_id": source_id, **kw})
 
     def all_sources(self):
         return [dict(r) for r in self.db.execute("SELECT * FROM source_state")]
@@ -146,9 +206,13 @@ class StateStore:
         return dict(r) if r else None
 
     def upsert_unit(self, source_id, unit_id, **kw):
-        self._upsert("unit_state", _UNIT_COLS, ["source_id", "unit_id"],
-                     self.get_unit(source_id, unit_id),
-                     {"source_id": source_id, "unit_id": unit_id, **kw})
+        with self._old_id_transaction(source_id):
+            current = self.get_unit(source_id, unit_id)
+            self._guard_old_id(source_id, "unit_state", kw.get("strategy", (current or {}).get("strategy")),
+                               check_strategy=True, current=current, unit_id=unit_id)
+            self._upsert("unit_state", _UNIT_COLS, ["source_id", "unit_id"],
+                         current,
+                         {"source_id": source_id, "unit_id": unit_id, **kw})
 
     def units_for_source(self, sid):
         return [dict(r) for r in self.db.execute(
@@ -163,6 +227,7 @@ class StateStore:
             "SELECT series_key,last_obs_date FROM series_cursor WHERE source_id=?", (sid,))}
 
     def put_series_cursors(self, sid, mapping: dict):
+        self._guard_old_id(sid, "series_cursor")
         self.db.executemany(
             "INSERT INTO series_cursor(source_id,series_key,last_obs_date) VALUES(?,?,?) "
             "ON CONFLICT(source_id,series_key) DO UPDATE SET last_obs_date=excluded.last_obs_date",
@@ -253,6 +318,7 @@ class StateStore:
 
     # ---- run log ----
     def log_run(self, sid, uid, status, obs=0, dur_s=0.0, note=None):
+        self._guard_old_id(sid, "runs")
         self.db.execute(
             "INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES(?,?,?,?,?,?,?)",
             (now_utc(), sid, uid, status, obs, dur_s, note))
@@ -266,6 +332,7 @@ class StateStore:
     # way. This row is the debt's persistence; only a completed wholesale derive campaign
     # (derive_csv_bulk's success stamp) clears it.
     def note_full_rederive_owed(self, source_id, vintage=None, note=None):
+        self._guard_old_id(source_id, "full_rederive_owed")
         self.db.execute(
             "INSERT INTO full_rederive_owed(source_id,vintage,noted_utc,note) "
             "VALUES(?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
