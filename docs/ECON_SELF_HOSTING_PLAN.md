@@ -106,11 +106,23 @@ Build status (branch feat/econ-selfhost-origin):
     last_updated until the next fully-ok stamp. After the move the sync stops pushing it and the stamp
     overwrites every served column; only `strategy` stays stale, and the worker does not read it.
     It runs only when ALL hold, each read at the time:
-      (1) OLD CODE CANNOT RUN: every queued or in-progress run of updater-daily.yml and updater-heavy.yml
-          (gh run list --json headSha,status) has a head SHA that contains the rename commit (git
-          merge-base --is-ancestor) - by SHA, not by creation time: workflow_dispatch runs any branch;
-      (2) the E: checkout that runs the desktop passes is at or after the rename commit;
+      (1) OLD CODE CANNOT RUN (R1205 made this checkable). RENAME = the SQUASH commit of the rename PR ON
+          main (the repo squash-merges, so the branch commit is never an ancestor of main). Then, for each
+          of updater-daily.yml and updater-heavy.yml:
+              git fetch origin
+              gh run list --workflow <file> --limit 200 --json databaseId,headSha,status
+          every run whose status is NOT completed - queued, in_progress, pending (waiting on the shared
+          concurrency group aqueduct-updater), waiting, requested - must have a head SHA with
+              git merge-base --is-ancestor RENAME <headSha>
+          true. By SHA, not by creation time: workflow_dispatch runs any branch;
+      (2) the E: checkout that runs the desktop passes is at or after RENAME (git merge-base --is-ancestor
+          RENAME HEAD in that checkout);
       (3) one sync from new code has pushed the sec_edgar_13f rows.
+    THE SAME CONDITIONS (1)-(2) GATE THE XBRL WRITER'S FIRST LOCAL RUN, and T0 (R1205 finding 2): old code
+    that writes source_state('sec_edgar') after the XBRL product owns the id merges the 13F strategy into
+    the XBRL row, and the next open then moves the XBRL row, runs and cursors to sec_edgar_13f. StateStore
+    refuses an XBRL write over a still-unmoved 13F row, but it cannot stop old code, which does not have
+    that guard; only the conditions can.
     Then re-read the key from D1 twice: right after the delete, and again after the NEXT state sync -
     that is when an old-code writer would show (R1201 rule 4).
     Expected after the rename: /v1/last-updates lists the 13F unit as sec_edgar_13f/_all - the same row
