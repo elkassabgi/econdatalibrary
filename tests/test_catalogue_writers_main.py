@@ -128,7 +128,8 @@ EXPECTED_WRITERS = {
     "tools/catalog_penn_world_table.py", "tools/catalog_pip_tables.py", "tools/catalog_pxweb_flowgrain.py",
     "tools/catalog_statcan_tables.py", "tools/catalog_table_grain.py", "tools/catalog_unsdg_flows.py",
     "tools/catalog_usda_tables.py", "tools/catalog_whr.py", "tools/catalog_who_api.py",
-    "tools/catalog_worldbank_esg_gaps.py", "tools/rekey_fao_series.py", "tools/title_bea_from_api.py",
+    "tools/catalog_worldbank_esg_gaps.py", "tools/enrich_sec_edgar_tickers.py",   # joined 2026-09-24 (plan step 1)
+    "tools/rekey_fao_series.py", "tools/title_bea_from_api.py",
     "tools/title_damodaran_margins.py", "tools/title_eia_eba_all.py", "tools/title_eia_nuclear_status.py",
     "tools/title_idb_from_ckan.py", "tools/title_noaa_from_siblings.py", "tools/title_rba_from_csv.py",
     "tools/title_riksbank_fx.py", "tools/title_unctad_span_variants.py", "tools/title_unesco_dem_wb_codes.py",

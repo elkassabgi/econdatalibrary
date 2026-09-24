@@ -21,7 +21,6 @@ tools/apply_series_names.py
 tools/delist_timeless_tables.py
 tools/derive_csv_bulk.py
 tools/derive_unsdg_flows.py
-tools/enrich_sec_edgar_tickers.py
 tools/flowgrain_insee_melodi.py
 tools/flowgrain_ons_uk.py
 tools/make_servable.py

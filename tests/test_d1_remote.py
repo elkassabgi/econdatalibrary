@@ -125,7 +125,7 @@ def test_only_the_two_econ_databases(sent, before_t0, monkeypatch):
 # The files that reach D1 remotely by another road TODAY (2026-09-24). They move into d1_remote in plan
 # step 1; this list may only SHRINK. A new file on it is a new unguarded write path after T0.
 LEGACY_REMOTE_D1 = {
-    "tools/enrich_sec_edgar_tickers.py", "tools/refresh_sec_edgar.py",
+    "tools/refresh_sec_edgar.py",
 }
 # Left on 2026-09-24 (plan step 1): the six D1 readers moved onto d1_remote.rows / run_json; five files
 # named `--remote` only in a docstring, a comment or a tool's own --remote-truth option; then
