@@ -229,6 +229,110 @@ def test_before_t0_nothing_changes(build, tmp_path):
     sys._econ_catalog_real_connect(str(tmp_path / "raw.db")).close()      # no refusal before T0
 
 
+# ---- R1215: the routes around the first authorizer ------------------------------------------------------------
+
+def test_a_writable_blob_on_the_build_is_refused(build, tmp_path):
+    c = sqlite3.connect(str(build))
+    try:
+        with pytest.raises(cutover.CutoverRefused, match="R1215"):
+            c.blobopen("which", "name", 1, readonly=False)
+        with c.blobopen("which", "name", 1, readonly=True) as b:            # reading is allowed
+            assert b.read() == b"before"
+    finally:
+        c.close()
+    other = sqlite3.connect(str(tmp_path / "staging.db"))
+    other.execute("ATTACH ? AS x", (str(build),))
+    with pytest.raises(cutover.CutoverRefused, match="R1215"):
+        other.blobopen("which", "name", 1, readonly=False, name="x")
+    other.execute("CREATE TABLE t (b BLOB)")
+    other.execute("INSERT INTO t VALUES (zeroblob(4))")
+    with other.blobopen("t", "b", 1) as b:                                  # main is not the build
+        b.write(b"ok!!")
+    other.close()
+    with cp.writer_lock():
+        c = sqlite3.connect(str(build))
+        with c.blobopen("which", "name", 1) as b:
+            b.write(b"BEFORE")
+        c.close()
+    assert _rows(build) == ["BEFORE"]
+
+
+class _MyConnection(sqlite3.Connection):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.execute("PRAGMA journal_mode=WAL")
+
+
+@pytest.mark.parametrize("how", ["keyword", "positional"])
+def test_a_connection_factory_is_refused_after_t0(build, how):
+    """R1215 findings 2-4: a factory's __init__ ran on the connection before the guard existed."""
+    with pytest.raises(cutover.CutoverRefused, match="factory"):
+        if how == "keyword":
+            sqlite3.connect(str(build), factory=_MyConnection)
+        else:
+            sqlite3.connect(str(build), 5.0, 0, "DEFERRED", True, _MyConnection)
+    assert sqlite3.connect(_uri(build, "?mode=ro"), uri=True).execute("PRAGMA journal_mode").fetchone() == ("delete",)
+
+
+def test_a_statement_prepared_under_the_lock_is_not_reused_after_it(build):
+    """R1215 finding 5: the statement cache kept an INSERT prepared while the lock was held."""
+    c = sqlite3.connect(str(build))
+    try:
+        with cp.writer_lock():
+            c.execute("INSERT INTO which VALUES ('under-lock')")
+            c.commit()
+        with pytest.raises(NOT_AUTHORIZED, match="not authorized"):
+            c.execute("INSERT INTO which VALUES ('under-lock')")
+        cur = c.cursor()
+        with pytest.raises(NOT_AUTHORIZED, match="not authorized"):
+            cur.execute("INSERT INTO which VALUES ('under-lock')")
+    finally:
+        c.close()
+    assert _rows(build) == ["before", "under-lock"]
+
+
+@pytest.mark.parametrize("theirs", ["allow everything", "None"])
+def test_a_callers_authorizer_is_combined_not_a_replacement(build, theirs):
+    c = sqlite3.connect(str(build))
+    c.set_authorizer((lambda *a: sqlite3.SQLITE_OK) if theirs != "None" else None)
+    with pytest.raises(NOT_AUTHORIZED, match="not authorized"):
+        _write(c)
+    c.close()
+    other = sqlite3.connect(":memory:")                          # and theirs still applies where ours allows
+    other.execute("CREATE TABLE t (x)")
+    other.set_authorizer(lambda a, *r: sqlite3.SQLITE_DENY if a == sqlite3.SQLITE_INSERT else sqlite3.SQLITE_OK)
+    with pytest.raises(NOT_AUTHORIZED):
+        other.execute("INSERT INTO t VALUES (1)")
+    other.close()
+
+
+def test_alter_is_judged_by_its_real_schema(build, tmp_path):
+    """R1215: SQLite passes ALTER's schema as arg1, so the first rule refused ALTER everywhere."""
+    other = sqlite3.connect(str(tmp_path / "staging.db"))
+    other.execute("CREATE TABLE t (x)")
+    other.execute("ALTER TABLE t ADD COLUMN y")                  # not the build: allowed
+    other.close()
+    c = sqlite3.connect(str(build))
+    with pytest.raises(NOT_AUTHORIZED, match="not authorized"):
+        c.execute("ALTER TABLE which ADD COLUMN z")
+    c.close()
+
+
+def test_an_unreadable_main_counts_as_the_build(build, monkeypatch):
+    """R1215 finding 4: an identity that cannot be read fell open to 'not the build'."""
+    c = sqlite3.connect(str(build))
+    c.text_factory = bytes                                        # the shape that fell open
+    assert cp._main_is_build(c) is True
+    c.close()
+    assert cp._main_is_build(c) is True, "a closed connection: the answer cannot be read"
+    m = sqlite3.connect(":memory:")
+    assert cp._main_is_build(m) is False, "a control: memory is not the build"
+    m.close()
+    monkeypatch.setattr(cp.os.path, "samefile", lambda a, b: (_ for _ in ()).throw(OSError("no")))
+    monkeypatch.setattr(cp.os.path, "realpath", lambda p: (_ for _ in ()).throw(OSError("no")))
+    assert cp._is_build("anything") is True
+
+
 def test_the_guard_is_installed_once():
     import sys
     assert getattr(sys, "_econ_catalog_audit_installed", False) is True

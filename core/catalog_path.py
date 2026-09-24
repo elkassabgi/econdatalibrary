@@ -54,11 +54,16 @@ _held: object | None = None           # the open lock file while this process ho
 #   * an audit hook on the "sqlite3.connect/handle" event refuses, after T0, a connection that did NOT pass
 #     through the wrapper (a `from sqlite3 import connect` bound before this module was imported) - so no
 #     connection in this process escapes the authorizer.
-# Before T0 nothing is installed; the cost is one flag check per connect. Not covered (no SQLite hook sees
-# them): the backup API writing INTO a build connection, VACUUM (no authorizer code), a connection opened
-# before T0 or one whose authorizer the caller removed (set_authorizer(None) is a deliberate bypass), a
-# file-level replace of the build, and processes that never import this module (the legacy list and t0_ready
-# cover those).
+#   * R1215: the guard is the connection's CLASS (_GuardedConnection) - Blob I/O, a caller's own authorizer,
+#     a connection factory and the statement cache all went around the first authorizer.
+# Before T0 nothing is installed; the cost is one flag check per connect (after T0 about 0.5 ms per connect,
+# measured by review R1215, and a statement re-prepare per execute). Not covered (no SQLite hook sees them):
+# the backup API writing INTO a build connection, VACUUM (no authorizer code), a connection opened before T0,
+# an explicit call of the BASE class (sqlite3.Connection.set_authorizer(conn, None) or .blobopen(conn, ...) -
+# a deliberate bypass, not a slip), a statement still stepping when the lock is let go, a file-level replace
+# of the build, a second copy of this module loaded by path (its lock is invisible to the first copy's guard,
+# so its writes are REFUSED, not let through), and processes that never import this module (the legacy list
+# and t0_ready cover those).
 _WRITE_ACTIONS = frozenset(getattr(sqlite3, n) for n in (
     "SQLITE_INSERT", "SQLITE_UPDATE", "SQLITE_DELETE", "SQLITE_CREATE_TABLE", "SQLITE_CREATE_INDEX",
     "SQLITE_CREATE_TRIGGER", "SQLITE_CREATE_VIEW", "SQLITE_CREATE_VTABLE", "SQLITE_DROP_TABLE",
@@ -71,13 +76,35 @@ _passing = threading.local()
 
 def _is_build(path) -> bool:
     """Whether `path` names THE build file - by identity, so a \\\\?\\ prefix, a share, a hard link or a junction
-    is still the build. A missing path is not."""
+    is still the build. When identity cannot be read (a file not there yet) the spelled paths are compared."""
     if not path:
         return False
     try:
         return os.path.samefile(path, BUILD_PATH)
     except (OSError, ValueError, TypeError):
-        return False
+        try:
+            return os.path.normcase(os.path.realpath(path)) == os.path.normcase(os.path.realpath(BUILD_PATH))
+        except (OSError, ValueError, TypeError):
+            return True                     # cannot tell: the build (fail closed - R1215 finding 4)
+
+
+def _main_is_build(conn) -> bool:
+    """Whether a connection's MAIN database is the build. Anything that stops the answer being read - no main
+    row, a text_factory that returns bytes, an error - counts as the build (R1215 finding 4: the first version
+    fell open to "not the build")."""
+    try:
+        rows = sqlite3.Connection.execute(conn, "PRAGMA database_list").fetchall()
+    except sqlite3.Error:
+        return True
+    for r in rows:
+        name, path = r[1], r[2]
+        if isinstance(name, bytes):
+            name = name.decode("utf-8", "replace")
+        if isinstance(path, bytes):
+            path = path.decode("utf-8", "replace")
+        if name == "main":
+            return _is_build(path)
+    return True
 
 
 # pragmas that change the FILE (its header or its format) when given a value, and two that write whatever they
@@ -85,6 +112,10 @@ def _is_build(path) -> bool:
 _FILE_PRAGMAS = frozenset({"journal_mode", "user_version", "application_id", "schema_version", "writable_schema",
                            "page_size", "auto_vacuum"})
 _WRITING_PRAGMAS = frozenset({"incremental_vacuum", "optimize"})
+
+
+def _may_write(schema, main_is_build: bool) -> bool:
+    return schema == "temp" or (schema == "main" and not main_is_build)
 
 
 def _authorizer(main_is_build: bool):
@@ -102,14 +133,15 @@ def _authorizer(main_is_build: bool):
         if action == sqlite3.SQLITE_ATTACH:
             attached[0] = True
             return sqlite3.SQLITE_OK
+        if action == sqlite3.SQLITE_ALTER_TABLE:
+            # SQLite passes ALTER's schema as arg1 and no dbname (R1215: `dbname == "main"` never matched)
+            return sqlite3.SQLITE_OK if _may_write(arg1, main_is_build) else sqlite3.SQLITE_DENY
         if action in _WRITE_ACTIONS:
-            if dbname == "temp" or (dbname == "main" and not main_is_build):
-                return sqlite3.SQLITE_OK
-            return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK if _may_write(dbname, main_is_build) else sqlite3.SQLITE_DENY
         if action == sqlite3.SQLITE_PRAGMA and arg1:
             name = arg1.lower()
             if name in _WRITING_PRAGMAS or (name in _FILE_PRAGMAS and arg2 is not None):
-                if dbname == "temp" or (dbname == "main" and not main_is_build):
+                if _may_write(dbname, main_is_build):
                     return sqlite3.SQLITE_OK
                 if dbname is None and not main_is_build and not attached[0]:
                     return sqlite3.SQLITE_OK
@@ -118,15 +150,68 @@ def _authorizer(main_is_build: bool):
     return check
 
 
+class _GuardedConnection(sqlite3.Connection):
+    """What every connection is after T0 (R1215). The guard is the class, not something done to a connection
+    after it exists, so nothing runs on it before the guard does:
+      * the authorizer is installed as the connection is made, and a caller's set_authorizer() is COMBINED
+        with it (the guard decides first) - set_authorizer(f) or (None) no longer replaces it;
+      * blobopen(readonly=False) - Blob I/O prepares no SQL, so the authorizer never sees it - is refused on
+        the authorizer's own terms (_may_write);
+      * the statement cache is off (_guarded_connect passes cached_statements=0), so every execute is prepared
+        - and authorized - against the lock as it is NOW: a statement prepared under the lock was reused after
+        the lock was released and wrote the build (R1215 finding 5)."""
+    _main_build = True
+    _user_authorizer = None
+
+    def _install_guard(self) -> None:
+        rule = _authorizer(self._main_build)
+        user = self._user_authorizer
+        if user is None:
+            fn = rule
+        else:
+            def fn(*a):
+                verdict = rule(*a)
+                return verdict if verdict != sqlite3.SQLITE_OK else user(*a)
+        sqlite3.Connection.set_authorizer(self, fn)
+
+    def set_authorizer(self, *args, **kwargs):
+        (callback,) = args or tuple(kwargs.values())
+        self._user_authorizer = callback
+        self._install_guard()
+
+    def blobopen(self, table, column, row, /, *, readonly=False, name="main"):
+        if not readonly and _held is None and not _may_write(name, self._main_build):
+            raise CutoverRefused(f"refused: a writable blob on schema {name!r} after T0 needs the catalogue "
+                                 f"writer lock ({LOCK_PATH}) - Blob I/O goes around the SQL guard (R1215)")
+        return super().blobopen(table, column, row, readonly=readonly, name=name)
+
+
+_CONNECT_PARAMS = ("database", "timeout", "detect_types", "isolation_level", "check_same_thread", "factory",
+                   "cached_statements", "uri")
+
+
 def _guarded_connect(*args, **kwargs):
+    if is_cut_over():
+        if len(args) > len(_CONNECT_PARAMS):
+            raise TypeError("sqlite3.connect: too many positional arguments")
+        kwargs.update(zip(_CONNECT_PARAMS, args))
+        args = ()
+        factory = kwargs.get("factory")
+        if factory not in (None, sqlite3.Connection, _GuardedConnection):
+            # a factory's own __init__ runs on the connection before any guard, and a connection it opens
+            # inside it is not seen at all (R1215 findings 2 and 3); nothing in the tree passes one
+            raise CutoverRefused(f"refused: sqlite3.connect(factory={factory!r}) after T0 - a connection "
+                                 f"factory runs before core.catalog_path's guard can (R1215)")
+        kwargs["factory"] = _GuardedConnection
+        kwargs["cached_statements"] = 0
     _passing.on = True
     try:
         conn = _real_connect(*args, **kwargs)
     finally:
         _passing.on = False
-    if is_cut_over():
-        main = next((r[2] for r in conn.execute("PRAGMA database_list") if r[1] == "main"), "")
-        conn.set_authorizer(_authorizer(_is_build(main)))
+    if isinstance(conn, _GuardedConnection):
+        conn._main_build = _main_is_build(conn)
+        conn._install_guard()
     return conn
 
 
