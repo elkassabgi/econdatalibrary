@@ -23,6 +23,7 @@ import os
 import pathlib
 import sqlite3
 import sys
+import threading
 
 from core.cutover import CutoverRefused, is_cut_over
 
@@ -40,54 +41,108 @@ LOCK_PATH = r"E:\econ_live\state\writer.lock"
 _held: object | None = None           # the open lock file while this process holds the writer lock
 
 
-# ---- THE RUNTIME GUARD (review R1209) ------------------------------------------------------------------------
-# The static rules (tests/test_catalogue_writers_*) see only the spellings they were written for: an alias of
-# this module, `from core.catalog_path import BUILD_PATH`, a helper in another module, sqlite3.dbapi2.connect
-# or a file with a byte-order mark all passed them, and after T0 wrote the build with no lock. Python's audit
-# hook on the sqlite3.connect event fires for EVERY spelling, so the rule lives here: after T0, an open of the
-# build that is not read-only needs this process to hold the writer lock - whoever makes the open. It is
-# installed once, when this module is imported (every tool that learns the build's path imports it).
-def _open_target(database) -> tuple[str, bool] | None:
-    """(normalised path, read_only) of a sqlite3.connect target; None for :memory: or anything not a path."""
-    import urllib.parse                                                     # noqa: PLC0415
-    if isinstance(database, bytes):
-        database = database.decode(errors="replace")
-    if not isinstance(database, (str, os.PathLike)):
-        return None
-    s = os.fspath(database)
-    if s in ("", ":memory:"):
-        return None
-    read_only = False
-    if s.startswith("file:"):
-        path, _, query = s[len("file:"):].partition("?")
-        q = urllib.parse.parse_qs(query)
-        read_only = q.get("mode", [""])[0] == "ro" or q.get("immutable", ["0"])[0] == "1"
-        path = urllib.parse.unquote(path)
-        if path.startswith("//"):                                           # file://host/path or file:///C:/x
-            path = path[2:]
-            path = path[path.find("/"):] if not path.startswith("/") else path
-        if len(path) >= 3 and path[0] == "/" and path[2] == ":":           # /C:/x -> C:/x
-            path = path[1:]
-        s = path
-    return os.path.normcase(os.path.realpath(s)), read_only
+# ---- THE RUNTIME GUARD (reviews R1209, R1214) ----------------------------------------------------------------
+# The static rules (tests/test_catalogue_writers_*) see only the spellings they were written for. The first
+# runtime guard (R1209) matched the PATH given to sqlite3.connect - and a path has too many spellings: an
+# ATTACH of the build, a \\?\ prefix, an admin share, a hard link, a URI with a '#' all wrote the build with no
+# lock after T0 (R1214). So the rule is enforced where SQLite itself decides what a statement touches:
+#   * this module wraps sqlite3.connect (and sqlite3.dbapi2.connect). After T0 every connection that passes
+#     through it gets an AUTHORIZER, which SQLite consults for every statement it prepares: a write to the
+#     main database when that database IS the build (os.path.samefile: the same file, however it was named),
+#     and ANY write to an attached database (SQLite does not say which file a parameter-bound ATTACH named),
+#     are refused unless this process holds the writer lock (_authorizer has the exact rule);
+#   * an audit hook on the "sqlite3.connect/handle" event refuses, after T0, a connection that did NOT pass
+#     through the wrapper (a `from sqlite3 import connect` bound before this module was imported) - so no
+#     connection in this process escapes the authorizer.
+# Before T0 nothing is installed; the cost is one flag check per connect. Not covered (no SQLite hook sees
+# them): the backup API writing INTO a build connection, VACUUM (no authorizer code), a connection opened
+# before T0 or one whose authorizer the caller removed (set_authorizer(None) is a deliberate bypass), a
+# file-level replace of the build, and processes that never import this module (the legacy list and t0_ready
+# cover those).
+_WRITE_ACTIONS = frozenset(getattr(sqlite3, n) for n in (
+    "SQLITE_INSERT", "SQLITE_UPDATE", "SQLITE_DELETE", "SQLITE_CREATE_TABLE", "SQLITE_CREATE_INDEX",
+    "SQLITE_CREATE_TRIGGER", "SQLITE_CREATE_VIEW", "SQLITE_CREATE_VTABLE", "SQLITE_DROP_TABLE",
+    "SQLITE_DROP_INDEX", "SQLITE_DROP_TRIGGER", "SQLITE_DROP_VIEW", "SQLITE_DROP_VTABLE", "SQLITE_ALTER_TABLE",
+    "SQLITE_REINDEX", "SQLITE_ANALYZE") if hasattr(sqlite3, n))
+_real_connect = getattr(sys, "_econ_catalog_real_connect", None) or sqlite3.connect
+sys._econ_catalog_real_connect = _real_connect
+_passing = threading.local()
+
+
+def _is_build(path) -> bool:
+    """Whether `path` names THE build file - by identity, so a \\\\?\\ prefix, a share, a hard link or a junction
+    is still the build. A missing path is not."""
+    if not path:
+        return False
+    try:
+        return os.path.samefile(path, BUILD_PATH)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+# pragmas that change the FILE (its header or its format) when given a value, and two that write whatever they
+# are given; everything else (busy_timeout, table_info, cache_size, ...) is a reader's business and is allowed
+_FILE_PRAGMAS = frozenset({"journal_mode", "user_version", "application_id", "schema_version", "writable_schema",
+                           "page_size", "auto_vacuum"})
+_WRITING_PRAGMAS = frozenset({"incremental_vacuum", "optimize"})
+
+
+def _authorizer(main_is_build: bool):
+    """The rule, per connection, after T0 and without the writer lock: a statement may write its MAIN database
+    when that is not the build, and TEMP - nothing else. An ATTACHed database is never written: SQLite names the
+    attached file to the authorizer only when the ATTACH is a string literal (a bound parameter or an expression
+    arrives as None, measured on 3.50.4), so which file a schema is cannot be known here, and the schema is
+    refused whatever it is. Attaching - to read - is allowed. A pragma that changes the file is refused on the
+    same terms; an unqualified one (SQLite passes no schema) counts as touching every attached database."""
+    attached = [False]
+
+    def check(action, arg1, arg2, dbname, source):
+        if _held is not None:
+            return sqlite3.SQLITE_OK
+        if action == sqlite3.SQLITE_ATTACH:
+            attached[0] = True
+            return sqlite3.SQLITE_OK
+        if action in _WRITE_ACTIONS:
+            if dbname == "temp" or (dbname == "main" and not main_is_build):
+                return sqlite3.SQLITE_OK
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_PRAGMA and arg1:
+            name = arg1.lower()
+            if name in _WRITING_PRAGMAS or (name in _FILE_PRAGMAS and arg2 is not None):
+                if dbname == "temp" or (dbname == "main" and not main_is_build):
+                    return sqlite3.SQLITE_OK
+                if dbname is None and not main_is_build and not attached[0]:
+                    return sqlite3.SQLITE_OK
+                return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+    return check
+
+
+def _guarded_connect(*args, **kwargs):
+    _passing.on = True
+    try:
+        conn = _real_connect(*args, **kwargs)
+    finally:
+        _passing.on = False
+    if is_cut_over():
+        main = next((r[2] for r in conn.execute("PRAGMA database_list") if r[1] == "main"), "")
+        conn.set_authorizer(_authorizer(_is_build(main)))
+    return conn
 
 
 def _audit(event: str, args) -> None:
-    if event != "sqlite3.connect" or not args:
+    if event != "sqlite3.connect/handle" or getattr(_passing, "on", False) or not is_cut_over():
         return
-    target = _open_target(args[0])
-    if target is None or target[1]:
-        return
-    if target[0] != os.path.normcase(os.path.realpath(BUILD_PATH)) or _held is not None or not is_cut_over():
-        return
-    raise CutoverRefused(f"refused: a read-write sqlite3 open of the catalogue build {BUILD_PATH} without the "
-                         f"single-writer lock ({LOCK_PATH}) - open it with core.catalog_path.connect(write=True) "
-                         "inside write_session() (R1209: the runtime guard behind the static rules)")
+    raise CutoverRefused("refused: after T0 every sqlite3 connection goes through core.catalog_path's guard, and "
+                         "this one did not (a `from sqlite3 import connect` bound before core.catalog_path was "
+                         "imported?) - call sqlite3.connect after importing it (R1214)")
 
 
 # once per process: a hook cannot be removed, and a second copy of this module (a test that loads it by path)
-# must not add a second one - the first reads this module's globals, which the tests monkeypatch
+# must not wrap twice - the first copy's functions read that copy's globals, which the tests monkeypatch
 if not getattr(sys, "_econ_catalog_audit_installed", False):
+    sqlite3.connect = _guarded_connect
+    sqlite3.dbapi2.connect = _guarded_connect
     sys.addaudithook(_audit)
     sys._econ_catalog_audit_installed = True
 
