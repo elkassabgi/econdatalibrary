@@ -230,6 +230,12 @@ def test_connect_path_after_t0_opens_only_the_build(paths, tmp_path):
         cp.connect_path(cp.BUILD_PATH, write=True).execute("INSERT INTO which VALUES ('y')").connection.commit()
 
 
+def test_under_names_the_checkout_s_catalogue():
+    """The real (unpatched) constants: a tool's own ROOT names the checkout's file, production's the build."""
+    assert cp.under(cp.ROOT) == cp.CHECKOUT_PATH
+    assert cp.under(cp.LIVE_STORE_ROOT) == cp.BUILD_PATH, "production's own ROOT names the build"
+
+
 def test_connect_path_passes_sqlite_options(paths, tmp_path):
     c = cp.connect_path(cp.CHECKOUT_PATH, write=False, detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False)
     assert _which(c) == "checkout"

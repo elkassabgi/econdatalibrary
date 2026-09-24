@@ -17,10 +17,8 @@ core/export_d1_sources.py
 core/gen_denylist.py
 core/load_d1_chunked.py
 core/load_d1_rest.py
-core/measure_uncataloged.py
 core/sync_catalog_d1.py
 core/sync_state_d1.py
-jobs/ingest_unctad_ds.py
 jobs/process_sec_edgar.py
 pipeline/title_bea.py
 tools/_cat_bea.py
@@ -37,7 +35,6 @@ tools/apply_series_names.py
 tools/audit_catalogue_impossible_dates.py
 tools/audit_csv_staleness.py
 tools/audit_d1_source_counts.py
-tools/audit_licence_disclosure.py
 tools/audit_r2_vs_catalog.py
 tools/audit_schedule_coverage.py
 tools/audit_serving_coherence.py

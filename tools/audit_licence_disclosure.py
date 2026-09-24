@@ -38,7 +38,6 @@ import argparse
 import io
 import os
 import re
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -150,8 +149,10 @@ def served_from_d1():
 
 
 def served_from_local():
-    con = sqlite3.connect(f"file:{os.path.join(ROOT,'data','catalog.db')}?mode=ro",
-                          uri=True)
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                        # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect()
     return list(con.execute(
         "SELECT se.source_id, se.license_id, COUNT(*), COALESCE(l.commercial_ok,-1), "
         "COALESCE(l.no_modify,-1), COALESCE(l.reservable,-1) "
@@ -162,7 +163,7 @@ def served_from_local():
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--local", action="store_true",
-                    help="read data/catalog.db instead of D1 — NOT what users see")
+                    help="read the local catalogue instead of D1 — NOT what users see")
     a = ap.parse_args()
 
     cls = classifications()
@@ -172,14 +173,17 @@ def main():
     served = served_from_local() if a.local else served_from_d1()
     if served is None:
         return 2
-    where = "LOCAL catalog.db (NOT the serving store)" if a.local else "D1 (serving store)"
+    where = "the LOCAL catalogue (NOT the serving store)" if a.local else "D1 (serving store)"
     print(f"audit classifications: {len(cls)}   |   read from: {where}")
     print()
 
     perm = granted()
     names = {}
     try:
-        _c = sqlite3.connect(f"file:{os.path.join(ROOT,'data','catalog.db')}?mode=ro", uri=True)
+        if ROOT not in sys.path:
+            sys.path.insert(0, ROOT)
+        from core import catalog_path                                    # noqa: PLC0415 - plan step 1
+        _c = catalog_path.connect()
         names = {r[0]: r[1] for r in _c.execute("SELECT source_id, name FROM source")}
     except Exception:                                         # noqa: BLE001
         pass

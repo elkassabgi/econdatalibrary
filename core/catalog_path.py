@@ -56,6 +56,13 @@ def connect(*, write: bool = False, timeout: float = 60.0) -> sqlite3.Connection
     return sqlite3.connect(uri, uri=True, timeout=timeout)
 
 
+def under(root: str | os.PathLike) -> str:
+    """<root>/data/catalog.db: the catalogue of the checkout at `root`, for a tool that keeps its own ROOT (a
+    test points it at a temporary folder). Open it with connect_path(), which after T0 accepts only the
+    build - so a production run is unchanged and a worktree's copy is refused."""
+    return os.path.join(os.fspath(root), "data", "catalog.db")
+
+
 def connect_path(path: str | os.PathLike, *, write: bool, timeout: float = 60.0, **kw) -> sqlite3.Connection:
     """The one-line replacement for a tool's own `sqlite3.connect(<catalogue path>)` (plan step 1): the tool
     keeps its --db argument and its tests keep their temporary catalogues.
