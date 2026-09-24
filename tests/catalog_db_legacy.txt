@@ -32,7 +32,6 @@ tools/_cat_tradeservcatbypartner.py
 tools/apply_license_class.py
 tools/apply_series_names.py
 tools/audit_catalogue_impossible_dates.py
-tools/audit_r2_vs_catalog.py
 tools/audit_schedule_coverage.py
 tools/audit_serving_coherence.py
 tools/audit_site.py
@@ -68,7 +67,6 @@ tools/derive_unsdg_flows.py
 tools/enrich_sec_edgar_tickers.py
 tools/flowgrain_insee_melodi.py
 tools/flowgrain_ons_uk.py
-tools/footer_diff.py
 tools/gen_runbook.py
 tools/make_servable.py
 tools/migrate_noaa_shard.py
@@ -97,7 +95,6 @@ tools/title_unesco_dem_wb_codes.py
 tools/title_unhcr_from_siblings.py
 tools/title_vdem_from_codebook.py
 tools/verify_derive_parity.py
-tools/verify_source_served.py
 updater/orchestrate.py
 updater/strategies/fetchers/_faostat.py
 updater/strategies/fetchers/_imf_mapped.py
