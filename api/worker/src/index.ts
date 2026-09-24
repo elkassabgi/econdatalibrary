@@ -28,6 +28,7 @@ import { requireDownloadAuth, logDownload } from "./auth";
 import { isGated } from "./denylist";
 import { handlePublicStats } from "./publicStats";
 import { json, reqLang } from "./util";
+import { isLocal, originGate, finalizeLocal } from "./localMode";
 
 const CORS_PREFLIGHT: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -49,6 +50,19 @@ export default {
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // SELF-HOSTED ORIGIN (src/localMode.ts): the secret gate comes before anything else, and every
+    // answer - errors included - leaves private, no-store. The production worker never sets LOCAL.
+    const local = isLocal(env);
+    if (local) {
+      const refused = await originGate(request, env);
+      if (refused) return refused;
+      return finalizeLocal(await route(request, env, ctx, true));
+    }
+    return route(request, env, ctx, false);
+  },
+} satisfies ExportedHandler<Env>;
+
+async function route(request: Request, env: Env, ctx: ExecutionContext, local: boolean): Promise<Response> {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_PREFLIGHT });
     }
@@ -71,6 +85,9 @@ export default {
       // one source drove 130B D1 rows read in a day. The catalog changes only at
       // sync time, so a 6h same-URL cache makes re-crawls free without staleness
       // anyone can observe. Only 200s are cached; the cap-400s and errors are not.
+      // The origin never uses the Cache API: behind the edge it would hide a catalogue swap for up to
+      // 6 h (s-maxage 21600), and the edge does the caching (review R1164).
+      if (path === "/v1/catalog" && local) return await handleCatalog(url, env);
       if (path === "/v1/catalog") {
         const cache = caches.default;
         const cacheKey = new Request(url.toString(), { method: "GET" });
@@ -118,9 +135,9 @@ export default {
         // same billing class as the browse incident, just smaller. The count now
         // reads source_counts (1 row/source, sync-maintained) with the live
         // COUNT(*) kept as fallback, and 200s are cached 6h.
-        const statsCache = caches.default;
+        const statsCache = local ? null : caches.default;
         const statsKey = new Request(url.toString(), { method: "GET" });
-        const statsHit = await statsCache.match(statsKey);
+        const statsHit = statsCache ? await statsCache.match(statsKey) : undefined;
         if (statsHit) return statsHit;
         const SUM_COUNTS = "SELECT SUM(n) AS c FROM source_counts";
         let catTotal: number | null = null;
@@ -204,6 +221,7 @@ export default {
             "The figures shown are from the census dated in as_of and may change. " +
             "catalog_entries is maintained by the catalogue sync and is not affected.",
         });
+        if (!statsCache) return statsResp;
         const statsToCache = new Response(statsResp.clone().body, statsResp);
         statsToCache.headers.set("cache-control", "public, max-age=300, s-maxage=21600");
         ctx.waitUntil(statsCache.put(statsKey, statsToCache.clone()));
@@ -255,6 +273,9 @@ export default {
           if (isGated(id)) {
             return json({ error: "not_redistributable", series_id: id, detail: "This source's licence does not permit third-party redistribution of the data. Please obtain it directly from the original provider." }, 451);
           }
+          // The origin serves what the EDGE already authorised and will log: no auth and no
+          // download log here (the edge counts length-less answers via x-econ-count).
+          if (local) return await handleSeriesCsv(id, url, env, ctx, async () => {});
           // Shared-login gate (auth.ts): data downloads need the free family
           // key (hf keys work as-is); catalog/metadata/freshness stay open.
           const auth = await requireDownloadAuth(request, env);
@@ -304,5 +325,4 @@ export default {
       const detail = err instanceof Error ? err.message : "unknown error";
       return json({ error: "internal_error", detail }, 500);
     }
-  },
-} satisfies ExportedHandler<Env>;
+}
