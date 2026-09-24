@@ -206,13 +206,15 @@ Build status (branch feat/econ-selfhost-origin):
   before that change. import_from_r2 never restores what a logged removal took. CONSEQUENCE: a derive and
   the updater no longer run side by side after T0. The second one to write is refused (it is not queued),
   so the daily schedule must run them in sequence.
-  THE PUBLIC /v1/stats FIGURE WILL STEP AT T0 (series_census): before T0 it counts only the parquet R2
-  holds, so statcan (175 GB local, 0 bytes on R2, served through its CSVs) is left out. After T0 a source
-  counts when the worker resolves it and the self-hosted store holds CSVs for it (R1221: "on local disk" is
-  not "downloadable"), read from the local parquet. The judgement is per source. The R420 gate (a >20%
-  move) will refuse the first publish. That refusal is correct: the jump is real and needs an explanation
-  and --force-publish, not a silent upload. WHAT COUNTS in the public number is Ahmed's metric decision;
-  this rule is my proposal until he confirms it.
+  WHAT THE PUBLIC /v1/stats FIGURE COUNTS CHANGES AT T0 (series_census): before T0 it counts the parquet
+  R2 holds for sources the worker resolves. After T0 a source counts when the worker resolves it and the
+  self-hosted store holds CSVs for it (R1221: "on local disk" is not "downloadable"), read from the local
+  parquet, per source, so a source with any served CSV counts whole. R1226 estimated the change at about
+  +0.5% observations. (An earlier version of this paragraph said statcan was never on R2; it has been
+  there since its 2026-09-05 restore.) That is far under R420's 20% gate, so the RULE is gated instead:
+  stats.json carries "served_rule" after T0, and a publish under a rule other than the live object's is
+  refused until --force-publish. WHAT COUNTS in the public number is Ahmed's metric decision; this rule is
+  my proposal until he confirms it.
   THE CATALOGUE GUARD IS AN AUTHORIZER (R1214, catpath 92301cf4a): after T0 every sqlite3 connection in a
   process that imports core.catalog_path may write only TEMP, and MAIN when MAIN is not the build.
   Attached schemas are never written without the lock, because SQLite does not name a parameter-bound
@@ -228,6 +230,14 @@ Build status (branch feat/econ-selfhost-origin):
   store, sends nothing to R2 (no credentials to DuckDB), opens the publish store before counting, waits up
   to 30 minutes for the writer lock at publish time, and publishes stats.json through csv_store(). A
   --publish run from another checkout is refused before the counting starts. 17 direct R2 writers are left.
+  THE WATCHDOG'S BEAT HAS A READER OFF THE MACHINE (origin fc55da6c5 + the R1226 fixes, under review):
+  after T0 tools/guard_heartbeat.py --publish writes the self-hosted store. The beat key is exempt from
+  the writer lock, not from the live checkout. The worker route /v1/guard-heartbeat serves only a timestamp
+  and counts, cached 60 s at the edge. selfhost-watch.yml checks it daily once GUARD_HEARTBEAT_URL is set.
+  On the machine, --check --local reads the full beat. t0_ready has a heartbeat-reader check.
+  AHMED'S STEPS, before T0: merge the branch to main; deploy the worker (the route); set the repository
+  variable GUARD_HEARTBEAT_URL to the public /v1/guard-heartbeat URL. A failure shows as a red
+  selfhost-watch run; GitHub's failed-run notification is the only email for it.
   THE HOST RUNS THE TESTS TOO (R1218 finding 5): one run of the router load test left 7,453 sockets in
   TIME_WAIT, and overlapping suites reached 12,289 of 16,384 ephemeral ports; tests then failed with
   WinError 10048. After T0 the live router opens a new connection to the origin for every request on this
