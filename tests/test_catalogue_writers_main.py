@@ -12,13 +12,18 @@ entry, after a simulated T0, with the parts that need data stubbed out:
   * a top-level script (write_session_for_process): run as __main__ with catalog_path.connect replaced by a
     probe that records the lock and stops the script - the lock must already be held at its open.
 
-The writer list is DISCOVERED (every file that opens the catalogue for write through core.catalog_path),
-so a new writer is covered without editing this file; only its arguments may need an entry in ARGS."""
+What is RUN is the ENTRY: every writer's __main__ block (or top-level script) runs, with main() replaced by
+the probe. main() itself runs only for the few writers in the open-mode tests below; the rest of main() is
+covered by the structural rules (the lock first, around every main() call; no rebinding of catalog_path;
+every plain open marked) - R1203 found "every writer is RUN" overstated.
+
+The writer list is DISCOVERED (every file that opens the catalogue for write through core.catalog_path) and
+then compared with EXPECTED_WRITERS: a new writer fails that test until it is added there (one line) and,
+if it needs arguments, to ARGS."""
 import ast
 import os
 import runpy
 import sys
-import types
 
 import pytest
 
@@ -174,6 +179,64 @@ def test_a_script_takes_the_lock_unconditionally_at_top_level():
     assert not bad, f"these scripts do not call catalog_path.write_session_for_process() at top level: {bad}"
 
 
+def test_a_writer_never_rebinds_catalog_path():
+    """R1203 N4: the structural rules read `catalog_path.write_session...` as text, so a writer that rebinds the
+    name (an assignment, a loop or with target, a def, or an attribute set on it) could make the lock a no-op."""
+    bad = []
+    for rel, path, _b in WRITERS:
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        for n in ast.walk(tree):
+            targets = []
+            if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+            elif isinstance(n, (ast.For, ast.AsyncFor)):
+                targets = [n.target]
+            elif isinstance(n, (ast.With, ast.AsyncWith)):
+                targets = [i.optional_vars for i in n.items if i.optional_vars is not None]
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name == "catalog_path":
+                bad.append(f"{rel}:{n.lineno}")
+            elif isinstance(n, ast.NamedExpr):
+                targets = [n.target]
+            for t in targets:
+                for x in ast.walk(t):
+                    if (isinstance(x, ast.Name) and x.id == "catalog_path") or \
+                            (isinstance(x, ast.Attribute) and ast.unparse(x.value) == "catalog_path"):
+                        bad.append(f"{rel}:{n.lineno}")
+            if isinstance(n, (ast.Import, ast.ImportFrom)):
+                for a in n.names:
+                    bound = a.asname or a.name.split(".")[0]
+                    if bound == "catalog_path" and not (
+                            (isinstance(n, ast.ImportFrom) and n.module == "core" and a.name == "catalog_path")
+                            or (isinstance(n, ast.Import) and a.name == "core.catalog_path")):
+                        bad.append(f"{rel}:{n.lineno}")
+    assert not bad, f"these writers rebind the name catalog_path (the lock could become a no-op): {bad}"
+
+
+def test_the_rebinding_rule_can_fail(tmp_path, monkeypatch):
+    for code in ("from core import catalog_path\ncatalog_path.write_session_for_process = lambda: None\n",
+                 "from core import catalog_path\nimport types\ncatalog_path = types.SimpleNamespace()\n",
+                 "from mylib import catalog_path\n",
+                 "from core import catalog_path\nfor catalog_path in []:\n    pass\n"):
+        p = tmp_path / "w.py"
+        p.write_text(code + "c = catalog_path.connect(write=True)\n")
+        monkeypatch.setattr(sys.modules[__name__], "WRITERS", [("w.py", str(p), None)])
+        with pytest.raises(AssertionError, match="rebind"):
+            test_a_writer_never_rebinds_catalog_path()
+
+
+def test_a_dry_mode_writer_reads_its_flags_exactly():
+    """R1203: the lock choice in __main__ reads the exact flag ("--apply" in sys.argv), while argparse also
+    accepts a prefix ("--app"); the two disagree unless the parser refuses prefixes."""
+    bad = []
+    for rel in (r for r, a in ARGS.items() if "dry" in a):
+        tree = ast.parse(open(os.path.join(ROOT, rel), encoding="utf-8").read())
+        parsers = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func).endswith("ArgumentParser")]
+        if not parsers or not all(any(k.arg == "allow_abbrev" and isinstance(k.value, ast.Constant)
+                                      and k.value.value is False for k in p.keywords) for p in parsers):
+            bad.append(rel)
+    assert not bad, f"these dry-mode writers' parsers accept flag prefixes: {bad}"
+
+
 def test_a_writer_opens_nothing_with_plain_sqlite3_unless_it_says_why():
     """R1199 M7: `sqlite3.connect(variable)` in a writer's locked path escaped the plain-open ratchet (which
     only sees a resolver expression as the argument). In a writer file every plain open carries a reason."""
@@ -270,6 +333,15 @@ def test_a_script_holds_the_lock_at_its_open(t0, monkeypatch, rel, path, block):
     import atexit
     at_exit = []
     monkeypatch.setattr(atexit, "register", lambda fn, *a, **k: at_exit.append((fn, a, k)))
+    # R1203 N4: the REAL lock function must be what the script calls - a name rebound to a no-op survived
+    # the order check below, which reads text
+    lock_calls = []
+    real_lock = cp.write_session_for_process
+
+    def lock_spy(*a, **k):
+        lock_calls.append(1)
+        return real_lock(*a, **k)
+    monkeypatch.setattr(cp, "write_session_for_process", lock_spy)
     monkeypatch.setattr(cp, "connect", probe)
     monkeypatch.setattr(cp, "connect_path", probe)
     monkeypatch.setattr(sys, "argv", [path])
@@ -291,6 +363,7 @@ def test_a_script_holds_the_lock_at_its_open(t0, monkeypatch, rel, path, block):
     # the lock is taken by a top-level statement BEFORE the first top-level statement that opens the
     # catalogue for write (R1194: a script that locked after its open survived every test).
     assert seen == [], f"{rel}: stopped early ({stopped_early!r}) yet reached an open: {seen}"
+    assert lock_calls == [1], f"{rel}: stopped early without calling the real write_session_for_process once"
     tree = ast.parse(open(path, encoding="utf-8").read())
     lock_at = next((i for i, s in enumerate(tree.body) if "write_session_for_process" in ast.unparse(s)), None)
     open_at = next((i for i, s in enumerate(tree.body) if any(_is_write_open(n) for n in ast.walk(s))), None)

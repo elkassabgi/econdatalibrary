@@ -158,7 +158,7 @@ def _year(d) -> int | None:
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(allow_abbrev=False)  # the lock choice in __main__ reads the exact flag
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--source", action="append")
     a = ap.parse_args()

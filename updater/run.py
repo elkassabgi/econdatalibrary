@@ -90,7 +90,7 @@ def _state_db_holders() -> list[str]:
     """
     lines: list[str] = []
     try:
-        con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=10)
+        con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=10)  # plain-open: the updater's state.db, read-only
         rows = list(con.execute("select key, owner, expires_utc from leases"))
         con.close()
     except Exception as e:                                   # noqa: BLE001
@@ -261,7 +261,7 @@ def push_state() -> int:
     if _remote_bytes >= _SUBSTANTIAL_REMOTE and not os.environ.get("AQUEDUCT_ALLOW_SHRINK"):
         local_bytes = os.path.getsize(config.STATE_DB) if os.path.exists(config.STATE_DB) else 0
         try:
-            _c = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=30)
+            _c = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=30)  # plain-open: the updater's state.db, read-only
             n_src = _c.execute("SELECT COUNT(*) FROM source_state").fetchone()[0]
             n_run = _c.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
             _c.close()
@@ -285,7 +285,7 @@ def push_state() -> int:
     tmp_db = os.path.join(config.STATE_DIR,
                           f"state.vacuum.{os.getpid()}.{uuid.uuid4().hex[:8]}.db")
     try:
-        con = sqlite3.connect(config.STATE_DB)
+        con = sqlite3.connect(config.STATE_DB)  # plain-open: the updater's state.db
         try:
             con.execute("VACUUM INTO ?", (tmp_db,))
         finally:

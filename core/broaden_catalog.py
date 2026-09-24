@@ -140,7 +140,7 @@ def _scan_source(files, key_col, freq_col):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(allow_abbrev=False)  # the lock choice in __main__ reads the exact flag
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--source", action="append", help="limit to specific source(s)")
     ap.add_argument("--series-cap", type=int, default=None,

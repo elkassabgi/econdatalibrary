@@ -42,7 +42,7 @@ def main() -> int:
     live = {os.path.normcase(os.path.realpath(p)) for p in (catalog_path.CHECKOUT_PATH, catalog_path.BUILD_PATH)}
     if os.path.normcase(os.path.realpath(a.db)) in live:
         print("WARNING: this is the live catalogue; with a crawler writing, this scan blocks and is blocked. Prefer a copy.", file=sys.stderr)
-    con = sqlite3.connect("file:%s?mode=ro" % a.db.replace("\\", "/"), uri=True, timeout=60)
+    con = sqlite3.connect("file:%s?mode=ro" % a.db.replace("\\", "/"), uri=True, timeout=60)  # plain-open: a snapshot the caller names, read-only (warns if live)
     t0 = time.time()
     n_total, = con.execute("SELECT COUNT(*) FROM series").fetchone()
     rows = con.execute(Q).fetchall()

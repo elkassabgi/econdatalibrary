@@ -12,6 +12,7 @@ Review R1192: the three core writers moved in 2d49d8a40 were never RUN by any te
     read-only mode and the lock check)."""
 import ast
 import os
+import re
 import runpy
 import sqlite3
 import sys
@@ -187,3 +188,133 @@ def test_the_plain_open_ratchet_can_fail():
     tree = ast.parse("import sqlite3\nc = sqlite3.connect(catalog_path.catalog_path())\n"
                      "d = sqlite3.connect(catalog_path.under(ROOT), timeout=5)\n")
     assert len(list(_plain_opens_of_resolver_paths(tree))) == 2
+
+
+# ---- R1203: a plain open in ANY file that uses core.catalog_path ----------------------------------------------
+# The marker rule in test_catalogue_writers_main covered only the 49 writer files, and the ratchet above sees
+# only a `catalog_path.` expression written as the argument. So `p = catalog_path.catalog_path();
+# sqlite3.connect(p)` in any other file passed every test and, after T0, wrote the build with no lock (R1203
+# probe_n1). Two rules close it:
+#   1. TAINT: a plain open whose path comes from a `catalog_path.` value through variables is refused,
+#      marker or not - that is the resolver's file opened around its lock and its read-only mode.
+#   2. SCOPE: in every file that imports core.catalog_path, every plain open (any alias of sqlite3, or
+#      `from sqlite3 import connect`) carries `# plain-open: <reason>` on one of its lines. The reason is
+#      self-certified - rule 1 is what catches the resolver's own path.
+
+def _imports_catalog_path(tree) -> bool:
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom) and n.module == "core" and any(a.name == "catalog_path" for a in n.names):
+            return True
+        if isinstance(n, ast.ImportFrom) and n.module == "core.catalog_path":
+            return True
+        if isinstance(n, ast.Import) and any(a.name == "core.catalog_path" for a in n.names):
+            return True
+    return False
+
+
+def _sqlite_opens(tree):
+    """Every call that opens a database with plain sqlite3: `<alias>.connect(...)` for any alias of the sqlite3
+    module, and `<name>(...)` for any name imported as `from sqlite3 import connect [as name]`."""
+    mods = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
+            for a in n.names if a.name == "sqlite3"}
+    funcs = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "sqlite3"
+             for a in n.names if a.name == "connect"}
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        if isinstance(f, ast.Attribute) and f.attr == "connect" and isinstance(f.value, ast.Name) and f.value.id in mods:
+            yield n
+        elif isinstance(f, ast.Name) and f.id in funcs:
+            yield n
+
+
+def _tainted_names(tree) -> set:
+    """Names assigned (anywhere in the file) from a value that mentions `catalog_path.` or another tainted
+    name - a fixpoint, so `p = catalog_path.x(); q = f"file:{p}"` taints both."""
+    assigns = []
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and n.value is not None:
+            targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+            names = {t.id for tg in targets for t in ast.walk(tg) if isinstance(t, ast.Name)}
+            assigns.append((names, n.value))
+        elif isinstance(n, ast.NamedExpr):
+            assigns.append(({n.target.id}, n.value))
+    tainted: set = set()
+    while True:
+        grew = False
+        for names, value in assigns:
+            if names <= tainted:
+                continue
+            used = {x.id for x in ast.walk(value) if isinstance(x, ast.Name)}
+            if "catalog_path." in ast.unparse(value) or used & tainted:
+                tainted |= names
+                grew = True
+        if not grew:
+            return tainted
+
+
+def _tainted_opens(tree):
+    tainted = _tainted_names(tree)
+    for n in _sqlite_opens(tree):
+        arg = n.args[0] if n.args else next((k.value for k in n.keywords if k.arg == "database"), None)
+        if arg is None:
+            continue
+        if "catalog_path." in ast.unparse(arg) or {x.id for x in ast.walk(arg) if isinstance(x, ast.Name)} & tainted:
+            yield n
+
+
+_MARKER = re.compile(r"#\s*plain-open:\s*\S")
+
+
+def _unmarked_opens(tree, src):
+    lines = src.splitlines()
+    for n in _sqlite_opens(tree):
+        span = lines[n.lineno - 1:(n.end_lineno or n.lineno)]
+        if not any(_MARKER.search(ln) for ln in span):
+            yield n
+
+
+def _code_files_with_source():
+    for rel, p in _repo_walk.code_files((".py",)):
+        if rel == "core/catalog_path.py" or rel.startswith("tests/"):
+            continue
+        src = open(p, encoding="utf-8").read()
+        try:
+            yield rel, ast.parse(src), src
+        except SyntaxError:
+            continue
+
+
+def test_no_plain_open_of_a_path_that_came_from_catalog_path():
+    bad = [f"{rel}:{n.lineno}" for rel, tree, _s in _code_files_with_source() for n in _tainted_opens(tree)]
+    assert not bad, ("a plain sqlite3 open of a path taken from core.catalog_path bypasses its read-only mode "
+                     "and its lock - use catalog_path.connect() / connect_path():\n  " + "\n  ".join(bad))
+
+
+def test_every_plain_open_in_a_catalog_path_file_says_why():
+    bad = [f"{rel}:{n.lineno}" for rel, tree, src in _code_files_with_source() if _imports_catalog_path(tree)
+           for n in _unmarked_opens(tree, src)]
+    assert not bad, ("plain sqlite3 opens in files that use core.catalog_path, without a "
+                     "'# plain-open: <reason>' on the call:\n  " + "\n  ".join(bad))
+
+
+def test_the_r1203_rules_can_fail():
+    n1 = ("from core import catalog_path\nimport sqlite3\np = catalog_path.catalog_path()\n"
+          "c = sqlite3.connect(p)  # plain-open: says anything\n")
+    assert len(list(_tainted_opens(ast.parse(n1)))) == 1, "N1: a variable from catalog_path, even marked"
+    n1b = ("from core import catalog_path\nimport sqlite3 as sq\nroot = catalog_path.under(R)\n"
+           "uri = f'file:{root}?mode=ro'\nc = sq.connect(uri, uri=True)\n")
+    assert len(list(_tainted_opens(ast.parse(n1b)))) == 1, "two hops and an alias"
+    n1c = ("from core import catalog_path\nfrom sqlite3 import connect as op\n"
+           "c = op(database=catalog_path.catalog_path())\n")
+    assert len(list(_tainted_opens(ast.parse(n1c)))) == 1, "from-import, keyword argument"
+    ok = ("from core import catalog_path\nimport sqlite3\n"
+          "c = sqlite3.connect(state_db)  # plain-open: the updater's state.db\n")
+    assert not list(_tainted_opens(ast.parse(ok))) and not list(_unmarked_opens(ast.parse(ok), ok))
+    unmarked = "from core import catalog_path\nimport sqlite3\nc = sqlite3.connect(\n    other_db)\n"
+    assert len(list(_unmarked_opens(ast.parse(unmarked), unmarked))) == 1
+    empty_reason = "import sqlite3\nc = sqlite3.connect(x)  # plain-open:\n"
+    assert len(list(_unmarked_opens(ast.parse(empty_reason), empty_reason))) == 1, "a marker needs a reason"
+    assert _imports_catalog_path(ast.parse("import core.catalog_path\n"))
+    assert not _imports_catalog_path(ast.parse("# core.catalog_path\nimport os\n"))

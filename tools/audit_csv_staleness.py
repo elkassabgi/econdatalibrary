@@ -64,7 +64,7 @@ BUCKET = "econ-data"
 
 def _never_ok_sources() -> set[str]:
     db = os.path.join(ROOT, "data", "_aqueduct", "state.db")
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)  # plain-open: the updater's state.db, read-only
     ok, seen = set(), set()
     for src, status in con.execute("SELECT source_id, status FROM runs"):
         seen.add(src)

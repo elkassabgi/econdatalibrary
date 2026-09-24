@@ -18,6 +18,9 @@ import pyarrow.parquet as pq
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+# after T0: the single-writer lock until exit - taken FIRST, before the store is read (R1203 N4: a script
+# that stops on a missing store must already have called the real lock, or no test can tell it is real)
+catalog_path.write_session_for_process()
 SRC = "efw"
 STORE = os.path.join(ROOT, "data", "clean_full", "efw")
 LICENSE_ID = "fraser-efw-permission"
@@ -53,7 +56,6 @@ def title_of(key: str) -> str:
     return f"{desc} — {c} (EFW)"
 
 
-catalog_path.write_session_for_process()   # after T0: the single-writer lock until exit
 con = catalog_path.connect(write=True, timeout=7200)
 con.execute("PRAGMA busy_timeout=7200000")
 con.execute(

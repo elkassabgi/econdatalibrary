@@ -58,7 +58,7 @@ def load_state():
     """{source_id: [row, ...]} from unit_state, plus the last few runs."""
     out, runs = {}, {}
     try:
-        con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=120)
+        con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=120)  # plain-open: the updater's state.db, read-only
     except Exception:
         return out, runs
     try:
