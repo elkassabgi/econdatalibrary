@@ -648,3 +648,74 @@ def test_no_other_connection_can_move_the_row_between_the_read_and_the_write(tmp
     assert db.execute("SELECT strategy, cadence FROM source_state WHERE source_id='sec_edgar'").fetchall() == \
         [("giant_changed_units", "quarterly")], "nothing merged, nothing moved under the write"
     db.close()
+
+
+def test_the_unit_write_holds_the_lock_from_its_read_too(tmp_path, monkeypatch):
+    """R1240: removing the transaction from upsert_unit, reading before it, or locking on another id all passed
+    - the R1237 race came back in unit_state. The unit twin of the test above: the XBRL product owns the id,
+    a 13F unit row is written behind the open store, and a move attempted right after the read cannot happen."""
+    p = str(tmp_path / "state.db")
+    s = StateStore(p)
+    s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")            # ownership
+    raw = sqlite3.connect(p)
+    raw.execute("INSERT INTO unit_state(source_id, unit_id, strategy) "
+                "VALUES ('sec_edgar', '_all', 'giant_changed_units')")
+    raw.commit()
+    raw.close()
+    tried = {}
+    real = StateStore.get_unit
+
+    def read_then_another_process_moves_it(self, sid, uid):
+        row = real(self, sid, uid)
+        other = sqlite3.connect(p, timeout=0.2)
+        try:
+            other.execute("UPDATE unit_state SET source_id='sec_edgar_13f' WHERE source_id='sec_edgar'")
+            other.commit()
+            tried["moved"] = True
+        except sqlite3.OperationalError as e:
+            tried["moved"], tried["why"] = False, str(e)
+        finally:
+            other.close()
+        return row
+    monkeypatch.setattr(StateStore, "get_unit", read_then_another_process_moves_it)
+    try:
+        with pytest.raises(ValueError, match="still holds the 13F row"):
+            s.upsert_unit("sec_edgar", "_all", strategy="edgar_delta", status="ok")
+    finally:
+        monkeypatch.undo()
+        s.close()
+    assert tried == {"moved": False, "why": "database is locked"}
+
+
+@pytest.mark.parametrize("table", ["source_state", "unit_state"])
+def test_a_refused_write_lets_go_of_the_lock(tmp_path, table):
+    """R1240 mutant T7: without the rollback a refused write kept the database's write lock - every other
+    connection got 'database is locked' and the next store open waited 60 s and failed."""
+    p = str(tmp_path / "state.db")
+    s = StateStore(p)
+    try:
+        if table == "unit_state":
+            s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+        raw = sqlite3.connect(p)
+        if table == "source_state":
+            raw.execute("INSERT INTO source_state(source_id, strategy, status) "
+                        "VALUES ('sec_edgar', 'giant_changed_units', 'ok')")
+        else:
+            raw.execute("INSERT INTO unit_state(source_id, unit_id, strategy) "
+                        "VALUES ('sec_edgar', '_all', 'giant_changed_units')")
+        raw.commit()
+        raw.close()
+        with pytest.raises(ValueError):
+            if table == "source_state":
+                s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+            else:
+                s.upsert_unit("sec_edgar", "_all", strategy="edgar_delta", status="ok")
+        assert not s.db.in_transaction, "the refused write's transaction is closed"
+        other = sqlite3.connect(p, timeout=0.2)
+        try:
+            other.execute("CREATE TABLE lock_probe (x)")                            # a write: needs the lock
+            other.commit()
+        finally:
+            other.close()
+    finally:
+        s.close()
