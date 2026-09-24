@@ -108,6 +108,26 @@ test("a counted body reports the bytes on completion and on abort", async () => 
   assert.ok(seen[1][0] > 0, "with the bytes that were taken");
 });
 
+test("a header timeout ABORTS the pending request to the origin", async (t) => {
+  // In workerd the end of a request cancels its subrequests anyway, so the integration test below cannot
+  // see a missing abort (R1175 follow-up: that mutant survived there). Under node, fetch keeps a pending
+  // request open until the server answers - so here only a real abort closes it early.
+  let closedEarly = 0;
+  const server = createServer((_req, res) => {
+    let answered = false;
+    res.on("close", () => { if (!answered) closedEarly++; });
+    setTimeout(() => { if (!res.destroyed) { answered = true; res.end("{}"); } }, 5000);
+  });
+  const host = await listen(server);
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const env = { ORIGIN_URL: `http://${host}`, ORIGIN_SECRET: "s", ORIGIN_TIMEOUT_MS: "200" };
+  const resp = await edge.fetchOrigin(edge.originRequest(new Request("https://e.example/v1/sources"), env)!, env);
+  assert.equal(resp.status, 504);
+  const t0 = Date.now();
+  while (closedEarly === 0 && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(closedEarly, 1, "the origin saw the request closed long before it answered");
+});
+
 test("the client never sees the internal headers", () => {
   const o = new Response("x", { headers: { "x-econ-count": "1", "x-econ-origin": "1", "content-type": "text/csv" } });
   const c = edge.clientResponse(o, o.body);
