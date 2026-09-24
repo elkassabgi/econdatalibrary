@@ -38,8 +38,8 @@ THIRTEEN_F_UNIT = "_all"                        # the 13F entry's only unit
 # table -> the WHERE clause (and its arguments) that selects the 13F product's rows under OLD.
 # ALWAYS: unambiguous (the 13F strategy) - moved whoever owns the id.
 _SELECT_ALWAYS = {
-    "source_state": ("source_id=? AND strategy=?", (OLD, THIRTEEN_F_STRATEGY)),
-    "unit_state": ("source_id=? AND strategy=?", (OLD, THIRTEEN_F_STRATEGY)),
+    "source_state": ("source_id=? AND lower(trim(strategy))=?", (OLD, THIRTEEN_F_STRATEGY)),
+    "unit_state": ("source_id=? AND lower(trim(strategy))=?", (OLD, THIRTEEN_F_STRATEGY)),
 }
 # BEFORE OWNERSHIP ONLY: no strategy column, so only the ownership gate says whose they are.
 _SELECT_GATED = {
@@ -63,7 +63,8 @@ def xbrl_owns(db: sqlite3.Connection) -> bool:
     of unknown strategy (left alone rather than guessed at)."""
     if "source_state" not in _tables(db):
         return False
-    return db.execute("SELECT 1 FROM source_state WHERE source_id=? AND strategy IS NOT ?",
+    return db.execute("SELECT 1 FROM source_state WHERE source_id=? "
+                      "AND (strategy IS NULL OR lower(trim(strategy)) <> ?)",
                       (OLD, THIRTEEN_F_STRATEGY)).fetchone() is not None
 
 

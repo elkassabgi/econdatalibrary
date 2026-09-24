@@ -259,7 +259,7 @@ def test_the_move_takes_the_write_lock_first(tmp_path):
     assert begins == ["BEGIN IMMEDIATE"], begins
     under_lock = seen[seen.index("BEGIN IMMEDIATE") + 1:]
     first_write = next(i for i, s in enumerate(under_lock) if s.lstrip().upper().startswith(("UPDATE", "DELETE")))
-    assert any("strategy IS NOT" in s for s in under_lock[:first_write]), \
+    assert any("lower(trim(strategy)) <>" in s for s in under_lock[:first_write]), \
         "the ownership is re-read under the lock, before the first write"
 
 
@@ -341,6 +341,60 @@ def test_an_xbrl_write_over_an_unmoved_13f_row_is_refused(tmp_path):
         s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
         assert s.get_source("sec_edgar")["cadence"] is None, "nothing of 13F's row merged in"
         assert s.get_source("sec_edgar_13f")["strategy"] == M.THIRTEEN_F_STRATEGY
+    finally:
+        s.close()
+
+
+def test_the_refusal_holds_when_the_new_id_row_exists_too(tmp_path):
+    """R1207 V6: the realistic probe-B state - sec_edgar_13f already has its row, then old code writes the 13F
+    row under sec_edgar behind this store's back. Refused; the reopen DROPS the old row (the new one wins)."""
+    p = str(tmp_path / "state.db")
+    _seed(p, [("INSERT INTO source_state(source_id, strategy, status) VALUES "
+               "('sec_edgar_13f','giant_changed_units','ok')", ())])
+    s = StateStore(p)
+    try:
+        c = sqlite3.connect(p)
+        c.execute(*THIRTEEN_F[0])
+        c.commit()
+        c.close()
+        with pytest.raises(ValueError, match="still holds the 13F row"):
+            s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+    finally:
+        s.close()
+    s = StateStore(p)
+    try:
+        s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+        assert s.get_source("sec_edgar")["cadence"] is None
+    finally:
+        s.close()
+
+
+def test_a_null_strategy_row_does_not_block_the_xbrl_write(tmp_path):
+    """R1207 V4: a row of unknown (NULL) strategy is not the 13F row - refusing it would block the XBRL
+    product's first write for ever (the migration leaves such a row alone)."""
+    p = str(tmp_path / "state.db")
+    _seed(p, [("INSERT INTO source_state(source_id, status) VALUES ('sec_edgar','ok')", ())])
+    s = StateStore(p)
+    try:
+        s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+        assert s.get_source("sec_edgar")["strategy"] == "edgar_delta"
+    finally:
+        s.close()
+
+
+def test_a_variant_spelling_of_the_13f_strategy_is_moved_not_refused_for_ever(tmp_path):
+    """R1207 probe E: the guard compared lower(strip()) while the migration compared exactly, so a
+    ' GIANT_CHANGED_UNITS ' row was refused on every open and never moved. Both now normalise."""
+    p = str(tmp_path / "state.db")
+    _seed(p, [("INSERT INTO source_state(source_id, strategy, status) VALUES "
+               "('sec_edgar',' GIANT_CHANGED_UNITS ','ok')", ()),
+              ("INSERT INTO unit_state(source_id, unit_id, strategy, status) VALUES "
+               "('sec_edgar','_all','Giant_Changed_Units','ok')", ())])
+    s = StateStore(p)
+    try:
+        assert s.get_source("sec_edgar") is None and s.get_unit("sec_edgar", "_all") is None, "moved on open"
+        assert s.get_source("sec_edgar_13f") is not None and s.get_unit("sec_edgar_13f", "_all") is not None
+        s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
     finally:
         s.close()
 
