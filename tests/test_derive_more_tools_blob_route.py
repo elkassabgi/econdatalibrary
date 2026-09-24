@@ -29,7 +29,8 @@ class Store:
     def list_keys(self, prefix):
         return [k for k in self.have if k.startswith(prefix)]
 
-    def put_atomic(self, key, data):
+    def put_atomic(self, key, data, plain=False):
+        self.__dict__.setdefault("plain", {})[key] = plain       # the encoding the tool asked for (R1206)
         self.put[key] = data
 
 
@@ -91,7 +92,24 @@ def test_the_csvs_reach_the_csv_store(run, tmp_path, name):
         assert k.startswith("series/") and k.endswith(".csv"), k
         text = (gzip.decompress(body) if body[:2] == b"\x1f\x8b" else body).decode()
         assert text.startswith("series_id,obs_date,value\n"), text[:60]
+    # each tool keeps the encoding it always had (R1206): usda and census stored plain, ilostat and istat gzip
+    assert set(store.plain.values()) == {name in PLAIN}, (name, store.plain)
     assert not os.path.exists(os.path.join(ROOT, "data", "_aqueduct", "state.db")), "wrote the checkout's state"
+
+
+PLAIN = {"derive_usda_tables", "derive_census_tables"}
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_a_failed_upload_fails_the_run(run, monkeypatch, name):
+    """R1204: a tool that ignored _put_with_retry's False survived every test - the store never refused."""
+    from updater import derive
+    monkeypatch.setattr(derive, "_put_with_retry", lambda *a, **k: False)
+    try:
+        rc = run(name, Store())
+    except SystemExit as e:
+        rc = e.code
+    assert rc not in (0, None), f"{name}: a failed upload exited {rc!r}"
 
 
 @pytest.mark.parametrize("name", sorted(CASES))

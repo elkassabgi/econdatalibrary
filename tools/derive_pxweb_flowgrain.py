@@ -150,12 +150,12 @@ def main():
             print(f"skip-existing: {len(existing):,} objects already in the store", flush=True)
 
     def put(series_id: str, body: bytes):
-        # put_atomic gzips the plain CSV and records its md5 (series_csv_put_args); this private put stored
-        # plain text/csv before - the fleet's gzip-at-rest rule now holds here too
+        # PLAIN at rest, as this tool always stored it (R1206: gzip would change what the worker serves -
+        # blob._refuse_plain_gzip); bytes the store already holds are not written again
         key = r2_key(series_id)
         for attempt in range(7):
             try:
-                store.put_atomic(key, body)
+                store.put_atomic(key, body, plain=True)
                 return
             except Exception as e:
                 if attempt == 6:

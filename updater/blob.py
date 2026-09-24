@@ -436,7 +436,7 @@ class LocalBlob:
         with open(p, "rb") as f:
             return f.read()
 
-    def put_atomic(self, key: str, data: bytes) -> None:
+    def put_atomic(self, key: str, data: bytes, *, plain: bool = False) -> None:   # local files: bytes as given
         p = self._path(key)
         d = os.path.dirname(p)
         if d:
@@ -508,6 +508,17 @@ _SKIPPED_LOCK = threading.Lock()
 # literal any more - `_already_holds` delegates the whole comparison.
 
 
+def _refuse_plain_gzip(key: str, data: bytes) -> None:
+    """put_atomic(plain=True) keeps a series CSV UNCOMPRESSED at rest, as the tools that always stored theirs
+    plain did before plan step 1 moved them onto the CSV store (R1206). Gzip is not a neutral change for
+    them: the worker refuses a date/geo filter on a gzipped object above its decompression-ratio limit
+    (4 large flow-grain CSVs measured at 45-66x) and serves a gzipped object without the citation in its
+    body. Changing that is a decision of its own, not a side effect of a move. A body that is already gzip
+    under plain=True would be served as garbage text/csv (the R560 class), so it is refused."""
+    if data[:2] == b"\x1f\x8b":
+        raise ValueError(f"{key}: plain=True with a gzip body - it would be stored as text/csv garbage")
+
+
 def _count_skip() -> None:
     with _SKIPPED_LOCK:
         SKIPPED_IDENTICAL[0] += 1
@@ -522,9 +533,10 @@ class R2Blob:
     boto3 or credentials, only actually touching R2 does.
     """
 
-    def __init__(self, bucket: str = R2_BUCKET, pool: int | None = None):
+    def __init__(self, bucket: str = R2_BUCKET, pool: int | None = None, write: bool = True):
         self.bucket = bucket
         self.pool = pool            # botocore max_pool_connections for a many-threaded caller; None = default
+        self.write = write          # False: the read key (r2_util prefers R2_READ_*) - for a store only read
         self._client = None
         self._client_lock = threading.Lock()
 
@@ -534,8 +546,8 @@ class R2Blob:
             with self._client_lock:     # many threads may touch a new store at once: build ONE client
                 if self._client is None:
                     from core import r2_util  # lazy — only R2 runs need boto3 + creds
-                    self._client = (r2_util.client(write=True, pool=self.pool) if self.pool
-                                    else r2_util.client(write=True))
+                    self._client = (r2_util.client(write=self.write, pool=self.pool) if self.pool
+                                    else r2_util.client(write=self.write))
         return self._client
 
     def get(self, key: str) -> bytes | None:
@@ -548,16 +560,24 @@ class R2Blob:
             raise
         return resp["Body"].read()
 
-    def put_atomic(self, key: str, data: bytes) -> None:
+    def put_atomic(self, key: str, data: bytes, *, plain: bool = False) -> None:
         # Single PUT — atomic per key on R2 (plan D-3); botocore already retries
         # transient failures (r2_util config: 5 attempts, standard mode).
         # ContentType by extension: the Worker serves series CSVs via plain R2 GET,
         # and core/derive_csv.py's backfill PUTs set text/csv — a re-derived CSV
         # must not silently downgrade to application/octet-stream (A3 handoff note).
+        # plain=True: store the bytes as they are (see _refuse_plain_gzip).
         kw = {}
         ct = _CONTENT_TYPES.get(os.path.splitext(key)[1].lower())
         if ct:
             kw["ContentType"] = ct
+        if plain:
+            _refuse_plain_gzip(key, data)
+            if key.startswith("series/") and key.endswith(".csv") and self._already_holds(key, data):
+                _count_skip()
+                return
+            self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **kw)
+            return
         # GZIP AT REST, series CSVs ONLY (cost plan 2026-08-18, mirrors
         # core/derive_csv.py's writer): ContentEncoding='gzip' is the marker the
         # worker's reader decompresses on; mtime=0 keeps bytes deterministic for
@@ -735,13 +755,18 @@ class SelfhostBlob:
         with open(meta["path"], "rb") as f:
             return f.read()
 
-    def put_atomic(self, key: str, data: bytes) -> None:
+    def put_atomic(self, key: str, data: bytes, *, plain: bool = False) -> None:
         # Same rules as R2Blob.put_atomic: ContentType by extension; series CSVs gzip at rest through the
-        # ONE shared definition (core.r2_util.series_csv_put_args); bytes the store already holds are
-        # not written again.
+        # ONE shared definition (core.r2_util.series_csv_put_args), unless plain=True (_refuse_plain_gzip);
+        # bytes the store already holds are not written again.
         ctype = _CONTENT_TYPES.get(os.path.splitext(key)[1].lower())
         encoding, metadata, plain_digest = None, {}, None
-        if key.startswith("series/") and key.endswith(".csv"):
+        if plain:
+            _refuse_plain_gzip(key, data)
+            if key.startswith("series/") and key.endswith(".csv") and self._already_holds(key, data, None):
+                _count_skip()
+                return
+        elif key.startswith("series/") and key.endswith(".csv"):
             from core.r2_util import series_csv_put_args                  # noqa: PLC0415
             data, kw, plain_digest = series_csv_put_args(data)
             ctype = kw.get("ContentType", ctype)
@@ -829,14 +854,20 @@ class LocalStoreReader:
         self.data_root = os.path.abspath(data_root or config.DATA_ROOT)   # the clean_full directory
 
     def _path(self, key: str) -> str:
-        if not key.startswith(self.PREFIX) or ".." in key.split("/"):
+        # R1206: split on '/' alone let '..\..' (a Windows separator) and 'C:' (a drive) out of the store
+        if (not key.startswith(self.PREFIX) or ".." in key.split("/") or "\\" in key or ":" in key
+                or "\x00" in key):
             raise ValueError(f"{key!r} is not a parquet-store key ({self.PREFIX}<source>/...)")
-        return os.path.join(self.data_root, *key[len(self.PREFIX):].split("/"))
+        p = os.path.join(self.data_root, *key[len(self.PREFIX):].split("/"))
+        root = os.path.normcase(os.path.realpath(self.data_root))
+        if os.path.commonpath([root, os.path.normcase(os.path.realpath(p))]) != root:
+            raise ValueError(f"{key!r} resolves outside the store {self.data_root}")
+        return p
 
     def list_keys(self, prefix: str) -> list[str]:
         """Every file key under the prefix, sorted. A missing source directory lists nothing - the caller
         decides whether an empty store is an error (the tools here refuse it)."""
-        if not prefix.startswith(self.PREFIX) or ".." in prefix.split("/"):
+        if not prefix.startswith(self.PREFIX) or ".." in prefix.split("/") or "\\" in prefix or ":" in prefix:
             raise ValueError(f"{prefix!r} is not a parquet-store prefix ({self.PREFIX}<source>/...)")
         # the directory is everything up to the prefix's last '/'; the rest filters names
         top = os.path.join(self.data_root, *prefix[len(self.PREFIX):].split("/")[:-1])
@@ -867,7 +898,8 @@ def store_reader() -> R2Blob | LocalStoreReader:
     side, as it does for csv_store."""
     from core import cutover                                              # noqa: PLC0415
     b = os.environ.get("AQUEDUCT_BACKEND", "").strip().lower()
-    reader = LocalStoreReader() if (cutover.is_cut_over() or b == "selfhost") else R2Blob()
+    # before T0 the READ key: a --dry-run or --catalog run needs no write credential (R1206)
+    reader = LocalStoreReader() if (cutover.is_cut_over() or b == "selfhost") else R2Blob(write=False)
     where = f"the local store {reader.data_root}" if isinstance(reader, LocalStoreReader) else f"R2 {reader.bucket}"
     print(f"[store-reader] {where}", flush=True)
     return reader

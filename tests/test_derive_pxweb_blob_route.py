@@ -26,7 +26,8 @@ class Store:
     def list_keys(self, prefix):
         return [k for k in self.have if k.startswith(prefix)]
 
-    def put_atomic(self, key, data):
+    def put_atomic(self, key, data, plain=False):
+        self.__dict__.setdefault("plain", {})[key] = plain       # the encoding the tool asked for (R1206)
         self.put[key] = data
 
 
@@ -54,6 +55,7 @@ def tool(tmp_path, monkeypatch):
         monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: store)
         monkeypatch.setattr(sys, "argv", ["x", "--bucket", "econ-data", "--source", "ssb", "--threads", "1", *extra])
         return m.main()
+    go.module = m                                           # the tool under test, for a test to patch
     return go
 
 
@@ -64,6 +66,26 @@ def test_one_table_reaches_the_csv_store(tool):
     body = store.put["series/ssb%3AT1.csv"]
     text = (gzip.decompress(body) if body[:2] == b"\x1f\x8b" else body).decode()
     assert text.count("\n") == 3 and "T1:Region=01:Contents=X" in text
+    assert store.plain == {"series/ssb%3AT1.csv": True} and body[:2] != b"\x1f\x8b", \
+        "stored PLAIN, as this tool always did (R1206)"
+
+
+def test_a_store_that_refuses_fails_the_run(tool, monkeypatch):
+    """R1204: pxweb swallowing its last failure survived - no test gave it a store that refuses."""
+    import types
+
+    class Refusing(Store):
+        def put_atomic(self, key, data, plain=False):
+            raise OSError("the store refused")
+    import time as _time
+    tries = []
+    m_time = types.SimpleNamespace(sleep=lambda s: tries.append(s), time=_time.time, perf_counter=_time.perf_counter,
+                                   monotonic=_time.monotonic)
+    mod = tool.module
+    monkeypatch.setattr(mod, "time", m_time)
+    with pytest.raises(OSError, match="refused"):
+        tool(Refusing())
+    assert len(tries) == 6, f"its own 7 tries: 6 waits, got {tries}"
 
 
 def test_skip_existing_lists_the_csv_store(tool):

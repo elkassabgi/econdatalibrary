@@ -101,7 +101,7 @@ def main():
 
     # plan step 1: the parquets are read from the published store (R2 before T0, the local store after it)
     # and the CSVs written to the CSV store (R2 before T0, the self-hosted blob store after it - which
-    # holds no parquets). put_atomic gzips a series CSV through the shared helper.
+    # holds no parquets). The CSV is stored plain, as before, and skipped when the store holds it.
     from updater import blob as _blob, derive as _derive                  # noqa: PLC0415
     reader = _blob.store_reader()
     store = _blob.csv_store(BUCKET) if a.upload else None
@@ -140,7 +140,8 @@ def main():
                              None, "{}"))
             if a.upload:
                 k = "series/" + urllib.parse.quote(sid, safe="") + ".csv"
-                if not _derive._put_with_retry(store, k, csv_b):
+                # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
+                if not _derive._put_with_retry(store, k, csv_b, plain=True):
                     raise SystemExit(f"{k}: gave up after {_derive.PUT_TRIES} tries")
                 put_ok += 1
 

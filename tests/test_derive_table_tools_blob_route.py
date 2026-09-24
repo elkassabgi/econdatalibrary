@@ -22,7 +22,8 @@ class Store:
     def __init__(self):
         self.put = {}
 
-    def put_atomic(self, key, data):
+    def put_atomic(self, key, data, plain=False):
+        self.__dict__.setdefault("plain", {})[key] = plain       # the encoding the tool asked for (R1206)
         self.put[key] = data
 
 
@@ -78,6 +79,22 @@ def test_the_table_csvs_reach_the_csv_store(env, monkeypatch, mod, pre, source, 
     assert k.startswith("series/") and k.endswith(".csv")
     text = (gzip.decompress(body) if body[:2] == b"\x1f\x8b" else body).decode()
     assert text.startswith("series_id,obs_date,value\n") and text.count("\n") == 3, text
+    assert store.plain == {k: True} and body[:2] != b"\x1f\x8b", "stored PLAIN, as this tool always did (R1206)"
+
+
+@pytest.mark.parametrize("mod,pre,source,key", _cases(), ids=lambda v: v if isinstance(v, str) and v.startswith("tools.") else "")
+def test_a_failed_upload_fails_the_run(env, monkeypatch, mod, pre, source, key):
+    """R1204: a tool that ignored _put_with_retry's False survived every test - the store never refused."""
+    _store_file(env, source, key)
+    monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: Store())
+    from updater import derive
+    monkeypatch.setattr(derive, "_put_with_retry", lambda *a, **k: False)
+    monkeypatch.setattr(sys, "argv", ["x", *pre, "--bucket", "econ-data", "--threads", "1"])
+    try:
+        rc = importlib.import_module(mod).main()
+    except SystemExit as e:
+        rc = e.code
+    assert rc not in (0, None), f"{mod}: a failed upload exited {rc!r}"
 
 
 @pytest.mark.parametrize("mod,pre,source,key", _cases()[:1], ids=["dip"])

@@ -28,8 +28,9 @@ were 42 datasets when this was written and R2 now holds 49 — the 7 from the 20
 never got a CSV. Fixing that with a plain `--catalog --upload` costs far more than it looks:
 
   * NO SKIP - FIXED 2026-09-24 (self-hosting plan step 1): the PUT now goes through the CSV store's
-    put_atomic, which gzips through series_csv_put_args and skips an object the store provably
-    holds (csvmd5, then ETag). What follows is what it was. The put called c.put_object directly
+    put_atomic(plain=True), which stores it plain as before (R1206) and skips an object the store
+    provably holds (its ETag is the MD5 of these plain bytes). What follows is what it was. The put
+    called c.put_object directly
     and never core.r2_util.put_series_csv, so
     there was no skip_identical and no gzip/csvmd5. A full run re-uploads ALL 49 CSVs —
     4,251,672,591 bytes to publish 51,613,652 new — with 0 of 42 parquets newer than the CSV
@@ -113,7 +114,7 @@ def main():
 
     # plan step 1: the parquets are read from the published store (R2 before T0, the local store after it)
     # and the CSVs written to the CSV store (R2 before T0, the self-hosted blob store after it - which
-    # holds no parquets). put_atomic gzips a series CSV and skips bytes the store already holds.
+    # holds no parquets). The CSV is stored plain, as before, and skipped when the store holds it.
     from updater import blob as _blob, derive as _derive                  # noqa: PLC0415
     reader = _blob.store_reader()
     store = _blob.csv_store(BUCKET) if a.upload else None
@@ -151,7 +152,8 @@ def main():
                              mn, mx, None, "{}"))
             if a.upload:
                 k = "series/" + urllib.parse.quote(sid, safe="") + ".csv"
-                if not _derive._put_with_retry(store, k, body):
+                # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
+                if not _derive._put_with_retry(store, k, body, plain=True):
                     raise SystemExit(f"{k}: gave up after {_derive.PUT_TRIES} tries")
                 put_ok += 1
 

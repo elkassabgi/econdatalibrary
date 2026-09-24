@@ -149,7 +149,8 @@ def main() -> int:
         for k, rr in grouped.items():
             body = _csv_bytes(k, rr)
             if a.apply:
-                if not _derive._put_with_retry(store, _r2_key(k), body):
+                # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
+                if not _derive._put_with_retry(store, _r2_key(k), body, plain=True):
                     raise SystemExit(f"{_r2_key(k)}: gave up after {_derive.PUT_TRIES} tries")
             written += 1
         print(f"  {shard:<24} {len(grouped):>5} series {'written' if a.apply else 'ready'}",

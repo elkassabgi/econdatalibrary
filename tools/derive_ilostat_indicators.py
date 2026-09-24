@@ -471,7 +471,8 @@ def main() -> int:
                "max_rows": int(a.max_rows)},
               open(summary, "w"), indent=1)
     print(f"summary -> {summary}")
-    return 0
+    # a failed upload fails the run (R1204): the summary above records it, and the exit says it
+    return 1 if counts["err"] else 0
 
 
 if __name__ == "__main__":

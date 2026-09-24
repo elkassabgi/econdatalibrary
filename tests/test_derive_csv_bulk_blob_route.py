@@ -52,6 +52,11 @@ def run(tmp_path, monkeypatch):
     state_dir.mkdir()
     monkeypatch.setattr(ucfg, "STATE_DIR", str(state_dir))
     monkeypatch.setattr(ucfg, "STATE_DB", str(state_dir / "state.db"))
+    # R1204: after a clean put main() calls _durable_clear, which starts `updater.run --pull-state` as a CHILD
+    # process in the real checkout, where none of these patches reach. Recorded, never run (and
+    # tests/conftest.py fails any test that starts a state sync).
+    cleared = []
+    monkeypatch.setattr(dcb, "_durable_clear", lambda source: cleared.append(source) or True)
 
     def go(store, *extra):
         monkeypatch.setenv("AQUEDUCT_BACKEND", "x")                       # then DELETED: the default route (R1200)
@@ -63,6 +68,7 @@ def run(tmp_path, monkeypatch):
                                           "--verify", "0", "--failed-keys-file", str(tmp_path / "failed.tsv"),
                                           *extra])
         return dcb.main()
+    go.cleared = cleared
     return go
 
 

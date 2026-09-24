@@ -187,8 +187,8 @@ def main() -> int:
                 return
             key, body = item
             try:
-                # gzipped at rest with the CSV's md5 (series_csv_put_args), 7 app-level tries; plain before
-                if not _derive._put_with_retry(store, key, body):
+                # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
+                if not _derive._put_with_retry(store, key, body, plain=True):
                     raise RuntimeError(f"gave up after {_derive.PUT_TRIES} tries")
                 with lock:
                     counts["put"] += 1

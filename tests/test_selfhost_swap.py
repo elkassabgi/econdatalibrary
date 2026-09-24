@@ -116,6 +116,9 @@ def rig(tmp_path):
     # Every stand-in started here is stopped at teardown - also one abandoned by a retry, and also when the
     # setup itself fails before the yield (a leaked blue once outlived its suite by hours, holding its port).
     started, rt = [], None
+    # the REAL stop, captured now: tests patch swap.stop to fail, and whether their patch is undone before this
+    # teardown runs depends on fixture order - 8 stand-ins leaked when it was not (R1204 follow-up)
+    real_stop = swap.stop
     try:
         for _attempt in range(3):
             blue = swap.start(_fake_cmd()(ports["blue"], str(gen / "persist"), "blue-instance"), str(worker),
@@ -124,7 +127,7 @@ def rig(tmp_path):
             if _eventually(lambda: swap.port_in_use(ports["blue"]) or blue.poll() is not None, 60) \
                     and blue.poll() is None:
                 break
-            swap.stop(blue.pid, started[-1][1])             # slow or dead: never left running behind the retry
+            real_stop(blue.pid, started[-1][1])             # slow or dead: never left running behind the retry
             ports["blue"] = _port()
             state.write_text(json.dumps({"active": "blue",
                                          "targets": {n: f"http://127.0.0.1:{p}" for n, p in ports.items()}}))
@@ -146,9 +149,9 @@ def rig(tmp_path):
             rt.shutdown()
             rt.server_close()
         for inst in swap.load_instances(str(work)).values():
-            swap.stop(inst["pid"], inst.get("created"))
+            real_stop(inst["pid"], inst.get("created"))
         for pid, created in started:
-            swap.stop(pid, created)
+            real_stop(pid, created)
 
 
 STOLEN_PORT = re.compile(r"the idle port \d+ (?:was taken while the copies were built|\(.*?\) already answers)")

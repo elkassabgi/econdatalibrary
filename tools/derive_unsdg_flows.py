@@ -124,15 +124,16 @@ def main() -> int:
         ap.error("--bucket required for a real run")
     sys.path.insert(0, MAIN)
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    # plan step 1: the CSV store - R2 before T0, the self-hosted blob store after it. Its put_atomic gzips a
-    # series CSV through the shared helper; _put_with_retry keeps the 7 tries with backoff this had
+    # plan step 1: the CSV store - R2 before T0, the self-hosted blob store after it. Stored plain, as before;
+    # _put_with_retry keeps the 7 tries with backoff this had
     from updater import blob as _blob, derive as _derive                  # noqa: PLC0415
     store = _blob.csv_store(a.bucket)
 
     def put(code: str) -> int:
         body = csv_bytes(groups[code])
         key = r2_key(f"unsdg:{code}")
-        if not _derive._put_with_retry(store, key, body):
+        # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
+        if not _derive._put_with_retry(store, key, body, plain=True):
             raise RuntimeError(f"{key}: gave up after {_derive.PUT_TRIES} tries")
         return len(body)
 

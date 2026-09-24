@@ -42,7 +42,8 @@ class Store:
     def exists(self, key):
         return key in self.objs
 
-    def put_atomic(self, key, data):
+    def put_atomic(self, key, data, plain=False):
+        self.__dict__.setdefault("plain", {})[key] = plain       # the encoding the tool asked for (R1206)
         self.put[key] = data
 
 
@@ -103,6 +104,7 @@ def test_unsdg_writes_every_code_to_the_csv_store(pre_t0, monkeypatch):
     assert m.main() == 0
     assert sorted(store.put) == ["series/unsdg%3AAG_A.csv", "series/unsdg%3AAG_B.csv"]
     assert _text(store.put["series/unsdg%3AAG_A.csv"]).count("\n") == 3
+    assert set(store.plain.values()) == {True}, "stored PLAIN, as this tool always did (R1206)"
 
 
 def test_unsdg_a_failed_put_fails_the_run(pre_t0, monkeypatch):
@@ -115,7 +117,7 @@ def test_unsdg_a_failed_put_fails_the_run(pre_t0, monkeypatch):
     monkeypatch.setattr(m, "STORE", str(main / "data" / "clean_full" / "unsdg" / "unsdg.parquet"))
     _route(monkeypatch, Store())
     from updater import derive
-    monkeypatch.setattr(derive, "_put_with_retry", lambda store, key, body: False)
+    monkeypatch.setattr(derive, "_put_with_retry", lambda *a, **k: False)
     monkeypatch.setattr(sys, "argv", ["x", "--bucket", "econ-data", "--threads", "1"])
     with pytest.raises(RuntimeError, match="gave up"):
         m.main()
@@ -140,6 +142,7 @@ def test_noaa_missing_writes_only_what_the_csv_store_lacks(pre_t0, monkeypatch):
     assert m.main() == 0
     assert list(store.put) == [m._r2_key("gsom:AYM003:DSND")], "catalogued and already-held keys are skipped"
     assert _text(store.put[m._r2_key("gsom:AYM003:DSND")]).splitlines()[1].startswith("gsom:AYM003:DSND,")
+    assert set(store.plain.values()) == {True}, "stored PLAIN, as this tool always did (R1206)"
 
 
 def test_noaa_missing_a_dry_run_writes_nothing(pre_t0, monkeypatch):
@@ -184,6 +187,7 @@ def test_flowgrain_before_t0_reads_and_writes_r2(pre_t0, monkeypatch, name):
     m.main()
     assert sorted(store.put) == [f"series/{src}%3ADS_A.csv", f"series/{src}%3ADS_B.csv"]
     assert _text(store.put[f"series/{src}%3ADS_A.csv"]).startswith("series_id,obs_date,value\n")
+    assert set(store.plain.values()) == {True}, "stored PLAIN, as this tool always did (R1206)"
 
 
 @pytest.mark.parametrize("name", sorted(FLOWGRAIN))
@@ -206,6 +210,7 @@ def test_flowgrain_after_t0_reads_the_local_store_and_writes_the_blob_store(tmp_
     monkeypatch.setattr(sys, "argv", ["x", "--upload", *extra])
     m.main()
     assert list(selfhost.put) == [f"series/{src}%3ADS_L.csv"]
+    assert set(selfhost.plain.values()) == {True}, "stored PLAIN, as this tool always did (R1206)"
 
 
 @pytest.mark.parametrize("name", sorted(FLOWGRAIN))
@@ -243,6 +248,7 @@ def test_bea_writes_through_the_csv_store_with_a_wide_pool(pre_t0, monkeypatch):
     assert seen == [{"pool": 96}], "the store's R2 client keeps the pool wider than the 64 workers"
     assert list(store.put) == [m.csv_key(m.PREFIX, m.SRC, "712:1")], "the held key is skipped"
     assert _text(store.put[m.csv_key(m.PREFIX, m.SRC, "712:1")]).count("\n") == 3
+    assert set(store.plain.values()) == {True}, "stored PLAIN, as this tool always did (R1206)"
 
 
 # ---- the pieces -------------------------------------------------------------------------------------------
@@ -291,3 +297,134 @@ def test_store_reader_selection(tmp_path, monkeypatch):
     flag.write_text("t0")
     monkeypatch.setattr(cutover, "FLAG_PATH", str(flag))
     assert isinstance(blob.store_reader(), blob.LocalStoreReader), "after T0 the flag wins over the variable"
+
+
+# ---- R1206: a store that refuses, a parquet that vanishes, an error that is not "absent" ----------------------
+def _never(*a, **k):
+    return False
+
+
+def test_noaa_missing_a_failed_upload_fails_the_run(pre_t0, monkeypatch):
+    m = importlib.import_module("derive_noaa_missing")
+    store_dir = pre_t0 / "clean_full" / "noaa"
+    store_dir.mkdir(parents=True)
+    pq.write_table(pa.table({"series_key": ["gsom:AYM003:DSND"]}), store_dir / "gsom__AY__series.parquet")
+    (store_dir / "gsom__AY.parquet").write_bytes(_parquet_bytes(["gsom:AYM003:DSND"]))
+    _catalog(str(pre_t0 / "catalog.db"))
+    monkeypatch.setattr(m, "STORE", str(store_dir))
+    monkeypatch.setattr(m, "CAT", str(pre_t0 / "catalog.db"))
+    _route(monkeypatch, Store())
+    monkeypatch.setattr(m._derive, "_put_with_retry", _never)
+    monkeypatch.setattr(sys, "argv", ["x", "--apply", "--workers", "1"])
+    with pytest.raises(SystemExit, match="gave up"):
+        m.main()
+
+
+def test_noaa_missing_an_error_is_not_read_as_absent(pre_t0, monkeypatch):
+    """R1206: 'any error means absent' re-wrote objects; now a non-404 error stops the run before any write."""
+    m = importlib.import_module("derive_noaa_missing")
+    store_dir = pre_t0 / "clean_full" / "noaa"
+    store_dir.mkdir(parents=True)
+    pq.write_table(pa.table({"series_key": ["gsom:AYM003:DSND"]}), store_dir / "gsom__AY__series.parquet")
+    (store_dir / "gsom__AY.parquet").write_bytes(_parquet_bytes(["gsom:AYM003:DSND"]))
+    _catalog(str(pre_t0 / "catalog.db"))
+    monkeypatch.setattr(m, "STORE", str(store_dir))
+    monkeypatch.setattr(m, "CAT", str(pre_t0 / "catalog.db"))
+
+    class Flaky(Store):
+        def exists(self, key):
+            raise OSError("503 SlowDown")
+    store = Flaky()
+    _route(monkeypatch, store)
+    monkeypatch.setattr(sys, "argv", ["x", "--apply", "--workers", "1"])
+    with pytest.raises(OSError, match="SlowDown"):
+        m.main()
+    assert store.put == {}
+
+
+@pytest.mark.parametrize("name", sorted(FLOWGRAIN))
+def test_flowgrain_a_failed_upload_fails_the_run(pre_t0, monkeypatch, name):
+    m, src, extra = _flowgrain(name, pre_t0, monkeypatch)
+    _route(monkeypatch, Store({f"clean_full/{src}/DS_A.parquet": _parquet_bytes(["A=1"])}))
+    from updater import derive
+    monkeypatch.setattr(derive, "_put_with_retry", _never)
+    monkeypatch.setattr(sys, "argv", ["x", "--upload", *extra])
+    with pytest.raises(SystemExit, match="gave up"):
+        m.main()
+
+
+@pytest.mark.parametrize("name", sorted(FLOWGRAIN))
+def test_flowgrain_a_listed_parquet_that_vanished_is_refused(pre_t0, monkeypatch, name):
+    """R1206: turning a listed-but-gone parquet into an empty CSV survived; a partial source is refused."""
+    m, src, extra = _flowgrain(name, pre_t0, monkeypatch)
+
+    class Vanishing(Store):
+        def get(self, key):
+            return None
+    store = Vanishing({f"clean_full/{src}/DS_A.parquet": _parquet_bytes(["A=1"])})
+    _route(monkeypatch, store)
+    monkeypatch.setattr(sys, "argv", ["x", "--upload", *extra])
+    with pytest.raises(SystemExit, match="listed but is gone"):
+        m.main()
+    assert store.put == {}
+
+
+def test_bea_a_failed_upload_fails_the_run(pre_t0, monkeypatch):
+    m = importlib.import_module("_derive_bea_bulk")
+    store_dir = pre_t0 / "clean_full" / "bea" / "Regional"
+    store_dir.mkdir(parents=True)
+    rows = {"712:1": [(dt.date(2020, 1, 1), 1.5)]}
+    pq.write_table(pa.table({"series_key": ["712:1"], "obs_date": pa.array([dt.date(2020, 1, 1)], pa.date32()),
+                             "value": [1.5]}), store_dir / "T1.parquet")
+    (pre_t0 / "data").mkdir()
+    _catalog(str(pre_t0 / "data" / "catalog.db"), [("bea:712:1", "bea")])
+    monkeypatch.setattr(m, "STORE", str(pre_t0 / "clean_full" / "bea"))
+    monkeypatch.setattr(m, "ROOT", str(pre_t0))
+    monkeypatch.setattr(m, "MUST_VERIFY", [])
+    from core import derive_csv
+    monkeypatch.setattr(derive_csv, "_series_csv_bytes",
+                        lambda sid: m._csv_bytes(sid.split(":", 1)[1], rows[sid.split(":", 1)[1]]))
+    _route(monkeypatch, Store())
+    monkeypatch.setattr(m._derive, "_put_with_retry", _never)
+    assert m.main() == 1, "a failed upload must not exit 0 (R1206: counted as a success before)"
+
+
+def test_the_pool_reaches_botocore():
+    """R1206: dropping the pool inside r2_util survived - the test above stops at r2_util.client."""
+    pytest.importorskip("boto3")
+    from core import r2_util
+    creds = {"endpoint": "https://example.invalid", "key": "k", "secret": "s"}
+    assert r2_util._boto3_client(creds, 96).meta.config.max_pool_connections == 96
+    assert r2_util._boto3_client(creds).meta.config.max_pool_connections == 10
+
+
+def test_the_local_store_reader_stays_inside_the_store(tmp_path):
+    root = tmp_path / "clean_full"
+    (root / "ons_uk").mkdir(parents=True)
+    (tmp_path / "secret.txt").write_text("x")
+    r = blob.LocalStoreReader(str(root))
+    for bad in ("clean_full/ons_uk/..\\..\\secret.txt", "clean_full/C:/secret.txt", "clean_full/ons_uk\\x",
+                "clean_full/ons_uk/\x00x"):
+        with pytest.raises(ValueError):
+            r.get(bad)
+    for bad in ("clean_full/ons_uk\\", "clean_full/C:"):
+        with pytest.raises(ValueError):
+            r.list_keys(bad)
+
+
+def test_store_reader_reads_r2_with_the_read_key(tmp_path, monkeypatch):
+    """R1206: before T0 the reader used the WRITE key, so a --dry-run needed write credentials."""
+    from core import cutover
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "x")
+    monkeypatch.delenv("AQUEDUCT_BACKEND")
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "no_flag" / "CUTOVER"))
+    seen = []
+    monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: seen.append(k) or Store())
+    blob.store_reader()
+    assert seen == [{"write": False}]
+    from core import r2_util
+    calls = []
+    monkeypatch.undo()
+    monkeypatch.setattr(r2_util, "client", lambda write=False, **kw: calls.append(write) or object())
+    blob.R2Blob(write=False).client
+    assert calls == [False]

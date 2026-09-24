@@ -162,7 +162,8 @@ def main() -> int:
                 q.task_done(); return
             key, body = item
             try:
-                if not _derive._put_with_retry(store, key, body):
+                # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
+                if not _derive._put_with_retry(store, key, body, plain=True):
                     raise RuntimeError(f"gave up after {_derive.PUT_TRIES} tries")
                 with lock:
                     counts["put"] += 1
