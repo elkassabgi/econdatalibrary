@@ -200,6 +200,41 @@ def test_a_busy_catalogue_names_the_unlocked_writer(paths, monkeypatch):
             pass
 
 
+# ---- connect_path: the one-line replacement for a tool's own sqlite3.connect(<catalogue>) ---------------
+def test_connect_path_before_t0_opens_the_tool_s_own_path(paths, tmp_path):
+    other = tmp_path / "a_test_catalogue.db"
+    with sqlite3.connect(other) as c:
+        c.execute("CREATE TABLE which (name TEXT)")
+        c.execute("INSERT INTO which VALUES ('other')")
+    assert _which(cp.connect_path(other, write=False)) == "other", "a --db argument or a test's copy still works"
+    with pytest.raises(sqlite3.OperationalError):
+        cp.connect_path(other, write=False).execute("INSERT INTO which VALUES ('x')")
+    w = cp.connect_path(str(other), write=True)
+    w.execute("INSERT INTO which VALUES ('x')")
+    w.commit()
+    with pytest.raises(FileNotFoundError):
+        cp.connect_path(tmp_path / "missing.db", write=True)
+    assert not (tmp_path / "missing.db").exists(), "never created"
+
+
+def test_connect_path_after_t0_opens_only_the_build(paths, tmp_path):
+    (paths / "CUTOVER").write_text("")
+    with pytest.raises(cutover.CutoverRefused, match="not"):
+        cp.connect_path(cp.CHECKOUT_PATH, write=False)               # a worktree's data/catalog.db
+    assert _which(cp.connect_path(cp.BUILD_PATH, write=False)) == "build"
+    spelled = os.path.join(os.path.dirname(cp.BUILD_PATH), ".", os.path.basename(cp.BUILD_PATH))
+    assert _which(cp.connect_path(spelled.upper() if os.name == "nt" else spelled, write=False)) == "build"
+    with pytest.raises(cutover.CutoverRefused, match="lock"):
+        cp.connect_path(cp.BUILD_PATH, write=True)
+    with cp.writer_lock():
+        cp.connect_path(cp.BUILD_PATH, write=True).execute("INSERT INTO which VALUES ('y')").connection.commit()
+
+
+def test_connect_path_passes_sqlite_options(paths, tmp_path):
+    c = cp.connect_path(cp.CHECKOUT_PATH, write=False, detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False)
+    assert _which(c) == "checkout"
+
+
 def test_the_lock_is_not_reentrant(paths):
     with cp.writer_lock():
         with pytest.raises(RuntimeError):

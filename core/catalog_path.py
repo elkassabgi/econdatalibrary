@@ -56,6 +56,27 @@ def connect(*, write: bool = False, timeout: float = 60.0) -> sqlite3.Connection
     return sqlite3.connect(uri, uri=True, timeout=timeout)
 
 
+def connect_path(path: str | os.PathLike, *, write: bool, timeout: float = 60.0, **kw) -> sqlite3.Connection:
+    """The one-line replacement for a tool's own `sqlite3.connect(<catalogue path>)` (plan step 1): the tool
+    keeps its --db argument and its tests keep their temporary catalogues.
+
+    Before T0 it opens `path` as the tool did (mode=ro for a read, which a reader never needed to write;
+    mode=rw for a write - neither creates a missing file). After T0 it opens only THE build: any other path
+    is refused (a copy, a worktree's data/catalog.db, a stale path in a script), and a write needs
+    writer_lock() held by this process. `kw` goes to sqlite3.connect (detect_types, check_same_thread...)."""
+    p = os.fspath(path)
+    if is_cut_over():
+        if os.path.normcase(os.path.realpath(p)) != os.path.normcase(os.path.realpath(BUILD_PATH)):
+            raise CutoverRefused(f"refused: after T0 the catalogue is {BUILD_PATH}, not {p}")
+        if write and _held is None:
+            raise CutoverRefused(f"refused: a write to the catalogue build {p} needs the single-writer lock "
+                                 f"({LOCK_PATH}); take it with core.catalog_path.writer_lock()")
+    if not os.path.isfile(p):
+        raise FileNotFoundError(f"no catalogue at {p} (it is never created implicitly)")
+    uri = pathlib.Path(p).resolve().as_uri() + ("?mode=rw" if write else "?mode=ro")
+    return sqlite3.connect(uri, uri=True, timeout=timeout, **kw)
+
+
 @contextlib.contextmanager
 def writer_lock():
     """Hold the machine-wide single-writer lock for the duration. Fails at once (never waits) when another

@@ -20,10 +20,8 @@ core/load_d1_rest.py
 core/measure_uncataloged.py
 core/sync_catalog_d1.py
 core/sync_state_d1.py
-core/title_insee_bdm.py
 jobs/ingest_unctad_ds.py
 jobs/process_sec_edgar.py
-jobs/verify_data.py
 pipeline/title_bea.py
 scripts/title_ei_statreview.py
 tools/_cat_bea.py
