@@ -74,8 +74,9 @@ Build status (branch feat/econ-selfhost-origin):
   showing the local sec_edgar store whole. Day status after T0 (R1235/R1236): OK only with <=5% transient
   fetch failures and nothing refused by the store, skipped under the lock, missing from the catalogue
   read-back, or all-empty (>10 answers parsing to no facts); anything else is partial (never last_success)
-  and exits 1. The heartbeat reader check (t0_ready) also requires origin/main's selfhost-watch.yml to parse
-  to the same document as the reviewed copy (R1236).
+  and exits 1. The heartbeat reader check (t0_ready) also requires origin/main's selfhost-watch.yml to be the
+  reviewed file BYTE FOR BYTE - its sha256 is pinned in t0_ready.REVIEWED_WORKFLOW_SHA256, so a workflow
+  change needs a visible edit to the gate (R1238: comparing with the live checkout compared main with itself).
   * ONE STORE, AND IT MUST BE WHOLE FIRST. After T0 the parquet store is LOCAL: under
     AQUEDUCT_BACKEND=selfhost updater.blob reads and writes files under the live checkout
     (blob._r2_routed() is None); only series/ CSVs go to the SelfhostBlob store. Draft 1 read "prior facts"
@@ -276,10 +277,16 @@ Build status (branch feat/econ-selfhost-origin):
   completed one-shot on a fixed list, R1210 - and refuses after T0 since cd1572c48); seven tools still end
   with "NEXT: refresh_r2_catalog", which refuses after T0 (catalog_complete, delist_source_rows,
   retire_source, derive_unsdg_flows, catalog_eia_tables, catalog_imts_tables, catalog_cepii_baci - R1234):
-  DONE f4dbbed81 - after T0 core.cutover.next_steps names the swap instead, and a ratchet holds every printed
-  refresh_r2_catalog to it; a self-hosted path for tools/run_local_heavy.ps1 and
-  make_servable.py (after T0 both fail closed today: the heavy run asks for --pull-state and the R2
-  backend, make_servable forces R2); the verifier re-pointing (6d).
+  DONE f4dbbed81 - after T0 core.cutover.next_steps keeps the tool's steps, names ONLY refresh_r2_catalog,
+  sync_catalog_d1 and the cloud wrangler deploy as skipped, says to commit code/registry edits and publish
+  with the swap (R1238); a ratchet holds every string naming refresh_r2_catalog in tools/, core/, updater/
+  and every .ps1 line to it; a self-hosted path for tools/run_local_heavy.ps1 and
+  make_servable.py - BUILT 2026-09-24 (under review): after T0 run_local_heavy asks core.cutover once
+  (an answer other than 0/1 stops the pass), skips the CI writer gate, the CI-window budget clamp and
+  the state pull/push, and runs the updater with AQUEDUCT_BACKEND=selfhost; make_servable does no sync,
+  runs the cataloguer in-process with the derive and the verify under one writer-lock hold, verifies by
+  listing the self-hosted store (a CSV older than the newest parquet, compared at whole seconds, counts
+  as absent), and names the swap as its NEXT step; the verifier re-pointing (6d).
 - Changes 4 and 5 follow the rules in section 3.4a-c (R1167 A-C).
 
 Measured 2026-09-24T01:33:51Z: the live worker's Cache API works on workers.dev (CF-Cache-Status HIT,
@@ -473,7 +480,10 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
    - The VERIFIERS move in step 6d, with the served store: ledger_check.py (its D1 and head_object
      checks), tools/audit_d1_*, audit_r2_vs_catalog, audit_serving_coherence, verify_source_served,
      probe_csv_freshness and every other tool that reads D1/R2 to prove "served" (the full list is
-     enumerated by grep in step 1 and attached to the step-6d change) are re-pointed to the EDGE (the
+     enumerated by grep in step 1 and attached to the step-6d change - DONE 2026-09-24:
+     tests/test_verifiers_6d.py TO_REPOINT_6D holds the 15 tools that read the cloud copy and do nothing at
+     T0, and fails on a new one or a stale entry; after T0 D1 still answers reads with the read token and
+     R2 reads are not guarded, so each would otherwise check the FROZEN copy) are re-pointed to the EDGE (the
      address users get), or refuse after the flag; CLAUDE.md, DESKTOP_FIRST.md, the econ-updater skill
      and the runbooks change in the same 6d commit.
    - The licence tools (purge_unpermitted_r2, retire_source, delist_source_rows) get their local backend
