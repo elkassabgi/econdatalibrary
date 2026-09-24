@@ -227,6 +227,21 @@ def test_the_daily_sync_keeps_its_four_tries_and_its_fatal_exit(monkeypatch, tmp
     assert seen[-1][0] == "econ-catalog-climate" and len(seen) == 3, "it stopped at the first failed chunk"
 
 
+def test_the_daily_sync_s_main_calls_it_idempotent(monkeypatch, tmp_path):
+    """A surviving R1186-set mutant dropped idempotent=True from main(): only the daily freshness sync may
+    retry a timeout, and it is main() that says so."""
+    from core import sync_state_d1
+    st = tmp_path / "state.db"
+    st.write_bytes(b"")
+    seen = {}
+    monkeypatch.setattr(sync_state_d1, "_gated_ids", lambda: set())
+    monkeypatch.setattr(sync_state_d1, "emit_sql", lambda *a, **k: ([str(tmp_path / "a.sql")], {"unit_state": 1}))
+    monkeypatch.setattr(sync_state_d1, "verify_replay", lambda *a, **k: None)
+    monkeypatch.setattr(sync_state_d1, "execute_remote", lambda files, *a, **k: seen.update(k))
+    sync_state_d1.main(["--state-db", str(st)])
+    assert seen == {"idempotent": True}
+
+
 def test_the_fatal_path_writes_wrangler_s_output_in_full(monkeypatch, tmp_path, capsys):
     from core import sync_state_d1
 

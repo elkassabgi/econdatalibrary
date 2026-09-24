@@ -125,8 +125,7 @@ def test_only_the_two_econ_databases(sent, before_t0, monkeypatch):
 # The files that reach D1 remotely by another road TODAY (2026-09-24). They move into d1_remote in plan
 # step 1; this list may only SHRINK. A new file on it is a new unguarded write path after T0.
 LEGACY_REMOTE_D1 = {
-    ".github/workflows/sec-edgar-daily.yml", "core/export_d1.py", "core/load_d1_chunked.py",
-    "core/load_d1_rest.py", "tools/audit_site.py", "tools/billing_guard.py",
+    ".github/workflows/sec-edgar-daily.yml", "core/export_d1.py",
     "tools/delist_timeless_tables.py", "tools/enrich_sec_edgar_tickers.py", "tools/migrate_noaa_shard.py",
     "tools/rebuild_series_fts.py", "tools/refresh_flowgrain_dates.py", "tools/refresh_sec_edgar.py",
     "tools/sync_titles_to_d1.py",
@@ -135,6 +134,13 @@ LEGACY_REMOTE_D1 = {
 # named `--remote` only in a docstring, a comment or a tool's own --remote-truth option; then
 # core/sync_state_d1.py, whose execute_remote (the daily sync's and sync_catalog_d1's bulk writer) now runs
 # d1_remote.execute_file.
+# Files whose remote-D1 calls read ONLY hf's login database (hfdatalibrary-db), which stays in D1 after T0.
+# Not econ roads, so not d1_remote's (it takes the two econ databases only); checked, not trusted:
+# test_the_hf_only_files_really_are - every `--remote` line in them names hfdatalibrary-db and no econ db.
+HF_ONLY_REMOTE_D1 = {
+    "tools/audit_site.py": "counts users / active / can-download in hfdatalibrary-db",
+    "tools/billing_guard.py": "counts new users in hfdatalibrary-db (its econ use is `d1 insights`, plan 6a)",
+}
 # `--remote` as wrangler's flag, not a tool's own option that starts with it (--remote-truth).
 REMOTE = re.compile(r"--remote(?![\w-])|/d1/database/")
 
@@ -160,10 +166,22 @@ def test_no_new_file_calls_d1_remotely_outside_the_chokepoint():
             if REMOTE.search(src):
                 found.add(rel)
     found.discard("core/d1_remote.py")
+    found -= set(HF_ONLY_REMOTE_D1)
     found.discard("tools/selfhost/cutover_hook.py")   # names the roads in order to REFUSE them (plan change 5)
     assert found - LEGACY_REMOTE_D1 == set(), "new remote-D1 callers: route them through core/d1_remote.query"
     gone = LEGACY_REMOTE_D1 - found
     assert not gone, f"these no longer call D1 remotely - remove them from LEGACY_REMOTE_D1: {sorted(gone)}"
+
+
+def test_the_hf_only_files_really_are():
+    econ = re.compile("|".join(re.escape(n) for n in (*d1_remote.DATABASES, *d1_remote.DATABASES.values())))
+    for rel in HF_ONLY_REMOTE_D1:
+        src = open(os.path.join(ROOT, rel), encoding="utf-8").read().splitlines()
+        hits = [i for i, l in enumerate(src) if REMOTE.search(l)]
+        assert hits, f"{rel} no longer calls D1 remotely - remove it from HF_ONLY_REMOTE_D1"
+        for i in hits:
+            window = " ".join(src[max(0, i - 2):i + 3])            # the call's own lines
+            assert "hfdatalibrary-db" in window and not econ.search(window), (rel, i + 1, src[i])
 
 
 def test_the_ratchet_can_fail(tmp_path):
