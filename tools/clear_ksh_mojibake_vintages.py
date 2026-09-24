@@ -54,6 +54,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 from updater import blob, config  # noqa: E402
 from tools.prune_series_cursors import runs_in_flight  # noqa: E402
@@ -256,11 +257,8 @@ def main() -> int:
 
 def _write_baseline(tables: list[str]) -> int:
     """Pre-clear watermark: max obs_date per catalogued clean key, so the gate can FAIL."""
-    import sqlite3
     store = config.source_dir("ksh_stadat")
-    cat = sqlite3.connect(
-        f"file:{os.environ.get('ECONDL_CATALOG') or os.path.join(config.ROOT, 'data', 'catalog.db')}"
-        f"?mode=ro", uri=True)
+    cat = catalog_path.connect()      # no ECONDL_CATALOG override: the resolver has none (plan 4a)
     catalogued = {r[0][len("ksh_stadat:"):] for r in cat.execute(
         "SELECT series_id FROM series WHERE series_id >= 'ksh_stadat:' "
         "AND series_id < 'ksh_stadat;'")}

@@ -38,11 +38,11 @@ import csv
 import io
 import json
 import os
-import sqlite3
 import sys
 import urllib.request
 
-CATALOG_DB = r"D:\research\econfindatalibrary\data\catalog.db"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 OUT_PATH = r"D:\research\econfindatalibrary\dist\titles\ei_statreview.json"
 SOURCE_ID = "ei_statreview"
 
@@ -84,7 +84,7 @@ def main():
     codebook = load_codebook(fetch(CODEBOOK_URL))
     iso2country = load_iso2country(fetch(ENERGYDATA_URL))
 
-    con = sqlite3.connect(CATALOG_DB)
+    con = catalog_path.connect()
     series_ids = [r[0] for r in con.execute(
         "SELECT series_id FROM series WHERE source_id=? ORDER BY series_id",
         (SOURCE_ID,)).fetchall()]

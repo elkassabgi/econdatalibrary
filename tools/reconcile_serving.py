@@ -31,11 +31,11 @@ from __future__ import annotations
 import glob
 import os
 import re
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 
 def supported_sources() -> set[str]:
@@ -90,7 +90,7 @@ def sidecar_series(source_id: str) -> int | None:
 
 def main() -> int:
     supported = supported_sources()
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
+    con = catalog_path.connect(timeout=180.0)
     con.execute("PRAGMA busy_timeout = 180000")
     cat = dict(con.execute("select source_id, count(*) from series group by 1").fetchall())
     con.close()

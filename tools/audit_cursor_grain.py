@@ -29,11 +29,11 @@ import argparse
 import json
 import os
 import random
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 from updater import config, orchestrate, registry  # noqa: E402
 from updater.state import StateStore  # noqa: E402
@@ -53,8 +53,7 @@ def main() -> int:
     if a.source:
         srcs = [s for s in srcs if s in set(a.source)]
 
-    cat = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
-    ccon = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
+    ccon = catalog_path.connect()     # no ECONDL_CATALOG override: the resolver has none (plan 4a)
 
     # r2 semantics for the mapper — see module docstring. Restored on exit.
     _saved_backend = config.BACKEND

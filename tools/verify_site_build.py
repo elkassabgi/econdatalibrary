@@ -27,7 +27,8 @@ import sys
 
 SITE = r"E:\research\econfindatalibrary\catalog\site"
 DENY_TS = r"E:\research\econfindatalibrary\api\worker\src\denylist.ts"
-CATALOG = r"E:\research\econfindatalibrary\data\catalog.db"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # THIS code's core/
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 # Hand-maintained pages that are deliberately not dataset pages (gen_site.py:52).
 HUB = {"_redirects", "download", "status", "mcp", "account", "404", "index", "catalog",
@@ -99,7 +100,7 @@ def main() -> int:
              % len(deny & pages))
 
     # 3/4. against the LOCAL catalogue, read-only (the fleet writes it continuously)
-    con = sqlite3.connect("file:%s?mode=ro" % CATALOG.replace(os.sep, "/"), uri=True, timeout=240)
+    con = catalog_path.connect_path(catalog_path.BUILD_PATH, write=False, timeout=240)   # production's own
     con.execute("PRAGMA busy_timeout=240000")
     con.row_factory = sqlite3.Row
     rows = con.execute(
