@@ -263,8 +263,30 @@ def test_under_names_the_checkout_s_catalogue():
 
 
 def test_connect_path_passes_sqlite_options(paths, tmp_path):
+    sqlite3.register_converter("cp_test_marked", lambda b: ("converted", b.decode()))   # a type only this test uses
+    with sqlite3.connect(cp.CHECKOUT_PATH) as w:
+        w.execute("CREATE TABLE stamped (d cp_test_marked)")
+        w.execute("INSERT INTO stamped VALUES ('2026-09-24')")
+    w.close()
     c = cp.connect_path(cp.CHECKOUT_PATH, write=False, detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False)
     assert _which(c) == "checkout"
+    got = c.execute("SELECT d FROM stamped").fetchone()[0]
+    assert got == ("converted", "2026-09-24"), f"detect_types did not reach sqlite3.connect: {got!r}"
+
+
+def test_after_t0_a_link_to_the_build_opens_it(paths, tmp_path):
+    """A junction (Windows) or symlink to the build's folder names the same file: realpath, not abspath."""
+    link = tmp_path / "link_to_build"
+    target = os.path.dirname(cp.BUILD_PATH)
+    if os.name == "nt":
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), target], capture_output=True).returncode == 0
+    else:
+        os.symlink(target, link)
+        made = True
+    if not made:
+        pytest.skip("could not make a junction here")
+    (paths / "CUTOVER").write_text("")
+    assert _which(cp.connect_path(link / "catalog.db", write=False)) == "build"
 
 
 def test_the_lock_is_not_reentrant(paths):

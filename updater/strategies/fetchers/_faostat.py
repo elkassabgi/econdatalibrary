@@ -90,6 +90,9 @@ def vintage(source_id: str):
 
 
 def _catalog_ids(source_id: str) -> set:
+    """The ids this source publishes. EMPTY = a readable catalogue with no rows for it. A catalogue that
+    cannot be read RAISES: an empty set there would skip restrict_to_published and the id self-check and
+    merge the whole superset unchecked (fao_qa: 75,786 duplicate series)."""
     from core import catalog_path                                  # noqa: PLC0415 - plan step 1
     try:
         con = catalog_path.connect_path(catalog_path.under(config.ROOT), write=False)
@@ -100,11 +103,14 @@ def _catalog_ids(source_id: str) -> set:
         # scored 0.0% — the self-check then refused a template the prover had just
         # measured at 98.2%. The guard was right to refuse; the two sides simply
         # were not speaking about the same string.
-        return {r[0].split(":", 1)[1] for r in con.execute(
-            "SELECT series_id FROM series WHERE source_id=?", (source_id,))
-            if ":" in r[0]}
-    except Exception:                                         # noqa: BLE001
-        return set()
+        try:
+            return {r[0].split(":", 1)[1] for r in con.execute(
+                "SELECT series_id FROM series WHERE source_id=?", (source_id,))
+                if ":" in r[0]}
+        finally:
+            con.close()
+    except Exception as e:                                    # noqa: BLE001
+        raise TransientError(f"{source_id}: catalogue unreadable, the id self-check cannot run: {e!r}") from e
 
 
 def run(source_id: str) -> Result:

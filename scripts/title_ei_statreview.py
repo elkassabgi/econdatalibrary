@@ -41,9 +41,10 @@ import os
 import sys
 import urllib.request
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
-OUT_PATH = r"D:\research\econfindatalibrary\dist\titles\ei_statreview.json"
+OUT_PATH = os.path.join(ROOT, "dist", "titles", "ei_statreview.json")   # beside the catalogue it read
 SOURCE_ID = "ei_statreview"
 
 CODEBOOK_URL = "https://raw.githubusercontent.com/owid/energy-data/master/owid-energy-codebook.csv"

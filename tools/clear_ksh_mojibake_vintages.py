@@ -258,7 +258,9 @@ def main() -> int:
 def _write_baseline(tables: list[str]) -> int:
     """Pre-clear watermark: max obs_date per catalogued clean key, so the gate can FAIL."""
     store = config.source_dir("ksh_stadat")
-    cat = catalog_path.connect()      # no ECONDL_CATALOG override: the resolver has none (plan 4a)
+    # config.ROOT's catalogue, the same checkout as the store above (ECONDL_ROOT moves both). The
+    # ECONDL_CATALOG override is gone: the resolver has none (plan 4a).
+    cat = catalog_path.connect_path(catalog_path.under(config.ROOT), write=False)
     catalogued = {r[0][len("ksh_stadat:"):] for r in cat.execute(
         "SELECT series_id FROM series WHERE series_id >= 'ksh_stadat:' "
         "AND series_id < 'ksh_stadat;'")}

@@ -82,14 +82,21 @@ def _period(p: str, conv: str):
 
 
 def _catalog_ids(source_id: str) -> set:
+    """The ids this source publishes. An EMPTY set means a readable catalogue with no rows for it (a new
+    source: the self-check has nothing to compare). A catalogue that cannot be read RAISES - returning an
+    empty set there would skip the self-check and merge unchecked (the open is read-only since plan step 1,
+    so a crashed writer's hot journal is an error here, not a silent recovery)."""
     from core import catalog_path                                  # noqa: PLC0415 - plan step 1
     try:
         con = catalog_path.connect_path(catalog_path.under(config.ROOT if hasattr(config, "ROOT") else "."),
                                         write=False)
-        return {r[0].split(":", 1)[1] for r in con.execute(
-            "SELECT series_id FROM series WHERE source_id=?", (source_id,))}
-    except Exception:                                         # noqa: BLE001
-        return set()
+        try:
+            return {r[0].split(":", 1)[1] for r in con.execute(
+                "SELECT series_id FROM series WHERE source_id=?", (source_id,))}
+        finally:
+            con.close()
+    except Exception as e:                                    # noqa: BLE001
+        raise TransientError(f"{source_id}: catalogue unreadable, the id self-check cannot run: {e!r}") from e
 
 
 def run(source_id: str) -> Result:

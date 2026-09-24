@@ -53,7 +53,9 @@ def main() -> int:
     if a.source:
         srcs = [s for s in srcs if s in set(a.source)]
 
-    ccon = catalog_path.connect()     # no ECONDL_CATALOG override: the resolver has none (plan 4a)
+    # config.ROOT's catalogue, so it and the store/state below come from one checkout (ECONDL_ROOT moves
+    # both). The ECONDL_CATALOG override is gone: the resolver has none (plan 4a).
+    ccon = catalog_path.connect_path(catalog_path.under(config.ROOT), write=False)
 
     # r2 semantics for the mapper — see module docstring. Restored on exit.
     _saved_backend = config.BACKEND
