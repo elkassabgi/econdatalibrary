@@ -17,6 +17,9 @@ Each check is mechanical and names what fails:
   preflight          updater/run.py's own post-T0 preflight passes from THIS checkout, run as if cut over
   ci-writers         updater-daily, updater-heavy and sec-edgar-daily are disabled on GitHub (gh workflow list)
   edge-state         the deployed edge reports edge_state "users" (plan step 5 is done)
+  state-db           the live state.db has unit_state and source_state rows: the origin copies build the
+                     freshness projection (/v1/last-updates) from it - the production catalog.db has none of
+                     those tables (R1186)
   flag               the flag does not exist yet (information: a READY with the flag present is a late check)
 Nothing here writes anything.
 """
@@ -146,6 +149,22 @@ def edge_state() -> tuple[bool, str]:
     return body.get("edge_state") == "users", f"edge_state={body.get('edge_state')!r} forward={body.get('forward')!r}"
 
 
+def state_db(path: str | None = None) -> tuple[bool, str]:
+    import sqlite3
+    from core import catalog_path
+    p = path or os.path.join(catalog_path.LIVE_STATE_DIR, "state.db")
+    if not os.path.isfile(p):
+        return False, f"no state.db at {p}"
+    con = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+    try:
+        n = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("unit_state", "source_state")}
+    except sqlite3.Error as e:
+        return False, f"{p}: {e}"
+    finally:
+        con.close()
+    return all(n.values()), f"{p}: {n}"
+
+
 def flag() -> tuple[bool, str]:
     from core import cutover
     return (not cutover.is_cut_over()), ("not set yet" if not cutover.is_cut_over() else "ALREADY SET")
@@ -153,7 +172,7 @@ def flag() -> tuple[bool, str]:
 
 CHECKS = [("legacy-catalogue", legacy_catalogue), ("legacy-remote-d1", legacy_remote_d1), ("ratchets", ratchets),
           ("launcher", launcher), ("preflight", preflight), ("ci-writers", ci_writers),
-          ("edge-state", edge_state), ("flag", flag)]
+          ("edge-state", edge_state), ("state-db", state_db), ("flag", flag)]
 
 
 def main() -> int:

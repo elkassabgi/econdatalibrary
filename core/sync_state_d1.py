@@ -153,12 +153,14 @@ def _servable(rows, cols, gated):
 
 
 def emit_sql(state_db: str, out_dir: str,
-             gated: set[str] | None = None) -> tuple[list[str], dict[str, int]]:
+             gated: set[str] | None = None, catalogue: str | None = None) -> tuple[list[str], dict[str, int]]:
     """Emit chunked upsert .sql files for every NON-GATED row of the freshness tables.
 
     Returns (ordered file paths, {table: row count}). Files must be executed in
     the returned order (DDL for a table always precedes its upserts). `gated`
-    defaults to the committed worker gate (_gated_ids); tests pass their own.
+    defaults to the committed worker gate (_gated_ids); tests pass their own. `catalogue` names the
+    catalogue data_through is computed from (default: ECONDL_CATALOG or the checkout's) - the self-hosted
+    origin passes the one it is copying (tools/selfhost/origin_copies.py).
     """
     gated = _gated_ids() if gated is None else {s.lower() for s in gated}
     # Strictly read-only: this script must never write (or WAL-touch) state.db.
@@ -195,7 +197,7 @@ def emit_sql(state_db: str, out_dir: str,
     # table (not an ALTER on source_state): CREATE IF NOT EXISTS is idempotent
     # where ADD COLUMN is fatal-on-rerun, and a fresh D1 stays workable.
     # verify_replay ignores it deliberately — it audits the state projection.
-    cat_path = os.environ.get("ECONDL_CATALOG") or os.path.join(
+    cat_path = catalogue or os.environ.get("ECONDL_CATALOG") or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "catalog.db")
     if os.path.exists(cat_path):
         cconn = sqlite3.connect(f"file:{cat_path}?mode=ro", uri=True)

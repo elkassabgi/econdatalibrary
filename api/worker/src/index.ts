@@ -57,18 +57,18 @@ export default {
     // answer - errors included - leaves private, no-store. The production worker never sets LOCAL.
     const local = isLocal(env);
     if (local) {
+      // Every local answer names its instance (R1186: the gate's 403/404 and the 503 did not)
+      const tag = (r: Response): Response => { if (env.INSTANCE_ID) r.headers.set(INSTANCE_HEADER, env.INSTANCE_ID); return r; };
       const refused = await originGate(request, env);
-      if (refused) return finalizeLocal(refused);         // marked too: a wrong secret is an honest 403 at the edge
+      if (refused) return tag(finalizeLocal(refused));    // marked too: a wrong secret is an honest 403 at the edge
       if (!env.BLOB_SIDECAR_URL) {
-        return finalizeLocal(json({ error: "origin_not_configured",
-          detail: "BLOB_SIDECAR_URL is unset, so this origin has no store to serve from" }, 503));
+        return tag(finalizeLocal(json({ error: "origin_not_configured",
+          detail: "BLOB_SIDECAR_URL is unset, so this origin has no store to serve from" }, 503)));
       }
       // SERIES_BUCKET becomes the blob sidecar (src/localBucket.ts); the route code is unchanged.
       const lenv: Env = { ...env, SERIES_BUCKET: new LocalBucket(env.BLOB_SIDECAR_URL) as unknown as R2Bucket };
       const download = isDownloadPath(new URL(request.url).pathname);
-      const out = finalizeLocal(await route(request, lenv, ctx, true), { download });
-      if (env.INSTANCE_ID) out.headers.set(INSTANCE_HEADER, env.INSTANCE_ID);
-      return out;
+      return tag(finalizeLocal(await route(request, lenv, ctx, true), { download }));
     }
     return route(request, env, ctx, false);
   },

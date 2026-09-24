@@ -125,6 +125,22 @@ def test_a_check_that_cannot_run_is_a_failure(monkeypatch, capsys):
     assert "FAIL  edge-state" in out and "could not check" in out
 
 
+def test_the_state_db_check(tmp_path):
+    import sqlite3
+    assert T.state_db(str(tmp_path / "none.db"))[0] is False
+    p = tmp_path / "state.db"
+    c = sqlite3.connect(p)
+    c.executescript("CREATE TABLE unit_state (source_id TEXT, unit_id TEXT);"
+                    "CREATE TABLE source_state (source_id TEXT);")
+    c.commit()
+    assert T.state_db(str(p))[0] is False, "empty tables: /v1/last-updates would be empty"
+    c.execute("INSERT INTO unit_state VALUES ('ecb', '_all')")
+    c.execute("INSERT INTO source_state VALUES ('ecb')")
+    c.commit()
+    c.close()
+    assert T.state_db(str(p))[0] is True
+
+
 def test_it_writes_nothing():
     """No write verb in the tool: it only reads files, runs pytest and gh list, and GETs the edge."""
     src = open(os.path.join(ROOT, "tools", "selfhost", "t0_ready.py"), encoding="utf-8").read()

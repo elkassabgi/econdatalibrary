@@ -89,15 +89,24 @@ def rig(tmp_path):
     gen.mkdir()
     swap.origin_copies.build(str(cat), str(gen / "copies"))
     swap.place(str(gen / "copies"), str(gen / "persist"), SLOTS)
-    blue = swap.start(_fake_cmd()(ports["blue"], str(gen / "persist"), "blue-instance"), str(worker),
-                      str(gen / "instance.log"))
+    # A random port can be taken between the pick and the bind (other test processes on the machine): a
+    # stand-in that exits is started again on a fresh port, and a slow start is given a minute.
+    for _attempt in range(3):
+        blue = swap.start(_fake_cmd()(ports["blue"], str(gen / "persist"), "blue-instance"), str(worker),
+                          str(gen / "instance.log"))
+        if _eventually(lambda: swap.port_in_use(ports["blue"]) or blue.poll() is not None, 60) \
+                and blue.poll() is None:
+            break
+        ports["blue"] = _port()
+        state.write_text(json.dumps({"active": "blue", "targets": {n: f"http://127.0.0.1:{p}" for n, p in ports.items()}}))
     swap.save_instances(str(work), {"blue": {"pid": blue.pid, "created": swap.created(blue.pid), "gen": str(gen),
                                              "port": ports["blue"], "instance": "blue-instance", "state": "active"}})
     stale = work / "gen-green-20250101T000000Z"          # an older generation nothing uses
     stale.mkdir()
     rt = router.serve(str(state), 0)
     threading.Thread(target=rt.serve_forever, daemon=True).start()
-    assert _eventually(lambda: swap.port_in_use(ports["blue"]))
+    assert _eventually(lambda: swap.port_in_use(ports["blue"]), 60), \
+        "blue never listened: " + open(gen / "instance.log", encoding="utf-8", errors="replace").read()[-500:]
     r = dict(cat=str(cat), worker=str(worker), work=str(work), state=str(state), ports=ports, gen=str(gen),
              router_port=rt.server_address[1], router_url=f"http://127.0.0.1:{rt.server_address[1]}",
              blue=blue, stale=str(stale))
@@ -196,6 +205,13 @@ def test_any_other_error_after_the_start_also_stops_the_instance(rig):
     """R1180 finding 6 (M05): cleanup must not depend on the error being a SwapRefused."""
     with pytest.raises(ValueError):                                  # json.loads on a garbage body
         _swap(rig, command=_fake_cmd(("--garbage",)))
+    _refused_cleanly(rig)
+
+
+def test_the_metadata_sample_must_come_from_this_instance_too(rig):
+    """A surviving R1186 mutant dropped the instance check on the metadata sample."""
+    with pytest.raises(swap.SwapRefused, match="primary sample .* came from instance 'someone-else'"):
+        _swap(rig, command=_fake_cmd(("--other-instance-on-metadata",)))
     _refused_cleanly(rig)
 
 
@@ -316,9 +332,68 @@ def test_the_drain_waits_the_whole_settle_time(monkeypatch):
 
 
 def test_the_drain_refuses_a_router_that_did_not_flip(monkeypatch):
+    """After the flip this is DrainAborted, never a refusal (R1186 finding 1)."""
     monkeypatch.setattr(swap, "router_status", lambda u: {"active": "b", "inflight": {}})
-    with pytest.raises(swap.SwapRefused, match="not the router this swap flipped"):
+    with pytest.raises(swap.DrainAborted, match="flipped back or another router"):
         swap.drain("http://r", "b", "g", timeout=5, poll=0.01)
+    assert not issubclass(swap.DrainAborted, swap.SwapRefused)
+
+
+def test_the_drain_rides_out_an_unreadable_state_and_a_router_hiccup(monkeypatch):
+    """One {"active": None} reading (the state file being replaced) or a refused connection is not the end."""
+    readings = iter([{"active": None, "error": "PermissionError"}, OSError("refused"), {"active": "g", "inflight": {}},
+                     {"active": "g", "inflight": {}}, {"active": "g", "inflight": {}}])
+
+    def status(u):
+        r = next(readings)
+        if isinstance(r, Exception):
+            raise r
+        return r
+    monkeypatch.setattr(swap, "router_status", status)
+    assert swap.drain("http://r", "b", "g", timeout=30, poll=0.01, settle=0.02) is True
+
+
+def test_the_drain_gives_up_after_its_grace(monkeypatch):
+    monkeypatch.setattr(swap, "router_status", lambda u: {"active": None, "error": "gone"})
+    with pytest.raises(swap.DrainAborted, match="no usable status"):
+        swap.drain("http://r", "b", "g", timeout=30, poll=0.001, grace=3)
+
+
+def test_a_drain_that_cannot_be_watched_is_reported_as_flipped(rig, monkeypatch, capsys):
+    """R1186 finding 1: the router already serves green - main() says so (exit 3), not "REFUSED" (exit 2)."""
+    def broken(*a, **k):
+        raise swap.DrainAborted("the router at x gave no usable status 11 times")
+    monkeypatch.setattr(swap, "drain", broken)
+    orig = swap.swap                                   # main() looks `swap` up at call time: wrap it with the rig
+    monkeypatch.setattr(swap, "swap", lambda **kw: orig(**{**kw, **dict(
+        worker_dir=rig["worker"], command=_fake_cmd(), freeze=_copy_freeze, slots=SLOTS, health_timeout=30,
+        space_check=False, log=lambda *_: None)}))
+    base = ["--work", rig["work"], "--state", rig["state"], "--router", rig["router_url"], "--catalogue", rig["cat"]]
+    assert swap.main(base) == 3
+    out = json.loads(capsys.readouterr().out)
+    assert out["active"] == "green" and "drain_error" in out and out["old_stopped"] is False and "stop_with" in out
+    assert json.load(open(rig["state"]))["active"] == "green" and _alive(rig["blue"].pid)
+    assert swap.load_instances(rig["work"])["blue"]["state"] == "draining"
+
+
+def test_a_failed_stop_is_recorded_as_failed(rig, monkeypatch):
+    """R1186 finding 2: a process that survives the kill is not "stopped"."""
+    monkeypatch.setattr(swap, "stop", lambda pid, created: {"stopped": False, "alive": [pid],
+                                                           "detail": f"STILL ALIVE: [{pid}]"})
+    out = _swap(rig)
+    assert out["active"] == "green" and out["old_stopped"] is False and "stop_with" in out
+    assert swap.load_instances(rig["work"])["blue"]["state"] == "stop-failed"
+
+
+def test_a_failed_swap_keeps_the_retired_generation_s_record(rig):
+    """R1186 finding 3: the idle target's previous record (the rollback) is put back, not dropped."""
+    inst = swap.load_instances(rig["work"])
+    inst["green"] = {"pid": 1, "created": 1.0, "gen": rig["stale"], "state": "stopped"}
+    swap.save_instances(rig["work"], inst)
+    with pytest.raises(swap.SwapRefused):
+        _swap(rig, command=_fake_cmd(("--unmarked",)))
+    assert swap.load_instances(rig["work"])["green"]["gen"] == rig["stale"]
+    assert os.path.isdir(rig["stale"]), "and its folder stays"
 
 
 def test_prune_compares_folders_not_spellings(tmp_path):
@@ -347,7 +422,8 @@ def test_stop_ends_the_whole_process_tree(tmp_path):
     assert _eventually(lambda: pidfile.exists() and pidfile.read_text().strip() != "")
     child = int(pidfile.read_text())
     assert _alive(child) and _alive(p.pid), "positive control: both are running"
-    assert swap.stop(p.pid, swap.created(p.pid)).startswith(f"stopped pid {p.pid} and 1 child")
+    st = swap.stop(p.pid, swap.created(p.pid))
+    assert st["stopped"] and st["alive"] == [] and st["detail"].startswith(f"stopped pid {p.pid} and 1 child")
     p.wait(15)
     assert _eventually(lambda: not _alive(p.pid) and not _alive(child)), "the child (workerd) went too"
 
@@ -356,8 +432,11 @@ def test_stop_never_kills_a_reused_pid(tmp_path):
     p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         what = swap.stop(p.pid, swap.created(p.pid) - 100.0)          # recorded for an older process
-        assert "NOT killed" in what and _alive(p.pid)
-        assert "gone" in swap.stop(2 ** 22 + 12345, 1.0)
+        assert "NOT killed" in what["detail"] and not what["stopped"] and _alive(p.pid)
+        what = swap.stop(p.pid, swap.created(p.pid) - 5.0)            # 5 s off: still another process (R1186)
+        assert not what["stopped"] and _alive(p.pid), "the tolerance is 1 s, not a minute"
+        gone = swap.stop(2 ** 22 + 12345, 1.0)
+        assert gone["stopped"] and "gone" in gone["detail"]
     finally:
         p.kill()
         p.wait()
@@ -458,6 +537,19 @@ def test_too_little_space_is_refused(tmp_path, monkeypatch):
     swap.check_space(str(tmp_path), str(cat), str(tmp_path / "w"))
 
 
+def test_the_frozen_worker_counts_in_the_space_needed(tmp_path, monkeypatch):
+    """A surviving R1186 mutant dropped the node_modules term: a generation copies it."""
+    cat = tmp_path / "c.db"
+    cat.write_bytes(b"x" * 1000)
+    nm = tmp_path / "w" / "node_modules"
+    nm.mkdir(parents=True)
+    (nm / "big.bin").write_bytes(b"\0" * (3 << 20))                   # 3 MiB of "node_modules"
+    free = int(1000 * 2.0) + (2 << 30) + (1 << 20)                      # enough WITHOUT node_modules, 1 MiB short
+    monkeypatch.setattr(swap.shutil, "disk_usage", lambda p: types.SimpleNamespace(free=free))
+    with pytest.raises(swap.SwapRefused, match="GB free"):
+        swap.check_space(str(tmp_path), str(cat), str(tmp_path / "w"))
+
+
 def test_after_t0_only_the_build_is_copied_under_the_writer_lock(tmp_path, monkeypatch):
     from core import catalog_path, cutover
     seen = []
@@ -471,20 +563,22 @@ def test_after_t0_only_the_build_is_copied_under_the_writer_lock(tmp_path, monke
     build.write_bytes(b"")
     monkeypatch.setattr(catalog_path, "writer_lock", lock)
     monkeypatch.setattr(catalog_path, "catalog_path", lambda: str(build))
-    def fake_build(c, o, lock=None):
+    def fake_build(c, o, lock=None, state_db=None):
         with (lock() if lock else contextlib.nullcontext()):
             seen.append("build")
+            seen.append(("state_db", state_db))
         return {"ok": 1}
     monkeypatch.setattr(swap.origin_copies, "build", fake_build)
     monkeypatch.setattr(cutover, "is_cut_over", lambda: False)
     swap.build_copies("anything", "o")
-    assert seen == ["build"], "before T0 no lock (CI's writer runs elsewhere)"
+    assert seen == ["build", ("state_db", None)], "before T0 no lock (CI's writer runs elsewhere)"
     seen.clear()
     monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
     with pytest.raises(swap.SwapRefused, match="copies only the build"):
-        swap.build_copies(str(tmp_path / "elsewhere.db"), "o")
+        swap.build_copies(str(tmp_path / "." / "elsewhere.db"), "o")
     swap.build_copies(str(tmp_path / "." / "catalog.db"), "o")
-    assert seen == ["held", "build"]
+    assert seen == ["held", "build", ("state_db", os.path.join(catalog_path.LIVE_STATE_DIR, "state.db"))], \
+        "after T0 the freshness projection comes from the LIVE state.db (R1186)"
 
 
 def test_after_t0_a_held_lock_is_waited_for_then_refused(tmp_path, monkeypatch):
@@ -503,7 +597,7 @@ def test_after_t0_a_held_lock_is_waited_for_then_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
     monkeypatch.setattr(swap.time, "sleep", lambda s: None)
 
-    def fake_build(c, o, lock=None):
+    def fake_build(c, o, lock=None, state_db=None):
         with lock():
             raise AssertionError("the lock was never free, so the build must not run")
     monkeypatch.setattr(swap.origin_copies, "build", fake_build)

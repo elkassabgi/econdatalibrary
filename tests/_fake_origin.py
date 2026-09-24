@@ -7,7 +7,7 @@ like the real worker (the REQUESTED id echoed, the title read from the database)
 hold a request in flight.
 
     python tests/_fake_origin.py <port> <persist> <slots json> --instance <id> [--child <pidfile>]
-        [--unmarked] [--die] [--garbage] [--gate <source or series id>,...]
+        [--unmarked] [--die] [--garbage] [--gate <source or series id>,...] [--other-instance-on-metadata]
 """
 import http.server
 import json
@@ -49,7 +49,8 @@ def main():
             if "--unmarked" not in flags:
                 self.send_header("x-econ-origin", "1")
             if instance:
-                self.send_header("x-econ-instance", instance)
+                other = "--other-instance-on-metadata" in flags and self.path.endswith(".metadata.json")
+                self.send_header("x-econ-instance", "someone-else" if other else instance)
             self.end_headers()
             self.wfile.write(body)
 

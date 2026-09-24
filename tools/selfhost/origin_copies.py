@@ -11,6 +11,11 @@ had both held them:
   primary  = every table of the catalogue, minus the shard sources' series / source_counts rows
   climate  = the shard sources' series rows, their source and license parent rows, and their source_counts
   source_counts is recomputed in both from `series` itself (a copy cannot inherit a drifted count - R709)
+  the FRESHNESS projection the worker reads from CATALOG - unit_state, source_state, source_data_through -
+             is built into the primary copy by the D1 sync's own emitter (core.sync_state_d1.emit_sql, the
+             same licence gate) from state.db and the catalogue being copied, when state_db is given (R1186:
+             the production catalog.db holds only license/series/series_fts/source - these tables lived in
+             D1 alone, so an origin copied from it answered /v1/last-updates with nothing)
   series_fts is REBUILT in both from `series` itself (review R1183: 31 writers change `series` without
              touching series_fts - a retitle, a new series, a re-keyed id - and a count check cannot see a
              retitle; the catalogue's own index is never copied, so search answers from what `series` holds)
@@ -60,7 +65,7 @@ def _rebuild_fts(con: sqlite3.Connection, ddl: str) -> None:
     con.execute(f"INSERT INTO series_fts({cols}) SELECT {cols} FROM series")
 
 
-def build(catalogue: str, out_dir: str, lock=None) -> dict:
+def build(catalogue: str, out_dir: str, lock=None, state_db: str | None = None) -> dict:
     """Write out_dir/primary.sqlite and out_dir/climate.sqlite; return the checked counts.
 
     `lock` (a callable returning a context manager, e.g. the catalogue writer lock after T0) is held ONLY
@@ -107,12 +112,23 @@ def build(catalogue: str, out_dir: str, lock=None) -> dict:
             c.execute("DETACH DATABASE b")
             src.close()
             opened.remove(src)
+            # the freshness projection, from the same moment (state.db is written under the same lock)
+            fresh_sql = _emit_freshness(state_db, catalogue, out_dir) if state_db else None
 
         # the catalogue is no longer read: only the copies are written from here on
         for s in SHARD_SOURCES:
             dst.execute("DELETE FROM series WHERE source_id=?", (s,))
         _recount(dst)
         _rebuild_fts(dst, schema["series_fts"])
+        if fresh_sql:
+            # the emitted projection is the ONLY source: a table the catalogue happened to carry (a copy
+            # taken from D1 has them, possibly stale or with other columns) is replaced, never merged
+            for t in FRESHNESS:
+                dst.execute(f"DROP TABLE IF EXISTS {t}")
+            for f in fresh_sql:
+                dst.executescript(open(f, encoding="utf-8").read())
+                os.remove(f)
+            os.rmdir(os.path.dirname(fresh_sql[0]))
         dst.commit()
         _recount(c)
         _rebuild_fts(c, schema["series_fts"])
@@ -121,7 +137,7 @@ def build(catalogue: str, out_dir: str, lock=None) -> dict:
             con.close()
         opened.clear()
 
-        return check(primary, climate, total)
+        return check(primary, climate, total, freshness=bool(state_db))
     except BaseException:
         for con in opened:                              # closed first: Windows cannot delete an open file
             con.close()
@@ -131,9 +147,37 @@ def build(catalogue: str, out_dir: str, lock=None) -> dict:
         raise
 
 
-def check(primary: str, climate: str, total: int) -> dict:
+def _emit_freshness(state_db: str, catalogue: str, out_dir: str) -> list[str]:
+    """The D1 sync's own freshness SQL (gate applied), written beside the copies; applied, then removed."""
+    from core import sync_state_d1
+    tmp = os.path.join(out_dir, "freshness_sql")
+    os.makedirs(tmp, exist_ok=True)
+    try:
+        files, _counts = sync_state_d1.emit_sql(state_db, tmp, catalogue=catalogue)
+    except SystemExit as e:               # e.g. its zero-row refusal: a failed build here, not an exit
+        raise RuntimeError(f"freshness projection refused: {e}") from None
+    return files
+
+
+FRESHNESS = ("unit_state", "source_state", "source_data_through")
+
+
+def check(primary: str, climate: str, total: int, freshness: bool = False) -> dict:
     """The checks that must pass before a copy is served. Raises RuntimeError naming the first failure."""
     out = {"catalogue_series": total}
+    if freshness:
+        con = _ro(primary)
+        try:
+            have = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in FRESHNESS
+                    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()}
+        finally:
+            con.close()
+        missing = [t for t in FRESHNESS if t not in have]
+        if missing:
+            raise RuntimeError(f"primary: the freshness table(s) {missing} are missing")
+        if not have["unit_state"] or not have["source_state"]:
+            raise RuntimeError(f"primary: an empty freshness projection {have} - /v1/last-updates would be empty")
+        out["freshness"] = have
     for label, path in (("primary", primary), ("climate", climate)):
         con = _ro(path)
         qc = con.execute("PRAGMA quick_check").fetchone()[0]
@@ -164,8 +208,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--catalogue", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--state-db", help="state.db: build the freshness projection into the primary copy")
     a = ap.parse_args()
-    print(json.dumps(build(a.catalogue, a.out), indent=1))
+    print(json.dumps(build(a.catalogue, a.out, state_db=a.state_db), indent=1))
     return 0
 
 

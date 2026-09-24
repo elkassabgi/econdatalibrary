@@ -136,6 +136,64 @@ def test_each_copy_s_search_index_is_rebuilt_from_its_series(tmp_path):
         "CREATE VIRTUAL TABLE series_fts USING fts5"), "the catalogue's own FTS definition"
 
 
+def _state_db(path, rows):
+    s = sqlite3.connect(path)
+    s.executescript("CREATE TABLE source_state (source_id TEXT PRIMARY KEY, cadence TEXT, status TEXT, "
+                    "last_success_utc TEXT);"
+                    "CREATE TABLE unit_state (source_id TEXT, unit_id TEXT, status TEXT, last_success_utc TEXT, "
+                    "upstream_vintage TEXT, last_obs_date TEXT, obs_count INTEGER, PRIMARY KEY (source_id, unit_id));")
+    for src in rows:
+        s.execute("INSERT INTO source_state VALUES (?,?,?,?)", (src, "daily", "ok", "2026-09-01T00:00:00+00:00"))
+        s.execute("INSERT INTO unit_state VALUES (?,?,?,?,?,?,?)", (src, "_all", "ok", "2026-09-01T00:00:00+00:00",
+                                                                    None, None, 1))
+    s.commit()
+    s.close()
+
+
+def _dated_catalogue(path):
+    _catalogue(path)
+    c = sqlite3.connect(path)
+    c.execute("ALTER TABLE series ADD COLUMN end_date TEXT")
+    c.execute("UPDATE series SET end_date = '2026-06-30'")
+    c.commit()
+    c.close()
+
+
+def test_the_primary_copy_carries_the_freshness_projection(tmp_path):
+    """R1186: the production catalog.db has no unit_state / source_state / source_data_through - they
+    lived in D1 alone. The copies build them with the D1 sync's own emitter."""
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _dated_catalogue(cat)
+    _state_db(st, ["ecb", "noaa"])
+    report = oc.build(str(cat), str(tmp_path / "out"), state_db=str(st))
+    assert report["freshness"]["unit_state"] == 2 and report["freshness"]["source_state"] == 2
+    assert report["freshness"]["source_data_through"] >= 1
+    con = sqlite3.connect(tmp_path / "out" / "primary.sqlite")
+    try:
+        assert con.execute("SELECT data_through FROM source_data_through WHERE source_id='ecb'").fetchone() == ("2026-06-30",)
+    finally:
+        con.close()
+    assert sorted(os.listdir(tmp_path / "out")) == ["climate.sqlite", "primary.sqlite"], "no SQL left behind"
+
+
+def test_an_empty_state_db_fails_the_build(tmp_path):
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _dated_catalogue(cat)
+    _state_db(st, [])
+    with pytest.raises(RuntimeError, match="freshness projection refused"):
+        oc.build(str(cat), str(tmp_path / "out"), state_db=str(st))
+    assert not os.path.exists(tmp_path / "out" / "primary.sqlite"), "a failed build leaves no copy"
+
+
+def test_the_freshness_check_can_fail(tmp_path):
+    cat = tmp_path / "catalog.db"
+    _catalogue(cat)
+    oc.build(str(cat), str(tmp_path / "out"))                      # no state_db: no projection built
+    with pytest.raises(RuntimeError, match="freshness table"):
+        oc.check(str(tmp_path / "out" / "primary.sqlite"), str(tmp_path / "out" / "climate.sqlite"), 5,
+                 freshness=True)
+
+
 def test_the_lock_covers_the_reads_and_only_the_reads(tmp_path):
     """R1185: the catalogue is read inside the lock - so a writer that commits the moment the lock is
     released changes nothing in the copies - and the rebuild runs after it is released."""
